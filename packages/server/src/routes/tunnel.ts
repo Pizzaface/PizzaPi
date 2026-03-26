@@ -13,13 +13,12 @@
  *   - Not suitable for large file downloads (>10 MB)
  */
 
+import type { TunnelRelay } from "@pizzapi/tunnel";
 import { requireSession } from "../middleware.js";
-import { getSession } from "../ws/sio-state.js";
+import { getTunnelRelay } from "../tunnel-relay.js";
 import { sendTunnelRequest } from "../ws/namespaces/runner.js";
+import { getSession } from "../ws/sio-state.js";
 import type { RouteHandler } from "./types.js";
-
-/** Maximum request body size for tunnel proxying (10 MB). */
-const MAX_TUNNEL_BODY_SIZE = 10 * 1024 * 1024;
 
 /** Pattern: /api/tunnel/:sessionId/:port/<rest> */
 const TUNNEL_PATH_RE = /^\/api\/tunnel\/([^/]+)\/(\d+)(\/.*)?$/;
@@ -250,6 +249,226 @@ function rewriteTunnelCss(css: string, sessionId: string, port: number): string 
         });
 }
 
+function shouldBufferTunnelResponse(contentType: string | null): boolean {
+    return shouldRewriteTunnelHtml(contentType)
+        || shouldRewriteTunnelJs(contentType)
+        || shouldRewriteTunnelCss(contentType);
+}
+
+function applyTunnelResponseHeaders(responseHeaders: Headers, sessionId: string, port: number): void {
+    const location = responseHeaders.get("location");
+    if (location) {
+        responseHeaders.set("location", rewriteTunnelUrl(location, sessionId, port));
+    }
+
+    responseHeaders.set("x-pizzapi-tunnel", "1");
+}
+
+function rewriteBufferedTunnelResponse(
+    responseBody: Buffer,
+    responseHeaders: Headers,
+    sessionId: string,
+    port: number,
+    proxyPath: string,
+): Buffer {
+    const contentType = responseHeaders.get("content-type");
+
+    if (shouldRewriteTunnelHtml(contentType)) {
+        const html = responseBody.toString("utf8");
+        responseHeaders.delete("content-length");
+        responseHeaders.delete("content-encoding");
+        return Buffer.from(rewriteTunnelHtml(html, sessionId, port, proxyPath), "utf8");
+    }
+
+    if (shouldRewriteTunnelJs(contentType)) {
+        const js = responseBody.toString("utf8");
+        responseHeaders.delete("content-length");
+        responseHeaders.delete("content-encoding");
+        return Buffer.from(rewriteTunnelJsModule(js, sessionId, port), "utf8");
+    }
+
+    if (shouldRewriteTunnelCss(contentType)) {
+        const css = responseBody.toString("utf8");
+        responseHeaders.delete("content-length");
+        responseHeaders.delete("content-encoding");
+        return Buffer.from(rewriteTunnelCss(css, sessionId, port), "utf8");
+    }
+
+    return responseBody;
+}
+
+function tunnelErrorResponse(message: string): Response {
+    if (message.includes("not connected") || message.includes("disconnected")) {
+        return Response.json({ error: "Runner not available" }, { status: 503 });
+    }
+
+    if (message.includes("timed out")) {
+        return Response.json({ error: "Tunnel request timed out" }, { status: 504 });
+    }
+
+    return Response.json({ error: `Tunnel error: ${message}` }, { status: 502 });
+}
+
+function bufferToBodyInit(buffer: Buffer): BodyInit {
+    return buffer as unknown as BodyInit;
+}
+
+async function streamRequestBodyToRelay(
+    req: Request,
+    relay: TunnelRelay,
+    runnerId: string,
+    requestId: string,
+): Promise<void> {
+    if (!req.body || req.method === "GET" || req.method === "HEAD") {
+        relay.sendRequestDataEnd(runnerId, requestId);
+        return;
+    }
+
+    const reader = req.body.getReader();
+    try {
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            if (!value || value.byteLength === 0) continue;
+            relay.sendRequestData(runnerId, requestId, Buffer.from(value));
+        }
+    } finally {
+        reader.releaseLock();
+    }
+
+    relay.sendRequestDataEnd(runnerId, requestId);
+}
+
+function proxyTunnelRequestViaRelay(
+    req: Request,
+    relay: TunnelRelay,
+    runnerId: string,
+    requestId: string,
+    sessionId: string,
+    port: number,
+    proxyPath: string,
+    pathWithQuery: string,
+    forwardHeaders: Record<string, string>,
+): Promise<Response> {
+    return new Promise<Response>((resolve) => {
+        let responseStarted = false;
+        let resolved = false;
+        let statusCode = 502;
+        let responseHeaders = new Headers();
+        let streamController: ReadableStreamDefaultController<Uint8Array> | null = null;
+        let shouldBuffer = false;
+        const bodyChunks: Buffer[] = [];
+
+        const resolveOnce = (response: Response): void => {
+            if (resolved) return;
+            resolved = true;
+            resolve(response);
+        };
+
+        const { cancel } = relay.proxyHttpRequest(
+            runnerId,
+            {
+                id: requestId,
+                port,
+                method: req.method.toUpperCase(),
+                url: pathWithQuery,
+                headers: forwardHeaders,
+            },
+            {
+                onResponseStart: (code, _statusMessage, headers) => {
+                    responseStarted = true;
+                    statusCode = code;
+                    responseHeaders = new Headers();
+                    for (const [key, value] of Object.entries(headers)) {
+                        try {
+                            responseHeaders.set(key, value);
+                        } catch {
+                            // Skip invalid header values rejected by the Headers API.
+                        }
+                    }
+
+                    shouldBuffer = shouldBufferTunnelResponse(responseHeaders.get("content-type"));
+                    if (shouldBuffer) return;
+
+                    applyTunnelResponseHeaders(responseHeaders, sessionId, port);
+                    const stream = new ReadableStream<Uint8Array>({
+                        start(controller) {
+                            streamController = controller;
+                        },
+                        cancel() {
+                            cancel();
+                        },
+                    });
+
+                    resolveOnce(new Response(stream, {
+                        status: statusCode,
+                        headers: responseHeaders,
+                    }));
+                },
+                onResponseData: (chunk) => {
+                    if (shouldBuffer) {
+                        bodyChunks.push(chunk);
+                        return;
+                    }
+
+                    streamController?.enqueue(
+                        new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength),
+                    );
+                },
+                onResponseEnd: () => {
+                    if (shouldBuffer) {
+                        if (!responseStarted) {
+                            resolveOnce(tunnelErrorResponse("Tunnel response missing headers"));
+                            return;
+                        }
+
+                        const responseBody = rewriteBufferedTunnelResponse(
+                            Buffer.concat(bodyChunks),
+                            responseHeaders,
+                            sessionId,
+                            port,
+                            proxyPath,
+                        );
+                        applyTunnelResponseHeaders(responseHeaders, sessionId, port);
+                        resolveOnce(new Response(bufferToBodyInit(responseBody), {
+                            status: statusCode,
+                            headers: responseHeaders,
+                        }));
+                        return;
+                    }
+
+                    streamController?.close();
+                },
+                onError: (error) => {
+                    if (!responseStarted || shouldBuffer) {
+                        resolveOnce(tunnelErrorResponse(error));
+                        return;
+                    }
+
+                    streamController?.error(new Error(error));
+                },
+            },
+        );
+
+        void streamRequestBodyToRelay(req, relay, runnerId, requestId).catch((error) => {
+            cancel();
+            const message = error instanceof Error ? error.message : String(error);
+
+            if (!responseStarted) {
+                resolveOnce(Response.json({ error: `Failed to read tunnel request body: ${message}` }, { status: 400 }));
+                return;
+            }
+
+            if (shouldBuffer) {
+                resolveOnce(Response.json({ error: `Tunnel request body error: ${message}` }, { status: 502 }));
+                return;
+            }
+
+            streamController?.error(new Error(message));
+        });
+    });
+}
+
 /**
  * Tunnel route handler.
  *
@@ -316,21 +535,6 @@ export const handleTunnelRoute: RouteHandler = async (req, url) => {
         return Response.json({ error: "Session has no runner" }, { status: 503 });
     }
 
-    // ── Read and enforce body size limit ─────────────────────────────────────
-    let bodyBase64: string | undefined;
-    if (req.body && method !== "GET" && method !== "HEAD") {
-        const bodyBuffer = await req.arrayBuffer();
-        if (bodyBuffer.byteLength > MAX_TUNNEL_BODY_SIZE) {
-            return Response.json(
-                { error: `Request body exceeds ${MAX_TUNNEL_BODY_SIZE / 1024 / 1024} MB limit` },
-                { status: 413 },
-            );
-        }
-        if (bodyBuffer.byteLength > 0) {
-            bodyBase64 = Buffer.from(bodyBuffer).toString("base64");
-        }
-    }
-
     // ── Forward headers (strip hop-by-hop and host) ───────────────────────────
     const HOP_BY_HOP = new Set([
         "connection",
@@ -356,8 +560,32 @@ export const handleTunnelRoute: RouteHandler = async (req, url) => {
         if (!HOP_BY_HOP.has(lk) && !STRIP_AUTH.has(lk)) forwardHeaders[k] = v;
     });
 
-    // ── Build requestId and emit tunnel_request ───────────────────────────────
+    // ── Build requestId and proxy the request ────────────────────────────────
     const requestId = `${sessionId}-${port}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+    const relay = getTunnelRelay();
+    if (relay?.hasRunner(runnerId)) {
+        return proxyTunnelRequestViaRelay(
+            req,
+            relay,
+            runnerId,
+            requestId,
+            sessionId,
+            port,
+            proxyPath,
+            pathWithQuery,
+            forwardHeaders,
+        );
+    }
+
+    // ── Fallback: existing Socket.IO transport ───────────────────────────────
+    let bodyBase64: string | undefined;
+    if (req.body && method !== "GET" && method !== "HEAD") {
+        const bodyBuffer = await req.arrayBuffer();
+        if (bodyBuffer.byteLength > 0) {
+            bodyBase64 = Buffer.from(bodyBuffer).toString("base64");
+        }
+    }
 
     let tunnelResponse;
     try {
@@ -370,55 +598,28 @@ export const handleTunnelRoute: RouteHandler = async (req, url) => {
             body: bodyBase64,
         });
     } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        if (msg.includes("not connected") || msg.includes("disconnected")) {
-            return Response.json({ error: "Runner not available" }, { status: 503 });
-        }
-        if (msg.includes("timed out")) {
-            return Response.json({ error: "Tunnel request timed out" }, { status: 504 });
-        }
-        return Response.json({ error: `Tunnel error: ${msg}` }, { status: 502 });
+        return tunnelErrorResponse(err instanceof Error ? err.message : String(err));
     }
-
-    // ── Write response back to viewer ─────────────────────────────────────────
-    let responseBody = Buffer.from(tunnelResponse.body, "base64");
 
     const responseHeaders = new Headers();
-    for (const [k, v] of Object.entries(tunnelResponse.headers)) {
+    for (const [key, value] of Object.entries(tunnelResponse.headers)) {
         try {
-            responseHeaders.set(k, v);
+            responseHeaders.set(key, value);
         } catch {
-            // Skip headers that are invalid in the Headers API
+            // Skip headers that are invalid in the Headers API.
         }
     }
 
-    const location = responseHeaders.get("location");
-    if (location) {
-        responseHeaders.set("location", rewriteTunnelUrl(location, sessionId, port));
-    }
+    const responseBody = rewriteBufferedTunnelResponse(
+        Buffer.from(tunnelResponse.body, "base64"),
+        responseHeaders,
+        sessionId,
+        port,
+        proxyPath,
+    );
+    applyTunnelResponseHeaders(responseHeaders, sessionId, port);
 
-    const contentType = responseHeaders.get("content-type");
-    if (shouldRewriteTunnelHtml(contentType)) {
-        const html = responseBody.toString("utf8");
-        responseBody = Buffer.from(rewriteTunnelHtml(html, sessionId, port, proxyPath), "utf8");
-        responseHeaders.delete("content-length");
-        responseHeaders.delete("content-encoding");
-    } else if (shouldRewriteTunnelJs(contentType)) {
-        const js = responseBody.toString("utf8");
-        responseBody = Buffer.from(rewriteTunnelJsModule(js, sessionId, port), "utf8");
-        responseHeaders.delete("content-length");
-        responseHeaders.delete("content-encoding");
-    } else if (shouldRewriteTunnelCss(contentType)) {
-        const css = responseBody.toString("utf8");
-        responseBody = Buffer.from(rewriteTunnelCss(css, sessionId, port), "utf8");
-        responseHeaders.delete("content-length");
-        responseHeaders.delete("content-encoding");
-    }
-
-    // Mark as tunnel response so withSecurityHeaders applies relaxed policy.
-    responseHeaders.set("x-pizzapi-tunnel", "1");
-
-    return new Response(responseBody, {
+    return new Response(bufferToBodyInit(responseBody), {
         status: tunnelResponse.status,
         headers: responseHeaders,
     });
