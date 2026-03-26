@@ -4,14 +4,13 @@ import { SessionSidebar, type DotState, type HubSession } from "@/components/Ses
 import { SessionViewer, type RelayMessage } from "@/components/SessionViewer";
 import type { CommandResultData } from "@/components/session-viewer/rendering";
 import { detectInFlightTools } from "@/components/session-viewer/utils";
-import { ProviderIcon } from "@/components/ProviderIcon";
+import { DesktopHeader, MobileHeader } from "@/components/AppHeaders";
 import { AuthPage } from "@/components/AuthPage";
 import { ApiKeyManager } from "@/components/ApiKeyManager";
 import { RunnerTokenManager } from "@/components/RunnerTokenManager";
 import { RunnerManager } from "@/components/RunnerManager";
 import { NewSessionWizardDialog } from "@/components/NewSessionWizardDialog";
-import { PizzaLogo } from "@/components/PizzaLogo";
-import { authClient, useSession, signOut, type BetterAuthSession } from "@/lib/auth-client";
+import { authClient, useSession, type BetterAuthSession } from "@/lib/auth-client";
 import { useRunnersFeed } from "@/lib/useRunnersFeed";
 import { io, type Socket } from "socket.io-client";
 import type {
@@ -26,7 +25,7 @@ import { cn } from "@/lib/utils";
 import { pulseStreamingHaptic, cancelHaptic, startToolHaptic, stopToolHaptic } from "@/lib/haptics";
 import { Button } from "@/components/ui/button";
 import { TooltipProvider, Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
-import { Separator } from "@/components/ui/separator";
+
 import {
   Dialog,
   DialogContent,
@@ -54,10 +53,8 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Sun, Moon, LogOut, KeyRound, X, User, ChevronsUpDown, PanelLeftOpen, HardDrive, Bell, BellOff, Check, Plus, TerminalIcon, FolderTree, GitBranch, Keyboard, EyeOff, Lock } from "lucide-react";
-import { NotificationToggle, MobileNotificationMenuItem } from "@/components/NotificationToggle";
-import { HapticsToggle, MobileHapticsMenuItem } from "@/components/HapticsToggle";
-import { UsageIndicator, type ProviderUsageMap } from "@/components/UsageIndicator";
+import { X, TerminalIcon, FolderTree, GitBranch, EyeOff } from "lucide-react";
+import type { ProviderUsageMap } from "@/components/UsageIndicator";
 import { TerminalManager } from "@/components/TerminalManager";
 import { FileExplorer, GitChangesView } from "@/components/FileExplorer";
 import { CombinedPanel, type CombinedPanelTab } from "@/components/CombinedPanel";
@@ -66,7 +63,7 @@ import { ViewerSocketContext } from "@/lib/viewer-socket-context";
 import { HubSocketContext } from "@/lib/hub-socket-context";
 import { shouldStopViewerReconnect } from "@/lib/viewer-connection";
 import { getConfirmedMetaSubscriptionTargets } from "@/lib/meta-subscriptions";
-import { useRunnerServices, attachServiceAnnounceListener } from "@/hooks/useRunnerServices";
+import { useRunnerServices, attachServiceAnnounceListener, seedServiceCache } from "@/hooks/useRunnerServices";
 import { ServicePanelButtons, useServicePanelState } from "@/components/service-panels/ServicePanels";
 import { SERVICE_PANELS } from "@/components/service-panels/registry";
 import { DynamicLucideIcon } from "@/components/service-panels/lucide-icon";
@@ -352,6 +349,10 @@ export function App() {
     handleSidebarPointerDown, handleSidebarPointerMove, handleSidebarPointerUp,
   } = useMobileSidebar();
   const [liveSessions, setLiveSessions] = React.useState<HubSession[]>([]);
+  // Ref kept in sync with liveSessions so openSession can look up runner IDs
+  // without including liveSessions in its dependency array.
+  const liveSessionsRef = React.useRef<HubSession[]>(liveSessions);
+  React.useLayoutEffect(() => { liveSessionsRef.current = liveSessions; }, [liveSessions]);
 
   React.useEffect(() => {
     confirmedMetaLiveSessionIdsRef.current = new Set(liveSessions.map((s) => s.sessionId));
@@ -2335,6 +2336,23 @@ export function App() {
     // Stop any in-flight haptics from the previous session immediately.
     cancelHaptic();
 
+    // Determine if this is a same-runner switch so we can preserve runner-level
+    // state (availableModels, availableCommands, providerUsage, authSource).
+    // These values are runner-scoped, not session-scoped — resetting them on
+    // same-runner switches causes a flash to empty and unnecessary re-renders
+    // in the header / model selector.
+    const sessions = liveSessionsRef.current;
+    const prevSessionId = activeSessionRef.current;
+    const prevRunnerId = prevSessionId
+      ? sessions.find((s) => s.sessionId === prevSessionId)?.runnerId ?? null
+      : null;
+    const nextRunnerId = sessions.find((s) => s.sessionId === relaySessionId)?.runnerId ?? null;
+    const sameRunner = !!(prevRunnerId && nextRunnerId && prevRunnerId === nextRunnerId);
+
+    // Save a ref to the old viewer socket before tearing it down — on same-runner
+    // switches we'll seed the new socket's eager service cache from it.
+    const prevViewerSocket = viewerWsRef.current;
+
     viewerWsRef.current?.disconnect();
     viewerWsRef.current = null;
     setViewerSocket(null);
@@ -2369,20 +2387,30 @@ export function App() {
     const cached = sessionUiCacheRef.current.get(relaySessionId);
     // Update lastAccessed so this entry is not evicted while actively being viewed.
     touchSessionCache(sessionUiCacheRef.current, relaySessionId);
+
+    // ── Session-scoped state: always reset from cache or defaults ────────
     setMessages(cached?.messages ?? []);
     setActiveModel(cached?.activeModel ?? null);
     setSessionName(cached?.sessionName ?? null);
-    setAvailableModels(cached?.availableModels ?? []);
-    setAvailableCommands(cached?.availableCommands ?? []);
     setAgentActive(cached?.agentActive ?? false);
     setIsCompacting(cached?.isCompacting ?? false);
     setEffortLevel(cached?.effortLevel ?? null);
     setPlanModeEnabled(cached?.planModeEnabled ?? false);
-    setAuthSource(cached?.authSource ?? null);
     setTokenUsage(cached?.tokenUsage ?? null);
-    setProviderUsage(cached?.providerUsage ?? null);
     setLastHeartbeatAt(cached?.lastHeartbeatAt ?? null);
     setTodoList(cached?.todoList ?? []);
+
+    // ── Runner-scoped state: preserve on same-runner switch ─────────────
+    // These values are identical across sessions on the same runner. Resetting
+    // them causes a flash-to-empty in the header / model selector, followed by
+    // the exact same values arriving again from the capabilities event.
+    if (!sameRunner) {
+      setAvailableModels(cached?.availableModels ?? []);
+      setAvailableCommands(cached?.availableCommands ?? []);
+      setAuthSource(cached?.authSource ?? null);
+      setProviderUsage(cached?.providerUsage ?? null);
+    }
+
     // Don't restore pendingQuestion/pendingPlan from cache — the cache can be
     // stale if the user answered/rejected before the next heartbeat arrived.
     // The heartbeat (which arrives within seconds) will restore them with
@@ -2399,6 +2427,13 @@ export function App() {
     // so the announce event (sent by the server during connection) is captured
     // eagerly and available when useRunnerServices reads it.
     attachServiceAnnounceListener(socket);
+
+    // For same-runner switches, seed the new socket's eager service cache from
+    // the previous socket so useRunnerServices doesn't flash to empty while
+    // waiting for the new socket's service_announce event.
+    if (sameRunner) {
+      seedServiceCache(socket, prevViewerSocket);
+    }
     setViewerSocket(socket);
 
     // Stale-connection watchdog: if the socket thinks it's connected but
@@ -3485,24 +3520,22 @@ export function App() {
   const userEmail = rawUser && typeof rawUser.email === "string" ? (rawUser.email as string) : "";
   const userLabel = userName || userEmail || "Account";
 
-  function relayStatusLabel(status: DotState, short = false) {
-    if (status === "connected") return short ? "Connected" : "Relay connected";
-    if (status === "connecting") return "Connecting…";
-    return short ? "Disconnected" : "Relay disconnected";
-  }
-
-  function relayStatusDot(status: DotState) {
-    return `inline-block h-2 w-2 rounded-full ${status === "connected" ? "bg-green-500 shadow-[0_0_4px_#22c55e80]" : status === "connecting" ? "bg-slate-400" : "bg-red-500"}`;
-  }
-
-  function initials(value: string) {
-    const parts = value
-      .trim()
-      .split(/\s+/)
-      .filter(Boolean)
-      .slice(0, 2);
-    return parts.map((p) => p[0]?.toUpperCase()).join("") || "U";
-  }
+  // Stable callbacks for memoized header components — these must not change
+  // between renders so React.memo can skip re-rendering when only session-
+  // scoped state changes.
+  const handleToggleDark = React.useCallback(() => setIsDark((d) => !d), []);
+  const handleShowApiKeys = React.useCallback(() => { setShowApiKeys(true); setShowRunners(false); }, []);
+  const handleShowRunners = React.useCallback(() => { setShowRunners(true); setShowApiKeys(false); setActiveSessionId(null); }, []);
+  const handleShowShortcuts = React.useCallback(() => setShowShortcutsHelp(true), []);
+  const handleShowHiddenModels = React.useCallback(() => setHiddenModelsOpen(true), []);
+  const handleChangePassword = React.useCallback(() => setChangePasswordOpen(true), []);
+  const handleToggleSidebar = React.useCallback(() => setSidebarOpen((prev) => !prev), []);
+  // Mobile-specific variants that also close the sidebar
+  const handleMobileShowApiKeys = React.useCallback(() => { setShowApiKeys(true); setShowRunners(false); setSidebarOpen(false); }, []);
+  const handleMobileShowRunners = React.useCallback(() => { setShowRunners(true); setShowApiKeys(false); setActiveSessionId(null); setSidebarOpen(false); }, []);
+  const handleMobileShowHiddenModels = React.useCallback(() => { setHiddenModelsOpen(true); setSidebarOpen(false); }, []);
+  const handleMobileChangePassword = React.useCallback(() => { setChangePasswordOpen(true); setSidebarOpen(false); }, []);
+  const handleSessionSwitcherOpenChange = React.useCallback((open: boolean) => setSessionSwitcherOpen(open), []);
 
   const activeModelKey = activeModel ? `${activeModel.provider}/${activeModel.id}` : "";
   const visibleModels = availableModels.filter(
@@ -3526,303 +3559,54 @@ export function App() {
         Skip to content
       </a>
       <DegradedBanner relayStatus={relayStatus} />
-      {/* ── Desktop header ────────────────────────────────────────────── */}
-      <header className="hidden md:flex items-center justify-between gap-3 border-b bg-background px-4 pb-2 pt-[calc(0.5rem_+_env(safe-area-inset-top))] flex-shrink-0">
-        <div className="flex items-center gap-3 flex-shrink-0">
-          <PizzaLogo />
-          <span className="text-sm font-semibold">PizzaPi</span>
-          <Separator orientation="vertical" className="h-5" />
-          <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-            <span className={relayStatusDot(relayStatus)} />
-            <span>{relayStatusLabel(relayStatus)}</span>
-          </div>
-          {(providerUsage || authSource) && (
-            <>
-              <Separator orientation="vertical" className="h-5" />
-              <UsageIndicator
-                usage={providerUsage}
-                authSource={authSource}
-                activeProvider={activeModel?.provider}
-                onRefresh={refreshUsage}
-                refreshing={usageRefreshing}
-              />
-            </>
-          )}
-        </div>
+      {/* ── Desktop header (memoized — skips re-render on same-runner session switch) ── */}
+      <DesktopHeader
+        relayStatus={relayStatus}
+        isDark={isDark}
+        providerUsage={providerUsage}
+        authSource={authSource}
+        activeProvider={activeModel?.provider}
+        usageRefreshing={usageRefreshing}
+        userName={userName}
+        userEmail={userEmail}
+        userLabel={userLabel}
+        onToggleDark={handleToggleDark}
+        onShowApiKeys={handleShowApiKeys}
+        onShowRunners={handleShowRunners}
+        onShowShortcuts={handleShowShortcuts}
+        onShowHiddenModels={handleShowHiddenModels}
+        onChangePassword={handleChangePassword}
+        onRefreshUsage={refreshUsage}
+      />
 
-        <div className="flex items-center gap-2">
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-9 w-9"
-                onClick={() => setIsDark((d) => !d)}
-                aria-label="Toggle dark mode"
-              >
-                {isDark ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>Toggle dark mode</TooltipContent>
-          </Tooltip>
-
-          <NotificationToggle />
-          <HapticsToggle />
-
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-9 w-9"
-                onClick={() => { setShowApiKeys(true); setShowRunners(false); }}
-                aria-label="Manage API keys"
-              >
-                <KeyRound className="h-4 w-4" />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>Manage API keys</TooltipContent>
-          </Tooltip>
-
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-9 w-9"
-                onClick={() => setShowShortcutsHelp(true)}
-                aria-label="Keyboard shortcuts"
-              >
-                <Keyboard className="h-4 w-4" />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>Keyboard shortcuts (?)</TooltipContent>
-          </Tooltip>
-
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button variant="outline" size="sm" className="gap-2">
-                <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-muted text-[11px] font-semibold flex-shrink-0">
-                  {initials(userLabel)}
-                </span>
-                <span className="truncate text-left max-w-40">{userLabel}</span>
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-64">
-              <DropdownMenuLabel className="flex items-center gap-2">
-                <User className="h-4 w-4 text-muted-foreground" />
-                <span className="truncate">{userName || "Signed in"}</span>
-              </DropdownMenuLabel>
-              {userEmail && (
-                <div className="px-2 pb-1 text-xs text-muted-foreground truncate">{userEmail}</div>
-              )}
-              <DropdownMenuSeparator />
-              <DropdownMenuItem onSelect={() => { setShowApiKeys(true); setShowRunners(false); }}>
-                <KeyRound className="h-4 w-4" />
-                API keys
-              </DropdownMenuItem>
-              <DropdownMenuItem onSelect={() => { setShowRunners(true); setShowApiKeys(false); setActiveSessionId(null); }}>
-                <HardDrive className="h-4 w-4" />
-                Runners
-              </DropdownMenuItem>
-              <DropdownMenuItem onSelect={() => setHiddenModelsOpen(true)}>
-                <EyeOff className="h-4 w-4" />
-                Model visibility
-              </DropdownMenuItem>
-              <DropdownMenuItem onSelect={() => setChangePasswordOpen(true)}>
-                <Lock className="h-4 w-4" />
-                Change password
-              </DropdownMenuItem>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem variant="destructive" onSelect={() => signOut()}>
-                <LogOut className="h-4 w-4" />
-                Sign out
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </div>
-      </header>
-
-      {/* ── Mobile header ─────────────────────────────────────────────── */}
-      {/* Fixed so the keyboard sliding up never pushes the header off-screen */}
-      <header className="md:hidden fixed top-0 left-0 right-0 z-50 flex items-center justify-between gap-2 border-b bg-background px-3 pp-safe-left pp-safe-right"
-        style={{ paddingTop: "calc(0.5rem + env(safe-area-inset-top))", paddingBottom: "0.5rem" }}
-      >
-        {/* Left: sidebar toggle — no Tooltip wrapper; on mobile, tooltips
-            intercept the first tap and prevent the click from firing. */}
-        <Button
-          variant="ghost"
-          size="icon"
-          className="h-9 w-9 flex-shrink-0"
-          onClick={() => setSidebarOpen(prev => !prev)}
-          aria-label={sidebarOpen ? "Close sidebar" : "Open sidebar"}
-        >
-          <PanelLeftOpen className={`h-5 w-5 transition-transform duration-300 ${sidebarOpen ? "rotate-180" : ""}`} />
-        </Button>
-
-        {/* Center: session switcher pill or logo */}
-        <div className="flex-1 min-w-0 flex justify-center">
-          <DropdownMenu open={sessionSwitcherOpen} onOpenChange={setSessionSwitcherOpen}>
-            <DropdownMenuTrigger asChild>
-              {activeSessionId ? (
-                <button
-                  className="inline-flex items-center gap-2 min-w-0 max-w-full rounded-xl bg-muted/50 border border-border/60 px-3 py-1.5 hover:bg-muted transition-colors"
-                >
-                  <span
-                    className={`inline-block h-1.5 w-1.5 rounded-full flex-shrink-0 transition-colors ${agentActive ? "bg-green-400 shadow-[0_0_5px_#4ade8080] animate-pulse" : "bg-slate-400"}`}
-                  />
-                  {activeModel?.provider && (
-                    <ProviderIcon provider={activeModel.provider} className="size-3.5 flex-shrink-0" />
-                  )}
-                  <span className="truncate text-sm font-medium">
-                    {sessionName || `Session ${activeSessionId.slice(0, 8)}…`}
-                  </span>
-                  <ChevronsUpDown className="h-3 w-3 opacity-40 flex-shrink-0" />
-                </button>
-              ) : (
-                <button className="inline-flex items-center gap-2 px-2 py-1.5 rounded-xl hover:bg-muted/50 transition-colors">
-                  <PizzaLogo className="!w-7 !h-7" />
-                  <span className="text-sm font-semibold">PizzaPi</span>
-                  <span className={relayStatusDot(relayStatus)} />
-                </button>
-              )}
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="center" className="w-72 max-h-[70dvh] overflow-y-auto">
-              <DropdownMenuLabel className="flex items-center justify-between">
-                <span>Sessions</span>
-                <span className={`inline-block h-1.5 w-1.5 rounded-full ${relayStatus === "connected" ? "bg-green-500 shadow-[0_0_4px_#22c55e80]" : relayStatus === "connecting" ? "bg-slate-400" : "bg-red-500"}`} />
-              </DropdownMenuLabel>
-              <DropdownMenuSeparator />
-              {liveSessions.length === 0 ? (
-                <div className="px-2 py-3 text-xs text-muted-foreground text-center italic">No live sessions</div>
-              ) : (
-                liveSessions
-                  .slice()
-                  .sort((a, b) => {
-                    const aT = Date.parse(a.lastHeartbeatAt ?? a.startedAt);
-                    const bT = Date.parse(b.lastHeartbeatAt ?? b.startedAt);
-                    return (Number.isFinite(bT) ? bT : 0) - (Number.isFinite(aT) ? aT : 0);
-                  })
-                  .map((s) => {
-                    const isActive = s.sessionId === activeSessionId;
-                    const provider = s.model?.provider ?? (isActive ? activeModel?.provider : undefined) ?? "unknown";
-                    const label = s.sessionName?.trim() || `Session ${s.sessionId.slice(0, 8)}…`;
-                    return (
-                      <DropdownMenuItem
-                        key={s.sessionId}
-                        onSelect={() => {
-                          handleOpenSession(s.sessionId);
-                          setSessionSwitcherOpen(false);
-                        }}
-                        className="flex items-center gap-2.5 py-2.5"
-                      >
-                        {/* Provider icon + activity badge */}
-                        <div className="relative flex-shrink-0 flex items-center justify-center w-7 h-7 rounded-md bg-muted">
-                          <ProviderIcon provider={provider} className="size-4 text-muted-foreground" />
-                          <span
-                            className={`absolute -top-0.5 -right-0.5 inline-block h-2 w-2 rounded-full border-2 border-popover ${s.isActive ? "bg-blue-400 animate-pulse" : "bg-green-600"}`}
-                            title={s.isActive ? "Generating" : "Idle"}
-                          />
-                        </div>
-                        {/* Name + path */}
-                        <div className="flex-1 min-w-0">
-                          <div className="text-sm font-medium truncate">{label}</div>
-                          {s.cwd && (
-                            <div className="text-[0.65rem] text-muted-foreground truncate">{s.cwd.split("/").slice(-2).join("/")}</div>
-                          )}
-                        </div>
-                        {/* Checkmark for active */}
-                        {isActive && <Check className="h-3.5 w-3.5 text-primary flex-shrink-0" />}
-                      </DropdownMenuItem>
-                    );
-                  })
-              )}
-              <DropdownMenuSeparator />
-              <DropdownMenuItem onSelect={() => { handleNewSession(); setSessionSwitcherOpen(false); }} className="gap-2">
-                <Plus className="h-4 w-4" />
-                New session
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </div>
-
-        {/* Right: usage + account */}
-        <div className="flex items-center gap-1 flex-shrink-0">
-          {(providerUsage || authSource) && (
-            <div className="hidden xs:flex">
-              <UsageIndicator
-                usage={providerUsage}
-                authSource={authSource}
-                activeProvider={activeModel?.provider}
-                onRefresh={refreshUsage}
-                refreshing={usageRefreshing}
-              />
-            </div>
-          )}
-          <DropdownMenu>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <DropdownMenuTrigger asChild>
-                  <Button variant="ghost" size="icon" className="h-9 w-9" aria-label="User menu">
-                    <span className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-muted text-[11px] font-semibold">
-                      {initials(userLabel)}
-                    </span>
-                  </Button>
-                </DropdownMenuTrigger>
-              </TooltipTrigger>
-              <TooltipContent>User menu</TooltipContent>
-            </Tooltip>
-            <DropdownMenuContent align="end" className="w-64">
-              <DropdownMenuLabel className="flex items-center gap-2">
-                <User className="h-4 w-4 text-muted-foreground" />
-                <span className="truncate">{userName || "Signed in"}</span>
-              </DropdownMenuLabel>
-              {userEmail && (
-                <div className="px-2 pb-1 text-xs text-muted-foreground truncate">{userEmail}</div>
-              )}
-              {(providerUsage || authSource) && (
-                <div className="px-2 py-1.5 border-t border-border/50">
-                  <UsageIndicator
-                    usage={providerUsage}
-                    authSource={authSource}
-                    activeProvider={activeModel?.provider}
-                    onRefresh={refreshUsage}
-                    refreshing={usageRefreshing}
-                  />
-                </div>
-              )}
-              <DropdownMenuSeparator />
-              <DropdownMenuItem onSelect={() => setIsDark((d) => !d)}>
-                {isDark ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
-                {isDark ? "Light mode" : "Dark mode"}
-              </DropdownMenuItem>
-              <MobileNotificationMenuItem />
-              <MobileHapticsMenuItem />
-              <DropdownMenuItem onSelect={() => { setShowApiKeys(true); setShowRunners(false); setSidebarOpen(false); }}>
-                <KeyRound className="h-4 w-4" />
-                API keys
-              </DropdownMenuItem>
-              <DropdownMenuItem onSelect={() => { setShowRunners(true); setShowApiKeys(false); setActiveSessionId(null); setSidebarOpen(false); }}>
-                <HardDrive className="h-4 w-4" />
-                Runners
-              </DropdownMenuItem>
-              <DropdownMenuItem onSelect={() => { setHiddenModelsOpen(true); setSidebarOpen(false); }}>
-                <EyeOff className="h-4 w-4" />
-                Model visibility
-              </DropdownMenuItem>
-              <DropdownMenuItem onSelect={() => { setChangePasswordOpen(true); setSidebarOpen(false); }}>
-                <Lock className="h-4 w-4" />
-                Change password
-              </DropdownMenuItem>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem variant="destructive" onSelect={() => signOut()}>
-                <LogOut className="h-4 w-4" />
-                Sign out
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </div>
-      </header>
+      {/* ── Mobile header (memoized — skips re-render on same-runner session switch) ── */}
+      <MobileHeader
+        relayStatus={relayStatus}
+        isDark={isDark}
+        sidebarOpen={sidebarOpen}
+        providerUsage={providerUsage}
+        authSource={authSource}
+        usageRefreshing={usageRefreshing}
+        activeSessionId={activeSessionId}
+        agentActive={agentActive}
+        sessionName={sessionName}
+        activeModel={activeModel}
+        liveSessions={liveSessions}
+        sessionSwitcherOpen={sessionSwitcherOpen}
+        userName={userName}
+        userEmail={userEmail}
+        userLabel={userLabel}
+        onToggleSidebar={handleToggleSidebar}
+        onToggleDark={handleToggleDark}
+        onShowApiKeys={handleMobileShowApiKeys}
+        onShowRunners={handleMobileShowRunners}
+        onShowHiddenModels={handleMobileShowHiddenModels}
+        onChangePassword={handleMobileChangePassword}
+        onRefreshUsage={refreshUsage}
+        onOpenSession={handleOpenSession}
+        onNewSession={handleNewSession}
+        onSessionSwitcherOpenChange={handleSessionSwitcherOpenChange}
+      />
       {/* Spacer that reserves the exact height of the fixed mobile header */}
       <div className="md:hidden flex-shrink-0" style={{ height: "calc(3.25rem + env(safe-area-inset-top))" }} aria-hidden="true" />
 
