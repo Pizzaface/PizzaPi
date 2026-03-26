@@ -57,6 +57,7 @@ export function spawnSession(
     requestedCwd: string | undefined,
     runningSessions: Map<string, RunnerSession>,
     restartingSessions: Set<string>,
+    killedSessions: Set<string>,
     onRestartRequested?: () => void,
     options?: {
         prompt?: string;
@@ -152,7 +153,7 @@ export function spawnSession(
         runningSessions.delete(sessionId);
         untrackSessionCwd(sessionId, effectiveCwd);
         logInfo(`session ${sessionId} exited (code=${code}, signal=${signal})`);
-        if (code === 43 && onRestartRequested) {
+        if (code === 43 && onRestartRequested && !killedSessions.has(sessionId)) {
             // Restart-in-place: re-spawn immediately without touching attachments.
             // The session continues under the same ID — files saved to
             // ~/.pizzapi/session-attachments/{sessionId} must survive the restart.
@@ -166,6 +167,8 @@ export function spawnSession(
             // True termination — clean up persisted attachments now.
             // session_ended will also arrive later but runningSessions will be empty
             // by then, so this is the reliable cleanup point for spawned sessions.
+            // Also remove from killedSessions if this was an explicit kill to prevent leaks.
+            killedSessions.delete(sessionId);
             void cleanupSessionAttachments(sessionId).catch(() => {});
         }
     });
