@@ -114,6 +114,10 @@ export default defineConfig({
     resolve: {
         alias: {
             "@": path.resolve(__dirname, "./src"),
+            // The UI only uses createLogger from @pizzapi/tools.  Resolve the
+            // bare specifier directly to the browser-safe log module so Vite
+            // bundles it instead of leaving it as an unresolvable bare import.
+            "@pizzapi/tools": path.resolve(__dirname, "../tools/dist/log.js"),
         },
     },
     server: {
@@ -155,7 +159,6 @@ export default defineConfig({
                 "node:buffer",
                 "node:console",
                 "node:assert",
-                "@pizzapi/tools",
                 /@smithy\/.*$/,
             ],
         },
