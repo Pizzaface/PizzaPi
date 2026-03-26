@@ -88,7 +88,7 @@ export const handleAttachmentsRoute: RouteHandler = async (req, url) => {
             return Response.json({ error: "Session is not live" }, { status: 404 });
         }
 
-        if (session.userId && session.userId !== identity.userId) {
+        if (!session.userId || session.userId !== identity.userId) {
             return Response.json({ error: "Forbidden" }, { status: 403 });
         }
 

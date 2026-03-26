@@ -32,6 +32,7 @@ import {
     emitToRelaySessionVerified,
     emitToRunner,
 } from "../sio-registry.js";
+import { isChildOfParent } from "../sio-state.js";
 import { getPendingChunkedSnapshot } from "./relay/index.js";
 import { getPersistedRelaySessionSnapshot } from "../../sessions/store.js";
 import { getCachedRelayEvents } from "../../sessions/redis.js";
@@ -440,6 +441,13 @@ export function registerViewerNamespace(io: SocketIOServer): void {
                 if (targetSession.userId !== viewerUserId) {
                     // Security: belongs to a different user — nack with trigger_error.
                     socket.emit("trigger_error", { message: `Target session ${targetSessionId} not found or unauthorized`, triggerId });
+                    return;
+                }
+                // Security: verify the target is a child of the current session to prevent
+                // cross-session trigger injection between unrelated sessions of the same user.
+                const childVerified = await isChildOfParent(sessionId, targetSessionId);
+                if (!childVerified) {
+                    socket.emit("trigger_error", { message: `Target session ${targetSessionId} is not a child of this session`, triggerId });
                     return;
                 }
                 const triggerPayload = {
