@@ -1,0 +1,9 @@
+{
+  "batchSize": 2,
+  "cooldownRemaining": 0,
+  "cycleNumber": 3,
+  "expoResults": [],
+  "consecutiveGoodWindows": 0,
+  "activeSessions": 8,
+  "deferredDishes": ["015"]
+}
