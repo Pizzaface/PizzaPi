@@ -109,9 +109,16 @@ import {
   normalizeSessionName,
   augmentThinkingDurations,
   normalizeModelList,
+  mergeChunkSnapshot,
 } from "@/lib/message-helpers";
 import { evictLruIfNeeded, touchSessionCache, MAX_SESSION_UI_CACHE_SIZE } from "@/lib/session-ui-cache";
-import { analyzeIncomingSeq, mergeConnectedSeq, shouldDeferEventForHydration } from "@/lib/session-seq";
+import {
+  analyzeIncomingSeq,
+  canFinalizeChunkHydration,
+  mergeConnectedSeq,
+  registerChunkIndex,
+  shouldDeferEventForHydration,
+} from "@/lib/session-seq";
 import { createLogger } from "@pizzapi/tools";
 import { isActiveViewerSessionPayload, matchesViewerGeneration } from "@/lib/viewer-switch";
 
@@ -348,8 +355,10 @@ export function App() {
     snapshotId: string;
     totalMessages: number;
     totalChunks: number;
-    receivedChunks: number;
-    loadedMessages: number; // cumulative count for fallback key offset
+    receivedChunkIndexes: Set<number>;
+    finalChunkSeen: boolean;
+    loadedMessages: number; // cumulative count for progress display
+    chunkBuffer: Map<number, unknown[]>; // raw messages buffered by chunkIndex for ordered assembly
   } | null>(null);
 
   // Track the last completed snapshot ID so we can reject stale chunks that
@@ -826,6 +835,33 @@ export function App() {
     patchSessionCache({ messages: next });
   }, [patchSessionCache]);
 
+  /** Remove a queued message whose text matches an incoming user message from the stream. */
+  const removeQueuedMessageByContent = React.useCallback((rawMessage: unknown) => {
+    if (!rawMessage || typeof rawMessage !== "object") return;
+    const msg = rawMessage as Record<string, unknown>;
+    if (msg.role !== "user") return;
+
+    // Extract text from user message content (string or array of text blocks)
+    let text = "";
+    if (typeof msg.content === "string") {
+      text = msg.content;
+    } else if (Array.isArray(msg.content)) {
+      text = (msg.content as Array<Record<string, unknown>>)
+        .filter((b) => b && typeof b === "object" && b.type === "text" && typeof b.text === "string")
+        .map((b) => b.text as string)
+        .join("");
+    }
+    if (!text) return;
+
+    const trimmed = text.trim();
+    setMessageQueue((prev) => {
+      if (prev.length === 0) return prev;
+      // Find the first queued message whose text matches and remove it
+      const idx = prev.findIndex((qm) => qm.text.trim() === trimmed);
+      if (idx === -1) return prev;
+      return [...prev.slice(0, idx), ...prev.slice(idx + 1)];
+    });
+  }, []);
 
   const applyMcpReport = React.useCallback((mcpReport: {
     slow?: boolean;
@@ -1356,8 +1392,10 @@ export function App() {
           snapshotId,
           totalMessages,
           totalChunks: 0, // updated as chunks arrive
-          receivedChunks: 0,
+          receivedChunkIndexes: new Set<number>(),
+          finalChunkSeen: false,
           loadedMessages: 0,
+          chunkBuffer: new Map<number, unknown[]>(),
         };
         setViewerStatus(`Loading session (0 of ${totalMessages} messages)…`);
       } else {
@@ -1440,6 +1478,7 @@ export function App() {
       }
 
       const chunkSnapshotId = typeof evt.snapshotId === "string" ? evt.snapshotId : "";
+      const chunkIndex = typeof evt.chunkIndex === "number" ? evt.chunkIndex : -1;
       const chunkMessages = Array.isArray(evt.messages) ? evt.messages as unknown[] : [];
       const isFinal = !!evt.final;
       const totalChunks = typeof evt.totalChunks === "number" ? evt.totalChunks : 0;
@@ -1459,36 +1498,60 @@ export function App() {
         }
       }
 
-      const keyOffset = chunkedDeliveryRef.current?.loadedMessages ?? 0;
-      // Convert messages but skip dedupe—we'll dedupe the full list when assembly completes.
-      // This prevents cross-chunk duplicates where a partial message in one chunk and
-      // its final timestamped version in another chunk would both survive per-chunk dedupe.
-      const convertedChunk = chunkMessages
-        .map((m, i) => toRelayMessage(m, `snapshot-${keyOffset + i}`))
-        .filter((m): m is RelayMessage => m !== null);
-
-      // For the final chunk, append + dedupe in a single updater pass so the
-      // dedup operates on the complete message array (including this chunk).
-      // For non-final chunks, just append.
-      let dedupedForSideEffects: RelayMessage[] | null = null;
-      setMessages((prev) => {
-        const appended = [...prev, ...convertedChunk];
-        if (!isFinal) return appended;
-        const deduped = deduplicateMessages(appended);
-        dedupedForSideEffects = deduped;
-        return deduped;
-      });
-
-      // Update chunked delivery tracking
-      if (chunkedDeliveryRef.current) {
-        chunkedDeliveryRef.current.receivedChunks++;
-        chunkedDeliveryRef.current.loadedMessages += chunkMessages.length;
-        chunkedDeliveryRef.current.totalChunks = totalChunks;
-        const loaded = chunkedDeliveryRef.current.loadedMessages;
-        setViewerStatus(`Loading session (${Math.min(loaded, totalMessages)} of ${totalMessages} messages)…`);
+      const chunkState = chunkedDeliveryRef.current;
+      if (!chunkState || chunkIndex < 0) {
+        return;
       }
 
       if (isFinal) {
+        chunkState.finalChunkSeen = true;
+      }
+
+      // Idempotency: duplicate retransmits for the same chunkIndex are ignored.
+      if (!registerChunkIndex(chunkState.receivedChunkIndexes, chunkIndex)) {
+        return;
+      }
+
+      if (Number.isInteger(totalChunks) && totalChunks > 0) {
+        chunkState.totalChunks = totalChunks;
+      }
+
+      // Buffer this chunk's raw messages by chunkIndex so we can assemble
+      // in index order at finalization time. Out-of-order delivery means we
+      // must NOT use arrival order — chunk 2 arriving before chunk 1 would
+      // produce a scrambled transcript if we append immediately.
+      chunkState.chunkBuffer.set(chunkIndex, chunkMessages);
+
+      // Update progress counter for status display.
+      chunkState.loadedMessages += chunkMessages.length;
+      const loaded = chunkState.loadedMessages;
+      setViewerStatus(`Loading session (${Math.min(loaded, totalMessages)} of ${totalMessages} messages)…`);
+
+      const readyToFinalize = canFinalizeChunkHydration(
+        chunkState.finalChunkSeen,
+        chunkState.receivedChunkIndexes,
+        chunkState.totalChunks,
+      );
+
+      if (readyToFinalize) {
+        // Assemble all buffered chunks in chunkIndex order so the resulting
+        // transcript matches the original server-side ordering regardless of
+        // network delivery order.
+        const sortedIndexes = Array.from(chunkState.chunkBuffer.keys()).sort((a, b) => a - b);
+        const orderedRaw: unknown[] = [];
+        for (const idx of sortedIndexes) {
+          const buf = chunkState.chunkBuffer.get(idx);
+          if (buf) {
+            for (const m of buf) orderedRaw.push(m);
+          }
+        }
+        // Convert the ordered raw messages with stable sequential keys and
+        // deduplicate the complete assembled list in one pass.
+        const convertedOrdered = orderedRaw
+          .map((m, i) => toRelayMessage(m, `snapshot-${i}`))
+          .filter((m): m is RelayMessage => m !== null);
+        const finalMessages = deduplicateMessages(convertedOrdered);
+
         lastCompletedSnapshotRef.current = chunkSnapshotId || null;
         chunkedDeliveryRef.current = null;
         sessionHydratedRef.current = true;
@@ -1499,12 +1562,20 @@ export function App() {
         }
         setViewerStatus("Connected");
 
-        // Side effects from the deduped result — the updater above assigned
-        // dedupedForSideEffects synchronously before returning.
-        if (dedupedForSideEffects) {
-          setActiveToolCalls(detectInFlightTools(dedupedForSideEffects));
-          patchSessionCache({ messages: dedupedForSideEffects });
-        }
+        // Capture the merged result inside the updater so patchSessionCache
+        // receives the same value that setMessages commits — including any
+        // injected banners or system messages that are in prev but not in
+        // the snapshot.  Using a plain variable here mirrors the mcpNext
+        // pattern used in applyMcpReport; React calls functional updaters
+        // synchronously when enqueuing the update so mergedMessages is
+        // populated before patchSessionCache runs.
+        let mergedMessages: RelayMessage[] = finalMessages;
+        setMessages((prev) => {
+          mergedMessages = mergeChunkSnapshot(finalMessages, prev);
+          return mergedMessages;
+        });
+        setActiveToolCalls(detectInFlightTools(finalMessages));
+        patchSessionCache({ messages: mergedMessages });
       }
       return;
     }
@@ -2190,7 +2261,17 @@ export function App() {
       thinkingStartTimesRef.current = new Map();
       thinkingDurationsRef.current = new Map();
     }
-  }, [upsertMessage, upsertMessageDebounced, cancelPendingDeltas, appendLocalSystemMessage, scheduleToolStreamFlush]);
+  }, [
+    upsertMessage,
+    upsertMessageDebounced,
+    cancelPendingDeltas,
+    appendLocalSystemMessage,
+    scheduleToolStreamFlush,
+    applyMcpReport,
+    getFallbackPromptKey,
+    patchSessionCache,
+    removeQueuedMessageByContent,
+  ]);
 
   React.useEffect(() => {
     const socket = io("/hub", {
@@ -2840,15 +2921,15 @@ export function App() {
         if (deliverAs === "steer") {
           // Steer messages appear immediately in the conversation
           const now = Date.now();
-          setMessages((prev) => [
-            ...prev,
-            {
-              key: `user:steer:${now}:${Math.random().toString(16).slice(2)}`,
-              role: "user",
-              timestamp: now,
-              content: trimmed,
-            },
-          ]);
+          const optimisticSteerMessage: RelayMessage = {
+            key: `user:steer:${now}:${Math.random().toString(16).slice(2)}`,
+            role: "user",
+            timestamp: now,
+            content: trimmed,
+          };
+          const next = [...messagesRef.current, optimisticSteerMessage];
+          setMessages(next);
+          patchSessionCache({ messages: next });
           setViewerStatus("Steering message sent");
         } else {
           setMessageQueue((prev) => [
@@ -2871,7 +2952,7 @@ export function App() {
       failCurrentAttempt();
       return false;
     }
-  }, []);
+  }, [patchSessionCache]);
 
   const sendRemoteExec = React.useCallback((payload: any) => {
     const socket = viewerWsRef.current;
@@ -3018,34 +3099,6 @@ export function App() {
 
   const editQueuedMessage = React.useCallback((id: string, newText: string) => {
     setMessageQueue((prev) => prev.map((m) => m.id === id ? { ...m, text: newText } : m));
-  }, []);
-
-  /** Remove a queued message whose text matches an incoming user message from the stream. */
-  const removeQueuedMessageByContent = React.useCallback((rawMessage: unknown) => {
-    if (!rawMessage || typeof rawMessage !== "object") return;
-    const msg = rawMessage as Record<string, unknown>;
-    if (msg.role !== "user") return;
-
-    // Extract text from user message content (string or array of text blocks)
-    let text = "";
-    if (typeof msg.content === "string") {
-      text = msg.content;
-    } else if (Array.isArray(msg.content)) {
-      text = (msg.content as Array<Record<string, unknown>>)
-        .filter((b) => b && typeof b === "object" && b.type === "text" && typeof b.text === "string")
-        .map((b) => b.text as string)
-        .join("");
-    }
-    if (!text) return;
-
-    const trimmed = text.trim();
-    setMessageQueue((prev) => {
-      if (prev.length === 0) return prev;
-      // Find the first queued message whose text matches and remove it
-      const idx = prev.findIndex((qm) => qm.text.trim() === trimmed);
-      if (idx === -1) return prev;
-      return [...prev.slice(0, idx), ...prev.slice(idx + 1)];
-    });
   }, []);
 
   const clearMessageQueue = React.useCallback(() => {

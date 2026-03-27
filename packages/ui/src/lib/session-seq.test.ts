@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { analyzeIncomingSeq, mergeConnectedSeq, shouldDeferEventForHydration } from "./session-seq";
+import {
+  analyzeIncomingSeq,
+  canFinalizeChunkHydration,
+  mergeConnectedSeq,
+  registerChunkIndex,
+  shouldDeferEventForHydration,
+} from "./session-seq";
 
 describe("mergeConnectedSeq", () => {
   test("uses connected seq when no current seq exists", () => {
@@ -35,6 +41,76 @@ describe("shouldDeferEventForHydration", () => {
 
   test("does not defer unrelated event types", () => {
     expect(shouldDeferEventForHydration("heartbeat", true, false)).toBe(false);
+  });
+});
+
+describe("chunk index tracking", () => {
+  test("registerChunkIndex is idempotent for duplicate chunk indexes", () => {
+    const seen = new Set<number>();
+
+    expect(registerChunkIndex(seen, 0)).toBe(true);
+    expect(registerChunkIndex(seen, 0)).toBe(false);
+    expect(Array.from(seen)).toEqual([0]);
+  });
+
+  test("canFinalizeChunkHydration requires all unique indexes", () => {
+    const seen = new Set<number>();
+    registerChunkIndex(seen, 0);
+    registerChunkIndex(seen, 2);
+
+    expect(canFinalizeChunkHydration(true, seen, 3)).toBe(false);
+
+    registerChunkIndex(seen, 1);
+    expect(canFinalizeChunkHydration(true, seen, 3)).toBe(true);
+  });
+
+  test("does not finalize until a final chunk has been seen", () => {
+    const seen = new Set<number>();
+    registerChunkIndex(seen, 0);
+    registerChunkIndex(seen, 1);
+
+    expect(canFinalizeChunkHydration(false, seen, 2)).toBe(false);
+    expect(canFinalizeChunkHydration(true, seen, 2)).toBe(true);
+  });
+
+  test("out-of-order chunk indexes finalize once 0..N-1 are present", () => {
+    const seen = new Set<number>();
+    registerChunkIndex(seen, 2);
+    registerChunkIndex(seen, 0);
+
+    expect(canFinalizeChunkHydration(true, seen, 3)).toBe(false);
+
+    registerChunkIndex(seen, 1);
+    expect(canFinalizeChunkHydration(true, seen, 3)).toBe(true);
+  });
+
+  test("consumer chunk buffer assembled in index order preserves original message sequence", () => {
+    // Simulates the Map<number, unknown[]> buffer pattern used by the UI
+    // chunk hydration handler.  Chunks arrive out of order (2 → 0 → 1) but
+    // the assembled transcript must reflect original order (0 → 1 → 2).
+    const seen = new Set<number>();
+    const chunkBuffer = new Map<number, string[]>();
+
+    // Arrival order: chunk 2 first, then 0, then 1
+    registerChunkIndex(seen, 2);
+    chunkBuffer.set(2, ["msg-c2-a", "msg-c2-b"]);
+
+    registerChunkIndex(seen, 0);
+    chunkBuffer.set(0, ["msg-c0-a"]);
+
+    registerChunkIndex(seen, 1);
+    chunkBuffer.set(1, ["msg-c1-a", "msg-c1-b"]);
+
+    expect(canFinalizeChunkHydration(true, seen, 3)).toBe(true);
+
+    // Sort by chunkIndex, then flatten — must equal original server-side order
+    const sortedIndexes = Array.from(chunkBuffer.keys()).sort((a, b) => a - b);
+    const assembled = sortedIndexes.flatMap((idx) => chunkBuffer.get(idx)!);
+
+    expect(assembled).toEqual(["msg-c0-a", "msg-c1-a", "msg-c1-b", "msg-c2-a", "msg-c2-b"]);
+    // Arrival order [2, 0, 1] must NOT be reflected in the final transcript
+    expect(assembled[0]).toBe("msg-c0-a");
+    expect(assembled[assembled.length - 1]).toBe("msg-c2-b");
   });
 });
 

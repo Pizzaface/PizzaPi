@@ -7,6 +7,7 @@ import {
   normalizeSessionName,
   augmentThinkingDurations,
   normalizeModelList,
+  mergeChunkSnapshot,
 } from "./message-helpers";
 import type { RelayMessage } from "@/components/session-viewer/types";
 
@@ -397,5 +398,87 @@ describe("normalizeModelList", () => {
     const result = normalizeModelList(models);
     expect(result).toHaveLength(1);
     expect(result[0].name).toBe("Second");
+  });
+});
+
+// ── mergeChunkSnapshot ────────────────────────────────────────────────────────
+
+describe("mergeChunkSnapshot", () => {
+  test("returns snapshot messages unchanged when prev is empty", () => {
+    const snap = [assistantMsg({ key: "snapshot-0" }), assistantMsg({ key: "snapshot-1" })];
+    expect(mergeChunkSnapshot(snap, [])).toEqual(snap);
+  });
+
+  test("returns snapshot messages unchanged when all prev keys are covered by snapshot", () => {
+    const snap = [assistantMsg({ key: "snapshot-0" }), assistantMsg({ key: "snapshot-1" })];
+    const prev = [assistantMsg({ key: "snapshot-0" }), assistantMsg({ key: "snapshot-1" })];
+    expect(mergeChunkSnapshot(snap, prev)).toEqual(snap);
+  });
+
+  test("preserves injected messages not present in snapshot", () => {
+    const snap = [assistantMsg({ key: "snapshot-0" }), assistantMsg({ key: "snapshot-1" })];
+    const injected = assistantMsg({ key: "mcp-banner-abc" });
+    const prev = [...snap, injected];
+
+    const result = mergeChunkSnapshot(snap, prev);
+
+    expect(result).toHaveLength(3);
+    // Snapshot messages come first
+    expect(result[0].key).toBe("snapshot-0");
+    expect(result[1].key).toBe("snapshot-1");
+    // Injected banner is preserved at the end
+    expect(result[2].key).toBe("mcp-banner-abc");
+  });
+
+  test("snapshot messages take precedence over matching prev messages", () => {
+    const snapMsg = { ...assistantMsg({ key: "snapshot-0" }), content: "new-content" };
+    const prevMsg = { ...assistantMsg({ key: "snapshot-0" }), content: "old-content" };
+
+    const result = mergeChunkSnapshot([snapMsg], [prevMsg]);
+
+    expect(result).toHaveLength(1);
+    expect((result[0] as { content: string }).content).toBe("new-content");
+  });
+
+  test("multiple injected messages are all preserved after snapshot", () => {
+    const snap = [assistantMsg({ key: "snapshot-0" })];
+    const banner1 = assistantMsg({ key: "banner-1" });
+    const banner2 = assistantMsg({ key: "banner-2" });
+    const prev = [assistantMsg({ key: "snapshot-0" }), banner1, banner2];
+
+    const result = mergeChunkSnapshot(snap, prev);
+
+    expect(result).toHaveLength(3);
+    expect(result[0].key).toBe("snapshot-0");
+    expect(result.map((m) => m.key)).toContain("banner-1");
+    expect(result.map((m) => m.key)).toContain("banner-2");
+  });
+
+  // ── session-cache correctness ────────────────────────────────────────────
+  // patchSessionCache must receive the *merged* result from mergeChunkSnapshot,
+  // not the raw finalMessages from the server.  Using finalMessages directly
+  // would drop injected banners (e.g. MCP startup messages) from the cache,
+  // causing them to disappear on session switch / page reload.
+  test("merged result preserves injected banners that the raw snapshot would drop", () => {
+    const finalMessages = [
+      assistantMsg({ key: "snapshot-0" }),
+      assistantMsg({ key: "snapshot-1" }),
+    ];
+    const mcpBanner = assistantMsg({ key: "mcp_startup:1700000000000" });
+    const triggerBanner = assistantMsg({ key: "trigger:abc123" });
+    // Simulate the rendered state that contains both snapshot messages and
+    // injected banners added since the last hydration.
+    const prevMessages = [...finalMessages, mcpBanner, triggerBanner];
+
+    const merged = mergeChunkSnapshot(finalMessages, prevMessages);
+
+    // The merged result (what should go into the session cache) keeps both
+    // injected keys even though they are absent from finalMessages.
+    expect(merged.map((m) => m.key)).toContain("mcp_startup:1700000000000");
+    expect(merged.map((m) => m.key)).toContain("trigger:abc123");
+
+    // Storing finalMessages directly in the cache would silently drop them.
+    expect(finalMessages.find((m) => m.key === "mcp_startup:1700000000000")).toBeUndefined();
+    expect(finalMessages.find((m) => m.key === "trigger:abc123")).toBeUndefined();
   });
 });
