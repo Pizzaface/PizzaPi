@@ -17,6 +17,7 @@ import { $ } from "bun";
 import { join, dirname } from "path";
 import { existsSync, mkdirSync, cpSync, readdirSync, readFileSync, rmSync } from "fs";
 import { platform as osPlatform, arch as osArch } from "os";
+import { fileURLToPath } from "url";
 
 // ---------------------------------------------------------------------------
 // Platform targets
@@ -49,7 +50,7 @@ const ALL_TARGETS: Target[] = [
 function resolvePiPackageDir(): string {
     // import.meta.resolve gives us the main entry point URL; walk up to find package.json
     const entryUrl = import.meta.resolve("@mariozechner/pi-coding-agent");
-    let dir = dirname(new URL(entryUrl).pathname);
+    let dir = dirname(fileURLToPath(new URL(entryUrl).href));
     while (dir !== dirname(dir)) {
         if (existsSync(join(dir, "package.json"))) {
             return dir;
@@ -84,6 +85,26 @@ function copyAssets(piPkgDir: string, outDir: string): void {
     if (existsSync(templatesSrc)) {
         cpSync(templatesSrc, join(outDir, "templates"), { recursive: true });
     }
+
+    const cliDist = join(import.meta.dirname, "dist");
+    const runnerDist = join(cliDist, "runner");
+    const runnerSrc = join(import.meta.dirname, "src", "runner");
+    const runnerSource = existsSync(runnerDist) ? runnerDist : runnerSrc;
+    if (existsSync(runnerSource)) {
+        cpSync(runnerSource, join(outDir, "runner"), { recursive: true });
+    }
+
+    // Always copy static assets from src first, then overlay compiled scripts
+    // from dist if present. Using dist-only would miss static files (plugin.json,
+    // skill markdown, etc.) that are never compiled into dist.
+    const pluginDist = join(cliDist, "claude-code-plugin");
+    const pluginSrc = join(import.meta.dirname, "src", "claude-code-plugin");
+    if (existsSync(pluginSrc)) {
+        cpSync(pluginSrc, join(outDir, "claude-code-plugin"), { recursive: true });
+    }
+    if (existsSync(pluginDist)) {
+        cpSync(pluginDist, join(outDir, "claude-code-plugin"), { recursive: true });
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -98,7 +119,7 @@ function resolvePtyVersion(): string | null {
     // Try import.meta.resolve on the parent @zenyr/bun-pty package
     try {
         const entryUrl = import.meta.resolve("@zenyr/bun-pty");
-        let dir = dirname(new URL(entryUrl).pathname);
+        let dir = dirname(fileURLToPath(new URL(entryUrl).href));
         while (dir !== dirname(dir)) {
             const pkgPath = join(dir, "package.json");
             if (existsSync(pkgPath)) {
@@ -169,7 +190,17 @@ async function downloadPtyLib(target: Target, outDir: string): Promise<boolean> 
         const tgzPath = join(tmpDir, `${pkgName}.tgz`);
         await Bun.write(tgzPath, tarResp);
 
-        // Extract the tarball
+        // Extract the tarball — require tar to be present (not available on all Windows
+        // or minimal CI environments; fail early with a clear message rather than silently
+        // returning false and leaving the PTY library missing)
+        const tarCheck = await $`tar --version`.nothrow().quiet();
+        if (tarCheck.exitCode !== 0) {
+            throw new Error(
+                "'tar' is not available on this system. " +
+                "On Windows, install Git for Windows or Windows Subsystem for Linux (which includes tar). " +
+                "On minimal Linux/CI environments, install the 'tar' package (e.g. apt-get install tar)."
+            );
+        }
         const result = await $`tar xzf ${tgzPath} -C ${tmpDir}`.nothrow().quiet();
         if (result.exitCode !== 0) {
             console.log(`    ✗ Failed to extract tarball`);
@@ -210,7 +241,7 @@ async function copyPtyLib(target: Target, outDir: string): Promise<boolean> {
     // installed for this host — i.e. target matches the build machine)
     try {
         const entryUrl = import.meta.resolve(ptyPlatformPkg);
-        const pkgDir = dirname(new URL(entryUrl).pathname);
+        const pkgDir = dirname(fileURLToPath(new URL(entryUrl).href));
         const libSrc = join(pkgDir, target.ptyLibName);
         if (existsSync(libSrc)) {
             cpSync(libSrc, join(outDir, target.ptyLibName));
@@ -295,7 +326,7 @@ for (const target of targets) {
     copyAssets(piPkgDir, outDir);
     console.log(`  ✓ Assets copied`);
 
-    if (copyPtyLib(target, outDir)) {
+    if (await copyPtyLib(target, outDir)) {
         console.log(`  ✓ PTY native library copied (${target.ptyLibName})`);
     } else {
         console.log(`  ⚠ PTY native library not available for ${target.ptyOs}-${target.ptyCpu} (cross-compile — must be added separately)`);

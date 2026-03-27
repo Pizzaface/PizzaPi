@@ -15,6 +15,7 @@ import { filterFolders } from "@/lib/filterFolders";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import {
     Dialog,
     DialogContent,
@@ -56,10 +57,16 @@ export interface NewSessionWizardDialogProps {
     initialCwd?: string;
 
     /**
+     * Optional initial worker type (e.g. when duplicating a session).
+     * Defaults to "pi" if not provided.
+     */
+    initialWorkerType?: "pi" | "claude-code";
+
+    /**
      * Called when the user clicks "Start Session".
      * `cwd` is `undefined` when the field is blank.
      */
-    onSpawn: (runnerId: string, cwd: string | undefined) => Promise<void>;
+    onSpawn: (runnerId: string, cwd: string | undefined, workerType: "pi" | "claude-code") => Promise<void>;
 }
 
 // ── Constants ──────────────────────────────────────────────────────────────
@@ -103,6 +110,7 @@ export function NewSessionWizardDialog({
     runnersLoading,
     preselectedRunnerId,
     initialCwd,
+    initialWorkerType,
     onSpawn,
 }: NewSessionWizardDialogProps) {
     const isPreselected = preselectedRunnerId != null;
@@ -117,6 +125,7 @@ export function NewSessionWizardDialog({
     const selectedRunnerIdRef = React.useRef(selectedRunnerId);
     selectedRunnerIdRef.current = selectedRunnerId;
     const [cwd, setCwd] = React.useState(initialCwd ?? "");
+    const [workerType, setWorkerType] = React.useState<"pi" | "claude-code">(initialWorkerType ?? "pi");
     const [spawning, setSpawning] = React.useState(false);
     const [spawnError, setSpawnError] = React.useState<string | null>(null);
     const [disconnectedMsg, setDisconnectedMsg] = React.useState<string | null>(null);
@@ -149,6 +158,7 @@ export function NewSessionWizardDialog({
         setStep(isPreselected ? "folder" : "runner");
         setSelectedRunnerId(preselectedRunnerId ?? null);
         setCwd(initialCwd ?? "");
+        setWorkerType(initialWorkerType ?? "pi");
         setSpawnError(null);
         setDisconnectedMsg(null);
         setRecentFolders([]);
@@ -259,7 +269,7 @@ export function NewSessionWizardDialog({
         setSpawning(true);
         setSpawnError(null);
         try {
-            await onSpawn(selectedRunnerId, cwd.trim() || undefined);
+            await onSpawn(selectedRunnerId, cwd.trim() || undefined, workerType);
         } catch (err) {
             setSpawnError(err instanceof Error ? err.message : String(err));
         } finally {
@@ -377,6 +387,30 @@ export function NewSessionWizardDialog({
                             <p className="text-xs text-muted-foreground">
                                 This is the path on the runner machine.
                             </p>
+                        </div>
+
+                        {/* Worker type */}
+                        <div className="flex flex-col gap-1.5">
+                            <Label>Session type</Label>
+                            <RadioGroup
+                                value={workerType}
+                                onValueChange={(v) => setWorkerType(v as "pi" | "claude-code")}
+                                className="flex gap-4"
+                                disabled={spawning}
+                            >
+                                <div className="flex items-center gap-2">
+                                    <RadioGroupItem value="pi" id="wt-pi" />
+                                    <Label htmlFor="wt-pi" className="font-normal cursor-pointer">
+                                        pi <span className="text-muted-foreground text-xs">(default)</span>
+                                    </Label>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                    <RadioGroupItem value="claude-code" id="wt-cc" />
+                                    <Label htmlFor="wt-cc" className="font-normal cursor-pointer">
+                                        Claude Code
+                                    </Label>
+                                </div>
+                            </RadioGroup>
                         </div>
 
                         {/* Recent projects */}

@@ -18,6 +18,10 @@ export interface RelayClientToServerEvents {
     sessionName?: string | null;
     /** Parent session ID for child→parent linking (trigger system). */
     parentSessionId?: string | null;
+    /** Worker type — "pi" for the standard pi agent, "claude-code" for the
+     *  Claude Code CLI worker.  When present, stored in Redis at registration
+     *  time so the UI knows the worker type before the first heartbeat. */
+    workerType?: "pi" | "claude-code";
   }) => void;
 
   /** TUI forwards an agent event (heartbeat, message_update, etc.)

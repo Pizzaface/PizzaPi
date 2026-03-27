@@ -54,6 +54,25 @@ async function main() {
         return;
     }
 
+    // `_claude_code_bridge` / `_claude_code_hook_handler` /
+    // `_claude_code_mcp_server` → internal entrypoints used by compiled
+    // binaries so Claude Code sidecars can run without requiring a separate
+    // system Bun/Node runtime on PATH.
+    if (args[0] === "_claude_code_bridge") {
+        await import("./runner/claude-code-bridge.js");
+        return;
+    }
+
+    if (args[0] === "_claude_code_hook_handler") {
+        await import("./claude-code-plugin/scripts/hook-handler.js");
+        return;
+    }
+
+    if (args[0] === "_claude_code_mcp_server") {
+        await import("./claude-code-plugin/scripts/mcp-server.js");
+        return;
+    }
+
     // `_terminal-worker` → internal entrypoint for terminal PTY workers
     //   inside compiled binaries. Not intended to be called directly.
     if (args[0] === "_terminal-worker") {
