@@ -6,6 +6,12 @@ on:
       - main
     paths:
       - "packages/ui/**"
+      - "packages/protocol/**"
+      - "packages/tools/**"
+      - "patches/**"
+      - "bun.lock"
+      - ".github/workflows/ui-docker.yml"
+  workflow_dispatch:
 
 permissions:
   contents: read
