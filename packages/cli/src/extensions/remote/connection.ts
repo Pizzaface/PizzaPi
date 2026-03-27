@@ -20,7 +20,7 @@ import { cancelPendingAskUserQuestion, consumePendingAskUserQuestionFromWeb } fr
 import { cancelPendingPlanMode, consumePendingPlanModeFromWeb } from "../remote-plan-mode.js";
 import { normalizeRemoteInputAttachments, buildUserMessageFromRemoteInput } from "../remote-input.js";
 import { handleExecFromWeb } from "../remote-exec-handler.js";
-import { renderTrigger } from "../triggers/registry.js";
+import { renderTrigger, renderTriggerBatch } from "../triggers/registry.js";
 import { trackReceivedTrigger, receivedTriggers } from "../triggers/extension.js";
 import type { ConversationTrigger } from "../triggers/types.js";
 import type { RelayContext } from "../remote-types.js";
@@ -196,6 +196,27 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
     );
     rctx.sioSocket = sock;
     resetRelayRegistrationGate();
+
+    // ── Trigger batch queue ───────────────────────────────────────────────
+    // When multiple linked child sessions finish (or send other triggers) at
+    // nearly the same time they each emit a session_trigger event. Without
+    // batching those events are delivered to the agent one at a time, causing
+    // N separate conversation turns. We collect triggers that arrive within a
+    // short window and flush them together as a single message.
+    const TRIGGER_BATCH_DEBOUNCE_MS = 80;
+    type BatchedTrigger = { trigger: ConversationTrigger; rendered: string; deliverAs: "followUp" | "steer" };
+    let pendingTriggerBatch: BatchedTrigger[] = [];
+    let triggerBatchTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const flushTriggerBatch = () => {
+        triggerBatchTimer = null;
+        if (pendingTriggerBatch.length === 0) return;
+        const batch = pendingTriggerBatch.splice(0);
+        // Prefer "followUp" delivery if any trigger requested it; otherwise "steer".
+        const deliverAs = batch.some((b) => b.deliverAs === "followUp") ? "followUp" as const : "steer" as const;
+        const rendered = renderTriggerBatch(batch.map((b) => b.trigger));
+        handlers.sendUserMessage(rendered, { deliverAs });
+    };
 
     // ── Backoff / reconnection logging (Manager-level events) ─────────────
     //
@@ -414,7 +435,12 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
         trackReceivedTrigger(trigger.triggerId, trigger.sourceSessionId, trigger.type);
         const rendered = renderTrigger(trigger);
         const deliverAs = trigger.deliverAs === "followUp" ? "followUp" as const : "steer" as const;
-        handlers.sendUserMessage(rendered, { deliverAs });
+
+        // Enqueue and debounce: triggers that arrive within the batch window are
+        // flushed together as a single agent message (see flushTriggerBatch above).
+        pendingTriggerBatch.push({ trigger, rendered, deliverAs });
+        if (triggerBatchTimer !== null) clearTimeout(triggerBatchTimer);
+        triggerBatchTimer = setTimeout(flushTriggerBatch, TRIGGER_BATCH_DEBOUNCE_MS);
     });
 
     sock.on("trigger_response" as any, (data: { triggerId: string; response: string; action?: string; targetSessionId?: string }) => {
@@ -501,6 +527,9 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
     });
 
     sock.on("disconnect", (_reason) => {
+        // Discard any pending batched triggers — don't deliver them after disconnect.
+        if (triggerBatchTimer !== null) { clearTimeout(triggerBatchTimer); triggerBatchTimer = null; }
+        pendingTriggerBatch = [];
         handlers.onDelinkDisconnect();
         rctx.relay = null;
         cancelPendingAskUserQuestion(rctx);

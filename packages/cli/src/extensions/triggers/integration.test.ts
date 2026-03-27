@@ -6,7 +6,7 @@
 // ============================================================================
 
 import { describe, it, expect, beforeEach } from "bun:test";
-import { renderTrigger, parseTriggerResponse, TRIGGER_RENDERERS } from "./registry.js";
+import { renderTrigger, renderTriggerBatch, parseTriggerResponse, TRIGGER_RENDERERS } from "./registry.js";
 import { trackReceivedTrigger, receivedTriggers } from "./extension.js";
 import type { ConversationTrigger } from "./types.js";
 
@@ -158,6 +158,49 @@ describe("trigger routing flow", () => {
 
         it("responding to non-existent trigger returns empty lookup", () => {
             expect(receivedTriggers.has("nonexistent")).toBe(false);
+        });
+    });
+
+    describe("renderTriggerBatch", () => {
+        it("single trigger: output identical to renderTrigger", () => {
+            const trigger = makeTrigger();
+            expect(renderTriggerBatch([trigger])).toBe(renderTrigger(trigger));
+        });
+
+        it("multiple triggers: contains all trigger IDs", () => {
+            const t1 = makeTrigger({ triggerId: "tid-1", sourceSessionId: "child-1", sourceSessionName: "worker-1", type: "session_complete", payload: { summary: "Done A" } });
+            const t2 = makeTrigger({ triggerId: "tid-2", sourceSessionId: "child-2", sourceSessionName: "worker-2", type: "session_complete", payload: { summary: "Done B" } });
+            const rendered = renderTriggerBatch([t1, t2]);
+            expect(rendered).toContain("tid-1");
+            expect(rendered).toContain("tid-2");
+            expect(rendered).toContain("Done A");
+            expect(rendered).toContain("Done B");
+        });
+
+        it("multiple triggers: includes batch header", () => {
+            const triggers = [
+                makeTrigger({ triggerId: "tid-1", type: "session_complete", payload: { summary: "A" } }),
+                makeTrigger({ triggerId: "tid-2", type: "session_complete", payload: { summary: "B" } }),
+                makeTrigger({ triggerId: "tid-3", type: "session_complete", payload: { summary: "C" } }),
+            ];
+            const rendered = renderTriggerBatch(triggers);
+            expect(rendered).toContain("3 child triggers");
+        });
+
+        it("multiple triggers: separated by ---", () => {
+            const t1 = makeTrigger({ triggerId: "tid-1", type: "session_complete", payload: { summary: "A" } });
+            const t2 = makeTrigger({ triggerId: "tid-2", type: "session_complete", payload: { summary: "B" } });
+            const rendered = renderTriggerBatch([t1, t2]);
+            expect(rendered).toContain("---");
+        });
+
+        it("each batched trigger still has its metadata comment for respond_to_trigger", () => {
+            const t1 = makeTrigger({ triggerId: "trigger-alpha", sourceSessionId: "child-alpha", type: "session_complete", payload: { summary: "Done" } });
+            const t2 = makeTrigger({ triggerId: "trigger-beta", sourceSessionId: "child-beta", type: "session_complete", payload: { summary: "Done" } });
+            const rendered = renderTriggerBatch([t1, t2]);
+            // Each individual trigger must have its trigger comment so respond_to_trigger IDs are present
+            expect(rendered).toContain("<!-- trigger:trigger-alpha");
+            expect(rendered).toContain("<!-- trigger:trigger-beta");
         });
     });
 });
