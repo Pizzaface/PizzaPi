@@ -20,7 +20,7 @@ import {
     refreshRunnerTTL,
     getSession,
     updateSessionFields,
-    getAllSessions,
+    getAllSessionSummaries,
     setPendingRunnerLink,
     setRunnerAssociation,
     deleteRunnerAssociation,
@@ -374,7 +374,7 @@ export async function removeRunnerSession(runnerId: string, sessionId: string): 
  * Used after a runner daemon restart to let it re-adopt orphaned worker processes.
  */
 export async function getConnectedSessionsForRunner(runnerId: string): Promise<Array<{ sessionId: string; cwd: string }>> {
-    const allSessions = await getAllSessions();
+    const allSessions = await getAllSessionSummaries();
     const results: Array<{ sessionId: string; cwd: string }> = [];
     for (const s of allSessions) {
         if (s.runnerId !== runnerId) continue;
@@ -414,8 +414,10 @@ function runnerDataToInfo(r: RedisRunnerData): RunnerInfo {
 
 /** Get all runners as RunnerInfo, optionally filtered by user. */
 export async function getRunners(filterUserId?: string): Promise<RunnerInfo[]> {
-    const runners = await getAllRunners(filterUserId);
-    const allSessions = await getAllSessions(filterUserId);
+    const [runners, allSessions] = await Promise.all([
+        getAllRunners(filterUserId),
+        getAllSessionSummaries(filterUserId),
+    ]);
 
     // Aggregate session counts by runnerId in memory
     const sessionCounts = new Map<string, number>();

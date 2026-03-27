@@ -12,12 +12,28 @@ import {
 } from "../sessions/store.js";
 import type { RouteHandler } from "./types.js";
 
+export function shouldIncludePersistedSessions(param: string | null | undefined): boolean {
+    const normalized = param?.trim().toLowerCase();
+    return !(normalized === "0" || normalized === "false" || normalized === "no");
+}
+
 export const handleSessionsRoute: RouteHandler = async (req, url) => {
     if (url.pathname === "/api/sessions" && req.method === "GET") {
         const identity = await requireSession(req);
         if (identity instanceof Response) return identity;
-        const sessions = await getSessions(identity.userId);
-        const persistedSessions = await listPersistedRelaySessionsForUser(identity.userId);
+
+        const includePersisted = shouldIncludePersistedSessions(url.searchParams.get("includePersisted"));
+
+        if (!includePersisted) {
+            const sessions = await getSessions(identity.userId);
+            return Response.json({ sessions, persistedSessions: [] });
+        }
+
+        const [sessions, persistedSessions] = await Promise.all([
+            getSessions(identity.userId),
+            listPersistedRelaySessionsForUser(identity.userId),
+        ]);
+
         return Response.json({ sessions, persistedSessions });
     }
 
