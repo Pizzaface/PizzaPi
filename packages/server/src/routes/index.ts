@@ -9,6 +9,7 @@
 
 import { getLatestNpmVersion } from "../version.js";
 import { serverHealth } from "../health.js";
+import { getServerRuntimeInfo } from "../runtime-version.js";
 import { handleAuthRoute } from "./auth.js";
 import { handleRunnersRoute } from "./runners.js";
 import { handleSessionsRoute } from "./sessions.js";
@@ -34,19 +35,25 @@ const routers: RouteHandler[] = [
 /**
  * Top-level API request handler.
  *
- * Handles a few global endpoints (/health, /api/version) directly, then
- * delegates to domain-specific routers.
+ * Handles a few global endpoints (/health, /status, /api/status, /api/version)
+ * directly, then delegates to domain-specific routers.
  */
 export async function handleApi(req: Request, url: URL): Promise<Response | undefined> {
     // ── Global endpoints (no auth required, no domain router) ──────────
-    if (url.pathname === "/health") {
+    if (url.pathname === "/health" || url.pathname === "/status" || url.pathname === "/api/status") {
         const { redis, socketio, startedAt } = serverHealth;
         const ok = redis && socketio;
+        const { serverVersion, socketProtocolVersion, buildTimestamp } = await getServerRuntimeInfo();
         return Response.json({
             status: ok ? "ok" : "degraded",
             redis,
             socketio,
             uptime: Math.floor((Date.now() - startedAt) / 1000),
+            version: {
+                server: serverVersion,
+                socketProtocol: socketProtocolVersion,
+                buildTimestamp,
+            },
         });
     }
 

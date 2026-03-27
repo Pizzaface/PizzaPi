@@ -5,6 +5,7 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import "@xterm/xterm/css/xterm.css";
 import { io, type Socket } from "socket.io-client";
 import type { TerminalServerToClientEvents, TerminalClientToServerEvents } from "@pizzapi/protocol";
+import { SOCKET_PROTOCOL_VERSION } from "@pizzapi/protocol";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { TerminalIcon, X, Maximize2, Minimize2 } from "lucide-react";
@@ -101,6 +102,11 @@ function utf8ToBase64(str: string): string {
   return btoa(binary);
 }
 
+declare const __PIZZAPI_UI_VERSION__: string;
+const UI_VERSION = typeof __PIZZAPI_UI_VERSION__ === "string" && __PIZZAPI_UI_VERSION__.trim()
+  ? __PIZZAPI_UI_VERSION__.trim()
+  : "0.0.0";
+
 export interface WebTerminalProps {
   terminalId: string;
   onClose?: () => void;
@@ -156,7 +162,11 @@ export function WebTerminal({ terminalId, onClose, className }: WebTerminalProps
 
     // Connect to relay terminal via Socket.IO
     const socket: Socket<TerminalServerToClientEvents, TerminalClientToServerEvents> = io("/terminal", {
-      auth: { terminalId },
+      auth: {
+        terminalId,
+        protocolVersion: SOCKET_PROTOCOL_VERSION,
+        clientVersion: UI_VERSION,
+      },
       withCredentials: true,
     });
     wsRef.current = socket;

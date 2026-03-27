@@ -2,7 +2,7 @@
 // /relay namespace — TUI (CLI agent) ↔ Server
 // ============================================================================
 
-import type { Attachment } from "./shared.js";
+import type { Attachment, SocketClientMetadata } from "./shared.js";
 
 // ---------------------------------------------------------------------------
 // Client → Server (TUI sends to server)
@@ -232,7 +232,7 @@ export interface RelayInterServerEvents {
 // Per-socket metadata
 // ---------------------------------------------------------------------------
 
-export interface RelaySocketData {
+export interface RelaySocketData extends SocketClientMetadata {
   sessionId?: string;
   token?: string;
   cwd?: string;

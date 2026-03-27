@@ -2,6 +2,8 @@
 // /terminal namespace — Browser terminal viewer ↔ Server
 // ============================================================================
 
+import type { SocketClientMetadata } from "./shared.js";
+
 // ---------------------------------------------------------------------------
 // Server → Client (Server sends to browser terminal viewer)
 // ---------------------------------------------------------------------------
@@ -72,7 +74,7 @@ export interface TerminalInterServerEvents {
 // Per-socket metadata
 // ---------------------------------------------------------------------------
 
-export interface TerminalSocketData {
+export interface TerminalSocketData extends SocketClientMetadata {
   terminalId?: string;
   userId?: string;
 }

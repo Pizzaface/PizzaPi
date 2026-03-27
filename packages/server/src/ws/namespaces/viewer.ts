@@ -231,7 +231,13 @@ export function registerViewerNamespace(io: SocketIOServer): void {
             return;
         }
 
-        log.info(`connected: ${socket.id} userId=${viewerUserId}`);
+log.info(`connected: ${socket.id} userId=${viewerUserId}`);
+
+        if (socket.data.protocolCompatible === false) {
+            socket.emit("error", {
+                message: "Protocol mismatch detected between UI and server. Some real-time features may be unavailable until you refresh/update the UI.",
+            });
+        }
 
         // ── Register ALL event handlers FIRST ────────────────────────────────
         // Handlers must be registered synchronously before any async work

@@ -13,10 +13,24 @@ services:
       timeout: 5s
       retries: 5
 
+  ui:
+    image: ghcr.io/pizzaface/pizzapi-ui:latest
+    pull_policy: always
+    command: ["/bin/sh", "-c", "rm -rf /ui-dist/* && cp -a /usr/share/nginx/html/. /ui-dist/ && tail -f /dev/null"]
+    volumes:
+      - ui-dist:/ui-dist
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "test", "-f", "/ui-dist/index.html"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   server:
     build:
       context: ..
       dockerfile: Dockerfile
+      target: runtime-no-ui
     ports:
       - "7492:7492"
     environment:
@@ -32,8 +46,11 @@ services:
       # - PIZZAPI_TRUST_PROXY=true
     volumes:
       - pizzapi-data:/app/data
+      - ui-dist:/app/packages/ui/dist:ro
     depends_on:
       redis:
+        condition: service_healthy
+      ui:
         condition: service_healthy
     restart: unless-stopped
     healthcheck:
@@ -63,3 +80,4 @@ services:
 
 volumes:
   pizzapi-data:
+  ui-dist:

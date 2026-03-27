@@ -13,7 +13,11 @@ import { TunnelService } from "./services/tunnel-service.js";
 import { discoverServices } from "./service-loader.js";
 import { globalPluginDirs } from "../plugins/discover.js";
 import { io, type Socket } from "socket.io-client";
-import type { RunnerClientToServerEvents, RunnerServerToClientEvents } from "@pizzapi/protocol";
+import {
+    SOCKET_PROTOCOL_VERSION,
+    type RunnerClientToServerEvents,
+    type RunnerServerToClientEvents,
+} from "@pizzapi/protocol";
 import { TunnelClient } from "@pizzapi/tunnel";
 import { loadGlobalConfig } from "../config.js";
 import { cleanupSessionAttachments, sweepOrphanedAttachments } from "../extensions/session-attachments.js";
@@ -317,6 +321,8 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                     apiKey,
                     runnerId: identity.runnerId,
                     runnerSecret: identity.runnerSecret,
+                    protocolVersion: SOCKET_PROTOCOL_VERSION,
+                    ...(cliVersion ? { clientVersion: cliVersion } : {}),
                 },
                 transports: ["websocket"],
                 reconnection: true,

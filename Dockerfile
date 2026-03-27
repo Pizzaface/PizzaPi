@@ -75,7 +75,7 @@ RUN echo "ui-dist-hash: $UI_DIST_HASH" \
     fi
 
 # ── Production image ─────────────────────────────────────────────────────────
-FROM oven/bun:1.3.10-slim
+FROM oven/bun:1.3.10-slim AS runtime-base
 WORKDIR /app
 
 COPY --from=build-server /app/node_modules ./node_modules
@@ -89,11 +89,17 @@ COPY --from=build-server /app/packages/tools/node_modules ./packages/tools/node_
 COPY --from=build-server /app/packages/server/dist ./packages/server/dist
 COPY --from=build-server /app/packages/server/package.json ./packages/server/
 COPY --from=build-server /app/packages/server/node_modules ./packages/server/node_modules
-COPY --from=build-ui /app/packages/ui/dist ./packages/ui/dist
 COPY --from=build-server /app/package.json ./
 
-ENV PIZZAPI_UI_DIR=/app/packages/ui/dist
 ENV AUTH_DB_PATH=/app/data/auth.db
 
 EXPOSE 7492
 CMD ["bun", "run", "packages/server/dist/index.js"]
+
+FROM runtime-base AS runtime
+COPY --from=build-ui /app/packages/ui/dist ./packages/ui/dist
+ENV PIZZAPI_UI_DIR=/app/packages/ui/dist
+
+FROM runtime-base AS runtime-no-ui
+RUN mkdir -p /app/packages/ui/dist
+ENV PIZZAPI_UI_DIR=/app/packages/ui/dist
