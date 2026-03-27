@@ -107,7 +107,13 @@ import {
   normalizeModelList,
 } from "@/lib/message-helpers";
 import { evictLruIfNeeded, touchSessionCache, MAX_SESSION_UI_CACHE_SIZE } from "@/lib/session-ui-cache";
-import { analyzeIncomingSeq, mergeConnectedSeq, shouldDeferEventForHydration } from "@/lib/session-seq";
+import {
+  analyzeIncomingSeq,
+  canFinalizeChunkHydration,
+  mergeConnectedSeq,
+  registerChunkIndex,
+  shouldDeferEventForHydration,
+} from "@/lib/session-seq";
 import { createLogger } from "@pizzapi/tools";
 import { isActiveViewerSessionPayload, matchesViewerGeneration } from "@/lib/viewer-switch";
 
@@ -329,7 +335,8 @@ export function App() {
     snapshotId: string;
     totalMessages: number;
     totalChunks: number;
-    receivedChunks: number;
+    receivedChunkIndexes: Set<number>;
+    finalChunkSeen: boolean;
     loadedMessages: number; // cumulative count for fallback key offset
   } | null>(null);
 
@@ -1313,7 +1320,8 @@ export function App() {
           snapshotId,
           totalMessages,
           totalChunks: 0, // updated as chunks arrive
-          receivedChunks: 0,
+          receivedChunkIndexes: new Set<number>(),
+          finalChunkSeen: false,
           loadedMessages: 0,
         };
         setViewerStatus(`Loading session (0 of ${totalMessages} messages)…`);
@@ -1397,6 +1405,7 @@ export function App() {
       }
 
       const chunkSnapshotId = typeof evt.snapshotId === "string" ? evt.snapshotId : "";
+      const chunkIndex = typeof evt.chunkIndex === "number" ? evt.chunkIndex : -1;
       const chunkMessages = Array.isArray(evt.messages) ? evt.messages as unknown[] : [];
       const isFinal = !!evt.final;
       const totalChunks = typeof evt.totalChunks === "number" ? evt.totalChunks : 0;
@@ -1416,7 +1425,25 @@ export function App() {
         }
       }
 
-      const keyOffset = chunkedDeliveryRef.current?.loadedMessages ?? 0;
+      const chunkState = chunkedDeliveryRef.current;
+      if (!chunkState || chunkIndex < 0) {
+        return;
+      }
+
+      if (isFinal) {
+        chunkState.finalChunkSeen = true;
+      }
+
+      // Idempotency: duplicate retransmits for the same chunkIndex are ignored.
+      if (!registerChunkIndex(chunkState.receivedChunkIndexes, chunkIndex)) {
+        return;
+      }
+
+      if (Number.isInteger(totalChunks) && totalChunks > 0) {
+        chunkState.totalChunks = totalChunks;
+      }
+
+      const keyOffset = chunkState.loadedMessages;
       // Convert messages but skip dedupe—we'll dedupe the full list when assembly completes.
       // This prevents cross-chunk duplicates where a partial message in one chunk and
       // its final timestamped version in another chunk would both survive per-chunk dedupe.
@@ -1437,15 +1464,17 @@ export function App() {
       });
 
       // Update chunked delivery tracking
-      if (chunkedDeliveryRef.current) {
-        chunkedDeliveryRef.current.receivedChunks++;
-        chunkedDeliveryRef.current.loadedMessages += chunkMessages.length;
-        chunkedDeliveryRef.current.totalChunks = totalChunks;
-        const loaded = chunkedDeliveryRef.current.loadedMessages;
-        setViewerStatus(`Loading session (${Math.min(loaded, totalMessages)} of ${totalMessages} messages)…`);
-      }
+      chunkState.loadedMessages += chunkMessages.length;
+      const loaded = chunkState.loadedMessages;
+      setViewerStatus(`Loading session (${Math.min(loaded, totalMessages)} of ${totalMessages} messages)…`);
 
-      if (isFinal) {
+      const readyToFinalize = canFinalizeChunkHydration(
+        chunkState.finalChunkSeen,
+        chunkState.receivedChunkIndexes,
+        chunkState.totalChunks,
+      );
+
+      if (readyToFinalize) {
         lastCompletedSnapshotRef.current = chunkSnapshotId || null;
         chunkedDeliveryRef.current = null;
         sessionHydratedRef.current = true;

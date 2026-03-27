@@ -1,10 +1,27 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
-import { enqueueSessionEvent, sessionEventQueues } from "./event-pipeline.js";
+import {
+    applyChunkToPendingState,
+    canFinalizeChunkedSnapshot,
+    enqueueSessionEvent,
+    sessionEventQueues,
+    type ChunkedSessionState,
+} from "./event-pipeline.js";
 
 async function flushQueue(): Promise<void> {
     for (let i = 0; i < 5; i++) {
         await Promise.resolve();
     }
+}
+
+function createPendingState(): ChunkedSessionState {
+    return {
+        snapshotId: "snap-1",
+        metadata: {},
+        chunks: [],
+        totalChunks: 0,
+        receivedChunkIndexes: new Set<number>(),
+        finalChunkSeen: false,
+    };
 }
 
 describe("enqueueSessionEvent", () => {
@@ -32,5 +49,121 @@ describe("enqueueSessionEvent", () => {
         expect(sessionEventQueues.has("session-1")).toBe(false);
 
         errorSpy.mockRestore();
+    });
+});
+
+describe("chunked snapshot assembly", () => {
+    test("duplicate chunk retransmits are idempotent", () => {
+        const pending = createPendingState();
+
+        const firstInsert = applyChunkToPendingState(pending, {
+            chunkIndex: 0,
+            chunkMessages: [{ id: "m1" }],
+            totalChunks: 2,
+            isFinalChunk: false,
+        });
+        const duplicateInsert = applyChunkToPendingState(pending, {
+            chunkIndex: 0,
+            chunkMessages: [{ id: "m1-duplicate" }],
+            totalChunks: 2,
+            isFinalChunk: false,
+        });
+
+        expect(firstInsert).toBe(true);
+        expect(duplicateInsert).toBe(false);
+        expect(Array.from(pending.receivedChunkIndexes)).toEqual([0]);
+        expect(pending.chunks[0]).toEqual([{ id: "m1" }]);
+        expect(canFinalizeChunkedSnapshot(pending)).toBe(false);
+    });
+
+    test("finalization requires all unique chunk indexes 0..N-1", () => {
+        const pending = createPendingState();
+
+        applyChunkToPendingState(pending, {
+            chunkIndex: 0,
+            chunkMessages: ["c0"],
+            totalChunks: 3,
+            isFinalChunk: false,
+        });
+        applyChunkToPendingState(pending, {
+            chunkIndex: 0,
+            chunkMessages: ["c0-retransmit"],
+            totalChunks: 3,
+            isFinalChunk: false,
+        });
+        applyChunkToPendingState(pending, {
+            chunkIndex: 2,
+            chunkMessages: ["c2"],
+            totalChunks: 3,
+            isFinalChunk: true,
+        });
+
+        expect(canFinalizeChunkedSnapshot(pending)).toBe(false);
+
+        applyChunkToPendingState(pending, {
+            chunkIndex: 1,
+            chunkMessages: ["c1"],
+            totalChunks: 3,
+            isFinalChunk: false,
+        });
+
+        expect(canFinalizeChunkedSnapshot(pending)).toBe(true);
+    });
+
+    test("does not finalize until final chunk is seen", () => {
+        const pending = createPendingState();
+
+        applyChunkToPendingState(pending, {
+            chunkIndex: 0,
+            chunkMessages: ["c0"],
+            totalChunks: 2,
+            isFinalChunk: false,
+        });
+        applyChunkToPendingState(pending, {
+            chunkIndex: 1,
+            chunkMessages: ["c1"],
+            totalChunks: 2,
+            isFinalChunk: false,
+        });
+
+        expect(canFinalizeChunkedSnapshot(pending)).toBe(false);
+
+        applyChunkToPendingState(pending, {
+            chunkIndex: 1,
+            chunkMessages: ["c1-final-retransmit"],
+            totalChunks: 2,
+            isFinalChunk: true,
+        });
+
+        expect(canFinalizeChunkedSnapshot(pending)).toBe(true);
+    });
+
+    test("out-of-order chunks still finalize once all unique indexes arrive", () => {
+        const pending = createPendingState();
+
+        // Final chunk arrives before chunk 1.
+        applyChunkToPendingState(pending, {
+            chunkIndex: 2,
+            chunkMessages: ["c2"],
+            totalChunks: 3,
+            isFinalChunk: true,
+        });
+        applyChunkToPendingState(pending, {
+            chunkIndex: 0,
+            chunkMessages: ["c0"],
+            totalChunks: 3,
+            isFinalChunk: false,
+        });
+
+        expect(canFinalizeChunkedSnapshot(pending)).toBe(false);
+
+        applyChunkToPendingState(pending, {
+            chunkIndex: 1,
+            chunkMessages: ["c1"],
+            totalChunks: 3,
+            isFinalChunk: false,
+        });
+
+        expect(canFinalizeChunkedSnapshot(pending)).toBe(true);
     });
 });
