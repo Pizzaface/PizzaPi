@@ -145,8 +145,35 @@ export function mapUserError(input: UserErrorInput): UserErrorResult {
     }
 
     if (context === "session_spawn" && statusCode === 400) {
+        // Only show the folder-path hint when the error is actually about cwd access
+        if (normalized.includes("runner cannot access cwd") || normalized.includes("cannot access cwd")) {
+            return {
+                userMessage: "Couldn't start that session — the runner can't access that folder. Check the folder path and try again.",
+                technicalMessage,
+            };
+        }
+        if (normalized.includes("invalid agent name")) {
+            return {
+                userMessage: "The agent name is invalid. Check the agent configuration and try again.",
+                technicalMessage,
+            };
+        }
+        if (normalized.includes("requested model is not available")) {
+            return {
+                userMessage: "The requested model is not available. Select a different model and try again.",
+                technicalMessage,
+            };
+        }
+        // For other 400s (including runner ack errors), surface the server's message directly
+        // rather than replacing it with a misleading folder-path hint.
+        if (technicalMessage && technicalMessage !== `HTTP ${statusCode}`) {
+            return {
+                userMessage: technicalMessage,
+                technicalMessage,
+            };
+        }
         return {
-            userMessage: "Couldn't start that session with the selected options. Check the folder path and try again.",
+            userMessage: "Couldn't start that session. Check the options and try again.",
             technicalMessage,
         };
     }

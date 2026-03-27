@@ -79,6 +79,67 @@ describe("mapUserError", () => {
         expect(result.userMessage).toContain("couldn't be loaded");
     });
 
+    // session_spawn HTTP 400 — distinct server error messages should be preserved
+
+    test("maps cwd-inaccessible 400 to folder-path hint", () => {
+        const result = mapUserError({
+            error: "Runner cannot access cwd: /home/user/secret",
+            statusCode: 400,
+            context: "session_spawn",
+        });
+
+        expect(result.userMessage).toContain("can't access that folder");
+        expect(result.userMessage).toContain("folder path");
+        expect(result.technicalMessage).toBe("Runner cannot access cwd: /home/user/secret");
+    });
+
+    test("maps invalid-agent-name 400 to agent guidance (not folder hint)", () => {
+        const result = mapUserError({
+            error: "Invalid agent name",
+            statusCode: 400,
+            context: "session_spawn",
+        });
+
+        expect(result.userMessage).toContain("agent name is invalid");
+        expect(result.userMessage).not.toContain("folder path");
+        expect(result.technicalMessage).toBe("Invalid agent name");
+    });
+
+    test("maps requested-model-unavailable 400 to model guidance", () => {
+        const result = mapUserError({
+            error: "Requested model is not available",
+            statusCode: 400,
+            context: "session_spawn",
+        });
+
+        expect(result.userMessage).toContain("model is not available");
+        expect(result.userMessage).not.toContain("folder path");
+        expect(result.technicalMessage).toBe("Requested model is not available");
+    });
+
+    test("passes through runner ack error message for 400 (not folder hint)", () => {
+        const result = mapUserError({
+            error: "Runner rejected spawn: unsupported prompt format",
+            statusCode: 400,
+            context: "session_spawn",
+        });
+
+        // Server message surfaced directly rather than replaced with folder hint
+        expect(result.userMessage).toContain("unsupported prompt format");
+        expect(result.userMessage).not.toContain("folder path");
+        expect(result.technicalMessage).toBe("Runner rejected spawn: unsupported prompt format");
+    });
+
+    test("uses generic 400 message when no body text available", () => {
+        const result = mapUserError({
+            statusCode: 400,
+            context: "session_spawn",
+        });
+
+        expect(result.userMessage).toContain("Couldn't start that session");
+        expect(result.userMessage).not.toContain("folder path");
+    });
+
     test("uses context fallback for unknown errors", () => {
         const result = mapUserError({
             error: "Unexpected explosion",
