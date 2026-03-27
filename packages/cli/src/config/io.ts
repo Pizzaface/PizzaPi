@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { homedir } from "os";
-import { join } from "path";
+import { dirname, join, resolve } from "path";
+import { fileURLToPath } from "url";
 
 import {
     type PizzaPiConfig,
@@ -198,6 +199,25 @@ export function expandHome(path: string): string {
 
 export function defaultAgentDir(): string {
     return join(homedir(), ".pizzapi");
+}
+
+// ── Changelog path ────────────────────────────────────────────────────────────
+
+/**
+ * Resolve the PizzaPi CHANGELOG.md path and export it as an env var so the
+ * patched upstream `getChangelogPath()` picks it up. This file lives in the
+ * CLI package root (next to package.json), not in the pi-coding-agent package.
+ */
+function resolveChangelogPath(): string {
+    const __filename = fileURLToPath(import.meta.url);
+    const __dirname = dirname(__filename);
+    // From dist/config/io.js → ../../CHANGELOG.md  (or src/config/io.ts → same)
+    return resolve(__dirname, "..", "..", "CHANGELOG.md");
+}
+
+const changelogPath = resolveChangelogPath();
+if (existsSync(changelogPath)) {
+    process.env.PIZZAPI_CHANGELOG_PATH = changelogPath;
 }
 
 // ── Plugin trust helpers ──────────────────────────────────────────────────────

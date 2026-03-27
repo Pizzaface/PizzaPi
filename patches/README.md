@@ -25,6 +25,7 @@ on top.
 | `dist/modes/interactive/interactive-mode.js` — `run()` | Removes `checkForNewVersion()` call |
 | `dist/modes/interactive/interactive-mode.js` | Removes `checkForNewVersion()` and `showNewVersionNotification()` methods |
 | `dist/modes/interactive/interactive-mode.js` — login flow | Uses `authStorage.storage?.authPath` instead of `getAuthPath()` |
+| `dist/config.js` — `getChangelogPath()` | Checks `PIZZAPI_CHANGELOG_PATH` env var first, allowing PizzaPi to redirect to its own changelog |
 
 ## @mariozechner/pi-ai@0.63.1
 

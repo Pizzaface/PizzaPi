@@ -4,11 +4,25 @@ index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2
 diff --git a/node_modules/@mariozechner/pi-coding-agent/.bun-tag-3bb5b1e4e0f13aee b/.bun-tag-3bb5b1e4e0f13aee
 new file mode 100644
 index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
+diff --git a/node_modules/@mariozechner/pi-coding-agent/.bun-tag-b7972330f11a52eb b/.bun-tag-b7972330f11a52eb
+new file mode 100644
+index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
 diff --git a/dist/config.js b/dist/config.js
-index 51cdae907f8cda750b66dd361b3acc7143ae22a2..f9e667986119c512aa1d222f2a171c08d9570323 100644
+index 51cdae907f8cda750b66dd361b3acc7143ae22a2..3fc188e21b73621fde5848af772d873098d3d068 100644
 --- a/dist/config.js
 +++ b/dist/config.js
-@@ -138,7 +138,9 @@ export function getChangelogPath() {
+@@ -131,6 +131,10 @@ export function getExamplesPath() {
+ }
+ /** Get path to CHANGELOG.md */
+ export function getChangelogPath() {
++    // PATCH(pizzapi): allow PizzaPi to redirect to its own changelog
++    if (process.env.PIZZAPI_CHANGELOG_PATH) {
++        return resolve(process.env.PIZZAPI_CHANGELOG_PATH);
++    }
+     return resolve(join(getPackageDir(), "CHANGELOG.md"));
+ }
+ // =============================================================================
+@@ -138,7 +142,9 @@ export function getChangelogPath() {
  // =============================================================================
  const pkg = JSON.parse(readFileSync(getPackageJsonPath(), "utf-8"));
  export const APP_NAME = pkg.piConfig?.name || "pi";
