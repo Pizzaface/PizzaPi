@@ -3530,6 +3530,29 @@ export function App() {
     return tabs.some((tab) => tab.id === combinedActiveTab) ? combinedActiveTab : tabs[0]!.id;
   }, [combinedActiveTab]);
 
+  // Stable callbacks for memoized header components.
+  //
+  // Important: these hooks must stay ABOVE the auth/loading early returns
+  // below. Moving them under `if (isPending)` / `if (!session)` changes the
+  // number of hooks executed between renders and triggers React error #310
+  // (“Rendered more hooks than during the previous render”).
+  //
+  // Keeping them here also preserves referential stability so React.memo can
+  // skip re-rendering when only session-scoped state changes.
+  const handleToggleDark = React.useCallback(() => setIsDark((d) => !d), []);
+  const handleShowApiKeys = React.useCallback(() => { setShowApiKeys(true); setShowRunners(false); }, []);
+  const handleShowRunners = React.useCallback(() => { setShowRunners(true); setShowApiKeys(false); setActiveSessionId(null); }, []);
+  const handleShowShortcuts = React.useCallback(() => setShowShortcutsHelp(true), []);
+  const handleShowHiddenModels = React.useCallback(() => setHiddenModelsOpen(true), []);
+  const handleChangePassword = React.useCallback(() => setChangePasswordOpen(true), []);
+  const handleToggleSidebar = React.useCallback(() => setSidebarOpen((prev) => !prev), []);
+  // Mobile-specific variants that also close the sidebar
+  const handleMobileShowApiKeys = React.useCallback(() => { setShowApiKeys(true); setShowRunners(false); setSidebarOpen(false); }, []);
+  const handleMobileShowRunners = React.useCallback(() => { setShowRunners(true); setShowApiKeys(false); setActiveSessionId(null); setSidebarOpen(false); }, []);
+  const handleMobileShowHiddenModels = React.useCallback(() => { setHiddenModelsOpen(true); setSidebarOpen(false); }, []);
+  const handleMobileChangePassword = React.useCallback(() => { setChangePasswordOpen(true); setSidebarOpen(false); }, []);
+  const handleSessionSwitcherOpenChange = React.useCallback((open: boolean) => setSessionSwitcherOpen(open), []);
+
   if (isPending) {
     return (
       <div className="flex h-[100dvh] w-full flex-col items-center justify-center bg-background gap-2 animate-in fade-in duration-300">
@@ -3546,23 +3569,6 @@ export function App() {
   const userName = rawUser && typeof rawUser.name === "string" ? (rawUser.name as string) : "";
   const userEmail = rawUser && typeof rawUser.email === "string" ? (rawUser.email as string) : "";
   const userLabel = userName || userEmail || "Account";
-
-  // Stable callbacks for memoized header components — these must not change
-  // between renders so React.memo can skip re-rendering when only session-
-  // scoped state changes.
-  const handleToggleDark = React.useCallback(() => setIsDark((d) => !d), []);
-  const handleShowApiKeys = React.useCallback(() => { setShowApiKeys(true); setShowRunners(false); }, []);
-  const handleShowRunners = React.useCallback(() => { setShowRunners(true); setShowApiKeys(false); setActiveSessionId(null); }, []);
-  const handleShowShortcuts = React.useCallback(() => setShowShortcutsHelp(true), []);
-  const handleShowHiddenModels = React.useCallback(() => setHiddenModelsOpen(true), []);
-  const handleChangePassword = React.useCallback(() => setChangePasswordOpen(true), []);
-  const handleToggleSidebar = React.useCallback(() => setSidebarOpen((prev) => !prev), []);
-  // Mobile-specific variants that also close the sidebar
-  const handleMobileShowApiKeys = React.useCallback(() => { setShowApiKeys(true); setShowRunners(false); setSidebarOpen(false); }, []);
-  const handleMobileShowRunners = React.useCallback(() => { setShowRunners(true); setShowApiKeys(false); setActiveSessionId(null); setSidebarOpen(false); }, []);
-  const handleMobileShowHiddenModels = React.useCallback(() => { setHiddenModelsOpen(true); setSidebarOpen(false); }, []);
-  const handleMobileChangePassword = React.useCallback(() => { setChangePasswordOpen(true); setSidebarOpen(false); }, []);
-  const handleSessionSwitcherOpenChange = React.useCallback((open: boolean) => setSessionSwitcherOpen(open), []);
 
   const activeModelKey = activeModel ? `${activeModel.provider}/${activeModel.id}` : "";
   const visibleModels = availableModels.filter(
