@@ -50,7 +50,8 @@ services:
 {{EXTRA_ORIGINS_LINE}}{{TRUST_PROXY_LINE}}{{PROXY_DEPTH_LINE}}    volumes:
       - {{DATA_DIR}}:/app/data:Z
 {{UI_VOLUME_LINE}}    depends_on:
-      - redis
+      redis:
+        condition: service_started
 {{UI_DEPENDS_ON_LINE}}    restart: unless-stopped
     stop_grace_period: 30s
 
