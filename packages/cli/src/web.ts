@@ -21,6 +21,7 @@ import { join, dirname } from "path";
 import { homedir, arch } from "os";
 import { c } from "./cli-colors.js";
 import { createLogger } from "@pizzapi/tools";
+import { createRequire } from "module";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -895,6 +896,17 @@ function isValidDockerTag(tag: string): boolean {
     return /^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$/.test(tag);
 }
 
+/** Read the CLI version from package.json (used as default Docker image tag). */
+export function getCliVersion(): string {
+    try {
+        const require = createRequire(import.meta.url);
+        const pkg = require("../package.json");
+        return typeof pkg?.version === "string" ? pkg.version : "latest";
+    } catch {
+        return "latest";
+    }
+}
+
 export function parseArgs(args: string[]): ParsedArgs {
     const result: ParsedArgs = { tag: "latest", build: false, detach: true, noCache: false, help: false };
 
@@ -963,7 +975,7 @@ function printWebHelp(): void {
     log.info(c.label("Flags"));
     log.info(`  ${c.flag("--port")} ${c.dim("<port>")}       Set the host port ${c.dim("(persisted to config.json)")}`);
     log.info(`  ${c.flag("--origins")} ${c.dim("<list>")}    Set extra allowed CORS origins ${c.dim("(comma-separated, persisted)")}`);
-    log.info(`  ${c.flag("--tag")} ${c.dim("<tag>")}         UI image tag from GHCR ${c.dim("(default: latest)")}`);
+    log.info(`  ${c.flag("--tag")} ${c.dim("<tag>")}         UI image tag from GHCR ${c.dim("(default: CLI version, or latest)")}`);
     log.info(`  ${c.flag("--build")}             Build UI locally ${c.dim("(fallback when GHCR is unavailable)")}`);
     log.info(`  ${c.flag("-f, --foreground")}    Run in the foreground ${c.dim("(don't detach)")}`);
     log.info(`  ${c.flag("--no-cache")}          Rebuild Docker image without layer cache`);
@@ -1152,7 +1164,20 @@ export async function runWeb(args: string[]): Promise<void> {
         saveWebConfig(config);
     }
 
-    const repoPath = getRepoPath();
+    const repoRoot = findRepoRoot();
+    const isLocalRepo = repoRoot !== null;
+    const repoPath = isLocalRepo ? repoRoot : getRepoPath();
+
+    // When running from a local repo, default to --build (local UI build).
+    // When running from a cloned/remote repo, default the image tag to the
+    // CLI version so the Docker image matches the installed CLI release.
+    if (!parsed.build && !isLocalRepo && parsed.tag === "latest") {
+        const cliVersion = getCliVersion();
+        if (cliVersion !== "latest") {
+            parsed.tag = cliVersion;
+            log.info(`Using Docker image tag matching CLI version: ${cliVersion}`);
+        }
+    }
 
     let prebuildResult: PrebuildResult = { prebuilt: false, rebuilt: false };
     if (parsed.build) {
