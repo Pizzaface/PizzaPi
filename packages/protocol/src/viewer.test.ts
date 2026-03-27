@@ -21,6 +21,7 @@ describe("viewer — ViewerServerToClientEvents payloads", () => {
     expect(minimal.lastSeq).toBeUndefined();
     expect(minimal.replayOnly).toBeUndefined();
     expect(minimal.isActive).toBeUndefined();
+    expect(minimal.generation).toBeUndefined();
 
     const full: Payload = {
       sessionId: "sess-2",
@@ -29,10 +30,12 @@ describe("viewer — ViewerServerToClientEvents payloads", () => {
       isActive: false,
       lastHeartbeatAt: null,
       sessionName: "My Session",
+      generation: 7,
     };
     expect(full.lastSeq).toBe(42);
     expect(full.replayOnly).toBe(true);
     expect(full.sessionName).toBe("My Session");
+    expect(full.generation).toBe(7);
   });
 
   test("event payload carries event with optional seq and replay", () => {
@@ -42,14 +45,17 @@ describe("viewer — ViewerServerToClientEvents payloads", () => {
     expect(minimal.event).toBeDefined();
     expect(minimal.seq).toBeUndefined();
     expect(minimal.replay).toBeUndefined();
+    expect(minimal.generation).toBeUndefined();
 
     const full: Payload = {
       event: { type: "message_update", content: "Hello" },
       seq: 100,
       replay: true,
+      generation: 7,
     };
     expect(full.seq).toBe(100);
     expect(full.replay).toBe(true);
+    expect(full.generation).toBe(7);
   });
 
   test("disconnected carries reason string with optional structured code", () => {
@@ -57,9 +63,11 @@ describe("viewer — ViewerServerToClientEvents payloads", () => {
     const p: Payload = { reason: "TUI disconnected" };
     expect(typeof p.reason).toBe("string");
     expect(p.code).toBeUndefined();
+    expect(p.generation).toBeUndefined();
 
-    const structured: Payload = { reason: "Session is no longer live (snapshot replay).", code: "snapshot_replay" };
+    const structured: Payload = { reason: "Session is no longer live (snapshot replay).", code: "snapshot_replay", generation: 8 };
     expect(structured.code).toBe("snapshot_replay");
+    expect(structured.generation).toBe(8);
   });
 
   test("exec_result carries id, ok, and command", () => {
@@ -89,8 +97,9 @@ describe("viewer — ViewerServerToClientEvents payloads", () => {
 
   test("error carries message string", () => {
     type Payload = Parameters<ViewerServerToClientEvents["error"]>[0];
-    const p: Payload = { message: "Unauthorized" };
+    const p: Payload = { message: "Unauthorized", generation: 9 };
     expect(typeof p.message).toBe("string");
+    expect(p.generation).toBe(9);
   });
 
   test("trigger_error carries message and triggerId", () => {
@@ -109,6 +118,17 @@ describe("viewer — ViewerClientToServerEvents payloads", () => {
     type Payload = Parameters<ViewerClientToServerEvents["connected"]>[0];
     const p: Payload = {};
     expect(Object.keys(p)).toHaveLength(0);
+  });
+
+  test("switch_session carries target session with optional generation", () => {
+    type Payload = Parameters<ViewerClientToServerEvents["switch_session"]>[0];
+    const minimal: Payload = { sessionId: "sess-1" };
+    expect(minimal.sessionId).toBe("sess-1");
+    expect(minimal.generation).toBeUndefined();
+
+    const full: Payload = { sessionId: "sess-2", generation: 10 };
+    expect(full.sessionId).toBe("sess-2");
+    expect(full.generation).toBe(10);
   });
 
   test("resync sends empty record", () => {
@@ -219,9 +239,11 @@ describe("viewer — ViewerSocketData", () => {
       sessionId: "sess-1",
       userId: "u-42",
       userName: "alice",
+      generation: 11,
     };
     expect(data.sessionId).toBe("sess-1");
     expect(data.userId).toBe("u-42");
     expect(data.userName).toBe("alice");
+    expect(data.generation).toBe(11);
   });
 });

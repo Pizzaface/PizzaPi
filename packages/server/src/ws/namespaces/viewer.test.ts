@@ -13,6 +13,7 @@ import {
     findLatestSnapshotEvent,
     onViewerConnectedSignal,
     onViewerReadyForRunnerSignal,
+    isViewerSwitchCurrent,
 } from "./viewer.js";
 
 // ── isAgentEndEvent ──────────────────────────────────────────────────────────
@@ -130,6 +131,22 @@ describe("findLatestSnapshotEvent", () => {
     test("handles a single snapshot event", () => {
         const sa = { type: "session_active", state: {} };
         expect(findLatestSnapshotEvent([sa])).toBe(sa);
+    });
+});
+
+// ── viewer switch generation guards ────────────────────────────────────────
+
+describe("isViewerSwitchCurrent", () => {
+    test("accepts payloads with no generation", () => {
+        expect(isViewerSwitchCurrent(4, undefined)).toBe(true);
+    });
+
+    test("accepts matching generations", () => {
+        expect(isViewerSwitchCurrent(4, 4)).toBe(true);
+    });
+
+    test("rejects stale generations", () => {
+        expect(isViewerSwitchCurrent(4, 3)).toBe(false);
     });
 });
 

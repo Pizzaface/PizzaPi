@@ -19,6 +19,8 @@ export interface ViewerServerToClientEvents {
     isActive?: boolean;
     lastHeartbeatAt?: string | null;
     sessionName?: string | null;
+    /** Optional switch generation echoed back during logical session switches. */
+    generation?: number;
   }) => void;
 
   /** Forwards an agent event to the viewer */
@@ -26,12 +28,16 @@ export interface ViewerServerToClientEvents {
     event: unknown;
     seq?: number;
     replay?: boolean;
+    /** Optional switch generation echoed back during logical session switches. */
+    generation?: number;
   }) => void;
 
   /** Notifies the viewer that the TUI disconnected */
   disconnected: (data: {
     reason: string;
     code?: ViewerDisconnectCode;
+    /** Optional switch generation echoed back during logical session switches. */
+    generation?: number;
   }) => void;
 
   /** Forwards an exec result back to the viewer */
@@ -48,11 +54,16 @@ export interface ViewerServerToClientEvents {
   service_message: (envelope: ServiceEnvelope) => void;
 
   /** Announces which services the connected runner supports. */
-  service_announce: (data: ServiceAnnounceData) => void;
+  service_announce: (data: ServiceAnnounceData & {
+    /** Optional switch generation echoed back during logical session switches. */
+    generation?: number;
+  }) => void;
 
   /** Generic error */
   error: (data: {
     message: string;
+    /** Optional switch generation echoed back during logical session switches. */
+    generation?: number;
   }) => void;
 
   /** Error delivering a trigger_response to a child session or relay target.
@@ -71,6 +82,12 @@ export interface ViewerServerToClientEvents {
 export interface ViewerClientToServerEvents {
   /** Viewer greeting — triggers TUI capabilities push */
   connected: (data: Record<string, never>) => void;
+
+  /** Logically switch the existing viewer socket to a different session. */
+  switch_session: (data: {
+    sessionId: string;
+    generation?: number;
+  }) => void;
 
   /** Request a fresh snapshot resync */
   resync: (data: Record<string, never>) => void;
@@ -111,8 +128,7 @@ export interface ViewerClientToServerEvents {
 
   /** Submit a pasted OAuth callback URL code for an MCP server.
    *  Used when the MCP server requires a localhost redirect URI that is
-   *  unreachable from the remote web UI (e.g. Figma via Tailscale). */
-  /** Submit a pasted OAuth callback URL code for an MCP server.
+   *  unreachable from the remote web UI (e.g. Figma via Tailscale).
    *  Supports Socket.IO ack — server calls the ack callback only on
    *  successful delivery to the runner, so the client can detect failures. */
   mcp_oauth_paste: (data: {
@@ -138,4 +154,6 @@ export interface ViewerSocketData {
   sessionId?: string;
   userId?: string;
   userName?: string;
+  /** Latest requested logical session-switch generation for this viewer socket. */
+  generation?: number;
 }
