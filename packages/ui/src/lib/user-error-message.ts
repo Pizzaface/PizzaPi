@@ -34,6 +34,35 @@ function extractStatusCode(message: string): number | null {
     return Number.isInteger(parsed) ? parsed : null;
 }
 
+/**
+ * Extracts an HTTP status code from non-message fields of a Socket.IO error.
+ *
+ * When Socket.IO's XHR transport gets a 401/403 response, it reports:
+ *   err.message      = "xhr poll error"   (transport-level description)
+ *   err.description  = { status: 401 }    (the actual HTTP response object)
+ *   err.context      = { status: 401 }    (alternative field in some versions)
+ *
+ * Without this check those auth failures are misclassified as network errors
+ * because "xhr poll error" is matched by the network-error branch first.
+ */
+function extractSocketIOStatusCode(error: unknown): number | null {
+    if (!error || typeof error !== "object") return null;
+
+    // Socket.IO v4: err.description may be an XHR object or a plain object with .status
+    const errObj = error as Record<string, unknown>;
+
+    for (const field of ["description", "context"]) {
+        const candidate = errObj[field];
+        if (!candidate || typeof candidate !== "object") continue;
+        const status = (candidate as Record<string, unknown>).status;
+        if (typeof status === "number" && status >= 100 && status <= 599) {
+            return status;
+        }
+    }
+
+    return null;
+}
+
 function defaultFallbackForContext(context: UserErrorContext): string {
     switch (context) {
         case "session_spawn":
@@ -52,7 +81,11 @@ function defaultFallbackForContext(context: UserErrorContext): string {
 export function mapUserError(input: UserErrorInput): UserErrorResult {
     const context = input.context ?? "generic";
     const technicalFromError = coerceErrorMessage(input.error);
-    const statusCode = input.statusCode ?? extractStatusCode(technicalFromError) ?? undefined;
+    const statusCode =
+        input.statusCode ??
+        extractStatusCode(technicalFromError) ??
+        extractSocketIOStatusCode(input.error) ??
+        undefined;
     const technicalMessage = technicalFromError || (statusCode ? `HTTP ${statusCode}` : "Unknown error");
 
     const normalized = technicalMessage.toLowerCase();

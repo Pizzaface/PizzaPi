@@ -98,4 +98,65 @@ describe("mapUserError", () => {
         expect(result.userMessage).toContain("Couldn't reach the selected runner");
         expect(result.technicalMessage).toBe("HTTP 502");
     });
+
+    // Regression: Socket.IO auth failures during viewer connect_error
+    //
+    // When the server rejects the connection with HTTP 401/403, Socket.IO
+    // reports err.message = "xhr poll error" (the transport error) but places
+    // the actual HTTP status in err.description.status.  Without inspecting
+    // that field, mapUserError would misclassify these as network errors and
+    // tell the user to "check your network" instead of "sign in again".
+
+    test("Socket.IO connect_error 401 via err.description.status → sign-in guidance (not network error)", () => {
+        const err = new Error("xhr poll error");
+        (err as unknown as Record<string, unknown>).description = { status: 401 };
+
+        const result = mapUserError({
+            error: err,
+            context: "viewer_connection",
+        });
+
+        expect(result.userMessage).toContain("Sign in");
+        expect(result.userMessage).not.toContain("Lost connection");
+        expect(result.technicalMessage).toBe("xhr poll error");
+    });
+
+    test("Socket.IO connect_error 403 via err.description.status → access guidance (not network error)", () => {
+        const err = new Error("xhr poll error");
+        (err as unknown as Record<string, unknown>).description = { status: 403 };
+
+        const result = mapUserError({
+            error: err,
+            context: "viewer_connection",
+        });
+
+        expect(result.userMessage).toContain("access");
+        expect(result.userMessage).not.toContain("Lost connection");
+    });
+
+    test("Socket.IO connect_error 401 via err.context.status → sign-in guidance", () => {
+        const err = new Error("xhr poll error");
+        (err as unknown as Record<string, unknown>).context = { status: 401 };
+
+        const result = mapUserError({
+            error: err,
+            context: "viewer_connection",
+        });
+
+        expect(result.userMessage).toContain("Sign in");
+        expect(result.userMessage).not.toContain("Lost connection");
+    });
+
+    test("Socket.IO connect_error without status stays as network error", () => {
+        // Plain "xhr poll error" with no description/context status should still
+        // be treated as a network/transport error.
+        const err = new Error("xhr poll error");
+
+        const result = mapUserError({
+            error: err,
+            context: "viewer_connection",
+        });
+
+        expect(result.userMessage).toContain("Lost connection");
+    });
 });
