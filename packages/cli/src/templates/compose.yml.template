@@ -3,7 +3,7 @@
 services:
   redis:
     image: redis:7-alpine
-    command: ["redis-server", "--save", "", "--appendonly", "no"]
+{{REDIS_PLATFORM_LINE}}    command: ["redis-server", "--save", "", "--appendonly", "no"]
     restart: unless-stopped
 
 {{UI_SERVICE_BLOCK}}  server:
