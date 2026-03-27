@@ -3644,10 +3644,17 @@ export function App() {
     if (activeServicePanels.has(serviceId)) {
       closeServicePanelById(serviceId);
     } else {
+      // If the currently-active tab is a service panel, place the new panel in
+      // the same position group so both appear together rather than in separate
+      // groups (which would leave the Tunnels panel highlighted in its group
+      // while the new panel appeared elsewhere).
+      if (activeServicePanels.has(combinedActiveTab)) {
+        setServicePanelPosition(serviceId, getServicePanelPosition(combinedActiveTab));
+      }
       toggleServicePanel(serviceId);
       handleCombinedTabChange(serviceId);
     }
-  }, [activeServicePanels, closeServicePanelById, toggleServicePanel, handleCombinedTabChange]);
+  }, [activeServicePanels, closeServicePanelById, toggleServicePanel, handleCombinedTabChange, combinedActiveTab, setServicePanelPosition, getServicePanelPosition]);
 
   const terminalPanelTab = React.useMemo<CombinedPanelTab | null>(() => showTerminal ? {
     id: "terminal",
@@ -3732,13 +3739,18 @@ export function App() {
         id: serviceId,
         label,
         icon,
-        onDragStart: (e) => startPanelDragWith(e, (pos) => setServicePanelPosition(serviceId, pos)),
+        onDragStart: (e) => startPanelDragWith(e, (pos) => {
+          setServicePanelPosition(serviceId, pos);
+          // Re-assert focus on the moved panel so the destination group
+          // highlights it rather than falling back to tabs[0] (Tunnels).
+          handleCombinedTabChange(serviceId);
+        }),
         onClose: () => closeServicePanelById(serviceId),
         content,
       });
     }
     return tabs;
-  }, [activeServicePanels, tunnelSessionId, activeSessionId, dynamicPanels, startPanelDragWith, setServicePanelPosition, closeServicePanelById]);
+  }, [activeServicePanels, tunnelSessionId, activeSessionId, dynamicPanels, startPanelDragWith, setServicePanelPosition, closeServicePanelById, handleCombinedTabChange]);
 
   const panelGroups = React.useMemo(() => {
     const groups: Record<"left" | "right" | "bottom", CombinedPanelTab[]> = { left: [], right: [], bottom: [] };
