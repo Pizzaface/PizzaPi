@@ -151,7 +151,16 @@ Bugs 1-2 are fixed by Dish 004 (PR #364). Bugs 3-6 captured as new Godmother ide
 **Grade:** D
 **Inspected:** 7 dishes | **Citations:** 2 (#364, #367) | **Violations:** 5 (#360, #362, #363, #365, #366)
 **Critic Accuracy:** 0% (1 critic completed, missed P1; 6 critics never ran due to session delink)
+**Fixers:** 5 dispatched, 5 complete ✅
 
-Session delink at 00:35 killed all pending critic sessions. Only 1 critic completed (LGTM on #360) and it missed a P1 test-pollution CI failure. 5 of 7 open PRs have P1-level issues requiring fixers. Common themes: concurrency/lifecycle gaps, shallow test coverage, test quality issues (mock pollution, fabricated inputs).
+Session delink at 00:35 killed all pending critic sessions. Only 1 critic completed (LGTM on #360) and it missed a P1 test-pollution CI failure. 5 of 7 open PRs had P1-level issues — all fixed.
 
-See `inspection-report.md` for full details.
+| PR | Fix | Summary |
+|----|-----|---------|
+| #360 | `be7cc96f` | `mock.module()` test pollution → CI green |
+| #362 | `d025ac0c` | MCP subprocess orphan on dispose; `list_ideas` limit; `search_ideas` topic |
+| #363 | `349a1748` | "Session not found" no longer falls to generic fallback; real socket.io test format |
+| #365 | `4a13d18e` | Out-of-order chunk finalization always runs `patchSessionCache` + `setActiveToolCalls` |
+| #366 | `bbfb96a9` | `service_healthy` depends_on; `.dockerignore` companion path |
+
+All 7 PRs ready for merge review. See `inspection-report.md` for full details.

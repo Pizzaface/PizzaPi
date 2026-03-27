@@ -148,12 +148,14 @@ The session-delink incident at 00:35 prevented critic dispatch for 6 of 7 PRs. O
 
 ---
 
-## Fixers Dispatched
+## Fixers Dispatched — All Complete ✅
 
-| PR | Issue | Fixer |
-|----|-------|-------|
-| #360 | Test pollution (mock.module leak) | Session 8c45d710 |
-| #362 | P1 MCP subprocess orphan + P2 limit/topic | To be dispatched |
-| #363 | P1 server msgs swallowed + test fabrication | To be dispatched |
-| #365 | P1 out-of-order finalization skips cache | To be dispatched |
-| #366 | P1 depends_on race + .dockerignore wrong path | To be dispatched |
+| PR | Fix Commit | What was fixed |
+|----|-----------|----------------|
+| #360 | `be7cc96f` | Removed `mock.module()` store pollution — CI tests now pass |
+| #362 | `d025ac0c` | MCP subprocess orphan on dispose race; `list_ideas` limit; `search_ideas` topic filter |
+| #363 | `349a1748` | "Session not found" no longer swallowed by generic fallback; `connect_error` test uses real socket.io `Error` format |
+| #365 | `4a13d18e` | Out-of-order chunk finalization now always runs `patchSessionCache` + `setActiveToolCalls`; uses `appendedForSideEffects` (not stale `messagesRef.current`) |
+| #366 | `bbfb96a9` | `depends_on: service_healthy` for UI container; `.dockerignore` renamed to `Dockerfile.dockerignore` companion form |
+
+**PRs ready for merge review:** #360, #362, #363, #364, #365, #366, #367
