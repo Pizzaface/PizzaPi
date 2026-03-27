@@ -44,6 +44,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
+import { Skeleton } from "@/components/ui/skeleton";
 import { ErrorBoundary } from "@/components/ui/error-boundary";
 import {
   DropdownMenu,
@@ -3546,8 +3547,34 @@ export function App() {
 
   if (isPending) {
     return (
-      <div className="flex h-[100dvh] w-full flex-col items-center justify-center bg-background gap-2 animate-in fade-in duration-300">
-        <Spinner className="size-8 text-primary/60" />
+      <div className="flex h-[100dvh] w-full flex-col overflow-hidden bg-background animate-in fade-in duration-300">
+        <div className="border-b px-3 md:px-4 py-2 md:py-3">
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2">
+              <Skeleton className="h-6 w-24 rounded-md" />
+              <Skeleton className="h-2.5 w-2.5 rounded-full" />
+            </div>
+            <div className="flex items-center gap-2">
+              <Skeleton className="h-8 w-20 rounded-md" />
+              <Skeleton className="h-8 w-8 rounded-md" />
+            </div>
+          </div>
+        </div>
+        <div className="flex min-h-0 flex-1">
+          <aside className="hidden md:flex md:w-72 border-r p-3 gap-3 flex-col">
+            <Skeleton className="h-9 w-full rounded-md" />
+            <Skeleton className="h-9 w-full rounded-md" />
+            <Skeleton className="h-16 w-full rounded-lg" />
+            <Skeleton className="h-16 w-full rounded-lg" />
+            <Skeleton className="h-16 w-full rounded-lg" />
+          </aside>
+          <main className="flex min-h-0 flex-1 items-center justify-center px-4">
+            <div className="flex flex-col items-center gap-3">
+              <Spinner className="size-7 text-primary/60" />
+              <span className="text-xs text-muted-foreground">Checking your session…</span>
+            </div>
+          </main>
+        </div>
       </div>
     );
   }

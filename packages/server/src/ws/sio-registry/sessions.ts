@@ -15,7 +15,7 @@ import {
     getSession,
     updateSessionFields,
     deleteSession,
-    getAllSessions,
+    getAllSessionSummaries,
     refreshSessionTTL,
     incrementSeq,
     getSeq,
@@ -365,7 +365,7 @@ export function removeLocalTuiSocket(sessionId: string): void {
 
 /** Returns a public summary of active sessions from Redis. */
 export async function getSessions(filterUserId?: string): Promise<SessionInfo[]> {
-    const sessions = await getAllSessions(filterUserId);
+    const sessions = await getAllSessionSummaries(filterUserId);
     return sessions.map((s) => {
         const heartbeat = s.lastHeartbeat ? safeJsonParse(s.lastHeartbeat) : null;
         const model = modelFromHeartbeat(heartbeat);
@@ -768,7 +768,7 @@ const HEARTBEAT_STALE_MS = 2 * 60 * 1000; // 2 minutes
 /** Clean up sessions that have no local relay socket and a stale heartbeat. */
 export async function sweepOrphanedSessions(nowMs: number): Promise<void> {
     const io = getIo();
-    const allSessions = await getAllSessions();
+    const allSessions = await getAllSessionSummaries();
     const candidates: Array<{ sessionId: string; lastActivity: number }> = [];
 
     for (const session of allSessions) {

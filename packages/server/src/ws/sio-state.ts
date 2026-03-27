@@ -176,6 +176,30 @@ export interface RedisSessionData {
     metaState?: string | null;
 }
 
+/**
+ * Lightweight subset used for session listings and runner counts.
+ * Intentionally excludes `lastState` so list queries never pull multi-MB
+ * message snapshots from Redis.
+ */
+export interface RedisSessionSummaryData {
+    sessionId: string;
+    shareUrl: string;
+    cwd: string;
+    startedAt: string;
+    userId: string | null;
+    userName: string | null;
+    sessionName: string | null;
+    isEphemeral: boolean;
+    expiresAt: string | null;
+    isActive: boolean;
+    lastHeartbeatAt: string | null;
+    /** JSON-stringified heartbeat payload */
+    lastHeartbeat: string | null;
+    runnerId: string | null;
+    runnerName: string | null;
+    parentSessionId: string | null;
+}
+
 export interface RedisRunnerData {
     runnerId: string;
     userId: string | null;
@@ -230,6 +254,65 @@ function toHashFields(data: Record<string, unknown>): Record<string, string> {
         }
     }
     return fields;
+}
+
+const SESSION_SUMMARY_FIELDS = [
+    "sessionId",
+    "shareUrl",
+    "cwd",
+    "startedAt",
+    "userId",
+    "userName",
+    "sessionName",
+    "isEphemeral",
+    "expiresAt",
+    "isActive",
+    "lastHeartbeatAt",
+    "lastHeartbeat",
+    "runnerId",
+    "runnerName",
+    "parentSessionId",
+] as const;
+
+function parseSessionSummaryFromHash(hash: Record<string, string>): RedisSessionSummaryData | null {
+    if (!hash.sessionId) return null;
+    return {
+        sessionId: hash.sessionId,
+        shareUrl: hash.shareUrl ?? "",
+        cwd: hash.cwd ?? "",
+        startedAt: hash.startedAt ?? "",
+        userId: hash.userId || null,
+        userName: hash.userName || null,
+        sessionName: hash.sessionName || null,
+        isEphemeral: hash.isEphemeral === "1",
+        expiresAt: hash.expiresAt || null,
+        isActive: hash.isActive === "1",
+        lastHeartbeatAt: hash.lastHeartbeatAt || null,
+        lastHeartbeat: hash.lastHeartbeat || null,
+        runnerId: hash.runnerId || null,
+        runnerName: hash.runnerName || null,
+        parentSessionId: hash.parentSessionId || null,
+    };
+}
+
+function rowToSummaryHash(row: unknown): Record<string, string> | null {
+    // node-redis hmGet returns string[] in field order.
+    if (Array.isArray(row)) {
+        const hash: Record<string, string> = {};
+        for (let i = 0; i < SESSION_SUMMARY_FIELDS.length; i++) {
+            const key = SESSION_SUMMARY_FIELDS[i];
+            const value = row[i];
+            hash[key] = value == null ? "" : String(value);
+        }
+        return hash;
+    }
+
+    // Fallback for test mocks that return an object (same as hGetAll shape).
+    if (row && typeof row === "object") {
+        return row as Record<string, string>;
+    }
+
+    return null;
 }
 
 function parseSessionFromHash(hash: Record<string, string>): RedisSessionData | null {
@@ -378,6 +461,51 @@ export async function deleteSession(sessionId: string): Promise<void> {
     }
 
     await multi.exec();
+}
+
+export async function getAllSessionSummaries(filterUserId?: string): Promise<RedisSessionSummaryData[]> {
+    const r = requireRedis();
+
+    let sessionIds: string[];
+    if (filterUserId) {
+        sessionIds = await r.sMembers(userSessionsKey(filterUserId));
+    } else {
+        sessionIds = await r.sMembers(allSessionsKey());
+    }
+
+    if (sessionIds.length === 0) return [];
+
+    const results: RedisSessionSummaryData[] = [];
+    const multi = r.multi();
+    const supportsHmGet = typeof (multi as unknown as { hmGet?: unknown }).hmGet === "function";
+
+    for (const id of sessionIds) {
+        if (supportsHmGet) {
+            // hmGet fetches only the requested fields, avoiding large lastState blobs.
+            (multi as unknown as { hmGet: (key: string, fields: readonly string[]) => unknown }).hmGet(
+                sessionKey(id),
+                SESSION_SUMMARY_FIELDS,
+            );
+        } else {
+            // Fallback for older/test clients that don't expose hmGet.
+            multi.hGetAll(sessionKey(id));
+        }
+    }
+
+    const responses = await multi.exec();
+
+    for (const resp of responses) {
+        const hash = rowToSummaryHash(resp);
+        if (!hash || Object.keys(hash).length === 0) continue;
+
+        const parsed = parseSessionSummaryFromHash(hash);
+        if (!parsed) continue;
+        if (filterUserId && parsed.userId !== filterUserId) continue;
+
+        results.push(parsed);
+    }
+
+    return results;
 }
 
 export async function getAllSessions(filterUserId?: string): Promise<RedisSessionData[]> {

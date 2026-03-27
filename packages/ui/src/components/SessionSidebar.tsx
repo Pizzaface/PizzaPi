@@ -624,7 +624,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
 
         const resyncLiveSessionsFromApi = async (epoch: number) => {
             try {
-                const res = await fetch("/api/sessions", { credentials: "include" });
+                const res = await fetch("/api/sessions?includePersisted=0", { credentials: "include" });
                 if (!res.ok) return;
                 const body = await res.json();
                 if (disposed) return;
