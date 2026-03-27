@@ -431,11 +431,13 @@ export async function createTestServer(opts?: TestServerOptions): Promise<TestSe
     };
 
     } catch (err) {
-        // Setup failed — clear guard, restore env var, close all leaked Redis
-        // clients (pub/sub + state), and clean up temp dir so state doesn't
-        // contaminate tests.
+        // Setup failed — clear guard, restore env var, tear down tunnel relay
+        // (if initTunnelRelay() was called before the error), close all leaked
+        // Redis clients (pub/sub + state), and clean up temp dir so state
+        // doesn't contaminate tests.
         _activeServer = false;
         restoreEnv();
+        disposeTunnelRelay();
         await Promise.allSettled([
             pubClient?.quit(),
             subClient?.quit(),
