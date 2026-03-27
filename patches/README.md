@@ -4,6 +4,42 @@ Patches in this directory are applied automatically by Bun via the
 `patchedDependencies` field in the root `package.json`. They are reapplied on
 every `bun install` — no postinstall script is needed.
 
+## @mariozechner/pi-coding-agent@0.63.1
+
+Same five changes as 0.58.3 (see below), ported forward. The upstream
+retryable error regex gained several new patterns in this release
+(`provider.?returned.?error`, `network.?error`, `socket hang up`,
+`timed? out`, `timeout`); our `json.?parse.?error` addition is appended
+on top.
+
+**What it changes:**
+
+| File | Change |
+|------|--------|
+| `dist/config.js` — `CONFIG_DIR_NAME` | Hardcodes `".pizzapi"` |
+| `dist/core/agent-session.js` — `_isRetryableError()` | Adds `json.?parse.?error\|unexpected.?end.?of.?json` |
+| `dist/core/extensions/loader.js` — `createExtensionRuntime()` | Adds `newSession`/`switchSession` stubs |
+| `dist/core/extensions/loader.js` — `createExtensionAPI()` | Adds `newSession`/`switchSession` wrappers |
+| `dist/core/extensions/runner.js` — `bindCommandContext()` | Copies real handlers onto the runtime |
+| `dist/core/resource-loader.js` | Uses factory `displayName`/`name` for inline extension paths |
+| `dist/modes/interactive/interactive-mode.js` — `run()` | Removes `checkForNewVersion()` call |
+| `dist/modes/interactive/interactive-mode.js` | Removes `checkForNewVersion()` and `showNewVersionNotification()` methods |
+| `dist/modes/interactive/interactive-mode.js` — login flow | Uses `authStorage.storage?.authPath` instead of `getAuthPath()` |
+
+## @mariozechner/pi-ai@0.63.1
+
+Same web search changes as 0.58.3 (see below), ported forward. No upstream
+changes affected our patch points in this release.
+
+**What it changes:**
+
+| File | Change |
+|------|--------|
+| `dist/providers/anthropic.js` — `convertTools()` | Pass through server-side tools as-is |
+| `dist/providers/anthropic.js` — `buildParams()` | Inject `web_search_20250305` tool when `PIZZAPI_WEB_SEARCH` env var is set |
+| `dist/providers/anthropic.js` — stream handler | Handle `server_tool_use` and `web_search_tool_result` blocks |
+| `dist/providers/anthropic.js` — `convertMessages()` | Round-trip `_serverToolUse` and `_webSearchResult` blocks |
+
 ## @mariozechner/pi-coding-agent@0.58.3
 
 **Purpose:** Five changes:
@@ -151,7 +187,15 @@ this patch can be deleted.
 
 ## Previously patched (no longer needed)
 
+### @mariozechner/pi-coding-agent@0.58.3 (replaced by 0.63.1 patch)
+
+Same purpose as the current patch, just targeting an older version.
+
 ### @mariozechner/pi-coding-agent@0.55.4 (replaced by 0.58.3 patch)
+
+Same purpose as the current patch, just targeting an older version.
+
+### @mariozechner/pi-ai@0.58.3 (replaced by 0.63.1 patch)
 
 Same purpose as the current patch, just targeting an older version.
 
