@@ -5,7 +5,7 @@
 ## Shift Summary
 - **Started:** 22:58 | **Ended:** 06:40 (with interruption at ~00:35, resumed 06:39)
 - **Status:** ⚠️ Service Complete (with session delink incident)
-- **Menu Items:** 17 planned → 13 served, 0 comped, 0 poisoned, 2 stalled (011, 014), 1 86'd (010), 1 research
+- **Menu Items:** 17 planned → 14 served (incl. 1 verification), 0 comped, 0 poisoned, 1 stalled (011), 1 86'd (010), 1 research
 - **Pairings:** 4 planned → 3 assembled (docker-versioning, ui-stability-core, ui-stability-p1), 1 broken (connection-efficiency — 014 stalled)
 - **Critics' Choice:** Active but no critic completions received (delink interrupted critic dispatch)
 
@@ -26,7 +26,7 @@
 | 011 | Panel Grid System (9-zone) | codex | L | — | ❌ stalled | — |
 | 011* | Slow UI load investigation | codex | M | — | ⭐ served | #360 |
 | 012 | Godmother triage (sidework) | haiku | M | — | ✅ 21 ideas shipped | — |
-| 014 | Double /hub WebSocket fix | sonnet | S | — | ❌ stalled | — |
+| 014 | Double /hub WebSocket fix (verification) | sonnet | S | — | ✅ verified (already fixed by PR #348) | — |
 | 015 | Connection audit + quick wins | codex | M | — | ⭐ served | #367 |
 | 016 | Godmother service panel | codex | M | — | ⭐ served | #362 |
 | 017 | Upgrade safety — versioning | codex | M | 🔗 docker-versioning | ⭐ served | #366 |
@@ -87,9 +87,10 @@ Chef wanted Codex 5.3 for kitchen cooks tonight. **11 of 17 dishes assigned to C
 ### Session Delink (00:35)
 All 8 running child sessions delinked from the Maître d'. No triggers received. 5 of 8 had already committed and pushed. 3 needed respawning. All respawned successfully. No work lost.
 
-### Kitchen Stoppages (2)
+### Kitchen Stoppages (1)
 1. **Dish 011** (Panel Grid System, L) — Cook never committed. Codex may struggle with L-complexity UI layout tasks. Captured to Godmother.
-2. **Dish 014** (Double Hub WS) — Cook never committed. May already be fixed by PR #348. Captured to Godmother.
+
+**Dish 014** was initially reported stalled but the cook's late-arriving trigger confirmed it completed: PR #348 already fixed the double /hub socket. No code changes needed — verification only.
 
 ### Scope Creep (1)
 Dish 005 cook included clearSelection refactor (dish 010 scope) in their changes. 86'd dish 010.
@@ -130,3 +131,15 @@ Bugs 1-2 are fixed by Dish 004 (PR #364). Bugs 3-6 captured as new Godmother ide
 - **Dish 014** (Double Hub WS) — verify if PR #348 already fixed it before re-attempting
 - **4 tunnel bugs** from audit need dishes in next shift
 - **Critics' Choice competition** was active but interrupted — no critic findings this shift
+
+---
+
+## Sidework Completed (07:30 EDT)
+
+- ✅ **7 PRs rebased** onto main — 0 conflicts
+- ✅ **11 worktrees cleaned** + pruned
+- ✅ **19 local nightshift branches deleted** (3 pairing branches kept for PRs)
+- ✅ **Godmother updates**: 7 dish ideas → review, 21 stale ideas → shipped, 5 new ideas captured
+- ✅ **Critic clippings** updated
+- ✅ **1 critic LGTM** received (PR #360) with Critic's Choice finding
+- ⏭️ **Batch critic** skipped (session interruption)

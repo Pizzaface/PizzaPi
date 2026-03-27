@@ -87,3 +87,4 @@ Unattended mode — plan_mode timed out (user went to bed). Proceeding directly 
 | 04:22 | kitchen | pairing-assembly-1 | ui-stability-core assembled, no conflicts. Fixer for dish 005 auto-focus. |
 | 10:41 | sidework | sidework-start | Beginning sidework. Skipping batch critic due to session interruption. |
 | 10:43 | sidework | morning-report-written |  |
+| 10:43 | sidework | sidework-complete | Shift complete. 7 PRs open, report pushed. |
