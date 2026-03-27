@@ -541,6 +541,13 @@ export function RunnerDetailPanel({
                     <span className="text-[10px] font-mono text-muted-foreground/35">
                         {runner.runnerId}
                     </span>
+
+                    {/* Row 3: hub version */}
+                    {hubVersion && (
+                        <span className="text-[10px] text-muted-foreground/60">
+                            Hub: {hubImage ? `${hubImage} (${hubVersion})` : hubVersion}
+                        </span>
+                    )}
                 </div>
 
                 {/* ---- Tabs ---- */}

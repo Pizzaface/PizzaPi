@@ -1361,9 +1361,10 @@ export async function runWeb(args: string[]): Promise<void> {
     console.log();
 
     if (parsed.detach) {
-        const upArgs = ["up", "-d", "--build"];
-        if (parsed.noCache) upArgs.push("--no-cache");
-        await composeExecAsync(composePath, upArgs);
+        if (parsed.noCache) {
+            await composeExecAsync(composePath, ["build", "--no-cache"]);
+        }
+        await composeExecAsync(composePath, ["up", "-d", "--build"]);
         log.info("");
         log.info(`✅ PizzaPi web is running at http://localhost:${config.port}`);
         log.info("");
@@ -1372,8 +1373,9 @@ export async function runWeb(args: string[]): Promise<void> {
         log.info("  pizza web stop      Stop the hub");
         log.info("  pizza web config    View configuration");
     } else {
-        const upArgs = ["up", "--build"];
-        if (parsed.noCache) upArgs.push("--no-cache");
-        await composeExecAsync(composePath, upArgs);
+        if (parsed.noCache) {
+            await composeExecAsync(composePath, ["build", "--no-cache"]);
+        }
+        await composeExecAsync(composePath, ["up", "--build"]);
     }
 }
