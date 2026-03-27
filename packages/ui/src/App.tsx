@@ -1481,10 +1481,17 @@ export function App() {
       // For the final chunk, append + dedupe in a single updater pass so the
       // dedup operates on the complete message array (including this chunk).
       // For non-final chunks, just append.
+      // We capture both paths so the finalization block always has the full
+      // picture even when canFinalizeChunkHydration fires on a non-final chunk
+      // (out-of-order delivery).
       let dedupedForSideEffects: RelayMessage[] | null = null;
+      let appendedForSideEffects: RelayMessage[] | null = null;
       setMessages((prev) => {
         const appended = [...prev, ...convertedChunk];
-        if (!isFinal) return appended;
+        if (!isFinal) {
+          appendedForSideEffects = appended;
+          return appended;
+        }
         const deduped = deduplicateMessages(appended);
         dedupedForSideEffects = deduped;
         return deduped;
@@ -1512,12 +1519,21 @@ export function App() {
         }
         setViewerStatus("Connected");
 
-        // Side effects from the deduped result — the updater above assigned
-        // dedupedForSideEffects synchronously before returning.
-        if (dedupedForSideEffects) {
-          setActiveToolCalls(detectInFlightTools(dedupedForSideEffects));
-          patchSessionCache({ messages: dedupedForSideEffects });
+        // Side effects from the deduped result. In the normal case, the final
+        // chunk's updater assigned dedupedForSideEffects synchronously.
+        // In the out-of-order case (canFinalizeChunkHydration fires on a
+        // non-final chunk), dedupedForSideEffects is null — fall back to
+        // deduplicating the appended state we captured in the non-final path
+        // so patchSessionCache and setActiveToolCalls are never skipped.
+        const finalMessages =
+          dedupedForSideEffects ??
+          deduplicateMessages(appendedForSideEffects ?? messagesRef.current);
+        if (!dedupedForSideEffects) {
+          // Promote the appended state to the deduped version in the store.
+          setMessages(finalMessages);
         }
+        setActiveToolCalls(detectInFlightTools(finalMessages));
+        patchSessionCache({ messages: finalMessages });
       }
       return;
     }
