@@ -172,3 +172,5 @@ The session-delink incident at 00:35 prevented critic dispatch for 6 of 7 PRs. O
 | #366 | `bbfb96a9` | `depends_on: service_healthy` for UI container; `.dockerignore` renamed to `Dockerfile.dockerignore` companion form |
 
 **PRs ready for merge review:** #360, #362, #363, #364, #365, #366, #367
+
+**PR descriptions:** Updated post-inspection — all 7 PRs now have proper descriptions (problem statement, root cause, what changed, how to verify, Godmother IDs).
