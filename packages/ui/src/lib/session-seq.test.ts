@@ -83,6 +83,35 @@ describe("chunk index tracking", () => {
     registerChunkIndex(seen, 1);
     expect(canFinalizeChunkHydration(true, seen, 3)).toBe(true);
   });
+
+  test("consumer chunk buffer assembled in index order preserves original message sequence", () => {
+    // Simulates the Map<number, unknown[]> buffer pattern used by the UI
+    // chunk hydration handler.  Chunks arrive out of order (2 → 0 → 1) but
+    // the assembled transcript must reflect original order (0 → 1 → 2).
+    const seen = new Set<number>();
+    const chunkBuffer = new Map<number, string[]>();
+
+    // Arrival order: chunk 2 first, then 0, then 1
+    registerChunkIndex(seen, 2);
+    chunkBuffer.set(2, ["msg-c2-a", "msg-c2-b"]);
+
+    registerChunkIndex(seen, 0);
+    chunkBuffer.set(0, ["msg-c0-a"]);
+
+    registerChunkIndex(seen, 1);
+    chunkBuffer.set(1, ["msg-c1-a", "msg-c1-b"]);
+
+    expect(canFinalizeChunkHydration(true, seen, 3)).toBe(true);
+
+    // Sort by chunkIndex, then flatten — must equal original server-side order
+    const sortedIndexes = Array.from(chunkBuffer.keys()).sort((a, b) => a - b);
+    const assembled = sortedIndexes.flatMap((idx) => chunkBuffer.get(idx)!);
+
+    expect(assembled).toEqual(["msg-c0-a", "msg-c1-a", "msg-c1-b", "msg-c2-a", "msg-c2-b"]);
+    // Arrival order [2, 0, 1] must NOT be reflected in the final transcript
+    expect(assembled[0]).toBe("msg-c0-a");
+    expect(assembled[assembled.length - 1]).toBe("msg-c2-b");
+  });
 });
 
 describe("analyzeIncomingSeq", () => {

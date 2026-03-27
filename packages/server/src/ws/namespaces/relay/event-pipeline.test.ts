@@ -165,5 +165,12 @@ describe("chunked snapshot assembly", () => {
         });
 
         expect(canFinalizeChunkedSnapshot(pending)).toBe(true);
+
+        // Assembled transcript must be in chunkIndex order (c0, c1, c2),
+        // NOT arrival order (c2, c0, c1).  The server stores chunks in a
+        // sparse array indexed by chunkIndex; flat() therefore always yields
+        // the original server-side ordering.
+        const assembled = pending.chunks.flat();
+        expect(assembled).toEqual(["c0", "c1", "c2"]);
     });
 });

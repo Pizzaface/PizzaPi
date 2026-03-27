@@ -337,7 +337,8 @@ export function App() {
     totalChunks: number;
     receivedChunkIndexes: Set<number>;
     finalChunkSeen: boolean;
-    loadedMessages: number; // cumulative count for fallback key offset
+    loadedMessages: number; // cumulative count for progress display
+    chunkBuffer: Map<number, unknown[]>; // raw messages buffered by chunkIndex for ordered assembly
   } | null>(null);
 
   // Track the last completed snapshot ID so we can reject stale chunks that
@@ -1350,6 +1351,7 @@ export function App() {
           receivedChunkIndexes: new Set<number>(),
           finalChunkSeen: false,
           loadedMessages: 0,
+          chunkBuffer: new Map<number, unknown[]>(),
         };
         setViewerStatus(`Loading session (0 of ${totalMessages} messages)…`);
       } else {
@@ -1470,34 +1472,13 @@ export function App() {
         chunkState.totalChunks = totalChunks;
       }
 
-      const keyOffset = chunkState.loadedMessages;
-      // Convert messages but skip dedupe—we'll dedupe the full list when assembly completes.
-      // This prevents cross-chunk duplicates where a partial message in one chunk and
-      // its final timestamped version in another chunk would both survive per-chunk dedupe.
-      const convertedChunk = chunkMessages
-        .map((m, i) => toRelayMessage(m, `snapshot-${keyOffset + i}`))
-        .filter((m): m is RelayMessage => m !== null);
+      // Buffer this chunk's raw messages by chunkIndex so we can assemble
+      // in index order at finalization time. Out-of-order delivery means we
+      // must NOT use arrival order — chunk 2 arriving before chunk 1 would
+      // produce a scrambled transcript if we append immediately.
+      chunkState.chunkBuffer.set(chunkIndex, chunkMessages);
 
-      // For the final chunk, append + dedupe in a single updater pass so the
-      // dedup operates on the complete message array (including this chunk).
-      // For non-final chunks, just append.
-      // We capture both paths so the finalization block always has the full
-      // picture even when canFinalizeChunkHydration fires on a non-final chunk
-      // (out-of-order delivery).
-      let dedupedForSideEffects: RelayMessage[] | null = null;
-      let appendedForSideEffects: RelayMessage[] | null = null;
-      setMessages((prev) => {
-        const appended = [...prev, ...convertedChunk];
-        if (!isFinal) {
-          appendedForSideEffects = appended;
-          return appended;
-        }
-        const deduped = deduplicateMessages(appended);
-        dedupedForSideEffects = deduped;
-        return deduped;
-      });
-
-      // Update chunked delivery tracking
+      // Update progress counter for status display.
       chunkState.loadedMessages += chunkMessages.length;
       const loaded = chunkState.loadedMessages;
       setViewerStatus(`Loading session (${Math.min(loaded, totalMessages)} of ${totalMessages} messages)…`);
@@ -1509,6 +1490,24 @@ export function App() {
       );
 
       if (readyToFinalize) {
+        // Assemble all buffered chunks in chunkIndex order so the resulting
+        // transcript matches the original server-side ordering regardless of
+        // network delivery order.
+        const sortedIndexes = Array.from(chunkState.chunkBuffer.keys()).sort((a, b) => a - b);
+        const orderedRaw: unknown[] = [];
+        for (const idx of sortedIndexes) {
+          const buf = chunkState.chunkBuffer.get(idx);
+          if (buf) {
+            for (const m of buf) orderedRaw.push(m);
+          }
+        }
+        // Convert the ordered raw messages with stable sequential keys and
+        // deduplicate the complete assembled list in one pass.
+        const convertedOrdered = orderedRaw
+          .map((m, i) => toRelayMessage(m, `snapshot-${i}`))
+          .filter((m): m is RelayMessage => m !== null);
+        const finalMessages = deduplicateMessages(convertedOrdered);
+
         lastCompletedSnapshotRef.current = chunkSnapshotId || null;
         chunkedDeliveryRef.current = null;
         sessionHydratedRef.current = true;
@@ -1519,19 +1518,7 @@ export function App() {
         }
         setViewerStatus("Connected");
 
-        // Side effects from the deduped result. In the normal case, the final
-        // chunk's updater assigned dedupedForSideEffects synchronously.
-        // In the out-of-order case (canFinalizeChunkHydration fires on a
-        // non-final chunk), dedupedForSideEffects is null — fall back to
-        // deduplicating the appended state we captured in the non-final path
-        // so patchSessionCache and setActiveToolCalls are never skipped.
-        const finalMessages =
-          dedupedForSideEffects ??
-          deduplicateMessages(appendedForSideEffects ?? messagesRef.current);
-        if (!dedupedForSideEffects) {
-          // Promote the appended state to the deduped version in the store.
-          setMessages(finalMessages);
-        }
+        setMessages(finalMessages);
         setActiveToolCalls(detectInFlightTools(finalMessages));
         patchSessionCache({ messages: finalMessages });
       }
