@@ -2,7 +2,7 @@ import { exec } from "node:child_process";
 import { promisify } from "node:util";
 
 const execAsync = promisify(exec);
-import { existsSync, mkdirSync, renameSync, cpSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, renameSync, statSync, cpSync, rmSync } from "node:fs";
 import { hostname, homedir } from "node:os";
 import { join } from "node:path";
 import { ServiceRegistry } from "./service-handler.js";
@@ -55,47 +55,76 @@ import {
 import type { UsageRange } from "../usage/types.js";
 
 /**
- * Migrate session storage from ~/.pi/agent to ~/.pizzapi/agent.
+ * Migrate session & agent data into the flat ~/.pizzapi/ directory.
+ *
+ * Phase 1: ~/.pi/agent → ~/.pizzapi/  (legacy pi installs)
+ * Phase 2: ~/.pizzapi/agent/ → ~/.pizzapi/  (pre-fix PizzaPi installs that
+ *          had upstream's getAgentDir() returning ~/.pizzapi/agent/)
+ *
  * Runs on daemon startup and is idempotent (safe to call repeatedly).
+ * A `.migrated` marker file is written to ~/.pizzapi/agent/ after phase 2
+ * so we don't re-scan on every boot.
  */
 function migrateSessionStorage(): void {
-    const oldDir = join(homedir(), ".pi", "agent");
-    const newDir = join(homedir(), ".pizzapi", "agent");
-    const newSessions = join(newDir, "sessions");
+    const pizzapiDir = join(homedir(), ".pizzapi");
+    const agentSubdir = join(pizzapiDir, "agent");
+    const markerFile = join(agentSubdir, ".migrated");
 
-    // Skip if old dir doesn't exist or new sessions dir already exists
-    if (!existsSync(oldDir) || existsSync(newSessions)) return;
-
-    // Ensure the parent directory exists but do NOT pre-create newDir itself —
-    // renameSync requires the target to not exist, or on some platforms it will
-    // fail with EEXIST/ENOTEMPTY when renaming onto an existing directory.
-    mkdirSync(join(newDir, ".."), { recursive: true });
-
-    if (existsSync(newDir)) {
-        // newDir already exists (e.g. a fresh install created it) but newSessions
-        // does not — merge any files from oldDir into newDir and remove oldDir.
-        try {
-            cpSync(oldDir, newDir, { recursive: true });
-            rmSync(oldDir, { recursive: true, force: true });
-            logInfo(`Merged session data from ~/.pi/agent into ~/.pizzapi/agent`);
-        } catch (e: any) {
-            logWarn(`Failed to merge session storage: ${e.message}`);
+    // ── Phase 1: ~/.pi/agent → ~/.pizzapi/ ─────────────────────────────────
+    const piAgentDir = join(homedir(), ".pi", "agent");
+    if (existsSync(piAgentDir)) {
+        // Only migrate if we haven't already (sessions dir doesn't exist at root)
+        if (!existsSync(join(pizzapiDir, "sessions"))) {
+            try {
+                _mergeDir(piAgentDir, pizzapiDir);
+                logInfo("Migrated session data from ~/.pi/agent into ~/.pizzapi");
+            } catch (e: any) {
+                logWarn(`Failed to migrate ~/.pi/agent: ${e.message}`);
+            }
         }
-        return;
     }
 
-    try {
-        renameSync(oldDir, newDir);
-        logInfo(`Migrated session data from ~/.pi/agent to ~/.pizzapi/agent`);
-    } catch (e: any) {
-        if (e.code === "EXDEV") {
-            // Cross-device move failed — fall back to copy
-            cpSync(oldDir, newDir, { recursive: true });
-            rmSync(oldDir, { recursive: true, force: true });
-            logInfo(`Migrated session data from ~/.pi/agent to ~/.pizzapi/agent (cross-device copy)`);
-        } else {
-            logWarn(`Failed to migrate session storage: ${e.message}`);
+    // ── Phase 2: ~/.pizzapi/agent/ → ~/.pizzapi/ ───────────────────────────
+    // Earlier PizzaPi versions (and the upstream lib) stored sessions, auth,
+    // bin, and usage.db under ~/.pizzapi/agent/. Now that getAgentDir() returns
+    // ~/.pizzapi/ directly, consolidate everything into the flat structure.
+    if (existsSync(agentSubdir) && !existsSync(markerFile)) {
+        try {
+            _mergeDir(agentSubdir, pizzapiDir);
+            // Write marker so we don't re-scan
+            mkdirSync(agentSubdir, { recursive: true });
+            Bun.write(markerFile, new Date().toISOString());
+            logInfo("Consolidated ~/.pizzapi/agent/ into ~/.pizzapi/");
+        } catch (e: any) {
+            logWarn(`Failed to consolidate ~/.pizzapi/agent/: ${e.message}`);
         }
+    }
+}
+
+/**
+ * Recursively merge `src` into `dst`, skipping files that already exist in dst.
+ * Does not delete src — caller decides cleanup.
+ */
+function _mergeDir(src: string, dst: string): void {
+    mkdirSync(dst, { recursive: true });
+    for (const entry of readdirSync(src)) {
+        // Skip the .migrated marker and .DS_Store
+        if (entry === ".migrated" || entry === ".DS_Store") continue;
+        const srcPath = join(src, entry);
+        const dstPath = join(dst, entry);
+        const stat = statSync(srcPath);
+        if (stat.isDirectory()) {
+            // Recursively merge subdirectories (e.g. sessions/*)
+            _mergeDir(srcPath, dstPath);
+        } else if (!existsSync(dstPath)) {
+            // Move file — try rename first, fall back to copy
+            try {
+                renameSync(srcPath, dstPath);
+            } catch {
+                cpSync(srcPath, dstPath);
+            }
+        }
+        // If dst already has the file, skip (don't overwrite)
     }
 }
 

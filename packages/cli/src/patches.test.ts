@@ -118,6 +118,17 @@ describe("pi-coding-agent patch application", () => {
         expect(source).not.toContain('CONFIG_DIR_NAME = pkg.piConfig');
         expect(source).toContain("PATCH(pizzapi)");
     });
+
+    test("config.js: getAgentDir() returns ~/.pizzapi/ (flat, no /agent/ segment)", async () => {
+        const source = await Bun.file(
+            piCodingAgentPath("dist/config.js"),
+        ).text();
+
+        // Must NOT append "agent" to the path
+        expect(source).toContain('return join(homedir(), CONFIG_DIR_NAME)');
+        expect(source).not.toContain('return join(homedir(), CONFIG_DIR_NAME, "agent")');
+        expect(source).toContain("PATCH(pizzapi): drop the /agent/ segment");
+    });
 });
 
 // ---------------------------------------------------------------------------
@@ -192,13 +203,23 @@ describe("pi-coding-agent patched runtime behavior", () => {
         expect(CONFIG_DIR_NAME).toBe(".pizzapi");
     });
 
-    test("getSessionsDir uses .pizzapi path", async () => {
+    test("getAgentDir returns flat ~/.pizzapi/ path (no /agent/ segment)", async () => {
+        const { getAgentDir } = await import(
+            piCodingAgentPath("dist/config.js")
+        );
+        const dir = getAgentDir();
+        expect(dir).toContain(".pizzapi");
+        expect(dir).not.toContain(".pizzapi/agent");
+        expect(dir).not.toMatch(/\/\.pi\//);
+    });
+
+    test("getSessionsDir uses flat ~/.pizzapi/sessions path", async () => {
         const { getSessionsDir } = await import(
             piCodingAgentPath("dist/config.js")
         );
         const dir = getSessionsDir();
-        expect(dir).toContain(".pizzapi");
-        expect(dir).not.toMatch(/\/\.pi\//);
+        expect(dir).toContain(".pizzapi/sessions");
+        expect(dir).not.toContain(".pizzapi/agent/sessions");
     });
 
     test("runtime.newSession/switchSession are assignable (runner can bind them)", async () => {

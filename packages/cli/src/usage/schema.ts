@@ -6,12 +6,12 @@ import { mkdirSync } from "node:fs";
 const SCHEMA_VERSION = 1;
 
 export function getUsageDbPath(): string {
-  return join(homedir(), ".pizzapi", "agent", "usage.db");
+  return join(homedir(), ".pizzapi", "usage.db");
 }
 
 export function getSessionsDir(): string {
-  // Primary directory — scanner also checks piDir as fallback
-  return join(homedir(), ".pizzapi", "agent", "sessions");
+  // Primary directory — scanner also checks legacy dirs as fallback
+  return join(homedir(), ".pizzapi", "sessions");
 }
 
 export function openUsageDb(): Database {

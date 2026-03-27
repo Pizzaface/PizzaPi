@@ -198,7 +198,7 @@ export function expandHome(path: string): string {
 }
 
 export function defaultAgentDir(): string {
-    return join(homedir(), ".pizzapi", "agent");
+    return join(homedir(), ".pizzapi");
 }
 
 // ── Changelog path ────────────────────────────────────────────────────────────

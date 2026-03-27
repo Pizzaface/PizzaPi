@@ -6,8 +6,14 @@ every `bun install` — no postinstall script is needed.
 
 ## @mariozechner/pi-coding-agent@0.63.1
 
-Same five changes as 0.58.3 (see below), ported forward. The upstream
-retryable error regex gained several new patterns in this release
+Same changes as 0.58.3 (see below), ported forward, plus one new patch:
+
+- **Flat agent directory:** `getAgentDir()` now returns `~/.pizzapi/` instead of
+  `~/.pizzapi/agent/`. PizzaPi uses a flat directory structure where sessions,
+  auth, models, bin, etc. all live directly under `~/.pizzapi/`. A startup
+  migration in the daemon consolidates any data from `~/.pizzapi/agent/`.
+
+The upstream retryable error regex gained several new patterns in this release
 (`provider.?returned.?error`, `network.?error`, `socket hang up`,
 `timed? out`, `timeout`); our `json.?parse.?error` addition is appended
 on top.
@@ -17,6 +23,7 @@ on top.
 | File | Change |
 |------|--------|
 | `dist/config.js` — `CONFIG_DIR_NAME` | Hardcodes `".pizzapi"` |
+| `dist/config.js` — `getAgentDir()` | Returns `~/.pizzapi/` instead of `~/.pizzapi/agent/` — PizzaPi uses a flat directory structure |
 | `dist/core/agent-session.js` — `_isRetryableError()` | Adds `json.?parse.?error\|unexpected.?end.?of.?json` |
 | `dist/core/extensions/loader.js` — `createExtensionRuntime()` | Adds `newSession`/`switchSession` stubs |
 | `dist/core/extensions/loader.js` — `createExtensionAPI()` | Adds `newSession`/`switchSession` wrappers |

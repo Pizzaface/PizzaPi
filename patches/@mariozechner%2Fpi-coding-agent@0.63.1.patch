@@ -8,7 +8,7 @@ diff --git a/node_modules/@mariozechner/pi-coding-agent/.bun-tag-b7972330f11a52e
 new file mode 100644
 index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
 diff --git a/dist/config.js b/dist/config.js
-index 51cdae907f8cda750b66dd361b3acc7143ae22a2..3fc188e21b73621fde5848af772d873098d3d068 100644
+index 51cdae907f8cda750b66dd361b3acc7143ae22a2..66cb107d9d1d965eb835bf591c93e920813488bf 100644
 --- a/dist/config.js
 +++ b/dist/config.js
 @@ -131,6 +131,10 @@ export function getExamplesPath() {
@@ -33,6 +33,30 @@ index 51cdae907f8cda750b66dd361b3acc7143ae22a2..3fc188e21b73621fde5848af772d8730
  export const VERSION = pkg.version;
  // e.g., PI_CODING_AGENT_DIR or TAU_CODING_AGENT_DIR
  export const ENV_AGENT_DIR = `${APP_NAME.toUpperCase()}_CODING_AGENT_DIR`;
+@@ -149,9 +155,12 @@ export function getShareViewerUrl(gistId) {
+     return `${baseUrl}#${gistId}`;
+ }
+ // =============================================================================
+-// User Config Paths (~/.pi/agent/*)
++// User Config Paths (~/.pizzapi/*)
+ // =============================================================================
+-/** Get the agent config directory (e.g., ~/.pi/agent/) */
++// PATCH(pizzapi): drop the /agent/ segment — PizzaPi uses a flat directory
++// structure where sessions, auth, models, bin, etc. all live directly under
++// ~/.pizzapi/ instead of ~/.pizzapi/agent/.
++/** Get the agent config directory (e.g., ~/.pizzapi/) */
+ export function getAgentDir() {
+     const envDir = process.env[ENV_AGENT_DIR];
+     if (envDir) {
+@@ -162,7 +171,7 @@ export function getAgentDir() {
+             return homedir() + envDir.slice(1);
+         return envDir;
+     }
+-    return join(homedir(), CONFIG_DIR_NAME, "agent");
++    return join(homedir(), CONFIG_DIR_NAME);
+ }
+ /** Get path to user's custom themes directory */
+ export function getCustomThemesDir() {
 diff --git a/dist/core/agent-session.js b/dist/core/agent-session.js
 index 209ee2939d441e0523fbe155c039fdd81fafba9b..569a70fa71e4c2a2c221a5d8d69a188d110ea7fd 100644
 --- a/dist/core/agent-session.js
