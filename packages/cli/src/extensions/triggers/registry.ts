@@ -155,6 +155,37 @@ const sessionErrorRenderer: TriggerRenderer = {
     },
 };
 
+const externalRenderer: TriggerRenderer = {
+    type: "external",
+    render(trigger) {
+        const source = trigger.sourceSessionName ?? trigger.sourceSessionId;
+        const summary = typeof trigger.payload.summary === "string"
+            ? trigger.payload.summary
+            : undefined;
+        const type = typeof trigger.payload.eventType === "string"
+            ? trigger.payload.eventType
+            : trigger.type;
+
+        const lines = [`🌐 External trigger from ${source}:`];
+        if (summary) {
+            lines.push(`> ${summary}`);
+        }
+        lines.push(`Type: ${type}`);
+        // Include payload keys for context (but not full values to avoid noise)
+        const payloadKeys = Object.keys(trigger.payload).filter(k => k !== "summary" && k !== "eventType");
+        if (payloadKeys.length > 0) {
+            lines.push(`Payload keys: ${payloadKeys.join(", ")}`);
+        }
+        if (trigger.expectsResponse) {
+            lines.push("", respondLine(trigger.triggerId));
+        }
+        return lines.join("\n");
+    },
+    parseResponse(responseText) {
+        return responseText;
+    },
+};
+
 const escalateRenderer: TriggerRenderer = {
     type: "escalate",
     render(trigger) {
@@ -183,6 +214,11 @@ export const TRIGGER_RENDERERS: ReadonlyMap<string, TriggerRenderer> = new Map([
     ["session_complete", sessionCompleteRenderer],
     ["session_error", sessionErrorRenderer],
     ["escalate", escalateRenderer],
+    ["external", externalRenderer],
+    ["webhook", externalRenderer],
+    ["service", externalRenderer],
+    ["cron", externalRenderer],
+    ["custom", externalRenderer],
 ]);
 
 /** Render a trigger to text, with trigger ID metadata prefix. */
