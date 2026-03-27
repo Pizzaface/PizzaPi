@@ -280,6 +280,7 @@ function parseRunnerFromHash(hash: Record<string, string>): RedisRunnerData | nu
         platform: hash.platform || null,
         serviceIds: hash.serviceIds || undefined,
         panels: hash.panels || undefined,
+        warnings: hash.warnings || undefined,
     };
 }
 
