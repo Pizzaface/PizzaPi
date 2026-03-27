@@ -6,6 +6,7 @@ import { tmpdir } from "os";
 import {
     extractVapidFromCompose,
     extractSettingsFromCompose,
+    findRepoRoot,
     normalizeImageRepoForExplicitTag,
     parseArgs,
     resolveBetterAuthSecret,
@@ -170,7 +171,7 @@ describe("readBooleanEnv", () => {
         // SERVER_BUILD_BLOCK now includes the args: section (with {{PREBUILT_UI}} embedded),
         // so it must be substituted before {{PREBUILT_UI}} to allow the nested replacement.
         const composed = COMPOSE_TEMPLATE
-            .replace(/\{\{SERVER_BUILD_BLOCK}}/g, "    build:\n      context: /home/user/.pizzapi/web/repo\n      dockerfile: Dockerfile\n      args:\n        PREBUILT_UI: \"{{PREBUILT_UI}}\"\n")
+            .replace(/\{\{SERVER_BUILD_BLOCK}}/g, "    build:\n      context: /home/user/.pizzapi/web/repo\n      dockerfile: Dockerfile\n      args:\n        PREBUILT_UI: \"{{PREBUILT_UI}}\"\n        UI_DIST_HASH: \"{{UI_DIST_HASH}}\"\n")
             .replace(/\{\{SERVER_IMAGE_LINE}}/g, "")
             .replace(/\{\{HUB_IMAGE}}/g, "local-build")
             .replace(/\{\{HUB_VERSION}}/g, "local")
@@ -207,7 +208,7 @@ describe("readBooleanEnv", () => {
 
     test("template with no extra origins produces commented-out line", () => {
         const composed = COMPOSE_TEMPLATE
-            .replace(/\{\{SERVER_BUILD_BLOCK}}/g, "    build:\n      context: /repo\n      dockerfile: Dockerfile\n      args:\n        PREBUILT_UI: \"{{PREBUILT_UI}}\"\n")
+            .replace(/\{\{SERVER_BUILD_BLOCK}}/g, "    build:\n      context: /repo\n      dockerfile: Dockerfile\n      args:\n        PREBUILT_UI: \"{{PREBUILT_UI}}\"\n        UI_DIST_HASH: \"{{UI_DIST_HASH}}\"\n")
             .replace(/\{\{SERVER_IMAGE_LINE}}/g, "")
             .replace(/\{\{HUB_IMAGE}}/g, "local-build")
             .replace(/\{\{HUB_VERSION}}/g, "local")
@@ -265,7 +266,7 @@ describe("readBooleanEnv", () => {
 describe("resolveComposeMode", () => {
     test("returns build mode fields when image is empty", () => {
         expect(resolveComposeMode("/repo", { image: "", imageTag: "latest" })).toEqual({
-            buildBlock: '    build:\n      context: /repo\n      dockerfile: Dockerfile\n      args:\n        PREBUILT_UI: "{{PREBUILT_UI}}"\n',
+            buildBlock: '    build:\n      context: /repo\n      dockerfile: Dockerfile\n      args:\n        PREBUILT_UI: "{{PREBUILT_UI}}"\n        UI_DIST_HASH: "{{UI_DIST_HASH}}"\n',
             imageLine: "",
             hubImage: "local-build",
             hubVersion: "local",
@@ -397,7 +398,7 @@ describe("normalizeImageRepoForExplicitTag", () => {
 describe("parseArgs", () => {
     test("parses image and tag flags", () => {
         expect(parseArgs(["--image", "ghcr.io/acme/pizzapi", "--tag", "0.1.32"]))
-            .toEqual({ detach: true, help: false, image: "ghcr.io/acme/pizzapi", tag: "0.1.32" });
+            .toEqual({ detach: true, help: false, noCache: false, image: "ghcr.io/acme/pizzapi", tag: "0.1.32" });
     });
 });
 

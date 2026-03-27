@@ -119,6 +119,20 @@ describe("handleApi — global endpoints", () => {
     });
 });
 
+// ── Dispatcher: /api/hub-info ────────────────────────────────────────────────
+
+describe("handleApi — /api/hub-info", () => {
+    test("GET /api/hub-info returns 401 when not authenticated", async () => {
+        // requireSession checks for a valid session cookie; without one it returns 401.
+        const url = new URL("http://localhost/api/hub-info");
+        const req = new Request(url, { method: "GET" });
+
+        const res = await handleApi(req, url);
+        expect(res).toBeTruthy();
+        expect(res!.status).toBe(401);
+    });
+});
+
 // ── Dispatcher: router delegation ───────────────────────────────────────────
 
 describe("handleApi — router delegation", () => {

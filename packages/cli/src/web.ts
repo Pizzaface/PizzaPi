@@ -78,6 +78,16 @@ function hashFile(path: string): string | null {
 }
 
 /**
+ * Write a cache-busting stamp to dist/.build-stamp so Docker's COPY layer
+ * always detects a rebuild even if Vite produced byte-identical output.
+ * The stamp contains the current Unix timestamp (milliseconds).
+ */
+function writeBuildStamp(distDir: string): void {
+    const stampPath = join(distDir, ".build-stamp");
+    writeFileSync(stampPath, `${Date.now()}\n`);
+}
+
+/**
  * Compute a short content hash of the UI dist/ directory for Docker cache-busting.
  * Uses the .build-stamp file (written on every prebuild) as a fast proxy —
  * if it's missing, falls back to hashing the index.html.
@@ -832,6 +842,7 @@ export function resolveComposeMode(repoPath: string, config: Pick<WebConfig, "im
       dockerfile: Dockerfile
       args:
         PREBUILT_UI: "{{PREBUILT_UI}}"
+        UI_DIST_HASH: "{{UI_DIST_HASH}}"
 `,
             imageLine: "",
             hubImage: "local-build",
@@ -900,7 +911,7 @@ export function resolveComposeMode(repoPath: string, config: Pick<WebConfig, "im
     };
 }
 
-function generateComposeFile(repoPath: string, config: WebConfig, prebuiltUi: boolean): string {
+function generateComposeFile(repoPath: string, config: WebConfig, prebuiltUi: boolean, uiDistHash?: string): string {
     const composePath = join(WEB_DIR, "compose.yml");
     mkdirSync(WEB_DIR, { recursive: true });
 
@@ -1324,15 +1335,20 @@ export async function runWeb(args: string[]): Promise<void> {
     const repoPath = useImageMode ? "" : getRepoPath();
 
     let prebuiltUi = false;
+    let uiDistHash: string | undefined;
     if (!useImageMode) {
         const useHostPrebuild = readBooleanEnv(process.env.PIZZAPI_PREBUILD_UI, true);
         if (!useHostPrebuild) {
             console.log("Skipping host UI pre-build (PIZZAPI_PREBUILD_UI=false).");
         }
         // Pre-build UI on the host for much faster Docker builds when enabled.
-        prebuiltUi = useHostPrebuild ? prebuildUI(repoPath) : false;
+        if (useHostPrebuild) {
+            const prebuildResult = prebuildUI(repoPath);
+            prebuiltUi = prebuildResult.prebuilt;
+            uiDistHash = prebuildResult.distHash;
+        }
     }
-    const composePath = generateComposeFile(repoPath, config, prebuiltUi);
+    const composePath = generateComposeFile(repoPath, config, prebuiltUi, uiDistHash);
 
     const composeMode = resolveComposeMode(repoPath, config);
     console.log(`Starting PizzaPi web on port ${config.port}...`);
@@ -1346,6 +1362,7 @@ export async function runWeb(args: string[]): Promise<void> {
 
     if (parsed.detach) {
         const upArgs = ["up", "-d", "--build"];
+        if (parsed.noCache) upArgs.push("--no-cache");
         await composeExecAsync(composePath, upArgs);
         log.info("");
         log.info(`✅ PizzaPi web is running at http://localhost:${config.port}`);
@@ -1356,6 +1373,7 @@ export async function runWeb(args: string[]): Promise<void> {
         log.info("  pizza web config    View configuration");
     } else {
         const upArgs = ["up", "--build"];
+        if (parsed.noCache) upArgs.push("--no-cache");
         await composeExecAsync(composePath, upArgs);
     }
 }

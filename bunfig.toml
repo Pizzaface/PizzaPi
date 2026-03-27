@@ -7,7 +7,11 @@
 # (which maps to packages/ui/src/) can be resolved without errors.
 
 [test]
-preload = ["./packages/server/tests/harness/preload.ts"]
+# NOTE: Do NOT add a root-level preload here — harness/preload.ts imports redis
+# which is not installed in the root node_modules, causing all 168 test files
+# to fail with "Cannot find package 'redis'".  The harness preload is only
+# needed when running harness integration tests directly, which are excluded
+# from the default `bun test` invocation anyway.
 
 # Harness integration tests (mock-runner, builders, integration, mock-viewer)
 # require a real Redis + HTTP server and break when run in the same Bun worker
