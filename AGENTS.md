@@ -105,34 +105,6 @@ bun run clean
 
 ---
 
-## Worktrees & Branching
-
-**Always create worktree branches from `origin/main`, not local `main`.** Local `main` may have commits from other branches that haven't been merged yet (e.g., from a rebase or local-only work). If you create a worktree from local `main`, your feature branch silently inherits those unmerged commits, and your PR will include them.
-
-```bash
-# WRONG — local main may be ahead of origin/main
-git worktree add .worktrees/my-feature -b feat/my-feature
-
-# RIGHT — always base on origin/main
-git fetch origin main
-git worktree add .worktrees/my-feature -b feat/my-feature origin/main
-```
-
-**After creating a worktree, verify your branch only has your commits:**
-
-```bash
-git log --oneline origin/main..HEAD
-# Should show ONLY your new commits, nothing else
-```
-
-If you see unexpected commits, rebase onto `origin/main`:
-
-```bash
-git rebase --onto origin/main HEAD~<N>  # where N = number of YOUR commits
-```
-
----
-
 ## Upstream Patches
 
 PizzaPi patches two upstream pi packages via `patchedDependencies` in the root `package.json`. Patches live in `patches/` and are auto-applied on `bun install`. See `patches/README.md` for full details.
