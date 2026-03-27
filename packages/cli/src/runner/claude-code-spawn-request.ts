@@ -8,6 +8,7 @@ export interface ClaudeCodeSpawnSessionBody {
   runnerId?: string;
   model?: { provider: string; id: string };
   parentSessionId?: string;
+  workerType?: "pi" | "claude-code";
 }
 
 /**
@@ -58,6 +59,18 @@ export function buildSpawnSessionBody(args: Record<string, unknown>, parentSessi
 
   if (args.linked !== false) {
     body.parentSessionId = parentSessionId;
+  }
+
+  // When spawning from a Claude Code session the child should also be a
+  // Claude Code worker by default.  The caller can opt-out by explicitly
+  // passing workerType: "pi".
+  if (args.workerType === "pi") {
+    body.workerType = "pi";
+  } else if (args.workerType === "claude-code" || args.workerType === undefined) {
+    body.workerType = "claude-code";
+  } else {
+    // Unknown value — fall back to claude-code (safe default in CC context)
+    body.workerType = "claude-code";
   }
 
   return body;

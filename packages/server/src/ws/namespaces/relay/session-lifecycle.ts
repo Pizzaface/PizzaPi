@@ -28,6 +28,9 @@ export function registerSessionLifecycleHandlers(socket: RelaySocket): void {
         const isEphemeral = data.ephemeral !== false;
         const collabMode = data.collabMode !== false;
 
+        const workerType = data.workerType === "claude-code" ? "claude-code" as const :
+            data.workerType === "pi" ? "pi" as const : undefined;
+
         const { sessionId, token, shareUrl, parentSessionId, wasDelinked } = await registerTuiSession(socket, cwd, {
             sessionId: data.sessionId,
             isEphemeral,
@@ -36,6 +39,7 @@ export function registerSessionLifecycleHandlers(socket: RelaySocket): void {
             userId: socket.data.userId,
             userName: (socket.data as RelaySocketData & { userName?: string }).userName,
             parentSessionId: data.parentSessionId ?? undefined,
+            workerType,
         });
 
         socket.data.sessionId = sessionId;

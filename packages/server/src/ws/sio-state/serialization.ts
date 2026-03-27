@@ -109,6 +109,7 @@ export function parseSessionFromHash(hash: Record<string, string>): RedisSession
         parentSessionId: hash.parentSessionId || null,
         linkedParentId: hash.linkedParentId || null,
         metaState: hash.metaState || null,
+        workerType: (hash.workerType === "claude-code" ? "claude-code" : hash.workerType === "pi" ? "pi" : null) as "pi" | "claude-code" | null | undefined,
     };
 }
 

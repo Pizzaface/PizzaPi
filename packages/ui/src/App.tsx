@@ -1760,8 +1760,13 @@ export function App() {
       const stateTodos = Array.isArray(state?.todoList) ? (state.todoList as TodoItem[]) : [];
       setTodoList(stateTodos);
 
-      // Extract workerType from session snapshot (defaults to "pi")
-      const stateWorkerType = typeof state?.workerType === "string" ? state.workerType : "pi";
+      // Extract workerType from session snapshot.  If absent (snapshot sent
+      // before the worker type was added), fall back to the hub session's stored
+      // workerType (available since registration) so Claude Code sessions are
+      // correctly identified before the first heartbeat arrives.
+      const snapshotWorkerType = typeof state?.workerType === "string" ? state.workerType : undefined;
+      const hubWorkerTypeForSnapshot = liveSessionsRef.current.find((s) => s.sessionId === activeSessionRef.current)?.workerType;
+      const stateWorkerType = snapshotWorkerType ?? hubWorkerTypeForSnapshot ?? "pi";
       setWorkerType(stateWorkerType);
 
       // Rehydrate pending permission request from the snapshot so that the
@@ -2875,7 +2880,11 @@ export function App() {
     setEffortLevel(cached?.effortLevel ?? null);
     setPlanModeEnabled(cached?.planModeEnabled ?? false);
     setAuthSource(cached?.authSource ?? null);
-    setWorkerType(cached?.workerType ?? "pi");
+    // Prefer cached workerType (set by heartbeat/snapshot).  Fall back to the
+    // hub session's stored workerType (populated at registration time) so the
+    // UI knows it's a Claude Code session before the first heartbeat arrives.
+    const hubWorkerType = liveSessionsRef.current.find((s) => s.sessionId === relaySessionId)?.workerType;
+    setWorkerType(cached?.workerType ?? hubWorkerType ?? "pi");
     setTokenUsage(cached?.tokenUsage ?? null);
     setLastHeartbeatAt(cached?.lastHeartbeatAt ?? null);
     setTodoList(cached?.todoList ?? []);

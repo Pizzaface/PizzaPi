@@ -88,6 +88,9 @@ export interface RegisterTuiSessionOpts {
     userName?: string;
     /** Parent session ID — set when registering a child session. */
     parentSessionId?: string | null;
+    /** Worker type — stored at registration time so the UI knows it before
+     *  the first heartbeat arrives.  Absent for standard pi sessions. */
+    workerType?: "pi" | "claude-code";
 }
 
 /**
@@ -270,6 +273,11 @@ export async function registerTuiSession(
         }
     }
 
+    const registrationWorkerType: "pi" | "claude-code" | null =
+        opts.workerType === "claude-code" ? "claude-code" :
+        opts.workerType === "pi" ? "pi" :
+        null;
+
     const sessionData: RedisSessionData = {
         sessionId,
         token,
@@ -291,6 +299,7 @@ export async function registerTuiSession(
         seq: 0,
         parentSessionId: resolvedParentSessionId,
         linkedParentId,
+        ...(registrationWorkerType ? { workerType: registrationWorkerType } : {}),
     };
 
     await setSession(sessionId, sessionData);
@@ -363,6 +372,7 @@ export async function registerTuiSession(
             runnerId,
             runnerName,
             parentSessionId: resolvedParentSessionId,
+            ...(registrationWorkerType ? { workerType: registrationWorkerType } : {}),
         } satisfies SessionInfo,
         userId ?? undefined,
     );
@@ -391,10 +401,16 @@ export async function getSessions(filterUserId?: string): Promise<SessionInfo[]>
     return sessions.map((s) => {
         const heartbeat = s.lastHeartbeat ? safeJsonParse(s.lastHeartbeat) : null;
         const model = modelFromHeartbeat(heartbeat);
-        const rawWorkerType = (heartbeat as any)?.workerType;
+        // Prefer the workerType stored at registration time (available before the
+        // first heartbeat) and fall back to the heartbeat-derived value for
+        // sessions created before this field was added.
+        const storedWorkerType = s.workerType;
+        const rawHeartbeatWorkerType = (heartbeat as any)?.workerType;
         const workerType: "pi" | "claude-code" | undefined =
-            rawWorkerType === "claude-code" ? "claude-code" :
-            rawWorkerType === "pi" ? "pi" :
+            storedWorkerType === "claude-code" ? "claude-code" :
+            storedWorkerType === "pi" ? "pi" :
+            rawHeartbeatWorkerType === "claude-code" ? "claude-code" :
+            rawHeartbeatWorkerType === "pi" ? "pi" :
             undefined;
 
         return {

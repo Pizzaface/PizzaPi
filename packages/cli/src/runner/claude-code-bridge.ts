@@ -662,7 +662,19 @@ async function dispatchMcpTool(tool: string, args: Record<string, unknown>): Pro
           ? (body as { error: string }).error
           : `Spawn failed: HTTP ${resp.status}`);
       }
-      return body;
+      // The /api/runners/spawn route returns { ok, runnerId, sessionId, pending }.
+      // Callers of pizzapi_spawn_session expect { sessionId, shareUrl } — construct
+      // the shareUrl here from the sessionId and the relay HTTP base.
+      const spawnedSessionId = (body as { sessionId?: unknown }).sessionId;
+      if (typeof spawnedSessionId !== "string") {
+        throw new Error("Spawn response missing sessionId");
+      }
+      const shareUrl = `${base}/session/${spawnedSessionId}`;
+      return {
+        sessionId: spawnedSessionId,
+        shareUrl,
+        pending: (body as { pending?: unknown }).pending === true,
+      };
     }
 
     case "pizzapi_send_message": {
@@ -1517,6 +1529,7 @@ function connectRelay(): void {
       cwd,
       ephemeral: true,
       collabMode: true,
+      workerType: "claude-code" as const,
       ...(parentSessionId ? { parentSessionId } : {}),
     });
   });

@@ -65,6 +65,10 @@ export interface RedisSessionData {
      *  Absent for sessions created before this feature; callers must use
      *  defaultMetaState() as fallback. */
     metaState?: string | null;
+    /** Worker type stored at registration time — "pi" or "claude-code".
+     *  Available immediately (before the first heartbeat).
+     *  Absent for sessions created before this field was added. */
+    workerType?: "pi" | "claude-code" | null;
 }
 
 /**
