@@ -25,6 +25,12 @@ import { initStateRedis, closeStateRedis } from "../../src/ws/sio-state.js";
 import { serverHealth } from "../../src/health.js";
 import { initSioRegistry } from "../../src/ws/sio-registry.js";
 import { registerNamespaces } from "../../src/ws/namespaces/index.js";
+import {
+    initTunnelRelay,
+    handleTunnelRelayUpgrade,
+    disposeTunnelRelay,
+} from "../../src/tunnel-relay.js";
+import { handleTunnelWsUpgrade } from "../../src/routes/tunnel-ws.js";
 
 import type { TestServerOptions, TestServer } from "./types.js";
 
@@ -250,6 +256,21 @@ export async function createTestServer(opts?: TestServerOptions): Promise<TestSe
     registerNamespaces(io);
     serverHealth.socketio = true;
 
+    // 10b. Init tunnel relay so mock runners can connect via /_tunnel WS
+    initTunnelRelay();
+
+    // 10c. Intercept WebSocket upgrades: tunnel relay first, then tunnel WS
+    //      proxy, then fall through to Socket.IO (mirrors src/index.ts).
+    const existingUpgradeListeners = httpServer.listeners("upgrade").slice();
+    httpServer.removeAllListeners("upgrade");
+    httpServer.on("upgrade", (req, socket, head) => {
+        if (handleTunnelRelayUpgrade(req, socket, head)) return;
+        if (handleTunnelWsUpgrade(req, socket, head)) return;
+        for (const listener of existingUpgradeListeners) {
+            (listener as Function).call(httpServer, req, socket, head);
+        }
+    });
+
     // 11. Listen on port 0 (OS assigns an ephemeral port) on IPv4 loopback
     const listenPort = opts?.port ?? 0;
     await new Promise<void>((resolve) => httpServer.listen(listenPort, "127.0.0.1", resolve));
@@ -381,6 +402,9 @@ export async function createTestServer(opts?: TestServerOptions): Promise<TestSe
         // Close Socket.IO — this also closes the underlying httpServer internally,
         // so we do NOT call httpServer.close() separately (it would throw ERR_SERVER_NOT_RUNNING).
         await new Promise<void>((resolve) => io.close(() => resolve()));
+
+        // Tear down tunnel relay WebSocket server
+        disposeTunnelRelay();
 
         // Disconnect Redis clients (adapter pub/sub + dedicated state client)
         await Promise.allSettled([pubClient?.quit(), subClient?.quit(), closeStateRedis()]);
