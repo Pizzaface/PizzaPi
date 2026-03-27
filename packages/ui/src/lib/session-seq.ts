@@ -37,6 +37,32 @@ export function shouldDeferEventForHydration(
   return false;
 }
 
+export function registerChunkIndex(seenChunkIndexes: Set<number>, chunkIndex: number): boolean {
+  if (seenChunkIndexes.has(chunkIndex)) {
+    return false;
+  }
+  seenChunkIndexes.add(chunkIndex);
+  return true;
+}
+
+export function canFinalizeChunkHydration(
+  finalChunkSeen: boolean,
+  seenChunkIndexes: Set<number>,
+  totalChunks: number,
+): boolean {
+  if (!finalChunkSeen || !Number.isInteger(totalChunks) || totalChunks <= 0) {
+    return false;
+  }
+
+  for (let i = 0; i < totalChunks; i++) {
+    if (!seenChunkIndexes.has(i)) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
 export function analyzeIncomingSeq(
   currentSeq: number | null,
   incomingSeq: number,

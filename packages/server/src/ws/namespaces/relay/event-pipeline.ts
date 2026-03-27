@@ -31,10 +31,57 @@ export interface ChunkedSessionState {
     metadata: Record<string, unknown>; // everything except messages
     chunks: unknown[][]; // ordered message slices
     totalChunks: number;
-    receivedChunks: number;
+    receivedChunkIndexes: Set<number>;
+    finalChunkSeen: boolean;
+}
+
+export interface PendingChunkUpdate {
+    chunkIndex: number;
+    chunkMessages: unknown[];
+    totalChunks: number;
+    isFinalChunk: boolean;
 }
 
 export const pendingChunkedStates = new Map<string, ChunkedSessionState>();
+
+export function applyChunkToPendingState(
+    pending: ChunkedSessionState,
+    update: PendingChunkUpdate,
+): boolean {
+    const { chunkIndex, chunkMessages, totalChunks, isFinalChunk } = update;
+
+    if (Number.isInteger(totalChunks) && totalChunks > 0) {
+        pending.totalChunks = totalChunks;
+    }
+
+    if (isFinalChunk) {
+        pending.finalChunkSeen = true;
+    }
+
+    if (pending.receivedChunkIndexes.has(chunkIndex)) {
+        return false;
+    }
+
+    pending.receivedChunkIndexes.add(chunkIndex);
+    pending.chunks[chunkIndex] = chunkMessages;
+    return true;
+}
+
+export function hasAllChunkIndexes(pending: ChunkedSessionState): boolean {
+    if (!Number.isInteger(pending.totalChunks) || pending.totalChunks <= 0) {
+        return false;
+    }
+    for (let i = 0; i < pending.totalChunks; i++) {
+        if (!pending.receivedChunkIndexes.has(i)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+export function canFinalizeChunkedSnapshot(pending: ChunkedSessionState): boolean {
+    return pending.finalChunkSeen && hasAllChunkIndexes(pending);
+}
 
 // ── Per-session event serialization ──────────────────────────────────────────
 // The async event handler must process events in arrival order per session.
@@ -81,7 +128,7 @@ export function getPendingChunkedSnapshot(sessionId: string): {
         messages,
         snapshotId: pending.snapshotId,
         totalMessages: (pending.metadata as any).totalMessages ?? messages.length,
-        receivedChunks: pending.receivedChunks,
+        receivedChunks: pending.receivedChunkIndexes.size,
         totalChunks: pending.totalChunks,
     };
 }
@@ -121,7 +168,8 @@ export function registerEventHandler(socket: RelaySocket): void {
                     metadata,
                     chunks: [],
                     totalChunks: 0,
-                    receivedChunks: 0,
+                    receivedChunkIndexes: new Set<number>(),
+                    finalChunkSeen: false,
                 });
                 // Touch activity but DON'T update lastState yet
                 await touchSessionActivity(sessionId);
@@ -141,11 +189,14 @@ export function registerEventHandler(socket: RelaySocket): void {
             const totalChunks = typeof event.totalChunks === "number" ? event.totalChunks : 0;
 
             if (pending && pending.snapshotId === chunkSnapshotId && chunkIndex >= 0) {
-                pending.chunks[chunkIndex] = chunkMessages;
-                pending.receivedChunks++;
-                pending.totalChunks = totalChunks;
+                applyChunkToPendingState(pending, {
+                    chunkIndex,
+                    chunkMessages,
+                    totalChunks,
+                    isFinalChunk: isFinal,
+                });
 
-                if (isFinal && pending.receivedChunks >= pending.totalChunks) {
+                if (canFinalizeChunkedSnapshot(pending)) {
                     // All chunks received — assemble and persist the full state
                     const allMessages = pending.chunks.flat();
                     const fullState = { ...pending.metadata, messages: allMessages };
