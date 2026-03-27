@@ -17,7 +17,7 @@
 import { execFileSync, spawn } from "child_process";
 import { createECDH, createHash, randomBytes } from "crypto";
 import { existsSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "fs";
-import { join } from "path";
+import { join, dirname } from "path";
 import { homedir } from "os";
 import { c } from "./cli-colors.js";
 import { createLogger } from "@pizzapi/tools";
@@ -837,9 +837,17 @@ function generateComposeFile(opts: {
 
 async function composeExecAsync(composePath: string, args: string[]): Promise<number> {
     return new Promise<number>((resolve) => {
+        // If compose.override.yml exists next to the generated compose.yml,
+        // include it so Docker Compose merges it. Passing an explicit -f flag
+        // disables automatic override detection, so we must add it manually.
+        const overridePath = join(dirname(composePath), "compose.override.yml");
+        const composeFileArgs: string[] = ["-f", composePath];
+        if (existsSync(overridePath)) {
+            composeFileArgs.push("-f", overridePath);
+        }
         const child = spawn(
             "docker",
-            ["compose", "-f", composePath, "-p", "pizzapi-web", ...args],
+            ["compose", ...composeFileArgs, "-p", "pizzapi-web", ...args],
             { stdio: "inherit" }
         );
         const signals: NodeJS.Signals[] = ["SIGINT", "SIGTERM"];

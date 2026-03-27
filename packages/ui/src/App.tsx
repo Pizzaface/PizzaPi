@@ -123,6 +123,12 @@ const UI_VERSION = typeof __PIZZAPI_UI_VERSION__ === "string" && __PIZZAPI_UI_VE
   ? __PIZZAPI_UI_VERSION__.trim()
   : "0.0.0";
 
+declare const __PIZZAPI_BUILD_TIMESTAMP__: string;
+const BUILD_TIMESTAMP =
+  typeof __PIZZAPI_BUILD_TIMESTAMP__ === "string" && __PIZZAPI_BUILD_TIMESTAMP__.trim()
+    ? __PIZZAPI_BUILD_TIMESTAMP__.trim()
+    : null;
+
 export function App() {
   const { data: session, isPending } = useSession();
   const { runners: feedRunners, status: runnersStatus } = useRunnersFeed({
@@ -453,6 +459,7 @@ export function App() {
       const negotiation = evaluateVersionNegotiation(payload, {
         uiVersion: UI_VERSION,
         clientSocketProtocol: SOCKET_PROTOCOL_VERSION,
+        uiBuildTimestamp: BUILD_TIMESTAMP,
       });
       setVersionBanner({
         message: negotiation.message,

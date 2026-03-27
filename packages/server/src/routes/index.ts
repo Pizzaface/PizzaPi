@@ -43,7 +43,7 @@ export async function handleApi(req: Request, url: URL): Promise<Response | unde
     if (url.pathname === "/health" || url.pathname === "/status" || url.pathname === "/api/status") {
         const { redis, socketio, startedAt } = serverHealth;
         const ok = redis && socketio;
-        const { serverVersion, socketProtocolVersion } = await getServerRuntimeInfo();
+        const { serverVersion, socketProtocolVersion, buildTimestamp } = await getServerRuntimeInfo();
         return Response.json({
             status: ok ? "ok" : "degraded",
             redis,
@@ -52,6 +52,7 @@ export async function handleApi(req: Request, url: URL): Promise<Response | unde
             version: {
                 server: serverVersion,
                 socketProtocol: socketProtocolVersion,
+                buildTimestamp,
             },
         });
     }

@@ -6,6 +6,7 @@ import path from "path";
 import fs from "fs";
 
 const API_PORT = process.env.PORT ?? "3001";
+const buildTimestamp = new Date().toISOString();
 const uiPackageJson = JSON.parse(
     fs.readFileSync(path.resolve(__dirname, "./package.json"), "utf8"),
 ) as { version?: string };
@@ -38,6 +39,18 @@ export default defineConfig({
     plugins: [
         react(),
         tailwindcss(),
+        // Emit build-info.json into dist/ so the server can read the build
+        // timestamp from the mounted UI dist directory at runtime.
+        {
+            name: "pizzapi-build-info",
+            generateBundle() {
+                this.emitFile({
+                    type: "asset",
+                    fileName: "build-info.json",
+                    source: JSON.stringify({ buildTimestamp }),
+                });
+            },
+        },
         VitePWA({
             registerType: "autoUpdate",
             includeAssets: ["favicon.ico", "pizza.svg", "apple-touch-icon-180x180.png"],
@@ -120,6 +133,7 @@ export default defineConfig({
     ],
     define: {
         __PIZZAPI_UI_VERSION__: JSON.stringify(uiVersion),
+        __PIZZAPI_BUILD_TIMESTAMP__: JSON.stringify(buildTimestamp),
     },
     resolve: {
         alias: {
