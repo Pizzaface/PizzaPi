@@ -13,6 +13,7 @@ import { BUILTIN_SYSTEM_PROMPT, defaultAgentDir, expandHome, loadConfig, resolve
 import { c, usageBar, colorPct, colorRemaining } from "./cli-colors.js";
 import { buildInteractiveSkillPaths } from "./skills.js";
 import { buildPizzaPiExtensionFactories } from "./extensions/factories.js";
+import { migrateAgentDir } from "./migrations.js";
 import { runSetup } from "./setup.js";
 import { createLogger, initSandbox, cleanupSandbox, isSandboxActive } from "@pizzapi/tools";
 
@@ -427,6 +428,9 @@ async function main() {
         const idx = args.indexOf(flag);
         if (idx !== -1) args.splice(idx, 1);
     }
+
+    // Migrate legacy agent data into flat ~/.pizzapi/ before anything reads from it
+    migrateAgentDir();
 
     const config = loadConfig(cwd);
     const agentDir = config.agentDir ? expandHome(config.agentDir) : defaultAgentDir();

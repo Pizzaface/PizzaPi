@@ -1,57 +1,57 @@
 {
-    "name": "pizzapi",
-    "private": true,
-    "workspaces": [
-        "packages/protocol",
-        "packages/tunnel",
-        "packages/tools",
-        "packages/server",
-        "packages/ui",
-        "packages/cli",
-        "packages/docs"
-    ],
-    "scripts": {
-        "build": "bun run build:protocol && bun run build:tunnel && bun run build:tools && bun run build:server && bun run build:ui && bun run build:cli",
-        "build:docs": "cd packages/docs && bun run build",
-        "dev:docs": "cd packages/docs && bun run dev",
-        "build:protocol": "cd packages/protocol && bun run build",
-        "build:tunnel": "cd packages/tunnel && bun run build",
-        "build:tools": "cd packages/tools && bun run build",
-        "build:server": "cd packages/server && bun run build",
-        "build:ui": "cd packages/ui && bun run build",
-        "build:cli": "cd packages/cli && bun run build",
-        "build:binaries": "cd packages/cli && bun run build:binaries",
-        "build:npm": "bun packages/npm/build-npm.ts",
-        "build:npm:skip-compile": "bun packages/npm/build-npm.ts --skip-compile",
-        "publish:npm": "bun packages/npm/publish-npm.ts",
-        "publish:npm:dry": "bun packages/npm/publish-npm.ts --dry-run",
-        "dev": "concurrently \"bun run dev:server\" \"bun run dev:ui --host\" --kill-others-on-exit",
-        "dev:server": "cd packages/server && bun run dev",
-        "dev:ui": "cd packages/ui && bun run dev",
-        "dev:cli": "bun packages/cli/src/index.ts",
-        "dev:runner": "bun packages/cli/src/index.ts runner",
-        "test": "bun test packages/protocol/src packages/tunnel/src packages/server/src packages/server/tests packages/tools/src && cd packages/cli && bun test src && cd ../ui && bun test src",
-        "typecheck": "tsc --build && bun run --cwd packages/protocol typecheck:tests && bun run --cwd packages/server typecheck:tests",
-        "migrate": "cd packages/server && bun run migrate",
-        "clean": "bun -e \"['protocol','tunnel','tools','server','ui','cli','docs'].forEach(p=>{require('fs').rmSync('packages/'+p+'/dist',{recursive:true,force:true});require('fs').rmSync('packages/'+p+'/tsconfig.tsbuildinfo',{force:true})})\"",
-        "postinstall": "bun scripts/link-workspaces.ts"
-    },
-    "dependencies": {
-        "@mariozechner/pi-agent-core": "^0.58.3",
-        "@mariozechner/pi-ai": "^0.58.3",
-        "@mariozechner/pi-tui": "^0.58.3",
-        "motion": "^12.34.2",
-        "pizzapi": "."
-    },
-    "devDependencies": {
-        "@playwright/test": "^1.58.2",
-        "concurrently": "^9.2.1",
-        "lefthook": "^2.1.1",
-        "typescript": "^5.7.0"
-    },
-    "patchedDependencies": {
-        "@mariozechner/pi-coding-agent@0.58.3": "patches/@mariozechner%2Fpi-coding-agent@0.58.3.patch",
-        "@mariozechner/pi-ai@0.58.3": "patches/@mariozechner%2Fpi-ai@0.58.3.patch"
-    },
-    "version": ""
+  "name": "pizzapi",
+  "private": true,
+  "workspaces": [
+    "packages/protocol",
+    "packages/tunnel",
+    "packages/tools",
+    "packages/server",
+    "packages/ui",
+    "packages/cli",
+    "packages/docs"
+  ],
+  "scripts": {
+    "build": "bun run build:protocol && bun run build:tunnel && bun run build:tools && bun run build:server && bun run build:ui && bun run build:cli",
+    "build:docs": "cd packages/docs && bun run build",
+    "dev:docs": "cd packages/docs && bun run dev",
+    "build:protocol": "cd packages/protocol && bun run build",
+    "build:tunnel": "cd packages/tunnel && bun run build",
+    "build:tools": "cd packages/tools && bun run build",
+    "build:server": "cd packages/server && bun run build",
+    "build:ui": "cd packages/ui && bun run build",
+    "build:cli": "cd packages/cli && bun run build",
+    "build:binaries": "cd packages/cli && bun run build:binaries",
+    "build:npm": "bun packages/npm/build-npm.ts",
+    "build:npm:skip-compile": "bun packages/npm/build-npm.ts --skip-compile",
+    "publish:npm": "bun packages/npm/publish-npm.ts",
+    "publish:npm:dry": "bun packages/npm/publish-npm.ts --dry-run",
+    "dev": "concurrently \"bun run dev:server\" \"bun run dev:ui --host\" --kill-others-on-exit",
+    "dev:server": "cd packages/server && bun run dev",
+    "dev:ui": "cd packages/ui && bun run dev",
+    "dev:cli": "bun packages/cli/src/index.ts",
+    "dev:runner": "bun packages/cli/src/index.ts runner",
+    "test": "bun test packages/protocol/src packages/tunnel/src packages/server/src packages/server/tests packages/tools/src && cd packages/cli && bun test src && cd ../ui && bun test src",
+    "typecheck": "tsc --build && bun run --cwd packages/protocol typecheck:tests && bun run --cwd packages/server typecheck:tests",
+    "migrate": "cd packages/server && bun run migrate",
+    "clean": "bun -e \"['protocol','tunnel','tools','server','ui','cli','docs'].forEach(p=>{require('fs').rmSync('packages/'+p+'/dist',{recursive:true,force:true});require('fs').rmSync('packages/'+p+'/tsconfig.tsbuildinfo',{force:true})})\"",
+    "postinstall": "bun scripts/link-workspaces.ts"
+  },
+  "dependencies": {
+    "@mariozechner/pi-agent-core": "^0.63.1",
+    "@mariozechner/pi-ai": "^0.63.1",
+    "@mariozechner/pi-tui": "^0.63.1",
+    "motion": "^12.34.2",
+    "pizzapi": "."
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.58.2",
+    "concurrently": "^9.2.1",
+    "lefthook": "^2.1.1",
+    "typescript": "^5.7.0"
+  },
+  "version": "",
+  "patchedDependencies": {
+    "@mariozechner/pi-coding-agent@0.63.1": "patches/@mariozechner%2Fpi-coding-agent@0.63.1.patch",
+    "@mariozechner/pi-ai@0.63.1": "patches/@mariozechner%2Fpi-ai@0.63.1.patch"
+  }
 }

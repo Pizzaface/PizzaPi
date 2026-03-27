@@ -3866,14 +3866,14 @@ export function App() {
   // skip re-rendering when only session-scoped state changes.
   const handleToggleDark = React.useCallback(() => setIsDark((d) => !d), []);
   const handleShowApiKeys = React.useCallback(() => { setShowApiKeys(true); setShowRunners(false); }, []);
-  const handleShowRunners = React.useCallback(() => { setShowRunners(true); setShowApiKeys(false); setActiveSessionId(null); }, []);
+  const handleShowRunners = React.useCallback(() => { setShowRunners(true); setShowApiKeys(false); activeSessionRef.current = null; setActiveSessionId(null); }, []);
   const handleShowShortcuts = React.useCallback(() => setShowShortcutsHelp(true), []);
   const handleShowHiddenModels = React.useCallback(() => setHiddenModelsOpen(true), []);
   const handleChangePassword = React.useCallback(() => setChangePasswordOpen(true), []);
   const handleToggleSidebar = React.useCallback(() => setSidebarOpen((prev) => !prev), []);
   // Mobile-specific variants that also close the sidebar
   const handleMobileShowApiKeys = React.useCallback(() => { setShowApiKeys(true); setShowRunners(false); setSidebarOpen(false); }, []);
-  const handleMobileShowRunners = React.useCallback(() => { setShowRunners(true); setShowApiKeys(false); setActiveSessionId(null); setSidebarOpen(false); }, []);
+  const handleMobileShowRunners = React.useCallback(() => { setShowRunners(true); setShowApiKeys(false); activeSessionRef.current = null; setActiveSessionId(null); setSidebarOpen(false); }, []);
   const handleMobileShowHiddenModels = React.useCallback(() => { setHiddenModelsOpen(true); setSidebarOpen(false); }, []);
   const handleMobileChangePassword = React.useCallback(() => { setChangePasswordOpen(true); setSidebarOpen(false); }, []);
   const handleSessionSwitcherOpenChange = React.useCallback((open: boolean) => setSessionSwitcherOpen(open), []);
@@ -4079,7 +4079,7 @@ export function App() {
               onOpenSession={handleOpenSession}
               onNewSession={handleNewSession}
               onClearSelection={handleClearSelection}
-              onShowRunners={() => { setShowRunners(true); setShowApiKeys(false); setActiveSessionId(null); }}
+              onShowRunners={() => { setShowRunners(true); setShowApiKeys(false); activeSessionRef.current = null; setActiveSessionId(null); }}
               activeSessionId={activeSessionId}
               showRunners={showRunners}
               activeModel={activeModel}

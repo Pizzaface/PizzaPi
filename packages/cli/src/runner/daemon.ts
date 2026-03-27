@@ -2,7 +2,6 @@ import { exec } from "node:child_process";
 import { promisify } from "node:util";
 
 const execAsync = promisify(exec);
-import { existsSync, mkdirSync, renameSync, cpSync, rmSync } from "node:fs";
 import { hostname, homedir } from "node:os";
 import { join } from "node:path";
 import { ServiceRegistry } from "./service-handler.js";
@@ -54,50 +53,8 @@ import {
 } from "../usage/index.js";
 import type { UsageRange } from "../usage/types.js";
 
-/**
- * Migrate session storage from ~/.pi/agent to ~/.pizzapi/agent.
- * Runs on daemon startup and is idempotent (safe to call repeatedly).
- */
-function migrateSessionStorage(): void {
-    const oldDir = join(homedir(), ".pi", "agent");
-    const newDir = join(homedir(), ".pizzapi", "agent");
-    const newSessions = join(newDir, "sessions");
-
-    // Skip if old dir doesn't exist or new sessions dir already exists
-    if (!existsSync(oldDir) || existsSync(newSessions)) return;
-
-    // Ensure the parent directory exists but do NOT pre-create newDir itself —
-    // renameSync requires the target to not exist, or on some platforms it will
-    // fail with EEXIST/ENOTEMPTY when renaming onto an existing directory.
-    mkdirSync(join(newDir, ".."), { recursive: true });
-
-    if (existsSync(newDir)) {
-        // newDir already exists (e.g. a fresh install created it) but newSessions
-        // does not — merge any files from oldDir into newDir and remove oldDir.
-        try {
-            cpSync(oldDir, newDir, { recursive: true });
-            rmSync(oldDir, { recursive: true, force: true });
-            logInfo(`Merged session data from ~/.pi/agent into ~/.pizzapi/agent`);
-        } catch (e: any) {
-            logWarn(`Failed to merge session storage: ${e.message}`);
-        }
-        return;
-    }
-
-    try {
-        renameSync(oldDir, newDir);
-        logInfo(`Migrated session data from ~/.pi/agent to ~/.pizzapi/agent`);
-    } catch (e: any) {
-        if (e.code === "EXDEV") {
-            // Cross-device move failed — fall back to copy
-            cpSync(oldDir, newDir, { recursive: true });
-            rmSync(oldDir, { recursive: true, force: true });
-            logInfo(`Migrated session data from ~/.pi/agent to ~/.pizzapi/agent (cross-device copy)`);
-        } else {
-            logWarn(`Failed to migrate session storage: ${e.message}`);
-        }
-    }
-}
+// Re-export migration from shared module — used on daemon startup
+import { migrateAgentDir } from "../migrations.js";
 
 /**
  * Read the `relayUrl` from ~/.pizzapi/config.json, returning undefined
@@ -130,8 +87,8 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
     const statePath = defaultStatePath();
     const identity = acquireStateAndIdentity(statePath);
 
-    // Migrate session storage from ~/.pi to ~/.pizzapi on startup
-    migrateSessionStorage();
+    // Migrate session storage from legacy locations into flat ~/.pizzapi/
+    migrateAgentDir();
 
     // Initialize usage tracking
     initUsage();

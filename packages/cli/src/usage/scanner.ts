@@ -341,14 +341,20 @@ export function processFile(
  */
 export async function scanSessions(db: Database): Promise<void> {
   const primaryDir = getSessionsDir();
-  const piDir = join(homedir(), ".pi", "agent", "sessions");
+  // Legacy fallback directories for unmigrated installs
+  const legacyDirs = [
+    join(homedir(), ".pizzapi", "agent", "sessions"),
+    join(homedir(), ".pi", "agent", "sessions"),
+  ];
 
   const dirsToScan = [];
   if (existsSync(primaryDir)) {
     dirsToScan.push(primaryDir);
   }
-  if (existsSync(piDir) && piDir !== primaryDir) {
-    dirsToScan.push(piDir);
+  for (const legacyDir of legacyDirs) {
+    if (existsSync(legacyDir) && legacyDir !== primaryDir && !dirsToScan.includes(legacyDir)) {
+      dirsToScan.push(legacyDir);
+    }
   }
 
   for (const sessionsDir of dirsToScan) {
