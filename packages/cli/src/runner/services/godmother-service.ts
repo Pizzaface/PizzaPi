@@ -209,6 +209,7 @@ export class GodmotherService implements ServiceHandler {
     private onServiceMessage: ((envelope: SessionServiceEnvelope) => void) | null = null;
     private client: McpClient | null = null;
     private clientPromise: Promise<McpClient> | null = null;
+    private isDisposed = false;
 
     private readonly resolveConfig: () => GodmotherMcpConfig | null;
     private readonly createClient: (config: GodmotherMcpConfig) => Promise<McpClient>;
@@ -248,6 +249,8 @@ export class GodmotherService implements ServiceHandler {
     }
 
     dispose(): void {
+        this.isDisposed = true;
+
         if (this.socket && this.onServiceMessage) {
             (this.socket as any).off("service_message", this.onServiceMessage);
         }
@@ -278,6 +281,11 @@ export class GodmotherService implements ServiceHandler {
         this.clientPromise = this.createClient(config)
             .then(async (client) => {
                 await client.initialize();
+                if (this.isDisposed) {
+                    try { client.close(); } catch { /* ignore */ }
+                    this.clientPromise = null;
+                    throw new Error("GodmotherService disposed during client init");
+                }
                 this.client = client;
                 return client;
             })
@@ -345,6 +353,7 @@ export class GodmotherService implements ServiceHandler {
                 query,
                 project,
                 ...(status ? { status } : {}),
+                ...(topic ? { topic } : {}),
                 limit,
             })
             : await this.callToolJson("list_ideas", {
@@ -352,6 +361,7 @@ export class GodmotherService implements ServiceHandler {
                 ...(status ? { status } : {}),
                 ...(topic ? { topics: [topic] } : {}),
                 include_completed: includeCompleted,
+                limit,
             });
 
         const ideas = Array.isArray(raw) ? raw.map(normalizeIdea).filter((idea): idea is GodmotherIdea => idea !== null) : [];
