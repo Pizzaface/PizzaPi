@@ -7,6 +7,7 @@ import {
     extractVapidFromCompose,
     extractSettingsFromCompose,
     findRepoRoot,
+    getCliVersion,
     parseArgs,
     resolveBetterAuthSecret,
     resolveMissingProxySettings,
@@ -573,6 +574,22 @@ describe("parseArgs", () => {
         expect(r.port).toBe(9000);
         expect(r.tag).toBe("sha123");
         expect(r.build).toBe(true);
+    });
+});
+
+describe("getCliVersion", () => {
+    test("returns a semver-like version string from package.json", () => {
+        const version = getCliVersion();
+        // Should be a non-empty string that looks like a version
+        expect(typeof version).toBe("string");
+        expect(version.length).toBeGreaterThan(0);
+        // Should match semver pattern (possibly with prerelease suffix)
+        expect(version).toMatch(/^\d+\.\d+\.\d+/);
+    });
+
+    test("does not return 'latest'", () => {
+        // When running from the repo, package.json always has a real version
+        expect(getCliVersion()).not.toBe("latest");
     });
 });
 
