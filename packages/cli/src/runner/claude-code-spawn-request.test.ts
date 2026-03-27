@@ -12,7 +12,6 @@ describe("buildSpawnSessionBody", () => {
       cwd: "/tmp/project",
       runnerId: "runner-1",
       model: { provider: "anthropic", id: "claude-sonnet-4-6" },
-      workerType: "pi",
       linked: true,
       agent: { name: "danger" },
     }, "parent-1")).toEqual({
@@ -21,7 +20,28 @@ describe("buildSpawnSessionBody", () => {
       runnerId: "runner-1",
       model: { provider: "anthropic", id: "claude-sonnet-4-6" },
       parentSessionId: "parent-1",
+      workerType: "claude-code",
     });
+  });
+
+  test("passes explicit workerType: 'pi' through to body", () => {
+    expect(buildSpawnSessionBody({
+      prompt: "Fix it",
+      cwd: "/tmp/project",
+      runnerId: "runner-1",
+      workerType: "pi",
+    }, "parent-1")).toEqual({
+      prompt: "Fix it",
+      cwd: "/tmp/project",
+      runnerId: "runner-1",
+      parentSessionId: "parent-1",
+      workerType: "pi",
+    });
+  });
+
+  test("defaults workerType to claude-code when not provided", () => {
+    const result = buildSpawnSessionBody({ prompt: "Hi" }, "parent-1");
+    expect(result.workerType).toBe("claude-code");
   });
 
   test("omits parent session when linked is false", () => {

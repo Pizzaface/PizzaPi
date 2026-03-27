@@ -144,6 +144,7 @@ const TOOLS: ToolDef[] = [
         cwd: { type: "string", description: "Working directory for the session" },
         linked: { type: "boolean", description: "Whether to link as a child session (default true)" },
         runnerId: { type: "string", description: "Target runner ID (defaults to current runner)" },
+        workerType: { type: "string", enum: ["pi", "claude-code"], description: "Worker type for the spawned session (default 'claude-code')" },
       },
       required: ["prompt"],
     },
