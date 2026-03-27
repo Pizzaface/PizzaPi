@@ -30,3 +30,10 @@ Tunnel relay timeouts don't cancel runner-side HTTP/WS work. On timeout:
 - WS: Send `ws-close` message to runner with code 1001
 
 See Godmother idea 1f5l22Vq for exact file locations and fix details.
+
+## Health Inspection — 13:03 UTC
+- **Inspector Model:** gemini-3.1-pro-preview
+- **Verdict:** CITATION
+- **Findings:** P2: exit code corrupted on fatal exception during SIGTERM drain window; no test for timeout cancellation lines; P3: TDZ comment incomplete, ECONNRESET swallowing
+- **Critic Missed:** N/A (no critic ran)
+- **Note:** All 3 fixes are logically correct. P2s are not blockers but should be addressed.

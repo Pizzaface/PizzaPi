@@ -21,3 +21,7 @@ Make it safer to upgrade users to latest frontend/server code:
 3. Add DB migration version check on server start — refuse to start if migrations are pending
 4. Add protocol version to WebSocket handshake — graceful degradation for version mismatches
 5. Ensure `pizza web` upgrade path is smooth: pull new image, run migrations, restart
+
+## Health Inspection — 13:03 UTC
+- **Inspector Model:** gemini-3.1-pro-preview
+- **Verdict:** VIOLATION (joint PR #366 finding — see dish 001)

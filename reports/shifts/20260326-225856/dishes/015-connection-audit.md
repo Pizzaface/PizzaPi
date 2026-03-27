@@ -21,3 +21,9 @@ Audit ALL connections between frontend and backend:
 4. Identify: duplicate connections, oversized payloads, connections that could share a transport
 5. Propose consolidation plan — output as Godmother ideas + implement quick wins
 6. Specifically investigate: can service channels share a single multiplexed socket?
+
+## Health Inspection — 13:03 UTC
+- **Inspector Model:** claude-sonnet-4-6
+- **Verdict:** CITATION
+- **Findings:** P2a: service_announce dedup creates starvation window after runner crash/reconnect — viewer joined during offline gap never gets service panels; P2b: "already connected" sidebar path now 1200ms instead of immediate REST fetch; P3: isSameServiceAnnounce order-sensitive, no fallback timer test, audit doc at repo root
+- **Critic Missed:** N/A (no critic ran)

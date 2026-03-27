@@ -140,3 +140,21 @@
 - **Codex 5.3 cook**: Reliable for S–M, excellent on research. Stalls on L.
 - **Sonnet 4.6 cook**: Reliable for S, mixed on scope discipline (dish 005 scope creep)
 - **Haiku subagents**: Effective for Ramsey expo and reality checks
+
+---
+
+## Shift 20260326-225856 — Health Inspector Findings (2026-03-27)
+
+**Critic accuracy:** 0% (1/1 critic gave LGTM; missed P1 test-pollution CI failure)
+**Session delink note:** 6 of 7 critics never ran. Accuracy stat is unrepresentative of a normal shift.
+
+**Grade:** D — 5 violations, 2 citations across 7 open PRs
+
+### Common misses
+- **Lifecycle/concurrency:** MCP subprocess orphan on dispose-during-connect (PR #362), out-of-order chunk finalization (PR #365), depends_on service_started vs service_healthy (PR #366)
+- **Test quality:** mock.module pollution (PR #360, also missed by independent inspector), fabricated socket.io test format (PR #363)
+- **Config artifact placement:** investigation docs and .dockerignore at wrong paths (PRs #360, #366, #367)
+
+### Model blind spots
+- The one critic that completed (model unknown) missed a test-pollution P1 that also evaded the independent inspector. Test pollution via `mock.module()` is a known Bun-specific behavior — consider adding explicit check to review prompts.
+- Independent inspectors consistently under-graded verdicts: labeled CITATION on 4 PRs that contained P1 findings. Verdict calibration needs improvement in inspector template.

@@ -26,3 +26,8 @@
 
 ## Task Description
 Adding or moving a service panel automatically focuses the Tunnels Panel instead of the newly added/moved panel. The panel that was just added or repositioned should receive focus.
+
+## Health Inspection — 13:03 UTC
+- **Inspector Model:** gemini-3.1-pro-preview
+- **Verdict:** CITATION (joint PR #364 finding)
+- **Findings:** Panel focus fix is correct. P2s from graceful shutdown (dish 008) apply at PR level.

@@ -143,3 +143,15 @@ Bugs 1-2 are fixed by Dish 004 (PR #364). Bugs 3-6 captured as new Godmother ide
 - ✅ **Critic clippings** updated
 - ✅ **1 critic LGTM** received (PR #360) with Critic's Choice finding
 - ⏭️ **Batch critic** skipped (session interruption)
+
+---
+
+## 🔍 Health Inspection (Post-Shift) — 2026-03-27
+
+**Grade:** D
+**Inspected:** 7 dishes | **Citations:** 2 (#364, #367) | **Violations:** 5 (#360, #362, #363, #365, #366)
+**Critic Accuracy:** 0% (1 critic completed, missed P1; 6 critics never ran due to session delink)
+
+Session delink at 00:35 killed all pending critic sessions. Only 1 critic completed (LGTM on #360) and it missed a P1 test-pollution CI failure. 5 of 7 open PRs have P1-level issues requiring fixers. Common themes: concurrency/lifecycle gaps, shallow test coverage, test quality issues (mock pollution, fabricated inputs).
+
+See `inspection-report.md` for full details.

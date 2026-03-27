@@ -30,3 +30,10 @@ The web UI sometimes takes ~2 minutes to load. Investigate root causes:
 4. **Add a loading skeleton** if auth check is the bottleneck (Godmother idea RYjcnlGY)
 
 Output: Identify root cause, implement fix, capture any deferred items as Godmother ideas.
+
+## Health Inspection — 13:03 UTC
+- **Inspector Model:** claude-sonnet-4-6
+- **Verdict:** VIOLATION (corrected from inspector's CITATION)
+- **Findings:** P2: no tests for getAllSessionSummaries; P3: dead guard, artifact at root, test coverage gap, fragile hmGet cast
+- **Critic Missed:** P1 test-pollution (mock.module leak causing CI failures on pin.test.ts + runner-assoc-persist.test.ts). Independent inspector also missed it. Caught by Health Inspector via CI log analysis.
+- **Fixer:** Session 8c45d710 dispatched

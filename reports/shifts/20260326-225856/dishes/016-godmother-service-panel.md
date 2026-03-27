@@ -20,3 +20,10 @@ Improve the Godmother runner service panel:
 3. Add quick actions (move status, add topics) from the panel
 4. Improve search/filter UX in the panel
 5. Connection efficiency: ensure it uses the service channel pattern efficiently
+
+## Health Inspection — 13:03 UTC
+- **Inspector Model:** claude-sonnet-4-6
+- **Verdict:** VIOLATION
+- **Findings:** P1: MCP subprocess orphaned on dispose-during-connect race; P2: list_ideas missing limit, search_ideas drops topic filter; P3: sessionId unused, topicDrafts unbounded, move_status untested, DEFAULT_PROJECT hardcoded
+- **Critic Missed:** N/A (no critic ran)
+- **Action:** Fixer to be dispatched

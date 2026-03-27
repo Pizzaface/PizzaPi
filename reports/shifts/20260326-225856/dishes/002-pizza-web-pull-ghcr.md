@@ -30,3 +30,7 @@ Update the `pizza web` command and docker/compose.yml to:
 2. Add a --tag flag to specify which UI image tag to use (default: latest)
 3. Keep the ability to build locally via --build flag as fallback
 4. Update compose.yml to reference the GHCR image
+
+## Health Inspection — 13:03 UTC
+- **Inspector Model:** gemini-3.1-pro-preview
+- **Verdict:** VIOLATION (joint PR #366 finding — see dish 001)

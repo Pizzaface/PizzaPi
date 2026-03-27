@@ -49,3 +49,10 @@ Create .dockerignore for packages/ui.
 
 ### Maître d' Override Rationale
 All three findings are P2/P3 polish issues, not P0/P1 logic errors. The Dockerfile builds correctly, the workflow runs on the right trigger, and the image is properly tagged. These can be addressed in a follow-up PR.
+
+## Health Inspection — 13:03 UTC
+- **Inspector Model:** gemini-3.1-pro-preview
+- **Verdict:** VIOLATION
+- **Findings:** P1a: depends_on: -ui uses service_started not service_healthy — server can start before UI files copied to mount; P1b: packages/ui/.dockerignore at wrong path, Docker never reads it; P2: UI_VERSION tripled, dual mismatch paths, workflow missing tsconfig trigger; P3: nginx unpinned, named volume stale, no ARM64 build
+- **Critic Missed:** N/A (no critic ran)
+- **Action:** Fixer to be dispatched

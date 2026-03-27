@@ -13,3 +13,11 @@
 
 ## Task Description
 Make chunk delivery idempotent per {snapshotId, chunkIndex}. Only count first-seen chunk indexes. Verify all chunks 0..N-1 present before finalizing. Add regression tests for duplicate retransmits.
+
+## Health Inspection — 13:03 UTC
+- **Inspector Model:** claude-sonnet-4-6
+- **Verdict:** VIOLATION
+- **Findings:** P1: out-of-order finalization silently skips patchSessionCache + setActiveToolCalls — session cache stale after chunked reconnect; P2: dedupedForSideEffects mutation from inside updater violates React model; cross-chunk dedup skipped in out-of-order case
+- **Critic Missed:** N/A (no critic ran)
+- **Note:** Server-side event-pipeline.ts idempotency fix is clean; bug is in App.tsx integration path
+- **Action:** Fixer to be dispatched
