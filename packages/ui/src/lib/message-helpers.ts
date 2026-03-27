@@ -138,6 +138,23 @@ export function deduplicateMessages(messages: RelayMessage[]): RelayMessage[] {
   return messages.filter((_, i) => !dropIndices.has(i));
 }
 
+/**
+ * Merge a finalized chunk snapshot with the previous message state.
+ *
+ * The assembled snapshot takes precedence for every message ID it covers, but
+ * any messages already in `prev` whose keys are *not* present in the snapshot
+ * (e.g. MCP auth banners, local system messages injected during hydration) are
+ * preserved by appending them after the snapshot messages.
+ */
+export function mergeChunkSnapshot(
+  snapshotMessages: RelayMessage[],
+  prev: RelayMessage[],
+): RelayMessage[] {
+  const snapshotKeys = new Set(snapshotMessages.map((m) => m.key));
+  const preserved = prev.filter((m) => !snapshotKeys.has(m.key));
+  return preserved.length > 0 ? [...snapshotMessages, ...preserved] : snapshotMessages;
+}
+
 export function normalizeMessages(rawMessages: unknown[], keyOffset = 0): RelayMessage[] {
   const all = rawMessages
     .map((m, i) => toRelayMessage(m, `snapshot-${keyOffset + i}`))

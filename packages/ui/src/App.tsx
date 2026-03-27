@@ -105,6 +105,7 @@ import {
   normalizeSessionName,
   augmentThinkingDurations,
   normalizeModelList,
+  mergeChunkSnapshot,
 } from "@/lib/message-helpers";
 import { evictLruIfNeeded, touchSessionCache, MAX_SESSION_UI_CACHE_SIZE } from "@/lib/session-ui-cache";
 import {
@@ -1518,7 +1519,7 @@ export function App() {
         }
         setViewerStatus("Connected");
 
-        setMessages(finalMessages);
+        setMessages((prev) => mergeChunkSnapshot(finalMessages, prev));
         setActiveToolCalls(detectInFlightTools(finalMessages));
         patchSessionCache({ messages: finalMessages });
       }
