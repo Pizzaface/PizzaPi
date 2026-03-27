@@ -2,7 +2,7 @@
 // /runners namespace — Browser runner feed (read-only for clients)
 // ============================================================================
 
-import type { RunnerInfo } from "./shared.js";
+import type { RunnerInfo, SocketClientMetadata } from "./shared.js";
 
 export interface RunnersServerToClientEvents {
   /** Full runner list snapshot sent on connection */
@@ -23,6 +23,6 @@ export interface RunnersInterServerEvents {
   // Reserved for future Redis adapter usage
 }
 
-export interface RunnersSocketData {
+export interface RunnersSocketData extends SocketClientMetadata {
   userId?: string;
 }

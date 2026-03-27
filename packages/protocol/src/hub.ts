@@ -2,7 +2,7 @@
 // /hub namespace — Session list feed (read-only for clients)
 // ============================================================================
 
-import type { ModelInfo, SessionInfo } from "./shared.js";
+import type { ModelInfo, SessionInfo, SocketClientMetadata } from "./shared.js";
 import type { SessionMetaState, MetaRelayEvent } from "./meta.js";
 
 // ---------------------------------------------------------------------------
@@ -59,6 +59,6 @@ export interface HubInterServerEvents {
 // Per-socket metadata
 // ---------------------------------------------------------------------------
 
-export interface HubSocketData {
+export interface HubSocketData extends SocketClientMetadata {
   userId?: string;
 }

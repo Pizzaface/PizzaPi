@@ -20,7 +20,7 @@ import type {
   HubClientToServerEvents,
   SessionMetaState,
 } from "@pizzapi/protocol";
-import { isMetaRelayEvent } from "@pizzapi/protocol";
+import { isMetaRelayEvent, SOCKET_PROTOCOL_VERSION } from "@pizzapi/protocol";
 import { cn } from "@/lib/utils";
 import { pulseStreamingHaptic, cancelHaptic, startToolHaptic, stopToolHaptic } from "@/lib/haptics";
 import { Button } from "@/components/ui/button";
@@ -63,6 +63,7 @@ import { ViewerSocketContext } from "@/lib/viewer-socket-context";
 import { HubSocketContext } from "@/lib/hub-socket-context";
 import { shouldStopViewerReconnect } from "@/lib/viewer-connection";
 import { getConfirmedMetaSubscriptionTargets } from "@/lib/meta-subscriptions";
+import { evaluateVersionNegotiation } from "@/lib/version-negotiation";
 import { useRunnerServices, attachServiceAnnounceListener, seedServiceCache, setViewerSwitchGeneration } from "@/hooks/useRunnerServices";
 import { ServicePanelButtons, useServicePanelState } from "@/components/service-panels/ServicePanels";
 import { SERVICE_PANELS } from "@/components/service-panels/registry";
@@ -84,6 +85,7 @@ import { HiddenModelsManager, loadHiddenModels, fetchHiddenModels, modelKey } fr
 import { ChangePasswordDialog } from "@/components/ChangePasswordDialog";
 import { DegradedBanner } from "@/components/DegradedBanner";
 import { RunnerWarningBanner } from "@/components/RunnerWarningBanner";
+import { VersionBanner } from "@/components/VersionBanner";
 import { ShortcutsDialog } from "@/components/ShortcutsDialog";
 import {
   beginInputAttempt,
@@ -116,6 +118,11 @@ const log = createLogger("relay");
 // Sync all CSS animations (pulse, chase-spin, etc.) to the same phase globally.
 initAnimationSync();
 
+declare const __PIZZAPI_UI_VERSION__: string;
+const UI_VERSION = typeof __PIZZAPI_UI_VERSION__ === "string" && __PIZZAPI_UI_VERSION__.trim()
+  ? __PIZZAPI_UI_VERSION__.trim()
+  : "0.0.0";
+
 export function App() {
   const { data: session, isPending } = useSession();
   const { runners: feedRunners, status: runnersStatus } = useRunnersFeed({
@@ -138,6 +145,10 @@ export function App() {
   const [viewerStatus, setViewerStatus] = React.useState("Idle");
   const [retryState, setRetryState] = React.useState<{ errorMessage: string; detectedAt: number } | null>(null);
   const [relayStatus, setRelayStatus] = React.useState<DotState>("connecting");
+  const [versionBanner, setVersionBanner] = React.useState<{ message: string | null; protocolCompatible: boolean }>({
+    message: null,
+    protocolCompatible: true,
+  });
   const [showApiKeys, setShowApiKeys] = React.useState(false);
   const [apiKeyVersion, setApiKeyVersion] = React.useState(0);
   const [showRunners, setShowRunners] = React.useState(false);
@@ -434,6 +445,24 @@ export function App() {
   const activeSessionRef = React.useRef<string | null>(null);
   const viewerSwitchGenerationRef = React.useRef(0);
 
+  const checkVersionCompatibility = React.useCallback(async () => {
+    try {
+      const res = await fetch("/health", { credentials: "include" });
+      if (!res.ok) return;
+      const payload: unknown = await res.json();
+      const negotiation = evaluateVersionNegotiation(payload, {
+        uiVersion: UI_VERSION,
+        clientSocketProtocol: SOCKET_PROTOCOL_VERSION,
+      });
+      setVersionBanner({
+        message: negotiation.message,
+        protocolCompatible: negotiation.protocolCompatible,
+      });
+    } catch {
+      // Best effort only — do not surface transient fetch errors as hard failures.
+    }
+  }, []);
+
   // Cache last-known UI state per relay session so switching sessions feels instant.
   const sessionUiCacheRef = React.useRef<Map<string, SessionUiCacheEntry>>(new Map());
 
@@ -519,6 +548,11 @@ export function App() {
     });
     return () => { cancelled = true; };
   }, [session]);
+
+  React.useEffect(() => {
+    if (!session) return;
+    void checkVersionCompatibility();
+  }, [session, checkVersionCompatibility]);
 
   React.useEffect(() => {
     return () => {
@@ -2150,7 +2184,13 @@ export function App() {
   }, [upsertMessage, upsertMessageDebounced, cancelPendingDeltas, appendLocalSystemMessage, scheduleToolStreamFlush]);
 
   React.useEffect(() => {
-    const socket = io("/hub", { withCredentials: true });
+    const socket = io("/hub", {
+      withCredentials: true,
+      auth: {
+        protocolVersion: SOCKET_PROTOCOL_VERSION,
+        clientVersion: UI_VERSION,
+      },
+    });
     hubSocketRef.current = socket;
     setHubSocket(socket);
 
@@ -2249,6 +2289,7 @@ export function App() {
       backgroundMetaIdsRef.current.clear();
       confirmedMetaLiveSessionIdsRef.current = new Set();
       setMetaInventoryVersion((version) => version + 1);
+      void checkVersionCompatibility();
     };
 
     socket.on("state_snapshot", handleStateSnapshot);
@@ -2263,7 +2304,7 @@ export function App() {
       hubSocketRef.current = null;
       setHubSocket(null);
     };
-  }, [applyMetaStateSnapshot, applyMetaPatch, applyMcpReport]);
+  }, [applyMetaStateSnapshot, applyMetaPatch, applyMcpReport, checkVersionCompatibility]);
 
   React.useEffect(() => {
     const hubSock = hubSocketRef.current;
@@ -2411,6 +2452,10 @@ export function App() {
     let socket = viewerWsRef.current;
     if (!socket) {
       socket = io("/viewer", {
+        auth: {
+          protocolVersion: SOCKET_PROTOCOL_VERSION,
+          clientVersion: UI_VERSION,
+        },
         withCredentials: true,
         autoConnect: false,
       });
@@ -2882,7 +2927,11 @@ export function App() {
     // blindly disconnecting after 500ms, which was too aggressive and caused the
     // exec to be dropped when the server was still processing.
     const tempSocket: Socket<ViewerServerToClientEvents, ViewerClientToServerEvents> = io("/viewer", {
-      auth: { sessionId },
+      auth: {
+        sessionId,
+        protocolVersion: SOCKET_PROTOCOL_VERSION,
+        clientVersion: UI_VERSION,
+      },
       withCredentials: true,
     });
 
@@ -3584,6 +3633,7 @@ export function App() {
       </a>
       <DegradedBanner relayStatus={relayStatus} />
       <RunnerWarningBanner runners={feedRunners} />
+      <VersionBanner message={versionBanner.message} protocolCompatible={versionBanner.protocolCompatible} />
       {/* ── Desktop header (memoized — skips re-render on same-runner session switch) ── */}
       <DesktopHeader
         relayStatus={relayStatus}
