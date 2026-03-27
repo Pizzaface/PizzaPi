@@ -1,5 +1,5 @@
-import { describe, expect, test, beforeAll, afterAll, spyOn } from "bun:test";
-import { getDisableSignupAfterFirstUser, isSignupAllowed, getKysely, initAuth } from "./auth";
+import { describe, expect, test, beforeAll, beforeEach, afterAll, spyOn } from "bun:test";
+import { getDisableSignupAfterFirstUser, isSignupAllowed, getKysely, initAuth, createTestDatabase, _setKyselyForTest } from "./auth";
 import { sql } from "kysely";
 import { mkdtempSync, rmSync } from "fs";
 import { join } from "path";
@@ -9,9 +9,12 @@ import { tmpdir } from "os";
 const tmpDir = mkdtempSync(join(tmpdir(), "auth-test-"));
 const tmpDbPath = join(tmpDir, "test.db");
 
+// Own Kysely instance — immune to other test files clobbering the singleton.
+const testDb = createTestDatabase(tmpDbPath);
+
 // Initialize auth with the temp DB before any tests run
 beforeAll(async () => {
-    initAuth({ dbPath: tmpDbPath });
+    _setKyselyForTest(testDb);
 
     // Ensure the user table exists for testing (better-auth normally creates it via migrations)
     await sql`
@@ -25,6 +28,11 @@ beforeAll(async () => {
             updatedAt TEXT NOT NULL
         )
     `.execute(getKysely());
+});
+
+// Re-pin before every test — secret validation tests and other files may overwrite _kysely.
+beforeEach(() => {
+    _setKyselyForTest(testDb);
 });
 
 afterAll(() => {
@@ -115,22 +123,9 @@ describe("secret validation", () => {
 });
 
 describe("signup gating", () => {
-    // Re-initialize with the test DB because the secret validation tests above
-    // call initAuth() with different temp DBs, resetting global auth state.
+    // Re-pin after secret validation tests which call initAuth() with different temp DBs.
     beforeAll(async () => {
-        initAuth({ dbPath: tmpDbPath });
-
-        await sql`
-            CREATE TABLE IF NOT EXISTS user (
-                id TEXT PRIMARY KEY,
-                name TEXT NOT NULL,
-                email TEXT NOT NULL UNIQUE,
-                emailVerified INTEGER NOT NULL DEFAULT 0,
-                image TEXT,
-                createdAt TEXT NOT NULL,
-                updatedAt TEXT NOT NULL
-            )
-        `.execute(getKysely());
+        _setKyselyForTest(testDb);
     });
 
     test("disableSignupAfterFirstUser defaults to true", () => {
