@@ -55,6 +55,12 @@ export const BUILTIN_SYSTEM_PROMPT = [
     "so you do NOT need to call `toggle_plan_mode` after approval — just proceed with execution.",
     "Do not exit plan mode without first submitting a plan via `plan_mode` unless the task is trivial.\n",
     ...ASK_USER_QUESTION_PROMPT_FRAGMENT,
+    "## Tunnels\n",
+    "Use `create_tunnel`, `list_tunnels`, and `close_tunnel` to expose local ports through the PizzaPi relay.",
+    "After starting a dev server (e.g. on port 3000), call `create_tunnel` with that port to get a public URL.",
+    "The tunnel proxies HTTP and WebSocket traffic through the relay so the web UI can preview it.",
+    "Tunnels only work when connected to a relay — they are unavailable in offline/local-only sessions.\n",
+
     "## Sandbox\n",
     "This session may run with OS-level sandbox restrictions that control which files you can read/write",
     "and which network domains are accessible. If a tool call is blocked by the sandbox,",

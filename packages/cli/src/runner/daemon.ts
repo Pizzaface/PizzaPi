@@ -331,6 +331,8 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             tunnelClient.on("registered", () => {
                 logInfo(`[tunnel] registered at ${tunnelRelayUrl}`);
                 tunnelService.setTunnelClient(tunnelClient);
+                // Clear any previous tunnel warning now that we're connected
+                socket.emit("runner_warning_clear", {} as Record<string, never>);
             });
             tunnelClient.on("disconnect", () => {
                 if (!isShuttingDown) {
@@ -339,6 +341,14 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             });
             tunnelClient.on("error", (error) => {
                 logError(`[tunnel] ${error instanceof Error ? error.message : String(error)}`);
+            });
+            tunnelClient.on("disabled", (data: { reason: string; failures: number; relayUrl: string }) => {
+                logWarn(`[tunnel] disabled after ${data.failures} failed connection attempts to ${data.relayUrl}`);
+                logWarn("[tunnel] The relay server may not support the /_tunnel endpoint. Upgrade the server with 'pizza web'.");
+                // Surface as a visible warning in the web UI
+                socket.emit("runner_warning", {
+                    message: "Tunnel unavailable — the relay server does not support the tunnel endpoint. Upgrade with 'pizza web' to enable tunnels and service panels.",
+                });
             });
         } else {
             logWarn("[tunnel] disabled: runner is missing an API key for tunnel authentication");

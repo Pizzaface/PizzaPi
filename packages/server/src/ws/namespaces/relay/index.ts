@@ -20,6 +20,7 @@ import { registerEventHandler } from "./event-pipeline.js";
 import { registerSessionLifecycleHandlers } from "./session-lifecycle.js";
 import { registerMessagingHandlers } from "./messaging.js";
 import { registerChildLifecycleHandlers } from "./child-lifecycle.js";
+import { registerServiceMessageHandler } from "./service-message.js";
 import { createLogger } from "@pizzapi/tools";
 
 // Re-export for viewer.ts compatibility
@@ -45,5 +46,6 @@ export function registerRelayNamespace(io: SocketIOServer): void {
         registerEventHandler(socket);
         registerMessagingHandlers(socket);
         registerChildLifecycleHandlers(socket, io);
+        registerServiceMessageHandler(socket);
     });
 }

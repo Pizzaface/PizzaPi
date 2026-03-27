@@ -12,6 +12,7 @@ import { spawnSessionExtension } from "./spawn-session.js";
 import { updateTodoExtension } from "./update-todo.js";
 import { createClaudePluginExtension } from "./claude-plugins.js";
 import { subagentExtension } from "./subagent.js";
+import { tunnelToolsExtension } from "./tunnel-tools.js";
 import { planModeToggleExtension } from "./plan-mode-toggle.js";
 import { triggersExtension } from "./triggers/extension.js";
 import { sandboxEventsExtension } from "./sandbox-events.js";
@@ -50,6 +51,7 @@ export function buildPizzaPiExtensionFactories(options: BuildExtensionFactoriesO
 
     if (!options.skipRelay) {
         factories.push(named(remoteExtension, "relay"));
+        factories.push(named(tunnelToolsExtension, "tunnel-tools"));
     }
 
     if (!options.skipMcp) {

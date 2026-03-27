@@ -122,6 +122,13 @@ export interface RunnerClientToServerEvents {
    *  Forwarded to all viewers watching sessions on this runner. */
   service_announce: (data: ServiceAnnounceData) => void;
 
+  /** Report a warning (e.g. tunnel connection failure).
+   *  Server stores the warning and broadcasts runner_updated to viewers. */
+  runner_warning: (data: { message: string }) => void;
+
+  /** Clear all warnings for this runner. */
+  runner_warning_clear: (data?: Record<string, never>) => void;
+
   /** Terminal is ready for interaction */
   terminal_ready: (data: {
     terminalId: string;

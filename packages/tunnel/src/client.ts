@@ -22,8 +22,12 @@ export interface TunnelClientOptions {
   log?: TunnelClientLogger;
   /** Auto-reconnect on disconnect. Default true. */
   autoReconnect?: boolean;
-  /** Reconnect delay in ms. Default 3000. */
+  /** Initial reconnect delay in ms. Default 3000. */
   reconnectDelayMs?: number;
+  /** Maximum reconnect delay in ms (exponential backoff cap). Default 60000. */
+  maxReconnectDelayMs?: number;
+  /** Stop reconnecting after this many consecutive failures. Default 10. */
+  maxConsecutiveFailures?: number;
 }
 
 export interface TunnelClientLogger {
@@ -76,10 +80,17 @@ export class TunnelClient extends EventEmitter {
   private log: TunnelClientLogger;
   private autoReconnect: boolean;
   private reconnectDelayMs: number;
+  private maxReconnectDelayMs: number;
+  private maxConsecutiveFailures: number;
 
   private ws: WebSocket | null = null;
   private exposedPorts = new Set<number>();
   private disposed = false;
+
+  /** Tracks consecutive connection failures (never received "registered"). */
+  private consecutiveFailures = 0;
+  /** Whether a "registered" message was received for the current connection. */
+  private registeredThisConnection = false;
 
   /** Active HTTP requests: requestId → { controller, req } */
   private activeRequests = new Map<string, { controller: AbortController; req: http.ClientRequest }>();
@@ -94,6 +105,15 @@ export class TunnelClient extends EventEmitter {
     this.log = options.log ?? noopLog;
     this.autoReconnect = options.autoReconnect ?? true;
     this.reconnectDelayMs = options.reconnectDelayMs ?? 3000;
+    this.maxReconnectDelayMs = options.maxReconnectDelayMs ?? 60_000;
+    this.maxConsecutiveFailures = options.maxConsecutiveFailures ?? 10;
+  }
+
+  /** Current reconnect delay (increases with consecutive failures). */
+  private get currentReconnectDelay(): number {
+    if (this.consecutiveFailures === 0) return this.reconnectDelayMs;
+    const delay = this.reconnectDelayMs * Math.pow(2, this.consecutiveFailures - 1);
+    return Math.min(delay, this.maxReconnectDelayMs);
   }
 
   connect(): void {
@@ -102,6 +122,7 @@ export class TunnelClient extends EventEmitter {
       return;
     }
 
+    this.registeredThisConnection = false;
     this.log.info("[tunnel-client] Connecting to", this.relayUrl);
     this.ws = new WebSocket(this.relayUrl);
 
@@ -118,14 +139,43 @@ export class TunnelClient extends EventEmitter {
       this.log.info("[tunnel-client] Disconnected");
       this.cleanup();
       this.ws = null;
+
+      if (!this.registeredThisConnection) {
+        this.consecutiveFailures++;
+      }
+
       this.emit("disconnect");
+
       if (this.autoReconnect && !this.disposed) {
-        setTimeout(() => this.connect(), this.reconnectDelayMs);
+        if (this.consecutiveFailures >= this.maxConsecutiveFailures) {
+          this.log.warn(
+            `[tunnel-client] Giving up after ${this.consecutiveFailures} consecutive failed connections.`,
+            "The relay server may not support the /_tunnel endpoint — upgrade the server or run 'pizza web'.",
+          );
+          this.emit("disabled", {
+            reason: "max-failures",
+            failures: this.consecutiveFailures,
+            relayUrl: this.relayUrl,
+          });
+          return;
+        }
+        const delay = this.currentReconnectDelay;
+        if (this.consecutiveFailures > 0) {
+          this.log.info(`[tunnel-client] Reconnecting in ${Math.round(delay / 1000)}s (attempt ${this.consecutiveFailures + 1}/${this.maxConsecutiveFailures})`);
+        }
+        setTimeout(() => this.connect(), delay);
       }
     });
 
-    this.ws.addEventListener("error", (error) => {
-      this.log.error("[tunnel-client] WebSocket error:", error);
+    this.ws.addEventListener("error", (event) => {
+      // ErrorEvent.toString() produces "[object ErrorEvent]" which is useless.
+      // Extract the actual error message if available.
+      const msg = (event as any)?.message
+        ?? (event as any)?.error?.message
+        ?? (event as any)?.error
+        ?? (event as any)?.type
+        ?? "unknown error";
+      this.log.error("[tunnel-client] WebSocket error:", msg);
     });
   }
 
@@ -171,6 +221,8 @@ export class TunnelClient extends EventEmitter {
 
     switch (msg.type) {
       case "registered":
+        this.registeredThisConnection = true;
+        this.consecutiveFailures = 0;
         this.log.info("[tunnel-client] Registered as", msg.runnerId);
         this.emit("registered", msg.runnerId);
         break;
