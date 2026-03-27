@@ -83,6 +83,10 @@ describe("handleApi — global endpoints", () => {
         expect(data.redis).toBe(false);
         expect(data.socketio).toBe(false);
         expect(typeof data.uptime).toBe("number");
+        expect(typeof data.version).toBe("object");
+        expect(data.version).not.toBeNull();
+        expect(Object.prototype.hasOwnProperty.call(data.version, "server")).toBe(true);
+        expect(typeof data.version.socketProtocol).toBe("number");
     });
 
     test("GET /health returns ok when redis and socketio are healthy", async () => {
@@ -100,6 +104,23 @@ describe("handleApi — global endpoints", () => {
         expect(data.redis).toBe(true);
         expect(data.socketio).toBe(true);
         expect(typeof data.uptime).toBe("number");
+        expect(typeof data.version).toBe("object");
+        expect(data.version).not.toBeNull();
+        expect(Object.prototype.hasOwnProperty.call(data.version, "server")).toBe(true);
+        expect(typeof data.version.socketProtocol).toBe("number");
+    });
+
+    test("GET /status returns the same health payload shape", async () => {
+        const url = new URL("http://localhost/status");
+        const req = new Request(url, { method: "GET" });
+
+        const res = await handleApi(req, url);
+        expect(res).toBeTruthy();
+        expect(res!.status).toBe(200);
+        const data = await res!.json();
+        expect(data).toHaveProperty("status");
+        expect(data).toHaveProperty("version");
+        expect(typeof data.version.socketProtocol).toBe("number");
     });
 
     test("returns undefined for unmatched paths", async () => {

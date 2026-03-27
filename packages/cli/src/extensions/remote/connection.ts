@@ -6,7 +6,7 @@
  */
 
 import { io, type Socket } from "socket.io-client";
-import type { RelayClientToServerEvents, RelayServerToClientEvents } from "@pizzapi/protocol";
+import { SOCKET_PROTOCOL_VERSION, type RelayClientToServerEvents, type RelayServerToClientEvents } from "@pizzapi/protocol";
 import { createLogger } from "@pizzapi/tools";
 import { loadConfig } from "../../config.js";
 import { RELAY_BACKOFF_DEFAULTS, computeBackoffDelay } from "../../backoff.js";
@@ -182,7 +182,10 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
     const sock: Socket<RelayServerToClientEvents, RelayClientToServerEvents> = io(
         sioUrl + "/relay",
         {
-            auth: { apiKey: key },
+            auth: {
+                apiKey: key,
+                protocolVersion: SOCKET_PROTOCOL_VERSION,
+            },
             transports: ["websocket"],
             // Exponential backoff with ±25% jitter. Socket.IO doubles the
             // delay on each reconnection attempt (up to reconnectionDelayMax)

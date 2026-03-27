@@ -4,6 +4,8 @@ import {
   PASSWORD_REQUIREMENTS_SUMMARY,
   validatePassword,
   isValidPassword,
+  SOCKET_PROTOCOL_VERSION,
+  compareSemver,
 } from "./index";
 import type {
   Attachment,
@@ -108,6 +110,11 @@ describe("index - runtime exports", () => {
     for (const pw of passwords) {
       expect(isValidPassword(pw)).toBe(validatePassword(pw).valid);
     }
+  });
+
+  test("version helpers are exported", () => {
+    expect(Number.isInteger(SOCKET_PROTOCOL_VERSION)).toBe(true);
+    expect(compareSemver("1.2.4", "1.2.3")).toBe(1);
   });
 });
 

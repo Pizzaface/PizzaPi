@@ -2,7 +2,7 @@
 // /runner namespace — Runner daemon ↔ Server
 // ============================================================================
 
-import type { RunnerSkill, RunnerAgent, RunnerPlugin, RunnerHook, ServiceAnnounceData, ServiceEnvelope } from "./shared.js";
+import type { RunnerSkill, RunnerAgent, RunnerPlugin, RunnerHook, ServiceAnnounceData, ServiceEnvelope, SocketClientMetadata } from "./shared.js";
 
 // ---------------------------------------------------------------------------
 // Client → Server (Runner daemon sends to server)
@@ -384,7 +384,7 @@ export interface RunnerInterServerEvents {
 // Per-socket metadata
 // ---------------------------------------------------------------------------
 
-export interface RunnerSocketData {
+export interface RunnerSocketData extends SocketClientMetadata {
   runnerId?: string;
   runnerName?: string | null;
   roots?: string[];

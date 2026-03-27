@@ -5,8 +5,14 @@ import type {
     RunnersClientToServerEvents,
     RunnerInfo,
 } from "@pizzapi/protocol";
+import { SOCKET_PROTOCOL_VERSION } from "@pizzapi/protocol";
 import { getSocketIOBase } from "./relay.js";
 import { upsert } from "./runnerHelpers.js";
+
+declare const __PIZZAPI_UI_VERSION__: string;
+const UI_VERSION = typeof __PIZZAPI_UI_VERSION__ === "string" && __PIZZAPI_UI_VERSION__.trim()
+    ? __PIZZAPI_UI_VERSION__.trim()
+    : "0.0.0";
 
 export type RunnersFeedStatus = "connecting" | "connected" | "disconnected";
 
@@ -72,7 +78,13 @@ export function useRunnersFeed(options: UseRunnersFeedOptions = {}): RunnersFeed
         const base = getSocketIOBase();
         const socket: Socket<RunnersServerToClientEvents, RunnersClientToServerEvents> = io(
             base ? `${base}/runners` : "/runners",
-            { withCredentials: true },
+            {
+                withCredentials: true,
+                auth: {
+                    protocolVersion: SOCKET_PROTOCOL_VERSION,
+                    clientVersion: UI_VERSION,
+                },
+            },
         );
 
         socket.on("connect", () => setStatus("connected"));

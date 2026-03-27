@@ -2,7 +2,7 @@
 // /viewer namespace — Browser viewer ↔ Server
 // ============================================================================
 
-import type { Attachment, ServiceAnnounceData, ServiceEnvelope } from "./shared.js";
+import type { Attachment, ServiceAnnounceData, ServiceEnvelope, SocketClientMetadata } from "./shared.js";
 
 export type ViewerDisconnectCode = "snapshot_replay" | "session_ended" | "session_reconnected";
 
@@ -134,7 +134,7 @@ export interface ViewerInterServerEvents {
 // Per-socket metadata
 // ---------------------------------------------------------------------------
 
-export interface ViewerSocketData {
+export interface ViewerSocketData extends SocketClientMetadata {
   sessionId?: string;
   userId?: string;
   userName?: string;

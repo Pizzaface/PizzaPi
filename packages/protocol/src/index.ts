@@ -9,6 +9,7 @@ export type {
   SessionInfo,
   ModelInfo,
   RunnerInfo,
+  SocketClientMetadata,
   RunnerSkill,
   RunnerAgent,
   RunnerPlugin,
@@ -76,6 +77,13 @@ export type {
   MetaPluginTrustPrompt, MetaMcpReport,
 } from "./meta.js";
 export { defaultMetaState, isMetaRelayEvent, metaEventToPatch, META_RELAY_EVENT_TYPES } from "./meta.js";
+
+export {
+  SOCKET_PROTOCOL_VERSION,
+  parseSemverTriplet,
+  compareSemver,
+  isSocketProtocolCompatible,
+} from "./version.js";
 
 // /runners namespace (Browser runner feed)
 export type {

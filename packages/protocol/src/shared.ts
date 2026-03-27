@@ -2,6 +2,16 @@
 // Shared types used across multiple Socket.IO namespaces
 // ============================================================================
 
+/** Common metadata extracted from Socket.IO handshake auth payloads. */
+export interface SocketClientMetadata {
+  /** Optional client package/app version reported at connect time. */
+  clientVersion?: string;
+  /** Optional handshake protocol version reported by the client. */
+  clientProtocolVersion?: number;
+  /** Derived compatibility flag on the server (true when compatible or unknown). */
+  protocolCompatible?: boolean;
+}
+
 /** Information about a connected session, used in hub feed and session lists */
 export interface SessionInfo {
   sessionId: string;

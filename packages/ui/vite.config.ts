@@ -6,6 +6,13 @@ import path from "path";
 import fs from "fs";
 
 const API_PORT = process.env.PORT ?? "3001";
+const uiPackageJson = JSON.parse(
+    fs.readFileSync(path.resolve(__dirname, "./package.json"), "utf8"),
+) as { version?: string };
+const uiVersion =
+    typeof uiPackageJson.version === "string" && uiPackageJson.version.trim()
+        ? uiPackageJson.version.trim()
+        : "0.0.0";
 
 // Derive extra allowed hosts from the PIZZAPI_EXTRA_ORIGINS env var so the
 // Vite dev server accepts requests from those origins without hardcoding them.
@@ -111,6 +118,9 @@ export default defineConfig({
             },
         }),
     ],
+    define: {
+        __PIZZAPI_UI_VERSION__: JSON.stringify(uiVersion),
+    },
     resolve: {
         alias: {
             "@": path.resolve(__dirname, "./src"),

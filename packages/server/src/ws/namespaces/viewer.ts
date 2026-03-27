@@ -230,6 +230,12 @@ export function registerViewerNamespace(io: SocketIOServer): void {
 
         log.info(`connected: ${socket.id} sessionId=${sessionId} userId=${viewerUserId}`);
 
+        if (socket.data.protocolCompatible === false) {
+            socket.emit("error", {
+                message: "Protocol mismatch detected between UI and server. Some real-time features may be unavailable until you refresh/update the UI.",
+            });
+        }
+
         // Look up the live session
         const session = await getSharedSession(sessionId);
         if (!session) {
