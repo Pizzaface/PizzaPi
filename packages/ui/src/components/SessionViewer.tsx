@@ -506,6 +506,9 @@ const SessionMessageItem = React.memo(({ message, activeToolCalls, agentActive, 
   // Note: activeToolCalls only changes on tool start/end, which is rare compared to text tokens.
   if (prev.activeToolCalls !== next.activeToolCalls) return false;
 
+  // Trigger cards rely on this callback; re-render if it changes.
+  if (prev.onTriggerResponse !== next.onTriggerResponse) return false;
+
   return true;
 });
 

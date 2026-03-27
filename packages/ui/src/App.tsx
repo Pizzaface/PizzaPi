@@ -790,6 +790,33 @@ export function App() {
     patchSessionCache({ messages: next });
   }, [patchSessionCache]);
 
+  /** Remove a queued message whose text matches an incoming user message from the stream. */
+  const removeQueuedMessageByContent = React.useCallback((rawMessage: unknown) => {
+    if (!rawMessage || typeof rawMessage !== "object") return;
+    const msg = rawMessage as Record<string, unknown>;
+    if (msg.role !== "user") return;
+
+    // Extract text from user message content (string or array of text blocks)
+    let text = "";
+    if (typeof msg.content === "string") {
+      text = msg.content;
+    } else if (Array.isArray(msg.content)) {
+      text = (msg.content as Array<Record<string, unknown>>)
+        .filter((b) => b && typeof b === "object" && b.type === "text" && typeof b.text === "string")
+        .map((b) => b.text as string)
+        .join("");
+    }
+    if (!text) return;
+
+    const trimmed = text.trim();
+    setMessageQueue((prev) => {
+      if (prev.length === 0) return prev;
+      // Find the first queued message whose text matches and remove it
+      const idx = prev.findIndex((qm) => qm.text.trim() === trimmed);
+      if (idx === -1) return prev;
+      return [...prev.slice(0, idx), ...prev.slice(idx + 1)];
+    });
+  }, []);
 
   const applyMcpReport = React.useCallback((mcpReport: {
     slow?: boolean;
@@ -2176,7 +2203,17 @@ export function App() {
       thinkingStartTimesRef.current = new Map();
       thinkingDurationsRef.current = new Map();
     }
-  }, [upsertMessage, upsertMessageDebounced, cancelPendingDeltas, appendLocalSystemMessage, scheduleToolStreamFlush]);
+  }, [
+    upsertMessage,
+    upsertMessageDebounced,
+    cancelPendingDeltas,
+    appendLocalSystemMessage,
+    scheduleToolStreamFlush,
+    applyMcpReport,
+    getFallbackPromptKey,
+    patchSessionCache,
+    removeQueuedMessageByContent,
+  ]);
 
   React.useEffect(() => {
     const socket = io("/hub", { withCredentials: true });
@@ -2804,15 +2841,15 @@ export function App() {
         if (deliverAs === "steer") {
           // Steer messages appear immediately in the conversation
           const now = Date.now();
-          setMessages((prev) => [
-            ...prev,
-            {
-              key: `user:steer:${now}:${Math.random().toString(16).slice(2)}`,
-              role: "user",
-              timestamp: now,
-              content: trimmed,
-            },
-          ]);
+          const optimisticSteerMessage: RelayMessage = {
+            key: `user:steer:${now}:${Math.random().toString(16).slice(2)}`,
+            role: "user",
+            timestamp: now,
+            content: trimmed,
+          };
+          const next = [...messagesRef.current, optimisticSteerMessage];
+          setMessages(next);
+          patchSessionCache({ messages: next });
           setViewerStatus("Steering message sent");
         } else {
           setMessageQueue((prev) => [
@@ -2835,7 +2872,7 @@ export function App() {
       failCurrentAttempt();
       return false;
     }
-  }, []);
+  }, [patchSessionCache]);
 
   const sendRemoteExec = React.useCallback((payload: any) => {
     const socket = viewerWsRef.current;
@@ -2978,34 +3015,6 @@ export function App() {
 
   const editQueuedMessage = React.useCallback((id: string, newText: string) => {
     setMessageQueue((prev) => prev.map((m) => m.id === id ? { ...m, text: newText } : m));
-  }, []);
-
-  /** Remove a queued message whose text matches an incoming user message from the stream. */
-  const removeQueuedMessageByContent = React.useCallback((rawMessage: unknown) => {
-    if (!rawMessage || typeof rawMessage !== "object") return;
-    const msg = rawMessage as Record<string, unknown>;
-    if (msg.role !== "user") return;
-
-    // Extract text from user message content (string or array of text blocks)
-    let text = "";
-    if (typeof msg.content === "string") {
-      text = msg.content;
-    } else if (Array.isArray(msg.content)) {
-      text = (msg.content as Array<Record<string, unknown>>)
-        .filter((b) => b && typeof b === "object" && b.type === "text" && typeof b.text === "string")
-        .map((b) => b.text as string)
-        .join("");
-    }
-    if (!text) return;
-
-    const trimmed = text.trim();
-    setMessageQueue((prev) => {
-      if (prev.length === 0) return prev;
-      // Find the first queued message whose text matches and remove it
-      const idx = prev.findIndex((qm) => qm.text.trim() === trimmed);
-      if (idx === -1) return prev;
-      return [...prev.slice(0, idx), ...prev.slice(idx + 1)];
-    });
   }, []);
 
   const clearMessageQueue = React.useCallback(() => {
