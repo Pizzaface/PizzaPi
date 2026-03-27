@@ -145,14 +145,16 @@ Usage:
 Flags:
   --port <port>       Set the host port (persisted to config.json)
   --origins <list>    Set extra allowed CORS origins (comma-separated, persisted)
+  --tag <tag>         UI image tag from GHCR (default: latest)
+  --build             Build UI locally (fallback mode)
   -f, --foreground    Run in the foreground (don't detach)
   --no-cache          Rebuild Docker image without layer cache
   -h, --help          Show this help
 
-Host build:
-  PIZZAPI_PREBUILD_UI=false   Skip the host-side UI build and let Docker build it instead
+Local build fallback (`--build` only):
+  PIZZAPI_PREBUILD_UI=false   Skip host prebuild and build UI inside Docker
 
-Docker build args:
+Docker build args (local fallback mode):
   PREBUILT_UI (auto)    Set by pizza web based on the host prebuild result
 
 Configuration (~/.pizzapi/web/config.json):
@@ -171,6 +173,12 @@ pizzapi web --port 8080
 # Set extra CORS origins (persisted)
 pizzapi web --origins "https://example.com,https://other.com"
 
+# Pull a specific GHCR UI tag
+pizzapi web --tag main
+
+# Fallback to local UI build mode
+pizzapi web --build
+
 # Run in the foreground (don't detach)
 pizzapi web --foreground
 
@@ -185,7 +193,7 @@ pizzapi web status
 </Aside>
 
 <Aside type="tip">
-  On each start `pizza web` attempts to build the UI on the host using Bun (typically ~15 seconds) and injects the result into the Docker build. Set `PIZZAPI_PREBUILD_UI=false` if you prefer Docker to perform the UI build or if Bun is unavailable on the host.
+  By default `pizza web` pulls `ghcr.io/pizzaface/pizzapi-ui:latest` before startup (or your `--tag` value). Use `--build` to fall back to local UI builds; in that mode, set `PIZZAPI_PREBUILD_UI=false` if you want Docker to build the UI instead of host-side Bun.
 </Aside>
 
 | Subcommand | Description |
@@ -201,7 +209,10 @@ pizzapi web status
 |------|-------------|
 | `--port <number>` | HTTP port to expose (default: `7492`). Persisted to `config.json`. |
 | `--origins <list>` | Extra CORS origins, comma-separated. Persisted to `config.json`. |
+| `--tag <tag>` | UI image tag to pull from `ghcr.io/pizzaface/pizzapi-ui` (default: `latest`). |
+| `--build` | Build UI locally instead of pulling GHCR image (fallback mode). |
 | `--foreground`, `-f` | Run in the foreground instead of detaching |
+| `--no-cache` | Rebuild Docker image without layer cache |
 | `--help`, `-h` | Show help |
 
 #### `pizzapi web config`

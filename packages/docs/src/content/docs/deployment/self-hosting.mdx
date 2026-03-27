@@ -5,7 +5,7 @@ description: Deploy your own PizzaPi relay server with Docker Compose or run it 
 
 import { Tabs, TabItem, Steps, Aside } from "@astrojs/starlight/components";
 
-Self-hosting gives you full control over your data, no rate limits, and the ability to customize the server. The stack is two Docker services: **Redis** (event buffer) and the **PizzaPi server** (relay API + web UI).
+Self-hosting gives you full control over your data, no rate limits, and the ability to customize the server. The default Docker stack includes **Redis** (event buffer), a **UI sidecar** (GHCR UI assets), and the **PizzaPi server** (relay API + web UI).
 
 ---
 
@@ -20,11 +20,11 @@ pizzapi web
 This automatically:
 1. Clones the PizzaPi repo (if not already present) to `~/.pizzapi/web/repo`
 2. Generates required secrets (including `BETTER_AUTH_SECRET` and VAPID keys) and a Docker Compose file in `~/.pizzapi/web/`
-3. Builds the UI on your host with Bun (cached between runs unless sources change)
+3. Pulls the UI image from GHCR (`ghcr.io/pizzaface/pizzapi-ui:latest` by default)
 4. Builds and starts Redis + the relay server
-4. Serves the web UI at **http://localhost:7492**
+5. Serves the web UI at **http://localhost:7492**
 
-On subsequent runs, it pulls the latest changes and rebuilds if needed.
+On subsequent runs, it pulls the latest repo changes and refreshes the configured UI image tag before startup.
 
 ```bash
 # Custom port (persisted for future runs)
@@ -32,6 +32,12 @@ pizzapi web --port 8080
 
 # Set extra CORS origins (persisted)
 pizzapi web --origins "https://example.com"
+
+# Pull a specific GHCR UI tag
+pizzapi web --tag main
+
+# Fallback to local UI build mode
+pizzapi web --build
 
 # Run in the foreground
 pizzapi web --foreground
@@ -52,7 +58,7 @@ All settings are persisted in `~/.pizzapi/web/config.json` and applied on every 
 Persistent data (SQLite database) is stored in `~/.pizzapi/web/data/`.
 
 <Aside type="tip">
-  `pizza web` is ideal for personal use or quick evaluation. For production deployments with custom domains and TLS, see the manual Docker Compose setup below. See the [CLI Reference](/PizzaPi/running/cli-reference/#pizzapi-web) for the full list of commands and config keys. Set `PIZZAPI_PREBUILD_UI=false` if you would rather have Docker perform the UI build.
+  `pizza web` is ideal for personal use or quick evaluation. For production deployments with custom domains and TLS, see the manual Docker Compose setup below. See the [CLI Reference](/PizzaPi/running/cli-reference/#pizzapi-web) for the full list of commands and config keys. Use `--build` if GHCR is unavailable; in that mode, set `PIZZAPI_PREBUILD_UI=false` to force Docker-side UI builds.
 </Aside>
 
 ---
@@ -78,6 +84,7 @@ Persistent data (SQLite database) is stored in `~/.pizzapi/web/data/`.
    | Service | Port | Description |
    |---------|------|-------------|
    | `redis` | 6379 | Session event buffer (internal) |
+   | `ui` | — | Sidecar that syncs the GHCR UI assets into a shared volume |
    | `server` | 7492 | Relay API + Web UI |
 
 3. **Open the web UI**

@@ -6,10 +6,11 @@ services:
     command: ["redis-server", "--save", "", "--appendonly", "no"]
     restart: unless-stopped
 
-  server:
+{{UI_SERVICE_BLOCK}}  server:
     build:
       context: {{REPO_PATH}}
       dockerfile: Dockerfile
+      target: {{SERVER_BUILD_TARGET}}
       args:
         PREBUILT_UI: "{{PREBUILT_UI}}"
         UI_DIST_HASH: "{{UI_DIST_HASH}}"
@@ -24,7 +25,10 @@ services:
       - VAPID_SUBJECT={{VAPID_SUBJECT}}
 {{EXTRA_ORIGINS_LINE}}{{TRUST_PROXY_LINE}}{{PROXY_DEPTH_LINE}}    volumes:
       - {{DATA_DIR}}:/app/data:Z
-    depends_on:
+{{UI_VOLUME_LINE}}    depends_on:
       - redis
-    restart: unless-stopped
+{{UI_DEPENDS_ON_LINE}}    restart: unless-stopped
     stop_grace_period: 30s
+
+volumes:
+  ui-dist:

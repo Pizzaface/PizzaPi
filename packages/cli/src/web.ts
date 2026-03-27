@@ -3,6 +3,8 @@
  *
  * Usage:
  *   pizza web                  Start the hub (default port 7492)
+ *   pizza web --tag main       Pull and use ghcr.io/pizzaface/pizzapi-ui:main
+ *   pizza web --build          Fallback: build UI locally instead of pulling GHCR image
  *   pizza web --port 8080      Start on a custom port (persisted)
  *   pizza web stop             Stop the hub
  *   pizza web logs             Tail logs
@@ -45,6 +47,7 @@ const WEB_DIR = join(homedir(), ".pizzapi", "web");
 const CONFIG_PATH = join(WEB_DIR, "config.json");
 const HOST_BUILD_STATE_PATH = join(WEB_DIR, "host-build.json");
 const REPO_URL = "https://github.com/Pizzaface/PizzaPi.git";
+const UI_IMAGE_REPOSITORY = "ghcr.io/pizzaface/pizzapi-ui";
 const log = createLogger("web");
 
 interface HostBuildState {
@@ -581,10 +584,11 @@ services:
     command: ["redis-server", "--save", "", "--appendonly", "no"]
     restart: unless-stopped
 
-  server:
+{{UI_SERVICE_BLOCK}}  server:
     build:
       context: {{REPO_PATH}}
       dockerfile: Dockerfile
+      target: {{SERVER_BUILD_TARGET}}
       args:
         PREBUILT_UI: "{{PREBUILT_UI}}"
         UI_DIST_HASH: "{{UI_DIST_HASH}}"
@@ -599,10 +603,13 @@ services:
       - VAPID_SUBJECT={{VAPID_SUBJECT}}
 {{EXTRA_ORIGINS_LINE}}{{TRUST_PROXY_LINE}}{{PROXY_DEPTH_LINE}}    volumes:
       - {{DATA_DIR}}:/app/data:Z
-    depends_on:
+{{UI_VOLUME_LINE}}    depends_on:
       - redis
-    restart: unless-stopped
+{{UI_DEPENDS_ON_LINE}}    restart: unless-stopped
     stop_grace_period: 30s
+
+volumes:
+  ui-dist:
 `;
 
 // ─── Host-side UI pre-build ──────────────────────────────────────────────────
@@ -728,9 +735,18 @@ function writeBuildStamp(distDir: string): void {
     }
 }
 
-function generateComposeFile(repoPath: string, config: WebConfig, prebuiltUi: boolean, uiDistHash?: string): string {
+function generateComposeFile(opts: {
+    repoPath: string;
+    config: WebConfig;
+    useLocalUiBuild: boolean;
+    imageTag: string;
+    prebuiltUi: boolean;
+    uiDistHash?: string;
+}): string {
     const composePath = join(WEB_DIR, "compose.yml");
     mkdirSync(WEB_DIR, { recursive: true });
+
+    const { repoPath, config, useLocalUiBuild, imageTag, prebuiltUi, uiDistHash } = opts;
 
     const dataDir = join(WEB_DIR, "data");
     mkdirSync(dataDir, { recursive: true });
@@ -778,6 +794,14 @@ function generateComposeFile(repoPath: string, config: WebConfig, prebuiltUi: bo
         ? `      - PIZZAPI_PROXY_DEPTH=${config.proxyDepth}\n`
         : `      # - PIZZAPI_PROXY_DEPTH=\n`;
 
+    const uiServiceBlock = useLocalUiBuild
+        ? ""
+        : `  ui:\n    image: ${UI_IMAGE_REPOSITORY}:${imageTag}\n    pull_policy: always\n    command: ["/bin/sh", "-c", "rm -rf /ui-dist/* && cp -a /usr/share/nginx/html/. /ui-dist/ && tail -f /dev/null"]\n    volumes:\n      - ui-dist:/ui-dist\n    healthcheck:\n      test: ["CMD", "test", "-f", "/ui-dist/index.html"]\n      interval: 10s\n      timeout: 5s\n      retries: 5\n    restart: unless-stopped\n\n`;
+
+    const uiVolumeLine = useLocalUiBuild ? "" : "      - ui-dist:/app/packages/ui/dist:ro\n";
+    const uiDependsOnLine = useLocalUiBuild ? "" : "      - ui\n";
+    const serverBuildTarget = useLocalUiBuild ? "runtime" : "runtime-no-ui";
+
     const compose = template
         .replace(/\{\{REPO_PATH}}/g, repoPath)
         .replace(/\{\{PORT}}/g, String(config.port))
@@ -789,6 +813,10 @@ function generateComposeFile(repoPath: string, config: WebConfig, prebuiltUi: bo
         .replace(/\{\{EXTRA_ORIGINS_LINE}}/g, extraOriginsLine)
         .replace(/\{\{TRUST_PROXY_LINE}}/g, trustProxyLine)
         .replace(/\{\{PROXY_DEPTH_LINE}}/g, proxyDepthLine)
+        .replace(/\{\{UI_SERVICE_BLOCK}}/g, uiServiceBlock)
+        .replace(/\{\{UI_VOLUME_LINE}}/g, uiVolumeLine)
+        .replace(/\{\{UI_DEPENDS_ON_LINE}}/g, uiDependsOnLine)
+        .replace(/\{\{SERVER_BUILD_TARGET}}/g, serverBuildTarget)
         .replace(/\{\{PREBUILT_UI}}/g, prebuiltUi ? "true" : "false")
         .replace(/\{\{UI_DIST_HASH}}/g, uiDistHash ?? "none");
 
@@ -828,13 +856,20 @@ async function composeExecAsync(composePath: string, args: string[]): Promise<nu
 interface ParsedArgs {
     port?: number;
     origins?: string;
+    tag: string;
+    build: boolean;
     detach: boolean;
     noCache: boolean;
     help: boolean;
 }
 
+function isValidDockerTag(tag: string): boolean {
+    // Docker tags are 1–128 chars; allow common tag characters.
+    return /^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$/.test(tag);
+}
+
 export function parseArgs(args: string[]): ParsedArgs {
-    const result: ParsedArgs = { detach: true, noCache: false, help: false };
+    const result: ParsedArgs = { tag: "latest", build: false, detach: true, noCache: false, help: false };
 
     for (let i = 0; i < args.length; i++) {
         const arg = args[i];
@@ -858,6 +893,20 @@ export function parseArgs(args: string[]): ParsedArgs {
             }
             result.origins = next;
             i++;
+        } else if (arg === "--tag") {
+            const next = args[i + 1];
+            if (!next || next.startsWith("-")) {
+                log.error("--tag requires a value (for example: latest, main, sha)");
+                process.exit(1);
+            }
+            if (!isValidDockerTag(next)) {
+                log.error(`Invalid image tag: ${next}`);
+                process.exit(1);
+            }
+            result.tag = next;
+            i++;
+        } else if (arg === "--build") {
+            result.build = true;
         } else if (arg === "--foreground" || arg === "-f") {
             result.detach = false;
         } else if (arg === "--no-cache") {
@@ -887,6 +936,8 @@ function printWebHelp(): void {
     log.info(c.label("Flags"));
     log.info(`  ${c.flag("--port")} ${c.dim("<port>")}       Set the host port ${c.dim("(persisted to config.json)")}`);
     log.info(`  ${c.flag("--origins")} ${c.dim("<list>")}    Set extra allowed CORS origins ${c.dim("(comma-separated, persisted)")}`);
+    log.info(`  ${c.flag("--tag")} ${c.dim("<tag>")}         UI image tag from GHCR ${c.dim("(default: latest)")}`);
+    log.info(`  ${c.flag("--build")}             Build UI locally ${c.dim("(fallback when GHCR is unavailable)")}`);
     log.info(`  ${c.flag("-f, --foreground")}    Run in the foreground ${c.dim("(don't detach)")}`);
     log.info(`  ${c.flag("--no-cache")}          Rebuild Docker image without layer cache`);
     log.info(`  ${c.flag("-h, --help")}          Show this help`);
@@ -898,6 +949,8 @@ function printWebHelp(): void {
     log.info("");
     log.info(c.label("Examples"));
     log.info(`  ${c.dim("pizza web")}                           Start on default port 7492`);
+    log.info(`  ${c.dim("pizza web --tag main")}                 Pull ghcr.io/pizzaface/pizzapi-ui:main`);
+    log.info(`  ${c.dim("pizza web --build")}                    Build UI locally (fallback mode)`);
     log.info(`  ${c.dim("pizza web --port 8080")}               Start on port 8080 (remembered for next time)`);
     log.info(`  ${c.dim("pizza web config set port 9000")}      Change port without starting`);
     log.info(`  ${c.dim('pizza web config set extraOrigins "https://example.com"')}`);
@@ -1074,26 +1127,47 @@ export async function runWeb(args: string[]): Promise<void> {
 
     const repoPath = getRepoPath();
 
-    const useHostPrebuild = readBooleanEnv(process.env.PIZZAPI_PREBUILD_UI, true);
-    if (!useHostPrebuild) {
-        log.info("Skipping host UI pre-build (PIZZAPI_PREBUILD_UI=false).");
+    let prebuildResult: PrebuildResult = { prebuilt: false, rebuilt: false };
+    if (parsed.build) {
+        const useHostPrebuild = readBooleanEnv(process.env.PIZZAPI_PREBUILD_UI, true);
+        if (!useHostPrebuild) {
+            log.info("Skipping host UI pre-build (PIZZAPI_PREBUILD_UI=false).");
+        }
+
+        // Local fallback mode: pre-build UI on the host for much faster Docker builds when enabled.
+        prebuildResult = useHostPrebuild
+            ? prebuildUI(repoPath)
+            : { prebuilt: false, rebuilt: false };
     }
 
-    // Pre-build UI on the host for much faster Docker builds when enabled.
-    const prebuildResult: PrebuildResult = useHostPrebuild
-        ? prebuildUI(repoPath)
-        : { prebuilt: false, rebuilt: false };
-    const composePath = generateComposeFile(repoPath, config, prebuildResult.prebuilt, prebuildResult.distHash);
+    const composePath = generateComposeFile({
+        repoPath,
+        config,
+        useLocalUiBuild: parsed.build,
+        imageTag: parsed.tag,
+        prebuiltUi: prebuildResult.prebuilt,
+        uiDistHash: prebuildResult.distHash,
+    });
 
     log.info(`Starting PizzaPi web on port ${config.port}...`);
     log.info(`  Repo:    ${repoPath}`);
     log.info(`  Config:  ${CONFIG_PATH}`);
+    if (parsed.build) {
+        log.info("  UI:      local build (--build)");
+    } else {
+        log.info(`  UI:      ${UI_IMAGE_REPOSITORY}:${parsed.tag}`);
+    }
     log.info("");
+
+    if (!parsed.build) {
+        log.info(`Pulling UI image ${UI_IMAGE_REPOSITORY}:${parsed.tag}...`);
+        await composeExecAsync(composePath, ["pull", "ui"]);
+    }
 
     // When the host prebuild actually rebuilt, force-recreate containers so
     // Docker picks up the new image even if BuildKit's layer cache didn't
     // detect the change (common on macOS Docker Desktop with virtiofs).
-    const forceRecreate = prebuildResult.rebuilt || parsed.noCache;
+    const forceRecreate = (parsed.build && prebuildResult.rebuilt) || parsed.noCache;
 
     // --no-cache: run a separate `docker compose build --no-cache` first,
     // because `docker compose up` doesn't support --no-cache directly.

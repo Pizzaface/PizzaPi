@@ -30,10 +30,11 @@ services:
     command: ["redis-server", "--save", "", "--appendonly", "no"]
     restart: unless-stopped
 
-  server:
+{{UI_SERVICE_BLOCK}}  server:
     build:
       context: {{REPO_PATH}}
       dockerfile: Dockerfile
+      target: {{SERVER_BUILD_TARGET}}
       args:
         PREBUILT_UI: "{{PREBUILT_UI}}"
         UI_DIST_HASH: "{{UI_DIST_HASH}}"
@@ -48,10 +49,13 @@ services:
       - VAPID_SUBJECT={{VAPID_SUBJECT}}
 {{EXTRA_ORIGINS_LINE}}{{TRUST_PROXY_LINE}}{{PROXY_DEPTH_LINE}}    volumes:
       - {{DATA_DIR}}:/app/data:Z
-    depends_on:
+{{UI_VOLUME_LINE}}    depends_on:
       - redis
-    restart: unless-stopped
+{{UI_DEPENDS_ON_LINE}}    restart: unless-stopped
     stop_grace_period: 30s
+
+volumes:
+  ui-dist:
 `;
 
 describe("web.ts compose template", () => {
@@ -157,6 +161,10 @@ describe("readBooleanEnv", () => {
         expect(COMPOSE_TEMPLATE).toContain("{{VAPID_PRIVATE_KEY}}");
         expect(COMPOSE_TEMPLATE).toContain("{{VAPID_SUBJECT}}");
         expect(COMPOSE_TEMPLATE).toContain("{{EXTRA_ORIGINS_LINE}}");
+        expect(COMPOSE_TEMPLATE).toContain("{{UI_SERVICE_BLOCK}}");
+        expect(COMPOSE_TEMPLATE).toContain("{{UI_VOLUME_LINE}}");
+        expect(COMPOSE_TEMPLATE).toContain("{{UI_DEPENDS_ON_LINE}}");
+        expect(COMPOSE_TEMPLATE).toContain("{{SERVER_BUILD_TARGET}}");
         expect(COMPOSE_TEMPLATE).toContain("{{PREBUILT_UI}}");
         expect(COMPOSE_TEMPLATE).toContain("{{UI_DIST_HASH}}");
     });
@@ -173,6 +181,10 @@ describe("readBooleanEnv", () => {
             .replace(/\{\{EXTRA_ORIGINS_LINE}}/g, "      - PIZZAPI_EXTRA_ORIGINS=https://example.com\n")
             .replace(/\{\{TRUST_PROXY_LINE}}/g, "      # - PIZZAPI_TRUST_PROXY=\n")
             .replace(/\{\{PROXY_DEPTH_LINE}}/g, "      # - PIZZAPI_PROXY_DEPTH=\n")
+            .replace(/\{\{UI_SERVICE_BLOCK}}/g, "  ui:\n    image: ghcr.io/pizzaface/pizzapi-ui:latest\n")
+            .replace(/\{\{UI_VOLUME_LINE}}/g, "      - ui-dist:/app/packages/ui/dist:ro\n")
+            .replace(/\{\{UI_DEPENDS_ON_LINE}}/g, "      - ui\n")
+            .replace(/\{\{SERVER_BUILD_TARGET}}/g, "runtime-no-ui")
             .replace(/\{\{PREBUILT_UI}}/g, "true")
             .replace(/\{\{UI_DIST_HASH}}/g, "abc123def456");
 
@@ -185,6 +197,8 @@ describe("readBooleanEnv", () => {
         expect(composed).toContain("redis:");
         expect(composed).toContain("server:");
         expect(composed).toContain('context: /home/user/.pizzapi/web/repo');
+        expect(composed).toContain('target: runtime-no-ui');
+        expect(composed).toContain('image: ghcr.io/pizzaface/pizzapi-ui:latest');
         expect(composed).toContain('"7492:7492"');
         expect(composed).toContain("BETTER_AUTH_SECRET=Secret123");
         expect(composed).toContain("VAPID_PUBLIC_KEY=BTestPublicKey123");
@@ -192,6 +206,7 @@ describe("readBooleanEnv", () => {
         expect(composed).toContain("VAPID_SUBJECT=mailto:admin@pizzapi.local");
         expect(composed).toContain("PIZZAPI_EXTRA_ORIGINS=https://example.com");
         expect(composed).toContain("/home/user/.pizzapi/web/data:/app/data:Z");
+        expect(composed).toContain("ui-dist:/app/packages/ui/dist:ro");
         expect(composed).toContain('PREBUILT_UI: "true"');
     });
 
@@ -207,6 +222,10 @@ describe("readBooleanEnv", () => {
             .replace(/\{\{EXTRA_ORIGINS_LINE}}/g, "      # - PIZZAPI_EXTRA_ORIGINS=\n")
             .replace(/\{\{TRUST_PROXY_LINE}}/g, "      # - PIZZAPI_TRUST_PROXY=\n")
             .replace(/\{\{PROXY_DEPTH_LINE}}/g, "      # - PIZZAPI_PROXY_DEPTH=\n")
+            .replace(/\{\{UI_SERVICE_BLOCK}}/g, "")
+            .replace(/\{\{UI_VOLUME_LINE}}/g, "")
+            .replace(/\{\{UI_DEPENDS_ON_LINE}}/g, "")
+            .replace(/\{\{SERVER_BUILD_TARGET}}/g, "runtime")
             .replace(/\{\{PREBUILT_UI}}/g, "false")
             .replace(/\{\{UI_DIST_HASH}}/g, "none");
 
@@ -509,11 +528,23 @@ describe("resolveMissingProxySettings", () => {
 });
 
 describe("parseArgs", () => {
-    test("defaults: detach true, noCache false, help false", () => {
+    test("defaults: latest tag, local build off, detach true, noCache false, help false", () => {
         const r = parseArgs([]);
+        expect(r.tag).toBe("latest");
+        expect(r.build).toBe(false);
         expect(r.detach).toBe(true);
         expect(r.noCache).toBe(false);
         expect(r.help).toBe(false);
+    });
+
+    test("--tag sets image tag", () => {
+        const r = parseArgs(["--tag", "main"]);
+        expect(r.tag).toBe("main");
+    });
+
+    test("--build enables local build fallback", () => {
+        const r = parseArgs(["--build"]);
+        expect(r.build).toBe(true);
     });
 
     test("--no-cache sets noCache", () => {
@@ -531,9 +562,11 @@ describe("parseArgs", () => {
     });
 
     test("combines multiple flags", () => {
-        const r = parseArgs(["--no-cache", "-f", "--port", "9000"]);
+        const r = parseArgs(["--no-cache", "-f", "--port", "9000", "--tag", "sha123", "--build"]);
         expect(r.noCache).toBe(true);
         expect(r.detach).toBe(false);
         expect(r.port).toBe(9000);
+        expect(r.tag).toBe("sha123");
+        expect(r.build).toBe(true);
     });
 });
