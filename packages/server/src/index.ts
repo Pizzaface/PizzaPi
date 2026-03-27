@@ -28,21 +28,6 @@ import {
 // Truly fatal errors trigger a graceful shutdown with a 10 s drain window
 // rather than an immediate process.exit so in-flight requests can complete.
 
-// Only classify errors that are genuinely scoped to a single request and
-// cannot indicate broader server-state corruption.  Per-socket network
-// errors (ECONNRESET, ENOTCONN, ERR_STREAM_DESTROYED) are handled
-// separately in the uncaughtException handler because they deserve their
-// own log level and comment — they are transient but still unusual at the
-// uncaughtException level (they should be caught at the call site).
-function isRecoverableError(err: Error): boolean {
-    // JSON.parse failures from malformed request bodies — fully scoped to
-    // one request; the server's state is untouched.
-    if (err instanceof SyntaxError && err.message.toLowerCase().includes("json")) {
-        return true;
-    }
-    return false;
-}
-
 process.on("uncaughtException", (err: Error) => {
     const code = (err as NodeJS.ErrnoException).code;
 
@@ -63,11 +48,13 @@ process.on("uncaughtException", (err: Error) => {
         return;
     }
 
-    // Single-request failures (e.g. malformed JSON body) — no state damage.
-    if (isRecoverableError(err)) {
-        processLog.warn("Caught recoverable per-request error — logging and continuing:", err);
-        return;
-    }
+    // NOTE: SyntaxError / JSON parse failures are intentionally NOT handled
+    // here.  At the uncaughtException level there is no reliable way to
+    // determine whether a SyntaxError originated from a single malformed
+    // request body (safe to swallow) or from startup / config / background
+    // code (potentially corrupted state).  Malformed request bodies must be
+    // caught at the request boundary (e.g. in handler.ts), not reclassified
+    // as recoverable at process scope.
 
     // Fatal: initiate graceful shutdown instead of an immediate process.exit(1).
     // onShutdownSignal is a hoisted function declaration and is callable here

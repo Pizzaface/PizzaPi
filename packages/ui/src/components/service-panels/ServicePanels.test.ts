@@ -16,45 +16,13 @@
  *    fell back to tabs[0] (Tunnels) and the user perceived Tunnels as having
  *    stolen focus.
  *
- * Because the fix lives in App.tsx (a large React component that requires a
- * real DOM renderer), the tests here verify the *pure decision logic*
- * extracted from that component — the same way usePanelLayout.test.ts tests
- * pure helpers rather than the full hook.
+ * The helpers under test (`resolveNewPanelPosition`, `resolveActiveTabIdFromIds`)
+ * are extracted from App.tsx into `@/utils/servicePanelUtils` so that these
+ * tests exercise the real production code rather than mirror copies.
  */
 
 import { describe, expect, test } from "bun:test";
-import type { PanelPosition } from "@/hooks/usePanelLayout";
-
-// ── Pure helpers mirroring App.tsx logic ──────────────────────────────────────
-
-/**
- * Mirrors the position-override logic added to handleToggleServicePanel:
- *
- * When the currently-active tab IS a service panel (i.e. it's in
- * activeServicePanels), the new panel should inherit that panel's position so
- * both appear in the same group.  Otherwise the stored/default position is
- * used unchanged.
- */
-function resolveNewPanelPosition(
-    newServiceId: string,
-    combinedActiveTab: string,
-    activeServicePanels: Set<string>,
-    getPanelPosition: (id: string) => PanelPosition,
-): PanelPosition {
-    if (activeServicePanels.has(combinedActiveTab)) {
-        return getPanelPosition(combinedActiveTab);
-    }
-    return getPanelPosition(newServiceId);
-}
-
-/**
- * Mirrors resolveActiveTabId in App.tsx:
- * returns combinedActiveTab if it is in the group, otherwise tabs[0].
- */
-function resolveActiveTabId(tabs: string[], combinedActiveTab: string): string {
-    if (tabs.length === 0) return combinedActiveTab;
-    return tabs.includes(combinedActiveTab) ? combinedActiveTab : tabs[0]!;
-}
+import { resolveNewPanelPosition, resolveActiveTabIdFromIds } from "../../utils/servicePanelUtils";
 
 // ── Adding bug: new panel should join the current active group ────────────────
 
@@ -65,13 +33,12 @@ describe("resolveNewPanelPosition — adding bug", () => {
         // the two panels to land in different groups.
         // After fix: godmother is placed at "bottom" (same as tunnel).
         const activeServicePanels = new Set(["tunnel"]);
-        const positions = new Map<string, PanelPosition>([
+        const positions = new Map([
             ["tunnel", "bottom"],
             // godmother has a *different* stored position
             ["godmother", "right"],
-        ]);
-        const getPanelPosition = (id: string): PanelPosition =>
-            positions.get(id) ?? "right";
+        ] as const);
+        const getPanelPosition = (id: string) => positions.get(id) ?? "right";
 
         const result = resolveNewPanelPosition(
             "godmother",
@@ -87,9 +54,8 @@ describe("resolveNewPanelPosition — adding bug", () => {
         // No service panels open yet.  combinedActiveTab = "terminal".
         // The new panel should use its stored/default position.
         const activeServicePanels = new Set<string>(); // empty
-        const positions = new Map<string, PanelPosition>([["godmother", "left"]]);
-        const getPanelPosition = (id: string): PanelPosition =>
-            positions.get(id) ?? "right";
+        const positions = new Map([["godmother", "left"]] as const);
+        const getPanelPosition = (id: string) => positions.get(id) ?? "right";
 
         const result = resolveNewPanelPosition(
             "godmother",
@@ -103,7 +69,7 @@ describe("resolveNewPanelPosition — adding bug", () => {
 
     test("uses default 'right' position when no service panel is active and no stored position", () => {
         const activeServicePanels = new Set<string>();
-        const getPanelPosition = (_id: string): PanelPosition => "right"; // default
+        const getPanelPosition = (_id: string) => "right" as const; // default
 
         const result = resolveNewPanelPosition(
             "godmother",
@@ -119,12 +85,11 @@ describe("resolveNewPanelPosition — adding bug", () => {
         // Tunnel is active at "right", godmother has a stale "bottom" in localStorage.
         // User clicks godmother button → should appear at "right" (same group as tunnel).
         const activeServicePanels = new Set(["tunnel"]);
-        const positions = new Map<string, PanelPosition>([
+        const positions = new Map([
             ["tunnel", "right"],
             ["godmother", "bottom"], // stale stored position
-        ]);
-        const getPanelPosition = (id: string): PanelPosition =>
-            positions.get(id) ?? "right";
+        ] as const);
+        const getPanelPosition = (id: string) => positions.get(id) ?? "right";
 
         const result = resolveNewPanelPosition(
             "godmother",
@@ -139,12 +104,11 @@ describe("resolveNewPanelPosition — adding bug", () => {
     test("does not change position when new panel is already in the same group", () => {
         // Both panels default to "right" — the fix is a no-op in this case.
         const activeServicePanels = new Set(["tunnel"]);
-        const positions = new Map<string, PanelPosition>([
+        const positions = new Map([
             ["tunnel", "right"],
             ["godmother", "right"],
-        ]);
-        const getPanelPosition = (id: string): PanelPosition =>
-            positions.get(id) ?? "right";
+        ] as const);
+        const getPanelPosition = (id: string) => positions.get(id) ?? "right";
 
         const result = resolveNewPanelPosition(
             "godmother",
@@ -157,13 +121,13 @@ describe("resolveNewPanelPosition — adding bug", () => {
     });
 });
 
-// ── Moving bug: resolveActiveTabId should use combinedActiveTab when present ──
+// ── Moving bug: resolveActiveTabIdFromIds should use combinedActiveTab when present ──
 
-describe("resolveActiveTabId — moving bug", () => {
+describe("resolveActiveTabIdFromIds — moving bug", () => {
     test("returns combinedActiveTab when it is in the group", () => {
         // Both tunnel and godmother are in the right group; godmother is active.
         expect(
-            resolveActiveTabId(["tunnel", "godmother"], "godmother"),
+            resolveActiveTabIdFromIds(["tunnel", "godmother"], "godmother"),
         ).toBe("godmother");
     });
 
@@ -171,28 +135,28 @@ describe("resolveActiveTabId — moving bug", () => {
         // Godmother moved to bottom; right group only has tunnel.
         // The correct fallback is tabs[0] = tunnel.
         expect(
-            resolveActiveTabId(["tunnel"], "godmother"),
+            resolveActiveTabIdFromIds(["tunnel"], "godmother"),
         ).toBe("tunnel");
     });
 
-    test("after adding fix: both panels are in the same group so resolveActiveTabId returns the new panel", () => {
+    test("after adding fix: both panels are in the same group so resolveActiveTabIdFromIds returns the new panel", () => {
         // With the adding fix, godmother is placed in the same group as tunnel.
         // combinedActiveTab = "godmother" (set by handleCombinedTabChange).
         // Both panels are in the right group.
         const rightGroupTabs = ["tunnel", "godmother"];
-        expect(resolveActiveTabId(rightGroupTabs, "godmother")).toBe("godmother");
+        expect(resolveActiveTabIdFromIds(rightGroupTabs, "godmother")).toBe("godmother");
     });
 
     test("single-tab group always returns its only tab", () => {
         // If godmother is the only tab in its group and is combinedActiveTab:
-        expect(resolveActiveTabId(["godmother"], "godmother")).toBe("godmother");
+        expect(resolveActiveTabIdFromIds(["godmother"], "godmother")).toBe("godmother");
         // If godmother is elsewhere and tunnel is the only tab:
-        expect(resolveActiveTabId(["tunnel"], "godmother")).toBe("tunnel");
+        expect(resolveActiveTabIdFromIds(["tunnel"], "godmother")).toBe("tunnel");
     });
 
     test("returns combinedActiveTab unchanged for empty tab list", () => {
         // No tabs → return combinedActiveTab (caller must not render a panel)
-        expect(resolveActiveTabId([], "godmother")).toBe("godmother");
+        expect(resolveActiveTabIdFromIds([], "godmother")).toBe("godmother");
     });
 
     test("moving panel: combinedActiveTab re-asserted via handleCombinedTabChange keeps focus", () => {
@@ -200,7 +164,7 @@ describe("resolveActiveTabId — moving bug", () => {
         // is called with "godmother".  The bottom group correctly highlights it.
         const bottomGroupAfterMove = ["godmother"];
         expect(
-            resolveActiveTabId(bottomGroupAfterMove, "godmother"),
+            resolveActiveTabIdFromIds(bottomGroupAfterMove, "godmother"),
         ).toBe("godmother");
     });
 });

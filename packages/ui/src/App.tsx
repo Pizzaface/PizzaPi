@@ -70,6 +70,7 @@ import { useRunnerServices, attachServiceAnnounceListener, seedServiceCache, set
 import { ServicePanelButtons, useServicePanelState } from "@/components/service-panels/ServicePanels";
 import { SERVICE_PANELS } from "@/components/service-panels/registry";
 import { DynamicLucideIcon } from "@/components/service-panels/lucide-icon";
+import { resolveNewPanelPosition, resolveActiveTabIdFromIds } from "@/utils/servicePanelUtils";
 import { IframeServicePanel } from "@/components/service-panels/IframeServicePanel";
 import {
   ModelSelector,
@@ -754,6 +755,12 @@ export function App() {
     // are cleared together. New fields added to SessionState are automatically
     // included; nothing can be accidentally left stale between sessions.
     setSessionState(createInitialSessionState());
+    // Reset live-status fields that are intentionally outside SessionState
+    // (they are driven by heartbeats, not snapshots) but must still be cleared
+    // when switching sessions so stale "compacting" / "plan mode" indicators
+    // are not carried over until the next heartbeat arrives.
+    setIsCompacting(false);
+    setPlanModeEnabled(false);
   }, []);
 
   // Full reset: cancel the RAF and wipe all pending streaming state. Use before
@@ -3644,13 +3651,17 @@ export function App() {
     if (activeServicePanels.has(serviceId)) {
       closeServicePanelById(serviceId);
     } else {
-      // If the currently-active tab is a service panel, place the new panel in
-      // the same position group so both appear together rather than in separate
-      // groups (which would leave the Tunnels panel highlighted in its group
-      // while the new panel appeared elsewhere).
-      if (activeServicePanels.has(combinedActiveTab)) {
-        setServicePanelPosition(serviceId, getServicePanelPosition(combinedActiveTab));
-      }
+      // Resolve the correct position for the new panel using the shared pure
+      // helper (also tested in ServicePanels.test.ts).  When the currently-
+      // active tab is a service panel, the new panel inherits that panel's
+      // position so both appear together rather than in separate dock groups.
+      const newPosition = resolveNewPanelPosition(
+        serviceId,
+        combinedActiveTab,
+        activeServicePanels,
+        getServicePanelPosition,
+      );
+      setServicePanelPosition(serviceId, newPosition);
       toggleServicePanel(serviceId);
       handleCombinedTabChange(serviceId);
     }
@@ -3779,8 +3790,7 @@ export function App() {
   }, [terminalPanelTab, filesPanelTab, gitPanelTab, servicePanelTabs]);
 
   const resolveActiveTabId = React.useCallback((tabs: CombinedPanelTab[]) => {
-    if (tabs.length === 0) return combinedActiveTab;
-    return tabs.some((tab) => tab.id === combinedActiveTab) ? combinedActiveTab : tabs[0]!.id;
+    return resolveActiveTabIdFromIds(tabs.map((t) => t.id), combinedActiveTab);
   }, [combinedActiveTab]);
 
   // Stable callbacks for memoized header components.
