@@ -352,13 +352,20 @@ jobs:
               $CLI_CMD web --build --port 7492 2>&1 | tee /tmp/pizza-web.log
 
               echo "[2/6] Waiting for web"
+              # Probe the explicit health endpoint instead of `/`.
+              # The API routes are the actual readiness contract for this test,
+              # while the root HTML route can vary across packaging modes.
               for i in $(seq 1 60); do
-                if curl -fsS "http://localhost:7492/" >/dev/null; then
+                HTTP_CODE=$(curl -sS -o /tmp/web-status.json -w "%{http_code}" "http://localhost:7492/api/status" || true)
+                if [ "$HTTP_CODE" = "200" ] && jq -e '.status == "ok" or .status == "degraded"' /tmp/web-status.json >/dev/null 2>&1; then
                   break
                 fi
                 if [ "$i" -eq 60 ]; then
-                  echo "Server did not become ready" >&2
-                  docker compose -p pizzapi-web logs || true
+                  echo "Server did not become ready (HTTP $HTTP_CODE)" >&2
+                  cat /tmp/web-status.json >&2 || true
+                  echo "--- GET / (debug) ---" >&2
+                  curl -i "http://localhost:7492/" >&2 || true
+                  docker compose -p pizzapi-web logs >&2 || true
                   exit 1
                 fi
                 sleep 2
