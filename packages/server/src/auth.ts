@@ -370,7 +370,31 @@ export function getDisableSignupAfterFirstUser(): boolean {
 
 export type Auth = AuthInstance;
 
+// ── Test helpers ──────────────────────────────────────────────────────────────
+// Bun's test runner runs ALL test files in a single process, so module-level
+// singletons like `_kysely` are shared across files.  When two test files each
+// call `initAuth({ dbPath })` with different temp DBs, the last one wins and
+// the other file's tests silently query the wrong database.
+//
+// These helpers let a test file pin `_kysely` to its own instance in
+// `beforeEach`, guaranteeing it is always correct even if another file's
+// `beforeAll` ran later and overwrote the singleton.
 
+/** Create a standalone Kysely instance for test isolation (does NOT touch the singleton). */
+export function createTestDatabase(dbPath: string): Kysely<DB> {
+    const sqliteDb = new Database(dbPath);
+    return new Kysely<DB>({ dialect: new BunSqliteDialect({ database: sqliteDb }) });
+}
+
+/**
+ * Override the global `_kysely` singleton.  Call this in `beforeEach` so
+ * every test case in your file uses the right database, regardless of
+ * what other test files did to the singleton between `beforeAll` hooks.
+ */
+export function _setKyselyForTest(db: Kysely<DB>): void {
+    _kysely = db;
+    _initialized = true;
+}
 
 // ── Signup gating ──────────────────────────────────────────────────────────────
 

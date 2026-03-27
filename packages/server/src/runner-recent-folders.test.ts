@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { recordRecentFolder, getRecentFolders, deleteRecentFolder, ensureRunnerRecentFoldersTable } from "./runner-recent-folders.js";
-import { initAuth, getKysely } from "./auth.js";
+import { createTestDatabase, _setKyselyForTest, getKysely } from "./auth.js";
 
 const USER = "user-1";
 const RUNNER = "runner-1";
@@ -11,12 +11,17 @@ const RUNNER = "runner-1";
 const tmpDir = mkdtempSync(join(tmpdir(), "pizzapi-recent-folders-test-"));
 const dbPath = join(tmpDir, "test.db");
 
+// Own Kysely instance — immune to other test files clobbering the singleton.
+const testDb = createTestDatabase(dbPath);
+
 beforeAll(async () => {
-    initAuth({ dbPath, baseURL: "http://localhost:7777", secret: "test-secret-rf" });
+    _setKyselyForTest(testDb);
     await ensureRunnerRecentFoldersTable();
 });
 
 beforeEach(async () => {
+    // Re-pin before every test — another file's beforeAll may have overwritten _kysely.
+    _setKyselyForTest(testDb);
     // Truncate rows for a clean slate (table already exists in temp DB).
     await getKysely().deleteFrom("runner_recent_folder").execute();
 });

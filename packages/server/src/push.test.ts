@@ -1,5 +1,5 @@
-import { describe, it, expect, beforeAll, afterAll, afterEach } from "bun:test";
-import { getKysely, initAuth } from "./auth.js";
+import { describe, it, expect, beforeAll, beforeEach, afterAll, afterEach } from "bun:test";
+import { getKysely, createTestDatabase, _setKyselyForTest } from "./auth.js";
 import { unsubscribePush, updateSuppressChildNotifications, getSubscriptionsForUser } from "./push.js";
 import { mkdtempSync, rmSync } from "fs";
 import { join } from "path";
@@ -9,9 +9,11 @@ import { tmpdir } from "os";
 const tmpDir = mkdtempSync(join(tmpdir(), "push-test-"));
 const tmpDbPath = join(tmpDir, "test.db");
 
-beforeAll(async () => {
-    initAuth({ dbPath: tmpDbPath });
+// Own Kysely instance — immune to other test files clobbering the singleton.
+const testDb = createTestDatabase(tmpDbPath);
 
+beforeAll(async () => {
+    _setKyselyForTest(testDb);
 
     await getKysely().schema
         .createTable("push_subscription")
@@ -24,6 +26,11 @@ beforeAll(async () => {
         .addColumn("enabledEvents", "text", (col) => col.notNull().defaultTo("*"))
         .addColumn("suppressChildNotifications", "integer", (col) => col.notNull().defaultTo(0))
         .execute();
+});
+
+// Re-pin before every test — another file's beforeAll may have overwritten _kysely.
+beforeEach(() => {
+    _setKyselyForTest(testDb);
 });
 
 afterEach(async () => {
