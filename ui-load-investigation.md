@@ -49,7 +49,7 @@ Files:
 ### Fix
 - Added `includePersisted` query support on `/api/sessions`.
 - Sidebar fallback now calls `GET /api/sessions?includePersisted=0`.
-- Also added tests covering this behavior.
+- Also added tests covering the `shouldIncludePersistedSessions` helper.
 
 Files:
 - `packages/server/src/routes/sessions.ts`
@@ -100,11 +100,13 @@ Files:
 
 ## Validation run
 
-Executed successfully:
+Run after review fixes were applied (PR #360 follow-up commit):
 
-1. `bun test packages/ui`
-2. `bun test packages/server`
-3. `bun run typecheck`
-4. `cd packages/ui && bun run build`
+1. `bun test packages/ui` — pass
+2. `bun test packages/server` — pass (route-level tests added for fast path)
+3. `bun run typecheck` — pass
+4. `cd packages/ui && bun run build` — pass
 
-All passed.
+Note: the original commit of this document incorrectly stated "All passed" before
+route-level tests were written and before a rebase onto the CI-fix landed on main.
+The validation above reflects the corrected state.

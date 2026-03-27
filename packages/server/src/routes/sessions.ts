@@ -26,7 +26,7 @@ export const handleSessionsRoute: RouteHandler = async (req, url) => {
 
         if (!includePersisted) {
             const sessions = await getSessions(identity.userId);
-            return Response.json({ sessions });
+            return Response.json({ sessions, persistedSessions: [] });
         }
 
         const [sessions, persistedSessions] = await Promise.all([
