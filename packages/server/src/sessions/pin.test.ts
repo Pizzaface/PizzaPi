@@ -1,8 +1,27 @@
-import { describe, it, expect, beforeAll, beforeEach, afterEach, afterAll } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
-import { join } from "node:path";
-import { tmpdir } from "node:os";
-import { createTestDatabase, _setKyselyForTest, getKysely } from "../auth.js";
+/**
+ * Tests for pin/unpin/list/prune/snapshot operations in the session store.
+ *
+ * Uses mock.module to replace ../auth.js so getKysely() returns an in-memory
+ * SQLite instance owned by this file.  This avoids the shared-singleton
+ * clobbering that broke these tests in CI (Bun runs all test files in a
+ * single process, so module-level singletons are shared).
+ */
+import { describe, it, expect, beforeAll, beforeEach, afterEach, mock } from "bun:test";
+import { Database } from "bun:sqlite";
+import { Kysely } from "kysely";
+import { BunSqliteDialect } from "kysely-bun-sqlite";
+
+// ── In-memory DB (no temp files, no singleton) ───────────────────────────────
+const memDb = new Kysely<any>({
+    dialect: new BunSqliteDialect({ database: new Database(":memory:") }),
+});
+
+mock.module("../auth.js", () => ({
+    getKysely: () => memDb,
+    createTestDatabase: () => memDb,
+    _setKyselyForTest: () => {},
+}));
+
 import {
     ensureRelaySessionTables,
     pinRelaySession,
@@ -14,13 +33,6 @@ import {
 } from "./store.js";
 
 const TEST_USER_ID = "test-user-pin";
-const tmpDir = mkdtempSync(join(tmpdir(), "pizzapi-pin-test-"));
-const dbPath = join(tmpDir, "pin-test.db");
-
-// Own Kysely instance — immune to other test files clobbering the singleton.
-// Bun runs ALL test files in a single process, so the module-level `_kysely`
-// in auth.ts is shared.  We pin it back to our DB in beforeEach.
-const testDb = createTestDatabase(dbPath);
 
 async function insertSession(opts: {
     sessionId: string;
@@ -30,7 +42,7 @@ async function insertSession(opts: {
     isPinned?: number;
 }) {
     const now = new Date().toISOString();
-    await getKysely()
+    await memDb
         .insertInto("relay_session")
         .values({
             id: opts.sessionId,
@@ -49,22 +61,12 @@ async function insertSession(opts: {
 }
 
 beforeAll(async () => {
-    _setKyselyForTest(testDb);
     await ensureRelaySessionTables();
 });
 
-// Re-pin before every test — another file's beforeAll may have overwritten _kysely.
-beforeEach(() => {
-    _setKyselyForTest(testDb);
-});
-
 afterEach(async () => {
-    await getKysely().deleteFrom("relay_session_state").execute();
-    await getKysely().deleteFrom("relay_session").execute();
-});
-
-afterAll(() => {
-    try { rmSync(tmpDir, { recursive: true, force: true }); } catch {}
+    await memDb.deleteFrom("relay_session_state").execute();
+    await memDb.deleteFrom("relay_session").execute();
 });
 
 describe("pinRelaySession", () => {
@@ -74,7 +76,7 @@ describe("pinRelaySession", () => {
         const result = await pinRelaySession("s1", TEST_USER_ID);
         expect(result).toBe(true);
 
-        const row = await getKysely()
+        const row = await memDb
             .selectFrom("relay_session")
             .select("isPinned")
             .where("id", "=", "s1")
@@ -121,7 +123,7 @@ describe("unpinRelaySession", () => {
         const result = await unpinRelaySession("s4", TEST_USER_ID);
         expect(result).toBe(true);
 
-        const row = await getKysely()
+        const row = await memDb
             .selectFrom("relay_session")
             .select("isPinned")
             .where("id", "=", "s4")
@@ -246,7 +248,7 @@ describe("pruneExpiredRelaySessions", () => {
         expect(pruned).not.toContain("s-prune-pinned");
 
         // Verify pinned session still exists
-        const remaining = await getKysely()
+        const remaining = await memDb
             .selectFrom("relay_session")
             .select("id")
             .where("id", "=", "s-prune-pinned")
