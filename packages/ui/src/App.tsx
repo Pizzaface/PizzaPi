@@ -92,7 +92,7 @@ import {
   shouldDeduplicateInput,
   type InputDedupeState,
 } from "@/lib/input-dedupe";
-import { parsePendingQuestionDisplayMode, parsePendingQuestions, type QuestionDisplayMode } from "@/lib/ask-user-questions";
+import { parsePendingQuestionDisplayMode, parsePendingQuestions, type QuestionDisplayMode, type QuestionType } from "@/lib/ask-user-questions";
 import type { TodoItem, TokenUsage, ConfiguredModelInfo, ResumeSessionOption, QueuedMessage, SessionUiCacheEntry } from "@/lib/types";
 import { metaEventToStatePatch, type MetaStatePatch } from "@/lib/meta-state-apply";
 import { usePanelLayout } from "@/hooks/usePanelLayout";
@@ -115,6 +115,71 @@ const log = createLogger("relay");
 // Sync all CSS animations (pulse, chase-spin, etc.) to the same phase globally.
 initAnimationSync();
 
+// ─── Session-scoped state ─────────────────────────────────────────────────────
+// All fields below are reset atomically by clearSelection(). Adding new
+// session-scoped state here ensures it is automatically included in the reset
+// — nothing can be accidentally left stale when switching sessions.
+interface SessionState {
+  viewerSocket: Socket<ViewerServerToClientEvents, ViewerClientToServerEvents> | null;
+  activeSessionId: string | null;
+  messages: RelayMessage[];
+  viewerStatus: string;
+  retryState: { errorMessage: string; detectedAt: number } | null;
+  pendingQuestion: { toolCallId: string; questions: Array<{ question: string; options: string[]; type?: QuestionType }>; display: QuestionDisplayMode } | null;
+  pendingPlan: { toolCallId: string; title: string; description: string | null; steps: Array<{ title: string; description?: string }> } | null;
+  pluginTrustPrompt: { promptId: string; pluginNames: string[]; pluginSummaries: string[] } | null;
+  activeToolCalls: Map<string, string>;
+  mcpOAuthPastes: Array<{ serverName: string; authUrl: string; nonce: string; ts: number }>;
+  messageQueue: QueuedMessage[];
+  activeModel: ConfiguredModelInfo | null;
+  sessionName: string | null;
+  availableModels: ConfiguredModelInfo[];
+  modelSelectorOpen: boolean;
+  isChangingModel: boolean;
+  agentActive: boolean;
+  effortLevel: string | null;
+  authSource: string | null;
+  tokenUsage: TokenUsage | null;
+  providerUsage: ProviderUsageMap | null;
+  usageRefreshing: boolean;
+  lastHeartbeatAt: number | null;
+  availableCommands: Array<{ name: string; description?: string; source?: string }>;
+  resumeSessions: ResumeSessionOption[];
+  resumeSessionsLoading: boolean;
+}
+
+function createInitialSessionState(): SessionState {
+  return {
+    viewerSocket: null,
+    activeSessionId: null,
+    messages: [],
+    viewerStatus: "Idle",
+    retryState: null,
+    pendingQuestion: null,
+    pendingPlan: null,
+    pluginTrustPrompt: null,
+    activeToolCalls: new Map(),
+    mcpOAuthPastes: [],
+    messageQueue: [],
+    activeModel: null,
+    sessionName: null,
+    availableModels: [],
+    modelSelectorOpen: false,
+    isChangingModel: false,
+    agentActive: false,
+    effortLevel: null,
+    authSource: null,
+    tokenUsage: null,
+    providerUsage: null,
+    usageRefreshing: false,
+    lastHeartbeatAt: null,
+    availableCommands: [],
+    resumeSessions: [],
+    resumeSessionsLoading: false,
+  };
+}
+// ─────────────────────────────────────────────────────────────────────────────
+
 export function App() {
   const { data: session, isPending } = useSession();
   const { runners: feedRunners, status: runnersStatus } = useRunnersFeed({
@@ -126,16 +191,158 @@ export function App() {
     const saved = localStorage.getItem("theme");
     return saved === "dark" || (!saved && window.matchMedia("(prefers-color-scheme: dark)").matches);
   });
-  const [activeSessionId, setActiveSessionId] = React.useState<string | null>(null);
-  const [messages, setMessages] = React.useState<RelayMessage[]>([]);
+  // ─── Consolidated session state ─────────────────────────────────────────────
+  // clearSelection() resets this entire object in a single atomic call.
+  const [sessionState, setSessionState] = React.useState<SessionState>(createInitialSessionState);
+  const {
+    viewerSocket, activeSessionId, messages, viewerStatus, retryState,
+    pendingQuestion, pendingPlan, pluginTrustPrompt, activeToolCalls,
+    mcpOAuthPastes, messageQueue, activeModel, sessionName, availableModels,
+    modelSelectorOpen, isChangingModel, agentActive, effortLevel, authSource,
+    tokenUsage, providerUsage, usageRefreshing, lastHeartbeatAt,
+    availableCommands, resumeSessions, resumeSessionsLoading,
+  } = sessionState;
+
+  // Thin setter wrappers — identical signatures to the original useState setters
+  // so all existing call-sites compile unchanged. Each supports both direct
+  // values and functional updates (React.SetStateAction<T>).
+  const setViewerSocket = React.useCallback(
+    (v: React.SetStateAction<SessionState["viewerSocket"]>) =>
+      setSessionState((p: SessionState) => ({ ...p, viewerSocket: typeof v === "function" ? v(p.viewerSocket) : v })),
+    []
+  );
+  const setActiveSessionId = React.useCallback(
+    (v: React.SetStateAction<string | null>) =>
+      setSessionState((p: SessionState) => ({ ...p, activeSessionId: typeof v === "function" ? v(p.activeSessionId) : v })),
+    []
+  );
+  const setMessages = React.useCallback(
+    (v: React.SetStateAction<RelayMessage[]>) =>
+      setSessionState((p: SessionState) => ({ ...p, messages: typeof v === "function" ? v(p.messages) : v })),
+    []
+  );
+  const setViewerStatus = React.useCallback(
+    (v: React.SetStateAction<string>) =>
+      setSessionState((p: SessionState) => ({ ...p, viewerStatus: typeof v === "function" ? v(p.viewerStatus) : v })),
+    []
+  );
+  const setRetryState = React.useCallback(
+    (v: React.SetStateAction<SessionState["retryState"]>) =>
+      setSessionState((p: SessionState) => ({ ...p, retryState: typeof v === "function" ? v(p.retryState) : v })),
+    []
+  );
+  const setPendingQuestion = React.useCallback(
+    (v: React.SetStateAction<SessionState["pendingQuestion"]>) =>
+      setSessionState((p: SessionState) => ({ ...p, pendingQuestion: typeof v === "function" ? v(p.pendingQuestion) : v })),
+    []
+  );
+  const setPendingPlan = React.useCallback(
+    (v: React.SetStateAction<SessionState["pendingPlan"]>) =>
+      setSessionState((p: SessionState) => ({ ...p, pendingPlan: typeof v === "function" ? v(p.pendingPlan) : v })),
+    []
+  );
+  const setPluginTrustPrompt = React.useCallback(
+    (v: React.SetStateAction<SessionState["pluginTrustPrompt"]>) =>
+      setSessionState((p: SessionState) => ({ ...p, pluginTrustPrompt: typeof v === "function" ? v(p.pluginTrustPrompt) : v })),
+    []
+  );
+  const setActiveToolCalls = React.useCallback(
+    (v: React.SetStateAction<Map<string, string>>) =>
+      setSessionState((p: SessionState) => ({ ...p, activeToolCalls: typeof v === "function" ? v(p.activeToolCalls) : v })),
+    []
+  );
+  const setMcpOAuthPastes = React.useCallback(
+    (v: React.SetStateAction<SessionState["mcpOAuthPastes"]>) =>
+      setSessionState((p: SessionState) => ({ ...p, mcpOAuthPastes: typeof v === "function" ? v(p.mcpOAuthPastes) : v })),
+    []
+  );
+  const setMessageQueue = React.useCallback(
+    (v: React.SetStateAction<QueuedMessage[]>) =>
+      setSessionState((p: SessionState) => ({ ...p, messageQueue: typeof v === "function" ? v(p.messageQueue) : v })),
+    []
+  );
+  const setActiveModel = React.useCallback(
+    (v: React.SetStateAction<ConfiguredModelInfo | null>) =>
+      setSessionState((p: SessionState) => ({ ...p, activeModel: typeof v === "function" ? v(p.activeModel) : v })),
+    []
+  );
+  const setSessionName = React.useCallback(
+    (v: React.SetStateAction<string | null>) =>
+      setSessionState((p: SessionState) => ({ ...p, sessionName: typeof v === "function" ? v(p.sessionName) : v })),
+    []
+  );
+  const setAvailableModels = React.useCallback(
+    (v: React.SetStateAction<ConfiguredModelInfo[]>) =>
+      setSessionState((p: SessionState) => ({ ...p, availableModels: typeof v === "function" ? v(p.availableModels) : v })),
+    []
+  );
+  const setModelSelectorOpen = React.useCallback(
+    (v: React.SetStateAction<boolean>) =>
+      setSessionState((p: SessionState) => ({ ...p, modelSelectorOpen: typeof v === "function" ? v(p.modelSelectorOpen) : v })),
+    []
+  );
+  const setIsChangingModel = React.useCallback(
+    (v: React.SetStateAction<boolean>) =>
+      setSessionState((p: SessionState) => ({ ...p, isChangingModel: typeof v === "function" ? v(p.isChangingModel) : v })),
+    []
+  );
+  const setAgentActive = React.useCallback(
+    (v: React.SetStateAction<boolean>) =>
+      setSessionState((p: SessionState) => ({ ...p, agentActive: typeof v === "function" ? v(p.agentActive) : v })),
+    []
+  );
+  const setEffortLevel = React.useCallback(
+    (v: React.SetStateAction<string | null>) =>
+      setSessionState((p: SessionState) => ({ ...p, effortLevel: typeof v === "function" ? v(p.effortLevel) : v })),
+    []
+  );
+  const setAuthSource = React.useCallback(
+    (v: React.SetStateAction<string | null>) =>
+      setSessionState((p: SessionState) => ({ ...p, authSource: typeof v === "function" ? v(p.authSource) : v })),
+    []
+  );
+  const setTokenUsage = React.useCallback(
+    (v: React.SetStateAction<TokenUsage | null>) =>
+      setSessionState((p: SessionState) => ({ ...p, tokenUsage: typeof v === "function" ? v(p.tokenUsage) : v })),
+    []
+  );
+  const setProviderUsage = React.useCallback(
+    (v: React.SetStateAction<ProviderUsageMap | null>) =>
+      setSessionState((p: SessionState) => ({ ...p, providerUsage: typeof v === "function" ? v(p.providerUsage) : v })),
+    []
+  );
+  const setUsageRefreshing = React.useCallback(
+    (v: React.SetStateAction<boolean>) =>
+      setSessionState((p: SessionState) => ({ ...p, usageRefreshing: typeof v === "function" ? v(p.usageRefreshing) : v })),
+    []
+  );
+  const setLastHeartbeatAt = React.useCallback(
+    (v: React.SetStateAction<number | null>) =>
+      setSessionState((p: SessionState) => ({ ...p, lastHeartbeatAt: typeof v === "function" ? v(p.lastHeartbeatAt) : v })),
+    []
+  );
+  const setAvailableCommands = React.useCallback(
+    (v: React.SetStateAction<Array<{ name: string; description?: string; source?: string }>>) =>
+      setSessionState((p: SessionState) => ({ ...p, availableCommands: typeof v === "function" ? v(p.availableCommands) : v })),
+    []
+  );
+  const setResumeSessions = React.useCallback(
+    (v: React.SetStateAction<ResumeSessionOption[]>) =>
+      setSessionState((p: SessionState) => ({ ...p, resumeSessions: typeof v === "function" ? v(p.resumeSessions) : v })),
+    []
+  );
+  const setResumeSessionsLoading = React.useCallback(
+    (v: React.SetStateAction<boolean>) =>
+      setSessionState((p: SessionState) => ({ ...p, resumeSessionsLoading: typeof v === "function" ? v(p.resumeSessionsLoading) : v })),
+    []
+  );
+  // ────────────────────────────────────────────────────────────────────────────
   // Ref kept in sync with `messages` via useLayoutEffect so we can read the
   // latest committed value in event handlers without needing functional updaters.
   // This lets us move patchSessionCache side effects OUT of setMessages updaters,
   // which would otherwise be called speculatively in React concurrent mode.
   const messagesRef = React.useRef<RelayMessage[]>(messages);
   React.useLayoutEffect(() => { messagesRef.current = messages; }, [messages]);
-  const [viewerStatus, setViewerStatus] = React.useState("Idle");
-  const [retryState, setRetryState] = React.useState<{ errorMessage: string; detectedAt: number } | null>(null);
   const [relayStatus, setRelayStatus] = React.useState<DotState>("connecting");
   const [showApiKeys, setShowApiKeys] = React.useState(false);
   const [apiKeyVersion, setApiKeyVersion] = React.useState(0);
@@ -199,28 +406,12 @@ export function App() {
   const [recentFolders, setRecentFolders] = React.useState<string[]>([]);
   const [recentFoldersLoading, setRecentFoldersLoading] = React.useState(false);
 
-  const [pendingQuestion, setPendingQuestion] = React.useState<{ toolCallId: string; questions: Array<{ question: string; options: string[]; type?: import("@/lib/ask-user-questions").QuestionType }>; display: QuestionDisplayMode } | null>(null);
-
   /** Set of session IDs that currently have a pending AskUserQuestion. */
   const [sessionsAwaitingInput, setSessionsAwaitingInput] = React.useState<Set<string>>(new Set());
 
   /** Set of session IDs that are actively compacting their context window. */
   const [sessionsCompacting, setSessionsCompacting] = React.useState<Set<string>>(new Set());
 
-  /** Pending plan mode prompt from the worker — shown as a plan review panel in the viewer. */
-  const [pendingPlan, setPendingPlan] = React.useState<{
-    toolCallId: string;
-    title: string;
-    description: string | null;
-    steps: Array<{ title: string; description?: string }>;
-  } | null>(null);
-
-  /** Pending plugin trust prompt from the worker — shown as a confirmation dialog in the viewer. */
-  const [pluginTrustPrompt, setPluginTrustPrompt] = React.useState<{
-    promptId: string;
-    pluginNames: string[];
-    pluginSummaries: string[];
-  } | null>(null);
   // Cached fallback promptKey for when toolCallId is absent (legacy/compat).
   // Only changes when the question content changes, preventing heartbeat
   // re-applications from resetting the MC component's selection state.
@@ -238,35 +429,15 @@ export function App() {
     }
     return pendingQuestionFallbackRef.current.key;
   }, []);
-  const [activeToolCalls, setActiveToolCalls] = React.useState<Map<string, string>>(new Map());
-
-  // Message queue: messages sent while the agent is active
-  const [messageQueue, setMessageQueue] = React.useState<QueuedMessage[]>([]);
-  const [activeModel, setActiveModel] = React.useState<ConfiguredModelInfo | null>(null);
-  const [sessionName, setSessionName] = React.useState<string | null>(null);
-  const [availableModels, setAvailableModels] = React.useState<ConfiguredModelInfo[]>([]);
-  const [modelSelectorOpen, setModelSelectorOpen] = React.useState(false);
-  const [isChangingModel, setIsChangingModel] = React.useState(false);
   const [hiddenModels, setHiddenModels] = React.useState<Set<string>>(() => loadHiddenModels());
   const [hiddenModelsOpen, setHiddenModelsOpen] = React.useState(false);
   const [changePasswordOpen, setChangePasswordOpen] = React.useState(false);
 
-  // Live session status from heartbeats
-  const [agentActive, setAgentActive] = React.useState(false);
+  // Live session status from heartbeats (isCompacting and planModeEnabled are intentionally
+  // NOT part of SessionState because they are not reset by clearSelection)
   const [isCompacting, setIsCompacting] = React.useState(false);
-  const [effortLevel, setEffortLevel] = React.useState<string | null>(null);
   const [planModeEnabled, setPlanModeEnabled] = React.useState(false);
-  const [tokenUsage, setTokenUsage] = React.useState<TokenUsage | null>(null);
-  const [lastHeartbeatAt, setLastHeartbeatAt] = React.useState<number | null>(null);
-  const [providerUsage, setProviderUsage] = React.useState<ProviderUsageMap | null>(null);
-  const [usageRefreshing, setUsageRefreshing] = React.useState(false);
   const [todoList, setTodoList] = React.useState<TodoItem[]>([]);
-  const [authSource, setAuthSource] = React.useState<string | null>(null);
-
-  /** Pending MCP OAuth paste prompts: server requires localhost redirect, user must paste callback URL. */
-  const [mcpOAuthPastes, setMcpOAuthPastes] = React.useState<
-    Array<{ serverName: string; authUrl: string; nonce: string; ts: number }>
-  >([]);
 
   // Keyboard shortcuts
   const isMac = React.useMemo(() => {
@@ -335,13 +506,6 @@ export function App() {
   // Track the last completed snapshot ID so we can reject stale chunks that
   // arrive after the ref has been cleared (e.g. from a superseded sender).
   const lastCompletedSnapshotRef = React.useRef<string | null>(null);
-
-  // Capabilities advertised by the runner (commands, models, etc.)
-  const [availableCommands, setAvailableCommands] = React.useState<Array<{ name: string; description?: string; source?: string }>>([]);
-
-  // /resume picker state (fetched from runner session files)
-  const [resumeSessions, setResumeSessions] = React.useState<ResumeSessionOption[]>([]);
-  const [resumeSessionsLoading, setResumeSessionsLoading] = React.useState(false);
 
   // Mobile layout
   const {
@@ -425,8 +589,7 @@ export function App() {
   }, [newSessionOpen, spawnRunnerId]);
 
   const viewerWsRef = React.useRef<Socket<ViewerServerToClientEvents, ViewerClientToServerEvents> | null>(null);
-  // Tracked as state so ViewerSocketContext consumers re-render when the socket changes.
-  const [viewerSocket, setViewerSocket] = React.useState<Socket<ViewerServerToClientEvents, ViewerClientToServerEvents> | null>(null);
+  // viewerSocket is part of SessionState — tracked so ViewerSocketContext consumers re-render.
   const hubSocketRef = React.useRef<Socket<HubServerToClientEvents, HubClientToServerEvents> | null>(null);
   // Tracked as state so HubSocketContext consumers re-render when the socket changes.
   const [hubSocket, setHubSocket] = React.useState<Socket<HubServerToClientEvents, HubClientToServerEvents> | null>(null);
@@ -537,37 +700,15 @@ export function App() {
     }
     viewerWsRef.current?.disconnect();
     viewerWsRef.current = null;
-    setViewerSocket(null);
     activeSessionRef.current = null;
     lastSeqRef.current = null;
     awaitingSnapshotRef.current = false;
     renderedMcpReportTsRef.current = null;
     injectedMessagesRef.current = [];
-    setActiveSessionId(null);
-    setMessages([]);
-    setViewerStatus("Idle");
-    setPendingQuestion(null);
-    setPendingPlan(null);
-    setPluginTrustPrompt(null);
-    setRetryState(null);
-    setActiveToolCalls(new Map());
-    setMcpOAuthPastes([]);
-    setMessageQueue([]);
-    setActiveModel(null);
-    setSessionName(null);
-    setAvailableModels([]);
-    setAvailableCommands([]);
-    setResumeSessions([]);
-    setResumeSessionsLoading(false);
-    setModelSelectorOpen(false);
-    setIsChangingModel(false);
-    setAgentActive(false);
-    setEffortLevel(null);
-    setAuthSource(null);
-    setTokenUsage(null);
-    setProviderUsage(null);
-    setUsageRefreshing(false);
-    setLastHeartbeatAt(null);
+    // Single atomic reset — all session-scoped fields defined in SessionState
+    // are cleared together. New fields added to SessionState are automatically
+    // included; nothing can be accidentally left stale between sessions.
+    setSessionState(createInitialSessionState());
   }, []);
 
   // Full reset: cancel the RAF and wipe all pending streaming state. Use before
@@ -3403,10 +3544,18 @@ export function App() {
     if (activeServicePanels.has(serviceId)) {
       closeServicePanelById(serviceId);
     } else {
+      // Place the new panel in the same position group as the currently-active
+      // service panel so it appears where the user is already looking.
+      // Without this, the new panel inherits its stored/default position (often
+      // different from the current group) and the Tunnels panel remains focused
+      // in its group instead of yielding focus to the new panel.
+      if (activeServicePanels.has(combinedActiveTab)) {
+        setServicePanelPosition(serviceId, getServicePanelPosition(combinedActiveTab));
+      }
       toggleServicePanel(serviceId);
       handleCombinedTabChange(serviceId);
     }
-  }, [activeServicePanels, closeServicePanelById, toggleServicePanel, handleCombinedTabChange]);
+  }, [activeServicePanels, closeServicePanelById, toggleServicePanel, handleCombinedTabChange, combinedActiveTab, getServicePanelPosition, setServicePanelPosition]);
 
   const terminalPanelTab = React.useMemo<CombinedPanelTab | null>(() => showTerminal ? {
     id: "terminal",
@@ -3491,13 +3640,20 @@ export function App() {
         id: serviceId,
         label,
         icon,
-        onDragStart: (e) => startPanelDragWith(e, (pos) => setServicePanelPosition(serviceId, pos)),
+        onDragStart: (e) => startPanelDragWith(e, (pos) => {
+          setServicePanelPosition(serviceId, pos);
+          // Keep focus on the moved panel after repositioning.
+          // Without this, if the panel was combinedActiveTab when dragged,
+          // its source group falls back to tabs[0] (Tunnels) and the user
+          // perceives Tunnels as having stolen focus.
+          handleCombinedTabChange(serviceId);
+        }),
         onClose: () => closeServicePanelById(serviceId),
         content,
       });
     }
     return tabs;
-  }, [activeServicePanels, tunnelSessionId, activeSessionId, dynamicPanels, startPanelDragWith, setServicePanelPosition, closeServicePanelById]);
+  }, [activeServicePanels, tunnelSessionId, activeSessionId, dynamicPanels, startPanelDragWith, setServicePanelPosition, closeServicePanelById, handleCombinedTabChange]);
 
   const panelGroups = React.useMemo(() => {
     const groups: Record<"left" | "right" | "bottom", CombinedPanelTab[]> = { left: [], right: [], bottom: [] };
