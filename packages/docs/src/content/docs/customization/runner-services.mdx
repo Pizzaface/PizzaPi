@@ -1,0 +1,218 @@
+---
+title: Runner Services
+description: Create custom runner services with their own UI panels — folder-based plugins with iframe dashboards.
+---
+
+import { Aside, FileTree, Steps } from "@astrojs/starlight/components";
+
+Runner services are background processes on the runner that expose interactive **UI panels** in the PizzaPi web interface. Each service ships its own self-contained HTML panel rendered in an iframe — no React compilation needed. Services are discovered automatically from `~/.pizzapi/services/` on startup.
+
+![Service panel showing a System Monitor with CPU, memory, disk, and process information](../../../assets/service-panel-screenshot.png)
+
+---
+
+## Quick Start
+
+<Steps>
+
+1. **Create the service directory:**
+
+   ```bash
+   mkdir -p ~/.pizzapi/services/my-service/panel
+   ```
+
+2. **Add `manifest.json`:**
+
+   ```json
+   {
+     "id": "my-service",
+     "label": "My Service",
+     "icon": "activity",
+     "entry": "./index.ts",
+     "panel": {
+       "dir": "./panel"
+     }
+   }
+   ```
+
+3. **Add `index.ts`** with a ServiceHandler class (see [ServiceHandler API](#servicehandler-api) below).
+
+4. **Add `panel/index.html`** with self-contained HTML/CSS/JS (see [Panel Guidelines](#panel-guidelines) below).
+
+5. **Restart the runner** — the panel button appears in the session toolbar header.
+
+</Steps>
+
+---
+
+## Folder Structure
+
+<FileTree>
+- ~/.pizzapi/services/my-service/
+  - manifest.json — metadata and panel config
+  - index.ts — ServiceHandler module (default export)
+  - panel/
+    - index.html — self-contained UI (HTML/CSS/JS)
+    - … — additional static assets
+</FileTree>
+
+Services can also be bundled inside Claude Code plugins:
+
+<FileTree>
+- ~/.pizzapi/plugins/my-plugin/
+  - plugin.json
+  - services/
+    - my-service/
+      - manifest.json
+      - index.ts
+      - panel/
+        - index.html
+</FileTree>
+
+---
+
+## manifest.json
+
+```json
+{
+  "id": "my-service",
+  "label": "My Service",
+  "icon": "activity",
+  "entry": "./index.ts",
+  "panel": {
+    "dir": "./panel"
+  }
+}
+```
+
+| Field | Required | Default | Description |
+|-------|----------|---------|-------------|
+| `id` | Yes | — | Unique service ID (must match `ServiceHandler.id`) |
+| `label` | Yes | — | Button label shown in the PizzaPi header bar |
+| `icon` | No | `"square"` | [Lucide](https://lucide.dev/icons) icon name (kebab-case) |
+| `entry` | No | `"./index.ts"` | Service module path relative to the service folder |
+| `panel.dir` | No | `"./panel"` | Panel static files directory |
+
+---
+
+## ServiceHandler API
+
+The service module must default-export a class implementing the ServiceHandler interface:
+
+```typescript
+import { readFileSync } from "node:fs";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+import type { Server } from "bun";
+
+class MyService {
+    get id() { return "my-service"; }
+
+    #server: Server | null = null;
+
+    init(socket: any, { isShuttingDown, announcePanel }: any) {
+        const panelDir = join(dirname(fileURLToPath(import.meta.url)), "panel");
+        const indexHtml = readFileSync(join(panelDir, "index.html"), "utf-8");
+
+        // Start HTTP server on a random available port
+        this.#server = Bun.serve({
+            port: 0,
+            fetch: async (req) => {
+                const url = new URL(req.url);
+
+                // API endpoints
+                if (url.pathname.endsWith("/api/data")) {
+                    return new Response(JSON.stringify({ hello: "world" }), {
+                        headers: {
+                            "Content-Type": "application/json",
+                            "Access-Control-Allow-Origin": "*",
+                        },
+                    });
+                }
+
+                // Serve panel HTML for everything else
+                return new Response(indexHtml, {
+                    headers: { "Content-Type": "text/html; charset=utf-8" },
+                });
+            },
+        });
+
+        // Register the panel port for tunnel proxying
+        if (announcePanel) {
+            announcePanel(this.#server.port);
+        }
+    }
+
+    dispose() {
+        if (this.#server) {
+            this.#server.stop(true);
+            this.#server = null;
+        }
+    }
+}
+
+export default MyService;
+```
+
+**Lifecycle:**
+- **`init(socket, context)`** — called when the runner starts. Start your HTTP server and call `announcePanel(port)` to register it with the tunnel system.
+- **`dispose()`** — called on shutdown. Must clean up the HTTP server to avoid port leaks.
+
+<Aside type="caution">
+  Always call `announcePanel(port)` after starting your server — without it, the panel won't appear in the UI.
+</Aside>
+
+---
+
+## Panel Guidelines
+
+Panels render inside a **280px-tall iframe** in the PizzaPi web interface. Key constraints:
+
+- **Self-contained** — all CSS and JS must be inline (no build step required)
+- **Dark theme** — match PizzaPi's dark UI:
+  ```css
+  body { background: #0a0a0b; color: #e4e4e7; font-size: 11px; }
+  /* Borders: #27272a */
+  ```
+- **Relative API URLs** — use `./api/data` (the tunnel proxy preserves the path)
+- **Polling for live data** — use `setInterval` + `fetch` (typically 3–5s intervals)
+- **No external CDN scripts** — the iframe is sandboxed; external scripts may be blocked
+- **CORS headers** — API responses need `Access-Control-Allow-Origin: *`
+
+---
+
+## How It Works
+
+1. The runner daemon discovers service folders in `~/.pizzapi/services/` (and plugin `services/` dirs)
+2. It reads `manifest.json` for panel metadata (label, icon)
+3. It loads the service module and calls `init(socket, { announcePanel })`
+4. The service starts `Bun.serve()` on port 0 and calls `announcePanel(port)`
+5. The daemon registers the port with the [streaming tunnel](/PizzaPi/reference/architecture/#streaming-tunnel) system
+6. The daemon emits a `service_announce` event with the panel list
+7. The UI renders an iframe at `/api/tunnel/{sessionId}/{port}/`
+
+---
+
+## Quick Reference
+
+| Task | How |
+|------|-----|
+| Serve static files | `Bun.serve()` with `readFileSync` for `index.html` |
+| Expose an API | Add route checks in the `fetch` handler |
+| Get a random port | `Bun.serve({ port: 0 })` then read `.port` |
+| Announce the panel | Call `announcePanel(server.port)` in `init()` |
+| Match PizzaPi theme | `#0a0a0b` bg, `#e4e4e7` text, `#27272a` borders |
+| Choose an icon | Browse [lucide.dev/icons](https://lucide.dev/icons), use kebab-case |
+
+---
+
+## Troubleshooting
+
+| Problem | Fix |
+|---------|-----|
+| Panel doesn't appear in UI | Check that `announcePanel()` is called after the server starts |
+| Blank panel iframe | Tunnel proxy can't reach local server — check the service is still running |
+| API calls fail in panel | Add `Access-Control-Allow-Origin: *` header to API responses |
+| Large panel doesn't fit | Panel container is 280px tall — design accordingly |
+| Absolute API URLs break | Use relative URLs (`./api/...`) — the tunnel proxy rewrites paths |
+| Port leak after restart | Ensure `dispose()` calls `server.stop(true)` |

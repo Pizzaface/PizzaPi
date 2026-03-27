@@ -324,6 +324,37 @@ Always run `bun run migrate` if you're running without Docker.
 
 ---
 
+## Security Hardening
+
+PizzaPi includes several built-in security measures for production deployments.
+
+### Response Headers
+
+All server responses include security headers automatically:
+
+- `X-Content-Type-Options: nosniff` — prevents MIME-type sniffing
+- `X-Frame-Options: DENY` — prevents clickjacking (tunnel responses use `SAMEORIGIN` to allow same-origin iframing)
+- `X-XSS-Protection: 0` — disables the legacy browser XSS filter (the recommended modern practice)
+- `Referrer-Policy: strict-origin-when-cross-origin` — limits referrer leakage
+- `Permissions-Policy` — restricts browser feature access
+
+No configuration needed — these are applied to every response.
+
+### Request Body Size Limits
+
+The server enforces body size limits to prevent denial-of-service:
+
+- **API routes**: 1 MB maximum
+- **Attachment uploads**: 50 MB maximum (configurable via `PIZZAPI_ATTACHMENT_MAX_FILE_SIZE_BYTES`)
+
+Requests exceeding these limits receive a `413 Payload Too Large` response.
+
+### Redis Health Monitoring
+
+The `/health` endpoint reports Redis and Socket.IO connectivity status. When Redis becomes unavailable, the web UI shows a **dismissable degraded-mode banner** with automatic retry. Sessions continue operating with reduced functionality (no cross-node relay, no event persistence) until Redis recovers.
+
+---
+
 ## Web Push Notifications
 
 The server supports browser push notifications for session events. Push is configured automatically — no additional setup required. Users can opt in from the web UI's notification settings.
