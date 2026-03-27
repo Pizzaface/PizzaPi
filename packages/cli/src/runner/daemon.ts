@@ -340,6 +340,10 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             tunnelClient.on("error", (error) => {
                 logError(`[tunnel] ${error instanceof Error ? error.message : String(error)}`);
             });
+            tunnelClient.on("disabled", (data: { reason: string; failures: number; relayUrl: string }) => {
+                logWarn(`[tunnel] disabled after ${data.failures} failed connection attempts to ${data.relayUrl}`);
+                logWarn("[tunnel] The relay server may not support the /_tunnel endpoint. Upgrade the server with 'pizza web'.");
+            });
         } else {
             logWarn("[tunnel] disabled: runner is missing an API key for tunnel authentication");
         }

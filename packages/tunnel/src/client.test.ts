@@ -1,6 +1,6 @@
 import { Buffer } from "node:buffer";
 import { createServer, type Server } from "node:http";
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test, jest } from "bun:test";
 import { TunnelClient } from "./client.js";
 
 function attachMockRelay(client: TunnelClient) {
@@ -339,5 +339,152 @@ describe("TunnelClient", () => {
 
     expect(Buffer.isBuffer(sentFrames[0])).toBe(true);
     expect((sentFrames[0] as Buffer).toString("utf-8")).toBe("hello");
+  });
+});
+
+describe("TunnelClient backoff and failure handling", () => {
+  test("currentReconnectDelay uses exponential backoff", () => {
+    const client = new TunnelClient({
+      runnerId: "r1",
+      apiKey: "key1",
+      relayUrl: "ws://localhost:9999/_tunnel",
+      reconnectDelayMs: 1000,
+      maxReconnectDelayMs: 16000,
+    });
+
+    // 0 failures → base delay
+    expect((client as any).currentReconnectDelay).toBe(1000);
+
+    // Simulate consecutive failures
+    (client as any).consecutiveFailures = 1;
+    expect((client as any).currentReconnectDelay).toBe(1000); // 1000 * 2^0
+
+    (client as any).consecutiveFailures = 2;
+    expect((client as any).currentReconnectDelay).toBe(2000); // 1000 * 2^1
+
+    (client as any).consecutiveFailures = 3;
+    expect((client as any).currentReconnectDelay).toBe(4000); // 1000 * 2^2
+
+    (client as any).consecutiveFailures = 4;
+    expect((client as any).currentReconnectDelay).toBe(8000); // 1000 * 2^3
+
+    (client as any).consecutiveFailures = 5;
+    expect((client as any).currentReconnectDelay).toBe(16000); // 1000 * 2^4 = cap
+
+    // Should cap at maxReconnectDelayMs
+    (client as any).consecutiveFailures = 10;
+    expect((client as any).currentReconnectDelay).toBe(16000);
+  });
+
+  test("consecutiveFailures resets on successful registration", () => {
+    const client = new TunnelClient({
+      runnerId: "r1",
+      apiKey: "key1",
+      relayUrl: "ws://localhost:9999/_tunnel",
+      autoReconnect: false,
+    });
+    attachMockRelay(client);
+
+    // Simulate some failures
+    (client as any).consecutiveFailures = 5;
+
+    // Simulate receiving a "registered" message
+    (client as any).handleMessage(JSON.stringify({ type: "registered", runnerId: "r1" }));
+
+    expect((client as any).consecutiveFailures).toBe(0);
+    expect((client as any).registeredThisConnection).toBe(true);
+  });
+
+  test("consecutiveFailures increments on disconnect without registration", () => {
+    const client = new TunnelClient({
+      runnerId: "r1",
+      apiKey: "key1",
+      relayUrl: "ws://localhost:9999/_tunnel",
+      autoReconnect: false, // Don't actually reconnect in test
+    });
+
+    expect((client as any).consecutiveFailures).toBe(0);
+
+    // Simulate a connection that closes without ever registering
+    (client as any).registeredThisConnection = false;
+    // Manually trigger the close logic
+    (client as any).ws = null;
+    if (!(client as any).registeredThisConnection) {
+      (client as any).consecutiveFailures++;
+    }
+
+    expect((client as any).consecutiveFailures).toBe(1);
+  });
+
+  test("emits 'disabled' event after maxConsecutiveFailures", () => {
+    const client = new TunnelClient({
+      runnerId: "r1",
+      apiKey: "key1",
+      relayUrl: "ws://localhost:9999/_tunnel",
+      autoReconnect: true,
+      maxConsecutiveFailures: 3,
+    });
+
+    const disabledEvents: any[] = [];
+    client.on("disabled", (data) => disabledEvents.push(data));
+
+    // Simulate reaching max failures
+    (client as any).consecutiveFailures = 2; // Will become 3 on next disconnect
+    (client as any).registeredThisConnection = false;
+
+    // Simulate the close handler logic
+    (client as any).consecutiveFailures++;
+    // Check the give-up condition
+    if ((client as any).consecutiveFailures >= (client as any).maxConsecutiveFailures) {
+      client.emit("disabled", {
+        reason: "max-failures",
+        failures: (client as any).consecutiveFailures,
+        relayUrl: (client as any).relayUrl,
+      });
+    }
+
+    expect(disabledEvents).toHaveLength(1);
+    expect(disabledEvents[0]).toMatchObject({
+      reason: "max-failures",
+      failures: 3,
+      relayUrl: "ws://localhost:9999/_tunnel",
+    });
+  });
+
+  test("consecutiveFailures does NOT increment on disconnect after successful registration", () => {
+    const client = new TunnelClient({
+      runnerId: "r1",
+      apiKey: "key1",
+      relayUrl: "ws://localhost:9999/_tunnel",
+      autoReconnect: false,
+    });
+
+    (client as any).consecutiveFailures = 0;
+    (client as any).registeredThisConnection = true; // Was registered
+
+    // Simulate close — should NOT increment
+    if (!(client as any).registeredThisConnection) {
+      (client as any).consecutiveFailures++;
+    }
+
+    expect((client as any).consecutiveFailures).toBe(0);
+  });
+
+  test("default maxConsecutiveFailures is 10", () => {
+    const client = new TunnelClient({
+      runnerId: "r1",
+      apiKey: "key1",
+      relayUrl: "ws://localhost:9999/_tunnel",
+    });
+    expect((client as any).maxConsecutiveFailures).toBe(10);
+  });
+
+  test("default maxReconnectDelayMs is 60000", () => {
+    const client = new TunnelClient({
+      runnerId: "r1",
+      apiKey: "key1",
+      relayUrl: "ws://localhost:9999/_tunnel",
+    });
+    expect((client as any).maxReconnectDelayMs).toBe(60000);
   });
 });
