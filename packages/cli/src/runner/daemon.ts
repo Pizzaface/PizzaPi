@@ -10,6 +10,7 @@ import { TerminalService } from "./services/terminal-service.js";
 import { FileExplorerService } from "./services/file-explorer-service.js";
 import { GitService } from "./services/git-service.js";
 import { TunnelService } from "./services/tunnel-service.js";
+import { GodmotherService } from "./services/godmother-service.js";
 import { discoverServices } from "./service-loader.js";
 import { globalPluginDirs } from "../plugins/discover.js";
 import { io, type Socket } from "socket.io-client";
@@ -241,6 +242,12 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
         registry.register(new GitService());
         const tunnelService = new TunnelService();
         registry.register(tunnelService);
+        const godmotherService = new GodmotherService();
+        if (godmotherService.isConfigured()) {
+            registry.register(godmotherService);
+        } else {
+            logInfo("[services] skipping built-in godmother service (MCP server not configured)");
+        }
 
         const formatTunnelLog = (...args: unknown[]) => args.map((arg) => {
             if (typeof arg === "string") return arg;
