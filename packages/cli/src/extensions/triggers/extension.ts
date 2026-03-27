@@ -11,6 +11,7 @@ import type { ExtensionFactory } from "@mariozechner/pi-coding-agent";
 import { Text } from "@mariozechner/pi-tui";
 import type { ConversationTrigger } from "./types.js";
 import { getRelaySocket, getRelaySessionId } from "../remote.js";
+import { fireTrigger } from "../trigger-client.js";
 
 function shortId(id: string, len = 8): string {
     return id.length > len ? id.slice(-len) : id;
@@ -296,6 +297,98 @@ export const triggersExtension: ExtensionFactory = (pi) => {
                 return new Text(theme.fg("error", "✗ ") + theme.fg("muted", preview(text, 60)), 0, 0);
             }
             return new Text(theme.fg("success", "✓ ") + theme.fg("dim", "trigger responded"), 0, 0);
+        },
+    });
+
+    // ── fire_trigger ──────────────────────────────────────────────────────
+    pi.registerTool({
+        name: "fire_trigger",
+        label: "Fire Trigger",
+        description:
+            "Fire a trigger into any session (not just children). Uses the HTTP Trigger API " +
+            "with API key auth, with Socket.IO fallback for offline/local mode. " +
+            "This lets agents fire triggers into peer sessions they are not directly linked to.",
+        parameters: {
+            type: "object",
+            properties: {
+                sessionId: {
+                    type: "string",
+                    description: "Target session ID to fire the trigger into",
+                },
+                type: {
+                    type: "string",
+                    description: "Trigger type — e.g. 'service', 'webhook', 'godmother:idea_started'",
+                },
+                payload: {
+                    type: "object",
+                    description: "Arbitrary payload object delivered to the session",
+                },
+                source: {
+                    type: "string",
+                    description: "Optional source identifier shown in trigger history (e.g. 'godmother', 'github')",
+                },
+                deliverAs: {
+                    type: "string",
+                    enum: ["steer", "followUp"],
+                    description: "How to deliver: 'steer' (default) interrupts the current turn; 'followUp' queues after the turn ends",
+                },
+            },
+            required: ["sessionId", "type", "payload"],
+        } as any,
+        async execute(_toolCallId, rawParams) {
+            const params = rawParams as {
+                sessionId: string;
+                type: string;
+                payload: Record<string, unknown>;
+                source?: string;
+                deliverAs?: "steer" | "followUp";
+            };
+
+            const result = await fireTrigger(params.sessionId, {
+                type: params.type,
+                payload: params.payload,
+                source: params.source,
+                deliverAs: params.deliverAs,
+            });
+
+            if (result.ok) {
+                return {
+                    content: [{
+                        type: "text" as const,
+                        text: `Trigger ${result.triggerId} fired to session ${params.sessionId} via ${result.method}`,
+                    }],
+                    details: null as any,
+                };
+            }
+            return {
+                content: [{
+                    type: "text" as const,
+                    text: `Error firing trigger to session ${params.sessionId}: ${result.error ?? "Unknown error"}`,
+                }],
+                details: null as any,
+            };
+        },
+        renderCall: (args: any, theme: any) => {
+            const sid = shortId(args.sessionId ?? "", 8);
+            const type = preview(args.type ?? "?", 30);
+            const via = args.deliverAs === "followUp" ? "followUp" : "steer";
+            return new Text(
+                theme.fg("accent", "⚡") + " " +
+                theme.fg("muted", "fire ") +
+                theme.fg("dim", type) +
+                theme.fg("muted", " → ") +
+                theme.fg("dim", sid) +
+                theme.fg("muted", ` [${via}]`),
+                0, 0
+            );
+        },
+        renderResult: (result: any, _opts: any, theme: any) => {
+            const text: string = result?.content?.[0]?.text ?? "";
+            if (text.startsWith("Error")) {
+                return new Text(theme.fg("error", "✗ ") + theme.fg("muted", preview(text, 60)), 0, 0);
+            }
+            const method = text.includes("http") ? "HTTP" : "Socket.IO";
+            return new Text(theme.fg("success", "✓ ") + theme.fg("dim", `trigger fired via ${method}`), 0, 0);
         },
     });
 
