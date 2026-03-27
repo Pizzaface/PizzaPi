@@ -349,7 +349,7 @@ jobs:
               echo "✅ CLI help & config tests passed"
 
               echo "[1/6] Starting pizza web"
-              $CLI_CMD web --port 7492 2>&1 | tee /tmp/pizza-web.log
+              $CLI_CMD web --build --port 7492 2>&1 | tee /tmp/pizza-web.log
 
               echo "[2/6] Waiting for web"
               for i in $(seq 1 60); do

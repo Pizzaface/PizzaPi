@@ -12,7 +12,12 @@ RUN apt-get update \
         jq \
         nodejs \
         npm \
+        unzip \
     && rm -rf /var/lib/apt/lists/*
+
+# Install Bun — needed by `pizza web` to prebuild the UI on the host
+RUN curl -fsSL https://bun.sh/install | bash
+ENV PATH="/root/.bun/bin:$PATH"
 
 # Normalize command availability across distros/images
 RUN if ! docker compose version >/dev/null 2>&1; then \
