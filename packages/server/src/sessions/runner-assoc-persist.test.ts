@@ -5,11 +5,11 @@
  * is deleted. These tests verify that runnerId/runnerName survive in SQLite so
  * historical and pinned sessions retain their runner provenance.
  */
-import { describe, it, expect, beforeAll, afterEach, afterAll } from "bun:test";
+import { describe, it, expect, beforeAll, beforeEach, afterEach, afterAll } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { initAuth, getKysely } from "../auth.js";
+import { createTestDatabase, _setKyselyForTest, getKysely } from "../auth.js";
 import {
     ensureRelaySessionTables,
     recordRelaySessionStart,
@@ -24,9 +24,17 @@ const TEST_USER = "test-user-runner-assoc";
 const tmpDir = mkdtempSync(join(tmpdir(), "pizzapi-runner-assoc-test-"));
 const dbPath = join(tmpDir, "runner-assoc-test.db");
 
+// Own Kysely instance — immune to other test files clobbering the singleton.
+const testDb = createTestDatabase(dbPath);
+
 beforeAll(async () => {
-    initAuth({ dbPath, baseURL: "http://localhost:7777", secret: "test-secret-ra" });
+    _setKyselyForTest(testDb);
     await ensureRelaySessionTables();
+});
+
+// Re-pin before every test — another file's beforeAll may have overwritten _kysely.
+beforeEach(() => {
+    _setKyselyForTest(testDb);
 });
 
 afterEach(async () => {

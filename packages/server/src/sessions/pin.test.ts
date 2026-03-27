@@ -1,8 +1,8 @@
-import { describe, it, expect, beforeAll, afterEach, afterAll } from "bun:test";
+import { describe, it, expect, beforeAll, beforeEach, afterEach, afterAll } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { initAuth, getKysely } from "../auth.js";
+import { createTestDatabase, _setKyselyForTest, getKysely } from "../auth.js";
 import {
     ensureRelaySessionTables,
     pinRelaySession,
@@ -16,6 +16,11 @@ import {
 const TEST_USER_ID = "test-user-pin";
 const tmpDir = mkdtempSync(join(tmpdir(), "pizzapi-pin-test-"));
 const dbPath = join(tmpDir, "pin-test.db");
+
+// Own Kysely instance — immune to other test files clobbering the singleton.
+// Bun runs ALL test files in a single process, so the module-level `_kysely`
+// in auth.ts is shared.  We pin it back to our DB in beforeEach.
+const testDb = createTestDatabase(dbPath);
 
 async function insertSession(opts: {
     sessionId: string;
@@ -44,8 +49,13 @@ async function insertSession(opts: {
 }
 
 beforeAll(async () => {
-    initAuth({ dbPath, baseURL: "http://localhost:7777", secret: "test-secret-pin" });
+    _setKyselyForTest(testDb);
     await ensureRelaySessionTables();
+});
+
+// Re-pin before every test — another file's beforeAll may have overwritten _kysely.
+beforeEach(() => {
+    _setKyselyForTest(testDb);
 });
 
 afterEach(async () => {
