@@ -604,7 +604,8 @@ services:
 {{EXTRA_ORIGINS_LINE}}{{TRUST_PROXY_LINE}}{{PROXY_DEPTH_LINE}}    volumes:
       - {{DATA_DIR}}:/app/data:Z
 {{UI_VOLUME_LINE}}    depends_on:
-      - redis
+      redis:
+        condition: service_started
 {{UI_DEPENDS_ON_LINE}}    restart: unless-stopped
     stop_grace_period: 30s
 
@@ -799,7 +800,7 @@ function generateComposeFile(opts: {
         : `  ui:\n    image: ${UI_IMAGE_REPOSITORY}:${imageTag}\n    pull_policy: always\n    command: ["/bin/sh", "-c", "rm -rf /ui-dist/* && cp -a /usr/share/nginx/html/. /ui-dist/ && tail -f /dev/null"]\n    volumes:\n      - ui-dist:/ui-dist\n    healthcheck:\n      test: ["CMD", "test", "-f", "/ui-dist/index.html"]\n      interval: 10s\n      timeout: 5s\n      retries: 5\n    restart: unless-stopped\n\n`;
 
     const uiVolumeLine = useLocalUiBuild ? "" : "      - ui-dist:/app/packages/ui/dist:ro\n";
-    const uiDependsOnLine = useLocalUiBuild ? "" : "      - ui\n";
+    const uiDependsOnLine = useLocalUiBuild ? "" : "      ui:\n        condition: service_healthy\n";
     const serverBuildTarget = useLocalUiBuild ? "runtime" : "runtime-no-ui";
 
     const compose = template
