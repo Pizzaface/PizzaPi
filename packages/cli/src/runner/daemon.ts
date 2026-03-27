@@ -2,7 +2,6 @@ import { exec } from "node:child_process";
 import { promisify } from "node:util";
 
 const execAsync = promisify(exec);
-import { existsSync, mkdirSync, readdirSync, renameSync, statSync, cpSync, rmSync } from "node:fs";
 import { hostname, homedir } from "node:os";
 import { join } from "node:path";
 import { ServiceRegistry } from "./service-handler.js";
@@ -54,79 +53,8 @@ import {
 } from "../usage/index.js";
 import type { UsageRange } from "../usage/types.js";
 
-/**
- * Migrate session & agent data into the flat ~/.pizzapi/ directory.
- *
- * Phase 1: ~/.pi/agent → ~/.pizzapi/  (legacy pi installs)
- * Phase 2: ~/.pizzapi/agent/ → ~/.pizzapi/  (pre-fix PizzaPi installs that
- *          had upstream's getAgentDir() returning ~/.pizzapi/agent/)
- *
- * Runs on daemon startup and is idempotent (safe to call repeatedly).
- * A `.migrated` marker file is written to ~/.pizzapi/agent/ after phase 2
- * so we don't re-scan on every boot.
- */
-function migrateSessionStorage(): void {
-    const pizzapiDir = join(homedir(), ".pizzapi");
-    const agentSubdir = join(pizzapiDir, "agent");
-    const markerFile = join(agentSubdir, ".migrated");
-
-    // ── Phase 1: ~/.pi/agent → ~/.pizzapi/ ─────────────────────────────────
-    const piAgentDir = join(homedir(), ".pi", "agent");
-    if (existsSync(piAgentDir)) {
-        // Only migrate if we haven't already (sessions dir doesn't exist at root)
-        if (!existsSync(join(pizzapiDir, "sessions"))) {
-            try {
-                _mergeDir(piAgentDir, pizzapiDir);
-                logInfo("Migrated session data from ~/.pi/agent into ~/.pizzapi");
-            } catch (e: any) {
-                logWarn(`Failed to migrate ~/.pi/agent: ${e.message}`);
-            }
-        }
-    }
-
-    // ── Phase 2: ~/.pizzapi/agent/ → ~/.pizzapi/ ───────────────────────────
-    // Earlier PizzaPi versions (and the upstream lib) stored sessions, auth,
-    // bin, and usage.db under ~/.pizzapi/agent/. Now that getAgentDir() returns
-    // ~/.pizzapi/ directly, consolidate everything into the flat structure.
-    if (existsSync(agentSubdir) && !existsSync(markerFile)) {
-        try {
-            _mergeDir(agentSubdir, pizzapiDir);
-            // Write marker so we don't re-scan
-            mkdirSync(agentSubdir, { recursive: true });
-            Bun.write(markerFile, new Date().toISOString());
-            logInfo("Consolidated ~/.pizzapi/agent/ into ~/.pizzapi/");
-        } catch (e: any) {
-            logWarn(`Failed to consolidate ~/.pizzapi/agent/: ${e.message}`);
-        }
-    }
-}
-
-/**
- * Recursively merge `src` into `dst`, skipping files that already exist in dst.
- * Does not delete src — caller decides cleanup.
- */
-function _mergeDir(src: string, dst: string): void {
-    mkdirSync(dst, { recursive: true });
-    for (const entry of readdirSync(src)) {
-        // Skip the .migrated marker and .DS_Store
-        if (entry === ".migrated" || entry === ".DS_Store") continue;
-        const srcPath = join(src, entry);
-        const dstPath = join(dst, entry);
-        const stat = statSync(srcPath);
-        if (stat.isDirectory()) {
-            // Recursively merge subdirectories (e.g. sessions/*)
-            _mergeDir(srcPath, dstPath);
-        } else if (!existsSync(dstPath)) {
-            // Move file — try rename first, fall back to copy
-            try {
-                renameSync(srcPath, dstPath);
-            } catch {
-                cpSync(srcPath, dstPath);
-            }
-        }
-        // If dst already has the file, skip (don't overwrite)
-    }
-}
+// Re-export migration from shared module — used on daemon startup
+import { migrateAgentDir } from "../migrations.js";
 
 /**
  * Read the `relayUrl` from ~/.pizzapi/config.json, returning undefined
@@ -159,8 +87,8 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
     const statePath = defaultStatePath();
     const identity = acquireStateAndIdentity(statePath);
 
-    // Migrate session storage from ~/.pi to ~/.pizzapi on startup
-    migrateSessionStorage();
+    // Migrate session storage from legacy locations into flat ~/.pizzapi/
+    migrateAgentDir();
 
     // Initialize usage tracking
     initUsage();
