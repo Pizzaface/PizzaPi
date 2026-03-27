@@ -137,6 +137,11 @@ function formatTime(isoString: string): string {
 
 export type DotState = "connecting" | "connected" | "disconnected";
 
+// Wait briefly for the canonical /hub "sessions" snapshot before falling back
+// to REST. This avoids an immediate duplicate /api/sessions fetch on healthy
+// connections while preserving a safety net if the snapshot is missed.
+const HUB_SESSIONS_REST_FALLBACK_DELAY_MS = 1200;
+
 function LiveDot({ state }: { state: DotState }) {
     return (
         <span
@@ -633,10 +638,27 @@ export const SessionSidebar = React.memo(function SessionSidebar({
             }
         };
 
+        let fallbackTimer: ReturnType<typeof setTimeout> | null = null;
+        const clearFallbackTimer = () => {
+            if (fallbackTimer) {
+                clearTimeout(fallbackTimer);
+                fallbackTimer = null;
+            }
+        };
+        const scheduleResyncFallback = (epoch: number) => {
+            clearFallbackTimer();
+            fallbackTimer = setTimeout(() => {
+                fallbackTimer = null;
+                if (disposed) return;
+                if (latestHubSnapshotEpoch >= epoch) return;
+                void resyncLiveSessionsFromApi(epoch);
+            }, HUB_SESSIONS_REST_FALLBACK_DELAY_MS);
+        };
+
         const handleConnect = () => {
             setDotState("connected");
             const epoch = ++connectEpoch;
-            void resyncLiveSessionsFromApi(epoch);
+            scheduleResyncFallback(epoch);
         };
 
         const handleDisconnect = () => {
@@ -649,6 +671,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
 
         const handleSessions = (data: unknown) => {
             latestHubSnapshotEpoch = connectEpoch;
+            clearFallbackTimer();
             applyLiveSessionsSnapshot(parseHubSessionsPayload(data));
         };
 
@@ -735,16 +758,18 @@ export const SessionSidebar = React.memo(function SessionSidebar({
         hubSocket.on("session_status", handleSessionStatus);
 
         // If the shared socket is already connected by the time this effect runs,
-        // sync the session list immediately via REST — we will have missed the
-        // server's initial "sessions" emit that fires on namespace join.
+        // we may have missed the server's initial "sessions" emit that fires on
+        // namespace join. Schedule the same delayed REST fallback used for normal
+        // connect events.
         if (hubSocket.connected) {
             setDotState("connected");
             const epoch = ++connectEpoch;
-            void resyncLiveSessionsFromApi(epoch);
+            scheduleResyncFallback(epoch);
         }
 
         return () => {
             disposed = true;
+            clearFallbackTimer();
             // Only remove our event handlers — App.tsx owns the socket lifecycle.
             hubSocket.off("connect", handleConnect);
             hubSocket.off("disconnect", handleDisconnect);

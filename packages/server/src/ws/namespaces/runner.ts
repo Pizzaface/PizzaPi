@@ -229,6 +229,36 @@ export function getRunnerServiceAnnounce(runnerId: string): ServiceAnnounceData 
     return runnerServiceAnnounce.get(runnerId) ?? null;
 }
 
+/** @internal — exported for unit tests only */
+export function isSameServiceAnnounce(
+    a: ServiceAnnounceData | null | undefined,
+    b: ServiceAnnounceData | null | undefined,
+): boolean {
+    if (!a || !b) return false;
+    if (a.serviceIds.length !== b.serviceIds.length) return false;
+    for (let i = 0; i < a.serviceIds.length; i++) {
+        if (a.serviceIds[i] !== b.serviceIds[i]) return false;
+    }
+
+    const aPanels = a.panels ?? [];
+    const bPanels = b.panels ?? [];
+    if (aPanels.length !== bPanels.length) return false;
+    for (let i = 0; i < aPanels.length; i++) {
+        const left = aPanels[i];
+        const right = bPanels[i];
+        if (
+            left.serviceId !== right.serviceId ||
+            left.port !== right.port ||
+            left.label !== right.label ||
+            left.icon !== right.icon
+        ) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 /**
  * Load service announce data from Redis into the in-memory cache.
  * Called after runner registration to seed the cache from persisted data
@@ -671,6 +701,12 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
         socket.on("service_announce", (data: ServiceAnnounceData) => {
             const runnerId = socket.data.runnerId;
             if (!runnerId) return;
+
+            const previous = runnerServiceAnnounce.get(runnerId);
+            // Skip no-op announces to avoid redundant Redis writes and fan-out
+            // to every viewer on this runner when nothing actually changed.
+            if (isSameServiceAnnounce(previous, data)) return;
+
             // Cache in memory for fast lookups
             runnerServiceAnnounce.set(runnerId, data);
             // Persist to Redis so the data survives server restarts

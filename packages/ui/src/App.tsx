@@ -63,7 +63,7 @@ import { ViewerSocketContext } from "@/lib/viewer-socket-context";
 import { HubSocketContext } from "@/lib/hub-socket-context";
 import { shouldStopViewerReconnect } from "@/lib/viewer-connection";
 import { getConfirmedMetaSubscriptionTargets } from "@/lib/meta-subscriptions";
-import { useRunnerServices, attachServiceAnnounceListener, seedServiceCache } from "@/hooks/useRunnerServices";
+import { useRunnerServices, attachServiceAnnounceListener, seedServiceCache, setViewerSwitchGeneration } from "@/hooks/useRunnerServices";
 import { ServicePanelButtons, useServicePanelState } from "@/components/service-panels/ServicePanels";
 import { SERVICE_PANELS } from "@/components/service-panels/registry";
 import { DynamicLucideIcon } from "@/components/service-panels/lucide-icon";
@@ -109,6 +109,7 @@ import {
 import { evictLruIfNeeded, touchSessionCache, MAX_SESSION_UI_CACHE_SIZE } from "@/lib/session-ui-cache";
 import { analyzeIncomingSeq, mergeConnectedSeq, shouldDeferEventForHydration } from "@/lib/session-seq";
 import { createLogger } from "@pizzapi/tools";
+import { isActiveViewerSessionPayload, matchesViewerGeneration } from "@/lib/viewer-switch";
 
 const log = createLogger("relay");
 
@@ -431,6 +432,7 @@ export function App() {
   // Tracked as state so HubSocketContext consumers re-render when the socket changes.
   const [hubSocket, setHubSocket] = React.useState<Socket<HubServerToClientEvents, HubClientToServerEvents> | null>(null);
   const activeSessionRef = React.useRef<string | null>(null);
+  const viewerSwitchGenerationRef = React.useRef(0);
 
   // Cache last-known UI state per relay session so switching sessions feels instant.
   const sessionUiCacheRef = React.useRef<Map<string, SessionUiCacheEntry>>(new Map());
@@ -2330,6 +2332,9 @@ export function App() {
   }, [hubSocket, liveSessions, activeSessionId, metaInventoryVersion]);
 
   const openSession = React.useCallback((relaySessionId: string) => {
+    // Already viewing this session — nothing to do.
+    if (relaySessionId === activeSessionRef.current) return;
+
     // Flush/cancel any pending RAF queues (streaming deltas & tool-stream
     // partials) from the previous session so they can't leak into the new one.
     cancelPendingDeltas();
@@ -2349,20 +2354,8 @@ export function App() {
       : null;
     const nextRunnerId = sessions.find((s) => s.sessionId === relaySessionId)?.runnerId ?? null;
     const sameRunner = !!(prevRunnerId && nextRunnerId && prevRunnerId === nextRunnerId);
-
-    // Save a ref to the old viewer socket before tearing it down — on same-runner
-    // switches we'll seed the new socket's eager service cache from it.
     const prevViewerSocket = viewerWsRef.current;
-
-    viewerWsRef.current?.disconnect();
-    viewerWsRef.current = null;
-    setViewerSocket(null);
-
-    // Clear any existing stale-connection timer from a previous session.
-    if (staleCheckTimerRef.current !== null) {
-      clearInterval(staleCheckTimerRef.current);
-      staleCheckTimerRef.current = null;
-    }
+    const nextGeneration = ++viewerSwitchGenerationRef.current;
 
     localStorage.setItem("pp.lastSessionId", relaySessionId);
     activeSessionRef.current = relaySessionId;
@@ -2386,7 +2379,6 @@ export function App() {
     setResumeSessionsLoading(false);
 
     const cached = sessionUiCacheRef.current.get(relaySessionId);
-    // Update lastAccessed so this entry is not evicted while actively being viewed.
     touchSessionCache(sessionUiCacheRef.current, relaySessionId);
 
     // ── Session-scoped state: always reset from cache or defaults ────────
@@ -2402,9 +2394,6 @@ export function App() {
     setTodoList(cached?.todoList ?? []);
 
     // ── Runner-scoped state: preserve on same-runner switch ─────────────
-    // These values are identical across sessions on the same runner. Resetting
-    // them causes a flash-to-empty in the header / model selector, followed by
-    // the exact same values arriving again from the capabilities event.
     if (!sameRunner) {
       setAvailableModels(cached?.availableModels ?? []);
       setAvailableCommands(cached?.availableCommands ?? []);
@@ -2419,196 +2408,198 @@ export function App() {
     setPendingQuestion(null);
     setPendingPlan(null);
 
-    const socket: Socket<ViewerServerToClientEvents, ViewerClientToServerEvents> = io("/viewer", {
-      auth: { sessionId: relaySessionId },
-      withCredentials: true,
-    });
-    viewerWsRef.current = socket;
-    // Attach service_announce listener BEFORE setViewerSocket triggers a render,
-    // so the announce event (sent by the server during connection) is captured
-    // eagerly and available when useRunnerServices reads it.
-    attachServiceAnnounceListener(socket);
-
-    // For same-runner switches, seed the new socket's eager service cache from
-    // the previous socket so useRunnerServices doesn't flash to empty while
-    // waiting for the new socket's service_announce event.
-    if (sameRunner) {
-      seedServiceCache(socket, prevViewerSocket);
-    }
-    setViewerSocket(socket);
-
-    // Stale-connection watchdog: if the socket thinks it's connected but
-    // no event has arrived for STALE_THRESHOLD_MS, force a reconnect.
-    // This catches NAT timeouts, middlebox drops, and backgrounded-tab
-    // scenarios where socket.io's own ping/pong doesn't fire in time.
-    staleCheckTimerRef.current = setInterval(() => {
-      if (activeSessionRef.current !== relaySessionId) return;
-      if (!socket.connected) return;
-      const elapsed = Date.now() - lastViewerEventAtRef.current;
-      if (elapsed > STALE_THRESHOLD_MS) {
-        log.warn(`Stale connection detected (${Math.round(elapsed / 1000)}s since last event). Reconnecting…`);
-        socket.disconnect();
-        socket.connect();
+    let socket = viewerWsRef.current;
+    if (!socket) {
+      socket = io("/viewer", {
+        withCredentials: true,
+        autoConnect: false,
+      });
+      viewerWsRef.current = socket;
+      attachServiceAnnounceListener(socket);
+      if (sameRunner) {
+        seedServiceCache(socket, prevViewerSocket);
       }
-    }, STALE_CHECK_INTERVAL_MS);
+      setViewerSocket(socket);
+      const nextSocket = socket;
 
-    socket.on("connected", (data) => {
-      if (activeSessionRef.current !== relaySessionId) return;
-      lastViewerEventAtRef.current = Date.now();
+      // Stale-connection watchdog: if the socket thinks it's connected but
+      // no event has arrived for STALE_THRESHOLD_MS, force a reconnect.
+      staleCheckTimerRef.current = setInterval(() => {
+        if (!activeSessionRef.current) return;
+        if (!nextSocket.connected) return;
+        const elapsed = Date.now() - lastViewerEventAtRef.current;
+        if (elapsed > STALE_THRESHOLD_MS) {
+          log.warn(`Stale connection detected (${Math.round(elapsed / 1000)}s since last event). Reconnecting…`);
+          nextSocket.disconnect();
+          nextSocket.connect();
+        }
+      }, STALE_CHECK_INTERVAL_MS);
 
-      const replayOnly = data.replayOnly === true;
-      setViewerStatus(replayOnly ? "Snapshot replay" : "Connected");
+      nextSocket.on("connect", () => {
+        const currentSessionId = activeSessionRef.current;
+        if (!currentSessionId) return;
+        setViewerStatus("Connecting…");
+        setViewerSwitchGeneration(nextSocket, viewerSwitchGenerationRef.current);
+        nextSocket.emit("switch_session", {
+          sessionId: currentSessionId,
+          generation: viewerSwitchGenerationRef.current,
+        });
+      });
 
-      // Seed sequence for gap detection, but never move backward if live
-      // events already advanced the cursor before "connected" arrives.
-      if (typeof data.lastSeq === "number") {
-        lastSeqRef.current = mergeConnectedSeq(lastSeqRef.current, data.lastSeq);
-      }
-
-      // Reflect initial active status from connected message.
-      if (typeof data.isActive === "boolean") {
-        setAgentActive(data.isActive);
-        patchSessionCache({ agentActive: data.isActive });
-      }
-
-      if (Object.prototype.hasOwnProperty.call(data, "sessionName")) {
-        const nextName = normalizeSessionName(data.sessionName);
-        setSessionName(nextName);
-        patchSessionCache({ sessionName: nextName });
-      }
-
-      // Tell the runner we connected so it can push capabilities (models/commands/etc.)
-      socket.emit("connected", {});
-    });
-
-    socket.on("event", (data) => {
-      if (activeSessionRef.current !== relaySessionId) return;
-      lastViewerEventAtRef.current = Date.now();
-
-      const rawEvent = data.event;
-      const eventType =
-        rawEvent && typeof rawEvent === "object" && typeof (rawEvent as Record<string, unknown>).type === "string"
-          ? (rawEvent as Record<string, unknown>).type as string
-          : "";
-
-      // Ignore pre-snapshot/chunk-hydration events BEFORE sequence analysis,
-      // otherwise dropped events can still advance lastSeq and block hydration.
-      if (shouldDeferEventForHydration(
-        eventType,
-        awaitingSnapshotRef.current,
-        !!chunkedDeliveryRef.current,
-      )) {
-        return;
-      }
-
-      // Detect sequence gaps and reject out-of-order stale events.
-      // This is safe during chunked delivery because the server's resync
-      // handler now falls back to getPendingChunkedSnapshot() when lastState
-      // hasn't been assembled yet, and the resync response is a non-chunked
-      // session_active that sets lastCompletedSnapshotRef, rejecting any
-      // subsequently arriving stale chunks.
-      const seq = typeof data.seq === "number" ? data.seq : null;
-      if (seq !== null) {
-        const decision = analyzeIncomingSeq(lastSeqRef.current, seq);
-        if (!decision.accept) {
+      nextSocket.on("connected", (data) => {
+        if (!isActiveViewerSessionPayload(
+          activeSessionRef.current,
+          data.sessionId,
+          viewerSwitchGenerationRef.current,
+          data.generation,
+        )) {
           return;
         }
-        if (decision.gap && decision.expected !== null) {
-          // Gap detected — request a resync snapshot from the server.
-          log.warn(`Sequence gap: expected ${decision.expected}, got ${seq}. Requesting resync.`);
-          socket.emit("resync", {});
+        lastViewerEventAtRef.current = Date.now();
+
+        const replayOnly = data.replayOnly === true;
+        setViewerStatus(replayOnly ? "Snapshot replay" : "Connected");
+
+        if (typeof data.lastSeq === "number") {
+          lastSeqRef.current = mergeConnectedSeq(lastSeqRef.current, data.lastSeq);
         }
-        lastSeqRef.current = decision.nextSeq;
-      }
 
-      handleRelayEvent(data.event, seq ?? undefined);
-    });
+        if (typeof data.isActive === "boolean") {
+          setAgentActive(data.isActive);
+          patchSessionCache({ agentActive: data.isActive });
+        }
 
-    socket.on("exec_result", (data) => {
-      if (activeSessionRef.current !== relaySessionId) return;
-      lastViewerEventAtRef.current = Date.now();
-      handleRelayEvent({ type: "exec_result", ...data });
-    });
+        if (Object.prototype.hasOwnProperty.call(data, "sessionName")) {
+          const nextName = normalizeSessionName(data.sessionName);
+          setSessionName(nextName);
+          patchSessionCache({ sessionName: nextName });
+        }
 
-    socket.on("disconnected", (data) => {
-      if (activeSessionRef.current !== relaySessionId) return;
-      // Server is actively talking to us — reset stale clock.
-      lastViewerEventAtRef.current = Date.now();
-      // "Session reconnected" means a new worker registered with the same session ID
-      // (e.g. the user ran /restart in the CLI terminal rather than via the web UI
-      // command bar).  Treat it identically to a UI-initiated restart so the
-      // existing auto-reconnect logic fires when the session comes back live.
-      if (data.reason === "Session reconnected" && restartPendingSessionIdRef.current !== relaySessionId) {
-        restartPendingSessionIdRef.current = relaySessionId;
-        if (restartPendingTimerRef.current) clearTimeout(restartPendingTimerRef.current);
-        restartPendingTimerRef.current = setTimeout(() => {
-          restartPendingSessionIdRef.current = null;
-          restartPendingTimerRef.current = null;
-        }, 60_000);
-      }
-      const isRestarting = restartPendingSessionIdRef.current === relaySessionId;
-      if (!isRestarting) {
-        setViewerStatus(data.reason || "Disconnected");
-      } else {
-        setViewerStatus("Restarting CLI\u2026");
-      }
-      setPendingQuestion(null);
-      setPendingPlan(null);
-      setIsChangingModel(false);
+        nextSocket.emit("connected", {});
+      });
 
-      // Snapshot replay means the session is no longer live. If we leave the
-      // namespace socket active, socket.io-client keeps retrying forever,
-      // creating repeated /viewer reconnect churn for a dead session.
-      if (shouldStopViewerReconnect(data)) {
-        socket.disconnect();
-      }
-    });
+      nextSocket.on("event", (data) => {
+        if (!matchesViewerGeneration(viewerSwitchGenerationRef.current, data.generation)) {
+          return;
+        }
+        if (!activeSessionRef.current) return;
+        lastViewerEventAtRef.current = Date.now();
 
-    socket.on("error", (data) => {
-      if (activeSessionRef.current !== relaySessionId) return;
-      // Server is actively talking to us — reset stale clock.
-      lastViewerEventAtRef.current = Date.now();
-      setViewerStatus(data.message || "Failed to load session");
-    });
+        const rawEvent = data.event;
+        const eventType =
+          rawEvent && typeof rawEvent === "object" && typeof (rawEvent as Record<string, unknown>).type === "string"
+            ? (rawEvent as Record<string, unknown>).type as string
+            : "";
 
-    socket.on("connect_error", () => {
-      if (activeSessionRef.current === relaySessionId) {
-        setViewerStatus("Connection error");
-      }
-    });
+        if (shouldDeferEventForHydration(
+          eventType,
+          awaitingSnapshotRef.current,
+          !!chunkedDeliveryRef.current,
+        )) {
+          return;
+        }
 
-    socket.on("disconnect", (reason) => {
-      if (activeSessionRef.current === relaySessionId) {
-        const isRestarting = restartPendingSessionIdRef.current === relaySessionId;
-        setViewerStatus((prev) =>
-          isRestarting
-            ? "Restarting CLI…"
-            : prev === "Connected" || prev === "Connecting…"
-              ? "Disconnected"
-              : prev,
-        );
+        const seq = typeof data.seq === "number" ? data.seq : null;
+        if (seq !== null) {
+          const decision = analyzeIncomingSeq(lastSeqRef.current, seq);
+          if (!decision.accept) {
+            return;
+          }
+          if (decision.gap && decision.expected !== null) {
+            log.warn(`Sequence gap: expected ${decision.expected}, got ${seq}. Requesting resync.`);
+            nextSocket.emit("resync", {});
+          }
+          lastSeqRef.current = decision.nextSeq;
+        }
+
+        handleRelayEvent(data.event, seq ?? undefined);
+      });
+
+      nextSocket.on("exec_result", (data) => {
+        if (!activeSessionRef.current) return;
+        lastViewerEventAtRef.current = Date.now();
+        handleRelayEvent({ type: "exec_result", ...data });
+      });
+
+      nextSocket.on("disconnected", (data) => {
+        if (!matchesViewerGeneration(viewerSwitchGenerationRef.current, data.generation)) {
+          return;
+        }
+        const currentSessionId = activeSessionRef.current;
+        if (!currentSessionId) return;
+        lastViewerEventAtRef.current = Date.now();
+        if (data.reason === "Session reconnected" && restartPendingSessionIdRef.current !== currentSessionId) {
+          restartPendingSessionIdRef.current = currentSessionId;
+          if (restartPendingTimerRef.current) clearTimeout(restartPendingTimerRef.current);
+          restartPendingTimerRef.current = setTimeout(() => {
+            restartPendingSessionIdRef.current = null;
+            restartPendingTimerRef.current = null;
+          }, 60_000);
+        }
+        const isRestarting = restartPendingSessionIdRef.current === currentSessionId;
+        if (!isRestarting) {
+          setViewerStatus(data.reason || "Disconnected");
+        } else {
+          setViewerStatus("Restarting CLI…");
+        }
         setPendingQuestion(null);
         setPendingPlan(null);
         setIsChangingModel(false);
-        // Reset the stale clock so we don't fire immediately on reconnect.
-        lastViewerEventAtRef.current = Date.now();
 
-        // When the server explicitly disconnects us (reason "io server disconnect"),
-        // socket.io permanently disables auto-reconnect on the client. This happens
-        // when the session isn't live yet — e.g. the server just restarted and the
-        // CLI hasn't re-registered. Schedule a manual reconnect so we pick up the
-        // session once it's available again.
-        // The activeSessionRef guard ensures this is a no-op if the user
-        // switches to a different session before the timer fires.
-        if (reason === "io server disconnect") {
-          setTimeout(() => {
-            if (activeSessionRef.current === relaySessionId && !socket.connected) {
-              socket.connect();
-            }
-          }, 2000);
+        if (shouldStopViewerReconnect(data)) {
+          nextSocket.disconnect();
         }
-      }
-    });
+      });
+
+      nextSocket.on("error", (data) => {
+        if (!matchesViewerGeneration(viewerSwitchGenerationRef.current, data.generation)) {
+          return;
+        }
+        if (!activeSessionRef.current) return;
+        lastViewerEventAtRef.current = Date.now();
+        setViewerStatus(data.message || "Failed to load session");
+      });
+
+      nextSocket.on("connect_error", () => {
+        if (activeSessionRef.current) {
+          setViewerStatus("Connection error");
+        }
+      });
+
+      nextSocket.on("disconnect", (reason) => {
+        if (activeSessionRef.current) {
+          const isRestarting = restartPendingSessionIdRef.current === activeSessionRef.current;
+          setViewerStatus((prev) =>
+            isRestarting
+              ? "Restarting CLI…"
+              : prev === "Connected" || prev === "Connecting…"
+                ? "Disconnected"
+                : prev,
+          );
+          setPendingQuestion(null);
+          setPendingPlan(null);
+          setIsChangingModel(false);
+          lastViewerEventAtRef.current = Date.now();
+
+          if (reason === "io server disconnect") {
+            setTimeout(() => {
+              if (activeSessionRef.current && !nextSocket.connected) {
+                nextSocket.connect();
+              }
+            }, 2000);
+          }
+        }
+      });
+    }
+
+    if (!socket) return;
+
+    setViewerSwitchGeneration(socket, nextGeneration);
+    if (socket.connected) {
+      socket.emit("switch_session", { sessionId: relaySessionId, generation: nextGeneration });
+    } else {
+      socket.connect();
+    }
   }, [handleRelayEvent, patchSessionCache, cancelPendingDeltas]);
 
   // Auto-reopen the last viewed session once live sessions arrive.

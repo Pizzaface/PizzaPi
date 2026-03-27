@@ -17,9 +17,11 @@
 import { useState, useEffect, useRef } from "react";
 import type { Socket } from "socket.io-client";
 import type { ServiceAnnounceData, ServicePanelInfo } from "@pizzapi/protocol";
+import { matchesViewerGeneration } from "@/lib/viewer-switch";
 
 const SERVICE_IDS_KEY = "__serviceIds" as const;
 const PANELS_KEY = "__panels" as const;
+const VIEWER_SWITCH_GENERATION_KEY = "__viewerSwitchGeneration" as const;
 
 /**
  * Call this synchronously right after creating the viewer socket.
@@ -27,7 +29,11 @@ const PANELS_KEY = "__panels" as const;
  * so they're available before any React hooks mount.
  */
 export function attachServiceAnnounceListener(socket: Socket): void {
-    socket.on("service_announce", (data: ServiceAnnounceData) => {
+    socket.on("service_announce", (data: ServiceAnnounceData & { generation?: number }) => {
+        const currentGeneration = (socket as any)[VIEWER_SWITCH_GENERATION_KEY] as number | undefined;
+        if (!matchesViewerGeneration(currentGeneration, data.generation)) {
+            return;
+        }
         (socket as any)[SERVICE_IDS_KEY] = data.serviceIds;
         (socket as any)[PANELS_KEY] = data.panels;
     });
@@ -48,6 +54,10 @@ export function seedServiceCache(newSocket: Socket, prevSocket: Socket | null): 
     const panels = (prevSocket as any)[PANELS_KEY] as ServicePanelInfo[] | undefined;
     if (ids) (newSocket as any)[SERVICE_IDS_KEY] = ids;
     if (panels) (newSocket as any)[PANELS_KEY] = panels;
+}
+
+export function setViewerSwitchGeneration(socket: Socket, generation: number): void {
+    (socket as any)[VIEWER_SWITCH_GENERATION_KEY] = generation;
 }
 
 /** Read any already-captured service IDs from the socket. */
@@ -71,14 +81,8 @@ export function useRunnerServices(socket: Socket | null): RunnerServicesState {
     const [panels, setPanels] = useState<ServicePanelInfo[]>(() => getEagerPanels(socket));
     const prevSocketRef = useRef(socket);
 
-    // When the socket changes, eagerly read any cached announce
     if (socket !== prevSocketRef.current) {
         prevSocketRef.current = socket;
-        const eager = getEagerServiceIds(socket);
-        if (eager.size > 0 || services.size > 0) {
-            // Can't call setState during render in strict mode without this pattern
-            // but since we're comparing refs it's fine — this is a derived-state reset
-        }
     }
 
     useEffect(() => {
@@ -99,7 +103,11 @@ export function useRunnerServices(socket: Socket | null): RunnerServicesState {
             setPanels(cachedPanels);
         }
 
-        const handleAnnounce = (data: ServiceAnnounceData) => {
+        const handleAnnounce = (data: ServiceAnnounceData & { generation?: number }) => {
+            const currentGeneration = (socket as any)[VIEWER_SWITCH_GENERATION_KEY] as number | undefined;
+            if (!matchesViewerGeneration(currentGeneration, data.generation)) {
+                return;
+            }
             setServices(new Set(data.serviceIds));
             setPanels(data.panels ?? []);
         };
