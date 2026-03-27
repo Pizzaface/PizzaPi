@@ -16,8 +16,8 @@
 import { randomUUID } from "node:crypto";
 import type { ExtensionFactory } from "@mariozechner/pi-coding-agent";
 import { Text } from "@mariozechner/pi-tui";
-import { getRelaySocket, getRelaySessionId } from "./remote.js";
-import { loadConfig } from "../config.js";
+import { getRelaySocket as getRelaySocketDefault, getRelaySessionId as getRelaySessionIdDefault } from "./remote.js";
+import { loadConfig as loadConfigDefault } from "../config.js";
 
 /** Timeout for service_message request/response round-trips. */
 const SERVICE_TIMEOUT_MS = 10_000;
@@ -29,6 +29,18 @@ interface TunnelInfo {
     pinned?: boolean;
 }
 
+interface TunnelToolsDeps {
+    getRelaySocket: typeof getRelaySocketDefault;
+    getRelaySessionId: typeof getRelaySessionIdDefault;
+    loadConfig: typeof loadConfigDefault;
+}
+
+const defaultDeps: TunnelToolsDeps = {
+    getRelaySocket: getRelaySocketDefault,
+    getRelaySessionId: getRelaySessionIdDefault,
+    loadConfig: loadConfigDefault,
+};
+
 /** Minimal Component that renders nothing — keeps the tool call invisible in the TUI. */
 const silent = { render: (_width: number): string[] => [], invalidate: () => {} };
 
@@ -37,11 +49,12 @@ const silent = { render: (_width: number): string[] => [], invalidate: () => {} 
  * and wait for a response with matching requestId.
  */
 function sendTunnelServiceMessage(
+    deps: TunnelToolsDeps,
     type: string,
     payload: unknown,
 ): Promise<{ type: string; payload: unknown }> {
     return new Promise((resolve, reject) => {
-        const conn = getRelaySocket();
+        const conn = deps.getRelaySocket();
         if (!conn) {
             reject(new Error("Not connected to relay. Cannot manage tunnels without a relay connection."));
             return;
@@ -78,10 +91,10 @@ function sendTunnelServiceMessage(
     });
 }
 
-function getRelayHttpBaseUrl(): string | null {
+function getRelayHttpBaseUrl(deps: TunnelToolsDeps): string | null {
     const configured =
         process.env.PIZZAPI_RELAY_URL ??
-        loadConfig(process.cwd()).relayUrl ??
+        deps.loadConfig(process.cwd()).relayUrl ??
         "ws://localhost:7492";
 
     if (configured.toLowerCase() === "off") return null;
@@ -93,9 +106,9 @@ function getRelayHttpBaseUrl(): string | null {
     return `https://${trimmed}`;
 }
 
-function buildPublicTunnelUrl(port: number): string | null {
-    const base = getRelayHttpBaseUrl();
-    const sessionId = getRelaySessionId();
+function buildPublicTunnelUrl(deps: TunnelToolsDeps, port: number): string | null {
+    const base = getRelayHttpBaseUrl(deps);
+    const sessionId = deps.getRelaySessionId();
     if (!base || !sessionId) return null;
     return `${base}/api/tunnel/${encodeURIComponent(sessionId)}/${port}/`;
 }
@@ -107,7 +120,8 @@ function ok(text: string, details?: Record<string, unknown>) {
     };
 }
 
-export const tunnelToolsExtension: ExtensionFactory = (pi) => {
+export function createTunnelToolsExtension(deps: TunnelToolsDeps = defaultDeps): ExtensionFactory {
+    return (pi) => {
     // ── create_tunnel ────────────────────────────────────────────────────────
     pi.registerTool({
         name: "create_tunnel",
@@ -140,7 +154,7 @@ export const tunnelToolsExtension: ExtensionFactory = (pi) => {
             }
 
             try {
-                const response = await sendTunnelServiceMessage("tunnel_expose", {
+                const response = await sendTunnelServiceMessage(deps, "tunnel_expose", {
                     port,
                     name: params.name ?? undefined,
                 });
@@ -152,7 +166,7 @@ export const tunnelToolsExtension: ExtensionFactory = (pi) => {
 
                 if (response.type === "tunnel_registered") {
                     const info = response.payload as TunnelInfo;
-                    const publicUrl = buildPublicTunnelUrl(info.port);
+                    const publicUrl = buildPublicTunnelUrl(deps, info.port);
 
                     const lines = [
                         `Tunnel created successfully.`,
@@ -223,7 +237,7 @@ export const tunnelToolsExtension: ExtensionFactory = (pi) => {
 
         async execute() {
             try {
-                const response = await sendTunnelServiceMessage("tunnel_list", {});
+                const response = await sendTunnelServiceMessage(deps, "tunnel_list", {});
 
                 if (response.type === "tunnel_list_result") {
                     const tunnels = ((response.payload as { tunnels?: TunnelInfo[] })?.tunnels ?? [])
@@ -231,7 +245,7 @@ export const tunnelToolsExtension: ExtensionFactory = (pi) => {
                             port: t.port,
                             name: t.name ?? null,
                             url: t.url,
-                            publicUrl: buildPublicTunnelUrl(t.port) ?? null,
+                            publicUrl: buildPublicTunnelUrl(deps, t.port) ?? null,
                             pinned: t.pinned ?? false,
                         }));
 
@@ -314,7 +328,7 @@ export const tunnelToolsExtension: ExtensionFactory = (pi) => {
                 // The tunnel service emits tunnel_removed on success (fire-and-forget).
                 // We listen for it briefly, but also accept that the operation may
                 // succeed silently if the port wasn't tracked.
-                const conn = getRelaySocket();
+                const conn = deps.getRelaySocket();
                 if (!conn) {
                     return ok("Error: Not connected to relay.", { error: "Not connected" });
                 }
@@ -396,4 +410,7 @@ export const tunnelToolsExtension: ExtensionFactory = (pi) => {
             );
         },
     });
-};
+    };
+}
+
+export const tunnelToolsExtension: ExtensionFactory = createTunnelToolsExtension();

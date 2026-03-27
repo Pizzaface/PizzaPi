@@ -1,24 +1,9 @@
 import { describe, test, expect, mock, beforeEach } from "bun:test";
+import { createTunnelToolsExtension } from "./tunnel-tools.js";
 
-// Mock the remote module exports before importing tunnel-tools
 const mockGetRelaySocket = mock(() => null as any);
 const mockGetRelaySessionId = mock(() => null as string | null);
-
-mock.module("./remote.js", () => ({
-    getRelaySocket: mockGetRelaySocket,
-    getRelaySessionId: mockGetRelaySessionId,
-    remoteExtension: () => {},
-}));
-
-mock.module("../config.js", () => ({
-    loadConfig: () => ({ relayUrl: "ws://localhost:7492" }),
-    expandHome: (p: string) => p,
-    defaultAgentDir: () => "/tmp/test-agent",
-    BUILTIN_SYSTEM_PROMPT: "",
-}));
-
-// Import after mocks are set up
-import { tunnelToolsExtension } from "./tunnel-tools.js";
+const mockLoadConfig = mock((_cwd: string) => ({ relayUrl: "ws://localhost:7492" } as any));
 
 // ── Test helpers ──────────────────────────────────────────────────────────────
 
@@ -72,11 +57,19 @@ describe("tunnelToolsExtension", () => {
     let tools: Map<string, RegisteredTool>;
 
     beforeEach(() => {
-        pi = createMockPi();
-        tunnelToolsExtension(pi as any);
-        tools = pi.tools;
         mockGetRelaySocket.mockReset();
         mockGetRelaySessionId.mockReset();
+        mockLoadConfig.mockReset();
+        mockLoadConfig.mockReturnValue({ relayUrl: "ws://localhost:7492" } as any);
+
+        pi = createMockPi();
+        const extension = createTunnelToolsExtension({
+            getRelaySocket: mockGetRelaySocket as any,
+            getRelaySessionId: mockGetRelaySessionId as any,
+            loadConfig: mockLoadConfig as any,
+        });
+        extension(pi as any);
+        tools = pi.tools;
     });
 
     test("registers create_tunnel, list_tunnels, and close_tunnel tools", () => {
@@ -285,7 +278,12 @@ describe("buildPublicTunnelUrl", () => {
         mockGetRelaySessionId.mockReturnValue("abc-def-123");
 
         const pi = createMockPi();
-        tunnelToolsExtension(pi as any);
+        const extension = createTunnelToolsExtension({
+            getRelaySocket: mockGetRelaySocket as any,
+            getRelaySessionId: mockGetRelaySessionId as any,
+            loadConfig: mockLoadConfig as any,
+        });
+        extension(pi as any);
 
         const tool = pi.tools.get("create_tunnel")!;
         const result = await tool.execute("call-1", { port: 8080 });
@@ -314,7 +312,12 @@ describe("buildPublicTunnelUrl", () => {
         mockGetRelaySessionId.mockReturnValue(null);
 
         const pi = createMockPi();
-        tunnelToolsExtension(pi as any);
+        const extension = createTunnelToolsExtension({
+            getRelaySocket: mockGetRelaySocket as any,
+            getRelaySessionId: mockGetRelaySessionId as any,
+            loadConfig: mockLoadConfig as any,
+        });
+        extension(pi as any);
 
         const tool = pi.tools.get("create_tunnel")!;
         const result = await tool.execute("call-1", { port: 8080 });
