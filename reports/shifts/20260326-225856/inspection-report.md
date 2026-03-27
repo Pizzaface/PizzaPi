@@ -122,15 +122,28 @@ The session-delink incident at 00:35 prevented critic dispatch for 6 of 7 PRs. O
 
 ## Systemic Patterns
 
-1. **Concurrency / lifecycle cleanup:** 3 of 5 violations involve race conditions or resource leak on dispose/reconnect (PR #362 MCP orphan, PR #365 out-of-order finalization, PR #366 depends_on race). Cooks are implementing the happy path correctly but missing the "what happens when the world moves during an async operation" cases.
+1. **PR descriptions: very poor.** Every PR in this shift has a near-empty description. Actual bodies:
+   - PR #360: `"Night Shift dish 011"` — 4 words, no context
+   - PR #362: `"Night Shift dish 016"` — 4 words
+   - PR #363: `"Night Shift dish 009"` — 4 words
+   - PR #364: dish list only, no explanation of what was changed or why
+   - PR #365: dish list only
+   - PR #366: dish list only
+   - PR #367: one sentence
 
-2. **Test coverage gaps on new functions:** PRs #360, #362, #363 all shipped new non-trivial functions with incomplete test suites. AGENTS.md rule "all new code must include tests" is being applied to test files being present but not to coverage depth.
+   A useful PR description should include: what changed and why, how to verify/test it, any risks or rollback considerations, and links to relevant Godmother ideas. These PRs have none of that. A reviewer encountering PR #360 cold has no idea what the performance problem was, what was measured, what the fix does, or how to verify it. This is a **hard block on effective review** — it forces reviewers to reconstruct intent from the diff alone.
 
-3. **Test quality issues:** PRs #360 and #363 both have tests that test the wrong thing (mock.module leak, fabricated socket.io format). Tests pass but don't validate production behavior.
+   **Required going forward:** Cook template must produce a description with at minimum: (1) problem statement, (2) root cause, (3) what changed, (4) how to verify, (5) Godmother ID if applicable.
 
-4. **Configuration artifacts committed to repo root:** 3 PRs committed work files to root (`ui-load-investigation.md`, `connection-audit.md`, `packages/ui/.dockerignore` in wrong place). Codex cooks have a pattern of dropping scratch files in obvious locations.
+2. **Concurrency / lifecycle cleanup:** 3 of 5 violations involve race conditions or resource leak on dispose/reconnect (PR #362 MCP orphan, PR #365 out-of-order finalization, PR #366 depends_on race). Cooks are implementing the happy path correctly but missing the "what happens when the world moves during an async operation" cases.
 
-5. **Codex verdict labeling:** All 4 Codex-authored violations were labeled CITATION by inspectors despite having P1 findings. Inspector model calibration issue — verdicts were corrected in this report.
+3. **Test coverage gaps on new functions:** PRs #360, #362, #363 all shipped new non-trivial functions with incomplete test suites. AGENTS.md rule "all new code must include tests" is being applied to test files being present but not to coverage depth.
+
+4. **Test quality issues:** PRs #360 and #363 both have tests that test the wrong thing (mock.module leak, fabricated socket.io format). Tests pass but don't validate production behavior.
+
+5. **Configuration artifacts committed to repo root:** 3 PRs committed work files to root (`ui-load-investigation.md`, `connection-audit.md`, `packages/ui/.dockerignore` in wrong place). Codex cooks have a pattern of dropping scratch files in obvious locations.
+
+6. **Codex verdict labeling:** All 4 Codex-authored violations were labeled CITATION by inspectors despite having P1 findings. Inspector model calibration issue — verdicts were corrected in this report.
 
 ---
 

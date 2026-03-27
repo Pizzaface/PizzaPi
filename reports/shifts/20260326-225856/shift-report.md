@@ -164,3 +164,5 @@ Session delink at 00:35 killed all pending critic sessions. Only 1 critic comple
 | #366 | `bbfb96a9` | `service_healthy` depends_on; `.dockerignore` companion path |
 
 All 7 PRs ready for merge review. See `inspection-report.md` for full details.
+
+⚠️ **PR descriptions are very poor** — most are 4 words ("Night Shift dish 011"). No problem statements, no root cause, no verification steps, no Godmother IDs. Cook template must be updated to require proper descriptions before next shift.

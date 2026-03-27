@@ -158,3 +158,6 @@
 ### Model blind spots
 - The one critic that completed (model unknown) missed a test-pollution P1 that also evaded the independent inspector. Test pollution via `mock.module()` is a known Bun-specific behavior — consider adding explicit check to review prompts.
 - Independent inspectors consistently under-graded verdicts: labeled CITATION on 4 PRs that contained P1 findings. Verdict calibration needs improvement in inspector template.
+
+### Additional finding — PR description quality
+All 7 PRs from this shift had near-empty descriptions ("Night Shift dish 011"). No problem statements, root cause, verification steps, or Godmother IDs. Blocks effective human review. Cook template update required (Godmother: 8MpNICWy).
