@@ -83,6 +83,7 @@ import {
 import { HiddenModelsManager, loadHiddenModels, fetchHiddenModels, modelKey } from "@/components/HiddenModelsManager";
 import { ChangePasswordDialog } from "@/components/ChangePasswordDialog";
 import { DegradedBanner } from "@/components/DegradedBanner";
+import { RunnerWarningBanner } from "@/components/RunnerWarningBanner";
 import { ShortcutsDialog } from "@/components/ShortcutsDialog";
 import {
   beginInputAttempt,
@@ -3585,6 +3586,7 @@ export function App() {
         Skip to content
       </a>
       <DegradedBanner relayStatus={relayStatus} />
+      <RunnerWarningBanner runners={feedRunners} />
       {/* ── Desktop header (memoized — skips re-render on same-runner session switch) ── */}
       <DesktopHeader
         relayStatus={relayStatus}

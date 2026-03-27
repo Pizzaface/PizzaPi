@@ -39,6 +39,8 @@ export {
     updateRunnerPlugins,
     updateRunnerServices,
     getRunnerServices,
+    addRunnerWarning,
+    clearRunnerWarnings,
     recordRunnerSession,
     linkSessionToRunner,
     removeRunnerSession,

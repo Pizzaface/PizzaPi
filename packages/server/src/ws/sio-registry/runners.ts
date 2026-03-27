@@ -242,6 +242,29 @@ export async function updateRunnerPlugins(runnerId: string, plugins: unknown[]):
     }
 }
 
+/** Add a warning to the runner's warnings list. Deduplicates by message. */
+export async function addRunnerWarning(runnerId: string, message: string): Promise<void> {
+    const existing = await getRunnerState(runnerId);
+    if (!existing) return;
+    const current: string[] = existing.warnings ? safeJsonParse(existing.warnings) ?? [] : [];
+    if (current.includes(message)) return; // already present
+    current.push(message);
+    await updateRunnerFields(runnerId, { warnings: JSON.stringify(current) });
+    const fresh = await getRunnerState(runnerId);
+    if (fresh) {
+        void broadcastToRunnersNs("runner_updated", runnerDataToInfo(fresh), fresh.userId ?? undefined);
+    }
+}
+
+/** Clear all warnings for a runner. */
+export async function clearRunnerWarnings(runnerId: string): Promise<void> {
+    await updateRunnerFields(runnerId, { warnings: "[]" });
+    const fresh = await getRunnerState(runnerId);
+    if (fresh) {
+        void broadcastToRunnersNs("runner_updated", runnerDataToInfo(fresh), fresh.userId ?? undefined);
+    }
+}
+
 /**
  * Persist service announce data (service IDs + panels) to Redis.
  * Called when a runner emits service_announce so the data survives
@@ -371,6 +394,7 @@ export async function getConnectedSessionsForRunner(runnerId: string): Promise<A
 function runnerDataToInfo(r: RedisRunnerData): RunnerInfo {
     const serviceIds: string[] | undefined = r.serviceIds ? safeJsonParse(r.serviceIds) ?? undefined : undefined;
     const panels = r.panels ? safeJsonParse(r.panels) ?? undefined : undefined;
+    const warnings: string[] | undefined = r.warnings ? safeJsonParse(r.warnings) ?? undefined : undefined;
     return {
         runnerId: r.runnerId,
         name: r.name,
@@ -384,6 +408,7 @@ function runnerDataToInfo(r: RedisRunnerData): RunnerInfo {
         platform: r.platform ?? null,
         ...(serviceIds ? { serviceIds } : {}),
         ...(panels ? { panels } : {}),
+        ...(warnings && warnings.length > 0 ? { warnings } : {}),
     };
 }
 

@@ -55,6 +55,8 @@ export interface RunnerInfo {
   serviceIds?: string[];
   /** Panel metadata for services that expose a UI panel. */
   panels?: ServicePanelInfo[];
+  /** Active warnings from the runner daemon (e.g. tunnel connection failures). */
+  warnings?: string[];
 }
 
 /** A discovered Claude Code plugin on a runner */

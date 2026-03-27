@@ -199,6 +199,8 @@ export interface RedisRunnerData {
     serviceIds?: string;
     /** JSON-stringified ServicePanelInfo[] — panel metadata from last service_announce */
     panels?: string;
+    /** JSON-stringified string[] — active warnings from the runner daemon */
+    warnings?: string;
 }
 
 export interface RedisTerminalData {

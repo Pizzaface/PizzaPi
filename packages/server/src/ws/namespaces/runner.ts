@@ -215,7 +215,7 @@ export async function sendRunnerCommand(
 // via updateRunnerServices() so late-joining viewers (or viewers after a server
 // restart) can receive the data without waiting for a fresh announce.
 import type { ServiceAnnounceData } from "@pizzapi/protocol";
-import { updateRunnerServices, getRunnerServices } from "../sio-registry/index.js";
+import { updateRunnerServices, getRunnerServices, addRunnerWarning, clearRunnerWarnings } from "../sio-registry/index.js";
 
 const runnerServiceAnnounce = new Map<string, ServiceAnnounceData>();
 
@@ -644,6 +644,25 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
                     emitToRelaySession(sid, "service_message", envelope);
                 }
             }
+        });
+
+        // ── runner_warning — runner reports a warning (e.g. tunnel failure) ───
+        socket.on("runner_warning", (data: { message: string }) => {
+            const runnerId = socket.data.runnerId;
+            if (!runnerId || !data?.message) return;
+            log.warn(`runner_warning from ${runnerId}: ${data.message}`);
+            void addRunnerWarning(runnerId, data.message).catch((err) => {
+                log.error(`failed to persist runner_warning for ${runnerId}:`, err);
+            });
+        });
+
+        // ── runner_warning_clear — runner clears all warnings ────────────────
+        socket.on("runner_warning_clear", () => {
+            const runnerId = socket.data.runnerId;
+            if (!runnerId) return;
+            void clearRunnerWarnings(runnerId).catch((err) => {
+                log.error(`failed to clear warnings for ${runnerId}:`, err);
+            });
         });
 
         // ── service_announce — runner announces available services ────────────
