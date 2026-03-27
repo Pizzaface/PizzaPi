@@ -357,7 +357,7 @@ jobs:
               # while the root HTML route can vary across packaging modes.
               for i in $(seq 1 60); do
                 HTTP_CODE=$(curl -sS -o /tmp/web-status.json -w "%{http_code}" "http://localhost:7492/api/status" || true)
-                if [ "$HTTP_CODE" = "200" ] && jq -e '.status == "ok" or .status == "degraded"' /tmp/web-status.json >/dev/null 2>&1; then
+                if [ "$HTTP_CODE" = "200" ] && jq -e ".status == \"ok\" or .status == \"degraded\"" /tmp/web-status.json >/dev/null 2>&1; then
                   break
                 fi
                 if [ "$i" -eq 60 ]; then
