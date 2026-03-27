@@ -3645,7 +3645,7 @@ export function App() {
 
   // Runner service panels — dynamically discovered
   const { services: availableServices, panels: dynamicPanels } = useRunnerServices(viewerSocket);
-  const { activePanelIds: activeServicePanels, togglePanel: toggleServicePanel, closePanelById: closeServicePanelById, closeAllPanels: closeAllServicePanels, getPanelPosition: getServicePanelPosition, setPanelPosition: setServicePanelPosition } = useServicePanelState();
+  const { activePanelIds: activeServicePanels, togglePanel: toggleServicePanel, closePanelById: closeServicePanelById, closeAllPanels: closeAllServicePanels, getPanelPosition: getServicePanelPosition, setPanelPosition: setServicePanelPosition, setEphemeralPanelPosition: setEphemeralServicePanelPosition } = useServicePanelState();
 
   const handleToggleServicePanel = React.useCallback((serviceId: string) => {
     if (activeServicePanels.has(serviceId)) {
@@ -3661,11 +3661,20 @@ export function App() {
         activeServicePanels,
         getServicePanelPosition,
       );
-      setServicePanelPosition(serviceId, newPosition);
+      if (activeServicePanels.has(combinedActiveTab)) {
+        // Auto-placement: the position was derived from another panel, not from
+        // this panel's own saved preference.  Store it as an ephemeral override
+        // so it is used for rendering this session but does NOT overwrite the
+        // panel's persisted dock preference in localStorage.
+        setEphemeralServicePanelPosition(serviceId, newPosition);
+      }
+      // When the active tab is NOT a service panel, newPosition equals the
+      // panel's own stored/default preference — no action needed, getPanelPosition
+      // will already return the correct value.
       toggleServicePanel(serviceId);
       handleCombinedTabChange(serviceId);
     }
-  }, [activeServicePanels, closeServicePanelById, toggleServicePanel, handleCombinedTabChange, combinedActiveTab, setServicePanelPosition, getServicePanelPosition]);
+  }, [activeServicePanels, closeServicePanelById, toggleServicePanel, handleCombinedTabChange, combinedActiveTab, setEphemeralServicePanelPosition, getServicePanelPosition]);
 
   const terminalPanelTab = React.useMemo<CombinedPanelTab | null>(() => showTerminal ? {
     id: "terminal",

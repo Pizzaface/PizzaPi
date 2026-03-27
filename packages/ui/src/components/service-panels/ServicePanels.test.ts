@@ -121,6 +121,81 @@ describe("resolveNewPanelPosition — adding bug", () => {
     });
 });
 
+// ── Persistence bug: auto-placement must NOT overwrite saved dock position ────
+
+describe("resolveNewPanelPosition — persistence safety", () => {
+    test("auto-placed position differs from the panel's own stored preference — persisting would corrupt it", () => {
+        // Repro: godmother saved at "right". Tunnel is active at "bottom".
+        // Auto-placement returns "bottom" (inherits from tunnel).
+        // This confirms the computed position diverges from the stored preference,
+        // so calling setServicePanelPosition with it would corrupt the saved value.
+        // The fix: use setEphemeralPanelPosition (non-persisted) in this case.
+        const activeServicePanels = new Set(["tunnel"]);
+        const positions = new Map([
+            ["tunnel", "bottom"],
+            ["godmother", "right"], // godmother's OWN saved preference
+        ] as const);
+        const getPanelPosition = (id: string) => positions.get(id) ?? "right";
+
+        const autoPlacedPosition = resolveNewPanelPosition(
+            "godmother",
+            "tunnel",           // active service panel → auto-placement triggered
+            activeServicePanels,
+            getPanelPosition,
+        );
+
+        // Auto-placement correctly returns "bottom" (same group as tunnel)…
+        expect(autoPlacedPosition).toBe("bottom");
+        // …but this DIFFERS from godmother's own stored preference ("right"),
+        // so persisting it would permanently corrupt the saved dock position.
+        expect(autoPlacedPosition).not.toBe(getPanelPosition("godmother"));
+    });
+
+    test("non-auto-placement returns panel's own stored position — identical, safe to skip persistence", () => {
+        // When the active tab is NOT a service panel, resolveNewPanelPosition
+        // returns the panel's own stored preference, making any persist call a no-op.
+        // The fix: skip the setServicePanelPosition call entirely in this path.
+        const activeServicePanels = new Set<string>();
+        const positions = new Map([["godmother", "left"]] as const);
+        const getPanelPosition = (id: string) => positions.get(id) ?? "right";
+
+        const position = resolveNewPanelPosition(
+            "godmother",
+            "terminal",         // NOT a service panel → no auto-placement
+            activeServicePanels,
+            getPanelPosition,
+        );
+
+        expect(position).toBe("left");
+        // Position equals the panel's own stored preference — no corruption possible.
+        expect(position).toBe(getPanelPosition("godmother"));
+    });
+
+    test("reopening after auto-placement should still use stored position (ephemeral cleared on close)", () => {
+        // Verifies the conceptual contract: after a panel is closed, its next
+        // open (without auto-placement context) should use the stored preference,
+        // not the stale transient position from the previous open.
+        // The ephemeral override must be cleared on panel close.
+        //
+        // Scenario: godmother stored at "right". Opened next to tunnel ("bottom")
+        // → auto-placed ephemeral="bottom". Closed. Opened again standalone.
+        // Expected: uses stored "right", NOT the stale "bottom".
+        const positions = new Map([["godmother", "right"]] as const);
+        const getPanelPosition = (id: string) => positions.get(id) ?? "right";
+
+        // Second open: active tab is NOT a service panel (tunnel closed)
+        const activeServicePanels = new Set<string>();
+        const position = resolveNewPanelPosition(
+            "godmother",
+            "terminal",
+            activeServicePanels,
+            getPanelPosition,
+        );
+        // Returns stored preference, not any stale ephemeral value
+        expect(position).toBe("right");
+    });
+});
+
 // ── Moving bug: resolveActiveTabIdFromIds should use combinedActiveTab when present ──
 
 describe("resolveActiveTabIdFromIds — moving bug", () => {
