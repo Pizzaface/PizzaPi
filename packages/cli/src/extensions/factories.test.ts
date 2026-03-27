@@ -14,6 +14,7 @@ import { setSessionNameExtension } from "./set-session-name.js";
 import { spawnSessionExtension } from "./spawn-session.js";
 import { updateTodoExtension } from "./update-todo.js";
 import { subagentExtension } from "./subagent.js";
+import { tunnelToolsExtension } from "./tunnel-tools.js";
 import { planModeToggleExtension } from "./plan-mode-toggle.js";
 import { triggersExtension } from "./triggers/extension.js";
 import { sandboxEventsExtension } from "./sandbox-events.js";
@@ -24,6 +25,7 @@ import { pizzapiHeaderExtension } from "./pizzapi-header.js";
 const CORE_EXTENSIONS: ExtensionFactory[] = [
     triggersExtension,  // Must be before remoteExtension (shutdown ordering)
     remoteExtension,
+    tunnelToolsExtension,
     mcpExtension,
     restartExtension,
     setSessionNameExtension,
@@ -105,9 +107,10 @@ describe("buildPizzaPiExtensionFactories — safe mode", () => {
         expect(factories).toContain(restartExtension);
     });
 
-    test("skipRelay excludes remote extension", () => {
+    test("skipRelay excludes remote extension and tunnel tools", () => {
         const factories = buildPizzaPiExtensionFactories({ cwd: "/tmp/pizzapi-test", skipRelay: true });
         expect(factories).not.toContain(remoteExtension);
+        expect(factories).not.toContain(tunnelToolsExtension);
         expect(factories).toContain(mcpExtension);
     });
 

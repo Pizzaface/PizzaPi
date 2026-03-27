@@ -46,6 +46,7 @@ import {
     getConnectedSessionsForRunner,
     touchRunner,
     broadcastToSessionViewers,
+    emitToRelaySession,
 } from "../sio-registry.js";
 import { resolveSpawnReady, resolveSpawnError } from "../runner-control.js";
 import { createLogger } from "@pizzapi/tools";
@@ -632,11 +633,15 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
                     return;
                 }
                 broadcastToSessionViewers(targetSessionId, "service_message", envelope);
+                // Also route to the session's relay socket (TUI worker) so
+                // agent-initiated service_message requests get their responses.
+                emitToRelaySession(targetSessionId, "service_message", envelope);
             } else {
                 const sessionIds = runnerSessionIds.get(runnerId);
                 if (!sessionIds || sessionIds.size === 0) return;
                 for (const sid of sessionIds) {
                     broadcastToSessionViewers(sid, "service_message", envelope);
+                    emitToRelaySession(sid, "service_message", envelope);
                 }
             }
         });
