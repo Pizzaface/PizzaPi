@@ -85,11 +85,11 @@ Service channels are **already multiplexed** over existing sockets (no extra nam
 1. **Duplicate session-list path on connect**
    - `/hub` already sends canonical `sessions`, while sidebar fallback also called `/api/sessions` immediately on each connect.
    - This created avoidable duplicate payload transfer.
-   - ✅ Quick win shipped: delayed/cancelable REST fallback (details below).
+   - ✅ Quick win already on `main`: delayed/cancelable REST fallback (details below).
 
 2. **Duplicate unchanged `service_announce` fanout**
    - Runner could re-emit identical announce payloads; server rebroadcasted and rewrote Redis every time.
-   - ✅ Quick win shipped: no-op dedupe for unchanged announce payloads.
+   - ✅ Quick win already on `main`: no-op dedupe for unchanged announce payloads.
 
 ### Oversized payload risk
 1. `service_message.payload` is unbounded (`unknown`) and currently not size-capped server-side.
@@ -108,9 +108,13 @@ Service channels are **already multiplexed** over existing sockets (no extra nam
 
 Current architecture multiplexes service traffic on the existing `/viewer`/`/relay` sockets using `serviceId` in `ServiceEnvelope`. No additional per-service WebSocket namespace is required.
 
-## 6) Safe quick wins implemented
+## 6) Quick wins noted by this audit
 
-### A) Avoid redundant `/api/sessions` fetches on healthy `/hub` connects
+The following improvements were identified during the audit. Items A and B were
+already present on `main` before this PR; they are documented here for completeness
+and attribution. Item C is the only change delivered by this PR.
+
+### A) Avoid redundant `/api/sessions` fetches on healthy `/hub` connects *(pre-existing on main)*
 - File: `packages/ui/src/components/SessionSidebar.tsx`
 - Change:
   - Added delayed fallback (`HUB_SESSIONS_REST_FALLBACK_DELAY_MS = 1200`)
@@ -118,16 +122,19 @@ Current architecture multiplexes service traffic on the existing `/viewer`/`/rel
   - Reused same delayed path for already-connected shared socket
 - Result: reduced duplicate startup/reconnect HTTP payloads.
 
-### B) Skip no-op `service_announce` fanout
+### B) Skip no-op `service_announce` fanout *(pre-existing on main)*
 - File: `packages/server/src/ws/namespaces/runner.ts`
 - Change:
   - Added `isSameServiceAnnounce(...)` comparator
   - `service_announce` handler now returns early for unchanged payloads
 - Result: avoids redundant Redis writes and per-session viewer broadcasts.
 
-### C) Added test coverage for service_announce dedupe helper
-- File: `packages/server/src/ws/namespaces/runner.service-announce.test.ts`
-- Covers equality and mismatch cases.
+### C) Extract and test `isSameServiceAnnounce` comparator *(shipped by this PR)*
+- Files:
+  - `packages/server/src/ws/namespaces/runner.service-announce.ts` — pure comparator extracted to its own module
+  - `packages/server/src/ws/namespaces/runner.service-announce.test.ts` — unit tests covering equality and mismatch cases
+- Change: moved the helper out of the heavy `runner.ts` namespace so the test can import just the comparator without pulling in the full server module and all its transitive dependencies.
+- Result: cheaper, more isolated test coverage for the dedupe logic.
 
 ## 7) Follow-up items (larger)
 

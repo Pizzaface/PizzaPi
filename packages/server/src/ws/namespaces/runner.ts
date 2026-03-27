@@ -216,6 +216,8 @@ export async function sendRunnerCommand(
 // restart) can receive the data without waiting for a fresh announce.
 import type { ServiceAnnounceData } from "@pizzapi/protocol";
 import { updateRunnerServices, getRunnerServices, addRunnerWarning, clearRunnerWarnings } from "../sio-registry/index.js";
+import { isSameServiceAnnounce } from "./runner.service-announce.js";
+export { isSameServiceAnnounce };
 
 const runnerServiceAnnounce = new Map<string, ServiceAnnounceData>();
 
@@ -227,36 +229,6 @@ export function getRunnerServiceIds(runnerId: string): string[] {
 /** Get the full cached service announce data for a runner (in-memory). */
 export function getRunnerServiceAnnounce(runnerId: string): ServiceAnnounceData | null {
     return runnerServiceAnnounce.get(runnerId) ?? null;
-}
-
-/** @internal — exported for unit tests only */
-export function isSameServiceAnnounce(
-    a: ServiceAnnounceData | null | undefined,
-    b: ServiceAnnounceData | null | undefined,
-): boolean {
-    if (!a || !b) return false;
-    if (a.serviceIds.length !== b.serviceIds.length) return false;
-    for (let i = 0; i < a.serviceIds.length; i++) {
-        if (a.serviceIds[i] !== b.serviceIds[i]) return false;
-    }
-
-    const aPanels = a.panels ?? [];
-    const bPanels = b.panels ?? [];
-    if (aPanels.length !== bPanels.length) return false;
-    for (let i = 0; i < aPanels.length; i++) {
-        const left = aPanels[i];
-        const right = bPanels[i];
-        if (
-            left.serviceId !== right.serviceId ||
-            left.port !== right.port ||
-            left.label !== right.label ||
-            left.icon !== right.icon
-        ) {
-            return false;
-        }
-    }
-
-    return true;
 }
 
 /**

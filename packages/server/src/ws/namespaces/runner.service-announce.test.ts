@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { isSameServiceAnnounce } from "./runner.js";
+import { isSameServiceAnnounce } from "./runner.service-announce.js";
 
 describe("isSameServiceAnnounce", () => {
     test("returns true when serviceIds and panels are identical", () => {
