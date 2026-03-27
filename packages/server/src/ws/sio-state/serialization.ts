@@ -42,6 +42,7 @@ export const SESSION_SUMMARY_FIELDS = [
     "runnerId",
     "runnerName",
     "parentSessionId",
+    "workerType",
 ] as const;
 
 export function parseSessionSummaryFromHash(hash: Record<string, string>): RedisSessionSummaryData | null {
@@ -62,6 +63,7 @@ export function parseSessionSummaryFromHash(hash: Record<string, string>): Redis
         runnerId: hash.runnerId || null,
         runnerName: hash.runnerName || null,
         parentSessionId: hash.parentSessionId || null,
+        workerType: (hash.workerType === "claude-code" ? "claude-code" : hash.workerType === "pi" ? "pi" : null) as "pi" | "claude-code" | null | undefined,
     };
 }
 
@@ -130,6 +132,7 @@ export function parseRunnerFromHash(hash: Record<string, string>): RedisRunnerDa
         serviceIds: hash.serviceIds || undefined,
         panels: hash.panels || undefined,
         triggerDefs: hash.triggerDefs || undefined,
+        warnings: hash.warnings || undefined,
     };
 }
 

@@ -93,6 +93,8 @@ export interface RedisSessionSummaryData {
     runnerId: string | null;
     runnerName: string | null;
     parentSessionId: string | null;
+    /** Worker type — "pi" or "claude-code". Absent for older sessions. */
+    workerType?: "pi" | "claude-code" | null;
 }
 
 export interface RedisRunnerData {
