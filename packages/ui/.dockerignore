@@ -1,0 +1,9 @@
+node_modules
+dist
+dev-dist
+.git
+.github
+.vscode
+.DS_Store
+*.log
+coverage
