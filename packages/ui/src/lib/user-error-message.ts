@@ -98,6 +98,8 @@ export function mapUserError(input: UserErrorInput): UserErrorResult {
             normalized.includes("failed to fetch") ||
             normalized.includes("network error") ||
             normalized.includes("websocket") ||
+            normalized.includes("xhr poll error") ||
+            normalized.includes("transport error") ||
             statusCode === 502 ||
             statusCode === 503 ||
             statusCode === 504
@@ -126,6 +128,20 @@ export function mapUserError(input: UserErrorInput): UserErrorResult {
     if (statusCode !== undefined && statusCode >= 500) {
         return {
             userMessage: "PizzaPi hit a temporary server problem. Please retry in a moment.",
+            technicalMessage,
+        };
+    }
+
+    if (normalized.includes("session not found")) {
+        return {
+            userMessage: "This session no longer exists. It may have ended or been removed.",
+            technicalMessage,
+        };
+    }
+
+    if (normalized.includes("snapshot not available") || normalized.includes("load session snapshot")) {
+        return {
+            userMessage: "Session history couldn't be loaded. Try refreshing.",
             technicalMessage,
         };
     }

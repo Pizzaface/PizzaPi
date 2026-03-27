@@ -30,13 +30,53 @@ describe("mapUserError", () => {
         expect(result.userMessage).toContain("didn't return full session details");
     });
 
-    test("maps viewer connection network failures", () => {
+    test("maps viewer connection xhr poll error (real socket.io format)", () => {
+        // Real socket.io connect_error delivers an Error object with .message = "xhr poll error" (no prefix)
         const result = mapUserError({
-            error: "connect_error: xhr poll error",
+            error: new Error("xhr poll error"),
             context: "viewer_connection",
         });
 
         expect(result.userMessage).toContain("Lost connection to PizzaPi");
+    });
+
+    test("maps viewer connection transport error (real socket.io format)", () => {
+        const result = mapUserError({
+            error: new Error("transport error"),
+            context: "viewer_connection",
+        });
+
+        expect(result.userMessage).toContain("Lost connection to PizzaPi");
+    });
+
+    test("maps 'Session not found' server message to permanent-removal message", () => {
+        const result = mapUserError({
+            error: "Session not found",
+            context: "viewer_connection",
+            fallbackMessage: "Failed to load session.",
+        });
+
+        expect(result.userMessage).toContain("no longer exists");
+        expect(result.userMessage).not.toContain("Failed to load session");
+        expect(result.technicalMessage).toBe("Session not found");
+    });
+
+    test("maps 'Session snapshot not available' to refresh guidance", () => {
+        const result = mapUserError({
+            error: "Session snapshot not available",
+            context: "viewer_connection",
+        });
+
+        expect(result.userMessage).toContain("couldn't be loaded");
+    });
+
+    test("maps 'Failed to load session snapshot' to refresh guidance", () => {
+        const result = mapUserError({
+            error: "Failed to load session snapshot",
+            context: "viewer_connection",
+        });
+
+        expect(result.userMessage).toContain("couldn't be loaded");
     });
 
     test("uses context fallback for unknown errors", () => {
