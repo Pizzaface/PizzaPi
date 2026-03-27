@@ -453,4 +453,32 @@ describe("mergeChunkSnapshot", () => {
     expect(result.map((m) => m.key)).toContain("banner-1");
     expect(result.map((m) => m.key)).toContain("banner-2");
   });
+
+  // ── session-cache correctness ────────────────────────────────────────────
+  // patchSessionCache must receive the *merged* result from mergeChunkSnapshot,
+  // not the raw finalMessages from the server.  Using finalMessages directly
+  // would drop injected banners (e.g. MCP startup messages) from the cache,
+  // causing them to disappear on session switch / page reload.
+  test("merged result preserves injected banners that the raw snapshot would drop", () => {
+    const finalMessages = [
+      assistantMsg({ key: "snapshot-0" }),
+      assistantMsg({ key: "snapshot-1" }),
+    ];
+    const mcpBanner = assistantMsg({ key: "mcp_startup:1700000000000" });
+    const triggerBanner = assistantMsg({ key: "trigger:abc123" });
+    // Simulate the rendered state that contains both snapshot messages and
+    // injected banners added since the last hydration.
+    const prevMessages = [...finalMessages, mcpBanner, triggerBanner];
+
+    const merged = mergeChunkSnapshot(finalMessages, prevMessages);
+
+    // The merged result (what should go into the session cache) keeps both
+    // injected keys even though they are absent from finalMessages.
+    expect(merged.map((m) => m.key)).toContain("mcp_startup:1700000000000");
+    expect(merged.map((m) => m.key)).toContain("trigger:abc123");
+
+    // Storing finalMessages directly in the cache would silently drop them.
+    expect(finalMessages.find((m) => m.key === "mcp_startup:1700000000000")).toBeUndefined();
+    expect(finalMessages.find((m) => m.key === "trigger:abc123")).toBeUndefined();
+  });
 });

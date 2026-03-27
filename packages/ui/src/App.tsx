@@ -1519,9 +1519,20 @@ export function App() {
         }
         setViewerStatus("Connected");
 
-        setMessages((prev) => mergeChunkSnapshot(finalMessages, prev));
+        // Capture the merged result inside the updater so patchSessionCache
+        // receives the same value that setMessages commits — including any
+        // injected banners or system messages that are in prev but not in
+        // the snapshot.  Using a plain variable here mirrors the mcpNext
+        // pattern used in applyMcpReport; React calls functional updaters
+        // synchronously when enqueuing the update so mergedMessages is
+        // populated before patchSessionCache runs.
+        let mergedMessages: RelayMessage[] = finalMessages;
+        setMessages((prev) => {
+          mergedMessages = mergeChunkSnapshot(finalMessages, prev);
+          return mergedMessages;
+        });
         setActiveToolCalls(detectInFlightTools(finalMessages));
-        patchSessionCache({ messages: finalMessages });
+        patchSessionCache({ messages: mergedMessages });
       }
       return;
     }
