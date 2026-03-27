@@ -2332,6 +2332,9 @@ export function App() {
   }, [hubSocket, liveSessions, activeSessionId, metaInventoryVersion]);
 
   const openSession = React.useCallback((relaySessionId: string) => {
+    // Already viewing this session — nothing to do.
+    if (relaySessionId === activeSessionRef.current) return;
+
     // Flush/cancel any pending RAF queues (streaming deltas & tool-stream
     // partials) from the previous session so they can't leak into the new one.
     cancelPendingDeltas();
