@@ -263,6 +263,12 @@ if (targets.length === 0) {
 const piPkgDir = resolvePiPackageDir();
 console.log(`Resolved pi-coding-agent at: ${piPkgDir}`);
 
+// Read CLI version to embed in the compiled binary via --define
+const cliPkgPath = join(import.meta.dirname, "package.json");
+const cliPkgJson = JSON.parse(readFileSync(cliPkgPath, "utf-8"));
+const cliVersion = cliPkgJson.version ?? "0.0.0";
+console.log(`CLI version: ${cliVersion}`);
+
 const entrypoint = join(import.meta.dirname, "src", "index.ts");
 const distBinaries = join(import.meta.dirname, "dist", "binaries");
 
@@ -276,7 +282,7 @@ for (const target of targets) {
 
     console.log(`\n▶ Building ${target.id} → ${outFile}`);
 
-    const result = await $`bun build --compile --target=${target.bunTarget} ${entrypoint} --outfile ${outFile}`.nothrow();
+    const result = await $`bun build --compile --target=${target.bunTarget} --define __PIZZAPI_VERSION__='"${cliVersion}"' ${entrypoint} --outfile ${outFile}`.nothrow();
 
     if (result.exitCode !== 0) {
         console.error(`  ✗ Build failed for ${target.id}`);
