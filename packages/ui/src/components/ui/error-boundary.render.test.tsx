@@ -22,6 +22,15 @@ mock.module("@/lib/utils", () => ({
 		classes.filter(Boolean).join(" "),
 }));
 
+mock.module("@pizzapi/tools", () => ({
+	createLogger: () => ({
+		error: () => {},
+		warn: () => {},
+		info: () => {},
+		debug: () => {},
+	}),
+}));
+
 // Restore all module mocks after this file so they don't bleed into other
 // test files running in the same Bun worker process.
 afterAll(() => mock.restore());
