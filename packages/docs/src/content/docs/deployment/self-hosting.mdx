@@ -345,7 +345,7 @@ No configuration needed — these are applied to every response.
 The server enforces body size limits to prevent denial-of-service:
 
 - **API routes**: 1 MB maximum
-- **Attachment uploads**: 50 MB maximum (configurable via `PIZZAPI_ATTACHMENT_MAX_FILE_SIZE_BYTES`)
+- **Attachment uploads**: 50 MB hard cap — the server rejects requests larger than 50 MB at the transport layer with a `413 Payload Too Large` before the upload handler runs. The `PIZZAPI_ATTACHMENT_MAX_FILE_SIZE_BYTES` env var can lower this limit further (per-file validation), but **cannot raise it above 50 MB** without a code change to `MAX_ATTACHMENT_BODY_SIZE` in `handler.ts`.
 
 Requests exceeding these limits receive a `413 Payload Too Large` response.
 

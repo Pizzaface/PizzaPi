@@ -258,7 +258,7 @@ When a child calls `plan_mode` or `AskUserQuestion`, a trigger appears in the pa
 
 ### Push notification suppression
 
-Linked child sessions (spawned via `spawn_session`) **do not trigger push notifications**. Only top-level sessions — those started by a user or the runner daemon directly — send push notifications. This prevents notification spam when orchestrating multiple child sessions.
+By default, linked child sessions (spawned via `spawn_session`) **do trigger push notifications** just like top-level sessions. Each device subscription has a **Suppress child notifications** toggle — when enabled, that subscription will not receive notifications originating from child sessions. This lets you reduce notification noise when orchestrating many child sessions without silencing all alerts globally.
 
 ## Claude Code compatibility
 
