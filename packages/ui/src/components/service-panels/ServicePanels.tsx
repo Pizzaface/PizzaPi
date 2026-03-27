@@ -168,6 +168,11 @@ function savePanelPositions(positions: Map<string, PanelPosition>) {
 export function useServicePanelState() {
     const [activePanelIds, setActivePanelIds] = useState<Set<string>>(new Set());
     const [panelPositions, setPanelPositions] = useState<Map<string, PanelPosition>>(loadPanelPositions);
+    // Ephemeral (non-persisted) position overrides used for auto-placement.
+    // When a panel is opened next to an active panel, its position for this
+    // session is stored here rather than in panelPositions / localStorage.
+    // The override is cleared when the panel is closed.
+    const [ephemeralPositions, setEphemeralPositions] = useState<Map<string, PanelPosition>>(new Map());
 
     const togglePanel = useCallback((serviceId: string) => {
         setActivePanelIds(prev => {
@@ -179,6 +184,14 @@ export function useServicePanelState() {
             }
             return next;
         });
+        // Clear ephemeral override when closing so that the next open uses the
+        // stored preference (or a fresh auto-placement), not a stale transient.
+        setEphemeralPositions(prev => {
+            if (!prev.has(serviceId)) return prev;
+            const next = new Map(prev);
+            next.delete(serviceId);
+            return next;
+        });
     }, []);
 
     const closePanelById = useCallback((serviceId: string) => {
@@ -187,15 +200,25 @@ export function useServicePanelState() {
             next.delete(serviceId);
             return next;
         });
+        // Clear ephemeral override on explicit close as well.
+        setEphemeralPositions(prev => {
+            if (!prev.has(serviceId)) return prev;
+            const next = new Map(prev);
+            next.delete(serviceId);
+            return next;
+        });
     }, []);
 
     const closeAllPanels = useCallback(() => {
         setActivePanelIds(new Set());
+        setEphemeralPositions(new Map());
     }, []);
 
     const getPanelPosition = useCallback((serviceId: string): PanelPosition => {
-        return panelPositions.get(serviceId) ?? "right";
-    }, [panelPositions]);
+        // Ephemeral overrides take precedence over persisted positions so that
+        // auto-placed panels render in the correct dock group for this session.
+        return ephemeralPositions.get(serviceId) ?? panelPositions.get(serviceId) ?? "right";
+    }, [ephemeralPositions, panelPositions]);
 
     const setPanelPosition = useCallback((serviceId: string, pos: PanelPosition) => {
         setPanelPositions(prev => {
@@ -204,7 +227,24 @@ export function useServicePanelState() {
             savePanelPositions(next);
             return next;
         });
+        // A deliberate user action (drag/dock) clears any ephemeral override so
+        // the newly-saved preference is used from this point forward.
+        setEphemeralPositions(prev => {
+            if (!prev.has(serviceId)) return prev;
+            const next = new Map(prev);
+            next.delete(serviceId);
+            return next;
+        });
     }, []);
 
-    return { activePanelIds, togglePanel, closePanelById, closeAllPanels, getPanelPosition, setPanelPosition };
+    /** Set a transient position for this session only — does NOT persist to localStorage. */
+    const setEphemeralPanelPosition = useCallback((serviceId: string, pos: PanelPosition) => {
+        setEphemeralPositions(prev => {
+            const next = new Map(prev);
+            next.set(serviceId, pos);
+            return next;
+        });
+    }, []);
+
+    return { activePanelIds, togglePanel, closePanelById, closeAllPanels, getPanelPosition, setPanelPosition, setEphemeralPanelPosition };
 }

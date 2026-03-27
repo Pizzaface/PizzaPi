@@ -136,6 +136,7 @@ export class TunnelRelay {
     }
 
     const timer = setTimeout(() => {
+      this.send(runner.ws, { type: "request-end", id: request.id });
       this.pendingRequests.delete(request.id);
       callbacks.onError("Tunnel request timed out");
     }, timeoutMs);
@@ -211,6 +212,7 @@ export class TunnelRelay {
     }
 
     const timer = setTimeout(() => {
+      this.send(runner.ws, { type: "ws-close", id: request.id, code: 1001, reason: "open timeout" });
       this.pendingWs.delete(request.id);
       callbacks.onError("WebSocket open timed out");
     }, timeoutMs);

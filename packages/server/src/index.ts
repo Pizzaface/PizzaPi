@@ -22,14 +22,53 @@ import {
 // The Socket.IO Redis adapter can throw EPIPE synchronously when the Redis
 // connection drops mid-broadcast. We catch any that slip through call-site
 // try/catches so the server never exits on a transient Redis disconnect.
+//
+// Known recoverable errors (per-request / transient network) are logged and
+// swallowed so a single bad request cannot bring down the whole server.
+// Truly fatal errors trigger a graceful shutdown with a 10 s drain window
+// rather than an immediate process.exit so in-flight requests can complete.
+
 process.on("uncaughtException", (err: Error) => {
-    if ((err as NodeJS.ErrnoException).code === "EPIPE") {
+    const code = (err as NodeJS.ErrnoException).code;
+
+    // EPIPE — Redis/socket write to a closed pipe.  Always per-connection;
+    // never indicates server-state damage.  Log and continue.
+    if (code === "EPIPE") {
         processLog.warn("Caught EPIPE (Redis connection dropped) — ignoring:", err.message);
         return;
     }
-    // Re-throw anything that isn't an EPIPE so genuine bugs still surface.
-    processLog.error("Uncaught exception:", err);
-    process.exit(1);
+
+    // Transient per-socket / per-stream network errors.  These should
+    // normally be caught at the call site; reaching uncaughtException means
+    // an error boundary was missed somewhere.  They are still connection-
+    // scoped and do NOT corrupt shared server state, so we log at warn
+    // level and continue rather than triggering a full shutdown.
+    if (code === "ECONNRESET" || code === "ERR_STREAM_DESTROYED" || code === "ENOTCONN") {
+        processLog.warn(`Caught transient network error (${code}) — logging and continuing:`, err.message);
+        return;
+    }
+
+    // NOTE: SyntaxError / JSON parse failures are intentionally NOT handled
+    // here.  At the uncaughtException level there is no reliable way to
+    // determine whether a SyntaxError originated from a single malformed
+    // request body (safe to swallow) or from startup / config / background
+    // code (potentially corrupted state).  Malformed request bodies must be
+    // caught at the request boundary (e.g. in handler.ts), not reclassified
+    // as recoverable at process scope.
+
+    // Fatal: initiate graceful shutdown instead of an immediate process.exit(1).
+    // onShutdownSignal is a hoisted function declaration and is callable here
+    // even though it is defined later in the file.  We wrap in try/catch as a
+    // safety net for the narrow window during startup before httpServer exists.
+    processLog.error("Uncaught fatal exception — initiating graceful shutdown:", err);
+    try {
+        onShutdownSignal("uncaughtException", 1);
+    } catch (shutdownErr) {
+        // Server not yet fully initialized (e.g. exception during migrations).
+        // Fall back to immediate exit — there is nothing to drain.
+        processLog.error("Graceful shutdown unavailable (server not ready) — exiting immediately:", shutdownErr);
+        process.exit(1);
+    }
 });
 
 // Socket.IO imports
@@ -362,25 +401,50 @@ setTimeout(() => {
 // Registered after httpServer and io are initialized so there's no TDZ risk
 // if SIGTERM arrives during startup.  Sets isServerShuttingDown before closing
 // Socket.IO so disconnect handlers can skip destructive Redis cleanup.
-function onShutdownSignal(signal: string): void {
+
+// Guards against re-entrant shutdown (e.g. SIGTERM followed by SIGINT, or
+// SIGTERM followed by an uncaughtException during the drain window).
+let shuttingDown = false;
+
+function onShutdownSignal(signal: string, exitCode = 0): void {
+    if (shuttingDown) {
+        shutdownLog.warn(`Received ${signal} during shutdown — ignoring duplicate signal`);
+        return;
+    }
+    shuttingDown = true;
+
     shutdownLog.info(`Received ${signal} — marking server as shutting down`);
     setServerShuttingDown();
     disposeTunnelRelay();
 
+    // Helper: close the HTTP server and wait for in-flight requests to drain.
+    // `httpServer.close()` stops accepting new connections but keeps existing
+    // ones alive until they finish.  `closeIdleConnections()` immediately
+    // releases keep-alive connections that are not currently serving a
+    // request, so the close callback fires as soon as the last in-flight
+    // request completes rather than waiting for clients to time out.
+    function closeHttp(cb: () => void): void {
+        httpServer.close(cb);
+        // closeIdleConnections was added in Node 18.2 / Bun equivalent.
+        // Optional chaining ensures forward-compat without a runtime check.
+        (httpServer as any).closeIdleConnections?.();
+    }
+
     // Close the Socket.IO server so disconnect handlers fire with the
-    // shuttingDown flag already set, then close the HTTP server.
+    // shuttingDown flag already set, then close the HTTP server so
+    // in-flight requests have a chance to complete before exit.
     if (io) {
         io.close(() => {
             shutdownLog.info("Socket.IO closed");
-            httpServer.close(() => {
-                shutdownLog.info("HTTP server closed");
-                process.exit(0);
+            closeHttp(() => {
+                shutdownLog.info("HTTP server closed — all connections drained");
+                process.exit(exitCode);
             });
         });
     } else {
-        httpServer.close(() => {
-            shutdownLog.info("HTTP server closed");
-            process.exit(0);
+        closeHttp(() => {
+            shutdownLog.info("HTTP server closed — all connections drained");
+            process.exit(exitCode);
         });
     }
 
