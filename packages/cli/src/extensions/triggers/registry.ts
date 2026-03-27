@@ -185,6 +185,18 @@ export const TRIGGER_RENDERERS: ReadonlyMap<string, TriggerRenderer> = new Map([
     ["escalate", escalateRenderer],
 ]);
 
+/**
+ * Render multiple triggers that arrived in the same batch window into a single
+ * message. When only one trigger is in the batch the output is identical to
+ * `renderTrigger`. For multiple triggers each is rendered individually and the
+ * results are joined with a separator so the parent agent sees them all at once.
+ */
+export function renderTriggerBatch(triggers: ConversationTrigger[]): string {
+    if (triggers.length === 1) return renderTrigger(triggers[0]);
+    const parts = triggers.map((t) => renderTrigger(t));
+    return `🔗 ${triggers.length} child triggers arrived simultaneously:\n\n` + parts.join("\n\n---\n\n");
+}
+
 /** Render a trigger to text, with trigger ID metadata prefix. */
 export function renderTrigger(trigger: ConversationTrigger): string {
     const renderer = TRIGGER_RENDERERS.get(trigger.type);
