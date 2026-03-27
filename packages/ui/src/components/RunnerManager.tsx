@@ -15,9 +15,7 @@ import {
 import { ErrorAlert } from "@/components/ui/error-alert";
 import type { HubSession } from "@/components/SessionSidebar";
 import type { RunnerInfo } from "@pizzapi/protocol";
-import { createLogger } from "@pizzapi/tools";
-
-const log = createLogger("runner-ui");
+import { mapUserError } from "@/lib/user-error-message";
 
 export interface RunnerManagerProps {
     /** Runner list from the /runners WS feed — passed from App.tsx (single hook instance) */
@@ -107,11 +105,22 @@ export function RunnerManager({
                 credentials: "include",
             });
             if (!res.ok) {
-                const data = await res.json();
-                setError(`Failed to restart runner: ${data.error || "Unknown error"}`);
+                const data = await res.json().catch(() => null) as { error?: string } | null;
+                const mapped = mapUserError({
+                    error: data?.error,
+                    statusCode: res.status,
+                    context: "runner_restart",
+                });
+                console.error("Failed to restart runner:", mapped.technicalMessage, data);
+                setError(mapped.userMessage);
             }
         } catch (err) {
-            log.error("Failed to restart runner:", err);
+            const mapped = mapUserError({
+                error: err,
+                context: "runner_restart",
+            });
+            console.error("Failed to restart runner:", err);
+            setError(mapped.userMessage);
         } finally {
             setTimeout(() => {
                 setRestarting((prev) => {
@@ -141,11 +150,22 @@ export function RunnerManager({
                 credentials: "include",
             });
             if (!res.ok) {
-                const data = await res.json();
-                setError(`Failed to stop runner: ${data.error || "Unknown error"}`);
+                const data = await res.json().catch(() => null) as { error?: string } | null;
+                const mapped = mapUserError({
+                    error: data?.error,
+                    statusCode: res.status,
+                    context: "runner_stop",
+                });
+                console.error("Failed to stop runner:", mapped.technicalMessage, data);
+                setError(mapped.userMessage);
             }
         } catch (err) {
-            log.error("Failed to stop runner:", err);
+            const mapped = mapUserError({
+                error: err,
+                context: "runner_stop",
+            });
+            console.error("Failed to stop runner:", err);
+            setError(mapped.userMessage);
         } finally {
             setTimeout(() => {
                 setStopping((prev) => {
@@ -168,12 +188,25 @@ export function RunnerManager({
             headers: { "content-type": "application/json" },
             body: JSON.stringify({ runnerId, ...(cwd ? { cwd } : {}) }),
         });
-        const body = await res.json().catch(() => null) as any;
+        const body = await res.json().catch(() => null) as { error?: string; sessionId?: string } | null;
         if (!res.ok) {
-            throw new Error(body?.error || `Spawn failed (HTTP ${res.status})`);
+            const mapped = mapUserError({
+                error: body?.error,
+                statusCode: res.status,
+                context: "session_spawn",
+            });
+            console.error("Failed to spawn session:", mapped.technicalMessage, body);
+            throw new Error(mapped.userMessage);
         }
         const sessionId = body?.sessionId;
-        if (!sessionId) throw new Error("Spawn failed: missing sessionId in response");
+        if (!sessionId) {
+            const mapped = mapUserError({
+                error: "Spawn failed: missing sessionId in response",
+                context: "session_spawn",
+            });
+            console.error("Failed to spawn session:", mapped.technicalMessage, body);
+            throw new Error(mapped.userMessage);
+        }
 
         setSpawnRunnerId(null);
         setPendingSessionId(sessionId);

@@ -62,6 +62,7 @@ import { DockedPanelGroup } from "@/components/DockedPanelGroup";
 import { ViewerSocketContext } from "@/lib/viewer-socket-context";
 import { HubSocketContext } from "@/lib/hub-socket-context";
 import { shouldStopViewerReconnect } from "@/lib/viewer-connection";
+import { mapUserError } from "@/lib/user-error-message";
 import { getConfirmedMetaSubscriptionTargets } from "@/lib/meta-subscriptions";
 import { evaluateVersionNegotiation } from "@/lib/version-negotiation";
 import { useRunnerServices, attachServiceAnnounceListener, seedServiceCache, setViewerSwitchGeneration } from "@/hooks/useRunnerServices";
@@ -2609,12 +2610,23 @@ export function App() {
         }
         if (!activeSessionRef.current) return;
         lastViewerEventAtRef.current = Date.now();
-        setViewerStatus(data.message || "Failed to load session");
+        const mapped = mapUserError({
+          error: data.message,
+          context: "viewer_connection",
+          fallbackMessage: "Failed to load session.",
+        });
+        console.error("Viewer socket error:", mapped.technicalMessage, data);
+        setViewerStatus(mapped.userMessage);
       });
 
-      nextSocket.on("connect_error", () => {
+      nextSocket.on("connect_error", (err) => {
         if (activeSessionRef.current) {
-          setViewerStatus("Connection error");
+          const mapped = mapUserError({
+            error: err,
+            context: "viewer_connection",
+          });
+          console.error("Viewer socket connect_error:", err);
+          setViewerStatus(mapped.userMessage);
         }
       });
 
@@ -3219,16 +3231,26 @@ export function App() {
         body: JSON.stringify(payload),
       });
 
-      const body = await res.json().catch(() => null) as any;
+      const body = await res.json().catch(() => null) as { error?: string; sessionId?: string } | null;
       if (!res.ok) {
-        const msg = body && typeof body.error === "string" ? body.error : `Spawn failed (HTTP ${res.status})`;
-        setViewerStatus(msg);
+        const mapped = mapUserError({
+          error: body?.error,
+          statusCode: res.status,
+          context: "session_spawn",
+        });
+        console.error("Failed to spawn session:", mapped.technicalMessage, body);
+        setViewerStatus(mapped.userMessage);
         return;
       }
 
       sessionId = typeof body?.sessionId === "string" ? body.sessionId : null;
       if (!sessionId) {
-        setViewerStatus("Spawn failed: missing sessionId");
+        const mapped = mapUserError({
+          error: "Spawn failed: missing sessionId",
+          context: "session_spawn",
+        });
+        console.error("Failed to spawn session:", mapped.technicalMessage, body);
+        setViewerStatus(mapped.userMessage);
         return;
       }
 
@@ -3245,8 +3267,12 @@ export function App() {
       handleOpenSession(sessionId);
       setViewerStatus("Connecting…");
     } catch (err) {
-      const detail = err instanceof Error ? err.message : String(err);
-      setViewerStatus(`Spawn failed: ${detail}`);
+      const mapped = mapUserError({
+        error: err,
+        context: "session_spawn",
+      });
+      console.error("Failed to spawn session:", err);
+      setViewerStatus(mapped.userMessage);
     } finally {
       setSpawningSession(false);
     }
@@ -3264,14 +3290,26 @@ export function App() {
       body: JSON.stringify(payload),
     });
 
-    const body = await res.json().catch(() => null) as any;
+    const body = await res.json().catch(() => null) as { error?: string; sessionId?: string } | null;
     if (!res.ok) {
-      const msg = body && typeof body.error === "string" ? body.error : `Spawn failed (HTTP ${res.status})`;
-      throw new Error(msg);
+      const mapped = mapUserError({
+        error: body?.error,
+        statusCode: res.status,
+        context: "session_spawn",
+      });
+      console.error("Failed to spawn session from wizard:", mapped.technicalMessage, body);
+      throw new Error(mapped.userMessage);
     }
 
     const sessionId = typeof body?.sessionId === "string" ? body.sessionId : null;
-    if (!sessionId) throw new Error("Spawn failed: missing sessionId");
+    if (!sessionId) {
+      const mapped = mapUserError({
+        error: "Spawn failed: missing sessionId",
+        context: "session_spawn",
+      });
+      console.error("Spawn response missing sessionId:", mapped.technicalMessage, body);
+      throw new Error(mapped.userMessage);
+    }
 
     setNewSessionOpen(false);
 
@@ -3377,16 +3415,26 @@ export function App() {
         }),
       });
 
-      const body = await res.json().catch(() => null) as any;
+      const body = await res.json().catch(() => null) as { error?: string; sessionId?: string } | null;
       if (!res.ok) {
-        const msg = body && typeof body.error === "string" ? body.error : `Spawn failed (HTTP ${res.status})`;
-        setViewerStatus(msg);
+        const mapped = mapUserError({
+          error: body?.error,
+          statusCode: res.status,
+          context: "session_spawn",
+        });
+        console.error("Failed to spawn agent session:", mapped.technicalMessage, body);
+        setViewerStatus(mapped.userMessage);
         return;
       }
 
       const sessionId = typeof body?.sessionId === "string" ? body.sessionId : null;
       if (!sessionId) {
-        setViewerStatus("Spawn failed: missing sessionId");
+        const mapped = mapUserError({
+          error: "Spawn failed: missing sessionId",
+          context: "session_spawn",
+        });
+        console.error("Agent spawn response missing sessionId:", mapped.technicalMessage, body);
+        setViewerStatus(mapped.userMessage);
         return;
       }
 
@@ -3400,8 +3448,12 @@ export function App() {
       handleOpenSession(sessionId);
       setViewerStatus("Connecting…");
     } catch (err) {
-      const detail = err instanceof Error ? err.message : String(err);
-      setViewerStatus(`Agent spawn failed: ${detail}`);
+      const mapped = mapUserError({
+        error: err,
+        context: "session_spawn",
+      });
+      console.error("Failed to spawn agent session:", err);
+      setViewerStatus(mapped.userMessage);
     }
   }, [activeSessionId, liveSessions, handleOpenSession, waitForSessionToGoLive]);
 
