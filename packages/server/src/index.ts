@@ -22,14 +22,48 @@ import {
 // The Socket.IO Redis adapter can throw EPIPE synchronously when the Redis
 // connection drops mid-broadcast. We catch any that slip through call-site
 // try/catches so the server never exits on a transient Redis disconnect.
+//
+// Known recoverable errors (per-request / transient network) are logged and
+// swallowed so a single bad request cannot bring down the whole server.
+// Truly fatal errors trigger a graceful shutdown with a 10 s drain window
+// rather than an immediate process.exit so in-flight requests can complete.
+
+function isRecoverableError(err: Error): boolean {
+    const code = (err as NodeJS.ErrnoException).code;
+    // Transient network conditions — only affect the current socket/stream,
+    // not the server's ability to serve future requests.
+    if (code === "ECONNRESET" || code === "ERR_STREAM_DESTROYED" || code === "ENOTCONN") {
+        return true;
+    }
+    // JSON.parse failures from malformed request bodies — scoped to one request.
+    if (err instanceof SyntaxError && err.message.toLowerCase().includes("json")) {
+        return true;
+    }
+    return false;
+}
+
 process.on("uncaughtException", (err: Error) => {
     if ((err as NodeJS.ErrnoException).code === "EPIPE") {
         processLog.warn("Caught EPIPE (Redis connection dropped) — ignoring:", err.message);
         return;
     }
-    // Re-throw anything that isn't an EPIPE so genuine bugs still surface.
-    processLog.error("Uncaught exception:", err);
-    process.exit(1);
+    if (isRecoverableError(err)) {
+        processLog.warn("Caught recoverable error — logging and continuing:", err);
+        return;
+    }
+    // Fatal: initiate graceful shutdown instead of an immediate process.exit(1).
+    // onShutdownSignal is a hoisted function declaration and is callable here
+    // even though it is defined later in the file.  We wrap in try/catch as a
+    // safety net for the narrow window during startup before httpServer exists.
+    processLog.error("Uncaught fatal exception — initiating graceful shutdown:", err);
+    try {
+        onShutdownSignal("uncaughtException", 1);
+    } catch (shutdownErr) {
+        // Server not yet fully initialized (e.g. exception during migrations).
+        // Fall back to immediate exit — there is nothing to drain.
+        processLog.error("Graceful shutdown unavailable (server not ready) — exiting immediately:", shutdownErr);
+        process.exit(1);
+    }
 });
 
 // Socket.IO imports
@@ -362,25 +396,26 @@ setTimeout(() => {
 // Registered after httpServer and io are initialized so there's no TDZ risk
 // if SIGTERM arrives during startup.  Sets isServerShuttingDown before closing
 // Socket.IO so disconnect handlers can skip destructive Redis cleanup.
-function onShutdownSignal(signal: string): void {
+function onShutdownSignal(signal: string, exitCode = 0): void {
     shutdownLog.info(`Received ${signal} — marking server as shutting down`);
     setServerShuttingDown();
     disposeTunnelRelay();
 
     // Close the Socket.IO server so disconnect handlers fire with the
-    // shuttingDown flag already set, then close the HTTP server.
+    // shuttingDown flag already set, then close the HTTP server so
+    // in-flight requests have a chance to complete before exit.
     if (io) {
         io.close(() => {
             shutdownLog.info("Socket.IO closed");
             httpServer.close(() => {
                 shutdownLog.info("HTTP server closed");
-                process.exit(0);
+                process.exit(exitCode);
             });
         });
     } else {
         httpServer.close(() => {
             shutdownLog.info("HTTP server closed");
-            process.exit(0);
+            process.exit(exitCode);
         });
     }
 
