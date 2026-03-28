@@ -163,7 +163,7 @@ function DiffContent({
 
   return (
     <div className="overflow-x-auto min-h-full bg-background">
-      <pre className="m-0 p-0 text-xs font-mono leading-5 min-h-full">
+      <pre className="m-0 p-0 text-xs font-mono leading-5 min-h-full min-w-fit">
         <code>
           {rows.map((row, i) => (
             <span
