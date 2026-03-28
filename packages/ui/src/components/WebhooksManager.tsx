@@ -41,6 +41,7 @@ interface WebhookData {
     secret: string;
     eventFilter: string[] | null;
     source: string;
+    runnerId: string | null;
     cwd: string | null;
     prompt: string | null;
     enabled: boolean;
@@ -62,6 +63,7 @@ async function fetchWebhooks(): Promise<WebhookData[]> {
 async function createWebhookApi(input: {
     name: string;
     source: string;
+    runnerId?: string | null;
     cwd?: string | null;
     prompt?: string | null;
     eventFilter?: string[] | null;
@@ -472,6 +474,7 @@ function CreateWebhookForm({
                 name: name.trim(),
                 source: source.trim() || "custom",
             };
+            if (runnerId) input.runnerId = runnerId;
             if (cwd.trim()) input.cwd = cwd.trim();
             if (prompt.trim()) input.prompt = prompt.trim();
             const filterItems = eventFilter

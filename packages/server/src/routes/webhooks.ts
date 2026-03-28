@@ -24,7 +24,6 @@ import {
     getLocalTuiSocket,
     emitToRelaySessionVerified,
     broadcastToSessionViewers,
-    getRunners,
     getLocalRunnerSocket,
     recordRunnerSession,
     linkSessionToRunner,
@@ -77,25 +76,15 @@ function hmacEqual(a: string, b: string): boolean {
 // ── Spawn helper ──────────────────────────────────────────────────────────────
 
 /**
- * Find the user's first connected runner and spawn a session on it.
+ * Spawn a session on the webhook's designated runner.
  * Returns the new sessionId, or an error Response.
  */
 async function spawnSessionForWebhook(
-    userId: string,
+    runnerId: string,
     cwd: string | null,
     prompt: string | null,
 ): Promise<{ sessionId: string } | Response> {
-    const runners = await getRunners(userId);
-    if (runners.length === 0) {
-        return Response.json(
-            { error: "No connected runner found for this user" },
-            { status: 503 },
-        );
-    }
-
-    // Use the first online runner.
-    const runner = runners[0];
-    const runnerSocket = getLocalRunnerSocket(runner.runnerId);
+    const runnerSocket = getLocalRunnerSocket(runnerId);
     if (!runnerSocket) {
         return Response.json(
             { error: "Runner is not connected to this server" },
@@ -127,8 +116,8 @@ async function spawnSessionForWebhook(
         );
     }
 
-    await recordRunnerSession(runner.runnerId, sessionId);
-    await linkSessionToRunner(runner.runnerId, sessionId);
+    await recordRunnerSession(runnerId, sessionId);
+    await linkSessionToRunner(runnerId, sessionId);
 
     return { sessionId };
 }
@@ -262,6 +251,10 @@ export const handleWebhooksRoute: RouteHandler = async (req, url) => {
             eventFilter = body.eventFilter as string[];
         }
 
+        const runnerId =
+            typeof body.runnerId === "string" && body.runnerId.trim()
+                ? body.runnerId.trim()
+                : null;
         const cwd =
             typeof body.cwd === "string" && body.cwd.trim()
                 ? body.cwd.trim()
@@ -276,6 +269,7 @@ export const handleWebhooksRoute: RouteHandler = async (req, url) => {
             name: name.trim(),
             eventFilter,
             source: source.trim(),
+            runnerId,
             cwd,
             prompt,
         });
@@ -352,6 +346,9 @@ export const handleWebhooksRoute: RouteHandler = async (req, url) => {
         if (typeof body.source === "string" && body.source.trim()) updates.source = body.source.trim();
         if (eventFilter !== undefined) updates.eventFilter = eventFilter;
         if (typeof body.enabled === "boolean") updates.enabled = body.enabled;
+        if ("runnerId" in body) {
+            updates.runnerId = typeof body.runnerId === "string" && body.runnerId.trim() ? body.runnerId.trim() : null;
+        }
         if ("cwd" in body) {
             updates.cwd = typeof body.cwd === "string" && body.cwd.trim() ? body.cwd.trim() : null;
         }
@@ -435,9 +432,17 @@ export const handleWebhooksRoute: RouteHandler = async (req, url) => {
             }
         }
 
-        // Spawn a new session on the user's runner
+        // Webhook must have a runner assigned
+        if (!webhook.runnerId) {
+            return Response.json(
+                { error: "Webhook has no runner assigned" },
+                { status: 500 },
+            );
+        }
+
+        // Spawn a new session on the webhook's designated runner
         const spawnResult = await spawnSessionForWebhook(
-            webhook.userId,
+            webhook.runnerId,
             webhook.cwd,
             webhook.prompt,
         );

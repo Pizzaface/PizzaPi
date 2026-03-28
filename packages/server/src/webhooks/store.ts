@@ -24,6 +24,8 @@ export interface Webhook {
     eventFilter: string[] | null;
     /** Source type — e.g. "custom", "slack", "cron", etc. */
     source: string;
+    /** Runner to spawn sessions on. */
+    runnerId: string | null;
     /** Working directory for spawned sessions. */
     cwd: string | null;
     /** Custom prompt sent to the spawned session. */
@@ -38,6 +40,7 @@ export interface CreateWebhookInput {
     name: string;
     eventFilter?: string[] | null;
     source: string;
+    runnerId?: string | null;
     cwd?: string | null;
     prompt?: string | null;
 }
@@ -46,6 +49,7 @@ export interface UpdateWebhookInput {
     name?: string;
     eventFilter?: string[] | null;
     source?: string;
+    runnerId?: string | null;
     cwd?: string | null;
     prompt?: string | null;
     enabled?: boolean;
@@ -65,6 +69,7 @@ export async function ensureWebhookTable(): Promise<void> {
         .addColumn("secret", "text", (col) => col.notNull())
         .addColumn("eventFilter", "text")
         .addColumn("source", "text", (col) => col.notNull())
+        .addColumn("runnerId", "text")
         .addColumn("cwd", "text")
         .addColumn("prompt", "text")
         .addColumn("enabled", "integer", (col) => col.notNull().defaultTo(1))
@@ -84,6 +89,7 @@ export async function ensureWebhookTable(): Promise<void> {
     // Drop targetSessionId if it still exists from the old schema.
     // Each ALTER is wrapped individually — if the column already exists (or
     // doesn't exist for DROP), SQLite throws and we catch silently.
+    try { await db.schema.alterTable("webhook").addColumn("runnerId", "text").execute(); log.info("Added 'runnerId' column."); } catch { /* already exists */ }
     try { await db.schema.alterTable("webhook").addColumn("cwd", "text").execute(); log.info("Added 'cwd' column."); } catch { /* already exists */ }
     try { await db.schema.alterTable("webhook").addColumn("prompt", "text").execute(); log.info("Added 'prompt' column."); } catch { /* already exists */ }
     try { await db.schema.alterTable("webhook").dropColumn("targetSessionId").execute(); log.info("Dropped legacy 'targetSessionId' column."); } catch { /* already gone */ }
@@ -104,6 +110,7 @@ function rowToWebhook(row: {
     secret: string;
     eventFilter: string | null;
     source: string;
+    runnerId: string | null;
     cwd: string | null;
     prompt: string | null;
     enabled: number;
@@ -125,6 +132,7 @@ function rowToWebhook(row: {
         secret: row.secret,
         eventFilter,
         source: row.source,
+        runnerId: row.runnerId ?? null,
         cwd: row.cwd ?? null,
         prompt: row.prompt ?? null,
         enabled: row.enabled === 1,
@@ -149,6 +157,7 @@ export async function createWebhook(input: CreateWebhookInput): Promise<Webhook>
             secret,
             eventFilter: input.eventFilter ? JSON.stringify(input.eventFilter) : null,
             source: input.source,
+            runnerId: input.runnerId ?? null,
             cwd: input.cwd ?? null,
             prompt: input.prompt ?? null,
             enabled: 1,
@@ -164,6 +173,7 @@ export async function createWebhook(input: CreateWebhookInput): Promise<Webhook>
         secret,
         eventFilter: input.eventFilter ?? null,
         source: input.source,
+        runnerId: input.runnerId ?? null,
         cwd: input.cwd ?? null,
         prompt: input.prompt ?? null,
         enabled: true,
@@ -207,6 +217,7 @@ export async function updateWebhook(
     if (input.eventFilter !== undefined) {
         updates.eventFilter = input.eventFilter ? JSON.stringify(input.eventFilter) : null;
     }
+    if (input.runnerId !== undefined) updates.runnerId = input.runnerId;
     if (input.cwd !== undefined) updates.cwd = input.cwd;
     if (input.prompt !== undefined) updates.prompt = input.prompt;
 
