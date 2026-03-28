@@ -243,7 +243,10 @@ export function renderTriggerBatch(triggers: ConversationTrigger[]): string {
 
 /** Render a trigger to text, with trigger ID metadata prefix. */
 export function renderTrigger(trigger: ConversationTrigger): string {
-    const renderer = TRIGGER_RENDERERS.get(trigger.type);
+    // Look up an exact renderer first, then fall back to externalRenderer for
+    // namespaced service triggers (e.g. "demo:message_sent", "github:pr_comment").
+    const renderer = TRIGGER_RENDERERS.get(trigger.type)
+        ?? (trigger.type.includes(":") ? TRIGGER_RENDERERS.get("external") : undefined);
     const body = renderer
         ? renderer.render(trigger)
         : `🔗 Child "${displayName(trigger)}" sent unknown trigger "${trigger.type}". Payload: ${JSON.stringify(trigger.payload)}`;
@@ -262,6 +265,7 @@ export function renderTrigger(trigger: ConversationTrigger): string {
 
 /** Parse a response using the trigger type's parser, if available. */
 export function parseTriggerResponse(trigger: ConversationTrigger, responseText: string): unknown {
-    const renderer = TRIGGER_RENDERERS.get(trigger.type);
+    const renderer = TRIGGER_RENDERERS.get(trigger.type)
+        ?? (trigger.type.includes(":") ? TRIGGER_RENDERERS.get("external") : undefined);
     return renderer?.parseResponse?.(responseText, trigger) ?? responseText;
 }
