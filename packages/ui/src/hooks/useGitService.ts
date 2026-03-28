@@ -21,6 +21,8 @@ export interface GitStatus {
     changes: GitChange[];
     ahead: number;
     behind: number;
+    /** Whether the current branch has an upstream tracking branch configured. */
+    hasUpstream: boolean;
     diffStaged: string;
 }
 
@@ -105,6 +107,7 @@ export function useGitService(cwd: string): UseGitServiceReturn {
                             changes: (payload.changes as GitChange[]) ?? [],
                             ahead: (payload.ahead as number) ?? 0,
                             behind: (payload.behind as number) ?? 0,
+                            hasUpstream: (payload.hasUpstream as boolean) ?? false,
                             diffStaged: (payload.diffStaged as string) ?? "",
                         });
                         setError(null);

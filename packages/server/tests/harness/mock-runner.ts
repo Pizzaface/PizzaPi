@@ -871,6 +871,7 @@ export async function createMockRunner(
                     changes: gitStatus.changes,
                     ahead: gitStatus.ahead,
                     behind: gitStatus.behind,
+                    hasUpstream: true,
                     diffStaged: gitStatus.diffStaged,
                 });
                 break;

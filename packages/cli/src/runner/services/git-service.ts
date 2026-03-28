@@ -24,9 +24,12 @@ function isValidBranchName(name: string): boolean {
 function isValidPath(p: string): boolean {
     if (!p) return false;
     const norm = normalize(p);
-    // Reject absolute paths and path traversal
+    // Reject absolute paths
     if (norm.startsWith("/") || norm.startsWith("\\")) return false;
-    if (norm.includes("..")) return false;
+    // Reject path traversal by checking segments — allows valid filenames
+    // like "foo..bar.ts" while blocking "../" traversal.
+    const segments = norm.split(/[/\\]/);
+    if (segments.some((s) => s === "..")) return false;
     return true;
 }
 
@@ -164,7 +167,9 @@ export class GitService implements ServiceHandler {
 
             let ahead = 0;
             let behind = 0;
-            if (abResult.status === "fulfilled") {
+            // If rev-list against @{u} failed, the branch has no upstream
+            const hasUpstream = abResult.status === "fulfilled";
+            if (hasUpstream) {
                 const [a, b] = abResult.value.stdout.trim().split(/\s+/);
                 ahead = parseInt(a, 10) || 0;
                 behind = parseInt(b, 10) || 0;
@@ -176,6 +181,7 @@ export class GitService implements ServiceHandler {
                 changes,
                 ahead,
                 behind,
+                hasUpstream,
                 diffStaged,
             }, requestId, sessionId);
         } catch (err) {
@@ -229,12 +235,25 @@ export class GitService implements ServiceHandler {
                 { cwd, timeout: 5000 },
             );
 
-            // List all branches: local and remote, sorted by most recent commit
-            const { stdout: branchOutput } = await execFileAsync(
-                "git",
-                ["branch", "-a", "--sort=-committerdate", "--format=%(refname:short)\t%(objectname:short)\t%(committerdate:relative)\t%(HEAD)"],
-                { cwd, timeout: 10000 },
-            );
+            // Use for-each-ref for reliable branch listing with ref-type awareness.
+            // List local branches from refs/heads and remote branches from refs/remotes,
+            // excluding remote HEAD aliases (e.g. refs/remotes/origin/HEAD).
+            const [localResult, remoteResult] = await Promise.allSettled([
+                execFileAsync(
+                    "git",
+                    ["for-each-ref", "--sort=-committerdate",
+                     "--format=%(refname:short)\t%(objectname:short)\t%(committerdate:relative)\t%(HEAD)",
+                     "refs/heads"],
+                    { cwd, timeout: 10000 },
+                ),
+                execFileAsync(
+                    "git",
+                    ["for-each-ref", "--sort=-committerdate",
+                     "--format=%(refname:short)\t%(objectname:short)\t%(committerdate:relative)",
+                     "refs/remotes", "--exclude=refs/remotes/*/HEAD"],
+                    { cwd, timeout: 10000 },
+                ),
+            ]);
 
             const branches: Array<{
                 name: string;
@@ -244,18 +263,33 @@ export class GitService implements ServiceHandler {
                 isRemote: boolean;
             }> = [];
 
-            for (const line of branchOutput.split("\n")) {
+            // Parse local branches
+            const localOutput = localResult.status === "fulfilled" ? localResult.value.stdout : "";
+            for (const line of localOutput.split("\n")) {
                 if (!line.trim()) continue;
                 const [name, shortHash, lastCommit, head] = line.split("\t");
                 if (!name) continue;
-                // Skip HEAD -> refs (detached state pointers)
-                if (name.includes("HEAD")) continue;
                 branches.push({
                     name: name.trim(),
                     shortHash: shortHash?.trim() ?? "",
                     lastCommit: lastCommit?.trim() ?? "",
                     isCurrent: head?.trim() === "*",
-                    isRemote: name.startsWith("origin/"),
+                    isRemote: false,
+                });
+            }
+
+            // Parse remote branches
+            const remoteOutput = remoteResult.status === "fulfilled" ? remoteResult.value.stdout : "";
+            for (const line of remoteOutput.split("\n")) {
+                if (!line.trim()) continue;
+                const [name, shortHash, lastCommit] = line.split("\t");
+                if (!name) continue;
+                branches.push({
+                    name: name.trim(),
+                    shortHash: shortHash?.trim() ?? "",
+                    lastCommit: lastCommit?.trim() ?? "",
+                    isCurrent: false,
+                    isRemote: true,
                 });
             }
 
@@ -286,23 +320,36 @@ export class GitService implements ServiceHandler {
         }
 
         try {
-            // For remote tracking branches like "origin/foo", create a local tracking branch "foo"
+            // Detect remote tracking branches (e.g. "origin/foo", "upstream/bar").
+            // Extract local branch name and use `git switch --track` for safe checkout.
+            const remoteMatch = branch.match(/^([^/]+)\/(.+)$/);
             let targetBranch = branch;
-            const args = ["checkout"];
 
-            if (branch.startsWith("origin/")) {
-                targetBranch = branch.slice("origin/".length);
+            // Check if this looks like a remote branch by verifying the remote exists
+            let isRemoteRef = false;
+            if (remoteMatch) {
+                try {
+                    await execFileAsync("git", ["remote", "get-url", remoteMatch[1]], { cwd, timeout: 5000 });
+                    isRemoteRef = true;
+                } catch {
+                    // Not a known remote — treat as a local branch name containing "/"
+                }
+            }
+
+            const args: string[] = [];
+            if (isRemoteRef && remoteMatch) {
+                targetBranch = remoteMatch[2];
                 // Check if a local branch with this name already exists
                 try {
-                    await execFileAsync("git", ["rev-parse", "--verify", targetBranch], { cwd, timeout: 5000 });
+                    await execFileAsync("git", ["rev-parse", "--verify", `refs/heads/${targetBranch}`], { cwd, timeout: 5000 });
                     // Local branch exists, just check it out
-                    args.push(targetBranch);
+                    args.push("checkout", targetBranch);
                 } catch {
                     // No local branch — create tracking branch
-                    args.push("-b", targetBranch, branch);
+                    args.push("checkout", "-b", targetBranch, branch);
                 }
             } else {
-                args.push(targetBranch);
+                args.push("checkout", targetBranch);
             }
 
             await execFileAsync("git", args, { cwd, timeout: 15000 });

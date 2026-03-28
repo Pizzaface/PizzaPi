@@ -49,18 +49,24 @@ export function GitPanel({ cwd, className }: GitPanelProps) {
         if (!git.lastOperationResult) return;
         const result = git.lastOperationResult;
         if (result.ok) {
-            const messages: Record<string, string> = {
-                summary: (result.summary as string) ?? "Done",
-                output: (result.output as string) ?? "Done",
-                branch: `Switched to ${result.branch as string}`,
-            };
-            const msg = messages.summary ?? messages.output ?? messages.branch ?? "Done";
+            const msg = (result.summary as string)
+                ?? (result.output as string)
+                ?? (result.branch ? `Switched to ${result.branch as string}` : null)
+                ?? "Done";
             setToast({ type: "success", message: msg });
         } else {
-            setToast({
-                type: "error",
-                message: (result.message as string) ?? "Operation failed",
-            });
+            // If push failed because no upstream, offer to retry with --set-upstream
+            if (result.noUpstream) {
+                setToast({
+                    type: "error",
+                    message: "No upstream branch. Click Publish to push and set upstream.",
+                });
+            } else {
+                setToast({
+                    type: "error",
+                    message: (result.message as string) ?? "Operation failed",
+                });
+            }
         }
 
         const timer = setTimeout(() => setToast(null), 5000);
@@ -162,7 +168,8 @@ export function GitPanel({ cwd, className }: GitPanelProps) {
     const { staged } = partitionChanges(git.status.changes);
     const hasChanges = git.status.changes.length > 0;
     const isPushing = git.operationInProgress === "push";
-    const showPush = git.status.ahead > 0;
+    // Show push when ahead of remote OR on a branch with no upstream yet
+    const showPush = git.status.ahead > 0 || !git.status.hasUpstream;
 
     return (
         <div className={cn("flex flex-col h-full", className)}>
@@ -200,17 +207,17 @@ export function GitPanel({ cwd, className }: GitPanelProps) {
                 {showPush && (
                     <button
                         type="button"
-                        onClick={() => git.push()}
+                        onClick={() => git.push(!git.status!.hasUpstream)}
                         disabled={isPushing}
                         className={cn(
                             "inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium transition-colors",
                             "bg-green-600/20 text-green-600 dark:text-green-400 hover:bg-green-600/30",
                             "disabled:opacity-50",
                         )}
-                        title="Push to remote"
+                        title={git.status!.hasUpstream ? "Push to remote" : "Push & set upstream"}
                     >
                         {isPushing ? <Loader2 className="size-3 animate-spin" /> : <Upload className="size-3" />}
-                        Push
+                        {git.status!.hasUpstream ? "Push" : "Publish"}
                     </button>
                 )}
 
