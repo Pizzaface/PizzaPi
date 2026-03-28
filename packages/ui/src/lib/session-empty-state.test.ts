@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { getSessionEmptyStateUi, isSessionHydrating } from "./session-empty-state";
+import { getSessionEmptyStateUi, isSessionHydrating, shouldShowSessionTranscript } from "./session-empty-state";
 
 describe("isSessionHydrating", () => {
   test("returns true for connecting statuses", () => {
@@ -18,6 +18,22 @@ describe("isSessionHydrating", () => {
     expect(isSessionHydrating("Connected")).toBe(false);
     expect(isSessionHydrating("")).toBe(false);
     expect(isSessionHydrating(undefined)).toBe(false);
+  });
+});
+
+describe("shouldShowSessionTranscript", () => {
+  test("hides cached transcript while a session is hydrating", () => {
+    expect(shouldShowSessionTranscript("sess-1", "Connecting…", true)).toBe(false);
+    expect(shouldShowSessionTranscript("sess-1", "Loading session (0 of 10 messages)…", true)).toBe(false);
+  });
+
+  test("shows transcript once the session is connected", () => {
+    expect(shouldShowSessionTranscript("sess-1", "Connected", true)).toBe(true);
+  });
+
+  test("never shows transcript without a session id or visible messages", () => {
+    expect(shouldShowSessionTranscript(null, "Connected", true)).toBe(false);
+    expect(shouldShowSessionTranscript("sess-1", "Connected", false)).toBe(false);
   });
 });
 

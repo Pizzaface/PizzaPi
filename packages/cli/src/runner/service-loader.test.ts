@@ -551,4 +551,81 @@ describe("discoverServices — folder-based services", () => {
         expect(result.services).toHaveLength(1);
         expect(result.services[0].handler.id).toBe("custom-entry");
     });
+
+    test("parses triggers[] from manifest.json", async () => {
+        writeFolderService("trigger-svc", {
+            id: "trigger-svc",
+            label: "Trigger Service",
+            icon: "zap",
+            triggers: [
+                {
+                    type: "trigger-svc:thing_happened",
+                    label: "Thing Happened",
+                    description: "Fires when a thing happens",
+                    schema: { type: "object", properties: { thingId: { type: "string" } } },
+                },
+                {
+                    type: "trigger-svc:other_event",
+                    label: "Other Event",
+                },
+            ],
+        });
+
+        const result = await discoverServices();
+        expect(result.errors).toHaveLength(0);
+        expect(result.services).toHaveLength(1);
+        const manifest = result.services[0].manifest!;
+        expect(manifest.triggers).toHaveLength(2);
+        expect(manifest.triggers![0].type).toBe("trigger-svc:thing_happened");
+        expect(manifest.triggers![0].label).toBe("Thing Happened");
+        expect(manifest.triggers![0].description).toBe("Fires when a thing happens");
+        expect(manifest.triggers![0].schema).toEqual({ type: "object", properties: { thingId: { type: "string" } } });
+        expect(manifest.triggers![1].type).toBe("trigger-svc:other_event");
+        expect(manifest.triggers![1].label).toBe("Other Event");
+        expect(manifest.triggers![1].description).toBeUndefined();
+        expect(manifest.triggers![1].schema).toBeUndefined();
+    });
+
+    test("skips invalid trigger entries (missing type or label)", async () => {
+        writeFolderService("partial-triggers", {
+            id: "partial-triggers",
+            label: "Partial Triggers",
+            triggers: [
+                { type: "ok:valid", label: "Valid" },
+                { type: "missing-label" },                    // no label → skipped
+                { label: "Missing Type" },                    // no type → skipped
+                null,                                         // null → skipped
+                { type: 42, label: "Bad type field" },        // non-string type → skipped
+                { type: "also:valid", label: "Also Valid", description: 99 }, // bad desc → allowed (omitted)
+            ],
+        });
+
+        const result = await discoverServices();
+        expect(result.errors).toHaveLength(0);
+        expect(result.services).toHaveLength(1);
+        const triggers = result.services[0].manifest!.triggers!;
+        // Only the two valid ones survive
+        expect(triggers).toHaveLength(2);
+        expect(triggers[0].type).toBe("ok:valid");
+        expect(triggers[1].type).toBe("also:valid");
+        expect(triggers[1].description).toBeUndefined(); // bad description omitted
+    });
+
+    test("manifest.triggers is undefined when no triggers declared", async () => {
+        writeFolderService("no-triggers", { id: "no-triggers", label: "No Triggers" });
+
+        const result = await discoverServices();
+        expect(result.errors).toHaveLength(0);
+        expect(result.services).toHaveLength(1);
+        expect(result.services[0].manifest!.triggers).toBeUndefined();
+    });
+
+    test("manifest.triggers is undefined when triggers is empty array", async () => {
+        writeFolderService("empty-triggers", { id: "empty-triggers", label: "Empty", triggers: [] });
+
+        const result = await discoverServices();
+        expect(result.errors).toHaveLength(0);
+        expect(result.services).toHaveLength(1);
+        expect(result.services[0].manifest!.triggers).toBeUndefined();
+    });
 });

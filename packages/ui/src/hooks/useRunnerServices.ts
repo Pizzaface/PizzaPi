@@ -16,11 +16,12 @@
  */
 import { useState, useEffect, useRef } from "react";
 import type { Socket } from "socket.io-client";
-import type { ServiceAnnounceData, ServicePanelInfo } from "@pizzapi/protocol";
+import type { ServiceAnnounceData, ServicePanelInfo, ServiceTriggerDef } from "@pizzapi/protocol";
 import { matchesViewerGeneration } from "@/lib/viewer-switch";
 
 const SERVICE_IDS_KEY = "__serviceIds" as const;
 const PANELS_KEY = "__panels" as const;
+const TRIGGER_DEFS_KEY = "__triggerDefs" as const;
 const VIEWER_SWITCH_GENERATION_KEY = "__viewerSwitchGeneration" as const;
 
 /**
@@ -36,10 +37,12 @@ export function attachServiceAnnounceListener(socket: Socket): void {
         }
         (socket as any)[SERVICE_IDS_KEY] = data.serviceIds;
         (socket as any)[PANELS_KEY] = data.panels;
+        (socket as any)[TRIGGER_DEFS_KEY] = data.triggerDefs;
     });
     socket.on("disconnect", () => {
         (socket as any)[SERVICE_IDS_KEY] = undefined;
         (socket as any)[PANELS_KEY] = undefined;
+        (socket as any)[TRIGGER_DEFS_KEY] = undefined;
     });
 }
 
@@ -52,8 +55,10 @@ export function seedServiceCache(newSocket: Socket, prevSocket: Socket | null): 
     if (!prevSocket) return;
     const ids = (prevSocket as any)[SERVICE_IDS_KEY] as string[] | undefined;
     const panels = (prevSocket as any)[PANELS_KEY] as ServicePanelInfo[] | undefined;
+    const triggerDefs = (prevSocket as any)[TRIGGER_DEFS_KEY] as ServiceTriggerDef[] | undefined;
     if (ids) (newSocket as any)[SERVICE_IDS_KEY] = ids;
     if (panels) (newSocket as any)[PANELS_KEY] = panels;
+    if (triggerDefs) (newSocket as any)[TRIGGER_DEFS_KEY] = triggerDefs;
 }
 
 export function setViewerSwitchGeneration(socket: Socket, generation: number): void {
@@ -71,14 +76,21 @@ function getEagerPanels(socket: Socket | null): ServicePanelInfo[] {
     return (socket ? (socket as any)[PANELS_KEY] as ServicePanelInfo[] | undefined : undefined) ?? [];
 }
 
+/** Read any already-captured trigger defs from the socket. */
+function getEagerTriggerDefs(socket: Socket | null): ServiceTriggerDef[] {
+    return (socket ? (socket as any)[TRIGGER_DEFS_KEY] as ServiceTriggerDef[] | undefined : undefined) ?? [];
+}
+
 export interface RunnerServicesState {
     services: Set<string>;
     panels: ServicePanelInfo[];
+    triggerDefs: ServiceTriggerDef[];
 }
 
 export function useRunnerServices(socket: Socket | null): RunnerServicesState {
     const [services, setServices] = useState<Set<string>>(() => getEagerServiceIds(socket));
     const [panels, setPanels] = useState<ServicePanelInfo[]>(() => getEagerPanels(socket));
+    const [triggerDefs, setTriggerDefs] = useState<ServiceTriggerDef[]>(() => getEagerTriggerDefs(socket));
     const prevSocketRef = useRef(socket);
 
     if (socket !== prevSocketRef.current) {
@@ -89,6 +101,7 @@ export function useRunnerServices(socket: Socket | null): RunnerServicesState {
         if (!socket) {
             setServices(new Set());
             setPanels([]);
+            setTriggerDefs([]);
             return;
         }
 
@@ -102,6 +115,10 @@ export function useRunnerServices(socket: Socket | null): RunnerServicesState {
         if (cachedPanels.length > 0) {
             setPanels(cachedPanels);
         }
+        const cachedDefs = getEagerTriggerDefs(socket);
+        if (cachedDefs.length > 0) {
+            setTriggerDefs(cachedDefs);
+        }
 
         const handleAnnounce = (data: ServiceAnnounceData & { generation?: number }) => {
             const currentGeneration = (socket as any)[VIEWER_SWITCH_GENERATION_KEY] as number | undefined;
@@ -110,6 +127,7 @@ export function useRunnerServices(socket: Socket | null): RunnerServicesState {
             }
             setServices(new Set(data.serviceIds));
             setPanels(data.panels ?? []);
+            setTriggerDefs(data.triggerDefs ?? []);
         };
 
         // NOTE: No handleDisconnect listener — we intentionally preserve
@@ -128,5 +146,5 @@ export function useRunnerServices(socket: Socket | null): RunnerServicesState {
         };
     }, [socket]);
 
-    return { services, panels };
+    return { services, panels, triggerDefs };
 }

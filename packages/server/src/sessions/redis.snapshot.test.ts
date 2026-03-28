@@ -1,49 +1,37 @@
-import { afterAll, beforeEach, describe, expect, mock, test } from "bun:test";
+import { beforeEach, describe, expect, mock, test } from "bun:test";
+import {
+    _resetRelayRedisCacheForTesting,
+    _injectRedisForTesting,
+    getLatestCachedSnapshotEvent,
+    initializeRelayRedisCache,
+} from "./redis";
+
+// ── In-memory Redis mock ─────────────────────────────────────────────────────
 
 const rowsByKey = new Map<string, string[]>();
 const lRangeCalls: Array<{ key: string; start: number; end: number }> = [];
 
-const mockConnect = mock(() => Promise.resolve());
-const mockOn = mock(() => {});
-const mockDisconnect = mock(() => Promise.resolve());
-const mockQuit = mock(() => Promise.resolve());
-const mockDel = mock((_keys: string | string[]) => Promise.resolve(1));
 const mockLlen = mock((key: string) => Promise.resolve((rowsByKey.get(key) ?? []).length));
 const mockLrange = mock((key: string, start: number, end: number) => {
     lRangeCalls.push({ key, start, end });
     const rows = rowsByKey.get(key) ?? [];
     return Promise.resolve(rows.slice(start, end + 1));
 });
-const mockMulti = mock(() => ({
-    rPush: mock(() => {}),
-    lTrim: mock(() => {}),
-    pExpire: mock(() => {}),
-    exec: mock(() => Promise.resolve()),
-}));
 
-mock.module("redis", () => ({
-    createClient: () => ({
-        connect: mockConnect,
-        on: mockOn,
-        disconnect: mockDisconnect,
-        quit: mockQuit,
-        del: mockDel,
-        lLen: mockLlen,
-        lRange: mockLrange,
-        multi: mockMulti,
-        isOpen: true,
-    }),
-}));
+const mockRedisClient = {
+    isOpen: true,
+    lLen: mockLlen,
+    lRange: mockLrange,
+    del: mock(() => Promise.resolve(1)),
+    multi: mock(() => ({
+        rPush: mock(() => {}),
+        lTrim: mock(() => {}),
+        pExpire: mock(() => {}),
+        exec: mock(() => Promise.resolve()),
+    })),
+};
 
-import {
-    _resetRelayRedisCacheForTesting,
-    getLatestCachedSnapshotEvent,
-    initializeRelayRedisCache,
-} from "./redis";
-
-afterAll(() => {
-    mock.restore();
-});
+// ── Helpers ──────────────────────────────────────────────────────────────────
 
 function keyForSession(sessionId: string): string {
     return `pizzapi:relay:session:${sessionId}:events`;
@@ -57,15 +45,16 @@ function noiseEvent(index: number): Record<string, unknown> {
     return { type: "tool_use", id: `tc-${index}` };
 }
 
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
 describe("getLatestCachedSnapshotEvent", () => {
     beforeEach(async () => {
         rowsByKey.clear();
         lRangeCalls.length = 0;
-        mockConnect.mockClear();
-        mockOn.mockClear();
         mockLlen.mockClear();
         mockLrange.mockClear();
         _resetRelayRedisCacheForTesting();
+        _injectRedisForTesting(mockRedisClient);
         process.env.PIZZAPI_RELAY_SNAPSHOT_SCAN_CHUNK_SIZE = "4";
         await initializeRelayRedisCache();
     });
@@ -98,7 +87,6 @@ describe("getLatestCachedSnapshotEvent", () => {
 
         expect(snapshot).not.toBeNull();
         expect(snapshot?.type).toBe("agent_end");
-        // length=10, chunk=4 => ranges [6..9], [2..5], [0..1]
         expect(lRangeCalls).toEqual([
             { key, start: 6, end: 9 },
             { key, start: 2, end: 5 },

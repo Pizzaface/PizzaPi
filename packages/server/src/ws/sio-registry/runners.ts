@@ -266,7 +266,7 @@ export async function clearRunnerWarnings(runnerId: string): Promise<void> {
 }
 
 /**
- * Persist service announce data (service IDs + panels) to Redis.
+ * Persist service announce data (service IDs, panels, trigger defs) to Redis.
  * Called when a runner emits service_announce so the data survives
  * server restarts and is available to late-joining viewers without
  * waiting for a fresh announce from the runner.
@@ -275,6 +275,7 @@ export async function updateRunnerServices(
     runnerId: string,
     serviceIds: string[],
     panels?: Array<{ serviceId: string; port: number; label: string; icon: string }>,
+    triggerDefs?: Array<{ type: string; label: string; description?: string; schema?: Record<string, unknown> }>,
 ): Promise<void> {
     const fields: Record<string, string> = {
         serviceIds: JSON.stringify(serviceIds),
@@ -283,6 +284,11 @@ export async function updateRunnerServices(
         fields.panels = JSON.stringify(panels);
     } else {
         fields.panels = "[]";
+    }
+    if (triggerDefs && triggerDefs.length > 0) {
+        fields.triggerDefs = JSON.stringify(triggerDefs);
+    } else {
+        fields.triggerDefs = "[]";
     }
     await updateRunnerFields(runnerId, fields);
     // No broadcast here — service_announce is already forwarded to viewers
@@ -295,13 +301,22 @@ export async function updateRunnerServices(
  */
 export async function getRunnerServices(
     runnerId: string,
-): Promise<{ serviceIds: string[]; panels?: Array<{ serviceId: string; port: number; label: string; icon: string }> } | null> {
+): Promise<{
+    serviceIds: string[];
+    panels?: Array<{ serviceId: string; port: number; label: string; icon: string }>;
+    triggerDefs?: Array<{ type: string; label: string; description?: string; schema?: Record<string, unknown> }>;
+} | null> {
     const runner = await getRunnerState(runnerId);
     if (!runner?.serviceIds) return null;
     const serviceIds: string[] = safeJsonParse(runner.serviceIds) ?? [];
     if (serviceIds.length === 0) return null;
     const panels = runner.panels ? safeJsonParse(runner.panels) ?? undefined : undefined;
-    return { serviceIds, ...(panels && panels.length > 0 ? { panels } : {}) };
+    const triggerDefs = runner.triggerDefs ? safeJsonParse(runner.triggerDefs) ?? undefined : undefined;
+    return {
+        serviceIds,
+        ...(panels && panels.length > 0 ? { panels } : {}),
+        ...(triggerDefs && triggerDefs.length > 0 ? { triggerDefs } : {}),
+    };
 }
 
 /** Record that a runner spawned a session. */
@@ -394,6 +409,7 @@ export async function getConnectedSessionsForRunner(runnerId: string): Promise<A
 function runnerDataToInfo(r: RedisRunnerData): RunnerInfo {
     const serviceIds: string[] | undefined = r.serviceIds ? safeJsonParse(r.serviceIds) ?? undefined : undefined;
     const panels = r.panels ? safeJsonParse(r.panels) ?? undefined : undefined;
+    const triggerDefs = r.triggerDefs ? safeJsonParse(r.triggerDefs) ?? undefined : undefined;
     const warnings: string[] | undefined = r.warnings ? safeJsonParse(r.warnings) ?? undefined : undefined;
     return {
         runnerId: r.runnerId,
@@ -408,6 +424,7 @@ function runnerDataToInfo(r: RedisRunnerData): RunnerInfo {
         platform: r.platform ?? null,
         ...(serviceIds ? { serviceIds } : {}),
         ...(panels ? { panels } : {}),
+        ...(triggerDefs && triggerDefs.length > 0 ? { triggerDefs } : {}),
         ...(warnings && warnings.length > 0 ? { warnings } : {}),
     };
 }

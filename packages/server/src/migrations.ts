@@ -5,6 +5,7 @@ import { ensurePushSubscriptionTable } from "./push.js";
 import { ensureRunnerRecentFoldersTable } from "./runner-recent-folders.js";
 import { ensureUserHiddenModelTable } from "./user-hidden-models.js";
 import { ensureExtractedAttachmentTable } from "./attachments/store.js";
+import { ensureWebhookTable } from "./webhooks/store.js";
 import { createLogger } from "@pizzapi/tools";
 
 const log = createLogger("startup");
@@ -53,6 +54,7 @@ export async function runAllMigrations(): Promise<void> {
         await ensureUserHiddenModelTable();
         await ensureRunnerRecentFoldersTable();
         await ensureExtractedAttachmentTable();
+        await ensureWebhookTable();
         log.info("All database migrations complete.");
     } catch (e) {
         log.error("Migration failed:", e);
