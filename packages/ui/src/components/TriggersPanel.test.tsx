@@ -459,6 +459,59 @@ describe("TriggersPanel — trigger catalog", () => {
     expect(unsubBtn).toBeDefined();
   });
 
+  test("trigger_delivered viewer event triggers immediate refresh", async () => {
+    fetchState.response = { ok: true, body: { triggers: [] } };
+
+    // Simple mock socket that tracks on/off
+    const handlers: Record<string, Array<(...args: any[]) => void>> = {};
+    const mockSocket = {
+      on: (event: string, fn: (...args: any[]) => void) => {
+        if (!handlers[event]) handlers[event] = [];
+        handlers[event].push(fn);
+      },
+      off: (event: string, fn: (...args: any[]) => void) => {
+        if (handlers[event]) {
+          handlers[event] = handlers[event].filter((h) => h !== fn);
+        }
+      },
+    };
+
+    await act(async () => {
+      render(<TriggersPanel sessionId="sess-abc" viewerSocket={mockSocket} />);
+    });
+
+    // Should have registered a trigger_delivered listener
+    expect(handlers["trigger_delivered"]?.length).toBe(1);
+
+    // Clear fetch call count, then simulate a trigger_delivered event
+    fetchSpy.mockClear();
+
+    // Update response with trigger data for the refresh
+    fetchState.response = {
+      ok: true,
+      body: {
+        triggers: [{
+          triggerId: "test-1",
+          type: "session_trigger",
+          source: "child-sess-123",
+          payload: {},
+          deliverAs: "steer",
+          ts: new Date().toISOString(),
+          direction: "inbound",
+        }],
+      },
+    };
+
+    await act(async () => {
+      handlers["trigger_delivered"][0]({ triggerId: "test-1" });
+      // Allow microtasks to flush
+      await new Promise((r) => setTimeout(r, 10));
+    });
+
+    // Fetch should have been called again (refresh triggered by the event)
+    expect(fetchSpy).toHaveBeenCalled();
+  });
+
   test("catalog section can be collapsed", async () => {
     fetchState.response = { ok: true, body: { triggers: [] } };
 

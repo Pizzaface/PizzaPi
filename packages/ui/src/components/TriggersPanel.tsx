@@ -600,9 +600,13 @@ export interface TriggersPanelProps {
   sessionId: string;
   /** Trigger defs from the session's runner (via service_announce) */
   triggerDefs?: ServiceTriggerDef[];
+  /** Viewer socket — used to listen for real-time trigger_delivered events.
+   *  Typed loosely to avoid Socket.IO generic constraints at the boundary. */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  viewerSocket?: any;
 }
 
-export function TriggersPanel({ sessionId, triggerDefs = [] }: TriggersPanelProps) {
+export function TriggersPanel({ sessionId, triggerDefs = [], viewerSocket }: TriggersPanelProps) {
   const [triggers, setTriggers] = React.useState<TriggerHistoryEntry[]>([]);
   const [subscriptions, setSubscriptions] = React.useState<TriggerSubscription[]>([]);
   const [loading, setLoading] = React.useState(true);
@@ -656,11 +660,20 @@ export function TriggersPanel({ sessionId, triggerDefs = [] }: TriggersPanelProp
     void fetchTriggers(false);
   }, [fetchTriggers]);
 
-  // Auto-refresh every 10s
+  // Auto-refresh every 10s (fallback for when viewer socket is unavailable)
   React.useEffect(() => {
     const timer = setInterval(() => { void fetchTriggers(true); }, 10_000);
     return () => clearInterval(timer);
   }, [fetchTriggers]);
+
+  // Instant refresh when a trigger is delivered to this session.
+  // The server broadcasts 'trigger_delivered' to all viewers of the session.
+  React.useEffect(() => {
+    if (!viewerSocket) return;
+    const handler = () => { void fetchTriggers(true); };
+    viewerSocket.on("trigger_delivered", handler);
+    return () => { viewerSocket.off("trigger_delivered", handler); };
+  }, [viewerSocket, fetchTriggers]);
 
   const linkedSessions = React.useMemo(() => deriveLinkedSessions(triggers), [triggers]);
 

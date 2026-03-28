@@ -10,11 +10,13 @@ import { describe, test, expect, beforeEach, mock } from "bun:test";
 const mockGetSharedSession = mock((_id: string) => Promise.resolve(null as any));
 const mockGetLocalTuiSocket = mock((_id: string) => null as any);
 const mockEmitToRelaySessionVerified = mock((_id: string, _event: string, _data: any) => Promise.resolve(false));
+const mockBroadcastToSessionViewers = mock((_sid: string, _event: string, _data: any) => {});
 
 mock.module("../ws/sio-registry.js", () => ({
     getSharedSession: mockGetSharedSession,
     getLocalTuiSocket: mockGetLocalTuiSocket,
     emitToRelaySessionVerified: mockEmitToRelaySessionVerified,
+    broadcastToSessionViewers: mockBroadcastToSessionViewers,
 }));
 
 // ── Mock middleware ──────────────────────────────────────────────────────

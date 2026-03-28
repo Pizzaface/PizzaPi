@@ -5,12 +5,14 @@ import {
     getSharedSession,
     getLocalTuiSocket,
     emitToRelaySessionVerified,
+    broadcastToSessionViewers,
 } from "../../sio-registry.js";
 import {
     isChildOfParent,
     isPendingParentDelinkChild,
     refreshChildSessionsTTL,
 } from "../../sio-state.js";
+import { pushTriggerHistory } from "../../../sessions/trigger-store.js";
 import type { RelaySocket } from "./types.js";
 
 export function registerMessagingHandlers(socket: RelaySocket): void {
@@ -194,22 +196,46 @@ export function registerMessagingHandlers(socket: RelaySocket): void {
             trigger.sourceSessionId = sessionId;
         }
 
+        let delivered = false;
         const targetSocket = getLocalTuiSocket(targetSessionId);
         if (targetSocket?.connected) {
             try {
                 targetSocket.emit("session_trigger" as any, { trigger });
+                delivered = true;
             } catch {
                 socket.emit("session_message_error", {
                     targetSessionId,
                     error: "Failed to deliver trigger to target session",
                 });
             }
-        } else if (!await emitToRelaySessionVerified(targetSessionId, "session_trigger", { trigger })) {
+        } else if (await emitToRelaySessionVerified(targetSessionId, "session_trigger", { trigger })) {
+            delivered = true;
+        } else {
             // Cross-node fallback: target TUI socket is on a different server node.
             // emitToRelaySessionVerified returns false when no relay recipient is present.
             socket.emit("session_message_error", {
                 targetSessionId,
                 error: `Target session ${targetSessionId} is not connected`,
+            });
+        }
+
+        // Record in trigger history so the history API and linked-sessions
+        // derivation have data to work with. Also poke viewers so the
+        // TriggersPanel can refresh immediately instead of waiting for the
+        // next 10s poll cycle.
+        if (delivered) {
+            void Promise.resolve(pushTriggerHistory(targetSessionId, {
+                triggerId: trigger.triggerId,
+                type: trigger.type ?? "session_trigger",
+                source: trigger.sourceSessionId ?? sessionId,
+                summary: trigger.sourceSessionName,
+                payload: trigger.payload ?? {},
+                deliverAs: trigger.deliverAs ?? "steer",
+                ts: trigger.ts ?? new Date().toISOString(),
+                direction: "inbound",
+            })).catch(() => {});
+            broadcastToSessionViewers(targetSessionId, "trigger_delivered", {
+                triggerId: trigger.triggerId,
             });
         }
     });

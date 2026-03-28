@@ -29,7 +29,7 @@
  */
 
 import { requireSession, validateApiKey } from "../middleware.js";
-import { getSharedSession, getLocalTuiSocket } from "../ws/sio-registry.js";
+import { getSharedSession, getLocalTuiSocket, broadcastToSessionViewers } from "../ws/sio-registry.js";
 import { emitToRelaySessionVerified } from "../ws/sio-registry.js";
 import { getRunnerServices } from "../ws/sio-registry/runners.js";
 import type { RouteHandler } from "./types.js";
@@ -153,6 +153,7 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
                 targetSocket.emit("session_trigger", { trigger });
                 log.info(`External trigger ${triggerId} delivered to session ${sessionId}`);
                 void Promise.resolve(pushTriggerHistory(sessionId, historyEntry)).catch(() => {});
+                broadcastToSessionViewers(sessionId, "trigger_delivered", { triggerId });
                 return Response.json({ ok: true, triggerId });
             } catch (err) {
                 log.error(`Failed to deliver trigger ${triggerId} to session ${sessionId}:`, err);
@@ -165,6 +166,7 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
         if (delivered) {
             log.info(`External trigger ${triggerId} delivered cross-node to session ${sessionId}`);
             void Promise.resolve(pushTriggerHistory(sessionId, historyEntry)).catch(() => {});
+            broadcastToSessionViewers(sessionId, "trigger_delivered", { triggerId });
             return Response.json({ ok: true, triggerId });
         }
 
@@ -390,6 +392,7 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
                 try {
                     localSocket.emit("session_trigger", { trigger: { ...trigger, targetSessionId } });
                     void Promise.resolve(pushTriggerHistory(targetSessionId, historyEntry)).catch(() => {});
+                    broadcastToSessionViewers(targetSessionId, "trigger_delivered", { triggerId: historyEntry.triggerId });
                     delivered++;
                     continue;
                 } catch {
@@ -401,6 +404,7 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
             );
             if (crossNode) {
                 void Promise.resolve(pushTriggerHistory(targetSessionId, historyEntry)).catch(() => {});
+                broadcastToSessionViewers(targetSessionId, "trigger_delivered", { triggerId: historyEntry.triggerId });
                 delivered++;
             }
         }

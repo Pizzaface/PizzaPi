@@ -3797,9 +3797,9 @@ export function App() {
     onClose: () => setShowTriggers(false),
     onDragStart: (e) => startPanelDragWith(e, handleTriggersPositionChange),
     content: (
-      <TriggersPanel sessionId={activeSessionId} triggerDefs={runnerTriggerDefs} />
+      <TriggersPanel sessionId={activeSessionId} triggerDefs={runnerTriggerDefs} viewerSocket={viewerSocket} />
     ),
-  } : null, [showTriggers, activeSessionId, runnerTriggerDefs, startPanelDragWith, handleTriggersPositionChange, setShowTriggers]);
+  } : null, [showTriggers, activeSessionId, runnerTriggerDefs, viewerSocket, startPanelDragWith, handleTriggersPositionChange, setShowTriggers]);
 
   const servicePanelTabs = React.useMemo<CombinedPanelTab[]>(() => {
     // Use tunnelSessionId (runner-stable) instead of activeSessionId so

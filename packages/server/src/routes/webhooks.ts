@@ -19,7 +19,7 @@
  */
 
 import { requireSession } from "../middleware.js";
-import { getSharedSession, getLocalTuiSocket, emitToRelaySessionVerified } from "../ws/sio-registry.js";
+import { getSharedSession, getLocalTuiSocket, emitToRelaySessionVerified, broadcastToSessionViewers } from "../ws/sio-registry.js";
 import type { RouteHandler } from "./types.js";
 import { randomUUID } from "crypto";
 import { createHmac, timingSafeEqual } from "crypto";
@@ -199,6 +199,7 @@ async function fireWebhookTrigger(
             targetSocket.emit("session_trigger", { trigger });
             log.info(`Webhook trigger ${triggerId} delivered to session ${targetSessionId}`);
             void Promise.resolve(pushTriggerHistory(targetSessionId, historyEntry)).catch(() => {});
+            broadcastToSessionViewers(targetSessionId, "trigger_delivered", { triggerId });
             return Response.json({ ok: true, triggerId });
         } catch (err) {
             log.error(`Failed to deliver webhook trigger ${triggerId}:`, err);
@@ -211,6 +212,7 @@ async function fireWebhookTrigger(
     if (delivered) {
         log.info(`Webhook trigger ${triggerId} delivered cross-node to session ${targetSessionId}`);
         void Promise.resolve(pushTriggerHistory(targetSessionId, historyEntry)).catch(() => {});
+        broadcastToSessionViewers(targetSessionId, "trigger_delivered", { triggerId });
         return Response.json({ ok: true, triggerId });
     }
 
