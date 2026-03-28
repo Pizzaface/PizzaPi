@@ -3718,7 +3718,7 @@ export function App() {
 
   // Runner service panels — dynamically discovered
   const { services: availableServices, panels: dynamicPanels, triggerDefs: runnerTriggerDefs } = useRunnerServices(viewerSocket);
-  const triggerCount = useTriggerCount(activeSessionId, viewerSocket);
+  const triggerCounts = useTriggerCount(activeSessionId, viewerSocket);
   const { activePanelIds: activeServicePanels, togglePanel: toggleServicePanel, closePanelById: closeServicePanelById, closeAllPanels: closeAllServicePanels, getPanelPosition: getServicePanelPosition, setPanelPosition: setServicePanelPosition, setEphemeralPanelPosition: setEphemeralServicePanelPosition } = useServicePanelState();
 
   // Auto-open Tunnel panel when a non-pinned tunnel is registered.
@@ -4374,7 +4374,7 @@ export function App() {
                         onToggleTriggers={() => setShowTriggers((v) => !v)}
                         showTriggersButton={!!activeSessionId}
                         isTriggersOpen={showTriggers}
-                        triggerCount={triggerCount}
+                        triggerCount={triggerCounts}
                         extraHeaderButtons={
                           <ServicePanelButtons
                             availableServices={availableServices}

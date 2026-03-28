@@ -76,7 +76,8 @@ import { PlanModePanel, type PlanModeAnswer } from "@/components/ai-elements/pla
 import { formatAnswersForAgent, type QuestionDisplayMode } from "@/lib/ask-user-questions";
 import { exportToMarkdown } from "@/lib/export-markdown";
 import { dismissNotificationsForSession } from "@/lib/push";
-import { AlertTriangleIcon, BookOpen, Bot, Check, CheckCircle2, ChevronsUpDown, Circle, CircleDashed, Copy, Download, Loader2, MessageSquare, MoreHorizontal, OctagonX, PaperclipIcon, Pencil, Plus, Puzzle, ShieldAlert, Zap, Clock, X, Trash2, TerminalIcon, XCircle, FolderTree, GitBranch } from "lucide-react";
+import { AlertTriangleIcon, BookOpen, Bot, Check, CheckCircle2, ChevronsUpDown, Circle, CircleDashed, Copy, Download, Loader2, MessageSquare, MoreHorizontal, OctagonX, PaperclipIcon, Pencil, Plus, Puzzle, ShieldAlert, Zap, Clock, X, Trash2, TerminalIcon, XCircle, FolderTree, GitBranch, Radio } from "lucide-react";
+import type { TriggerCounts } from "@/hooks/useTriggerCount";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -164,8 +165,8 @@ export interface SessionViewerProps {
   showTriggersButton?: boolean;
   /** Whether the triggers panel is currently open (used for mobile overflow menu state indicator) */
   isTriggersOpen?: boolean;
-  /** Number of incomplete/active triggers (for badge display) */
-  triggerCount?: number;
+  /** Trigger counts — pending (incomplete) and subscriptions */
+  triggerCount?: TriggerCounts;
   /** Extra buttons to render in the header bar (e.g. service panel toggles) */
   extraHeaderButtons?: React.ReactNode;
   /** Current agent todo list */
@@ -578,7 +579,7 @@ interface HeaderOverflowMenuProps {
   showTriggersButton?: boolean;
   onToggleTriggers?: () => void;
   isTriggersOpen?: boolean;
-  triggerCount?: number;
+  triggerCount?: TriggerCounts;
   onDuplicateSession?: () => void;
   messages: RelayMessage[];
   sessionId: string | null;
@@ -649,9 +650,14 @@ function HeaderOverflowMenu({ showTerminalButton, onToggleTerminal, isTerminalOp
           <DropdownMenuItem onSelect={onToggleTriggers}>
             <Zap className="size-3.5 mr-2 shrink-0" />
             Triggers
-            {(triggerCount ?? 0) > 0 && (
+            {(triggerCount?.pending ?? 0) > 0 && (
               <span className="ml-1 flex items-center justify-center min-w-[16px] h-4 rounded-full bg-amber-500 text-[10px] font-bold text-black px-1 leading-none">
-                {triggerCount! > 9 ? "9+" : triggerCount}
+                {triggerCount!.pending > 9 ? "9+" : triggerCount!.pending}
+              </span>
+            )}
+            {(triggerCount?.subscriptions ?? 0) > 0 && (
+              <span className="ml-1 flex items-center justify-center min-w-[16px] h-4 rounded-full bg-blue-500 text-[10px] font-bold text-white px-1 leading-none">
+                {triggerCount!.subscriptions > 9 ? "9+" : triggerCount!.subscriptions}
               </span>
             )}
             {isTriggersOpen && <Check className="size-3 ml-auto text-primary" />}
@@ -1793,6 +1799,41 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                   </Button>
                 </TooltipTrigger>
                 <TooltipContent>Git</TooltipContent>
+              </Tooltip>
+            )}
+            {showTriggersButton && onToggleTriggers && (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    className="hidden md:inline-flex h-7 relative"
+                    onClick={onToggleTriggers}
+                    size="icon"
+                    type="button"
+                    variant="outline"
+                    aria-label="Toggle triggers panel"
+                  >
+                    <Zap className="size-3.5" />
+                    {((triggerCount?.pending ?? 0) > 0 || (triggerCount?.subscriptions ?? 0) > 0) && (
+                      <span className="absolute -top-1.5 -right-1.5 flex items-center gap-px">
+                        {(triggerCount?.pending ?? 0) > 0 && (
+                          <span className="flex items-center justify-center min-w-[14px] h-3.5 rounded-full bg-amber-500 text-[9px] font-bold text-black px-0.5 leading-none">
+                            {triggerCount!.pending > 9 ? "9+" : triggerCount!.pending}
+                          </span>
+                        )}
+                        {(triggerCount?.subscriptions ?? 0) > 0 && (
+                          <span className="flex items-center justify-center min-w-[14px] h-3.5 rounded-full bg-blue-500 text-[9px] font-bold text-white px-0.5 leading-none">
+                            {triggerCount!.subscriptions > 9 ? "9+" : triggerCount!.subscriptions}
+                          </span>
+                        )}
+                      </span>
+                    )}
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>
+                  Triggers
+                  {(triggerCount?.pending ?? 0) > 0 && ` • ${triggerCount!.pending} pending`}
+                  {(triggerCount?.subscriptions ?? 0) > 0 && ` • ${triggerCount!.subscriptions} subscribed`}
+                </TooltipContent>
               </Tooltip>
             )}
             {extraHeaderButtons}
