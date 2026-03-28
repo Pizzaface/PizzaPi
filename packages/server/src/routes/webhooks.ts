@@ -83,6 +83,7 @@ async function spawnSessionForWebhook(
     runnerId: string,
     cwd: string | null,
     prompt: string | null,
+    model: { provider: string; id: string } | null,
 ): Promise<{ sessionId: string } | Response> {
     const runnerSocket = getLocalRunnerSocket(runnerId);
     if (!runnerSocket) {
@@ -100,6 +101,7 @@ async function spawnSessionForWebhook(
             sessionId,
             ...(cwd ? { cwd } : {}),
             ...(prompt ? { prompt } : {}),
+            ...(model ? { model } : {}),
         });
     } catch {
         return Response.json(
@@ -269,6 +271,16 @@ export const handleWebhooksRoute: RouteHandler = async (req, url) => {
                 ? body.prompt.trim()
                 : null;
 
+        // Validate model if provided
+        let model: { provider: string; id: string } | null = null;
+        if (body.model && typeof body.model === "object") {
+            const mp = (body.model as any).provider;
+            const mi = (body.model as any).id;
+            if (typeof mp === "string" && mp.trim() && typeof mi === "string" && mi.trim()) {
+                model = { provider: mp.trim(), id: mi.trim() };
+            }
+        }
+
         const webhook = await createWebhook({
             userId: identity.userId,
             name: name.trim(),
@@ -277,6 +289,7 @@ export const handleWebhooksRoute: RouteHandler = async (req, url) => {
             runnerId,
             cwd,
             prompt,
+            model,
         });
 
         return Response.json({ webhook }, { status: 201 });
@@ -359,6 +372,17 @@ export const handleWebhooksRoute: RouteHandler = async (req, url) => {
         }
         if ("prompt" in body) {
             updates.prompt = typeof body.prompt === "string" && body.prompt.trim() ? body.prompt.trim() : null;
+        }
+        if ("model" in body) {
+            if (body.model === null) {
+                updates.model = null;
+            } else if (body.model && typeof body.model === "object") {
+                const mp = (body.model as any).provider;
+                const mi = (body.model as any).id;
+                if (typeof mp === "string" && mp.trim() && typeof mi === "string" && mi.trim()) {
+                    updates.model = { provider: mp.trim(), id: mi.trim() };
+                }
+            }
         }
 
         const updated = await updateWebhook(webhookId, identity.userId, updates as any);
@@ -450,6 +474,7 @@ export const handleWebhooksRoute: RouteHandler = async (req, url) => {
             webhook.runnerId,
             webhook.cwd,
             webhook.prompt,
+            webhook.model,
         );
         if (spawnResult instanceof Response) return spawnResult;
 

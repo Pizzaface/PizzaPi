@@ -30,6 +30,8 @@ export interface Webhook {
     cwd: string | null;
     /** Custom prompt sent to the spawned session. */
     prompt: string | null;
+    /** Model to use for spawned sessions (provider + model ID). */
+    model: { provider: string; id: string } | null;
     enabled: boolean;
     createdAt: string;
     updatedAt: string;
@@ -43,6 +45,7 @@ export interface CreateWebhookInput {
     runnerId?: string | null;
     cwd?: string | null;
     prompt?: string | null;
+    model?: { provider: string; id: string } | null;
 }
 
 export interface UpdateWebhookInput {
@@ -52,6 +55,7 @@ export interface UpdateWebhookInput {
     runnerId?: string | null;
     cwd?: string | null;
     prompt?: string | null;
+    model?: { provider: string; id: string } | null;
     enabled?: boolean;
 }
 
@@ -72,6 +76,8 @@ export async function ensureWebhookTable(): Promise<void> {
         .addColumn("runnerId", "text")
         .addColumn("cwd", "text")
         .addColumn("prompt", "text")
+        .addColumn("modelProvider", "text")
+        .addColumn("modelId", "text")
         .addColumn("enabled", "integer", (col) => col.notNull().defaultTo(1))
         .addColumn("createdAt", "text", (col) => col.notNull())
         .addColumn("updatedAt", "text", (col) => col.notNull())
@@ -92,6 +98,8 @@ export async function ensureWebhookTable(): Promise<void> {
     try { await db.schema.alterTable("webhook").addColumn("runnerId", "text").execute(); log.info("Added 'runnerId' column."); } catch { /* already exists */ }
     try { await db.schema.alterTable("webhook").addColumn("cwd", "text").execute(); log.info("Added 'cwd' column."); } catch { /* already exists */ }
     try { await db.schema.alterTable("webhook").addColumn("prompt", "text").execute(); log.info("Added 'prompt' column."); } catch { /* already exists */ }
+    try { await db.schema.alterTable("webhook").addColumn("modelProvider", "text").execute(); log.info("Added 'modelProvider' column."); } catch { /* already exists */ }
+    try { await db.schema.alterTable("webhook").addColumn("modelId", "text").execute(); log.info("Added 'modelId' column."); } catch { /* already exists */ }
     try { await db.schema.alterTable("webhook").dropColumn("targetSessionId").execute(); log.info("Dropped legacy 'targetSessionId' column."); } catch { /* already gone */ }
 
     log.info("Webhook table ready.");
@@ -113,6 +121,8 @@ function rowToWebhook(row: {
     runnerId: string | null;
     cwd: string | null;
     prompt: string | null;
+    modelProvider: string | null;
+    modelId: string | null;
     enabled: number;
     createdAt: string;
     updatedAt: string;
@@ -135,6 +145,9 @@ function rowToWebhook(row: {
         runnerId: row.runnerId ?? null,
         cwd: row.cwd ?? null,
         prompt: row.prompt ?? null,
+        model: row.modelProvider && row.modelId
+            ? { provider: row.modelProvider, id: row.modelId }
+            : null,
         enabled: row.enabled === 1,
         createdAt: row.createdAt,
         updatedAt: row.updatedAt,
@@ -160,6 +173,8 @@ export async function createWebhook(input: CreateWebhookInput): Promise<Webhook>
             runnerId: input.runnerId ?? null,
             cwd: input.cwd ?? null,
             prompt: input.prompt ?? null,
+            modelProvider: input.model?.provider ?? null,
+            modelId: input.model?.id ?? null,
             enabled: 1,
             createdAt: now,
             updatedAt: now,
@@ -176,6 +191,7 @@ export async function createWebhook(input: CreateWebhookInput): Promise<Webhook>
         runnerId: input.runnerId ?? null,
         cwd: input.cwd ?? null,
         prompt: input.prompt ?? null,
+        model: input.model ?? null,
         enabled: true,
         createdAt: now,
         updatedAt: now,
@@ -220,6 +236,10 @@ export async function updateWebhook(
     if (input.runnerId !== undefined) updates.runnerId = input.runnerId;
     if (input.cwd !== undefined) updates.cwd = input.cwd;
     if (input.prompt !== undefined) updates.prompt = input.prompt;
+    if (input.model !== undefined) {
+        updates.modelProvider = input.model?.provider ?? null;
+        updates.modelId = input.model?.id ?? null;
+    }
 
     const result = await getKysely()
         .updateTable("webhook")

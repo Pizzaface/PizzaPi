@@ -28,6 +28,7 @@ import {
     Filter,
     MessageSquare,
     Loader2,
+    Cpu,
 } from "lucide-react";
 
 // ---------------------------------------------------------------------------
@@ -44,6 +45,7 @@ interface WebhookData {
     runnerId: string | null;
     cwd: string | null;
     prompt: string | null;
+    model: { provider: string; id: string } | null;
     enabled: boolean;
     createdAt: string;
     updatedAt: string;
@@ -66,6 +68,7 @@ async function createWebhookApi(input: {
     runnerId?: string | null;
     cwd?: string | null;
     prompt?: string | null;
+    model?: { provider: string; id: string } | null;
     eventFilter?: string[] | null;
 }): Promise<WebhookData> {
     const res = await fetch("/api/webhooks", {
@@ -276,6 +279,12 @@ function WebhookRow({
                                 {webhook.cwd}
                             </span>
                         )}
+                        {webhook.model && (
+                            <span className="flex items-center gap-0.5 font-mono truncate max-w-48">
+                                <Cpu className="h-2.5 w-2.5 shrink-0" />
+                                {webhook.model.id}
+                            </span>
+                        )}
                         {webhook.prompt && (
                             <span className="flex items-center gap-0.5 truncate max-w-48">
                                 <MessageSquare className="h-2.5 w-2.5 shrink-0" />
@@ -343,6 +352,18 @@ function WebhookRow({
                             <pre className="text-[11px] font-mono bg-muted/40 px-2 py-1.5 rounded border border-border/30 whitespace-pre-wrap text-muted-foreground leading-relaxed">
                                 {webhook.prompt}
                             </pre>
+                        </div>
+                    )}
+
+                    {/* Model */}
+                    {webhook.model && (
+                        <div className="space-y-1">
+                            <label className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">
+                                Model
+                            </label>
+                            <code className="block text-[11px] font-mono bg-muted/40 px-2 py-1 rounded border border-border/30">
+                                {webhook.model.provider}/{webhook.model.id}
+                            </code>
                         </div>
                     )}
 
@@ -421,6 +442,8 @@ function CreateWebhookForm({
     const [source, setSource] = useState("custom");
     const [cwd, setCwd] = useState("");
     const [prompt, setPrompt] = useState("");
+    const [modelProvider, setModelProvider] = useState("");
+    const [modelId, setModelId] = useState("");
     const [eventFilter, setEventFilter] = useState("");
     const [creating, setCreating] = useState(false);
     const [error, setError] = useState<string | null>(null);
@@ -477,6 +500,9 @@ function CreateWebhookForm({
             if (runnerId) input.runnerId = runnerId;
             if (cwd.trim()) input.cwd = cwd.trim();
             if (prompt.trim()) input.prompt = prompt.trim();
+            if (modelProvider.trim() && modelId.trim()) {
+                input.model = { provider: modelProvider.trim(), id: modelId.trim() };
+            }
             const filterItems = eventFilter
                 .split(",")
                 .map((s) => s.trim())
@@ -491,6 +517,8 @@ function CreateWebhookForm({
             setSource("custom");
             setCwd("");
             setPrompt("");
+            setModelProvider("");
+            setModelId("");
             setEventFilter("");
             setOpen(false);
         } catch (err) {
@@ -655,6 +683,28 @@ function CreateWebhookForm({
                         "resize-y",
                     )}
                 />
+            </div>
+
+            {/* Model */}
+            <div className="space-y-1">
+                <label className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">
+                    Model{" "}
+                    <span className="font-normal normal-case">(optional — uses runner default if empty)</span>
+                </label>
+                <div className="grid grid-cols-2 gap-2">
+                    <Input
+                        value={modelProvider}
+                        onChange={(e) => setModelProvider(e.target.value)}
+                        placeholder="e.g. anthropic"
+                        className="h-8 text-xs font-mono"
+                    />
+                    <Input
+                        value={modelId}
+                        onChange={(e) => setModelId(e.target.value)}
+                        placeholder="e.g. claude-sonnet-4-20250514"
+                        className="h-8 text-xs font-mono"
+                    />
+                </div>
             </div>
 
             {/* Event filter */}

@@ -148,6 +148,8 @@ export interface WebhookTable {
     runnerId: string | null;
     cwd: string | null;
     prompt: string | null;
+    modelProvider: string | null;
+    modelId: string | null;
     enabled: number;
     createdAt: string;
     updatedAt: string;
