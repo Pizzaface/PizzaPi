@@ -11,6 +11,13 @@ import type { ExtensionFactory } from "@mariozechner/pi-coding-agent";
 import { Text } from "@mariozechner/pi-tui";
 import type { ConversationTrigger } from "./types.js";
 import { getRelaySocket, getRelaySessionId } from "../remote.js";
+import {
+    fireTrigger,
+    getAvailableTriggers,
+    subscribeTrigger,
+    listTriggerSubscriptions,
+    unsubscribeTrigger,
+} from "../trigger-client.js";
 
 function shortId(id: string, len = 8): string {
     return id.length > len ? id.slice(-len) : id;
@@ -299,6 +306,98 @@ export const triggersExtension: ExtensionFactory = (pi) => {
         },
     });
 
+    // ── fire_trigger ──────────────────────────────────────────────────────
+    pi.registerTool({
+        name: "fire_trigger",
+        label: "Fire Trigger",
+        description:
+            "Fire a trigger into any session (not just children). Uses the HTTP Trigger API " +
+            "with API key auth, with Socket.IO fallback for offline/local mode. " +
+            "This lets agents fire triggers into peer sessions they are not directly linked to.",
+        parameters: {
+            type: "object",
+            properties: {
+                sessionId: {
+                    type: "string",
+                    description: "Target session ID to fire the trigger into",
+                },
+                type: {
+                    type: "string",
+                    description: "Trigger type — e.g. 'service', 'webhook', 'godmother:idea_started'",
+                },
+                payload: {
+                    type: "object",
+                    description: "Arbitrary payload object delivered to the session",
+                },
+                source: {
+                    type: "string",
+                    description: "Optional source identifier shown in trigger history (e.g. 'godmother', 'github')",
+                },
+                deliverAs: {
+                    type: "string",
+                    enum: ["steer", "followUp"],
+                    description: "How to deliver: 'steer' (default) interrupts the current turn; 'followUp' queues after the turn ends",
+                },
+            },
+            required: ["sessionId", "type", "payload"],
+        } as any,
+        async execute(_toolCallId, rawParams) {
+            const params = rawParams as {
+                sessionId: string;
+                type: string;
+                payload: Record<string, unknown>;
+                source?: string;
+                deliverAs?: "steer" | "followUp";
+            };
+
+            const result = await fireTrigger(params.sessionId, {
+                type: params.type,
+                payload: params.payload,
+                source: params.source,
+                deliverAs: params.deliverAs,
+            });
+
+            if (result.ok) {
+                return {
+                    content: [{
+                        type: "text" as const,
+                        text: `Trigger ${result.triggerId} fired to session ${params.sessionId} via ${result.method}`,
+                    }],
+                    details: null as any,
+                };
+            }
+            return {
+                content: [{
+                    type: "text" as const,
+                    text: `Error firing trigger to session ${params.sessionId}: ${result.error ?? "Unknown error"}`,
+                }],
+                details: null as any,
+            };
+        },
+        renderCall: (args: any, theme: any) => {
+            const sid = shortId(args.sessionId ?? "", 8);
+            const type = preview(args.type ?? "?", 30);
+            const via = args.deliverAs === "followUp" ? "followUp" : "steer";
+            return new Text(
+                theme.fg("accent", "⚡") + " " +
+                theme.fg("muted", "fire ") +
+                theme.fg("dim", type) +
+                theme.fg("muted", " → ") +
+                theme.fg("dim", sid) +
+                theme.fg("muted", ` [${via}]`),
+                0, 0
+            );
+        },
+        renderResult: (result: any, _opts: any, theme: any) => {
+            const text: string = result?.content?.[0]?.text ?? "";
+            if (text.startsWith("Error")) {
+                return new Text(theme.fg("error", "✗ ") + theme.fg("muted", preview(text, 60)), 0, 0);
+            }
+            const method = text.includes("http") ? "HTTP" : "Socket.IO";
+            return new Text(theme.fg("success", "✓ ") + theme.fg("dim", `trigger fired via ${method}`), 0, 0);
+        },
+    });
+
     // ── escalate_trigger ──────────────────────────────────────────────────
     pi.registerTool({
         name: "escalate_trigger",
@@ -357,6 +456,246 @@ export const triggersExtension: ExtensionFactory = (pi) => {
                 return new Text(theme.fg("error", "✗ ") + theme.fg("muted", preview(text, 60)), 0, 0);
             }
             return new Text(theme.fg("warning", "↑ ") + theme.fg("dim", "trigger escalated to human"), 0, 0);
+        },
+    });
+
+    // ── list_available_triggers ───────────────────────────────────────────
+    pi.registerTool({
+        name: "list_available_triggers",
+        label: "List Available Triggers",
+        description:
+            "List trigger types available on this session's runner. " +
+            "Shows all triggers declared by runner services that can be subscribed to. " +
+            "Returns type, label, and optional description for each trigger.",
+        parameters: {
+            type: "object",
+            properties: {
+                sessionId: {
+                    type: "string",
+                    description: "Session ID to query. Defaults to the current session if omitted.",
+                },
+            },
+            required: [],
+        } as any,
+        async execute(_toolCallId, rawParams) {
+            const params = rawParams as { sessionId?: string };
+            const targetId = params.sessionId ?? getOwnSessionId() ?? "";
+            if (!targetId) {
+                return { content: [{ type: "text" as const, text: "Error: Could not determine session ID." }], details: null as any };
+            }
+
+            const defs = await getAvailableTriggers(targetId);
+            if (defs.length === 0) {
+                return {
+                    content: [{ type: "text" as const, text: "No trigger types available. The runner may not have any services with declared triggers." }],
+                    details: null as any,
+                };
+            }
+
+            const lines = defs.map((d) =>
+                `• ${d.type} — ${d.label}${d.description ? `\n  ${d.description}` : ""}`,
+            );
+            return {
+                content: [{ type: "text" as const, text: `Available triggers (${defs.length}):\n${lines.join("\n")}` }],
+                details: null as any,
+            };
+        },
+        renderCall: (args: any, theme: any) => {
+            const sid = args.sessionId ? shortId(args.sessionId, 8) : "self";
+            return new Text(
+                theme.fg("accent", "⚡") + " " +
+                theme.fg("muted", "list triggers for ") +
+                theme.fg("dim", sid),
+                0, 0,
+            );
+        },
+        renderResult: (result: any, _opts: any, theme: any) => {
+            const text: string = result?.content?.[0]?.text ?? "";
+            if (text.startsWith("Error") || text.startsWith("No trigger")) {
+                return new Text(theme.fg("muted", preview(text, 60)), 0, 0);
+            }
+            const count = text.match(/Available triggers \((\d+)\)/)?.[1] ?? "?";
+            return new Text(theme.fg("success", "✓ ") + theme.fg("dim", `${count} trigger(s) available`), 0, 0);
+        },
+    });
+
+    // ── subscribe_trigger ─────────────────────────────────────────────────
+    pi.registerTool({
+        name: "subscribe_trigger",
+        label: "Subscribe to Trigger",
+        description:
+            "Subscribe a session to a trigger type from a runner service. " +
+            "When the service fires that trigger type, it will be delivered to the subscribed session. " +
+            "The trigger type must be declared by a service on the session's runner " +
+            "(use list_available_triggers to discover valid types). " +
+            "To subscribe a child session, pass its sessionId.",
+        parameters: {
+            type: "object",
+            properties: {
+                triggerType: {
+                    type: "string",
+                    description: "Trigger type to subscribe to, e.g. 'godmother:idea_moved'",
+                },
+                sessionId: {
+                    type: "string",
+                    description: "Session ID to subscribe. Defaults to the current session if omitted.",
+                },
+            },
+            required: ["triggerType"],
+        } as any,
+        async execute(_toolCallId, rawParams) {
+            const params = rawParams as { triggerType: string; sessionId?: string };
+            const targetId = params.sessionId ?? getOwnSessionId() ?? "";
+            if (!targetId) {
+                return { content: [{ type: "text" as const, text: "Error: Could not determine session ID." }], details: null as any };
+            }
+
+            const result = await subscribeTrigger(targetId, params.triggerType);
+
+            if (result.ok) {
+                return {
+                    content: [{ type: "text" as const, text: `Subscribed to '${result.triggerType}' on runner ${result.runnerId}` }],
+                    details: null as any,
+                };
+            }
+            return {
+                content: [{ type: "text" as const, text: `Error subscribing to '${params.triggerType}': ${result.error}` }],
+                details: null as any,
+            };
+        },
+        renderCall: (args: any, theme: any) => {
+            const type = preview(args.triggerType ?? "?", 30);
+            const sid = args.sessionId ? shortId(args.sessionId, 8) : "self";
+            return new Text(
+                theme.fg("success", "+") + " " +
+                theme.fg("muted", "subscribe ") +
+                theme.fg("dim", sid) +
+                theme.fg("muted", " → ") +
+                theme.fg("dim", type),
+                0, 0,
+            );
+        },
+        renderResult: (result: any, _opts: any, theme: any) => {
+            const text: string = result?.content?.[0]?.text ?? "";
+            if (text.startsWith("Error")) {
+                return new Text(theme.fg("error", "✗ ") + theme.fg("muted", preview(text, 60)), 0, 0);
+            }
+            return new Text(theme.fg("success", "✓ ") + theme.fg("dim", "subscribed"), 0, 0);
+        },
+    });
+
+    // ── list_trigger_subscriptions ────────────────────────────────────────
+    pi.registerTool({
+        name: "list_trigger_subscriptions",
+        label: "List Trigger Subscriptions",
+        description: "List active trigger subscriptions for a session.",
+        parameters: {
+            type: "object",
+            properties: {
+                sessionId: {
+                    type: "string",
+                    description: "Session ID to query. Defaults to the current session if omitted.",
+                },
+            },
+            required: [],
+        } as any,
+        async execute(_toolCallId, rawParams) {
+            const params = rawParams as { sessionId?: string };
+            const targetId = params.sessionId ?? getOwnSessionId() ?? "";
+            if (!targetId) {
+                return { content: [{ type: "text" as const, text: "Error: Could not determine session ID." }], details: null as any };
+            }
+
+            const subs = await listTriggerSubscriptions(targetId);
+            if (subs.length === 0) {
+                return {
+                    content: [{ type: "text" as const, text: "No active trigger subscriptions." }],
+                    details: null as any,
+                };
+            }
+
+            const lines = subs.map((s) => `• ${s.triggerType} (runner: ${s.runnerId})`);
+            return {
+                content: [{ type: "text" as const, text: `Active subscriptions (${subs.length}):\n${lines.join("\n")}` }],
+                details: null as any,
+            };
+        },
+        renderCall: (args: any, theme: any) => {
+            const sid = args.sessionId ? shortId(args.sessionId, 8) : "self";
+            return new Text(
+                theme.fg("accent", "⚡") + " " +
+                theme.fg("muted", "list subscriptions for ") +
+                theme.fg("dim", sid),
+                0, 0,
+            );
+        },
+        renderResult: (result: any, _opts: any, theme: any) => {
+            const text: string = result?.content?.[0]?.text ?? "";
+            if (text.startsWith("Error") || text.startsWith("No active")) {
+                return new Text(theme.fg("muted", preview(text, 60)), 0, 0);
+            }
+            const count = text.match(/Active subscriptions \((\d+)\)/)?.[1] ?? "?";
+            return new Text(theme.fg("success", "✓ ") + theme.fg("dim", `${count} subscription(s)`), 0, 0);
+        },
+    });
+
+    // ── unsubscribe_trigger ───────────────────────────────────────────────
+    pi.registerTool({
+        name: "unsubscribe_trigger",
+        label: "Unsubscribe from Trigger",
+        description: "Remove a trigger subscription from a session.",
+        parameters: {
+            type: "object",
+            properties: {
+                triggerType: {
+                    type: "string",
+                    description: "Trigger type to unsubscribe from",
+                },
+                sessionId: {
+                    type: "string",
+                    description: "Session ID to unsubscribe. Defaults to the current session if omitted.",
+                },
+            },
+            required: ["triggerType"],
+        } as any,
+        async execute(_toolCallId, rawParams) {
+            const params = rawParams as { triggerType: string; sessionId?: string };
+            const targetId = params.sessionId ?? getOwnSessionId() ?? "";
+            if (!targetId) {
+                return { content: [{ type: "text" as const, text: "Error: Could not determine session ID." }], details: null as any };
+            }
+
+            const result = await unsubscribeTrigger(targetId, params.triggerType);
+
+            if (result.ok) {
+                return {
+                    content: [{ type: "text" as const, text: `Unsubscribed from '${result.triggerType}'` }],
+                    details: null as any,
+                };
+            }
+            return {
+                content: [{ type: "text" as const, text: `Error unsubscribing from '${params.triggerType}': ${result.error}` }],
+                details: null as any,
+            };
+        },
+        renderCall: (args: any, theme: any) => {
+            const type = preview(args.triggerType ?? "?", 30);
+            const sid = args.sessionId ? shortId(args.sessionId, 8) : "self";
+            return new Text(
+                theme.fg("error", "−") + " " +
+                theme.fg("muted", "unsubscribe ") +
+                theme.fg("dim", sid) +
+                theme.fg("muted", " ← ") +
+                theme.fg("dim", type),
+                0, 0,
+            );
+        },
+        renderResult: (result: any, _opts: any, theme: any) => {
+            const text: string = result?.content?.[0]?.text ?? "";
+            if (text.startsWith("Error")) {
+                return new Text(theme.fg("error", "✗ ") + theme.fg("muted", preview(text, 60)), 0, 0);
+            }
+            return new Text(theme.fg("success", "✓ ") + theme.fg("dim", "unsubscribed"), 0, 0);
         },
     });
 };

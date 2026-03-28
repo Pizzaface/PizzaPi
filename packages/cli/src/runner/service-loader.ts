@@ -17,6 +17,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, extname, join, resolve } from "node:path";
 import type { ServiceHandler } from "./service-handler.js";
+import type { ServiceTriggerDef } from "@pizzapi/protocol";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -29,6 +30,8 @@ export interface ServiceManifest {
     panel?: {
         dir?: string;
     };
+    /** Trigger types this service can emit. Declared statically in manifest.json. */
+    triggers?: ServiceTriggerDef[];
 }
 
 export interface ServicePluginResult {
@@ -347,6 +350,26 @@ function parseServiceManifest(manifestPath: string): ServiceManifest {
     if (typeof raw.label !== "string" || !raw.label) {
         throw new Error('manifest.json missing required "label" field');
     }
+
+    // Parse triggers[] — each entry must have a string `type` and `label`.
+    // Invalid entries are skipped (defensive; bad manifests shouldn't crash the daemon).
+    const triggers: ServiceTriggerDef[] = [];
+    if (Array.isArray(raw.triggers)) {
+        for (const t of raw.triggers) {
+            if (!t || typeof t !== "object") continue;
+            if (typeof t.type !== "string" || !t.type) continue;
+            if (typeof t.label !== "string" || !t.label) continue;
+            triggers.push({
+                type: t.type,
+                label: t.label,
+                description: typeof t.description === "string" ? t.description : undefined,
+                schema: t.schema && typeof t.schema === "object" && !Array.isArray(t.schema)
+                    ? t.schema as Record<string, unknown>
+                    : undefined,
+            });
+        }
+    }
+
     return {
         id: raw.id,
         label: raw.label,
@@ -355,6 +378,7 @@ function parseServiceManifest(manifestPath: string): ServiceManifest {
         panel: raw.panel && typeof raw.panel === "object"
             ? { dir: typeof raw.panel.dir === "string" ? raw.panel.dir : undefined }
             : undefined,
+        triggers: triggers.length > 0 ? triggers : undefined,
     };
 }
 
