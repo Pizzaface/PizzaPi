@@ -3,6 +3,7 @@ import * as ReactDOM from "react-dom";
 import { cn } from "@/lib/utils";
 import { GripHorizontal, X } from "lucide-react";
 import type { PanelPosition } from "@/hooks/usePanelLayout";
+import { computePositionDropdownCoords } from "../utils/panelLayoutHelpers";
 
 // ── 9-zone grid definition ───────────────────────────────────────────────────
 // Row 0 = top, Row 1 = middle (center-middle is main content), Row 2 = bottom.
@@ -79,16 +80,18 @@ const PositionDropdown = React.forwardRef<
   React.useLayoutEffect(() => {
     const el = containerRef.current;
     if (!el) return;
-    const rect   = el.getBoundingClientRect();
+    const rect = el.getBoundingClientRect();
     // 3 cols × 26px + 2 gaps × 2px + 8px padding
-    const width  = 3 * 26 + 2 * 2 + 8;
+    const width = 3 * 26 + 2 * 2 + 8;
     const height = 3 * 26 + 2 * 2 + 8;
-    setCoords({
-      top:  rect.top - 6 - height,
-      left: rect.left + rect.width / 2 - width / 2,
-    });
+    setCoords(
+      computePositionDropdownCoords(
+        rect,
+        { width: window.innerWidth, height: window.innerHeight },
+        { width, height },
+      ),
+    );
   }, [containerRef]);
-
   if (!coords) return null;
 
   return (

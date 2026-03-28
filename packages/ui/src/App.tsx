@@ -23,6 +23,7 @@ import type {
 import { isMetaRelayEvent, SOCKET_PROTOCOL_VERSION } from "@pizzapi/protocol";
 import { cn } from "@/lib/utils";
 import { pulseStreamingHaptic, cancelHaptic, startToolHaptic, stopToolHaptic } from "@/lib/haptics";
+import { shouldCenterTopSpanFullWidth, shouldCenterBottomSpanFullWidth } from "@/utils/panelLayoutHelpers";
 import { Button } from "@/components/ui/button";
 import { TooltipProvider, Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 
@@ -60,7 +61,7 @@ import { TerminalManager } from "@/components/TerminalManager";
 import { FileExplorer } from "@/components/FileExplorer";
 import { GitPanel } from "@/components/git";
 import { CombinedPanel, type CombinedPanelTab } from "@/components/CombinedPanel";
-import { DockedPanelGroup } from "@/components/DockedPanelGroup";
+import { DockedPanelGroup, TAB_BAR_HEIGHT } from "@/components/DockedPanelGroup";
 import { ViewerSocketContext } from "@/lib/viewer-socket-context";
 import { HubSocketContext } from "@/lib/hub-socket-context";
 import { shouldStopViewerReconnect } from "@/lib/viewer-connection";
@@ -3890,6 +3891,11 @@ export function App() {
     Object.values(panelGroups).some(g => g.length > 0),
   [panelGroups]);
 
+  const centerTopTabs = panelGroups["center-top"];
+  const centerBottomTabs = panelGroups["center-bottom"];
+  const centerTopFullWidth = shouldCenterTopSpanFullWidth(panelGroups);
+  const centerBottomFullWidth = shouldCenterBottomSpanFullWidth(panelGroups);
+
   const handleGroupPositionChange = React.useCallback((tabIds: string[], pos: import("@/hooks/usePanelLayout").PanelPosition) => {
     if (tabIds.includes("terminal")) handleTerminalPositionChange(pos);
     if (tabIds.includes("files")) handleFilesPositionChange(pos);
@@ -3902,6 +3908,21 @@ export function App() {
   const handleGroupDragStart = React.useCallback((tabIds: string[]) => (e: React.PointerEvent) => {
     startPanelDragWith(e, (pos) => handleGroupPositionChange(tabIds, pos));
   }, [startPanelDragWith, handleGroupPositionChange]);
+
+  const getPanelGroupKey = React.useCallback((tabIds: string[]) => [...tabIds].sort().join("|"), []);
+  const [collapsedGroups, setCollapsedGroups] = React.useState<Record<string, boolean>>({});
+  const isGroupCollapsed = React.useCallback((tabIds: string[]) => {
+    return !!collapsedGroups[getPanelGroupKey(tabIds)];
+  }, [collapsedGroups, getPanelGroupKey]);
+  const setGroupCollapsed = React.useCallback((tabIds: string[], collapsed: boolean) => {
+    const key = getPanelGroupKey(tabIds);
+    setCollapsedGroups((prev) => (prev[key] === collapsed ? prev : { ...prev, [key]: collapsed }));
+  }, [getPanelGroupKey]);
+
+  const centerTopTabIds = React.useMemo(() => centerTopTabs.map((t) => t.id), [centerTopTabs]);
+  const centerBottomTabIds = React.useMemo(() => centerBottomTabs.map((t) => t.id), [centerBottomTabs]);
+  const centerTopCollapsed = isGroupCollapsed(centerTopTabIds);
+  const centerBottomCollapsed = isGroupCollapsed(centerBottomTabIds);
 
   const mobilePanelTabs = React.useMemo(() => {
     return [terminalPanelTab, filesPanelTab, gitPanelTab, ...servicePanelTabs].filter(Boolean) as CombinedPanelTab[];
@@ -4175,269 +4196,316 @@ export function App() {
 
         <div
           ref={terminalColumnRef}
-          className="relative flex flex-1 min-w-0 h-full overflow-hidden"
+          className="relative flex flex-1 min-w-0 h-full overflow-hidden flex-col"
           onPointerMove={hasPanels ? handleOuterPointerMove : undefined}
           onPointerUp={hasPanels ? handleOuterPointerUp : undefined}
           onPointerCancel={hasPanels ? handleOuterPointerUp : undefined}
         >
-          {/* ── LEFT COLUMN ─────────────────────────────────────────────── */}
-          {leftColZones.length > 0 && (
-            <>
-              <div className="hidden md:flex flex-col shrink-0 min-h-0" style={{ width: leftColumnWidth }}>
-                {leftColZones.map((zone, i) => {
-                  const nextZone = leftColZones[i + 1];
-                  const handleZonePos = nextZone
-                    ? (zone.fills ? nextZone.pos : zone.pos)
-                    : undefined;
-                  return (
-                    <React.Fragment key={zone.pos}>
-                      <div
-                        className={cn(zone.fills ? "flex-1 min-h-0" : "shrink-0")}
-                        style={!zone.fills ? { height: zone.storedHeight } : undefined}
-                      >
-                        <CombinedPanel
-                          position={zone.pos}
-                          tabs={zone.tabs}
-                          activeTabId={resolveActiveTabId(zone.tabs)}
-                          onActiveTabChange={handleCombinedTabChange}
-                          onPositionChange={(pos) => handleGroupPositionChange(zone.tabs.map(t => t.id), pos)}
-                          onDragStart={handleGroupDragStart(zone.tabs.map(t => t.id))}
-                          className="h-full"
-                        />
-                      </div>
-                      {nextZone && (
-                        <div
-                          className="hidden md:flex h-[5px] cursor-row-resize shrink-0 items-center justify-center group"
-                          onPointerDown={handleZonePos ? (e) => startZoneHeightResize(handleZonePos, e) : undefined}
-                        >
-                          <div className="bg-zinc-800 group-hover:bg-blue-500/60 group-active:bg-blue-500 transition-colors w-full h-px" />
-                        </div>
-                      )}
-                    </React.Fragment>
-                  );
-                })}
-              </div>
-              <div
-                className="hidden md:flex w-[5px] cursor-col-resize shrink-0 items-center justify-center group"
-                onPointerDown={(e) => startColumnWidthResize("left", e)}
-              >
-                <div className="bg-zinc-800 group-hover:bg-blue-500/60 group-active:bg-blue-500 transition-colors h-full w-px" />
-              </div>
-            </>
+          {/* center-top spans full width when no left/right top panels exist */}
+          {centerTopFullWidth && (
+            <div className="hidden md:flex flex-col shrink-0" style={{ height: centerTopCollapsed ? TAB_BAR_HEIGHT : centerTopHeight }}>
+              <DockedPanelGroup
+                position="center-top"
+                size={centerTopHeight}
+                tabs={centerTopTabs}
+                activeTabId={resolveActiveTabId(centerTopTabs)}
+                onActiveTabChange={handleCombinedTabChange}
+                onPositionChange={(pos) => handleGroupPositionChange(centerTopTabIds, pos)}
+                onDragStart={handleGroupDragStart(centerTopTabIds)}
+                onResizeStart={(e) => startZoneHeightResize("center-top", e)}
+                collapsed={centerTopCollapsed}
+                onCollapseChange={(next) => setGroupCollapsed(centerTopTabIds, next)}
+                className="h-full w-full"
+              />
+            </div>
           )}
 
-          {/* ── CENTER COLUMN ───────────────────────────────────────────── */}
-          <div className="flex flex-col flex-1 min-w-0 min-h-0">
-            {/* center-top zone */}
-            {panelGroups["center-top"].length > 0 && (
+          <div className="flex flex-1 min-w-0 h-full overflow-hidden">
+            {/* ── LEFT COLUMN ─────────────────────────────────────────────── */}
+            {leftColZones.length > 0 && (
               <>
-                <div className="hidden md:flex flex-col shrink-0" style={{ height: centerTopHeight }}>
-                  <CombinedPanel
-                    position="center-top"
-                    tabs={panelGroups["center-top"]}
-                    activeTabId={resolveActiveTabId(panelGroups["center-top"])}
-                    onActiveTabChange={handleCombinedTabChange}
-                    onPositionChange={(pos) => handleGroupPositionChange(panelGroups["center-top"].map(t => t.id), pos)}
-                    onDragStart={handleGroupDragStart(panelGroups["center-top"].map(t => t.id))}
-                    className="h-full"
-                  />
-                </div>
-                <div
-                  className="hidden md:flex h-[5px] cursor-row-resize shrink-0 items-center justify-center group"
-                  onPointerDown={(e) => startZoneHeightResize("center-top", e)}
-                >
-                  <div className="bg-zinc-800 group-hover:bg-blue-500/60 group-active:bg-blue-500 transition-colors w-full h-px" />
-                </div>
-              </>
-            )}
-
-            <div id="main-content" tabIndex={-1} className="flex flex-col flex-1 min-w-0 min-h-0 overflow-hidden">
-                {showRunners ? (
-                  <RunnerManager
-                    runners={feedRunners}
-                    runnersStatus={runnersStatus}
-                    sessions={liveSessions}
-                    onOpenSession={(id) => { handleOpenSession(id); setShowRunners(false); }}
-                    selectedRunnerId={selectedRunnerId}
-                    onSelectRunner={setSelectedRunnerId}
-                  />
-                ) : (
-                  <ErrorBoundary level="section" resetKeys={[activeSessionId]}>
-                    <SessionViewer
-                      sessionId={activeSessionId}
-                      sessionName={sessionName}
-                      messages={messages}
-                      activeModel={activeModel}
-                      activeToolCalls={activeToolCalls}
-                      pendingQuestion={pendingQuestion}
-                      pendingPlan={pendingPlan}
-                      pluginTrustPrompt={pluginTrustPrompt}
-                      onPluginTrustResponse={respondPluginTrust}
-                      availableCommands={availableCommands}
-                      resumeSessions={resumeSessions}
-                      resumeSessionsLoading={resumeSessionsLoading}
-                      onRequestResumeSessions={requestResumeSessions}
-                      onSendInput={sendSessionInput}
-                      onExec={sendRemoteExec}
-                      onShowModelSelector={() => setModelSelectorOpen(true)}
-                      agentActive={agentActive}
-                      isCompacting={isCompacting}
-                      effortLevel={effortLevel}
-                      tokenUsage={tokenUsage}
-                      lastHeartbeatAt={lastHeartbeatAt}
-                      viewerStatus={viewerStatus}
-                      retryState={retryState}
-                      messageQueue={messageQueue}
-                      onRemoveQueuedMessage={removeQueuedMessage}
-                      onEditQueuedMessage={editQueuedMessage}
-                      onClearMessageQueue={clearMessageQueue}
-                      onToggleTerminal={() => setShowTerminal((v) => !v)}
-                      showTerminalButton
-                      isTerminalOpen={showTerminal}
-                      onToggleFileExplorer={() => setShowFileExplorer((v) => !v)}
-                      showFileExplorerButton={!!activeSessionInfo?.runnerId && !!activeSessionInfo?.cwd}
-                      isFileExplorerOpen={showFileExplorer}
-                      onToggleGit={() => setShowGit((v) => !v)}
-                      showGitButton={!!activeSessionInfo?.runnerId && !!activeSessionInfo?.cwd}
-                      isGitOpen={showGit}
-                      extraHeaderButtons={
-                        <ServicePanelButtons
-                          availableServices={availableServices}
-                          dynamicPanels={dynamicPanels}
-                          activePanelIds={activeServicePanels}
-                          onTogglePanel={handleToggleServicePanel}
-                        />
-                      }
-                      todoList={todoList}
-                      planModeEnabled={planModeEnabled}
-                      runnerId={activeSessionInfo?.runnerId ?? undefined}
-                      sessionCwd={activeSessionInfo?.cwd || undefined}
-                      onAppendSystemMessage={appendLocalSystemMessage}
-                      onSpawnAgentSession={handleSpawnAgentSession}
-                      onTriggerResponse={handleTriggerResponse}
-                      onQuestionDismiss={() => setPendingQuestion(null)}
-                      onPlanDismiss={() => setPendingPlan(null)}
-                      onDuplicateSession={activeSessionInfo?.runnerId ? () => handleDuplicateSession(activeSessionInfo.runnerId!, activeSessionInfo.cwd || "") : undefined}
-                      runnerInfo={activeRunnerInfo}
-                      mcpOAuthPastes={mcpOAuthPastes}
-                      onMcpOAuthPaste={(nonce, code, state) => {
-                        const socket = viewerWsRef.current;
-                        if (!socket?.connected) return Promise.resolve({ ok: false, error: "Not connected" });
-                        return new Promise<{ ok: boolean; error?: string }>((resolve) => {
-                          const timeout = setTimeout(() => resolve({ ok: false, error: "Delivery timed out" }), 5000);
-                          socket.emit("mcp_oauth_paste", { nonce, code, state }, (result: any) => {
-                            clearTimeout(timeout);
-                            resolve(result && typeof result === "object" ? result : { ok: false, error: "Invalid response" });
-                          });
-                        });
-                      }}
-                      onMcpOAuthPasteDismiss={(serverName) => {
-                        setMcpOAuthPastes((prev) => prev.filter((p) => p.serverName !== serverName));
-                        const stableKey = `mcp_auth:${serverName}`;
-                        injectedMessagesRef.current = injectedMessagesRef.current.filter(
-                          (m) => m.key !== stableKey && !m.key.startsWith(`${stableKey}:`),
-                        );
-                        setMessages((prev) => {
-                          const next = prev.filter((m) => m.key !== stableKey && !m.key.startsWith(`${stableKey}:`));
-                          return next.length !== prev.length ? next : prev;
-                        });
-                      }}
-                      onMcpServerDisable={(serverName) => {
-                        setMcpOAuthPastes((prev) => prev.filter((p) => p.serverName !== serverName));
-                        const stableKey = `mcp_auth:${serverName}`;
-                        injectedMessagesRef.current = injectedMessagesRef.current.filter(
-                          (m) => m.key !== stableKey && !m.key.startsWith(`${stableKey}:`),
-                        );
-                        const disableNext = messagesRef.current.filter(
-                          (m) => m.key !== stableKey && !m.key.startsWith(`${stableKey}:`),
-                        );
-                        if (disableNext.length !== messagesRef.current.length) {
-                          setMessages(disableNext);
-                          patchSessionCache({ messages: disableNext });
-                        }
-                        const socket = viewerWsRef.current;
-                        if (socket?.connected) {
-                          socket.emit("exec", {
-                            id: `disable-mcp-${serverName}-${Date.now()}`,
-                            command: "mcp_toggle_server",
-                            serverName,
-                            disabled: true,
-                          });
-                        }
-                      }}
-                    />
-                  </ErrorBoundary>
-                )}
-              </div>
-
-            {/* center-bottom zone */}
-            {panelGroups["center-bottom"].length > 0 && (
-              <>
-                <div
-                  className="hidden md:flex h-[5px] cursor-row-resize shrink-0 items-center justify-center group"
-                  onPointerDown={(e) => startZoneHeightResize("center-bottom", e)}
-                >
-                  <div className="bg-zinc-800 group-hover:bg-blue-500/60 group-active:bg-blue-500 transition-colors w-full h-px" />
-                </div>
-                <div className="hidden md:flex flex-col shrink-0" style={{ height: centerBottomHeight }}>
-                  <CombinedPanel
-                    position="center-bottom"
-                    tabs={panelGroups["center-bottom"]}
-                    activeTabId={resolveActiveTabId(panelGroups["center-bottom"])}
-                    onActiveTabChange={handleCombinedTabChange}
-                    onPositionChange={(pos) => handleGroupPositionChange(panelGroups["center-bottom"].map(t => t.id), pos)}
-                    onDragStart={handleGroupDragStart(panelGroups["center-bottom"].map(t => t.id))}
-                    className="h-full"
-                  />
-                </div>
-              </>
-            )}
-          </div>{/* end center column */}
-
-          {/* ── RIGHT COLUMN ────────────────────────────────────────────── */}
-          {rightColZones.length > 0 && (
-            <>
-              <div
-                className="hidden md:flex w-[5px] cursor-col-resize shrink-0 items-center justify-center group"
-                onPointerDown={(e) => startColumnWidthResize("right", e)}
-              >
-                <div className="bg-zinc-800 group-hover:bg-blue-500/60 group-active:bg-blue-500 transition-colors h-full w-px" />
-              </div>
-              <div className="hidden md:flex flex-col shrink-0 min-h-0" style={{ width: rightColumnWidth }}>
-                {rightColZones.map((zone, i) => {
-                  const nextZone = rightColZones[i + 1];
-                  const handleZonePos = nextZone
-                    ? (zone.fills ? nextZone.pos : zone.pos)
-                    : undefined;
-                  return (
-                    <React.Fragment key={zone.pos}>
-                      <div
-                        className={cn(zone.fills ? "flex-1 min-h-0" : "shrink-0")}
-                        style={!zone.fills ? { height: zone.storedHeight } : undefined}
-                      >
-                        <CombinedPanel
-                          position={zone.pos}
-                          tabs={zone.tabs}
-                          activeTabId={resolveActiveTabId(zone.tabs)}
-                          onActiveTabChange={handleCombinedTabChange}
-                          onPositionChange={(pos) => handleGroupPositionChange(zone.tabs.map(t => t.id), pos)}
-                          onDragStart={handleGroupDragStart(zone.tabs.map(t => t.id))}
-                          className="h-full"
-                        />
-                      </div>
-                      {nextZone && (
+                <div className="hidden md:flex flex-col shrink-0 min-h-0" style={{ width: leftColumnWidth }}>
+                  {leftColZones.map((zone, i) => {
+                    const nextZone = leftColZones[i + 1];
+                    const handleZonePos = nextZone
+                      ? (zone.fills ? nextZone.pos : zone.pos)
+                      : undefined;
+                    const zoneTabIds = zone.tabs.map((t) => t.id);
+                    const zoneCollapsed = isGroupCollapsed(zoneTabIds);
+                    return (
+                      <React.Fragment key={zone.pos}>
                         <div
-                          className="hidden md:flex h-[5px] cursor-row-resize shrink-0 items-center justify-center group"
-                          onPointerDown={handleZonePos ? (e) => startZoneHeightResize(handleZonePos, e) : undefined}
+                          className={cn(zoneCollapsed ? "shrink-0" : (zone.fills ? "flex-1 min-h-0" : "shrink-0"))}
+                          style={zoneCollapsed
+                            ? { height: TAB_BAR_HEIGHT }
+                            : !zone.fills
+                              ? { height: zone.storedHeight }
+                              : undefined}
                         >
-                          <div className="bg-zinc-800 group-hover:bg-blue-500/60 group-active:bg-blue-500 transition-colors w-full h-px" />
+                          <DockedPanelGroup
+                            position={zone.pos}
+                            size={zone.storedHeight}
+                            tabs={zone.tabs}
+                            activeTabId={resolveActiveTabId(zone.tabs)}
+                            onActiveTabChange={handleCombinedTabChange}
+                            onPositionChange={(pos) => handleGroupPositionChange(zoneTabIds, pos)}
+                            onDragStart={handleGroupDragStart(zoneTabIds)}
+                            onResizeStart={() => {}}
+                            collapsed={zoneCollapsed}
+                            onCollapseChange={(next) => setGroupCollapsed(zoneTabIds, next)}
+                            className="h-full w-full"
+                          />
                         </div>
-                      )}
-                    </React.Fragment>
-                  );
-                })}
-              </div>
-            </>
+                        {nextZone && (
+                          <div
+                            className="hidden md:flex h-[5px] cursor-row-resize shrink-0 items-center justify-center group"
+                            onPointerDown={handleZonePos ? (e) => startZoneHeightResize(handleZonePos, e) : undefined}
+                          >
+                            <div className="bg-zinc-800 group-hover:bg-blue-500/60 group-active:bg-blue-500 transition-colors w-full h-px" />
+                          </div>
+                        )}
+                      </React.Fragment>
+                    );
+                  })}
+                </div>
+                <div
+                  className="hidden md:flex w-[5px] cursor-col-resize shrink-0 items-center justify-center group"
+                  onPointerDown={(e) => startColumnWidthResize("left", e)}
+                >
+                  <div className="bg-zinc-800 group-hover:bg-blue-500/60 group-active:bg-blue-500 transition-colors h-full w-px" />
+                </div>
+              </>
+            )}
+
+            {/* ── CENTER COLUMN ───────────────────────────────────────────── */}
+            <div className="flex flex-col flex-1 min-w-0 min-h-0">
+              {/* center-top zone */}
+              {!centerTopFullWidth && centerTopTabs.length > 0 && (
+                <DockedPanelGroup
+                  position="center-top"
+                  size={centerTopHeight}
+                  tabs={centerTopTabs}
+                  activeTabId={resolveActiveTabId(centerTopTabs)}
+                  onActiveTabChange={handleCombinedTabChange}
+                  onPositionChange={(pos) => handleGroupPositionChange(centerTopTabIds, pos)}
+                  onDragStart={handleGroupDragStart(centerTopTabIds)}
+                  onResizeStart={(e) => startZoneHeightResize("center-top", e)}
+                  collapsed={centerTopCollapsed}
+                  onCollapseChange={(next) => setGroupCollapsed(centerTopTabIds, next)}
+                  className="w-full"
+                />
+              )}
+
+              <div id="main-content" tabIndex={-1} className="flex flex-col flex-1 min-w-0 min-h-0 overflow-hidden">
+                  {showRunners ? (
+                    <RunnerManager
+                      runners={feedRunners}
+                      runnersStatus={runnersStatus}
+                      sessions={liveSessions}
+                      onOpenSession={(id) => { handleOpenSession(id); setShowRunners(false); }}
+                      selectedRunnerId={selectedRunnerId}
+                      onSelectRunner={setSelectedRunnerId}
+                    />
+                  ) : (
+                    <ErrorBoundary level="section" resetKeys={[activeSessionId]}>
+                      <SessionViewer
+                        sessionId={activeSessionId}
+                        sessionName={sessionName}
+                        messages={messages}
+                        activeModel={activeModel}
+                        activeToolCalls={activeToolCalls}
+                        pendingQuestion={pendingQuestion}
+                        pendingPlan={pendingPlan}
+                        pluginTrustPrompt={pluginTrustPrompt}
+                        onPluginTrustResponse={respondPluginTrust}
+                        availableCommands={availableCommands}
+                        resumeSessions={resumeSessions}
+                        resumeSessionsLoading={resumeSessionsLoading}
+                        onRequestResumeSessions={requestResumeSessions}
+                        onSendInput={sendSessionInput}
+                        onExec={sendRemoteExec}
+                        onShowModelSelector={() => setModelSelectorOpen(true)}
+                        agentActive={agentActive}
+                        isCompacting={isCompacting}
+                        effortLevel={effortLevel}
+                        tokenUsage={tokenUsage}
+                        lastHeartbeatAt={lastHeartbeatAt}
+                        viewerStatus={viewerStatus}
+                        retryState={retryState}
+                        messageQueue={messageQueue}
+                        onRemoveQueuedMessage={removeQueuedMessage}
+                        onEditQueuedMessage={editQueuedMessage}
+                        onClearMessageQueue={clearMessageQueue}
+                        onToggleTerminal={() => setShowTerminal((v) => !v)}
+                        showTerminalButton
+                        isTerminalOpen={showTerminal}
+                        onToggleFileExplorer={() => setShowFileExplorer((v) => !v)}
+                        showFileExplorerButton={!!activeSessionInfo?.runnerId && !!activeSessionInfo?.cwd}
+                        isFileExplorerOpen={showFileExplorer}
+                        onToggleGit={() => setShowGit((v) => !v)}
+                        showGitButton={!!activeSessionInfo?.runnerId && !!activeSessionInfo?.cwd}
+                        isGitOpen={showGit}
+                        extraHeaderButtons={
+                          <ServicePanelButtons
+                            availableServices={availableServices}
+                            dynamicPanels={dynamicPanels}
+                            activePanelIds={activeServicePanels}
+                            onTogglePanel={handleToggleServicePanel}
+                          />
+                        }
+                        todoList={todoList}
+                        planModeEnabled={planModeEnabled}
+                        runnerId={activeSessionInfo?.runnerId ?? undefined}
+                        sessionCwd={activeSessionInfo?.cwd || undefined}
+                        onAppendSystemMessage={appendLocalSystemMessage}
+                        onSpawnAgentSession={handleSpawnAgentSession}
+                        onTriggerResponse={handleTriggerResponse}
+                        onQuestionDismiss={() => setPendingQuestion(null)}
+                        onPlanDismiss={() => setPendingPlan(null)}
+                        onDuplicateSession={activeSessionInfo?.runnerId ? () => handleDuplicateSession(activeSessionInfo.runnerId!, activeSessionInfo.cwd || "") : undefined}
+                        runnerInfo={activeRunnerInfo}
+                        mcpOAuthPastes={mcpOAuthPastes}
+                        onMcpOAuthPaste={(nonce, code, state) => {
+                          const socket = viewerWsRef.current;
+                          if (!socket?.connected) return Promise.resolve({ ok: false, error: "Not connected" });
+                          return new Promise<{ ok: boolean; error?: string }>((resolve) => {
+                            const timeout = setTimeout(() => resolve({ ok: false, error: "Delivery timed out" }), 5000);
+                            socket.emit("mcp_oauth_paste", { nonce, code, state }, (result: any) => {
+                              clearTimeout(timeout);
+                              resolve(result && typeof result === "object" ? result : { ok: false, error: "Invalid response" });
+                            });
+                          });
+                        }}
+                        onMcpOAuthPasteDismiss={(serverName) => {
+                          setMcpOAuthPastes((prev) => prev.filter((p) => p.serverName !== serverName));
+                          const stableKey = `mcp_auth:${serverName}`;
+                          injectedMessagesRef.current = injectedMessagesRef.current.filter(
+                            (m) => m.key !== stableKey && !m.key.startsWith(`${stableKey}:`),
+                          );
+                          setMessages((prev) => {
+                            const next = prev.filter((m) => m.key !== stableKey && !m.key.startsWith(`${stableKey}:`));
+                            return next.length !== prev.length ? next : prev;
+                          });
+                        }}
+                        onMcpServerDisable={(serverName) => {
+                          setMcpOAuthPastes((prev) => prev.filter((p) => p.serverName !== serverName));
+                          const stableKey = `mcp_auth:${serverName}`;
+                          injectedMessagesRef.current = injectedMessagesRef.current.filter(
+                            (m) => m.key !== stableKey && !m.key.startsWith(`${stableKey}:`),
+                          );
+                          const disableNext = messagesRef.current.filter(
+                            (m) => m.key !== stableKey && !m.key.startsWith(`${stableKey}:`),
+                          );
+                          if (disableNext.length !== messagesRef.current.length) {
+                            setMessages(disableNext);
+                            patchSessionCache({ messages: disableNext });
+                          }
+                          const socket = viewerWsRef.current;
+                          if (socket?.connected) {
+                            socket.emit("exec", {
+                              id: `disable-mcp-${serverName}-${Date.now()}`,
+                              command: "mcp_toggle_server",
+                              serverName,
+                              disabled: true,
+                            });
+                          }
+                        }}
+                      />
+                    </ErrorBoundary>
+                  )}
+                </div>
+
+              {/* center-bottom zone */}
+              {!centerBottomFullWidth && centerBottomTabs.length > 0 && (
+                <DockedPanelGroup
+                  position="center-bottom"
+                  size={centerBottomHeight}
+                  tabs={centerBottomTabs}
+                  activeTabId={resolveActiveTabId(centerBottomTabs)}
+                  onActiveTabChange={handleCombinedTabChange}
+                  onPositionChange={(pos) => handleGroupPositionChange(centerBottomTabIds, pos)}
+                  onDragStart={handleGroupDragStart(centerBottomTabIds)}
+                  onResizeStart={(e) => startZoneHeightResize("center-bottom", e)}
+                  collapsed={centerBottomCollapsed}
+                  onCollapseChange={(next) => setGroupCollapsed(centerBottomTabIds, next)}
+                  className="w-full"
+                />
+              )}
+            </div>{/* end center column */}
+
+            {/* ── RIGHT COLUMN ────────────────────────────────────────────── */}
+            {rightColZones.length > 0 && (
+              <>
+                <div
+                  className="hidden md:flex w-[5px] cursor-col-resize shrink-0 items-center justify-center group"
+                  onPointerDown={(e) => startColumnWidthResize("right", e)}
+                >
+                  <div className="bg-zinc-800 group-hover:bg-blue-500/60 group-active:bg-blue-500 transition-colors h-full w-px" />
+                </div>
+                <div className="hidden md:flex flex-col shrink-0 min-h-0" style={{ width: rightColumnWidth }}>
+                  {rightColZones.map((zone, i) => {
+                    const nextZone = rightColZones[i + 1];
+                    const handleZonePos = nextZone
+                      ? (zone.fills ? nextZone.pos : zone.pos)
+                      : undefined;
+                    const zoneTabIds = zone.tabs.map((t) => t.id);
+                    const zoneCollapsed = isGroupCollapsed(zoneTabIds);
+                    return (
+                      <React.Fragment key={zone.pos}>
+                        <div
+                          className={cn(zoneCollapsed ? "shrink-0" : (zone.fills ? "flex-1 min-h-0" : "shrink-0"))}
+                          style={zoneCollapsed
+                            ? { height: TAB_BAR_HEIGHT }
+                            : !zone.fills
+                              ? { height: zone.storedHeight }
+                              : undefined}
+                        >
+                          <DockedPanelGroup
+                            position={zone.pos}
+                            size={zone.storedHeight}
+                            tabs={zone.tabs}
+                            activeTabId={resolveActiveTabId(zone.tabs)}
+                            onActiveTabChange={handleCombinedTabChange}
+                            onPositionChange={(pos) => handleGroupPositionChange(zoneTabIds, pos)}
+                            onDragStart={handleGroupDragStart(zoneTabIds)}
+                            onResizeStart={() => {}}
+                            collapsed={zoneCollapsed}
+                            onCollapseChange={(next) => setGroupCollapsed(zoneTabIds, next)}
+                            className="h-full w-full"
+                          />
+                        </div>
+                        {nextZone && (
+                          <div
+                            className="hidden md:flex h-[5px] cursor-row-resize shrink-0 items-center justify-center group"
+                            onPointerDown={handleZonePos ? (e) => startZoneHeightResize(handleZonePos, e) : undefined}
+                          >
+                            <div className="bg-zinc-800 group-hover:bg-blue-500/60 group-active:bg-blue-500 transition-colors w-full h-px" />
+                          </div>
+                        )}
+                      </React.Fragment>
+                    );
+                  })}
+                </div>
+              </>
+            )}
+          </div>
+
+          {centerBottomFullWidth && (
+            <div className="hidden md:flex flex-col shrink-0" style={{ height: centerBottomCollapsed ? TAB_BAR_HEIGHT : centerBottomHeight }}>
+              <DockedPanelGroup
+                position="center-bottom"
+                size={centerBottomHeight}
+                tabs={centerBottomTabs}
+                activeTabId={resolveActiveTabId(centerBottomTabs)}
+                onActiveTabChange={handleCombinedTabChange}
+                onPositionChange={(pos) => handleGroupPositionChange(centerBottomTabIds, pos)}
+                onDragStart={handleGroupDragStart(centerBottomTabIds)}
+                onResizeStart={(e) => startZoneHeightResize("center-bottom", e)}
+                collapsed={centerBottomCollapsed}
+                onCollapseChange={(next) => setGroupCollapsed(centerBottomTabIds, next)}
+                className="h-full w-full"
+              />
+            </div>
           )}
 
           {/* ── MOBILE OVERLAY ──────────────────────────────────────────── */}

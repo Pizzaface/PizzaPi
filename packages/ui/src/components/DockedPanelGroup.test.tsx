@@ -79,6 +79,36 @@ describe("DockedPanelGroup", () => {
     expect(colResizeHandle).toBeUndefined(); // by design — handled in App.tsx
   });
 
+  test("double-clicking a tab collapses and restores the panel", () => {
+    const { container } = render(
+      <DockedPanelGroup
+        {...TAB_PROPS}
+        position="center-bottom"
+        size={280}
+        onDragStart={() => {}}
+        onResizeStart={() => {}}
+      />,
+    );
+
+    const getPanelWrapper = () => Array.from(container.getElementsByTagName("div")).find((el) => (el as HTMLElement).style.height) as HTMLElement | undefined;
+    const panelWrapper = getPanelWrapper();
+    expect(panelWrapper).toBeTruthy();
+    expect(panelWrapper!.style.height).toBe("280px");
+
+    const terminalTab = Array.from(container.getElementsByTagName("div")).find((el) => (el as HTMLElement).className?.includes?.("border-primary")) as HTMLElement | undefined;
+    expect(terminalTab).toBeTruthy();
+
+    fireEvent.doubleClick(terminalTab!);
+    expect(getPanelWrapper()!.style.height).toBe("32px");
+
+    const elementsAfterCollapse = Array.from(container.getElementsByTagName("*"));
+    const resizeHandleAfterCollapse = elementsAfterCollapse.find((el) => (el as HTMLElement).className?.includes?.("cursor-row-resize"));
+    expect(resizeHandleAfterCollapse).toBeUndefined();
+
+    fireEvent.doubleClick(terminalTab!);
+    expect(getPanelWrapper()!.style.height).toBe("280px");
+  });
+
   test("center-bottom zone renders an inline row-resize handle", () => {
     let resized = 0;
     const { container } = render(

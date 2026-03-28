@@ -6,7 +6,7 @@ import type { PanelPosition } from "@/hooks/usePanelLayout";
 export type DockPosition = PanelPosition;
 
 /** Height in pixels of the tab bar — used as the collapsed size */
-const TAB_BAR_HEIGHT = 32;
+export const TAB_BAR_HEIGHT = 32;
 
 export interface DockedPanelGroupProps {
   position: DockPosition;
@@ -19,6 +19,8 @@ export interface DockedPanelGroupProps {
   onDragStart: (e: React.PointerEvent) => void;
   onResizeStart: (e: React.PointerEvent) => void;
   className?: string;
+  collapsed?: boolean;
+  onCollapseChange?: (collapsed: boolean) => void;
 }
 
 export function DockedPanelGroup({
@@ -31,6 +33,8 @@ export function DockedPanelGroup({
   onDragStart,
   onResizeStart,
   className,
+  collapsed,
+  onCollapseChange,
 }: DockedPanelGroupProps) {
   // Determine orientation from position string
   const isHorizontal =
@@ -45,20 +49,26 @@ export function DockedPanelGroup({
   // component is used standalone.
   const isSized = isHorizontal;
 
-  const [collapsed, setCollapsed] = React.useState(false);
+  const [internalCollapsed, setInternalCollapsed] = React.useState(false);
+  const isCollapsed = collapsed ?? internalCollapsed;
+  const updateCollapsed = React.useCallback((next: boolean) => {
+    if (onCollapseChange) onCollapseChange(next);
+    else setInternalCollapsed(next);
+  }, [onCollapseChange]);
 
   // When position changes, un-collapse so the panel is usable in the new spot
   const prevPosition = React.useRef(position);
-  if (prevPosition.current !== position) {
+  React.useEffect(() => {
+    if (prevPosition.current === position) return;
     prevPosition.current = position;
-    if (collapsed) setCollapsed(false);
-  }
+    if (isCollapsed) updateCollapsed(false);
+  }, [position, isCollapsed, updateCollapsed]);
 
   const handleCollapseToggle = React.useCallback(() => {
-    setCollapsed((c) => !c);
-  }, []);
+    updateCollapsed(!isCollapsed);
+  }, [isCollapsed, updateCollapsed]);
 
-  const effectiveSize = collapsed ? TAB_BAR_HEIGHT : size;
+  const effectiveSize = isCollapsed ? TAB_BAR_HEIGHT : size;
 
   // Resize handle orientation:
   //   - center-top: horizontal handle below (row-resize)
@@ -95,7 +105,7 @@ export function DockedPanelGroup({
   );
 
   // Resize handle — hidden when collapsed
-  const handle = collapsed ? null : (
+  const handle = isCollapsed ? null : (
     <div
       className={cn(
         "hidden md:flex shrink-0 items-center justify-center group",
