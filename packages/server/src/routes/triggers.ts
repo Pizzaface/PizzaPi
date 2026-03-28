@@ -129,10 +129,14 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
             ts,
         };
 
+        // Prefix with "external:" so deriveLinkedSessions() in the UI
+        // doesn't misclassify this as a child session source. The trigger's
+        // own sourceSessionId already uses this prefix; history must match.
+        const historySource = `external:${body.source ?? "api"}`;
         const historyEntry = {
             triggerId,
             type: body.type,
-            source: body.source ?? "api",
+            source: historySource,
             summary: body.summary,
             payload: body.payload,
             deliverAs,
@@ -369,7 +373,9 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
             const historyEntry = {
                 triggerId: `${triggerId}_${targetSessionId.slice(0, 8)}`,
                 type: body.type,
-                source: body.source ?? "service",
+                // Prefix with "external:" so deriveLinkedSessions() in the UI
+                // doesn't misclassify service sources as child sessions.
+                source: `external:${body.source ?? "service"}`,
                 summary: body.summary,
                 payload: body.payload,
                 deliverAs,

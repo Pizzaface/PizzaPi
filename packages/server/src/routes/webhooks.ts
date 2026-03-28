@@ -181,7 +181,9 @@ async function fireWebhookTrigger(
     const historyEntry = {
         triggerId,
         type: "webhook",
-        source,
+        // Prefix with "external:" so deriveLinkedSessions() in the UI
+        // doesn't misclassify webhook sources (e.g. "github") as child sessions.
+        source: `external:${source}`,
         summary: webhookName,
         payload: triggerPayload,
         deliverAs: "steer" as const,
