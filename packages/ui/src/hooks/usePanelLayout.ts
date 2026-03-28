@@ -1,151 +1,267 @@
 import * as React from "react";
 import type { TerminalTab } from "@/components/TerminalManager";
 
-export type PanelPosition = "bottom" | "right" | "left";
+// ── 9-Zone panel position ─────────────────────────────────────────────────────
+// Layout grid (center-middle = main content, not a dock target):
+//   ┌──────────┬──────────────┬──────────┐
+//   │ left-top │  center-top  │right-top │
+//   ├──────────┤              ├──────────┤
+//   │left-mid  │  MAIN CONTENT│right-mid │
+//   ├──────────┤              ├──────────┤
+//   │left-bot  │ center-bot   │right-bot │
+//   └──────────┴──────────────┴──────────┘
+export type PanelPosition =
+  | "left-top"    | "left-middle"    | "left-bottom"
+  | "center-top"  | "center-bottom"
+  | "right-top"   | "right-middle"   | "right-bottom";
 
+/** Migrate old 3-value localStorage position strings → new 8-value format. */
+function migratePanelPosition(raw: string | null, fallback: PanelPosition): PanelPosition {
+  if (!raw) return fallback;
+  if (raw === "left") return "left-middle";
+  if (raw === "right") return "right-middle";
+  if (raw === "bottom") return "center-bottom";
+  const valid: readonly PanelPosition[] = [
+    "left-top", "left-middle", "left-bottom",
+    "center-top", "center-bottom",
+    "right-top", "right-middle", "right-bottom",
+  ];
+  return (valid as readonly string[]).includes(raw) ? (raw as PanelPosition) : fallback;
+}
+
+// ── Resize direction ──────────────────────────────────────────────────────────
+type ResizeDir =
+  | "col-left"           // drag left-column right edge → adjust leftColumnWidth
+  | "col-right"          // drag right-column left edge → adjust rightColumnWidth
+  | "zone-left-top"      // drag handle under left-top → adjust leftTopHeight
+  | "zone-left-bottom"   // drag handle above left-bottom → adjust leftBottomHeight
+  | "zone-right-top"
+  | "zone-right-bottom"
+  | "zone-center-top"
+  | "zone-center-bottom"
+  | null;
+
+// ── Size bounds ───────────────────────────────────────────────────────────────
+const COL_MIN  = 200;
+const COL_MAX  = 1400;
+const ZONE_MIN = 80;
+const ZONE_MAX = 900;
+
+function clampColWidth(v: number)    { return Math.max(COL_MIN, Math.min(v, COL_MAX)); }
+function clampZoneHeight(v: number)  { return Math.max(ZONE_MIN, Math.min(v, ZONE_MAX)); }
+
+function loadColWidth(key: string, def: number): number {
+  try {
+    const raw = localStorage.getItem(key);
+    if (raw) return clampColWidth(parseInt(raw, 10));
+  } catch {}
+  return def;
+}
+function loadZoneHeight(key: string, def: number): number {
+  try {
+    const raw = localStorage.getItem(key);
+    if (raw) return clampZoneHeight(parseInt(raw, 10));
+  } catch {}
+  return def;
+}
+function saveNum(key: string, value: number) {
+  try { localStorage.setItem(key, String(Math.round(value))); } catch {}
+}
+function loadPos(key: string, fallback: PanelPosition): PanelPosition {
+  try { return migratePanelPosition(localStorage.getItem(key), fallback); } catch { return fallback; }
+}
+function savePos(key: string, pos: PanelPosition) {
+  try { localStorage.setItem(key, pos); } catch {}
+}
+
+// ── Public interface ──────────────────────────────────────────────────────────
 export interface PanelLayoutState {
-  // ── Shared docked panel state ────────────────────────────────────────────
-  showTerminal: boolean;
-  setShowTerminal: React.Dispatch<React.SetStateAction<boolean>>;
-  terminalPosition: PanelPosition;
-  terminalHeight: number;
-  terminalWidth: number;
-  terminalColumnRef: React.RefObject<HTMLDivElement | null>;
-  handleTerminalResizeStart: (e: React.PointerEvent) => void;
-  handleTerminalPositionChange: (pos: PanelPosition) => void;
-  startPanelResizeForPosition: (position: PanelPosition, e: React.PointerEvent) => void;
+  // ── Column widths ──────────────────────────────────────────────────────────
+  leftColumnWidth: number;
+  rightColumnWidth: number;
 
-  // ── Shared drag-to-reposition ───────────────────────────────────────────
+  // ── Zone heights (for the 6 non-fill zones) ────────────────────────────────
+  leftTopHeight: number;
+  leftBottomHeight: number;
+  rightTopHeight: number;
+  rightBottomHeight: number;
+  centerTopHeight: number;
+  centerBottomHeight: number;
+
+  // ── Main layout container ref ──────────────────────────────────────────────
+  // Attach to the outermost layout div; used for all resize + drag calculations.
+  terminalColumnRef: React.RefObject<HTMLDivElement | null>;
+
+  // ── Column + zone resize starters ─────────────────────────────────────────
+  startColumnWidthResize: (side: "left" | "right", e: React.PointerEvent) => void;
+  startZoneHeightResize: (zone: PanelPosition, e: React.PointerEvent) => void;
+
+  // ── Drag-to-reposition ─────────────────────────────────────────────────────
   panelDragActive: boolean;
   panelDragZone: PanelPosition | null;
-  handlePanelDragStart: (e: React.PointerEvent) => void;
-  handleTerminalTabDragStart: (e: React.PointerEvent) => void;
   startPanelDragWith: (e: React.PointerEvent, applyPosition: (pos: PanelPosition) => void) => void;
 
-  // ── Shared outer pointer handlers (resize + drag combined) ──────────────
+  // ── Combined outer pointer handlers (resize + drag) ────────────────────────
   handleOuterPointerMove: (e: React.PointerEvent) => void;
   handleOuterPointerUp: () => void;
 
-  // ── Combined panel (terminal + file explorer + service panels) ───────────
+  // ── Combined panel tab state ───────────────────────────────────────────────
   combinedActiveTab: string;
   handleCombinedTabChange: (tab: string) => void;
   handleCombinedPositionChange: (pos: PanelPosition) => void;
 
-  // ── Lifted terminal tab state ───────────────────────────────────────────
+  // ── Lifted terminal tab state ──────────────────────────────────────────────
   terminalTabs: TerminalTab[];
   activeTerminalId: string | null;
   setActiveTerminalId: React.Dispatch<React.SetStateAction<string | null>>;
   handleTerminalTabAdd: (tab: TerminalTab) => void;
   handleTerminalTabClose: (terminalId: string) => void;
 
-  // ── File explorer panel ─────────────────────────────────────────────────
+  // ── Terminal panel ─────────────────────────────────────────────────────────
+  showTerminal: boolean;
+  setShowTerminal: React.Dispatch<React.SetStateAction<boolean>>;
+  terminalPosition: PanelPosition;
+  handleTerminalPositionChange: (pos: PanelPosition) => void;
+
+  // ── File explorer panel ────────────────────────────────────────────────────
   showFileExplorer: boolean;
   setShowFileExplorer: React.Dispatch<React.SetStateAction<boolean>>;
   filesPosition: PanelPosition;
-  filesWidth: number;
-  filesHeight: number;
-  filesContainerRef: React.RefObject<HTMLDivElement | null>;
-  handleFilesWidthLeftResizeStart: (e: React.PointerEvent) => void;
-  handleFilesWidthRightResizeStart: (e: React.PointerEvent) => void;
-  handleFilesHeightResizeStart: (e: React.PointerEvent) => void;
   handleFilesPositionChange: (pos: PanelPosition) => void;
 
-  // ── File explorer drag-to-reposition ────────────────────────────────────
-  filesDragActive: boolean;
-  filesDragZone: PanelPosition | null;
-  handleFilesDragStart: (e: React.PointerEvent) => void;
-
-  // ── File explorer outer pointer handlers (resize + drag combined) ───────
-  handleFilesOuterPointerMove: (e: React.PointerEvent) => void;
-  handleFilesOuterPointerUp: () => void;
-
-  // ── Git panel ───────────────────────────────────────────────────────────
+  // ── Git panel ─────────────────────────────────────────────────────────────
   showGit: boolean;
   setShowGit: React.Dispatch<React.SetStateAction<boolean>>;
   gitPosition: PanelPosition;
   handleGitPositionChange: (pos: PanelPosition) => void;
+
+  // ── Triggers panel ────────────────────────────────────────────────────────
+  showTriggers: boolean;
+  setShowTriggers: React.Dispatch<React.SetStateAction<boolean>>;
+  triggersPosition: PanelPosition;
+  handleTriggersPositionChange: (pos: PanelPosition) => void;
 }
 
-/**
- * Manages the full panel layout: terminal and file explorer positioning,
- * resizing, drag-to-reposition, combined-panel tab state, and lifted
- * terminal tab state that survives panel remounts.
- */
+// ── Hook ──────────────────────────────────────────────────────────────────────
 export function usePanelLayout(activeSessionId: string | null): PanelLayoutState {
-  // ── Terminal panel state ───────────────────────────────────────────────
-  const [showTerminal, setShowTerminal] = React.useState(false);
-  const [terminalPosition, setTerminalPosition] = React.useState<PanelPosition>(() => {
-    try { return (localStorage.getItem("pp-terminal-position") as PanelPosition) ?? "bottom"; } catch { return "bottom"; }
-  });
-  const [terminalHeight, setTerminalHeight] = React.useState<number>(() => {
-    try {
-      const saved = localStorage.getItem("pp-terminal-height");
-      if (saved) return Math.max(120, Math.min(parseInt(saved, 10), 900));
-    } catch {}
-    return 280;
-  });
-  const [terminalWidth, setTerminalWidth] = React.useState<number>(() => {
-    try {
-      const saved = localStorage.getItem("pp-terminal-width");
-      if (saved) return Math.max(200, Math.min(parseInt(saved, 10), 1400));
-    } catch {}
-    return 480;
-  });
-  const terminalColumnRef = React.useRef<HTMLDivElement>(null);
-  // "height" = bottom panel vertical drag, "width-right" = right panel, "width-left" = left panel
-  const resizeDir = React.useRef<"height" | "width-right" | "width-left" | null>(null);
+  // ── Column widths ───────────────────────────────────────────────────────
+  const [leftColumnWidth, setLeftColumnWidth] = React.useState(() =>
+    // Migrate from legacy pp-terminal-width / pp-files-width if present
+    loadColWidth("pp-left-col-width",
+      loadColWidth("pp-terminal-width",
+        loadColWidth("pp-files-width", 320))),
+  );
+  const [rightColumnWidth, setRightColumnWidth] = React.useState(() =>
+    loadColWidth("pp-right-col-width",
+      loadColWidth("pp-terminal-width", 320)),
+  );
 
-  const startPanelResizeForPosition = React.useCallback((position: PanelPosition, e: React.PointerEvent) => {
+  // ── Zone heights ────────────────────────────────────────────────────────
+  const [leftTopHeight, setLeftTopHeight] = React.useState(() =>
+    loadZoneHeight("pp-zone-left-top-h", 200));
+  const [leftBottomHeight, setLeftBottomHeight] = React.useState(() =>
+    loadZoneHeight("pp-zone-left-bottom-h", 200));
+  const [rightTopHeight, setRightTopHeight] = React.useState(() =>
+    loadZoneHeight("pp-zone-right-top-h", 200));
+  const [rightBottomHeight, setRightBottomHeight] = React.useState(() =>
+    loadZoneHeight("pp-zone-right-bottom-h", 200));
+  const [centerTopHeight, setCenterTopHeight] = React.useState(() =>
+    loadZoneHeight("pp-zone-center-top-h",
+      // migrate from old pp-terminal-height (which was the bottom panel height)
+      loadZoneHeight("pp-terminal-height", 200)));
+  const [centerBottomHeight, setCenterBottomHeight] = React.useState(() =>
+    loadZoneHeight("pp-zone-center-bottom-h",
+      loadZoneHeight("pp-terminal-height", 280)));
+
+  // ── Main layout container ref ───────────────────────────────────────────
+  const terminalColumnRef = React.useRef<HTMLDivElement>(null);
+
+  // ── Resize ──────────────────────────────────────────────────────────────
+  const resizeDir = React.useRef<ResizeDir>(null);
+
+  const startColumnWidthResize = React.useCallback((side: "left" | "right", e: React.PointerEvent) => {
     e.preventDefault();
-    resizeDir.current = position === "bottom" ? "height"
-      : position === "right" ? "width-right"
-      : "width-left";
+    resizeDir.current = side === "left" ? "col-left" : "col-right";
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
   }, []);
 
-  // Single handler — direction is derived from current terminalPosition at drag start
-  const handleTerminalResizeStart = React.useCallback((e: React.PointerEvent) => {
-    startPanelResizeForPosition(terminalPosition, e);
-  }, [terminalPosition, startPanelResizeForPosition]);
+  const startZoneHeightResize = React.useCallback((zone: PanelPosition, e: React.PointerEvent) => {
+    e.preventDefault();
+    const dirMap: Partial<Record<PanelPosition, ResizeDir>> = {
+      "left-top":      "zone-left-top",
+      "left-bottom":   "zone-left-bottom",
+      "right-top":     "zone-right-top",
+      "right-bottom":  "zone-right-bottom",
+      "center-top":    "zone-center-top",
+      "center-bottom": "zone-center-bottom",
+    };
+    resizeDir.current = dirMap[zone] ?? null;
+    if (resizeDir.current) {
+      (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    }
+  }, []);
 
-  const handleTerminalResizeMove = React.useCallback((e: React.PointerEvent) => {
+  const handleResizeMove = React.useCallback((e: React.PointerEvent) => {
     const dir = resizeDir.current;
     if (!dir || !terminalColumnRef.current) return;
     const rect = terminalColumnRef.current.getBoundingClientRect();
-    if (dir === "height") {
-      setTerminalHeight(Math.max(120, Math.min(rect.bottom - e.clientY, rect.height - 80)));
-    } else if (dir === "width-right") {
-      setTerminalWidth(Math.max(200, Math.min(rect.right - e.clientX, rect.width - 200)));
-    } else {
-      setTerminalWidth(Math.max(200, Math.min(e.clientX - rect.left, rect.width - 200)));
+
+    switch (dir) {
+      case "col-left":
+        setLeftColumnWidth(clampColWidth(e.clientX - rect.left));
+        break;
+      case "col-right":
+        setRightColumnWidth(clampColWidth(rect.right - e.clientX));
+        break;
+      case "zone-left-top":
+        setLeftTopHeight(clampZoneHeight(e.clientY - rect.top));
+        break;
+      case "zone-left-bottom":
+        setLeftBottomHeight(clampZoneHeight(rect.bottom - e.clientY));
+        break;
+      case "zone-right-top":
+        setRightTopHeight(clampZoneHeight(e.clientY - rect.top));
+        break;
+      case "zone-right-bottom":
+        setRightBottomHeight(clampZoneHeight(rect.bottom - e.clientY));
+        break;
+      case "zone-center-top":
+        setCenterTopHeight(clampZoneHeight(e.clientY - rect.top));
+        break;
+      case "zone-center-bottom":
+        setCenterBottomHeight(clampZoneHeight(rect.bottom - e.clientY));
+        break;
     }
   }, []);
 
-  const handleTerminalResizeEnd = React.useCallback(() => {
+  const handleResizeEnd = React.useCallback(() => {
     const dir = resizeDir.current;
     if (!dir) return;
     resizeDir.current = null;
-    if (dir === "height") {
-      setTerminalHeight((h) => { try { localStorage.setItem("pp-terminal-height", String(Math.round(h))); } catch {} return h; });
-    } else {
-      setTerminalWidth((w) => { try { localStorage.setItem("pp-terminal-width", String(Math.round(w))); } catch {} return w; });
+    // Persist on pointer-up
+    switch (dir) {
+      case "col-left":      setLeftColumnWidth((v)      => { saveNum("pp-left-col-width",           v); return v; }); break;
+      case "col-right":     setRightColumnWidth((v)     => { saveNum("pp-right-col-width",          v); return v; }); break;
+      case "zone-left-top":    setLeftTopHeight((v)     => { saveNum("pp-zone-left-top-h",          v); return v; }); break;
+      case "zone-left-bottom": setLeftBottomHeight((v)  => { saveNum("pp-zone-left-bottom-h",       v); return v; }); break;
+      case "zone-right-top":   setRightTopHeight((v)    => { saveNum("pp-zone-right-top-h",         v); return v; }); break;
+      case "zone-right-bottom":setRightBottomHeight((v) => { saveNum("pp-zone-right-bottom-h",      v); return v; }); break;
+      case "zone-center-top":  setCenterTopHeight((v)   => { saveNum("pp-zone-center-top-h",        v); return v; }); break;
+      case "zone-center-bottom":setCenterBottomHeight((v)=>{ saveNum("pp-zone-center-bottom-h",     v); return v; }); break;
     }
   }, []);
 
-  // ── Panel drag-to-reposition ──────────────────────────────────────────
+  // ── Drag-to-reposition ──────────────────────────────────────────────────
   const isPanelDragging = React.useRef(false);
   const panelDragZoneRef = React.useRef<PanelPosition | null>(null);
   const [panelDragActive, setPanelDragActive] = React.useState(false);
   const [panelDragZone, setPanelDragZone] = React.useState<PanelPosition | null>(null);
-
-  const handleTerminalPositionChange = React.useCallback((pos: PanelPosition) => {
-    setTerminalPosition(pos);
-    try { localStorage.setItem("pp-terminal-position", pos); } catch {}
-  }, []);
-
   const dragApplyRef = React.useRef<((zone: PanelPosition) => void) | null>(null);
 
-  const startPanelDragWith = React.useCallback((e: React.PointerEvent, applyPosition: (pos: PanelPosition) => void) => {
+  const startPanelDragWith = React.useCallback((
+    e: React.PointerEvent,
+    applyPosition: (pos: PanelPosition) => void,
+  ) => {
     e.preventDefault();
     dragApplyRef.current = applyPosition;
     isPanelDragging.current = true;
@@ -155,53 +271,48 @@ export function usePanelLayout(activeSessionId: string | null): PanelLayoutState
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
   }, []);
 
-  const handlePanelDragStart = React.useCallback((e: React.PointerEvent) => {
-    startPanelDragWith(e, handleTerminalPositionChange);
-  }, [startPanelDragWith, handleTerminalPositionChange]);
-
-  const handlePanelDragMove = React.useCallback((e: React.PointerEvent) => {
+  const handleDragMove = React.useCallback((e: React.PointerEvent) => {
     if (!isPanelDragging.current || !terminalColumnRef.current) return;
     const rect = terminalColumnRef.current.getBoundingClientRect();
     const pctX = (e.clientX - rect.left) / rect.width;
-    const pctY = (e.clientY - rect.top) / rect.height;
-    let zone: PanelPosition | null = null;
-    if (pctY > 0.55) zone = "bottom";
-    else if (pctX > 0.65) zone = "right";
-    else if (pctX < 0.35) zone = "left";
+    const pctY = (e.clientY - rect.top)  / rect.height;
+
+    const col: "left" | "center" | "right" =
+      pctX < 0.33 ? "left" : pctX > 0.67 ? "right" : "center";
+    const row: "top" | "middle" | "bottom" =
+      pctY < 0.33 ? "top" : pctY > 0.67 ? "bottom" : "middle";
+
+    // center-middle is the main content area — not a valid dock target
+    const zone: PanelPosition | null =
+      col === "center" && row === "middle" ? null : `${col}-${row}` as PanelPosition;
+
     panelDragZoneRef.current = zone;
     setPanelDragZone(zone);
   }, []);
 
-  // Drag start handler for the Terminal tab inside the combined panel.
-  // Unlike the grip handle, this only moves the terminal panel.
-  const handleTerminalTabDragStart = React.useCallback((e: React.PointerEvent) => {
-    startPanelDragWith(e, handleTerminalPositionChange);
-  }, [startPanelDragWith, handleTerminalPositionChange]);
-
-  const handlePanelDragEnd = React.useCallback(() => {
+  const handleDragEnd = React.useCallback(() => {
     if (!isPanelDragging.current) return;
     isPanelDragging.current = false;
     const zone = panelDragZoneRef.current;
     panelDragZoneRef.current = null;
     setPanelDragActive(false);
     setPanelDragZone(null);
-    if (zone) {
-      dragApplyRef.current?.(zone);
-    }
+    if (zone) dragApplyRef.current?.(zone);
     dragApplyRef.current = null;
   }, []);
 
+  // ── Combined pointer handlers ───────────────────────────────────────────
   const handleOuterPointerMove = React.useCallback((e: React.PointerEvent) => {
-    handleTerminalResizeMove(e);
-    handlePanelDragMove(e);
-  }, [handleTerminalResizeMove, handlePanelDragMove]);
+    handleResizeMove(e);
+    handleDragMove(e);
+  }, [handleResizeMove, handleDragMove]);
 
   const handleOuterPointerUp = React.useCallback(() => {
-    handleTerminalResizeEnd();
-    handlePanelDragEnd();
-  }, [handleTerminalResizeEnd, handlePanelDragEnd]);
+    handleResizeEnd();
+    handleDragEnd();
+  }, [handleResizeEnd, handleDragEnd]);
 
-  // ── Combined panel tab state ──────────────────────────────────────────
+  // ── Combined panel tab state ────────────────────────────────────────────
   const [combinedActiveTab, setCombinedActiveTab] = React.useState<string>(() => {
     try { return localStorage.getItem("pp-combined-tab") ?? "terminal"; } catch { return "terminal"; }
   });
@@ -210,16 +321,12 @@ export function usePanelLayout(activeSessionId: string | null): PanelLayoutState
     try { localStorage.setItem("pp-combined-tab", tab); } catch {}
   }, []);
 
-  // ── Lifted terminal tab state ─────────────────────────────────────────
-  // Stored here (not inside TerminalManager) so tabs survive panel remounts
-  // (e.g., when the panel transitions between combined and standalone layouts).
+  // ── Lifted terminal tab state ───────────────────────────────────────────
   const [terminalTabs, setTerminalTabs] = React.useState<TerminalTab[]>([]);
   const [activeTerminalId, setActiveTerminalId] = React.useState<string | null>(null);
 
-  // Per-session last-active terminal: save/restore when switching sessions.
   const sessionActiveTerminalRef = React.useRef<Map<string | null, string | null>>(new Map());
   const prevSessionIdForTerminalRef = React.useRef<string | null>(null);
-  // Stable ref so the effect doesn't need activeTerminalId in its dep array
   const activeTerminalIdRef = React.useRef<string | null>(null);
   activeTerminalIdRef.current = activeTerminalId;
 
@@ -227,17 +334,12 @@ export function usePanelLayout(activeSessionId: string | null): PanelLayoutState
     const prev = prevSessionIdForTerminalRef.current;
     if (prev === activeSessionId) return;
     prevSessionIdForTerminalRef.current = activeSessionId;
-
-    // Save current active terminal for the outgoing session
     sessionActiveTerminalRef.current.set(prev, activeTerminalIdRef.current);
-
-    // Restore the last-active terminal for the incoming session
     const incoming = activeSessionId;
     const sessionTabs = incoming != null
       ? terminalTabs.filter((t) => t.sessionId === incoming)
       : terminalTabs;
     const savedActive = sessionActiveTerminalRef.current.get(incoming);
-
     if (savedActive && sessionTabs.some((t) => t.terminalId === savedActive)) {
       setActiveTerminalId(savedActive);
     } else if (sessionTabs.length > 0) {
@@ -257,7 +359,6 @@ export function usePanelLayout(activeSessionId: string | null): PanelLayoutState
       const next = prev.filter((t) => t.terminalId !== terminalId);
       setActiveTerminalId((current) => {
         if (current !== terminalId) return current;
-        // Find the closest remaining tab in the same session
         const removed = prev.find((t) => t.terminalId === terminalId);
         const sameSess = next.filter((t) => t.sessionId === (removed?.sessionId ?? null));
         return sameSess.length > 0 ? sameSess[sameSess.length - 1].terminalId : null;
@@ -266,144 +367,66 @@ export function usePanelLayout(activeSessionId: string | null): PanelLayoutState
     });
   }, []);
 
-  // ── File explorer panel state ─────────────────────────────────────────
+  // ── Terminal panel ──────────────────────────────────────────────────────
+  const [showTerminal, setShowTerminal] = React.useState(false);
+  const [terminalPosition, setTerminalPosition] = React.useState<PanelPosition>(() =>
+    loadPos("pp-terminal-position", "center-bottom"),
+  );
+  const handleTerminalPositionChange = React.useCallback((pos: PanelPosition) => {
+    setTerminalPosition(pos);
+    savePos("pp-terminal-position", pos);
+  }, []);
+
+  // ── File explorer panel ─────────────────────────────────────────────────
   const [showFileExplorer, setShowFileExplorer] = React.useState(false);
-  const [filesPosition, setFilesPosition] = React.useState<PanelPosition>(() => {
-    try { return (localStorage.getItem("pp-files-position") as PanelPosition) ?? "left"; } catch { return "left"; }
-  });
-  const [filesWidth, setFilesWidth] = React.useState<number>(() => {
-    try {
-      const saved = localStorage.getItem("pp-files-width");
-      if (saved) return Math.max(160, Math.min(parseInt(saved, 10), 800));
-    } catch {}
-    return 280;
-  });
-  const [filesHeight, setFilesHeight] = React.useState<number>(() => {
-    try {
-      const saved = localStorage.getItem("pp-files-height");
-      if (saved) return Math.max(150, Math.min(parseInt(saved, 10), 800));
-    } catch {}
-    return 280;
-  });
-  const filesContainerRef = React.useRef<HTMLDivElement>(null);
-  const filesResizeDir = React.useRef<"width-right" | "width-left" | "height" | null>(null);
-
-  const handleFilesWidthLeftResizeStart = React.useCallback((e: React.PointerEvent) => {
-    e.preventDefault();
-    filesResizeDir.current = "width-left";
-    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-  }, []);
-  const handleFilesWidthRightResizeStart = React.useCallback((e: React.PointerEvent) => {
-    e.preventDefault();
-    filesResizeDir.current = "width-right";
-    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-  }, []);
-  const handleFilesHeightResizeStart = React.useCallback((e: React.PointerEvent) => {
-    e.preventDefault();
-    filesResizeDir.current = "height";
-    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-  }, []);
-  const handleFilesResizeMove = React.useCallback((e: React.PointerEvent) => {
-    const dir = filesResizeDir.current;
-    if (!dir || !filesContainerRef.current) return;
-    const rect = filesContainerRef.current.getBoundingClientRect();
-    if (dir === "width-right") {
-      setFilesWidth(Math.max(160, Math.min(rect.right - e.clientX, rect.width - 200)));
-    } else if (dir === "width-left") {
-      setFilesWidth(Math.max(160, Math.min(e.clientX - rect.left, rect.width - 200)));
-    } else {
-      setFilesHeight(Math.max(150, Math.min(rect.bottom - e.clientY, rect.height - 100)));
-    }
-  }, []);
-  const handleFilesResizeEnd = React.useCallback(() => {
-    const dir = filesResizeDir.current;
-    if (!dir) return;
-    filesResizeDir.current = null;
-    if (dir === "height") {
-      setFilesHeight((h) => { try { localStorage.setItem("pp-files-height", String(Math.round(h))); } catch {} return h; });
-    } else {
-      setFilesWidth((w) => { try { localStorage.setItem("pp-files-width", String(Math.round(w))); } catch {} return w; });
-    }
-  }, []);
-
+  const [filesPosition, setFilesPosition] = React.useState<PanelPosition>(() =>
+    loadPos("pp-files-position", "left-middle"),
+  );
   const handleFilesPositionChange = React.useCallback((pos: PanelPosition) => {
     setFilesPosition(pos);
-    try { localStorage.setItem("pp-files-position", pos); } catch {}
+    savePos("pp-files-position", pos);
   }, []);
 
+  // ── Git panel ───────────────────────────────────────────────────────────
+  const [showGit, setShowGit] = React.useState(false);
+  const [gitPosition, setGitPosition] = React.useState<PanelPosition>(() =>
+    loadPos("pp-git-position", "left-middle"),
+  );
+  const handleGitPositionChange = React.useCallback((pos: PanelPosition) => {
+    setGitPosition(pos);
+    savePos("pp-git-position", pos);
+  }, []);
+
+  // ── Triggers panel ──────────────────────────────────────────────────────
+  const [showTriggers, setShowTriggers] = React.useState(false);
+  const [triggersPosition, setTriggersPosition] = React.useState<PanelPosition>(() =>
+    loadPos("pp-triggers-position", "right-middle"),
+  );
+  const handleTriggersPositionChange = React.useCallback((pos: PanelPosition) => {
+    setTriggersPosition(pos);
+    savePos("pp-triggers-position", pos);
+  }, []);
+
+  // ── Combined-position change (moves all co-located panels) ─────────────
   const handleCombinedPositionChange = React.useCallback((pos: PanelPosition) => {
     handleTerminalPositionChange(pos);
     handleFilesPositionChange(pos);
   }, [handleTerminalPositionChange, handleFilesPositionChange]);
 
-  // ── File explorer drag-to-reposition ──────────────────────────────────
-  const isFilesDragging = React.useRef(false);
-  const filesDragZoneRef = React.useRef<PanelPosition | null>(null);
-  const [filesDragActive, setFilesDragActive] = React.useState(false);
-  const [filesDragZone, setFilesDragZone] = React.useState<PanelPosition | null>(null);
-
-  const handleFilesDragStart = React.useCallback((e: React.PointerEvent) => {
-    e.preventDefault();
-    isFilesDragging.current = true;
-    filesDragZoneRef.current = null;
-    setFilesDragActive(true);
-    setFilesDragZone(null);
-    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-  }, []);
-  const handleFilesDragMove = React.useCallback((e: React.PointerEvent) => {
-    if (!isFilesDragging.current || !filesContainerRef.current) return;
-    const rect = filesContainerRef.current.getBoundingClientRect();
-    const pctX = (e.clientX - rect.left) / rect.width;
-    const pctY = (e.clientY - rect.top) / rect.height;
-    let zone: PanelPosition | null = null;
-    if (pctY > 0.55) zone = "bottom";
-    else if (pctX > 0.65) zone = "right";
-    else if (pctX < 0.35) zone = "left";
-    filesDragZoneRef.current = zone;
-    setFilesDragZone(zone);
-  }, []);
-  const handleFilesDragEnd = React.useCallback(() => {
-    if (!isFilesDragging.current) return;
-    isFilesDragging.current = false;
-    const zone = filesDragZoneRef.current;
-    filesDragZoneRef.current = null;
-    setFilesDragActive(false);
-    setFilesDragZone(null);
-    if (zone) handleFilesPositionChange(zone);
-  }, [handleFilesPositionChange]);
-  const handleFilesOuterPointerMove = React.useCallback((e: React.PointerEvent) => {
-    handleFilesResizeMove(e);
-    handleFilesDragMove(e);
-  }, [handleFilesResizeMove, handleFilesDragMove]);
-  const handleFilesOuterPointerUp = React.useCallback(() => {
-    handleFilesResizeEnd();
-    handleFilesDragEnd();
-  }, [handleFilesResizeEnd, handleFilesDragEnd]);
-
-  // ── Git panel state ───────────────────────────────────────────────────
-  const [showGit, setShowGit] = React.useState(false);
-  const [gitPosition, setGitPosition] = React.useState<PanelPosition>(() => {
-    try { return (localStorage.getItem("pp-git-position") as PanelPosition) ?? "left"; } catch { return "left"; }
-  });
-  const handleGitPositionChange = React.useCallback((pos: PanelPosition) => {
-    setGitPosition(pos);
-    try { localStorage.setItem("pp-git-position", pos); } catch {}
-  }, []);
-
   return {
-    showTerminal,
-    setShowTerminal,
-    terminalPosition,
-    terminalHeight,
-    terminalWidth,
+    leftColumnWidth,
+    rightColumnWidth,
+    leftTopHeight,
+    leftBottomHeight,
+    rightTopHeight,
+    rightBottomHeight,
+    centerTopHeight,
+    centerBottomHeight,
     terminalColumnRef,
-    handleTerminalResizeStart,
-    handleTerminalPositionChange,
-    startPanelResizeForPosition,
+    startColumnWidthResize,
+    startZoneHeightResize,
     panelDragActive,
     panelDragZone,
-    handlePanelDragStart,
-    handleTerminalTabDragStart,
     startPanelDragWith,
     handleOuterPointerMove,
     handleOuterPointerUp,
@@ -415,24 +438,21 @@ export function usePanelLayout(activeSessionId: string | null): PanelLayoutState
     setActiveTerminalId,
     handleTerminalTabAdd,
     handleTerminalTabClose,
+    showTerminal,
+    setShowTerminal,
+    terminalPosition,
+    handleTerminalPositionChange,
     showFileExplorer,
     setShowFileExplorer,
     filesPosition,
-    filesWidth,
-    filesHeight,
-    filesContainerRef,
-    handleFilesWidthLeftResizeStart,
-    handleFilesWidthRightResizeStart,
-    handleFilesHeightResizeStart,
     handleFilesPositionChange,
-    filesDragActive,
-    filesDragZone,
-    handleFilesDragStart,
-    handleFilesOuterPointerMove,
-    handleFilesOuterPointerUp,
     showGit,
     setShowGit,
     gitPosition,
     handleGitPositionChange,
+    showTriggers,
+    setShowTriggers,
+    triggersPosition,
+    handleTriggersPositionChange,
   };
 }

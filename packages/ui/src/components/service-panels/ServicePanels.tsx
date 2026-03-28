@@ -219,7 +219,14 @@ export function useServicePanelState() {
     const getPanelPosition = useCallback((serviceId: string): PanelPosition => {
         // Ephemeral overrides take precedence over persisted positions so that
         // auto-placed panels render in the correct dock group for this session.
-        return ephemeralPositions.get(serviceId) ?? panelPositions.get(serviceId) ?? "right";
+        // Migrate old 3-value positions from localStorage to new 8-value format.
+        // Cast to string for comparison since localStorage may hold pre-migration values.
+        const stored: string | undefined = ephemeralPositions.get(serviceId) ?? panelPositions.get(serviceId);
+        if (!stored) return "right-middle";
+        if (stored === "right")  return "right-middle";
+        if (stored === "left")   return "left-middle";
+        if (stored === "bottom") return "center-bottom";
+        return stored as PanelPosition;
     }, [ephemeralPositions, panelPositions]);
 
     const setPanelPosition = useCallback((serviceId: string, pos: PanelPosition) => {

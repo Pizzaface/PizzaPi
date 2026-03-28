@@ -39,34 +39,26 @@ afterEach(() => {
   document.body.innerHTML = "";
 });
 
-describe("DockedPanelGroup", () => {
-  test("renders tabs and forwards resize + drag handlers", () => {
-    let resized = 0;
-    let dragged = 0;
+const TAB_PROPS = {
+  activeTabId: "terminal",
+  onActiveTabChange: () => {},
+  onPositionChange: () => {},
+  tabs: [
+    { id: "terminal", label: "Terminal", icon: <span>T</span>, content: <div>Terminal content</div> },
+    { id: "files",    label: "Files",    icon: <span>F</span>, content: <div>Files content</div>    },
+  ],
+};
 
+describe("DockedPanelGroup", () => {
+  test("renders tabs and forwards drag handler (right-middle zone)", () => {
+    let dragged = 0;
     const { container } = render(
       <DockedPanelGroup
-        position="right"
+        {...TAB_PROPS}
+        position="right-middle"
         size={320}
-        activeTabId="terminal"
-        onActiveTabChange={() => {}}
-        onPositionChange={() => {}}
         onDragStart={() => { dragged += 1; }}
-        onResizeStart={() => { resized += 1; }}
-        tabs={[
-          {
-            id: "terminal",
-            label: "Terminal",
-            icon: <span>T</span>,
-            content: <div>Terminal content</div>,
-          },
-          {
-            id: "files",
-            label: "Files",
-            icon: <span>F</span>,
-            content: <div>Files content</div>,
-          },
-        ]}
+        onResizeStart={() => {}}
       />,
     );
 
@@ -80,7 +72,27 @@ describe("DockedPanelGroup", () => {
     fireEvent.pointerDown(dragHandle!);
     expect(dragged).toBe(1);
 
-    const resizeHandle = elements.find((el) => (el as HTMLElement).className?.includes?.("cursor-col-resize")) as HTMLElement | undefined;
+    // NOTE: column-width resize handles for left-*/right-* zones are managed at
+    // the column level in App.tsx, NOT inside DockedPanelGroup. The component
+    // only renders an inline row-resize handle for center-top / center-bottom.
+    const colResizeHandle = elements.find((el) => (el as HTMLElement).className?.includes?.("cursor-col-resize"));
+    expect(colResizeHandle).toBeUndefined(); // by design — handled in App.tsx
+  });
+
+  test("center-bottom zone renders an inline row-resize handle", () => {
+    let resized = 0;
+    const { container } = render(
+      <DockedPanelGroup
+        {...TAB_PROPS}
+        position="center-bottom"
+        size={280}
+        onDragStart={() => {}}
+        onResizeStart={() => { resized += 1; }}
+      />,
+    );
+
+    const elements = Array.from(container.getElementsByTagName("*"));
+    const resizeHandle = elements.find((el) => (el as HTMLElement).className?.includes?.("cursor-row-resize")) as HTMLElement | undefined;
     expect(resizeHandle).toBeTruthy();
     fireEvent.pointerDown(resizeHandle!);
     expect(resized).toBe(1);
