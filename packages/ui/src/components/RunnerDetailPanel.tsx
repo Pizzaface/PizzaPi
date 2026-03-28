@@ -14,6 +14,7 @@ import { SkillsManager, type SkillInfo } from "@/components/SkillsManager";
 import { AgentsManager, type AgentInfo } from "@/components/AgentsManager";
 import { PluginsManager, type PluginInfo } from "@/components/PluginsManager";
 import { SandboxManager } from "@/components/SandboxManager";
+import { WebhooksManager } from "@/components/WebhooksManager";
 const UsageDashboard = React.lazy(() =>
     import("@/components/usage-dashboard/UsageDashboard").then((m) => ({
         default: m.UsageDashboard,
@@ -36,7 +37,7 @@ import {
 // Types
 // ---------------------------------------------------------------------------
 
-export type RunnerTab = "sessions" | "skills" | "agents" | "plugins" | "sandbox" | "hooks" | "usage";
+export type RunnerTab = "sessions" | "skills" | "agents" | "plugins" | "sandbox" | "hooks" | "webhooks" | "usage";
 
 interface RunnerHook {
     type: string;
@@ -260,6 +261,7 @@ const TABS: { key: RunnerTab; label: string; countKey?: "skills" | "agents" | "p
     { key: "agents", label: "Agents", countKey: "agents" },
     { key: "plugins", label: "Plugins", countKey: "plugins" },
     { key: "hooks", label: "Hooks", countKey: "hooks" },
+    { key: "webhooks", label: "Webhooks" },
     { key: "usage", label: "Usage" },
     { key: "sandbox", label: "Sandbox" },
 ];
@@ -410,6 +412,9 @@ export function RunnerDetailPanel({
             break;
         case "hooks":
             tabContent = <HooksList hooks={runner.hooks} />;
+            break;
+        case "webhooks":
+            tabContent = <WebhooksManager bare />;
             break;
         case "usage":
             tabContent = (

@@ -142,10 +142,11 @@ export interface WebhookTable {
     id: string;
     userId: string;
     name: string;
-    targetSessionId: string | null;
     secret: string;
     eventFilter: string | null;
     source: string;
+    cwd: string | null;
+    prompt: string | null;
     enabled: number;
     createdAt: string;
     updatedAt: string;

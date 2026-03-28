@@ -1,8 +1,8 @@
 /**
  * Tests for the Webhooks API route handler.
  *
- * Tests CRUD, HMAC validation, event filtering, disabled webhook behavior
- * — all with mocked dependencies.
+ * Tests CRUD, HMAC validation, event filtering, disabled webhook behavior,
+ * and spawn-on-fire — all with mocked dependencies.
  */
 
 import { describe, test, expect, beforeEach, afterAll, mock } from "bun:test";
@@ -21,10 +21,11 @@ const mockCreateWebhook = mock((_input: any) =>
         id: "wh-1",
         userId: "user-1",
         name: "Test Hook",
-        targetSessionId: "sess-1" as string | null,
         secret: "test-secret-abc",
         eventFilter: null as string[] | null,
         source: "custom",
+        cwd: null as string | null,
+        prompt: null as string | null,
         enabled: true,
         createdAt: "2026-01-01T00:00:00Z",
         updatedAt: "2026-01-01T00:00:00Z",
@@ -36,9 +37,6 @@ const mockUpdateWebhook = mock((_id: string, _userId: string, _input: any) =>
     Promise.resolve(null as any),
 );
 const mockDeleteWebhook = mock((_id: string, _userId: string) => Promise.resolve(false));
-const mockGetMostRecentActiveSessionId = mock((_userId: string) =>
-    Promise.resolve(null as string | null),
-);
 
 mock.module("../webhooks/store.js", () => ({
     createWebhook: mockCreateWebhook,
@@ -46,7 +44,6 @@ mock.module("../webhooks/store.js", () => ({
     listWebhooksForUser: mockListWebhooksForUser,
     updateWebhook: mockUpdateWebhook,
     deleteWebhook: mockDeleteWebhook,
-    getMostRecentActiveSessionId: mockGetMostRecentActiveSessionId,
 }));
 
 // ── Mock sio-registry ────────────────────────────────────────────────────────
@@ -56,12 +53,29 @@ const mockEmitToRelaySessionVerified = mock(
     (_id: string, _event: string, _data: any) => Promise.resolve(false),
 );
 const mockBroadcastToSessionViewers = mock((_sid: string, _event: string, _data: any) => {});
+const mockGetRunners = mock((_userId?: string) => Promise.resolve([] as any[]));
+const mockGetLocalRunnerSocket = mock((_runnerId: string) => null as any);
+const mockRecordRunnerSession = mock((_runnerId: string, _sessionId: string) => Promise.resolve());
+const mockLinkSessionToRunner = mock((_runnerId: string, _sessionId: string) => Promise.resolve());
 
 mock.module("../ws/sio-registry.js", () => ({
     getSharedSession: mockGetSharedSession,
     getLocalTuiSocket: mockGetLocalTuiSocket,
     emitToRelaySessionVerified: mockEmitToRelaySessionVerified,
     broadcastToSessionViewers: mockBroadcastToSessionViewers,
+    getRunners: mockGetRunners,
+    getLocalRunnerSocket: mockGetLocalRunnerSocket,
+    recordRunnerSession: mockRecordRunnerSession,
+    linkSessionToRunner: mockLinkSessionToRunner,
+}));
+
+// ── Mock runner-control ──────────────────────────────────────────────────────
+const mockWaitForSpawnAck = mock((_sessionId: string, _timeoutMs: number) =>
+    Promise.resolve({ ok: true }),
+);
+
+mock.module("../ws/runner-control.js", () => ({
+    waitForSpawnAck: mockWaitForSpawnAck,
 }));
 
 // ── Mock middleware ──────────────────────────────────────────────────────────
@@ -79,9 +93,6 @@ const mockPushTriggerHistory = mock((_sid: string, _entry: any) => Promise.resol
 mock.module("../sessions/trigger-store.js", () => ({
     pushTriggerHistory: mockPushTriggerHistory,
 }));
-
-// NOTE: @pizzapi/tools mock removed — log calls in tests are harmless,
-// and mock.module("@pizzapi/tools") poisons every other test file's logger.
 
 // Import AFTER mocks
 const { handleWebhooksRoute } = await import("./webhooks.js");
@@ -134,13 +145,13 @@ describe("POST /api/webhooks — create webhook", () => {
         mockRequireSession.mockReturnValue(
             Promise.resolve(Response.json({ error: "Unauthorized" }, { status: 401 })) as any,
         );
-        const [req, url] = makeReq("POST", "/api/webhooks", { name: "Hook", source: "github" });
+        const [req, url] = makeReq("POST", "/api/webhooks", { name: "Hook", source: "custom" });
         const res = await handleWebhooksRoute(req, url);
         expect(res?.status).toBe(401);
     });
 
     test("returns 400 when name is missing", async () => {
-        const [req, url] = makeReq("POST", "/api/webhooks", { source: "github" });
+        const [req, url] = makeReq("POST", "/api/webhooks", { source: "custom" });
         const res = await handleWebhooksRoute(req, url);
         expect(res?.status).toBe(400);
         const body = await res!.json();
@@ -158,7 +169,7 @@ describe("POST /api/webhooks — create webhook", () => {
     test("returns 400 when eventFilter is not array of strings", async () => {
         const [req, url] = makeReq("POST", "/api/webhooks", {
             name: "Hook",
-            source: "github",
+            source: "custom",
             eventFilter: "push",
         });
         const res = await handleWebhooksRoute(req, url);
@@ -170,10 +181,11 @@ describe("POST /api/webhooks — create webhook", () => {
             id: "wh-1",
             userId: "user-1",
             name: "My Hook",
-            targetSessionId: null,
             secret: "abc123",
             eventFilter: null,
-            source: "github",
+            source: "custom",
+            cwd: null,
+            prompt: null,
             enabled: true,
             createdAt: "2026-01-01T00:00:00Z",
             updatedAt: "2026-01-01T00:00:00Z",
@@ -182,7 +194,7 @@ describe("POST /api/webhooks — create webhook", () => {
 
         const [req, url] = makeReq("POST", "/api/webhooks", {
             name: "My Hook",
-            source: "github",
+            source: "custom",
         });
         const res = await handleWebhooksRoute(req, url);
         expect(res?.status).toBe(201);
@@ -191,15 +203,45 @@ describe("POST /api/webhooks — create webhook", () => {
         expect(body.webhook.secret).toBe("abc123");
     });
 
-    test("creates webhook with eventFilter", async () => {
+    test("creates webhook with cwd and prompt", async () => {
         const created = {
             id: "wh-2",
             userId: "user-1",
-            name: "Filtered Hook",
-            targetSessionId: null,
+            name: "Deploy Hook",
             secret: "abc123",
-            eventFilter: ["push", "pull_request"],
-            source: "github",
+            eventFilter: null,
+            source: "custom",
+            cwd: "/srv/my-project",
+            prompt: "Handle this deploy event",
+            enabled: true,
+            createdAt: "2026-01-01T00:00:00Z",
+            updatedAt: "2026-01-01T00:00:00Z",
+        };
+        mockCreateWebhook.mockReturnValue(Promise.resolve(created));
+
+        const [req, url] = makeReq("POST", "/api/webhooks", {
+            name: "Deploy Hook",
+            source: "custom",
+            cwd: "/srv/my-project",
+            prompt: "Handle this deploy event",
+        });
+        const res = await handleWebhooksRoute(req, url);
+        expect(res?.status).toBe(201);
+        const body = await res!.json();
+        expect(body.webhook.cwd).toBe("/srv/my-project");
+        expect(body.webhook.prompt).toBe("Handle this deploy event");
+    });
+
+    test("creates webhook with eventFilter", async () => {
+        const created = {
+            id: "wh-3",
+            userId: "user-1",
+            name: "Filtered Hook",
+            secret: "abc123",
+            eventFilter: ["deploy", "build"],
+            source: "custom",
+            cwd: null,
+            prompt: null,
             enabled: true,
             createdAt: "2026-01-01T00:00:00Z",
             updatedAt: "2026-01-01T00:00:00Z",
@@ -208,13 +250,13 @@ describe("POST /api/webhooks — create webhook", () => {
 
         const [req, url] = makeReq("POST", "/api/webhooks", {
             name: "Filtered Hook",
-            source: "github",
-            eventFilter: ["push", "pull_request"],
+            source: "custom",
+            eventFilter: ["deploy", "build"],
         });
         const res = await handleWebhooksRoute(req, url);
         expect(res?.status).toBe(201);
         const body = await res!.json();
-        expect(body.webhook.eventFilter).toEqual(["push", "pull_request"]);
+        expect(body.webhook.eventFilter).toEqual(["deploy", "build"]);
     });
 });
 
@@ -252,7 +294,7 @@ describe("GET /api/webhooks — list webhooks", () => {
                     id: "wh-1",
                     userId: "user-1",
                     name: "Hook 1",
-                    source: "github",
+                    source: "custom",
                     enabled: true,
                 },
             ]),
@@ -292,7 +334,7 @@ describe("GET /api/webhooks/:id — get webhook", () => {
     });
 
     test("returns webhook details", async () => {
-        const hook = { id: "wh-1", userId: "user-1", name: "Hook 1", source: "github", enabled: true };
+        const hook = { id: "wh-1", userId: "user-1", name: "Hook 1", source: "custom", enabled: true };
         mockGetWebhook.mockReturnValue(Promise.resolve(hook));
         const [req, url] = makeReq("GET", "/api/webhooks/wh-1");
         const res = await handleWebhooksRoute(req, url);
@@ -332,7 +374,7 @@ describe("PUT /api/webhooks/:id — update webhook", () => {
         mockGetWebhook.mockReturnValue(
             Promise.resolve({ id: "wh-1", userId: "user-1", name: "Hook" }),
         );
-        const updated = { id: "wh-1", userId: "user-1", name: "Updated", source: "github", enabled: true };
+        const updated = { id: "wh-1", userId: "user-1", name: "Updated", source: "custom", enabled: true };
         mockUpdateWebhook.mockReturnValue(Promise.resolve(updated));
 
         const [req, url] = makeReq("PUT", "/api/webhooks/wh-1", { name: "Updated", enabled: false });
@@ -340,6 +382,28 @@ describe("PUT /api/webhooks/:id — update webhook", () => {
         expect(res?.status).toBe(200);
         const body = await res!.json();
         expect(body.webhook.id).toBe("wh-1");
+    });
+
+    test("updates cwd and prompt", async () => {
+        mockGetWebhook.mockReturnValue(
+            Promise.resolve({ id: "wh-1", userId: "user-1", name: "Hook" }),
+        );
+        const updated = {
+            id: "wh-1", userId: "user-1", name: "Hook",
+            cwd: "/new/path", prompt: "Do the thing",
+        };
+        mockUpdateWebhook.mockReturnValue(Promise.resolve(updated));
+
+        const [req, url] = makeReq("PUT", "/api/webhooks/wh-1", {
+            cwd: "/new/path",
+            prompt: "Do the thing",
+        });
+        const res = await handleWebhooksRoute(req, url);
+        expect(res?.status).toBe(200);
+        expect(mockUpdateWebhook).toHaveBeenCalledTimes(1);
+        const call = mockUpdateWebhook.mock.calls[0] as any[];
+        expect(call[2].cwd).toBe("/new/path");
+        expect(call[2].prompt).toBe("Do the thing");
     });
 
     test("can clear eventFilter by setting to null", async () => {
@@ -352,7 +416,6 @@ describe("PUT /api/webhooks/:id — update webhook", () => {
         const [req, url] = makeReq("PUT", "/api/webhooks/wh-1", { eventFilter: null });
         const res = await handleWebhooksRoute(req, url);
         expect(res?.status).toBe(200);
-        // updateWebhook was called with eventFilter: null
         expect(mockUpdateWebhook).toHaveBeenCalledTimes(1);
     });
 });
@@ -389,16 +452,34 @@ const ACTIVE_WEBHOOK = {
     id: "wh-1",
     userId: "user-1",
     name: "Test Hook",
-    targetSessionId: "sess-1",
     secret: "test-secret-xyz",
     eventFilter: null,
     source: "custom",
+    cwd: "/srv/project",
+    prompt: "Handle this webhook",
     enabled: true,
     createdAt: "2026-01-01T00:00:00Z",
     updatedAt: "2026-01-01T00:00:00Z",
 };
 
-const ACTIVE_SESSION = { userId: "user-1", sessionId: "sess-1" };
+const MOCK_RUNNER = { runnerId: "runner-1", userId: "user-1", name: "My Runner", roots: [] };
+
+/**
+ * Set up mocks so that fire spawns a session and delivers the trigger.
+ */
+function setupSpawnAndDeliverMocks() {
+    mockGetRunners.mockReturnValue(Promise.resolve([MOCK_RUNNER]));
+    const runnerEmitMock = mock(() => {});
+    mockGetLocalRunnerSocket.mockReturnValue({ emit: runnerEmitMock });
+    mockWaitForSpawnAck.mockReturnValue(Promise.resolve({ ok: true }));
+
+    // After spawn, the session socket must appear
+    const sessionEmitMock = mock(() => {});
+    mockGetLocalTuiSocket.mockReturnValue({ connected: true, emit: sessionEmitMock });
+    mockGetSharedSession.mockReturnValue(Promise.resolve({ userId: "user-1" }));
+
+    return { runnerEmitMock, sessionEmitMock };
+}
 
 describe("POST /api/webhooks/:id/fire — HMAC validation", () => {
     beforeEach(() => {
@@ -407,6 +488,11 @@ describe("POST /api/webhooks/:id/fire — HMAC validation", () => {
         mockGetLocalTuiSocket.mockReset();
         mockEmitToRelaySessionVerified.mockReset();
         mockPushTriggerHistory.mockReset();
+        mockGetRunners.mockReset();
+        mockGetLocalRunnerSocket.mockReset();
+        mockWaitForSpawnAck.mockReset();
+        mockRecordRunnerSession.mockReset();
+        mockLinkSessionToRunner.mockReset();
     });
 
     test("returns 404 for unknown webhook", async () => {
@@ -448,11 +534,9 @@ describe("POST /api/webhooks/:id/fire — HMAC validation", () => {
         expect(body.error).toContain("signature");
     });
 
-    test("accepts valid HMAC signature and fires trigger", async () => {
+    test("spawns session and delivers trigger on valid HMAC", async () => {
         mockGetWebhook.mockReturnValue(Promise.resolve(ACTIVE_WEBHOOK));
-        mockGetSharedSession.mockReturnValue(Promise.resolve(ACTIVE_SESSION));
-        const emitMock = mock(() => {});
-        mockGetLocalTuiSocket.mockReturnValue({ connected: true, emit: emitMock });
+        const { sessionEmitMock } = setupSpawnAndDeliverMocks();
 
         const body = { event: "deploy", repo: "test/repo" };
         const [req, url] = makeFireReq("/api/webhooks/wh-1/fire", body, ACTIVE_WEBHOOK.secret);
@@ -461,46 +545,26 @@ describe("POST /api/webhooks/:id/fire — HMAC validation", () => {
         const resBody = await res!.json();
         expect(resBody.ok).toBe(true);
         expect(resBody.triggerId).toMatch(/^wh_/);
+        expect(resBody.sessionId).toBeTruthy();
 
-        expect(emitMock).toHaveBeenCalledTimes(1);
+        // Session should have received the trigger
+        expect(sessionEmitMock).toHaveBeenCalledTimes(1);
         expect(mockPushTriggerHistory).toHaveBeenCalledTimes(1);
+        // Runner spawn should have been called
+        expect(mockRecordRunnerSession).toHaveBeenCalledTimes(1);
+        expect(mockLinkSessionToRunner).toHaveBeenCalledTimes(1);
     });
 
-    test("falls back to cross-node delivery", async () => {
+    test("returns 503 when no runner is connected", async () => {
         mockGetWebhook.mockReturnValue(Promise.resolve(ACTIVE_WEBHOOK));
-        mockGetSharedSession.mockReturnValue(Promise.resolve(ACTIVE_SESSION));
-        mockGetLocalTuiSocket.mockReturnValue(null);
-        mockEmitToRelaySessionVerified.mockReturnValue(Promise.resolve(true));
-
-        const body = { event: "test" };
-        const [req, url] = makeFireReq("/api/webhooks/wh-1/fire", body, ACTIVE_WEBHOOK.secret);
-        const res = await handleWebhooksRoute(req, url);
-        expect(res?.status).toBe(200);
-        expect(mockEmitToRelaySessionVerified).toHaveBeenCalledTimes(1);
-    });
-
-    test("returns 503 when session not connected", async () => {
-        mockGetWebhook.mockReturnValue(Promise.resolve(ACTIVE_WEBHOOK));
-        mockGetSharedSession.mockReturnValue(Promise.resolve(ACTIVE_SESSION));
-        mockGetLocalTuiSocket.mockReturnValue(null);
-        mockEmitToRelaySessionVerified.mockReturnValue(Promise.resolve(false));
+        mockGetRunners.mockReturnValue(Promise.resolve([]));
 
         const body = { event: "test" };
         const [req, url] = makeFireReq("/api/webhooks/wh-1/fire", body, ACTIVE_WEBHOOK.secret);
         const res = await handleWebhooksRoute(req, url);
         expect(res?.status).toBe(503);
-    });
-
-    test("returns 404 when target session belongs to different user", async () => {
-        mockGetWebhook.mockReturnValue(Promise.resolve(ACTIVE_WEBHOOK));
-        mockGetSharedSession.mockReturnValue(
-            Promise.resolve({ userId: "user-2", sessionId: "sess-1" }),
-        );
-
-        const body = { event: "test" };
-        const [req, url] = makeFireReq("/api/webhooks/wh-1/fire", body, ACTIVE_WEBHOOK.secret);
-        const res = await handleWebhooksRoute(req, url);
-        expect(res?.status).toBe(404);
+        const resBody = await res!.json();
+        expect(resBody.error).toContain("runner");
     });
 });
 
@@ -511,6 +575,11 @@ describe("POST /api/webhooks/:id/fire — event filtering", () => {
         mockGetLocalTuiSocket.mockReset();
         mockEmitToRelaySessionVerified.mockReset();
         mockPushTriggerHistory.mockReset();
+        mockGetRunners.mockReset();
+        mockGetLocalRunnerSocket.mockReset();
+        mockWaitForSpawnAck.mockReset();
+        mockRecordRunnerSession.mockReset();
+        mockLinkSessionToRunner.mockReset();
     });
 
     const FILTERED_WEBHOOK = {
@@ -521,9 +590,7 @@ describe("POST /api/webhooks/:id/fire — event filtering", () => {
 
     test("forwards matching events", async () => {
         mockGetWebhook.mockReturnValue(Promise.resolve(FILTERED_WEBHOOK));
-        mockGetSharedSession.mockReturnValue(Promise.resolve(ACTIVE_SESSION));
-        const emitMock = mock(() => {});
-        mockGetLocalTuiSocket.mockReturnValue({ connected: true, emit: emitMock });
+        const { sessionEmitMock } = setupSpawnAndDeliverMocks();
 
         const body = { type: "deploy", env: "production" };
         const [req, url] = makeFireReq("/api/webhooks/wh-1/fire", body, ACTIVE_WEBHOOK.secret);
@@ -532,14 +599,11 @@ describe("POST /api/webhooks/:id/fire — event filtering", () => {
         const resBody = await res!.json();
         expect(resBody.ok).toBe(true);
         expect(resBody.filtered).toBeUndefined();
-        expect(emitMock).toHaveBeenCalledTimes(1);
+        expect(sessionEmitMock).toHaveBeenCalledTimes(1);
     });
 
     test("silently drops events not in filter", async () => {
         mockGetWebhook.mockReturnValue(Promise.resolve(FILTERED_WEBHOOK));
-        mockGetSharedSession.mockReturnValue(Promise.resolve(ACTIVE_SESSION));
-        const emitMock = mock(() => {});
-        mockGetLocalTuiSocket.mockReturnValue({ connected: true, emit: emitMock });
 
         const body = { type: "star", action: "created" };
         const [req, url] = makeFireReq("/api/webhooks/wh-1/fire", body, ACTIVE_WEBHOOK.secret);
@@ -548,50 +612,79 @@ describe("POST /api/webhooks/:id/fire — event filtering", () => {
         const resBody = await res!.json();
         expect(resBody.ok).toBe(true);
         expect(resBody.filtered).toBe(true);
-        // Should NOT have delivered anything
-        expect(emitMock).not.toHaveBeenCalled();
+        // Should NOT have spawned or delivered anything
+        expect(mockGetRunners).not.toHaveBeenCalled();
         expect(mockPushTriggerHistory).not.toHaveBeenCalled();
     });
 });
 
-describe("POST /api/webhooks/:id/fire — targetSessionId fallback", () => {
+describe("POST /api/webhooks/:id/fire — spawn behavior", () => {
     beforeEach(() => {
         mockGetWebhook.mockReset();
         mockGetSharedSession.mockReset();
         mockGetLocalTuiSocket.mockReset();
-        mockGetMostRecentActiveSessionId.mockReset();
+        mockEmitToRelaySessionVerified.mockReset();
         mockPushTriggerHistory.mockReset();
+        mockGetRunners.mockReset();
+        mockGetLocalRunnerSocket.mockReset();
+        mockWaitForSpawnAck.mockReset();
+        mockRecordRunnerSession.mockReset();
+        mockLinkSessionToRunner.mockReset();
     });
 
-    test("uses most recent active session when targetSessionId is null", async () => {
-        const nullTargetHook = { ...ACTIVE_WEBHOOK, targetSessionId: null };
-        mockGetWebhook.mockReturnValue(Promise.resolve(nullTargetHook));
-        mockGetMostRecentActiveSessionId.mockReturnValue(Promise.resolve("sess-fallback"));
-        mockGetSharedSession.mockReturnValue(
-            Promise.resolve({ userId: "user-1", sessionId: "sess-fallback" }),
-        );
-        const emitMock = mock(() => {});
-        mockGetLocalTuiSocket.mockReturnValue({ connected: true, emit: emitMock });
+    test("passes cwd and prompt to runner spawn", async () => {
+        const hook = { ...ACTIVE_WEBHOOK, cwd: "/my/project", prompt: "Handle deploy" };
+        mockGetWebhook.mockReturnValue(Promise.resolve(hook));
+
+        mockGetRunners.mockReturnValue(Promise.resolve([MOCK_RUNNER]));
+        const runnerEmitMock = mock(() => {});
+        mockGetLocalRunnerSocket.mockReturnValue({ emit: runnerEmitMock });
+        mockWaitForSpawnAck.mockReturnValue(Promise.resolve({ ok: true }));
+        const sessionEmitMock = mock(() => {});
+        mockGetLocalTuiSocket.mockReturnValue({ connected: true, emit: sessionEmitMock });
+
+        const body = { event: "deploy" };
+        const [req, url] = makeFireReq("/api/webhooks/wh-1/fire", body, hook.secret);
+        const res = await handleWebhooksRoute(req, url);
+        expect(res?.status).toBe(200);
+
+        // Verify runner received cwd and prompt
+        expect(runnerEmitMock).toHaveBeenCalledTimes(1);
+        const spawnArgs = (runnerEmitMock.mock.calls[0] as any[])[1];
+        expect(spawnArgs.cwd).toBe("/my/project");
+        expect(spawnArgs.prompt).toBe("Handle deploy");
+    });
+
+    test("returns 502 when runner rejects spawn", async () => {
+        mockGetWebhook.mockReturnValue(Promise.resolve(ACTIVE_WEBHOOK));
+        mockGetRunners.mockReturnValue(Promise.resolve([MOCK_RUNNER]));
+        const runnerEmitMock = mock(() => {});
+        mockGetLocalRunnerSocket.mockReturnValue({ emit: runnerEmitMock });
+        mockWaitForSpawnAck.mockReturnValue(Promise.resolve({ ok: false, message: "cwd not allowed" }));
+
+        const body = { event: "test" };
+        const [req, url] = makeFireReq("/api/webhooks/wh-1/fire", body, ACTIVE_WEBHOOK.secret);
+        const res = await handleWebhooksRoute(req, url);
+        expect(res?.status).toBe(502);
+    });
+
+    test("cross-node fallback delivery", async () => {
+        mockGetWebhook.mockReturnValue(Promise.resolve(ACTIVE_WEBHOOK));
+        mockGetRunners.mockReturnValue(Promise.resolve([MOCK_RUNNER]));
+        const runnerEmitMock = mock(() => {});
+        mockGetLocalRunnerSocket.mockReturnValue({ emit: runnerEmitMock });
+        mockWaitForSpawnAck.mockReturnValue(Promise.resolve({ ok: true }));
+
+        // No local socket, but shared session exists (cross-node)
+        mockGetLocalTuiSocket.mockReturnValue(null);
+        mockGetSharedSession.mockReturnValue(Promise.resolve({ userId: "user-1" }));
+        mockEmitToRelaySessionVerified.mockReturnValue(Promise.resolve(true));
 
         const body = { event: "test" };
         const [req, url] = makeFireReq("/api/webhooks/wh-1/fire", body, ACTIVE_WEBHOOK.secret);
         const res = await handleWebhooksRoute(req, url);
         expect(res?.status).toBe(200);
-        expect(mockGetMostRecentActiveSessionId).toHaveBeenCalledWith("user-1");
-        expect(emitMock).toHaveBeenCalledTimes(1);
-    });
-
-    test("returns 404 when no active session found for user", async () => {
-        const nullTargetHook = { ...ACTIVE_WEBHOOK, targetSessionId: null };
-        mockGetWebhook.mockReturnValue(Promise.resolve(nullTargetHook));
-        mockGetMostRecentActiveSessionId.mockReturnValue(Promise.resolve(null));
-
-        const body = { event: "test" };
-        const [req, url] = makeFireReq("/api/webhooks/wh-1/fire", body, ACTIVE_WEBHOOK.secret);
-        const res = await handleWebhooksRoute(req, url);
-        expect(res?.status).toBe(404);
-        const resBody = await res!.json();
-        expect(resBody.error).toContain("No active session");
+        expect(mockEmitToRelaySessionVerified).toHaveBeenCalledTimes(1);
     });
 });
 
