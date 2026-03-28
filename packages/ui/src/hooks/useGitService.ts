@@ -60,7 +60,7 @@ export interface UseGitServiceReturn {
     fetchStatus: () => void;
     fetchDiff: (path: string, staged?: boolean) => Promise<string>;
     fetchBranches: () => void;
-    checkout: (branch: string) => void;
+    checkout: (branch: string, isRemote?: boolean) => void;
     stage: (paths: string[]) => void;
     stageAll: () => void;
     unstage: (paths: string[]) => void;
@@ -82,6 +82,12 @@ export function useGitService(cwd: string): UseGitServiceReturn {
     // Track pending diff requests: requestId → resolve callback
     const pendingDiffsRef = useRef(new Map<string, (diff: string) => void>());
 
+    // Generation counter — incremented on cwd change. Responses from stale
+    // generations are discarded so a slow response from the old cwd doesn't
+    // overwrite the new session's state.
+    const generationRef = useRef(0);
+    const statusGenRef = useRef(0); // generation when last status request was sent
+
     // Generate unique request IDs
     const nextId = useRef(0);
     const makeRequestId = useCallback(() => `git-${Date.now()}-${nextId.current++}`, []);
@@ -100,6 +106,8 @@ export function useGitService(cwd: string): UseGitServiceReturn {
 
             switch (type) {
                 case "git_status_result": {
+                    // Ignore stale responses from a previous cwd
+                    if (statusGenRef.current !== generationRef.current) break;
                     setLoading(false);
                     if (payload.ok) {
                         setStatus({
@@ -168,6 +176,7 @@ export function useGitService(cwd: string): UseGitServiceReturn {
 
     const fetchStatus = useCallback(() => {
         if (!available) return;
+        statusGenRef.current = generationRef.current;
         setLoading(true);
         setError(null);
         send("git_status", { cwd }, makeRequestId());
@@ -198,11 +207,11 @@ export function useGitService(cwd: string): UseGitServiceReturn {
         send("git_branches", { cwd }, makeRequestId());
     }, [available, send, cwd, makeRequestId]);
 
-    const checkout = useCallback((branch: string) => {
+    const checkout = useCallback((branch: string, isRemote = false) => {
         if (!available) return;
         setOperationInProgress("checkout");
         setLastOperationResult(null);
-        send("git_checkout", { cwd, branch }, makeRequestId());
+        send("git_checkout", { cwd, branch, isRemote }, makeRequestId());
     }, [available, send, cwd, makeRequestId]);
 
     const stage = useCallback((paths: string[]) => {
@@ -251,11 +260,22 @@ export function useGitService(cwd: string): UseGitServiceReturn {
         setLastOperationResult(null);
     }, []);
 
-    // Auto-fetch status when service becomes available or cwd changes
+    // Clear stale state and re-fetch when cwd changes or service becomes available.
+    // Bump generation so in-flight responses from the old cwd are discarded.
     useEffect(() => {
+        generationRef.current++;
+        // Clear state immediately so old data doesn't flash
+        setStatus(null);
+        setBranches([]);
+        setCurrentBranch("");
+        setError(null);
+        setOperationInProgress(null);
+        setLastOperationResult(null);
+        pendingDiffsRef.current.clear();
+
         if (available && cwd) {
+            statusGenRef.current = generationRef.current;
             setLoading(true);
-            setError(null);
             send("git_status", { cwd }, makeRequestId());
         }
     }, [available, cwd]); // eslint-disable-line react-hooks/exhaustive-deps

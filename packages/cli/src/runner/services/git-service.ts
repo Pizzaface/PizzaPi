@@ -136,36 +136,40 @@ export class GitService implements ServiceHandler {
         if (!cwd) return;
 
         try {
-            const [branchResult, statusResult, diffStagedResult, abResult] = await Promise.allSettled([
+            const [branchResult, toplevelResult, statusResult, diffStagedResult, abResult] = await Promise.allSettled([
                 execFileAsync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd, timeout: 5000 }),
-                execFileAsync("git", ["status", "--porcelain=v1", "-uall"], { cwd, timeout: 10000 }),
+                execFileAsync("git", ["rev-parse", "--show-toplevel"], { cwd, timeout: 5000 }),
+                // Use -z for NUL-delimited output — avoids C-quoting of filenames
+                // with spaces/special chars and makes parsing unambiguous.
+                execFileAsync("git", ["status", "--porcelain=v1", "-uall", "-z"], { cwd, timeout: 10000 }),
                 execFileAsync("git", ["diff", "--cached", "--stat"], { cwd, timeout: 10000 }),
                 execFileAsync("git", ["rev-list", "--left-right", "--count", "HEAD...@{u}"], { cwd, timeout: 5000 }),
             ]);
 
             const branch = branchResult.status === "fulfilled" ? branchResult.value.stdout.trim() : "";
+            const repoRoot = toplevelResult.status === "fulfilled" ? toplevelResult.value.stdout.trim() : cwd;
             const statusOutput = statusResult.status === "fulfilled" ? statusResult.value.stdout : "";
             const diffStaged = diffStagedResult.status === "fulfilled" ? diffStagedResult.value.stdout : "";
 
-            // Parse porcelain v1 output.
+            // Parse porcelain v1 -z output (NUL-delimited).
+            // Format: XY PATH\0 (for renames: XY ORIG\0NEW\0)
             // IMPORTANT: preserve the raw 2-char XY status (e.g. " M", "M ", "MM", "??").
-            // The UI's partition logic depends on checking X (index) and Y (worktree)
-            // positions separately. Trimming collapses " M" and "M " into "M", breaking
-            // the staged/unstaged categorization.
             const changes: Array<{ status: string; path: string; originalPath?: string }> = [];
-            for (const line of statusOutput.split("\n")) {
-                if (!line.trim()) continue;
-                const xy = line.substring(0, 2);
-                const rest = line.substring(3);
-                const arrowIdx = rest.indexOf(" -> ");
-                if (arrowIdx >= 0) {
-                    changes.push({
-                        status: xy,
-                        path: rest.substring(arrowIdx + 4),
-                        originalPath: rest.substring(0, arrowIdx),
-                    });
+            const entries = statusOutput.split("\0");
+            let i = 0;
+            while (i < entries.length) {
+                const entry = entries[i];
+                if (!entry || entry.length < 3) { i++; continue; }
+                const xy = entry.substring(0, 2);
+                const path = entry.substring(3);
+                // Renames (R/C) have a second NUL-delimited field for the new path
+                if (xy[0] === "R" || xy[0] === "C") {
+                    const newPath = entries[i + 1] ?? path;
+                    changes.push({ status: xy, path: newPath, originalPath: path });
+                    i += 2;
                 } else {
-                    changes.push({ status: xy, path: rest });
+                    changes.push({ status: xy, path });
+                    i++;
                 }
             }
 
@@ -182,6 +186,7 @@ export class GitService implements ServiceHandler {
             this.emit("git_status_result", {
                 ok: true,
                 branch,
+                repoRoot,
                 changes,
                 ahead,
                 behind,
@@ -212,10 +217,17 @@ export class GitService implements ServiceHandler {
         }
 
         try {
+            // Resolve repo root — paths from git status are repo-root-relative,
+            // so diff must run from repo root for paths to resolve correctly.
+            const { stdout: toplevel } = await execFileAsync(
+                "git", ["rev-parse", "--show-toplevel"], { cwd, timeout: 5000 },
+            );
+            const repoRoot = toplevel.trim() || cwd;
+
             const args = staged
                 ? ["diff", "--cached", "--", filePath]
                 : ["diff", "--", filePath];
-            const { stdout: diff } = await execFileAsync("git", args, { cwd, timeout: 10000 });
+            const { stdout: diff } = await execFileAsync("git", args, { cwd: repoRoot, timeout: 10000 });
             this.emit("git_diff_result", { ok: true, diff }, requestId, sessionId);
         } catch (err) {
             this.emitError("git_diff_result", err instanceof Error ? err.message : String(err), requestId, sessionId);
@@ -323,26 +335,21 @@ export class GitService implements ServiceHandler {
             return;
         }
 
+        // The UI passes isRemote explicitly based on which section the user
+        // clicked (local vs remote). This avoids name heuristics that misclassify
+        // local branches like "feature/foo" when a remote named "feature" exists.
+        const isRemote = payload.isRemote === true;
+
         try {
-            // Detect remote tracking branches (e.g. "origin/foo", "upstream/bar").
-            // Extract local branch name and use `git switch --track` for safe checkout.
-            const remoteMatch = branch.match(/^([^/]+)\/(.+)$/);
             let targetBranch = branch;
-
-            // Check if this looks like a remote branch by verifying the remote exists
-            let isRemoteRef = false;
-            if (remoteMatch) {
-                try {
-                    await execFileAsync("git", ["remote", "get-url", remoteMatch[1]], { cwd, timeout: 5000 });
-                    isRemoteRef = true;
-                } catch {
-                    // Not a known remote — treat as a local branch name containing "/"
-                }
-            }
-
             const args: string[] = [];
-            if (isRemoteRef && remoteMatch) {
-                targetBranch = remoteMatch[2];
+
+            if (isRemote) {
+                // Remote branch: extract local name from "remote/branch" and create tracking branch
+                const slashIdx = branch.indexOf("/");
+                if (slashIdx > 0) {
+                    targetBranch = branch.substring(slashIdx + 1);
+                }
                 // Check if a local branch with this name already exists
                 try {
                     await execFileAsync("git", ["rev-parse", "--verify", `refs/heads/${targetBranch}`], { cwd, timeout: 5000 });
@@ -353,6 +360,7 @@ export class GitService implements ServiceHandler {
                     args.push("checkout", "-b", targetBranch, branch);
                 }
             } else {
+                // Local branch — check out directly
                 args.push("checkout", targetBranch);
             }
 
@@ -396,8 +404,15 @@ export class GitService implements ServiceHandler {
         }
 
         try {
+            // Resolve repo root — paths from git status are repo-root-relative,
+            // so operations must run from repo root for paths to resolve correctly.
+            const { stdout: toplevel } = await execFileAsync(
+                "git", ["rev-parse", "--show-toplevel"], { cwd, timeout: 5000 },
+            );
+            const repoRoot = toplevel.trim() || cwd;
+
             const args = all ? ["add", "--all"] : ["add", "--", ...paths];
-            await execFileAsync("git", args, { cwd, timeout: 15000 });
+            await execFileAsync("git", args, { cwd: repoRoot, timeout: 15000 });
             this.emit("git_stage_result", { ok: true }, requestId, sessionId);
         } catch (err) {
             this.emitError("git_stage_result", err instanceof Error ? err.message : String(err), requestId, sessionId);
@@ -432,10 +447,18 @@ export class GitService implements ServiceHandler {
         }
 
         try {
+            // Resolve repo root — run from there so repo-root-relative paths work.
+            // For unstage-all, use ":/" pathspec (magic "repo root") instead of "."
+            // which would only cover the cwd subtree.
+            const { stdout: toplevel } = await execFileAsync(
+                "git", ["rev-parse", "--show-toplevel"], { cwd, timeout: 5000 },
+            );
+            const repoRoot = toplevel.trim() || cwd;
+
             const args = all
-                ? ["restore", "--staged", "."]
+                ? ["restore", "--staged", ":/"]
                 : ["restore", "--staged", "--", ...paths];
-            await execFileAsync("git", args, { cwd, timeout: 15000 });
+            await execFileAsync("git", args, { cwd: repoRoot, timeout: 15000 });
             this.emit("git_unstage_result", { ok: true }, requestId, sessionId);
         } catch (err) {
             this.emitError("git_unstage_result", err instanceof Error ? err.message : String(err), requestId, sessionId);
