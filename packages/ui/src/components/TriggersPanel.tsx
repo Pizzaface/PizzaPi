@@ -1,8 +1,14 @@
 /**
- * TriggersPanel — shows trigger history, linked child sessions, and a manual send form.
+ * TriggersPanel — status-first view of triggers, grouped by linked session.
  *
- * Fetches from GET /api/sessions/:id/triggers and auto-refreshes every 10s.
- * Also shows the runner's trigger catalog (available trigger types) with subscribe/unsubscribe UI.
+ * Shows "Awaiting Response" triggers prominently at the top, then linked
+ * sessions with expandable event history, and finally non-session triggers.
+ *
+ * Supports real-time `trigger_status_update` events for live progress text
+ * (e.g. "Working on step 3/7") without creating new history entries.
+ *
+ * Fetches from GET /api/sessions/:id/triggers and listens for viewer
+ * socket events for instant refresh.
  */
 import * as React from "react";
 import {
@@ -22,6 +28,10 @@ import {
   BellRing,
   BellOff,
   BookOpen,
+  CheckCircle2,
+  AlertCircle,
+  HelpCircle,
+  XCircle,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -58,11 +68,28 @@ export interface TriggerSubscription {
   runnerId: string;
 }
 
-interface LinkedSession {
+/** Ephemeral status update for a trigger (not persisted in history). */
+interface TriggerStatusUpdate {
+  triggerId: string;
+  sourceSessionId: string;
+  statusText: string;
+  ts: string;
+}
+
+/** A linked child session derived from trigger history. */
+interface LinkedSessionGroup {
+  /** Session ID of the linked child */
   source: string;
+  /** All trigger events from this session, most recent first */
+  events: TriggerHistoryEntry[];
+  /** The most recent pending trigger (no response), if any */
+  pendingTrigger: TriggerHistoryEntry | null;
+  /** Most recent trigger type */
   lastType: string;
+  /** Most recent trigger timestamp */
   lastTs: string;
-  count: number;
+  /** Summary from the most recent trigger */
+  lastSummary?: string;
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -90,7 +117,6 @@ function SourceIcon({ source, className }: { source: string; className?: string 
   if (src.includes("cron") || src.includes("schedule")) return <Clock className={cn("size-3.5", className)} />;
   if (src.includes("service")) return <Settings className={cn("size-3.5", className)} />;
   if (src === "api" || src.startsWith("external")) return <Globe className={cn("size-3.5", className)} />;
-  // Looks like a session (hex ID or named session) — treat as child session
   if (src.length >= 8 && /^[a-z0-9-]+$/.test(src)) return <Link className={cn("size-3.5", className)} />;
   return <Wrench className={cn("size-3.5", className)} />;
 }
@@ -101,26 +127,113 @@ function sourceLabel(source: string): string {
   return source;
 }
 
-/** Extract linked child sessions from inbound triggers that aren't from "api". */
-function deriveLinkedSessions(triggers: TriggerHistoryEntry[]): LinkedSession[] {
-  const map = new Map<string, LinkedSession>();
+/** Truncate a session ID for display. */
+function truncateId(id: string, maxLen = 12): string {
+  if (id.length <= maxLen) return id;
+  return id.slice(0, maxLen) + "…";
+}
+
+/** Known trigger types that require a response (interactive triggers). */
+const RESPONSE_TRIGGER_TYPES = new Set([
+  "ask_user_question",
+  "plan_review",
+  "session_complete",
+  "escalate",
+]);
+
+/** Whether a trigger is "pending" — inbound, requires response, and has none. */
+function isPendingTrigger(entry: TriggerHistoryEntry): boolean {
+  if (entry.direction !== "inbound") return false;
+  if (entry.response) return false;
+  return RESPONSE_TRIGGER_TYPES.has(entry.type);
+}
+
+/** Derive the status of a linked session from its most recent trigger. */
+function deriveSessionStatus(group: LinkedSessionGroup): {
+  label: string;
+  color: "amber" | "emerald" | "red" | "blue" | "zinc";
+  icon: React.ReactNode;
+} {
+  if (group.pendingTrigger) {
+    const type = group.pendingTrigger.type;
+    if (type === "ask_user_question") {
+      return { label: "asking question", color: "blue", icon: <HelpCircle className="size-3.5" /> };
+    }
+    if (type === "plan_review") {
+      return { label: "awaiting plan review", color: "amber", icon: <Clock className="size-3.5" /> };
+    }
+    if (type === "session_complete") {
+      return { label: "completed", color: "emerald", icon: <CheckCircle2 className="size-3.5" /> };
+    }
+    if (type === "escalate") {
+      return { label: "escalated", color: "red", icon: <AlertCircle className="size-3.5" /> };
+    }
+    return { label: "awaiting response", color: "amber", icon: <Clock className="size-3.5" /> };
+  }
+
+  // No pending trigger — check the most recent event's response
+  const latest = group.events[0];
+  if (!latest) return { label: "active", color: "emerald", icon: <CheckCircle2 className="size-3.5" /> };
+
+  if (latest.type === "session_complete") {
+    const action = latest.response?.action;
+    if (action === "ack") {
+      return { label: "completed", color: "zinc", icon: <CheckCircle2 className="size-3.5" /> };
+    }
+    return { label: "completed", color: "emerald", icon: <CheckCircle2 className="size-3.5" /> };
+  }
+
+  if (latest.response) {
+    return { label: "responded", color: "emerald", icon: <CheckCircle2 className="size-3.5" /> };
+  }
+
+  return { label: "active", color: "emerald", icon: <CheckCircle2 className="size-3.5" /> };
+}
+
+/** Group triggers by linked session source. Returns groups sorted by most recent first. */
+function groupByLinkedSession(triggers: TriggerHistoryEntry[]): {
+  sessionGroups: LinkedSessionGroup[];
+  otherEvents: TriggerHistoryEntry[];
+} {
+  const groupMap = new Map<string, TriggerHistoryEntry[]>();
+  const otherEvents: TriggerHistoryEntry[] = [];
+
   for (const t of triggers) {
-    // Only show inbound triggers from non-external sources (child sessions)
-    if (t.direction !== "inbound") continue;
-    if (t.source === "api" || t.source.startsWith("external:")) continue;
-    const existing = map.get(t.source);
-    if (!existing) {
-      map.set(t.source, { source: t.source, lastType: t.type, lastTs: t.ts, count: 1 });
-    } else {
-      existing.count++;
-      // Keep the most recent
-      if (new Date(t.ts) > new Date(existing.lastTs)) {
-        existing.lastType = t.type;
-        existing.lastTs = t.ts;
+    // Only group inbound triggers from non-external sources (child sessions)
+    if (t.direction === "inbound" && t.source !== "api" && !t.source.startsWith("external:")) {
+      const existing = groupMap.get(t.source);
+      if (existing) {
+        existing.push(t);
+      } else {
+        groupMap.set(t.source, [t]);
       }
+    } else {
+      otherEvents.push(t);
     }
   }
-  return Array.from(map.values()).sort((a, b) => new Date(b.lastTs).getTime() - new Date(a.lastTs).getTime());
+
+  const sessionGroups: LinkedSessionGroup[] = [];
+  for (const [source, events] of groupMap) {
+    // Events are already sorted most-recent-first from the API
+    const pendingTrigger = events.find(isPendingTrigger) ?? null;
+    sessionGroups.push({
+      source,
+      events,
+      pendingTrigger,
+      lastType: events[0].type,
+      lastTs: events[0].ts,
+      lastSummary: events[0].summary,
+    });
+  }
+
+  // Sort: groups with pending triggers first, then by most recent event
+  sessionGroups.sort((a, b) => {
+    if (a.pendingTrigger && !b.pendingTrigger) return -1;
+    if (!a.pendingTrigger && b.pendingTrigger) return 1;
+    return new Date(b.lastTs).getTime() - new Date(a.lastTs).getTime();
+  });
+
+  return { sessionGroups, otherEvents };
 }
 
 // ── Send Trigger Dialog ────────────────────────────────────────────────────
@@ -130,7 +243,6 @@ interface SendTriggerDialogProps {
   onOpenChange: (open: boolean) => void;
   sessionId: string;
   onSent: () => void;
-  /** Trigger catalog for type auto-complete */
   triggerDefs?: ServiceTriggerDef[];
 }
 
@@ -142,7 +254,6 @@ function SendTriggerDialog({ open, onOpenChange, sessionId, onSent, triggerDefs 
   const [sending, setSending] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
 
-  // Reset state when dialog opens
   React.useEffect(() => {
     if (open) {
       setTriggerType("");
@@ -213,7 +324,6 @@ function SendTriggerDialog({ open, onOpenChange, sessionId, onSent, triggerDefs 
         </DialogHeader>
 
         <div className="flex flex-col gap-3">
-          {/* Type */}
           <div className="flex flex-col gap-1">
             <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
               Type <span className="text-destructive">*</span>
@@ -235,7 +345,6 @@ function SendTriggerDialog({ open, onOpenChange, sessionId, onSent, triggerDefs 
             )}
           </div>
 
-          {/* Source */}
           <div className="flex flex-col gap-1">
             <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
               Source <span className="text-muted-foreground/50">(optional)</span>
@@ -249,7 +358,6 @@ function SendTriggerDialog({ open, onOpenChange, sessionId, onSent, triggerDefs 
             />
           </div>
 
-          {/* Payload */}
           <div className="flex flex-col gap-1">
             <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
               Payload (JSON)
@@ -263,7 +371,6 @@ function SendTriggerDialog({ open, onOpenChange, sessionId, onSent, triggerDefs 
             />
           </div>
 
-          {/* DeliverAs */}
           <div className="flex flex-col gap-1">
             <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
               Deliver As
@@ -293,11 +400,7 @@ function SendTriggerDialog({ open, onOpenChange, sessionId, onSent, triggerDefs 
         </div>
 
         <DialogFooter>
-          <Button
-            variant="outline"
-            onClick={() => onOpenChange(false)}
-            disabled={sending}
-          >
+          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={sending}>
             Cancel
           </Button>
           <Button onClick={handleSend} disabled={sending || !triggerType.trim()}>
@@ -310,83 +413,63 @@ function SendTriggerDialog({ open, onOpenChange, sessionId, onSent, triggerDefs 
   );
 }
 
-// ── Trigger Row ────────────────────────────────────────────────────────────
+// ── Event Row (inside expanded session group) ──────────────────────────────
 
-function TriggerRow({ entry }: { entry: TriggerHistoryEntry }) {
+function EventRow({ entry }: { entry: TriggerHistoryEntry }) {
   const [expanded, setExpanded] = React.useState(false);
-
   const hasPayload = Object.keys(entry.payload).length > 0;
   const payloadStr = hasPayload ? JSON.stringify(entry.payload, null, 2) : null;
 
   return (
-    <div className="border-b border-border/50 last:border-0">
+    <div className="border-b border-border/30 last:border-0">
       <button
         type="button"
         onClick={() => hasPayload && setExpanded((v) => !v)}
         className={cn(
-          "w-full flex items-start gap-2 px-3 py-2.5 text-left transition-colors",
+          "w-full flex items-center gap-2 px-3 py-1.5 text-left transition-colors",
           hasPayload ? "hover:bg-muted/40 cursor-pointer" : "cursor-default",
         )}
       >
-        {/* Direction arrow */}
-        <div className="mt-0.5 shrink-0">
+        <div className="shrink-0">
           {entry.direction === "inbound" ? (
-            <ArrowDownCircle className="size-3.5 text-blue-400" />
+            <ArrowDownCircle className="size-3 text-blue-400/70" />
           ) : (
-            <ArrowUpCircle className="size-3.5 text-violet-400" />
+            <ArrowUpCircle className="size-3 text-violet-400/70" />
           )}
         </div>
 
-        {/* Source icon */}
-        <div className="mt-0.5 shrink-0 text-muted-foreground">
-          <SourceIcon source={entry.source} />
-        </div>
+        <span className="text-[11px] font-medium text-foreground/80">{entry.type}</span>
 
-        {/* Content */}
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-1.5 flex-wrap">
-            <span className="text-xs font-medium text-foreground truncate">{entry.type}</span>
-            <Badge
-              variant="outline"
-              className="px-1 py-0 text-[10px] h-4"
-            >
-              {sourceLabel(entry.source)}
-            </Badge>
-            {entry.deliverAs === "steer" ? (
-              <Badge variant="outline" className="px-1 py-0 text-[10px] h-4 border-amber-500/40 text-amber-400">
-                steer
-              </Badge>
-            ) : (
-              <Badge variant="outline" className="px-1 py-0 text-[10px] h-4 border-blue-500/40 text-blue-400">
-                follow-up
-              </Badge>
-            )}
-          </div>
-          <div className="flex items-center gap-2 mt-0.5">
-            <span className="text-[10px] text-muted-foreground/70">{formatRelativeTime(entry.ts)}</span>
-            {entry.response && (
-              <span className="text-[10px] text-emerald-500">
-                ✓ {entry.response.action ?? "responded"}
-              </span>
-            )}
-            {entry.summary && (
-              <span className="text-[10px] text-muted-foreground/60 truncate">{entry.summary}</span>
-            )}
-          </div>
-        </div>
+        {entry.deliverAs === "steer" ? (
+          <Badge variant="outline" className="px-1 py-0 text-[9px] h-3.5 border-amber-500/30 text-amber-400/70">
+            steer
+          </Badge>
+        ) : (
+          <Badge variant="outline" className="px-1 py-0 text-[9px] h-3.5 border-blue-500/30 text-blue-400/70">
+            follow-up
+          </Badge>
+        )}
 
-        {/* Expand chevron */}
+        <span className="text-[10px] text-muted-foreground/50 ml-auto shrink-0">
+          {formatRelativeTime(entry.ts)}
+        </span>
+
+        {entry.response && (
+          <span className="text-[10px] text-emerald-500/70 shrink-0">
+            ✓ {entry.response.action ?? "responded"}
+          </span>
+        )}
+
         {hasPayload && (
-          <div className="mt-0.5 shrink-0 text-muted-foreground/50">
-            {expanded ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />}
+          <div className="shrink-0 text-muted-foreground/40">
+            {expanded ? <ChevronDown className="size-2.5" /> : <ChevronRight className="size-2.5" />}
           </div>
         )}
       </button>
 
-      {/* Expanded payload */}
       {expanded && payloadStr && (
-        <div className="px-3 pb-2.5">
-          <pre className="rounded bg-muted/60 border border-border/50 px-2.5 py-2 text-[10px] font-mono text-foreground/80 overflow-auto max-h-40 whitespace-pre-wrap break-all">
+        <div className="px-3 pb-1.5">
+          <pre className="rounded bg-muted/60 border border-border/50 px-2 py-1.5 text-[9px] font-mono text-foreground/70 overflow-auto max-h-32 whitespace-pre-wrap break-all">
             {payloadStr}
           </pre>
         </div>
@@ -395,45 +478,177 @@ function TriggerRow({ entry }: { entry: TriggerHistoryEntry }) {
   );
 }
 
-// ── Linked Sessions Section ────────────────────────────────────────────────
+// ── Linked Session Card ────────────────────────────────────────────────────
 
-function LinkedSessionsSection({ sessions }: { sessions: LinkedSession[] }) {
-  if (sessions.length === 0) return null;
+interface LinkedSessionCardProps {
+  group: LinkedSessionGroup;
+  statusUpdates: Map<string, TriggerStatusUpdate>;
+  /** Force relative times to re-render */
+  tick: number;
+}
+
+function LinkedSessionCard({ group, statusUpdates, tick: _tick }: LinkedSessionCardProps) {
+  const [expanded, setExpanded] = React.useState(false);
+  const status = deriveSessionStatus(group);
+  const isPending = !!group.pendingTrigger;
+
+  // Find the most recent status update for any trigger in this group
+  const latestStatusUpdate = React.useMemo(() => {
+    let latest: TriggerStatusUpdate | null = null;
+    for (const event of group.events) {
+      const update = statusUpdates.get(event.triggerId);
+      if (update && (!latest || new Date(update.ts) > new Date(latest.ts))) {
+        latest = update;
+      }
+    }
+    return latest;
+  }, [group.events, statusUpdates]);
+
+  const colorMap = {
+    amber: {
+      border: "border-amber-500/30",
+      bg: "bg-amber-950/20",
+      headerBg: "bg-amber-950/30",
+      text: "text-amber-300",
+      badge: "border-amber-500/40 text-amber-400",
+      icon: "text-amber-400",
+      pulse: true,
+    },
+    blue: {
+      border: "border-blue-500/30",
+      bg: "bg-blue-950/20",
+      headerBg: "bg-blue-950/30",
+      text: "text-blue-300",
+      badge: "border-blue-500/40 text-blue-400",
+      icon: "text-blue-400",
+      pulse: true,
+    },
+    red: {
+      border: "border-red-500/30",
+      bg: "bg-red-950/20",
+      headerBg: "bg-red-950/30",
+      text: "text-red-300",
+      badge: "border-red-500/40 text-red-400",
+      icon: "text-red-400",
+      pulse: true,
+    },
+    emerald: {
+      border: "border-emerald-500/20",
+      bg: "bg-emerald-950/10",
+      headerBg: "bg-emerald-950/20",
+      text: "text-emerald-300",
+      badge: "border-emerald-500/40 text-emerald-400",
+      icon: "text-emerald-400",
+      pulse: false,
+    },
+    zinc: {
+      border: "border-border/50",
+      bg: "bg-muted/10",
+      headerBg: "bg-muted/20",
+      text: "text-muted-foreground",
+      badge: "border-border text-muted-foreground",
+      icon: "text-muted-foreground",
+      pulse: false,
+    },
+  };
+
+  const colors = colorMap[status.color];
 
   return (
-    <div className="border-b border-border">
-      <div className="px-3 py-2 flex items-center gap-1.5">
-        <Link className="size-3 text-muted-foreground" />
-        <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-          Linked Sessions ({sessions.length})
-        </span>
-      </div>
-      <div className="divide-y divide-border/50">
-        {sessions.map((session) => (
-          <div key={session.source} className="flex items-center gap-2 px-3 py-2">
-            <div className="shrink-0 text-muted-foreground">
-              <SourceIcon source={session.source} />
-            </div>
-            <div className="flex-1 min-w-0">
-              <div className="flex items-center gap-1.5">
-                <span className="text-xs font-mono text-foreground truncate">{session.source}</span>
-                <Badge variant="outline" className="px-1 py-0 text-[10px] h-4 border-emerald-500/40 text-emerald-400">
-                  active
-                </Badge>
-              </div>
-              <div className="flex items-center gap-2 mt-0.5">
-                <span className="text-[10px] text-muted-foreground/70">
-                  Last: <span className="text-muted-foreground">{session.lastType}</span>
-                </span>
-                <span className="text-[10px] text-muted-foreground/50">{formatRelativeTime(session.lastTs)}</span>
-                {session.count > 1 && (
-                  <span className="text-[10px] text-muted-foreground/50">{session.count} triggers</span>
-                )}
-              </div>
-            </div>
+    <div className={cn("rounded-lg border overflow-hidden", colors.border, colors.bg)}>
+      {/* Main clickable header */}
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        className={cn(
+          "w-full flex items-start gap-2.5 px-3 py-2.5 text-left transition-colors hover:bg-white/[0.02]",
+        )}
+      >
+        {/* Status icon */}
+        <div className={cn("mt-0.5 shrink-0", colors.icon, colors.pulse && "animate-pulse")}>
+          {status.icon}
+        </div>
+
+        {/* Content */}
+        <div className="flex-1 min-w-0">
+          {/* Session name + status */}
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <span className="text-xs font-mono text-foreground/90 truncate">
+              {group.lastSummary || truncateId(group.source)}
+            </span>
+            <Badge
+              variant="outline"
+              className={cn("px-1.5 py-0 text-[10px] h-4 shrink-0", colors.badge)}
+            >
+              {status.label}
+            </Badge>
           </div>
-        ))}
-      </div>
+
+          {/* Pending trigger detail */}
+          {isPending && (
+            <div className="mt-1">
+              <span className={cn("text-[11px] font-medium", colors.text)}>
+                {group.pendingTrigger!.type === "ask_user_question" && "Waiting for your answer"}
+                {group.pendingTrigger!.type === "plan_review" && "Waiting for plan approval"}
+                {group.pendingTrigger!.type === "session_complete" && "Session finished — needs acknowledgement"}
+                {group.pendingTrigger!.type === "escalate" && "Escalated — needs human attention"}
+                {!["ask_user_question", "plan_review", "session_complete", "escalate"].includes(group.pendingTrigger!.type) && `Awaiting response to ${group.pendingTrigger!.type}`}
+              </span>
+              <span className="text-[10px] text-muted-foreground/60 ml-2">
+                {formatRelativeTime(group.pendingTrigger!.ts)}
+              </span>
+            </div>
+          )}
+
+          {/* Streaming status update */}
+          {latestStatusUpdate && (
+            <div className="mt-1 flex items-center gap-1.5">
+              <Loader2 className="size-2.5 animate-spin text-muted-foreground/60 shrink-0" />
+              <span className="text-[10px] text-muted-foreground/80 italic truncate">
+                {latestStatusUpdate.statusText}
+              </span>
+            </div>
+          )}
+
+          {/* Non-pending: show last event summary */}
+          {!isPending && !latestStatusUpdate && (
+            <div className="flex items-center gap-2 mt-0.5">
+              <span className="text-[10px] text-muted-foreground/60">
+                Last: <span className="text-muted-foreground/80">{group.lastType}</span>
+              </span>
+              <span className="text-[10px] text-muted-foreground/40">
+                {formatRelativeTime(group.lastTs)}
+              </span>
+            </div>
+          )}
+
+          {/* Event count + session ID hint */}
+          <div className="flex items-center gap-2 mt-0.5">
+            <span className="text-[10px] text-muted-foreground/40">
+              {group.events.length} event{group.events.length !== 1 ? "s" : ""}
+            </span>
+            {group.lastSummary && (
+              <span className="text-[10px] font-mono text-muted-foreground/30 truncate">
+                {truncateId(group.source)}
+              </span>
+            )}
+          </div>
+        </div>
+
+        {/* Expand chevron */}
+        <div className="mt-0.5 shrink-0 text-muted-foreground/40">
+          {expanded ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
+        </div>
+      </button>
+
+      {/* Expanded event history */}
+      {expanded && (
+        <div className={cn("border-t", colors.border)}>
+          {group.events.map((event) => (
+            <EventRow key={event.triggerId} entry={event} />
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -477,7 +692,7 @@ function TriggerCatalogSection({ sessionId, triggerDefs, subscriptions, onSubscr
       }
       onSubscriptionsChange();
     } catch {
-      // ignore — the UI will reflect current state on next refresh
+      // ignore
     } finally {
       setPending((prev) => {
         const next = new Set(prev);
@@ -511,7 +726,7 @@ function TriggerCatalogSection({ sessionId, triggerDefs, subscriptions, onSubscr
         <div className="divide-y divide-border/50">
           {triggerDefs.map((def) => {
             const isSubscribed = subscribedTypes.has(def.type);
-            const isPending = pending.has(def.type);
+            const isPendingToggle = pending.has(def.type);
 
             return (
               <div key={def.type} className="flex items-start gap-2 px-3 py-2">
@@ -537,18 +752,18 @@ function TriggerCatalogSection({ sessionId, triggerDefs, subscriptions, onSubscr
                 <button
                   type="button"
                   onClick={() => handleToggle(def.type, isSubscribed)}
-                  disabled={isPending}
+                  disabled={isPendingToggle}
                   className={cn(
                     "shrink-0 p-1 rounded transition-colors",
                     isSubscribed
                       ? "text-emerald-400 hover:text-red-400 hover:bg-red-500/10"
                       : "text-muted-foreground/50 hover:text-emerald-400 hover:bg-emerald-500/10",
-                    isPending && "opacity-50 cursor-not-allowed",
+                    isPendingToggle && "opacity-50 cursor-not-allowed",
                   )}
                   title={isSubscribed ? "Unsubscribe" : "Subscribe"}
                   aria-label={isSubscribed ? `Unsubscribe from ${def.type}` : `Subscribe to ${def.type}`}
                 >
-                  {isPending ? (
+                  {isPendingToggle ? (
                     <Loader2 className="size-3.5 animate-spin" />
                   ) : isSubscribed ? (
                     <BellOff className="size-3.5" />
@@ -567,11 +782,7 @@ function TriggerCatalogSection({ sessionId, triggerDefs, subscriptions, onSubscr
 
 // ── Active Subscriptions Section ───────────────────────────────────────────
 
-interface ActiveSubscriptionsSectionProps {
-  subscriptions: TriggerSubscription[];
-}
-
-function ActiveSubscriptionsSection({ subscriptions }: ActiveSubscriptionsSectionProps) {
+function ActiveSubscriptionsSection({ subscriptions }: { subscriptions: TriggerSubscription[] }) {
   if (subscriptions.length === 0) return null;
 
   return (
@@ -594,14 +805,88 @@ function ActiveSubscriptionsSection({ subscriptions }: ActiveSubscriptionsSectio
   );
 }
 
+// ── Other Events Row ───────────────────────────────────────────────────────
+
+function OtherTriggerRow({ entry }: { entry: TriggerHistoryEntry }) {
+  const [expanded, setExpanded] = React.useState(false);
+  const hasPayload = Object.keys(entry.payload).length > 0;
+  const payloadStr = hasPayload ? JSON.stringify(entry.payload, null, 2) : null;
+
+  return (
+    <div className="border-b border-border/30 last:border-0">
+      <button
+        type="button"
+        onClick={() => hasPayload && setExpanded((v) => !v)}
+        className={cn(
+          "w-full flex items-center gap-2 px-3 py-2 text-left transition-colors",
+          hasPayload ? "hover:bg-muted/40 cursor-pointer" : "cursor-default",
+        )}
+      >
+        <div className="shrink-0">
+          {entry.direction === "inbound" ? (
+            <ArrowDownCircle className="size-3.5 text-blue-400" />
+          ) : (
+            <ArrowUpCircle className="size-3.5 text-violet-400" />
+          )}
+        </div>
+
+        <div className="shrink-0 text-muted-foreground">
+          <SourceIcon source={entry.source} />
+        </div>
+
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <span className="text-xs font-medium text-foreground truncate">{entry.type}</span>
+            <Badge variant="outline" className="px-1 py-0 text-[10px] h-4">
+              {sourceLabel(entry.source)}
+            </Badge>
+            {entry.deliverAs === "steer" ? (
+              <Badge variant="outline" className="px-1 py-0 text-[10px] h-4 border-amber-500/40 text-amber-400">
+                steer
+              </Badge>
+            ) : (
+              <Badge variant="outline" className="px-1 py-0 text-[10px] h-4 border-blue-500/40 text-blue-400">
+                follow-up
+              </Badge>
+            )}
+          </div>
+          <div className="flex items-center gap-2 mt-0.5">
+            <span className="text-[10px] text-muted-foreground/70">{formatRelativeTime(entry.ts)}</span>
+            {entry.response && (
+              <span className="text-[10px] text-emerald-500">
+                ✓ {entry.response.action ?? "responded"}
+              </span>
+            )}
+            {entry.summary && (
+              <span className="text-[10px] text-muted-foreground/60 truncate">{entry.summary}</span>
+            )}
+          </div>
+        </div>
+
+        {hasPayload && (
+          <div className="shrink-0 text-muted-foreground/50">
+            {expanded ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />}
+          </div>
+        )}
+      </button>
+
+      {expanded && payloadStr && (
+        <div className="px-3 pb-2.5">
+          <pre className="rounded bg-muted/60 border border-border/50 px-2.5 py-2 text-[10px] font-mono text-foreground/80 overflow-auto max-h-40 whitespace-pre-wrap break-all">
+            {payloadStr}
+          </pre>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Main Panel ─────────────────────────────────────────────────────────────
 
 export interface TriggersPanelProps {
   sessionId: string;
-  /** Trigger defs from the session's runner (via service_announce) */
   triggerDefs?: ServiceTriggerDef[];
-  /** Viewer socket — used to listen for real-time trigger_delivered events.
-   *  Typed loosely to avoid Socket.IO generic constraints at the boundary. */
+  /** Viewer socket — used to listen for real-time events. */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   viewerSocket?: any;
 }
@@ -614,6 +899,12 @@ export function TriggersPanel({ sessionId, triggerDefs = [], viewerSocket }: Tri
   const [sendOpen, setSendOpen] = React.useState(false);
   const [refreshing, setRefreshing] = React.useState(false);
 
+  // Ephemeral status updates keyed by triggerId
+  const [statusUpdates, setStatusUpdates] = React.useState<Map<string, TriggerStatusUpdate>>(new Map());
+
+  // Tick counter for re-rendering relative times
+  const [tick, setTick] = React.useState(0);
+
   const fetchSubscriptions = React.useCallback(async () => {
     try {
       const res = await fetch(
@@ -625,7 +916,7 @@ export function TriggersPanel({ sessionId, triggerDefs = [], viewerSocket }: Tri
         setSubscriptions(data.subscriptions ?? []);
       }
     } catch {
-      // best-effort — don't surface subscription fetch errors in the main UI
+      // best-effort
     }
   }, [sessionId]);
 
@@ -660,14 +951,19 @@ export function TriggersPanel({ sessionId, triggerDefs = [], viewerSocket }: Tri
     void fetchTriggers(false);
   }, [fetchTriggers]);
 
-  // Auto-refresh every 10s (fallback for when viewer socket is unavailable)
+  // Auto-refresh every 10s
   React.useEffect(() => {
     const timer = setInterval(() => { void fetchTriggers(true); }, 10_000);
     return () => clearInterval(timer);
   }, [fetchTriggers]);
 
-  // Instant refresh when a trigger is delivered to this session.
-  // The server broadcasts 'trigger_delivered' to all viewers of the session.
+  // Tick timer for relative time updates (every 5s)
+  React.useEffect(() => {
+    const timer = setInterval(() => { setTick((t) => t + 1); }, 5_000);
+    return () => clearInterval(timer);
+  }, []);
+
+  // Instant refresh on trigger_delivered event
   React.useEffect(() => {
     if (!viewerSocket) return;
     const handler = () => { void fetchTriggers(true); };
@@ -675,7 +971,29 @@ export function TriggersPanel({ sessionId, triggerDefs = [], viewerSocket }: Tri
     return () => { viewerSocket.off("trigger_delivered", handler); };
   }, [viewerSocket, fetchTriggers]);
 
-  const linkedSessions = React.useMemo(() => deriveLinkedSessions(triggers), [triggers]);
+  // Listen for trigger_status_update events
+  React.useEffect(() => {
+    if (!viewerSocket) return;
+    const handler = (data: TriggerStatusUpdate) => {
+      if (!data?.triggerId || !data?.statusText) return;
+      setStatusUpdates((prev) => {
+        const next = new Map(prev);
+        next.set(data.triggerId, data);
+        return next;
+      });
+    };
+    viewerSocket.on("trigger_status_update", handler);
+    return () => { viewerSocket.off("trigger_status_update", handler); };
+  }, [viewerSocket]);
+
+  // Derive grouped layout
+  const { sessionGroups, otherEvents } = React.useMemo(
+    () => groupByLinkedSession(triggers),
+    [triggers],
+  );
+
+  const pendingGroups = sessionGroups.filter((g) => g.pendingTrigger);
+  const otherGroups = sessionGroups.filter((g) => !g.pendingTrigger);
 
   const handleRefresh = React.useCallback(() => {
     void fetchTriggers(true);
@@ -685,7 +1003,7 @@ export function TriggersPanel({ sessionId, triggerDefs = [], viewerSocket }: Tri
     <div className="flex flex-col h-full">
       {/* Toolbar */}
       <div className="flex items-center gap-1.5 px-3 py-1.5 border-b border-border bg-muted/20 shrink-0">
-        <span className="text-xs font-medium text-muted-foreground flex-1">Trigger History</span>
+        <span className="text-xs font-medium text-muted-foreground flex-1">Triggers</span>
 
         <button
           type="button"
@@ -711,7 +1029,7 @@ export function TriggersPanel({ sessionId, triggerDefs = [], viewerSocket }: Tri
 
       {/* Content */}
       <div className="flex-1 overflow-y-auto min-h-0">
-        {/* Trigger catalog — always shown when available, regardless of history */}
+        {/* Trigger catalog */}
         {triggerDefs.length > 0 && (
           <TriggerCatalogSection
             sessionId={sessionId}
@@ -721,7 +1039,7 @@ export function TriggersPanel({ sessionId, triggerDefs = [], viewerSocket }: Tri
           />
         )}
 
-        {/* Active subscriptions — shown when there are subscriptions but no catalog (edge case) */}
+        {/* Active subscriptions (only when no catalog) */}
         {triggerDefs.length === 0 && subscriptions.length > 0 && (
           <ActiveSubscriptionsSection subscriptions={subscriptions} />
         )}
@@ -743,14 +1061,68 @@ export function TriggersPanel({ sessionId, triggerDefs = [], viewerSocket }: Tri
             </p>
           </div>
         ) : (
-          <>
-            <LinkedSessionsSection sessions={linkedSessions} />
-            <div className="divide-y divide-border/30">
-              {triggers.map((entry) => (
-                <TriggerRow key={entry.triggerId} entry={entry} />
-              ))}
-            </div>
-          </>
+          <div className="flex flex-col gap-2 p-2">
+            {/* Awaiting Response section */}
+            {pendingGroups.length > 0 && (
+              <div>
+                <div className="px-1 pb-1.5 flex items-center gap-1.5">
+                  <Clock className="size-3 text-amber-400 animate-pulse" />
+                  <span className="text-[10px] font-semibold uppercase tracking-wider text-amber-400/80">
+                    Awaiting Response ({pendingGroups.length})
+                  </span>
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  {pendingGroups.map((group) => (
+                    <LinkedSessionCard
+                      key={group.source}
+                      group={group}
+                      statusUpdates={statusUpdates}
+                      tick={tick}
+                    />
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Other linked sessions */}
+            {otherGroups.length > 0 && (
+              <div>
+                <div className="px-1 pb-1.5 flex items-center gap-1.5">
+                  <Link className="size-3 text-muted-foreground" />
+                  <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                    Linked Sessions ({otherGroups.length})
+                  </span>
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  {otherGroups.map((group) => (
+                    <LinkedSessionCard
+                      key={group.source}
+                      group={group}
+                      statusUpdates={statusUpdates}
+                      tick={tick}
+                    />
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Other events (external/API triggers) */}
+            {otherEvents.length > 0 && (
+              <div>
+                <div className="px-1 pb-1.5 flex items-center gap-1.5">
+                  <Globe className="size-3 text-muted-foreground" />
+                  <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                    Other Events ({otherEvents.length})
+                  </span>
+                </div>
+                <div className="rounded-lg border border-border/50 bg-muted/10 overflow-hidden">
+                  {otherEvents.map((entry) => (
+                    <OtherTriggerRow key={entry.triggerId} entry={entry} />
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
         )}
       </div>
 

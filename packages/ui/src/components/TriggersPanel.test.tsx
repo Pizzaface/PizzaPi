@@ -4,7 +4,12 @@
  * Covers:
  *   - Renders empty state when no triggers are returned
  *   - Renders trigger list with entries
- *   - Send trigger dialog opens and closes
+ *   - Groups triggers by linked session
+ *   - Shows "Awaiting Response" for pending triggers
+ *   - Shows expanded event history
+ *   - Trigger catalog and subscriptions
+ *   - Send trigger dialog
+ *   - Real-time status updates
  */
 import { afterAll, afterEach, describe, test, expect, mock } from "bun:test";
 import { Window } from "happy-dom";
@@ -12,8 +17,6 @@ import { render, act, cleanup, fireEvent } from "@testing-library/react";
 import React from "react";
 
 // ── DOM globals ──────────────────────────────────────────────────────────────
-// Must be set BEFORE any component/hook imports so that React, lucide-react,
-// etc. see a DOM at module-evaluation time.
 const win = new Window({ url: "http://localhost/" });
 /* eslint-disable @typescript-eslint/no-explicit-any */
 (globalThis as any).window = win;
@@ -24,8 +27,6 @@ const win = new Window({ url: "http://localhost/" });
 (globalThis as any).Node = win.Node;
 (globalThis as any).SVGElement = win.SVGElement;
 (globalThis as any).MutationObserver = win.MutationObserver;
-// Override getComputedStyle to prevent react-remove-scroll-bar from calling
-// querySelectorAll with complex CSS selectors that crash in happy-dom.
 (globalThis as any).getComputedStyle = () => ({
   getPropertyValue: () => "",
   paddingRight: "",
@@ -33,13 +34,11 @@ const win = new Window({ url: "http://localhost/" });
   paddingLeft: "",
   paddingBottom: "",
 });
-// ResizeObserver stub
 (globalThis as any).ResizeObserver = class {
   observe() {}
   unobserve() {}
   disconnect() {}
 };
-// IntersectionObserver stub
 (globalThis as any).IntersectionObserver = class {
   observe() {}
   unobserve() {}
@@ -56,14 +55,12 @@ interface MockFetchResponse {
 
 const fetchState: {
   response: MockFetchResponse;
-  /** Per-URL response overrides (keyed by substring match). */
   urlOverrides?: Record<string, MockFetchResponse>;
 } = {
   response: { ok: true, body: { triggers: [] } },
 };
 
 const fetchSpy = mock(async (url: string, _opts?: RequestInit) => {
-  // Check per-URL overrides first
   if (fetchState.urlOverrides) {
     for (const [key, override] of Object.entries(fetchState.urlOverrides)) {
       if (url.includes(key)) {
@@ -86,8 +83,6 @@ const fetchSpy = mock(async (url: string, _opts?: RequestInit) => {
 (globalThis as any).fetch = fetchSpy;
 
 // ── Module mocks ─────────────────────────────────────────────────────────────
-// Mock the Dialog component to avoid Radix UI's react-remove-scroll-bar which
-// crashes in happy-dom due to complex CSS querySelectorAll selectors.
 mock.module("@/components/ui/dialog", () => {
   const R = require("react");
   const DialogCtx = R.createContext<{ open: boolean; onOpenChange: (v: boolean) => void }>({
@@ -121,7 +116,6 @@ mock.module("@/components/ui/dialog", () => {
   return { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogTrigger, DialogDescription, DialogClose };
 });
 
-// Restore mocks after this file
 afterAll(() => mock.restore());
 
 // Import AFTER globals are set
@@ -161,12 +155,10 @@ describe("TriggersPanel — empty state", () => {
       ({ container } = render(<TriggersPanel sessionId="sess-abc" />));
     });
 
-    // Wait for loading to complete (loading spinner disappears, empty state appears)
     expect(container.textContent).toContain("No triggers yet");
   });
 
   test("renders loading spinner initially", async () => {
-    // Delay the fetch response so we can observe the loading state
     let resolveFetch!: () => void;
     fetchSpy.mockImplementationOnce(
       () =>
@@ -185,12 +177,9 @@ describe("TriggersPanel — empty state", () => {
       ({ container } = render(<TriggersPanel sessionId="sess-abc" />));
     });
 
-    // Should show loading spinner before fetch resolves
-    // (check for an svg which is the Loader2 icon, or a loading text)
     const svgs = container.getElementsByTagName("svg");
     expect(svgs.length).toBeGreaterThan(0);
 
-    // Resolve so the component doesn't hang
     await act(async () => { resolveFetch(); });
   });
 
@@ -206,9 +195,55 @@ describe("TriggersPanel — empty state", () => {
   });
 });
 
-describe("TriggersPanel — trigger list", () => {
-  test("renders trigger entries from the API response", async () => {
-    const trigger = makeTrigger({ type: "webhook", source: "github" });
+describe("TriggersPanel — grouped layout", () => {
+  test("groups child session triggers under Awaiting Response when pending", async () => {
+    const trigger = makeTrigger({
+      triggerId: "t-pending",
+      type: "ask_user_question",
+      source: "child-session-abc",
+      direction: "inbound",
+      // No response — pending
+    });
+    fetchState.response = { ok: true, body: { triggers: [trigger] } };
+
+    let container!: HTMLElement;
+    await act(async () => {
+      ({ container } = render(<TriggersPanel sessionId="sess-parent" />));
+    });
+
+    expect(container.textContent).toContain("Awaiting Response");
+    expect(container.textContent).toContain("asking question");
+    expect(container.textContent).toContain("Waiting for your answer");
+  });
+
+  test("groups child session triggers under Linked Sessions when responded", async () => {
+    const trigger = makeTrigger({
+      triggerId: "t-responded",
+      type: "plan_review",
+      source: "child-session-abc",
+      direction: "inbound",
+      response: { action: "approve", text: "OK", ts: new Date().toISOString() },
+    });
+    fetchState.response = { ok: true, body: { triggers: [trigger] } };
+
+    let container!: HTMLElement;
+    await act(async () => {
+      ({ container } = render(<TriggersPanel sessionId="sess-parent" />));
+    });
+
+    // Should appear under Linked Sessions, not Awaiting Response
+    expect(container.textContent).not.toContain("Awaiting Response");
+    expect(container.textContent).toContain("Linked Sessions");
+    expect(container.textContent).toContain("responded");
+  });
+
+  test("shows external/API triggers under Other Events", async () => {
+    const trigger = makeTrigger({
+      triggerId: "t-ext",
+      type: "webhook",
+      source: "external:github",
+      direction: "inbound",
+    });
     fetchState.response = { ok: true, body: { triggers: [trigger] } };
 
     let container!: HTMLElement;
@@ -216,30 +251,47 @@ describe("TriggersPanel — trigger list", () => {
       ({ container } = render(<TriggersPanel sessionId="sess-abc" />));
     });
 
+    expect(container.textContent).toContain("Other Events");
     expect(container.textContent).toContain("webhook");
     expect(container.textContent).toContain("github");
   });
 
-  test("renders multiple trigger entries", async () => {
-    const t1 = makeTrigger({ triggerId: "t1", type: "custom_event", source: "godmother" });
-    const t2 = makeTrigger({ triggerId: "t2", type: "cron_job", source: "scheduler", direction: "outbound" });
-    fetchState.response = { ok: true, body: { triggers: [t1, t2] } };
+  test("shows multiple events from same child in one group", async () => {
+    const t1 = makeTrigger({
+      triggerId: "t1",
+      type: "ask_user_question",
+      source: "child-sess-xyz",
+      direction: "inbound",
+      response: { action: "answered", ts: new Date().toISOString() },
+      ts: new Date(Date.now() - 120_000).toISOString(),
+    });
+    const t2 = makeTrigger({
+      triggerId: "t2",
+      type: "session_complete",
+      source: "child-sess-xyz",
+      direction: "inbound",
+      // No response — pending
+      ts: new Date(Date.now() - 30_000).toISOString(),
+    });
+    fetchState.response = { ok: true, body: { triggers: [t2, t1] } };
 
     let container!: HTMLElement;
     await act(async () => {
-      ({ container } = render(<TriggersPanel sessionId="sess-abc" />));
+      ({ container } = render(<TriggersPanel sessionId="sess-parent" />));
     });
 
-    expect(container.textContent).toContain("custom_event");
-    expect(container.textContent).toContain("cron_job");
+    // Should show session_complete as pending (Awaiting Response)
+    expect(container.textContent).toContain("Awaiting Response");
+    // Should show event count
+    expect(container.textContent).toContain("2 events");
   });
 
-  test("shows linked sessions section for inbound non-external triggers", async () => {
-    // A trigger from a child session (not "api" or "external:" source)
+  test("pending plan_review shows correct waiting text", async () => {
     const trigger = makeTrigger({
-      triggerId: "t-child",
-      type: "session_complete",
-      source: "child-session-abc",
+      triggerId: "t-plan",
+      type: "plan_review",
+      source: "child-session-plan",
+      summary: "Feature Builder",
       direction: "inbound",
     });
     fetchState.response = { ok: true, body: { triggers: [trigger] } };
@@ -249,58 +301,40 @@ describe("TriggersPanel — trigger list", () => {
       ({ container } = render(<TriggersPanel sessionId="sess-parent" />));
     });
 
-    // Linked Sessions section should appear
-    expect(container.textContent).toContain("Linked Sessions");
-    expect(container.textContent).toContain("child-session-abc");
+    expect(container.textContent).toContain("Waiting for plan approval");
+    expect(container.textContent).toContain("Feature Builder");
   });
+});
 
-  test("does NOT show linked sessions for external API triggers", async () => {
+describe("TriggersPanel — expandable history", () => {
+  test("clicking a session group expands event history", async () => {
     const trigger = makeTrigger({
-      triggerId: "t-ext",
-      type: "webhook",
-      source: "api",
-      direction: "inbound",
-    });
-    fetchState.response = { ok: true, body: { triggers: [trigger] } };
-
-    let container!: HTMLElement;
-    await act(async () => {
-      ({ container } = render(<TriggersPanel sessionId="sess-abc" />));
-    });
-
-    // "Linked Sessions" header must NOT appear for "api" source
-    expect(container.textContent).not.toContain("Linked Sessions");
-  });
-
-  test("shows response status for triggers with response", async () => {
-    const trigger = makeTrigger({
-      triggerId: "t-resp",
-      type: "plan_review",
+      triggerId: "t-expand",
+      type: "session_complete",
       source: "child-abc",
-      response: { action: "approve", text: "Looks good", ts: new Date().toISOString() },
+      direction: "inbound",
+      response: { action: "ack", ts: new Date().toISOString() },
     });
     fetchState.response = { ok: true, body: { triggers: [trigger] } };
 
     let container!: HTMLElement;
     await act(async () => {
-      ({ container } = render(<TriggersPanel sessionId="sess-abc" />));
+      ({ container } = render(<TriggersPanel sessionId="sess-parent" />));
     });
 
-    expect(container.textContent).toContain("approve");
-  });
+    // Initially, the event details shouldn't be visible (collapsed)
+    // The session_complete type should appear in the group summary
+    const buttons = Array.from(container.getElementsByTagName("button"));
+    const groupBtn = buttons.find((b) => b.textContent?.includes("child-abc"));
+    expect(groupBtn).toBeDefined();
 
-  test("fetches from the correct endpoint for the given sessionId", async () => {
-    fetchState.response = { ok: true, body: { triggers: [] } };
-
+    // Click to expand
     await act(async () => {
-      render(<TriggersPanel sessionId="my-session-123" />);
+      fireEvent.click(groupBtn!);
     });
 
-    const calls = fetchSpy.mock.calls;
-    expect(calls.length).toBeGreaterThan(0);
-    const url = calls[0][0] as string;
-    expect(url).toContain("my-session-123");
-    expect(url).toContain("triggers");
+    // Now the event details should be visible (session_complete row with follow-up badge etc.)
+    expect(container.textContent).toContain("session_complete");
   });
 });
 
@@ -313,8 +347,6 @@ describe("TriggersPanel — Send Trigger dialog", () => {
       ({ container } = render(<TriggersPanel sessionId="sess-abc" />));
     });
 
-    // The dialog-specific "Payload (JSON)" label is NOT visible initially
-    // (the toolbar has "Send Trigger" text, but the dialog payload form is not)
     expect(document.body.textContent).not.toContain("Payload (JSON)");
     expect(document.body.textContent).not.toContain("Deliver As");
   });
@@ -327,7 +359,6 @@ describe("TriggersPanel — Send Trigger dialog", () => {
       ({ container } = render(<TriggersPanel sessionId="sess-abc" />));
     });
 
-    // Find the "Send Trigger" button in the toolbar
     const buttons = Array.from(container.getElementsByTagName("button"));
     const sendBtn = buttons.find((b) => b.textContent?.includes("Send Trigger"));
     expect(sendBtn).toBeDefined();
@@ -336,7 +367,6 @@ describe("TriggersPanel — Send Trigger dialog", () => {
       fireEvent.click(sendBtn!);
     });
 
-    // Dialog should now be visible — unique dialog-only content appears
     expect(document.body.textContent).toContain("Payload (JSON)");
     expect(document.body.textContent).toContain("Deliver As");
   });
@@ -349,7 +379,6 @@ describe("TriggersPanel — Send Trigger dialog", () => {
       ({ container } = render(<TriggersPanel sessionId="sess-abc" />));
     });
 
-    // Open the dialog
     const buttons = Array.from(container.getElementsByTagName("button"));
     const sendBtn = buttons.find((b) => b.textContent?.includes("Send Trigger"));
 
@@ -357,10 +386,8 @@ describe("TriggersPanel — Send Trigger dialog", () => {
       fireEvent.click(sendBtn!);
     });
 
-    // Verify dialog is open (dialog-only content is visible)
     expect(document.body.textContent).toContain("Payload (JSON)");
 
-    // Find and click Cancel (all buttons in document)
     const allButtons = Array.from(document.getElementsByTagName("button"));
     const cancelBtn = allButtons.find((b) => b.textContent?.trim() === "Cancel");
     expect(cancelBtn).toBeDefined();
@@ -369,7 +396,6 @@ describe("TriggersPanel — Send Trigger dialog", () => {
       fireEvent.click(cancelBtn!);
     });
 
-    // After close: Radix Dialog removes portal content — dialog-only text is gone
     expect(document.body.textContent).not.toContain("Payload (JSON)");
     expect(document.body.textContent).not.toContain("Deliver As");
   });
@@ -407,32 +433,18 @@ describe("TriggersPanel — trigger catalog", () => {
     expect(container.textContent).not.toContain("Available Triggers");
   });
 
-  test("does NOT render Available Triggers section when triggerDefs is not provided", async () => {
-    fetchState.response = { ok: true, body: { triggers: [] } };
-
-    let container!: HTMLElement;
-    await act(async () => {
-      ({ container } = render(<TriggersPanel sessionId="sess-abc" />));
-    });
-
-    expect(container.textContent).not.toContain("Available Triggers");
-  });
-
   test("renders subscribe button for unsubscribed trigger types", async () => {
     fetchState.urlOverrides = {
       "trigger-subscriptions": { ok: true, body: { subscriptions: [] } },
     };
 
-    const triggerDefs = [
-      { type: "svc:event", label: "Service Event" },
-    ];
+    const triggerDefs = [{ type: "svc:event", label: "Service Event" }];
 
     let container!: HTMLElement;
     await act(async () => {
       ({ container } = render(<TriggersPanel sessionId="sess-abc" triggerDefs={triggerDefs} />));
     });
 
-    // Subscribe button should be present (aria-label)
     const buttons = Array.from(container.getElementsByTagName("button"));
     const subscribeBtn = buttons.find((b) => b.getAttribute("aria-label")?.startsWith("Subscribe to"));
     expect(subscribeBtn).toBeDefined();
@@ -443,9 +455,7 @@ describe("TriggersPanel — trigger catalog", () => {
       "trigger-subscriptions": { ok: true, body: { subscriptions: [{ triggerType: "svc:event", runnerId: "runner-A" }] } },
     };
 
-    const triggerDefs = [
-      { type: "svc:event", label: "Service Event" },
-    ];
+    const triggerDefs = [{ type: "svc:event", label: "Service Event" }];
 
     let container!: HTMLElement;
     await act(async () => {
@@ -453,7 +463,6 @@ describe("TriggersPanel — trigger catalog", () => {
     });
 
     expect(container.textContent).toContain("subscribed");
-    // Unsubscribe button should be present
     const buttons = Array.from(container.getElementsByTagName("button"));
     const unsubBtn = buttons.find((b) => b.getAttribute("aria-label")?.startsWith("Unsubscribe from"));
     expect(unsubBtn).toBeDefined();
@@ -462,7 +471,6 @@ describe("TriggersPanel — trigger catalog", () => {
   test("trigger_delivered viewer event triggers immediate refresh", async () => {
     fetchState.response = { ok: true, body: { triggers: [] } };
 
-    // Simple mock socket that tracks on/off
     const handlers: Record<string, Array<(...args: any[]) => void>> = {};
     const mockSocket = {
       on: (event: string, fn: (...args: any[]) => void) => {
@@ -480,13 +488,10 @@ describe("TriggersPanel — trigger catalog", () => {
       render(<TriggersPanel sessionId="sess-abc" viewerSocket={mockSocket} />);
     });
 
-    // Should have registered a trigger_delivered listener
     expect(handlers["trigger_delivered"]?.length).toBe(1);
 
-    // Clear fetch call count, then simulate a trigger_delivered event
     fetchSpy.mockClear();
 
-    // Update response with trigger data for the refresh
     fetchState.response = {
       ok: true,
       body: {
@@ -504,30 +509,24 @@ describe("TriggersPanel — trigger catalog", () => {
 
     await act(async () => {
       handlers["trigger_delivered"][0]({ triggerId: "test-1" });
-      // Allow microtasks to flush
       await new Promise((r) => setTimeout(r, 10));
     });
 
-    // Fetch should have been called again (refresh triggered by the event)
     expect(fetchSpy).toHaveBeenCalled();
   });
 
   test("catalog section can be collapsed", async () => {
     fetchState.response = { ok: true, body: { triggers: [] } };
 
-    const triggerDefs = [
-      { type: "svc:event", label: "Service Event" },
-    ];
+    const triggerDefs = [{ type: "svc:event", label: "Service Event" }];
 
     let container!: HTMLElement;
     await act(async () => {
       ({ container } = render(<TriggersPanel sessionId="sess-abc" triggerDefs={triggerDefs} />));
     });
 
-    // Catalog initially visible
     expect(container.textContent).toContain("svc:event");
 
-    // Click the "Available Triggers" header to collapse
     const buttons = Array.from(container.getElementsByTagName("button"));
     const collapseBtn = buttons.find((b) => b.textContent?.includes("Available Triggers"));
     expect(collapseBtn).toBeDefined();
@@ -536,7 +535,88 @@ describe("TriggersPanel — trigger catalog", () => {
       fireEvent.click(collapseBtn!);
     });
 
-    // Catalog items should now be hidden
     expect(container.textContent).not.toContain("svc:event");
+  });
+});
+
+describe("TriggersPanel — status updates", () => {
+  test("subscribes to trigger_status_update events on viewer socket", async () => {
+    fetchState.response = { ok: true, body: { triggers: [] } };
+
+    const handlers: Record<string, Array<(...args: any[]) => void>> = {};
+    const mockSocket = {
+      on: (event: string, fn: (...args: any[]) => void) => {
+        if (!handlers[event]) handlers[event] = [];
+        handlers[event].push(fn);
+      },
+      off: (event: string, fn: (...args: any[]) => void) => {
+        if (handlers[event]) {
+          handlers[event] = handlers[event].filter((h) => h !== fn);
+        }
+      },
+    };
+
+    await act(async () => {
+      render(<TriggersPanel sessionId="sess-abc" viewerSocket={mockSocket} />);
+    });
+
+    // Should have registered both event listeners
+    expect(handlers["trigger_delivered"]?.length).toBe(1);
+    expect(handlers["trigger_status_update"]?.length).toBe(1);
+  });
+
+  test("displays streaming status update text", async () => {
+    const trigger = makeTrigger({
+      triggerId: "t-progress",
+      type: "session_complete",
+      source: "child-worker",
+      direction: "inbound",
+      // No response — pending
+    });
+    fetchState.response = { ok: true, body: { triggers: [trigger] } };
+
+    const handlers: Record<string, Array<(...args: any[]) => void>> = {};
+    const mockSocket = {
+      on: (event: string, fn: (...args: any[]) => void) => {
+        if (!handlers[event]) handlers[event] = [];
+        handlers[event].push(fn);
+      },
+      off: (event: string, fn: (...args: any[]) => void) => {
+        if (handlers[event]) {
+          handlers[event] = handlers[event].filter((h) => h !== fn);
+        }
+      },
+    };
+
+    let container!: HTMLElement;
+    await act(async () => {
+      ({ container } = render(<TriggersPanel sessionId="sess-abc" viewerSocket={mockSocket} />));
+    });
+
+    // Fire a status update
+    await act(async () => {
+      handlers["trigger_status_update"][0]({
+        triggerId: "t-progress",
+        sourceSessionId: "child-worker",
+        statusText: "Working on step 3 of 7",
+        ts: new Date().toISOString(),
+      });
+    });
+
+    expect(container.textContent).toContain("Working on step 3 of 7");
+  });
+
+  test("fetches from the correct endpoint for the given sessionId", async () => {
+    fetchState.response = { ok: true, body: { triggers: [] } };
+
+    await act(async () => {
+      render(<TriggersPanel sessionId="my-session-123" />);
+    });
+
+    const calls = fetchSpy.mock.calls;
+    expect(calls.length).toBeGreaterThan(0);
+    const url = calls[0][0] as string;
+    expect(url).toContain("my-session-123");
+    expect(url).toContain("triggers");
   });
 });

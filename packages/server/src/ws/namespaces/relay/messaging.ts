@@ -316,4 +316,43 @@ export function registerMessagingHandlers(socket: RelaySocket): void {
             if (typeof ack === "function") ack({ ok: true });
         }
     });
+
+    // ── trigger_status_update — ephemeral progress updates for triggers ──
+    // A child session can push status text for a trigger it previously sent
+    // to its parent. This is NOT stored in trigger history — it's a
+    // real-time-only update broadcast to the parent's viewers so the
+    // TriggersPanel can show live progress (e.g. "Working on step 3/7").
+    socket.on("trigger_status_update" as any, async (data: {
+        token: string;
+        triggerId: string;
+        targetSessionId: string;
+        statusText: string;
+    }) => {
+        const sessionId = socket.data.sessionId;
+        if (!sessionId || data?.token !== socket.data.token) {
+            socket.emit("error", { message: "Invalid token" });
+            return;
+        }
+
+        const { triggerId, targetSessionId, statusText } = data ?? {};
+        if (!triggerId || !targetSessionId || typeof statusText !== "string") {
+            socket.emit("error", { message: "trigger_status_update requires triggerId, targetSessionId, statusText" });
+            return;
+        }
+
+        // Validate same-user ownership
+        const senderSession = await getSharedSession(sessionId);
+        const targetSession = await getSharedSession(targetSessionId);
+        if (!senderSession?.userId || !targetSession?.userId || senderSession.userId !== targetSession.userId) {
+            return; // silently drop — not critical
+        }
+
+        // Broadcast to viewers of the target (parent) session
+        broadcastToSessionViewers(targetSessionId, "trigger_status_update", {
+            triggerId,
+            sourceSessionId: sessionId,
+            statusText,
+            ts: new Date().toISOString(),
+        });
+    });
 }
