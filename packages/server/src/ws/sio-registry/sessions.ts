@@ -459,7 +459,7 @@ export async function getSessionState(sessionId: string): Promise<unknown | unde
 }
 
 /** Refresh ephemeral session expiry and SQLite touch. */
-export async function touchSessionActivity(sessionId: string): Promise<void> {
+export async function touchSessionActivity(sessionId: string, sessionHint?: RedisSessionData | null): Promise<void> {
     const now = Date.now();
     const lastTouch = lastTouchTimes.get(sessionId) || 0;
 
@@ -468,7 +468,7 @@ export async function touchSessionActivity(sessionId: string): Promise<void> {
     }
     lastTouchTimes.set(sessionId, now);
 
-    const session = await getSession(sessionId);
+    const session = sessionHint ?? await getSession(sessionId);
     if (!session) return;
 
     if (session.isEphemeral) {
@@ -833,12 +833,36 @@ export async function sweepOrphanedSessions(nowMs: number): Promise<void> {
  * Add a viewer to a session (joins the viewer room).
  * Returns false if the session doesn't exist.
  */
-export async function addViewer(sessionId: string, socket: Socket): Promise<boolean> {
-    const session = await getSession(sessionId);
+export interface AddViewerOptions {
+    /**
+     * Optional already-fetched session data to avoid a redundant Redis read.
+     */
+    sessionHint?: RedisSessionData | null;
+    /**
+     * When true, viewer join acks are not blocked on activity bookkeeping.
+     */
+    touchAsync?: boolean;
+}
+
+export async function addViewer(
+    sessionId: string,
+    socket: Socket,
+    options: AddViewerOptions = {},
+): Promise<boolean> {
+    const session = options.sessionHint ?? await getSession(sessionId);
     if (!session) return false;
 
     await socket.join(viewerSessionRoom(sessionId));
-    await touchSessionActivity(sessionId);
+
+    const touchPromise = touchSessionActivity(sessionId, session);
+    if (options.touchAsync) {
+        void touchPromise.catch((error) => {
+            log.error("addViewer async touch failed:", error);
+        });
+    } else {
+        await touchPromise;
+    }
+
     return true;
 }
 

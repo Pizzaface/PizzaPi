@@ -7,10 +7,23 @@ const log = createLogger("redis");
 const DEFAULT_REDIS_URL = "redis://127.0.0.1:6379";
 const DEFAULT_EVENT_BUFFER_SIZE = 1000;
 const DEFAULT_EVENT_TTL_MS = 24 * 60 * 60 * 1000;
+const DEFAULT_SNAPSHOT_SCAN_CHUNK_SIZE = 64;
 
 interface CachedRelayEventEnvelope {
     ts: number;
     event: unknown;
+}
+
+function isSnapshotEvent(event: unknown): event is Record<string, unknown> {
+    if (!event || typeof event !== "object") return false;
+    const evt = event as Record<string, unknown>;
+    if (evt.type === "agent_end") {
+        return Array.isArray(evt.messages);
+    }
+    if (evt.type === "session_active") {
+        return Object.prototype.hasOwnProperty.call(evt, "state") && evt.state !== undefined;
+    }
+    return false;
 }
 
 function parsePositiveInt(value: string | undefined, fallback: number): number {
@@ -39,6 +52,10 @@ function nonEphemeralEventTtlMs(): number {
 
 function ttlMsForSession(isEphemeral: boolean | undefined): number {
     return isEphemeral === false ? nonEphemeralEventTtlMs() : getEphemeralTtlMs();
+}
+
+function snapshotScanChunkSize(): number {
+    return parsePositiveInt(process.env.PIZZAPI_RELAY_SNAPSHOT_SCAN_CHUNK_SIZE, DEFAULT_SNAPSHOT_SCAN_CHUNK_SIZE);
 }
 
 function eventsKey(sessionId: string): string {
@@ -164,6 +181,51 @@ export async function getCachedRelayEvents(sessionId: string): Promise<unknown[]
     } catch (error) {
         logUnavailableOnce("Failed to read relay event cache from Redis", error);
         return [];
+    }
+}
+
+/**
+ * Read only the newest portion(s) of the relay cache and return the latest
+ * full snapshot event (session_active/agent_end), if present.
+ *
+ * This avoids parsing the entire event list on each viewer switch when the
+ * newest snapshot is near the tail (common case).
+ */
+export async function getLatestCachedSnapshotEvent(sessionId: string): Promise<Record<string, unknown> | null> {
+    if (isRedisDisabled()) return null;
+    if (!initPromise) {
+        void initializeRelayRedisCache();
+    }
+
+    const redis = activeClient();
+    if (!redis) return null;
+
+    try {
+        const key = eventsKey(sessionId);
+        const length = await redis.lLen(key);
+        if (!Number.isFinite(length) || length <= 0) return null;
+
+        const chunkSize = snapshotScanChunkSize();
+        for (let end = length - 1; end >= 0; end -= chunkSize) {
+            const start = Math.max(0, end - chunkSize + 1);
+            const rows = await redis.lRange(key, start, end);
+            for (let i = rows.length - 1; i >= 0; i--) {
+                const row = rows[i];
+                try {
+                    const parsed = JSON.parse(row) as CachedRelayEventEnvelope;
+                    if (isSnapshotEvent(parsed?.event)) {
+                        return parsed.event;
+                    }
+                } catch {
+                    // Ignore malformed cache entries.
+                }
+            }
+        }
+
+        return null;
+    } catch (error) {
+        logUnavailableOnce("Failed to read latest snapshot from Redis cache", error);
+        return null;
     }
 }
 
