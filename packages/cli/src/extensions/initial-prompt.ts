@@ -32,8 +32,8 @@ export const initialPromptExtension: ExtensionFactory = (pi) => {
     const agentTools = process.env.PIZZAPI_WORKER_AGENT_TOOLS?.trim();
     const agentDisallowedTools = process.env.PIZZAPI_WORKER_AGENT_DISALLOWED_TOOLS?.trim();
 
-    // Nothing to do if no initial prompt and no agent was set.
-    if (!initialPrompt && !agentName) return;
+    // Nothing to do if no initial prompt, initial model, or agent was set.
+    if (!initialPrompt && !agentName && !(initialModelProvider && initialModelId)) return;
 
     // Clear prompt/model env vars immediately so restarts don't re-trigger.
     // Agent name is NOT cleared — it should persist across restarts.
