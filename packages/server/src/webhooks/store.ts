@@ -21,7 +21,7 @@ export interface Webhook {
     secret: string;
     /** Parsed event filter array (or null if no filter). */
     eventFilter: string[] | null;
-    /** Source type — "github", "slack", "cron", "custom", etc. */
+    /** Source type — e.g. "custom", "slack", "cron", etc. */
     source: string;
     enabled: boolean;
     createdAt: string;
