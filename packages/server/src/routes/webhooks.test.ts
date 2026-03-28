@@ -1,8 +1,8 @@
 /**
  * Tests for the Webhooks API route handler.
  *
- * Tests CRUD, HMAC validation, event filtering, disabled webhook behavior,
- * and GitHub event mapping — all with mocked dependencies.
+ * Tests CRUD, HMAC validation, event filtering, disabled webhook behavior
+ * — all with mocked dependencies.
  */
 
 import { describe, test, expect, beforeEach, afterAll, mock } from "bun:test";
@@ -431,7 +431,7 @@ describe("POST /api/webhooks/:id/fire — HMAC validation", () => {
         const res = await handleWebhooksRoute(req, url);
         expect(res?.status).toBe(401);
         const body = await res!.json();
-        expect(body.error).toContain("Signature");
+        expect(body.error).toContain("X-Webhook-Signature");
     });
 
     test("returns 401 when signature is invalid", async () => {
@@ -515,8 +515,8 @@ describe("POST /api/webhooks/:id/fire — event filtering", () => {
 
     const FILTERED_WEBHOOK = {
         ...ACTIVE_WEBHOOK,
-        eventFilter: ["push", "pull_request"],
-        source: "github",
+        eventFilter: ["deploy", "build"],
+        source: "custom",
     };
 
     test("forwards matching events", async () => {
@@ -525,10 +525,8 @@ describe("POST /api/webhooks/:id/fire — event filtering", () => {
         const emitMock = mock(() => {});
         mockGetLocalTuiSocket.mockReturnValue({ connected: true, emit: emitMock });
 
-        const body = { ref: "refs/heads/main", head_commit: { id: "abc123" } };
-        const [req, url] = makeFireReq("/api/webhooks/wh-1/fire", body, ACTIVE_WEBHOOK.secret, {
-            "x-github-event": "push",
-        });
+        const body = { type: "deploy", env: "production" };
+        const [req, url] = makeFireReq("/api/webhooks/wh-1/fire", body, ACTIVE_WEBHOOK.secret);
         const res = await handleWebhooksRoute(req, url);
         expect(res?.status).toBe(200);
         const resBody = await res!.json();
@@ -543,10 +541,8 @@ describe("POST /api/webhooks/:id/fire — event filtering", () => {
         const emitMock = mock(() => {});
         mockGetLocalTuiSocket.mockReturnValue({ connected: true, emit: emitMock });
 
-        const body = { action: "created" };
-        const [req, url] = makeFireReq("/api/webhooks/wh-1/fire", body, ACTIVE_WEBHOOK.secret, {
-            "x-github-event": "star",
-        });
+        const body = { type: "star", action: "created" };
+        const [req, url] = makeFireReq("/api/webhooks/wh-1/fire", body, ACTIVE_WEBHOOK.secret);
         const res = await handleWebhooksRoute(req, url);
         expect(res?.status).toBe(200);
         const resBody = await res!.json();
@@ -555,115 +551,6 @@ describe("POST /api/webhooks/:id/fire — event filtering", () => {
         // Should NOT have delivered anything
         expect(emitMock).not.toHaveBeenCalled();
         expect(mockPushTriggerHistory).not.toHaveBeenCalled();
-    });
-});
-
-describe("POST /api/webhooks/:id/fire — GitHub event mapping", () => {
-    beforeEach(() => {
-        mockGetWebhook.mockReset();
-        mockGetSharedSession.mockReset();
-        mockGetLocalTuiSocket.mockReset();
-        mockPushTriggerHistory.mockReset();
-    });
-
-    const GITHUB_WEBHOOK = { ...ACTIVE_WEBHOOK, source: "github", eventFilter: null };
-
-    test("maps push event fields", async () => {
-        mockGetWebhook.mockReturnValue(Promise.resolve(GITHUB_WEBHOOK));
-        mockGetSharedSession.mockReturnValue(Promise.resolve(ACTIVE_SESSION));
-        const emitMock = mock(() => {});
-        mockGetLocalTuiSocket.mockReturnValue({ connected: true, emit: emitMock });
-
-        const body = {
-            ref: "refs/heads/main",
-            head_commit: { id: "deadbeef" },
-            repository: { full_name: "owner/repo" },
-            sender: { login: "octocat" },
-        };
-        const [req, url] = makeFireReq("/api/webhooks/wh-1/fire", body, ACTIVE_WEBHOOK.secret, {
-            "x-github-event": "push",
-        });
-        const res = await handleWebhooksRoute(req, url);
-        expect(res?.status).toBe(200);
-
-        const call = emitMock.mock.calls[0] as any[];
-        const trigger = call[1].trigger;
-        expect(trigger.payload.event).toBe("push");
-        expect(trigger.payload.ref).toBe("refs/heads/main");
-        expect(trigger.payload.commit).toBe("deadbeef");
-        expect(trigger.payload.repository).toBe("owner/repo");
-        expect(trigger.payload.sender).toBe("octocat");
-    });
-
-    test("maps pull_request event fields", async () => {
-        mockGetWebhook.mockReturnValue(Promise.resolve(GITHUB_WEBHOOK));
-        mockGetSharedSession.mockReturnValue(Promise.resolve(ACTIVE_SESSION));
-        const emitMock = mock(() => {});
-        mockGetLocalTuiSocket.mockReturnValue({ connected: true, emit: emitMock });
-
-        const body = {
-            action: "opened",
-            pull_request: { number: 42, title: "Add feature" },
-            repository: { full_name: "owner/repo" },
-            sender: { login: "dev" },
-        };
-        const [req, url] = makeFireReq("/api/webhooks/wh-1/fire", body, ACTIVE_WEBHOOK.secret, {
-            "x-github-event": "pull_request",
-        });
-        const res = await handleWebhooksRoute(req, url);
-        expect(res?.status).toBe(200);
-
-        const call = emitMock.mock.calls[0] as any[];
-        const trigger = call[1].trigger;
-        expect(trigger.payload.event).toBe("pull_request");
-        expect(trigger.payload.action).toBe("opened");
-        expect(trigger.payload.prNumber).toBe(42);
-        expect(trigger.payload.prTitle).toBe("Add feature");
-    });
-
-    test("maps issues event fields", async () => {
-        mockGetWebhook.mockReturnValue(Promise.resolve(GITHUB_WEBHOOK));
-        mockGetSharedSession.mockReturnValue(Promise.resolve(ACTIVE_SESSION));
-        const emitMock = mock(() => {});
-        mockGetLocalTuiSocket.mockReturnValue({ connected: true, emit: emitMock });
-
-        const body = {
-            action: "closed",
-            issue: { number: 7, title: "Bug fix" },
-            repository: { full_name: "owner/repo" },
-            sender: { login: "dev" },
-        };
-        const [req, url] = makeFireReq("/api/webhooks/wh-1/fire", body, ACTIVE_WEBHOOK.secret, {
-            "x-github-event": "issues",
-        });
-        const res = await handleWebhooksRoute(req, url);
-        expect(res?.status).toBe(200);
-
-        const call = emitMock.mock.calls[0] as any[];
-        const trigger = call[1].trigger;
-        expect(trigger.payload.event).toBe("issues");
-        expect(trigger.payload.action).toBe("closed");
-        expect(trigger.payload.issueNumber).toBe(7);
-        expect(trigger.payload.issueTitle).toBe("Bug fix");
-    });
-
-    test("passes unknown events through with raw body", async () => {
-        mockGetWebhook.mockReturnValue(Promise.resolve(GITHUB_WEBHOOK));
-        mockGetSharedSession.mockReturnValue(Promise.resolve(ACTIVE_SESSION));
-        const emitMock = mock(() => {});
-        mockGetLocalTuiSocket.mockReturnValue({ connected: true, emit: emitMock });
-
-        const body = { some_field: "value" };
-        const [req, url] = makeFireReq("/api/webhooks/wh-1/fire", body, ACTIVE_WEBHOOK.secret, {
-            "x-github-event": "workflow_run",
-        });
-        const res = await handleWebhooksRoute(req, url);
-        expect(res?.status).toBe(200);
-
-        const call = emitMock.mock.calls[0] as any[];
-        const trigger = call[1].trigger;
-        expect(trigger.payload.event).toBe("workflow_run");
-        expect(trigger.payload.raw).toEqual(body);
     });
 });
 
@@ -705,71 +592,6 @@ describe("POST /api/webhooks/:id/fire — targetSessionId fallback", () => {
         expect(res?.status).toBe(404);
         const resBody = await res!.json();
         expect(resBody.error).toContain("No active session");
-    });
-});
-
-describe("POST /api/webhooks/:id/fire — GitHub X-Hub-Signature-256", () => {
-    function makeGitHubFireReq(
-        path: string,
-        body: object,
-        secret: string,
-    ): [Request, URL] {
-        const bodyStr = JSON.stringify(body);
-        const sig = `sha256=${signBody(secret, bodyStr)}`;
-        const url = new URL(`http://localhost${path}`);
-        const req = new Request(url.toString(), {
-            method: "POST",
-            headers: {
-                "content-type": "application/json",
-                "x-hub-signature-256": sig,
-                "x-github-event": "push",
-            },
-            body: bodyStr,
-        });
-        return [req, url];
-    }
-
-    test("accepts X-Hub-Signature-256 with sha256= prefix (GitHub format)", async () => {
-        mockGetWebhook.mockReturnValue(Promise.resolve(ACTIVE_WEBHOOK));
-        mockGetSharedSession.mockReturnValue(Promise.resolve(ACTIVE_SESSION));
-        const emitMock = mock(() => {});
-        mockGetLocalTuiSocket.mockReturnValue({ connected: true, emit: emitMock });
-
-        const body = { ref: "refs/heads/main", repository: { full_name: "org/repo" } };
-        const [req, url] = makeGitHubFireReq("/api/webhooks/wh-1/fire", body, ACTIVE_WEBHOOK.secret);
-        const res = await handleWebhooksRoute(req, url);
-        expect(res?.status).toBe(200);
-        const resBody = await res!.json();
-        expect(resBody.ok).toBe(true);
-        expect(emitMock).toHaveBeenCalledTimes(1);
-    });
-
-    test("rejects X-Hub-Signature-256 with wrong secret", async () => {
-        mockGetWebhook.mockReturnValue(Promise.resolve(ACTIVE_WEBHOOK));
-
-        const body = { ref: "refs/heads/main" };
-        const bodyStr = JSON.stringify(body);
-        const badSig = `sha256=${signBody("wrong-secret", bodyStr)}`;
-        const url = new URL("http://localhost/api/webhooks/wh-1/fire");
-        const req = new Request(url.toString(), {
-            method: "POST",
-            headers: {
-                "content-type": "application/json",
-                "x-hub-signature-256": badSig,
-            },
-            body: bodyStr,
-        });
-        const res = await handleWebhooksRoute(req, url);
-        expect(res?.status).toBe(401);
-    });
-
-    test("returns 401 when both x-webhook-signature and x-hub-signature-256 are absent", async () => {
-        mockGetWebhook.mockReturnValue(Promise.resolve(ACTIVE_WEBHOOK));
-        const [req, url] = makeReq("POST", "/api/webhooks/wh-1/fire", { event: "test" });
-        const res = await handleWebhooksRoute(req, url);
-        expect(res?.status).toBe(401);
-        const resBody = await res!.json();
-        expect(resBody.error).toContain("signature");
     });
 });
 

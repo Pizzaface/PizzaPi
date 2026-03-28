@@ -13,9 +13,6 @@
  *
  * HMAC validation: SHA-256 of raw request body using webhook.secret.
  * The caller must send the hex digest in X-Webhook-Signature header.
- *
- * GitHub integration: when source="github", X-GitHub-Event is used to map
- * common events (push, pull_request, issues) to richer trigger payloads.
  */
 
 import { requireSession } from "../middleware.js";
@@ -59,79 +56,6 @@ function hmacEqual(a: string, b: string): boolean {
     }
 }
 
-// ── GitHub event mapping ──────────────────────────────────────────────────────
-
-interface GitHubTriggerPayload {
-    event: string;
-    action?: string;
-    repository?: string;
-    sender?: string;
-    ref?: string;
-    commit?: string;
-    prNumber?: number;
-    prTitle?: string;
-    issueNumber?: number;
-    issueTitle?: string;
-    raw: Record<string, unknown>;
-}
-
-function mapGitHubEvent(
-    eventType: string,
-    body: Record<string, unknown>,
-): GitHubTriggerPayload {
-    const raw = body;
-    const repo =
-        (body.repository as Record<string, unknown> | undefined)?.full_name as string | undefined;
-    const sender =
-        (body.sender as Record<string, unknown> | undefined)?.login as string | undefined;
-
-    switch (eventType) {
-        case "push": {
-            return {
-                event: "push",
-                repository: repo,
-                sender,
-                ref: body.ref as string | undefined,
-                commit: (body.head_commit as Record<string, unknown> | undefined)
-                    ?.id as string | undefined,
-                raw,
-            };
-        }
-        case "pull_request": {
-            const pr = body.pull_request as Record<string, unknown> | undefined;
-            return {
-                event: "pull_request",
-                action: body.action as string | undefined,
-                repository: repo,
-                sender,
-                prNumber: pr?.number as number | undefined,
-                prTitle: pr?.title as string | undefined,
-                raw,
-            };
-        }
-        case "issues": {
-            const issue = body.issue as Record<string, unknown> | undefined;
-            return {
-                event: "issues",
-                action: body.action as string | undefined,
-                repository: repo,
-                sender,
-                issueNumber: issue?.number as number | undefined,
-                issueTitle: issue?.title as string | undefined,
-                raw,
-            };
-        }
-        default: {
-            return {
-                event: eventType,
-                repository: repo,
-                sender,
-                raw,
-            };
-        }
-    }
-}
-
 // ── Fire logic ────────────────────────────────────────────────────────────────
 
 async function fireWebhookTrigger(
@@ -141,7 +65,6 @@ async function fireWebhookTrigger(
     targetSessionId: string,
     userId: string,
     payload: Record<string, unknown>,
-    githubEvent?: string,
 ): Promise<Response> {
     // Validate the target session and ownership
     const targetSession = await getSharedSession(targetSessionId);
@@ -161,10 +84,7 @@ async function fireWebhookTrigger(
     const triggerId = `wh_${randomUUID().replace(/-/g, "").slice(0, 16)}`;
     const ts = new Date().toISOString();
 
-    const triggerPayload: Record<string, unknown> =
-        source === "github" && githubEvent
-            ? (mapGitHubEvent(githubEvent, payload) as unknown as Record<string, unknown>)
-            : payload;
+    const triggerPayload: Record<string, unknown> = payload;
 
     const trigger = {
         type: "webhook",
@@ -182,7 +102,7 @@ async function fireWebhookTrigger(
         triggerId,
         type: "webhook",
         // Prefix with "external:" so deriveLinkedSessions() in the UI
-        // doesn't misclassify webhook sources (e.g. "github") as child sessions.
+        // doesn't misclassify webhook sources as child sessions.
         source: `external:${source}`,
         summary: webhookName,
         payload: triggerPayload,
@@ -404,17 +324,10 @@ export const handleWebhooksRoute: RouteHandler = async (req, url) => {
         }
 
         // Validate HMAC signature.
-        // Accept both our native header (x-webhook-signature) and GitHub's header
-        // (X-Hub-Signature-256: sha256=<hex>) so GitHub webhooks work without any
-        // extra configuration when source="github".
-        const rawSig =
-            req.headers.get("x-webhook-signature") ??
-            req.headers.get("x-hub-signature-256");
-        if (!rawSig) {
-            return Response.json({ error: "Missing signature header (X-Webhook-Signature or X-Hub-Signature-256)" }, { status: 401 });
+        const signature = req.headers.get("x-webhook-signature");
+        if (!signature) {
+            return Response.json({ error: "Missing X-Webhook-Signature header" }, { status: 401 });
         }
-        // Strip optional "sha256=" prefix from GitHub's format
-        const signature = rawSig.startsWith("sha256=") ? rawSig.slice(7) : rawSig;
 
         const expected = computeHmac(webhook.secret, new Uint8Array(rawBody));
         if (!hmacEqual(signature, expected)) {
@@ -431,8 +344,7 @@ export const handleWebhooksRoute: RouteHandler = async (req, url) => {
         }
 
         // Check event filter
-        const githubEvent = req.headers.get("x-github-event") ?? undefined;
-        const eventType = githubEvent ?? (body.type as string | undefined) ?? "webhook";
+        const eventType = (body.type as string | undefined) ?? "webhook";
 
         if (webhook.eventFilter && webhook.eventFilter.length > 0) {
             if (!webhook.eventFilter.includes(eventType)) {
@@ -460,7 +372,6 @@ export const handleWebhooksRoute: RouteHandler = async (req, url) => {
             targetSessionId,
             webhook.userId,
             body,
-            githubEvent,
         );
     }
 
