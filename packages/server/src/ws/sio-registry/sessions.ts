@@ -60,9 +60,12 @@ import {
     safeJsonParse,
     modelFromHeartbeat,
     emitToRunner,
+    broadcastToSessionViewers,
 } from "./context.js";
 import { broadcastToHub } from "./hub.js";
 import { createLogger } from "@pizzapi/tools";
+import { clearSessionSubscriptions } from "../../sessions/trigger-subscription-store.js";
+import { pushTriggerHistory } from "../../sessions/trigger-store.js";
 
 const log = createLogger("sio-registry");
 
@@ -302,6 +305,23 @@ export async function registerTuiSession(
             // later delink_children hits re-delinking this child incorrectly.
             await removePendingParentDelinkChild(previousParentSessionId, sessionId);
         }
+
+        // Push a synthetic trigger history entry so the parent's TriggersPanel
+        // shows this child immediately (not only after the first real trigger).
+        const linkedTriggerId = `linked_${sessionId.replace(/-/g, "").slice(0, 16)}`;
+        void Promise.resolve(pushTriggerHistory(resolvedParentSessionId, {
+            triggerId: linkedTriggerId,
+            type: "session_linked",
+            source: sessionId,
+            summary: sessionName ?? undefined,
+            payload: {},
+            deliverAs: "followUp",
+            ts: new Date().toISOString(),
+            direction: "inbound",
+        })).catch(() => {});
+        broadcastToSessionViewers(resolvedParentSessionId, "trigger_delivered", {
+            triggerId: linkedTriggerId,
+        });
     }
 
     // Store local socket reference
@@ -741,6 +761,18 @@ export async function endSharedSession(sessionId: string, reason: string = "Sess
     // connected to a different relay node than the one calling this function.
     if (session.runnerId) {
         emitToRunner(session.runnerId, "session_ended", { sessionId, reason });
+    }
+
+    // Clean up trigger subscriptions eagerly so reverse-index entries don't
+    // outlive the session (best-effort — failures are logged, not thrown).
+    // Skip on reconnect teardown: "Session reconnected" is called by
+    // registerTuiSession() during normal reconnects and the session
+    // immediately re-registers, so subscriptions must be preserved.
+    // Only clear on true termination paths (session ended, killed, expired).
+    if (reason !== "Session reconnected") {
+        void clearSessionSubscriptions(sessionId).catch((err) => {
+            log.warn("Failed to clear trigger subscriptions for session", sessionId, ":", err);
+        });
     }
 
     // Delete from Redis

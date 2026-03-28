@@ -20,6 +20,7 @@ import {
 import { TunnelClient } from "@pizzapi/tunnel";
 import { loadGlobalConfig } from "../config.js";
 import { cleanupSessionAttachments, sweepOrphanedAttachments } from "../extensions/session-attachments.js";
+import type { ServiceTriggerDef } from "@pizzapi/protocol";
 import { setLogComponent, logInfo, logWarn, logError } from "./logger.js";
 import { extractHookSummary } from "./hook-summary.js";
 import { defaultStatePath, acquireStateAndIdentity, releaseStateLock } from "./runner-state.js";
@@ -226,17 +227,32 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
         tunnelService.setTunnelClient(tunnelClient);
 
         // Panel tracking — manifests from folder-based services, ports from announcePanel()
-        type PanelEntry = { serviceId: string; label: string; icon: string; port?: number };
+        type PanelEntry = {
+            serviceId: string;
+            label: string;
+            icon: string;
+            port?: number;
+            /** Trigger types declared in this service's manifest */
+            triggers?: ServiceTriggerDef[];
+        };
         const panelEntries = new Map<string, PanelEntry>();
 
-        /** Emit service_announce with current service IDs and panel metadata. */
+        /** Emit service_announce with current service IDs, panel metadata, and trigger defs. */
         const emitServiceAnnounce = () => {
             const allServiceIds = registry.getAll().map((s) => s.id);
             const panels = Array.from(panelEntries.values())
                 .filter((p): p is PanelEntry & { port: number } => p.port != null);
+            // Collect all trigger defs across all services with manifests
+            const allTriggerDefs: ServiceTriggerDef[] = [];
+            for (const entry of panelEntries.values()) {
+                if (entry.triggers && entry.triggers.length > 0) {
+                    allTriggerDefs.push(...entry.triggers);
+                }
+            }
             (socket as any).emit("service_announce", {
                 serviceIds: allServiceIds,
                 ...(panels.length > 0 ? { panels } : {}),
+                ...(allTriggerDefs.length > 0 ? { triggerDefs: allTriggerDefs } : {}),
             });
         };
 
@@ -250,12 +266,17 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                 try {
                     registry.register(handler);
                     logInfo(`[services] loaded plugin service "${handler.id}" from ${source.pluginName ?? source.path}`);
-                    // Track panel metadata from folder-based services
-                    if (manifest?.panel) {
+                    // Track panel metadata and trigger defs from folder-based services
+                    if (manifest?.panel || (manifest?.triggers && manifest.triggers.length > 0)) {
+                        const existing = panelEntries.get(handler.id);
                         panelEntries.set(handler.id, {
                             serviceId: handler.id,
                             label: manifest.label,
                             icon: manifest.icon,
+                            ...(existing?.port !== undefined ? { port: existing.port } : {}),
+                            ...(manifest.triggers && manifest.triggers.length > 0
+                                ? { triggers: manifest.triggers }
+                                : {}),
                         });
                     }
                 } catch (err) {

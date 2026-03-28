@@ -1,10 +1,9 @@
-import { createClient } from "redis";
+import { connectRedisClient, isRedisDisabled, redisUrl, type RedisClient } from "../redis-client.js";
 import { getEphemeralTtlMs } from "./store.js";
 import { createLogger } from "@pizzapi/tools";
 
 const log = createLogger("redis");
 
-const DEFAULT_REDIS_URL = "redis://127.0.0.1:6379";
 const DEFAULT_EVENT_BUFFER_SIZE = 1000;
 const DEFAULT_EVENT_TTL_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_SNAPSHOT_SCAN_CHUNK_SIZE = 64;
@@ -32,16 +31,6 @@ function parsePositiveInt(value: string | undefined, fallback: number): number {
     return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
-function isRedisDisabled(): boolean {
-    const configured = process.env.PIZZAPI_REDIS_URL?.trim().toLowerCase();
-    return configured === "off" || configured === "disabled" || configured === "none";
-}
-
-function redisUrl(): string {
-    const configured = process.env.PIZZAPI_REDIS_URL?.trim();
-    return configured && configured.length > 0 ? configured : DEFAULT_REDIS_URL;
-}
-
 function eventBufferSize(): number {
     return parsePositiveInt(process.env.PIZZAPI_RELAY_EVENT_BUFFER_SIZE, DEFAULT_EVENT_BUFFER_SIZE);
 }
@@ -62,10 +51,29 @@ function eventsKey(sessionId: string): string {
     return `pizzapi:relay:session:${sessionId}:events`;
 }
 
-type RelayRedisClient = ReturnType<typeof createClient>;
+let _redis: RedisClient | null = null;
+let _initPromise: Promise<void> | null = null;
 
-let client: RelayRedisClient | null = null;
-let initPromise: Promise<void> | null = null;
+async function getClient(): Promise<RedisClient | null> {
+    if (_redis?.isOpen) return _redis;
+    if (_initPromise) { await _initPromise; return _redis; }
+    _initPromise = connectRedisClient().then(c => { _redis = c; });
+    await _initPromise;
+    return _redis;
+}
+
+/** Inject a mock client for tests. */
+export function _injectRedisForTesting(client: unknown): void {
+    _redis = client as RedisClient;
+    _initPromise = Promise.resolve();
+}
+
+/** Reset client state for tests. */
+export function _resetRedisForTesting(): void {
+    _redis = null;
+    _initPromise = null;
+}
+
 let unavailableLogged = false;
 
 function logUnavailableOnce(message: string, error?: unknown) {
@@ -78,51 +86,18 @@ function logUnavailableOnce(message: string, error?: unknown) {
     }
 }
 
-function activeClient(): RelayRedisClient | null {
-    if (!client || !client.isOpen) return null;
-    return client;
-}
-
 export async function initializeRelayRedisCache(): Promise<void> {
     if (isRedisDisabled()) {
         log.info("Relay Redis cache disabled (PIZZAPI_REDIS_URL=off).");
         return;
     }
 
-    if (initPromise) {
-        await initPromise;
-        return;
-    }
-
-    const url = redisUrl();
-    initPromise = (async () => {
-        const next = createClient({
-            url,
-            socket: {
-                reconnectStrategy: (attempt) => Math.min(1000 * 2 ** attempt, 30_000),
-            },
-        });
-
-        next.on("error", (error) => {
-            logUnavailableOnce("Relay Redis cache unavailable; continuing without event replay", error);
-        });
-
-        try {
-            await next.connect();
-            client = next;
-            unavailableLogged = false;
-            log.info(`Relay Redis cache connected at ${url}.`);
-        } catch (error) {
-            logUnavailableOnce("Relay Redis cache unavailable; continuing without event replay", error);
-            try {
-                next.disconnect();
-            } catch {}
-        }
-    })();
-
-    await initPromise;
-    if (!activeClient()) {
-        initPromise = null;
+    const redis = await getClient();
+    if (redis) {
+        unavailableLogged = false;
+        log.info(`Relay Redis cache connected at ${redisUrl()}.`);
+    } else {
+        logUnavailableOnce("Relay Redis cache unavailable; continuing without event replay");
     }
 }
 
@@ -132,11 +107,8 @@ export async function appendRelayEventToCache(
     opts: { isEphemeral?: boolean } = {},
 ): Promise<void> {
     if (isRedisDisabled()) return;
-    if (!initPromise) {
-        void initializeRelayRedisCache();
-    }
 
-    const redis = activeClient();
+    const redis = await getClient();
     if (!redis) return;
 
     const payload: CachedRelayEventEnvelope = {
@@ -159,11 +131,8 @@ export async function appendRelayEventToCache(
 
 export async function getCachedRelayEvents(sessionId: string): Promise<unknown[]> {
     if (isRedisDisabled()) return [];
-    if (!initPromise) {
-        void initializeRelayRedisCache();
-    }
 
-    const redis = activeClient();
+    const redis = await getClient();
     if (!redis) return [];
 
     try {
@@ -193,11 +162,8 @@ export async function getCachedRelayEvents(sessionId: string): Promise<unknown[]
  */
 export async function getLatestCachedSnapshotEvent(sessionId: string): Promise<Record<string, unknown> | null> {
     if (isRedisDisabled()) return null;
-    if (!initPromise) {
-        void initializeRelayRedisCache();
-    }
 
-    const redis = activeClient();
+    const redis = await getClient();
     if (!redis) return null;
 
     try {
@@ -231,7 +197,7 @@ export async function getLatestCachedSnapshotEvent(sessionId: string): Promise<R
 
 export async function deleteRelayEventCache(sessionId: string): Promise<void> {
     if (isRedisDisabled()) return;
-    const redis = activeClient();
+    const redis = await getClient();
     if (!redis) return;
 
     try {
@@ -244,7 +210,7 @@ export async function deleteRelayEventCache(sessionId: string): Promise<void> {
 export async function deleteRelayEventCaches(sessionIds: string[]): Promise<void> {
     if (sessionIds.length === 0) return;
     if (isRedisDisabled()) return;
-    const redis = activeClient();
+    const redis = await getClient();
     if (!redis) return;
 
     try {
@@ -261,7 +227,6 @@ export async function deleteRelayEventCaches(sessionIds: string[]): Promise<void
  * mock environment.  Intended for use in test hooks only.
  */
 export function _resetRelayRedisCacheForTesting(): void {
-    client = null;
-    initPromise = null;
+    _resetRedisForTesting();
     unavailableLogged = false;
 }

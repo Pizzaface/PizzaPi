@@ -155,6 +155,45 @@ const sessionErrorRenderer: TriggerRenderer = {
     },
 };
 
+const externalRenderer: TriggerRenderer = {
+    type: "external",
+    render(trigger) {
+        const source = trigger.sourceSessionName ?? trigger.sourceSessionId;
+        const summary = typeof trigger.payload.summary === "string"
+            ? trigger.payload.summary
+            : undefined;
+        const type = typeof trigger.payload.eventType === "string"
+            ? trigger.payload.eventType
+            : trigger.type;
+
+        const lines = [`🌐 External trigger from ${source}:`];
+        if (summary) {
+            lines.push(`> ${summary}`);
+        }
+        lines.push(`Type: ${type}`);
+        // Surface the webhook prompt (instructions) prominently when present.
+        const prompt = typeof trigger.payload.prompt === "string" ? trigger.payload.prompt : undefined;
+        if (prompt) {
+            lines.push("", `**Prompt:** ${prompt}`);
+        }
+        // Include payload data so the agent can act on the trigger content.
+        // Filter out keys already rendered above (summary, eventType, prompt).
+        const dataPayload = Object.fromEntries(
+            Object.entries(trigger.payload).filter(([k]) => k !== "summary" && k !== "eventType" && k !== "prompt"),
+        );
+        if (Object.keys(dataPayload).length > 0) {
+            lines.push("", "```json", JSON.stringify(dataPayload, null, 2), "```");
+        }
+        if (trigger.expectsResponse) {
+            lines.push("", respondLine(trigger.triggerId));
+        }
+        return lines.join("\n");
+    },
+    parseResponse(responseText) {
+        return responseText;
+    },
+};
+
 const escalateRenderer: TriggerRenderer = {
     type: "escalate",
     render(trigger) {
@@ -183,6 +222,11 @@ export const TRIGGER_RENDERERS: ReadonlyMap<string, TriggerRenderer> = new Map([
     ["session_complete", sessionCompleteRenderer],
     ["session_error", sessionErrorRenderer],
     ["escalate", escalateRenderer],
+    ["external", externalRenderer],
+    ["webhook", externalRenderer],
+    ["service", externalRenderer],
+    ["cron", externalRenderer],
+    ["custom", externalRenderer],
 ]);
 
 /**
@@ -199,7 +243,10 @@ export function renderTriggerBatch(triggers: ConversationTrigger[]): string {
 
 /** Render a trigger to text, with trigger ID metadata prefix. */
 export function renderTrigger(trigger: ConversationTrigger): string {
-    const renderer = TRIGGER_RENDERERS.get(trigger.type);
+    // Look up an exact renderer first, then fall back to externalRenderer for
+    // namespaced service triggers (e.g. "demo:message_sent", "github:pr_comment").
+    const renderer = TRIGGER_RENDERERS.get(trigger.type)
+        ?? (trigger.type.includes(":") ? TRIGGER_RENDERERS.get("external") : undefined);
     const body = renderer
         ? renderer.render(trigger)
         : `🔗 Child "${displayName(trigger)}" sent unknown trigger "${trigger.type}". Payload: ${JSON.stringify(trigger.payload)}`;
@@ -218,6 +265,7 @@ export function renderTrigger(trigger: ConversationTrigger): string {
 
 /** Parse a response using the trigger type's parser, if available. */
 export function parseTriggerResponse(trigger: ConversationTrigger, responseText: string): unknown {
-    const renderer = TRIGGER_RENDERERS.get(trigger.type);
+    const renderer = TRIGGER_RENDERERS.get(trigger.type)
+        ?? (trigger.type.includes(":") ? TRIGGER_RENDERERS.get("external") : undefined);
     return renderer?.parseResponse?.(responseText, trigger) ?? responseText;
 }

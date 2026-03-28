@@ -39,6 +39,7 @@ import { getCurrentTodoList } from "../update-todo.js";
 import { setPlanModeChangeCallback, setPlanModeMetaEmitter } from "../plan-mode-toggle.js";
 import type { RemoteExecResponse } from "../remote-commands.js";
 import { clearAndCancelPendingTriggers } from "../triggers/extension.js";
+import { listTriggerSubscriptions, unsubscribeTrigger } from "../trigger-client.js";
 import type { ConversationTrigger } from "../triggers/types.js";
 import type { Socket } from "socket.io-client";
 import type { RelayClientToServerEvents, RelayServerToClientEvents } from "@pizzapi/protocol";
@@ -833,6 +834,24 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                 if (rctx.relay && rctx.sioSocket?.connected) {
                     startPendingCancellationRetryLoop();
                 }
+            }
+
+            // ── Unsubscribe from all active trigger subscriptions ────────
+            const sid = getRelaySessionId();
+            if (sid) {
+                listTriggerSubscriptions(sid).then(async (subs) => {
+                    if (subs.length === 0) return;
+                    log.info(`pizzapi: unsubscribing from ${subs.length} trigger subscription(s) on /new`);
+                    const results = await Promise.allSettled(
+                        subs.map((s) => unsubscribeTrigger(sid, s.triggerType)),
+                    );
+                    const failed = results.filter((r) => r.status === "rejected" || (r.status === "fulfilled" && !r.value.ok));
+                    if (failed.length > 0) {
+                        log.info(`pizzapi: ${failed.length} trigger unsubscribe(s) failed on /new`);
+                    }
+                }).catch((err) => {
+                    log.info(`pizzapi: trigger subscription cleanup failed on /new: ${err instanceof Error ? err.message : String(err)}`);
+                });
             }
 
             const rawDelinkEpoch = Date.now();

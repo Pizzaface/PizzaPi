@@ -551,4 +551,239 @@ describe("discoverServices — folder-based services", () => {
         expect(result.services).toHaveLength(1);
         expect(result.services[0].handler.id).toBe("custom-entry");
     });
+
+    test("parses triggers[] from manifest.json", async () => {
+        writeFolderService("trigger-svc", {
+            id: "trigger-svc",
+            label: "Trigger Service",
+            icon: "zap",
+            triggers: [
+                {
+                    type: "trigger-svc:thing_happened",
+                    label: "Thing Happened",
+                    description: "Fires when a thing happens",
+                    schema: { type: "object", properties: { thingId: { type: "string" } } },
+                },
+                {
+                    type: "trigger-svc:other_event",
+                    label: "Other Event",
+                },
+            ],
+        });
+
+        const result = await discoverServices();
+        expect(result.errors).toHaveLength(0);
+        expect(result.services).toHaveLength(1);
+        const manifest = result.services[0].manifest!;
+        expect(manifest.triggers).toHaveLength(2);
+        expect(manifest.triggers![0].type).toBe("trigger-svc:thing_happened");
+        expect(manifest.triggers![0].label).toBe("Thing Happened");
+        expect(manifest.triggers![0].description).toBe("Fires when a thing happens");
+        expect(manifest.triggers![0].schema).toEqual({ type: "object", properties: { thingId: { type: "string" } } });
+        expect(manifest.triggers![1].type).toBe("trigger-svc:other_event");
+        expect(manifest.triggers![1].label).toBe("Other Event");
+        expect(manifest.triggers![1].description).toBeUndefined();
+        expect(manifest.triggers![1].schema).toBeUndefined();
+    });
+
+    test("skips invalid trigger entries (missing type or label)", async () => {
+        writeFolderService("partial-triggers", {
+            id: "partial-triggers",
+            label: "Partial Triggers",
+            triggers: [
+                { type: "ok:valid", label: "Valid" },
+                { type: "missing-label" },                    // no label → skipped
+                { label: "Missing Type" },                    // no type → skipped
+                null,                                         // null → skipped
+                { type: 42, label: "Bad type field" },        // non-string type → skipped
+                { type: "also:valid", label: "Also Valid", description: 99 }, // bad desc → allowed (omitted)
+            ],
+        });
+
+        const result = await discoverServices();
+        expect(result.errors).toHaveLength(0);
+        expect(result.services).toHaveLength(1);
+        const triggers = result.services[0].manifest!.triggers!;
+        // Only the two valid ones survive
+        expect(triggers).toHaveLength(2);
+        expect(triggers[0].type).toBe("ok:valid");
+        expect(triggers[1].type).toBe("also:valid");
+        expect(triggers[1].description).toBeUndefined(); // bad description omitted
+    });
+
+    test("manifest.triggers is undefined when no triggers declared", async () => {
+        writeFolderService("no-triggers", { id: "no-triggers", label: "No Triggers" });
+
+        const result = await discoverServices();
+        expect(result.errors).toHaveLength(0);
+        expect(result.services).toHaveLength(1);
+        expect(result.services[0].manifest!.triggers).toBeUndefined();
+    });
+
+    test("manifest.triggers is undefined when triggers is empty array", async () => {
+        writeFolderService("empty-triggers", { id: "empty-triggers", label: "Empty", triggers: [] });
+
+        const result = await discoverServices();
+        expect(result.errors).toHaveLength(0);
+        expect(result.services).toHaveLength(1);
+        expect(result.services[0].manifest!.triggers).toBeUndefined();
+    });
+
+    test("parses trigger params from manifest.json", async () => {
+        writeFolderService("param-triggers", {
+            id: "param-triggers",
+            label: "Param Triggers",
+            triggers: [
+                {
+                    type: "github:pr_comment",
+                    label: "PR Comment Added",
+                    description: "Fires when a PR comment is added",
+                    params: [
+                        { name: "prNumber", label: "PR Number", type: "number", required: true },
+                        { name: "repo", label: "Repository", type: "string", description: "GitHub repo slug" },
+                        { name: "draft", label: "Include Drafts", type: "boolean", default: false },
+                    ],
+                },
+            ],
+        });
+
+        const result = await discoverServices();
+        expect(result.errors).toHaveLength(0);
+        expect(result.services).toHaveLength(1);
+        const trigger = result.services[0].manifest!.triggers![0];
+        expect(trigger.params).toHaveLength(3);
+        expect(trigger.params![0]).toEqual({
+            name: "prNumber",
+            label: "PR Number",
+            type: "number",
+            required: true,
+            description: undefined,
+            default: undefined,
+        });
+        expect(trigger.params![1]).toEqual({
+            name: "repo",
+            label: "Repository",
+            type: "string",
+            description: "GitHub repo slug",
+            required: undefined,
+            default: undefined,
+        });
+        expect(trigger.params![2]).toEqual({
+            name: "draft",
+            label: "Include Drafts",
+            type: "boolean",
+            description: undefined,
+            required: undefined,
+            default: false,
+        });
+    });
+
+    test("skips invalid param entries and defaults type to string", async () => {
+        writeFolderService("bad-params", {
+            id: "bad-params",
+            label: "Bad Params",
+            triggers: [
+                {
+                    type: "test:event",
+                    label: "Test Event",
+                    params: [
+                        { name: "valid", label: "Valid Param" }, // no type → defaults to "string"
+                        { name: "no-label" },                    // no label → skipped
+                        { label: "No Name" },                    // no name → skipped
+                        null,                                    // null → skipped
+                        { name: "bad-type", label: "Bad Type", type: "array" }, // invalid type → defaults to "string"
+                    ],
+                },
+            ],
+        });
+
+        const result = await discoverServices();
+        expect(result.errors).toHaveLength(0);
+        const trigger = result.services[0].manifest!.triggers![0];
+        expect(trigger.params).toHaveLength(2);
+        expect(trigger.params![0].name).toBe("valid");
+        expect(trigger.params![0].type).toBe("string");
+        expect(trigger.params![1].name).toBe("bad-type");
+        expect(trigger.params![1].type).toBe("string"); // defaulted
+    });
+
+    test("trigger without params has no params field", async () => {
+        writeFolderService("no-params", {
+            id: "no-params",
+            label: "No Params",
+            triggers: [
+                { type: "test:event", label: "Test", params: [] },
+            ],
+        });
+
+        const result = await discoverServices();
+        const trigger = result.services[0].manifest!.triggers![0];
+        expect(trigger.params).toBeUndefined();
+    });
+
+    test("parses enum values from trigger params", async () => {
+        writeFolderService("enum-params", {
+            id: "enum-params",
+            label: "Enum Params",
+            triggers: [
+                {
+                    type: "test:event",
+                    label: "Test",
+                    params: [
+                        { name: "channel", label: "Channel", type: "string", enum: ["general", "alerts", "debug"] },
+                        { name: "level", label: "Level", type: "number", enum: [1, 2, 3] },
+                    ],
+                },
+            ],
+        });
+
+        const result = await discoverServices();
+        const trigger = result.services[0].manifest!.triggers![0];
+        expect(trigger.params![0].enum).toEqual(["general", "alerts", "debug"]);
+        expect(trigger.params![1].enum).toEqual([1, 2, 3]);
+    });
+
+    test("parses multiselect flag (requires enum)", async () => {
+        writeFolderService("multi-params", {
+            id: "multi-params",
+            label: "Multi Params",
+            triggers: [
+                {
+                    type: "test:event",
+                    label: "Test",
+                    params: [
+                        { name: "tags", label: "Tags", type: "string", enum: ["bug", "feature", "chore"], multiselect: true },
+                        { name: "solo", label: "Solo", type: "string", multiselect: true }, // no enum → multiselect ignored
+                    ],
+                },
+            ],
+        });
+
+        const result = await discoverServices();
+        const trigger = result.services[0].manifest!.triggers![0];
+        expect(trigger.params![0].enum).toEqual(["bug", "feature", "chore"]);
+        expect(trigger.params![0].multiselect).toBe(true);
+        // multiselect without enum is silently dropped
+        expect(trigger.params![1].multiselect).toBeUndefined();
+    });
+
+    test("skips non-primitive enum values", async () => {
+        writeFolderService("bad-enum", {
+            id: "bad-enum",
+            label: "Bad Enum",
+            triggers: [
+                {
+                    type: "test:event",
+                    label: "Test",
+                    params: [
+                        { name: "x", label: "X", type: "string", enum: ["valid", { bad: true }, null, "also-valid"] },
+                    ],
+                },
+            ],
+        });
+
+        const result = await discoverServices();
+        const trigger = result.services[0].manifest!.triggers![0];
+        expect(trigger.params![0].enum).toEqual(["valid", "also-valid"]);
+    });
 });

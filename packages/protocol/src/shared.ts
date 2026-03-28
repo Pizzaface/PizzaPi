@@ -65,6 +65,8 @@ export interface RunnerInfo {
   serviceIds?: string[];
   /** Panel metadata for services that expose a UI panel. */
   panels?: ServicePanelInfo[];
+  /** Trigger types declared by services on this runner (from service_announce). */
+  triggerDefs?: ServiceTriggerDef[];
   /** Active warnings from the runner daemon (e.g. tunnel connection failures). */
   warnings?: string[];
 }
@@ -134,11 +136,65 @@ export interface ServicePanelInfo {
   icon: string;
 }
 
+// ── Service trigger types ─────────────────────────────────────────────────────
+
+/**
+ * A trigger type that a service can emit.
+ * Declared in a service's manifest.json and forwarded via service_announce
+ * so agents and the UI can discover what triggers are available.
+ */
+export interface ServiceTriggerDef {
+  /** Namespaced trigger type, e.g. "godmother:idea_moved" */
+  type: string;
+  /** Human-readable label, e.g. "Idea Status Changed" */
+  label: string;
+  /** Optional description of when/why this trigger fires */
+  description?: string;
+  /** Optional JSON Schema for the trigger payload */
+  schema?: Record<string, unknown>;
+  /**
+   * Configurable parameters that subscribers provide when subscribing.
+   * At broadcast time, delivery is filtered: a subscriber only receives the
+   * trigger if every param they specified matches the corresponding payload field.
+   */
+  params?: ServiceTriggerParamDef[];
+}
+
+/**
+ * A configurable parameter on a trigger type.
+ * Subscribers provide values for these when subscribing, and the broadcast
+ * delivery path filters based on matches.
+ */
+export interface ServiceTriggerParamDef {
+  /** Parameter name — must match a key in the trigger payload */
+  name: string;
+  /** Human-readable label for the UI */
+  label: string;
+  /** Value type */
+  type: "string" | "number" | "boolean";
+  /** Optional description */
+  description?: string;
+  /** Whether the subscriber must provide this param */
+  required?: boolean;
+  /** Default value if not provided */
+  default?: string | number | boolean;
+  /** Allowed values — renders as a dropdown in the UI */
+  enum?: Array<string | number | boolean>;
+  /**
+   * Allow selecting multiple enum values. Requires `enum` to be set.
+   * Stored as an array; at delivery time the trigger matches if the payload
+   * value is contained in the subscriber's selected set (OR semantics).
+   */
+  multiselect?: boolean;
+}
+
 /** Payload for the service_announce event. */
 export interface ServiceAnnounceData {
   serviceIds: string[];
   /** Panels exposed by plugin services (present when ≥1 service has a panel). */
   panels?: ServicePanelInfo[];
+  /** Trigger types declared by services on this runner. */
+  triggerDefs?: ServiceTriggerDef[];
 }
 
 // ── Tunnel service types ──────────────────────────────────────────────────────

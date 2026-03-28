@@ -4,7 +4,7 @@
  * Called from both the daemon and interactive TUI on startup.
  * Idempotent — safe to call repeatedly.
  */
-import { existsSync, mkdirSync, readdirSync, renameSync, statSync, cpSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, renameSync, statSync, cpSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { createLogger } from "@pizzapi/tools";
@@ -47,9 +47,12 @@ export function migrateAgentDir(): void {
     if (existsSync(agentSubdir) && !existsSync(markerFile)) {
         try {
             mergeDir(agentSubdir, pizzapiDir);
-            // Write marker so we don't re-scan
+            // Write marker so we don't re-scan. Use writeFileSync (not
+            // Bun.write which returns a Promise) so the marker is reliably
+            // persisted before the function returns and the try/catch covers
+            // write failures.
             mkdirSync(agentSubdir, { recursive: true });
-            Bun.write(markerFile, new Date().toISOString());
+            writeFileSync(markerFile, new Date().toISOString(), "utf-8");
             log.info("Consolidated ~/.pizzapi/agent/ into ~/.pizzapi/");
         } catch (e: any) {
             log.warn(`Failed to consolidate ~/.pizzapi/agent/: ${e.message}`);

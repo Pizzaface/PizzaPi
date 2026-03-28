@@ -17,6 +17,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, extname, join, resolve } from "node:path";
 import type { ServiceHandler } from "./service-handler.js";
+import type { ServiceTriggerDef, ServiceTriggerParamDef } from "@pizzapi/protocol";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -29,6 +30,8 @@ export interface ServiceManifest {
     panel?: {
         dir?: string;
     };
+    /** Trigger types this service can emit. Declared statically in manifest.json. */
+    triggers?: ServiceTriggerDef[];
 }
 
 export interface ServicePluginResult {
@@ -347,6 +350,62 @@ function parseServiceManifest(manifestPath: string): ServiceManifest {
     if (typeof raw.label !== "string" || !raw.label) {
         throw new Error('manifest.json missing required "label" field');
     }
+
+    // Parse triggers[] — each entry must have a string `type` and `label`.
+    // Invalid entries are skipped (defensive; bad manifests shouldn't crash the daemon).
+    const triggers: ServiceTriggerDef[] = [];
+    if (Array.isArray(raw.triggers)) {
+        for (const t of raw.triggers) {
+            if (!t || typeof t !== "object") continue;
+            if (typeof t.type !== "string" || !t.type) continue;
+            if (typeof t.label !== "string" || !t.label) continue;
+            // Parse params[] — configurable parameters subscribers provide.
+            const params: ServiceTriggerParamDef[] = [];
+            if (Array.isArray(t.params)) {
+                for (const p of t.params) {
+                    if (!p || typeof p !== "object") continue;
+                    if (typeof p.name !== "string" || !p.name) continue;
+                    if (typeof p.label !== "string" || !p.label) continue;
+                    const pType = typeof p.type === "string" && ["string", "number", "boolean"].includes(p.type)
+                        ? p.type as "string" | "number" | "boolean"
+                        : "string";
+                    // Parse enum — must be an array of primitives matching the param type.
+                    let enumVals: Array<string | number | boolean> | undefined;
+                    if (Array.isArray(p.enum) && p.enum.length > 0) {
+                        const valid = p.enum.filter(
+                            (v: unknown) => typeof v === "string" || typeof v === "number" || typeof v === "boolean",
+                        ) as Array<string | number | boolean>;
+                        if (valid.length > 0) enumVals = valid;
+                    }
+
+                    params.push({
+                        name: p.name,
+                        label: p.label,
+                        type: pType,
+                        description: typeof p.description === "string" ? p.description : undefined,
+                        required: typeof p.required === "boolean" ? p.required : undefined,
+                        default: (typeof p.default === "string" || typeof p.default === "number" || typeof p.default === "boolean")
+                            ? p.default
+                            : undefined,
+                        ...(enumVals ? { enum: enumVals } : {}),
+                        // multiselect only makes sense with enum
+                        ...(enumVals && p.multiselect === true ? { multiselect: true } : {}),
+                    });
+                }
+            }
+
+            triggers.push({
+                type: t.type,
+                label: t.label,
+                description: typeof t.description === "string" ? t.description : undefined,
+                schema: t.schema && typeof t.schema === "object" && !Array.isArray(t.schema)
+                    ? t.schema as Record<string, unknown>
+                    : undefined,
+                ...(params.length > 0 ? { params } : {}),
+            });
+        }
+    }
+
     return {
         id: raw.id,
         label: raw.label,
@@ -355,6 +414,7 @@ function parseServiceManifest(manifestPath: string): ServiceManifest {
         panel: raw.panel && typeof raw.panel === "object"
             ? { dir: typeof raw.panel.dir === "string" ? raw.panel.dir : undefined }
             : undefined,
+        triggers: triggers.length > 0 ? triggers : undefined,
     };
 }
 
