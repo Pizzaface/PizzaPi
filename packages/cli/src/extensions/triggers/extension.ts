@@ -499,7 +499,16 @@ export const triggersExtension: ExtensionFactory = (pi) => {
             const subscribedTypes = new Set(subs.map((s) => s.triggerType));
             const lines = defs.map((d) => {
                 const badge = subscribedTypes.has(d.type) ? " ✅ subscribed" : "";
-                return `• ${d.type} — ${d.label}${badge}${d.description ? `\n  ${d.description}` : ""}`;
+                let paramInfo = "";
+                if (d.params && d.params.length > 0) {
+                    const paramParts = d.params.map((p: any) => {
+                        const req = p.required ? " (required)" : "";
+                        const def = p.default !== undefined ? ` [default: ${p.default}]` : "";
+                        return `    - ${p.name}: ${p.type}${req}${def}${p.description ? ` — ${p.description}` : ""}`;
+                    });
+                    paramInfo = `\n  Params:\n${paramParts.join("\n")}`;
+                }
+                return `• ${d.type} — ${d.label}${badge}${d.description ? `\n  ${d.description}` : ""}${paramInfo}`;
             });
             return {
                 content: [{ type: "text" as const, text: `Available triggers (${defs.length}):\n${lines.join("\n")}` }],
@@ -536,7 +545,10 @@ export const triggersExtension: ExtensionFactory = (pi) => {
             "When the service fires that trigger type, it will be delivered to the subscribed session. " +
             "The trigger type must be declared by a service on the session's runner " +
             "(use list_available_triggers to discover valid types). " +
-            "To subscribe a child session, pass its sessionId.",
+            "To subscribe a child session, pass its sessionId. " +
+            "Some triggers accept params that filter which events you receive " +
+            "(e.g. { prNumber: 42 } to only get events for PR #42). " +
+            "Use list_available_triggers to see available params for each trigger type.",
         parameters: {
             type: "object",
             properties: {
@@ -548,21 +560,40 @@ export const triggersExtension: ExtensionFactory = (pi) => {
                     type: "string",
                     description: "Session ID to subscribe. Defaults to the current session if omitted.",
                 },
+                params: {
+                    type: "object",
+                    description: "Optional subscription params to filter trigger delivery. Keys must match the trigger's declared param names. Values are matched against the trigger payload at delivery time.",
+                },
             },
             required: ["triggerType"],
         } as any,
         async execute(_toolCallId, rawParams) {
-            const params = rawParams as { triggerType: string; sessionId?: string };
+            const params = rawParams as { triggerType: string; sessionId?: string; params?: Record<string, unknown> };
             const targetId = params.sessionId ?? getOwnSessionId() ?? "";
             if (!targetId) {
                 return { content: [{ type: "text" as const, text: "Error: Could not determine session ID." }], details: null as any };
             }
 
-            const result = await subscribeTrigger(targetId, params.triggerType);
+            // Coerce param values to primitives
+            let subParams: Record<string, string | number | boolean> | undefined;
+            if (params.params && typeof params.params === "object") {
+                subParams = {};
+                for (const [k, v] of Object.entries(params.params)) {
+                    if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") {
+                        subParams[k] = v;
+                    } else if (v !== undefined && v !== null) {
+                        subParams[k] = String(v);
+                    }
+                }
+                if (Object.keys(subParams).length === 0) subParams = undefined;
+            }
+
+            const result = await subscribeTrigger(targetId, params.triggerType, {}, subParams);
 
             if (result.ok) {
+                const paramSuffix = subParams ? ` with params ${JSON.stringify(subParams)}` : "";
                 return {
-                    content: [{ type: "text" as const, text: `Subscribed to '${result.triggerType}' on runner ${result.runnerId}` }],
+                    content: [{ type: "text" as const, text: `Subscribed to '${result.triggerType}' on runner ${result.runnerId}${paramSuffix}` }],
                     details: null as any,
                 };
             }

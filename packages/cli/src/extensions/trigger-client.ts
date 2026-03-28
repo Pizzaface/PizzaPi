@@ -298,6 +298,7 @@ export interface TriggerDef {
     label: string;
     description?: string;
     schema?: Record<string, unknown>;
+    params?: Array<{ name: string; label: string; type: string; description?: string; required?: boolean; default?: string | number | boolean }>;
 }
 
 export interface TriggerSubscription {
@@ -345,11 +346,14 @@ export async function getAvailableTriggers(
 /**
  * Subscribe a session to a trigger type.
  * The trigger type must be declared by a service on the session's runner.
+ *
+ * @param params Optional subscription params — values to match against the trigger payload at delivery time.
  */
 export async function subscribeTrigger(
     sessionId: string,
     triggerType: string,
     deps: Partial<TriggerClientDeps> = {},
+    params?: Record<string, string | number | boolean>,
 ): Promise<SubscriptionResult> {
     const d: TriggerClientDeps = { ...defaultDeps, ...deps };
     const baseUrl = d.getRelayHttpBaseUrl();
@@ -364,9 +368,12 @@ export async function subscribeTrigger(
         const response = await d.fetch(url, {
             method: "POST",
             headers: { "Content-Type": "application/json", "x-api-key": apiKey },
-            body: JSON.stringify({ triggerType }),
+            body: JSON.stringify({
+                triggerType,
+                ...(params && Object.keys(params).length > 0 ? { params } : {}),
+            }),
         });
-        const data = await response.json() as { ok?: boolean; triggerType?: string; runnerId?: string; error?: string };
+        const data = await response.json() as { ok?: boolean; triggerType?: string; runnerId?: string; params?: Record<string, unknown>; error?: string };
         if (response.ok && data.ok) {
             return { ok: true, triggerType: data.triggerType, runnerId: data.runnerId };
         }

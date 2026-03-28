@@ -44,15 +44,17 @@ mock.module("../sessions/trigger-store.js", () => ({
 }));
 
 // ── Mock trigger subscription store ─────────────────────────────────────
-const mockSubscribeSessionToTrigger = mock((_sid: string, _rid: string, _type: string) => Promise.resolve());
+const mockSubscribeSessionToTrigger = mock((_sid: string, _rid: string, _type: string, _ttl?: number, _params?: any) => Promise.resolve());
 const mockUnsubscribeSessionFromTrigger = mock((_sid: string, _type: string) => Promise.resolve());
 const mockListSessionSubscriptions = mock((_sid: string) => Promise.resolve([] as any[]));
 const mockGetSubscribersForTrigger = mock((_rid: string, _type: string) => Promise.resolve([] as string[]));
+const mockGetSubscriptionParams = mock((_sid: string, _type: string) => Promise.resolve(undefined as any));
 mock.module("../sessions/trigger-subscription-store.js", () => ({
     subscribeSessionToTrigger: mockSubscribeSessionToTrigger,
     unsubscribeSessionFromTrigger: mockUnsubscribeSessionFromTrigger,
     listSessionSubscriptions: mockListSessionSubscriptions,
     getSubscribersForTrigger: mockGetSubscribersForTrigger,
+    getSubscriptionParams: mockGetSubscriptionParams,
 }));
 
 // ── Mock runners registry ────────────────────────────────────────────────
@@ -614,6 +616,8 @@ describe("POST /api/runners/:runnerId/trigger-broadcast", () => {
         mockEmitToRelaySessionVerified.mockReset();
         mockPushTriggerHistory.mockReset();
         mockGetSubscribersForTrigger.mockReset();
+        mockGetSubscriptionParams.mockReset();
+        mockGetSubscriptionParams.mockReturnValue(Promise.resolve(undefined));
         mockValidateApiKey.mockReturnValue(
             Promise.resolve({ userId: "user-1", userName: "TestUser" }),
         );
@@ -716,6 +720,34 @@ describe("POST /api/runners/:runnerId/trigger-broadcast", () => {
         );
         const res = await handleTriggersRoute(req, url);
         expect(res?.status).toBe(400);
+    });
+
+    test("filters by subscription params — only matching subscribers receive trigger", async () => {
+        mockGetSubscribersForTrigger.mockReturnValue(
+            Promise.resolve(["sess-pr42", "sess-pr99", "sess-all"]),
+        );
+        mockGetSharedSession.mockImplementation((id: string) =>
+            Promise.resolve({ userId: "user-1", sessionId: id } as any),
+        );
+        // sess-pr42 subscribes with prNumber=42, sess-pr99 with prNumber=99, sess-all has no params
+        mockGetSubscriptionParams.mockImplementation((sid: string, _type: string) => {
+            if (sid === "sess-pr42") return Promise.resolve({ prNumber: 42 });
+            if (sid === "sess-pr99") return Promise.resolve({ prNumber: 99 });
+            return Promise.resolve(undefined); // sess-all — no params, receives everything
+        });
+        const emitMock = mock(() => {});
+        mockGetLocalTuiSocket.mockReturnValue({ connected: true, emit: emitMock });
+
+        const [req, url] = makeReq(
+            "POST", "/api/runners/runner-A/trigger-broadcast",
+            { type: "github:pr_comment", payload: { prNumber: 42, comment: "hello" }, source: "github" },
+            { "x-api-key": "test-key" },
+        );
+        const res = await handleTriggersRoute(req, url);
+        const body = await res!.json();
+        // sess-pr42 matches (prNumber=42), sess-all matches (no filter), sess-pr99 does NOT match
+        expect(body.delivered).toBe(2);
+        expect(emitMock).toHaveBeenCalledTimes(2);
     });
 });
 

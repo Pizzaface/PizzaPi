@@ -18,6 +18,7 @@ export type {
   ServiceEnvelope,
   ServicePanelInfo,
   ServiceTriggerDef,
+  ServiceTriggerParamDef,
   ServiceAnnounceData,
   TunnelInfo,
 } from "./shared.js";

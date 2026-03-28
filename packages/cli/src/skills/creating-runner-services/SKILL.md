@@ -44,7 +44,16 @@ Runner services are background processes on the runner daemon. They can:
           "itemId": { "type": "string" },
           "timestamp": { "type": "number" }
         }
-      }
+      },
+      "params": [
+        {
+          "name": "itemId",
+          "label": "Item ID",
+          "type": "string",
+          "description": "Only receive events for this specific item",
+          "required": false
+        }
+      ]
     }
   ]
 }
@@ -69,6 +78,39 @@ Each entry in `triggers` declares a trigger type this service can emit:
 | `label` | Yes | Human-readable label for the UI and agent tools |
 | `description` | No | When/why this trigger fires |
 | `schema` | No | JSON Schema describing the trigger payload |
+| `params` | No | Array of configurable parameters for subscriber filtering (see below) |
+
+### Trigger Parameters
+
+Triggers can declare **params** — configurable values that subscribers provide when subscribing. At broadcast time, delivery is filtered: a subscriber only receives the trigger if every param they specified matches the corresponding field in the trigger payload. Subscribers with no params receive all events (wildcard).
+
+Each entry in `params`:
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `name` | Yes | Parameter name — must match a key in the trigger payload |
+| `label` | Yes | Human-readable label for the UI |
+| `type` | No | Value type: `"string"` (default), `"number"`, or `"boolean"` |
+| `description` | No | Help text for the subscriber |
+| `required` | No | If `true`, subscriber must provide this param |
+| `default` | No | Default value if not provided |
+
+**Example:** A GitHub integration service might declare:
+
+```json
+{
+  "type": "github:pr_comment_added",
+  "label": "PR Comment Added",
+  "params": [
+    { "name": "prNumber", "label": "PR Number", "type": "number", "required": true },
+    { "name": "repo", "label": "Repository", "type": "string" }
+  ]
+}
+```
+
+An agent subscribes with: `subscribe_trigger(triggerType: "github:pr_comment_added", params: { prNumber: 42 })`
+
+Only events with `prNumber: 42` in their payload are delivered to that session. Other sessions subscribed with `prNumber: 99` won't receive it. Sessions subscribed without specifying `prNumber` receive all events.
 
 Trigger types are advertised to agents via `service_announce` so they can be discovered with `list_available_triggers()` and subscribed to with `subscribe_trigger()`.
 

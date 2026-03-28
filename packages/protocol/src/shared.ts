@@ -152,6 +152,32 @@ export interface ServiceTriggerDef {
   description?: string;
   /** Optional JSON Schema for the trigger payload */
   schema?: Record<string, unknown>;
+  /**
+   * Configurable parameters that subscribers provide when subscribing.
+   * At broadcast time, delivery is filtered: a subscriber only receives the
+   * trigger if every param they specified matches the corresponding payload field.
+   */
+  params?: ServiceTriggerParamDef[];
+}
+
+/**
+ * A configurable parameter on a trigger type.
+ * Subscribers provide values for these when subscribing, and the broadcast
+ * delivery path filters based on matches.
+ */
+export interface ServiceTriggerParamDef {
+  /** Parameter name — must match a key in the trigger payload */
+  name: string;
+  /** Human-readable label for the UI */
+  label: string;
+  /** Value type */
+  type: "string" | "number" | "boolean";
+  /** Optional description */
+  description?: string;
+  /** Whether the subscriber must provide this param */
+  required?: boolean;
+  /** Default value if not provided */
+  default?: string | number | boolean;
 }
 
 /** Payload for the service_announce event. */

@@ -17,7 +17,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, extname, join, resolve } from "node:path";
 import type { ServiceHandler } from "./service-handler.js";
-import type { ServiceTriggerDef } from "@pizzapi/protocol";
+import type { ServiceTriggerDef, ServiceTriggerParamDef } from "@pizzapi/protocol";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -359,6 +359,29 @@ function parseServiceManifest(manifestPath: string): ServiceManifest {
             if (!t || typeof t !== "object") continue;
             if (typeof t.type !== "string" || !t.type) continue;
             if (typeof t.label !== "string" || !t.label) continue;
+            // Parse params[] — configurable parameters subscribers provide.
+            const params: ServiceTriggerParamDef[] = [];
+            if (Array.isArray(t.params)) {
+                for (const p of t.params) {
+                    if (!p || typeof p !== "object") continue;
+                    if (typeof p.name !== "string" || !p.name) continue;
+                    if (typeof p.label !== "string" || !p.label) continue;
+                    const pType = typeof p.type === "string" && ["string", "number", "boolean"].includes(p.type)
+                        ? p.type as "string" | "number" | "boolean"
+                        : "string";
+                    params.push({
+                        name: p.name,
+                        label: p.label,
+                        type: pType,
+                        description: typeof p.description === "string" ? p.description : undefined,
+                        required: typeof p.required === "boolean" ? p.required : undefined,
+                        default: (typeof p.default === "string" || typeof p.default === "number" || typeof p.default === "boolean")
+                            ? p.default
+                            : undefined,
+                    });
+                }
+            }
+
             triggers.push({
                 type: t.type,
                 label: t.label,
@@ -366,6 +389,7 @@ function parseServiceManifest(manifestPath: string): ServiceManifest {
                 schema: t.schema && typeof t.schema === "object" && !Array.isArray(t.schema)
                     ? t.schema as Record<string, unknown>
                     : undefined,
+                ...(params.length > 0 ? { params } : {}),
             });
         }
     }

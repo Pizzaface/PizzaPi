@@ -45,6 +45,8 @@ import {
     unsubscribeSessionFromTrigger,
     listSessionSubscriptions,
     getSubscribersForTrigger,
+    getSubscriptionParams,
+    type SubscriptionParams,
 } from "../sessions/trigger-subscription-store.js";
 
 const log = createLogger("triggers-api");
@@ -268,9 +270,9 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
             return Response.json({ error: "Session not found" }, { status: 404 });
         }
 
-        let body: { triggerType?: string };
+        let body: { triggerType?: string; params?: Record<string, unknown> };
         try {
-            body = await req.json() as { triggerType?: string };
+            body = await req.json() as { triggerType?: string; params?: Record<string, unknown> };
         } catch {
             return Response.json({ error: "Invalid JSON body" }, { status: 400 });
         }
@@ -297,17 +299,76 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
             );
         }
         const available = services.triggerDefs ?? [];
-        const isDeclared = available.some((def) => def.type === triggerType);
-        if (!isDeclared) {
+        const triggerDef = available.find((def) => def.type === triggerType);
+        if (!triggerDef) {
             return Response.json(
                 { error: `Trigger type '${triggerType}' is not available on this session's runner` },
                 { status: 422 },
             );
         }
 
-        await subscribeSessionToTrigger(sessionId, session.runnerId, triggerType);
-        log.info(`Session ${sessionId} subscribed to trigger type '${triggerType}' on runner ${session.runnerId}`);
-        return Response.json({ ok: true, triggerType, runnerId: session.runnerId });
+        // Validate and coerce subscription params against the trigger def's param definitions.
+        let subParams: SubscriptionParams | undefined;
+        if (body.params && typeof body.params === "object" && !Array.isArray(body.params)) {
+            const paramDefs = triggerDef.params ?? [];
+            const validated: SubscriptionParams = {};
+            const errors: string[] = [];
+
+            for (const def of paramDefs) {
+                const raw = body.params[def.name];
+                if (raw === undefined || raw === null) {
+                    if (def.required) {
+                        errors.push(`Missing required param '${def.name}'`);
+                    }
+                    continue;
+                }
+                // Coerce to the declared type
+                if (def.type === "number") {
+                    const num = Number(raw);
+                    if (isNaN(num)) {
+                        errors.push(`Param '${def.name}' must be a number`);
+                    } else {
+                        validated[def.name] = num;
+                    }
+                } else if (def.type === "boolean") {
+                    validated[def.name] = raw === true || raw === "true";
+                } else {
+                    validated[def.name] = String(raw);
+                }
+            }
+
+            // Also accept params not in the def (extensible — services may accept extra keys)
+            for (const [key, val] of Object.entries(body.params)) {
+                if (key in validated) continue;
+                if (paramDefs.some(d => d.name === key)) continue; // already processed
+                if (val === undefined || val === null) continue;
+                if (typeof val === "string" || typeof val === "number" || typeof val === "boolean") {
+                    validated[key] = val;
+                }
+            }
+
+            if (errors.length > 0) {
+                return Response.json({ error: errors.join("; ") }, { status: 400 });
+            }
+
+            if (Object.keys(validated).length > 0) {
+                subParams = validated;
+            }
+        } else if (triggerDef.params) {
+            // Check for required params with no params provided
+            const missing = triggerDef.params.filter(p => p.required);
+            if (missing.length > 0) {
+                return Response.json(
+                    { error: `Missing required params: ${missing.map(p => p.name).join(", ")}` },
+                    { status: 400 },
+                );
+            }
+        }
+
+        await subscribeSessionToTrigger(sessionId, session.runnerId, triggerType, undefined, subParams);
+        log.info(`Session ${sessionId} subscribed to trigger type '${triggerType}' on runner ${session.runnerId}${subParams ? ` with params ${JSON.stringify(subParams)}` : ""}`);
+        broadcastToSessionViewers(sessionId, "trigger_subscriptions_changed", { triggerType, action: "subscribe" });
+        return Response.json({ ok: true, triggerType, runnerId: session.runnerId, ...(subParams ? { params: subParams } : {}) });
     }
 
     // ── DELETE /api/sessions/:id/trigger-subscriptions/:triggerType ───
@@ -326,6 +387,7 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
 
         await unsubscribeSessionFromTrigger(sessionId, triggerType);
         log.info(`Session ${sessionId} unsubscribed from trigger type '${triggerType}'`);
+        broadcastToSessionViewers(sessionId, "trigger_subscriptions_changed", { triggerType, action: "unsubscribe" });
         return Response.json({ ok: true, triggerType });
     }
 
@@ -390,6 +452,25 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
             // Only deliver to sessions belonging to the same user (ownership check)
             // and sessions that are actually connected.
             if (!targetSession || targetSession.userId !== identity.userId) continue;
+
+            // Filter by subscription params: each param the subscriber specified
+            // must match the corresponding field in the trigger payload.
+            // Subscribers with no params receive all triggers (no filtering).
+            const subParams = await getSubscriptionParams(targetSessionId, body.type);
+            if (subParams) {
+                let matches = true;
+                for (const [key, expected] of Object.entries(subParams)) {
+                    const actual = body.payload[key];
+                    // Loose equality: compare after coercion to the same type.
+                    // This handles "42" == 42 for payloads that send numbers as strings.
+                    // eslint-disable-next-line eqeqeq
+                    if (actual != expected) {
+                        matches = false;
+                        break;
+                    }
+                }
+                if (!matches) continue;
+            }
 
             const historyEntry = {
                 triggerId: `${triggerId}_${targetSessionId.slice(0, 8)}`,

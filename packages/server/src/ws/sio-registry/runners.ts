@@ -26,7 +26,7 @@ import {
     deleteRunnerAssociation,
 } from "../sio-state.js";
 import { updateRelaySessionRunner } from "../../sessions/store.js";
-import type { RunnerInfo, RunnerSkill, RunnerAgent, RunnerHook } from "@pizzapi/protocol";
+import type { RunnerInfo, RunnerSkill, RunnerAgent, RunnerHook, ServiceTriggerDef } from "@pizzapi/protocol";
 import {
     localTuiSockets,
     localRunnerSockets,
@@ -304,7 +304,7 @@ export async function getRunnerServices(
 ): Promise<{
     serviceIds: string[];
     panels?: Array<{ serviceId: string; port: number; label: string; icon: string }>;
-    triggerDefs?: Array<{ type: string; label: string; description?: string; schema?: Record<string, unknown> }>;
+    triggerDefs?: ServiceTriggerDef[];
 } | null> {
     const runner = await getRunnerState(runnerId);
     if (!runner?.serviceIds) return null;

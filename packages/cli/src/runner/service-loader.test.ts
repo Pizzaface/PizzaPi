@@ -628,4 +628,96 @@ describe("discoverServices — folder-based services", () => {
         expect(result.services).toHaveLength(1);
         expect(result.services[0].manifest!.triggers).toBeUndefined();
     });
+
+    test("parses trigger params from manifest.json", async () => {
+        writeFolderService("param-triggers", {
+            id: "param-triggers",
+            label: "Param Triggers",
+            triggers: [
+                {
+                    type: "github:pr_comment",
+                    label: "PR Comment Added",
+                    description: "Fires when a PR comment is added",
+                    params: [
+                        { name: "prNumber", label: "PR Number", type: "number", required: true },
+                        { name: "repo", label: "Repository", type: "string", description: "GitHub repo slug" },
+                        { name: "draft", label: "Include Drafts", type: "boolean", default: false },
+                    ],
+                },
+            ],
+        });
+
+        const result = await discoverServices();
+        expect(result.errors).toHaveLength(0);
+        expect(result.services).toHaveLength(1);
+        const trigger = result.services[0].manifest!.triggers![0];
+        expect(trigger.params).toHaveLength(3);
+        expect(trigger.params![0]).toEqual({
+            name: "prNumber",
+            label: "PR Number",
+            type: "number",
+            required: true,
+            description: undefined,
+            default: undefined,
+        });
+        expect(trigger.params![1]).toEqual({
+            name: "repo",
+            label: "Repository",
+            type: "string",
+            description: "GitHub repo slug",
+            required: undefined,
+            default: undefined,
+        });
+        expect(trigger.params![2]).toEqual({
+            name: "draft",
+            label: "Include Drafts",
+            type: "boolean",
+            description: undefined,
+            required: undefined,
+            default: false,
+        });
+    });
+
+    test("skips invalid param entries and defaults type to string", async () => {
+        writeFolderService("bad-params", {
+            id: "bad-params",
+            label: "Bad Params",
+            triggers: [
+                {
+                    type: "test:event",
+                    label: "Test Event",
+                    params: [
+                        { name: "valid", label: "Valid Param" }, // no type → defaults to "string"
+                        { name: "no-label" },                    // no label → skipped
+                        { label: "No Name" },                    // no name → skipped
+                        null,                                    // null → skipped
+                        { name: "bad-type", label: "Bad Type", type: "array" }, // invalid type → defaults to "string"
+                    ],
+                },
+            ],
+        });
+
+        const result = await discoverServices();
+        expect(result.errors).toHaveLength(0);
+        const trigger = result.services[0].manifest!.triggers![0];
+        expect(trigger.params).toHaveLength(2);
+        expect(trigger.params![0].name).toBe("valid");
+        expect(trigger.params![0].type).toBe("string");
+        expect(trigger.params![1].name).toBe("bad-type");
+        expect(trigger.params![1].type).toBe("string"); // defaulted
+    });
+
+    test("trigger without params has no params field", async () => {
+        writeFolderService("no-params", {
+            id: "no-params",
+            label: "No Params",
+            triggers: [
+                { type: "test:event", label: "Test", params: [] },
+            ],
+        });
+
+        const result = await discoverServices();
+        const trigger = result.services[0].manifest!.triggers![0];
+        expect(trigger.params).toBeUndefined();
+    });
 });

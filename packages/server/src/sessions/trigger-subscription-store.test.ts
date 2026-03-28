@@ -9,6 +9,7 @@ import {
     unsubscribeSessionFromTrigger,
     listSessionSubscriptions,
     getSubscribersForTrigger,
+    getSubscriptionParams,
     clearSessionSubscriptions,
     _injectRedisForTesting,
     _resetRedisForTesting,
@@ -257,5 +258,77 @@ describe.todo("clearSessionSubscriptions", () => {
 
     test("is a no-op for a session with no subscriptions", async () => {
         await expect(clearSessionSubscriptions("session-no-subs")).resolves.toBeUndefined();
+    });
+});
+
+// ── Subscription params ──────────────────────────────────────────────────────
+
+describe.todo("subscription params", () => {
+    beforeEach(resetState);
+
+    test("subscribe with params stores them and lists them", async () => {
+        await subscribeSessionToTrigger("session-1", "runner-A", "github:pr_comment", undefined, { prNumber: 42 });
+        const subs = await listSessionSubscriptions("session-1");
+        expect(subs).toHaveLength(1);
+        expect(subs[0].triggerType).toBe("github:pr_comment");
+        expect(subs[0].runnerId).toBe("runner-A");
+        expect(subs[0].params).toEqual({ prNumber: 42 });
+    });
+
+    test("getSubscriptionParams returns params for subscribed session", async () => {
+        await subscribeSessionToTrigger("session-1", "runner-A", "github:pr_comment", undefined, { prNumber: 42, repo: "pizzapi" });
+        const params = await getSubscriptionParams("session-1", "github:pr_comment");
+        expect(params).toEqual({ prNumber: 42, repo: "pizzapi" });
+    });
+
+    test("getSubscriptionParams returns undefined when no params stored", async () => {
+        await subscribeSessionToTrigger("session-1", "runner-A", "svc:event");
+        const params = await getSubscriptionParams("session-1", "svc:event");
+        expect(params).toBeUndefined();
+    });
+
+    test("getSubscriptionParams returns undefined for unsubscribed type", async () => {
+        const params = await getSubscriptionParams("session-1", "nonexistent:type");
+        expect(params).toBeUndefined();
+    });
+
+    test("subscribe without params does not include params in listing", async () => {
+        await subscribeSessionToTrigger("session-1", "runner-A", "svc:event");
+        const subs = await listSessionSubscriptions("session-1");
+        expect(subs[0].params).toBeUndefined();
+    });
+
+    test("re-subscribing with different params replaces old params", async () => {
+        await subscribeSessionToTrigger("session-1", "runner-A", "github:pr_comment", undefined, { prNumber: 42 });
+        await subscribeSessionToTrigger("session-1", "runner-A", "github:pr_comment", undefined, { prNumber: 99 });
+        const params = await getSubscriptionParams("session-1", "github:pr_comment");
+        expect(params).toEqual({ prNumber: 99 });
+    });
+
+    test("unsubscribe clears params", async () => {
+        await subscribeSessionToTrigger("session-1", "runner-A", "github:pr_comment", undefined, { prNumber: 42 });
+        await unsubscribeSessionFromTrigger("session-1", "github:pr_comment");
+        const params = await getSubscriptionParams("session-1", "github:pr_comment");
+        expect(params).toBeUndefined();
+    });
+
+    test("clearSessionSubscriptions clears params for all types", async () => {
+        await subscribeSessionToTrigger("session-1", "runner-A", "type:a", undefined, { key: "val1" });
+        await subscribeSessionToTrigger("session-1", "runner-A", "type:b", undefined, { key: "val2" });
+        await clearSessionSubscriptions("session-1");
+        const paramsA = await getSubscriptionParams("session-1", "type:a");
+        const paramsB = await getSubscriptionParams("session-1", "type:b");
+        expect(paramsA).toBeUndefined();
+        expect(paramsB).toBeUndefined();
+    });
+
+    test("params support multiple value types: string, number, boolean", async () => {
+        await subscribeSessionToTrigger("session-1", "runner-A", "test:event", undefined, {
+            name: "test",
+            count: 5,
+            active: true,
+        });
+        const params = await getSubscriptionParams("session-1", "test:event");
+        expect(params).toEqual({ name: "test", count: 5, active: true });
     });
 });

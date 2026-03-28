@@ -65,19 +65,53 @@ const DEFAULT_TTL_SECONDS = 24 * 60 * 60; // 24 hours
 
 // ── Public API ───────────────────────────────────────────────────────────
 
+/** Subscription params — values the subscriber provided to filter trigger delivery. */
+export type SubscriptionParams = Record<string, string | number | boolean>;
+
+/** Internal storage format for a subscription hash value. */
+interface SubscriptionValue {
+    runnerId: string;
+    params?: SubscriptionParams;
+}
+
+/** Parse a subscription hash value (backward-compatible with plain runnerId strings). */
+function parseSubValue(raw: string): SubscriptionValue {
+    // Old format: just a runnerId string (no braces)
+    if (!raw.startsWith("{")) return { runnerId: raw };
+    try {
+        const parsed = JSON.parse(raw) as SubscriptionValue;
+        if (typeof parsed.runnerId === "string") return parsed;
+        return { runnerId: raw };
+    } catch {
+        return { runnerId: raw };
+    }
+}
+
+/** Serialize a subscription value for Redis storage. */
+function serializeSubValue(value: SubscriptionValue): string {
+    if (!value.params || Object.keys(value.params).length === 0) {
+        // Store as JSON consistently so parseSubValue always gets the right type
+        return JSON.stringify({ runnerId: value.runnerId });
+    }
+    return JSON.stringify(value);
+}
+
 /**
  * Subscribe a session to a trigger type from a specific runner.
  * - Cleans up the old reverse-index entry if the session was previously subscribed
  *   to the same trigger type via a different runner (rebind case)
- * - Adds `triggerType → runnerId` to the session's subscription hash
+ * - Adds `triggerType → {runnerId, params?}` to the session's subscription hash
  * - Adds `sessionId` to the runner+type reverse index set
  * - Refreshes TTL on both keys
+ *
+ * @param params Optional subscription params — values to match against the trigger payload at delivery time.
  */
 export async function subscribeSessionToTrigger(
     sessionId: string,
     runnerId: string,
     triggerType: string,
     ttlSeconds = DEFAULT_TTL_SECONDS,
+    params?: SubscriptionParams,
 ): Promise<void> {
     const redis = await getClient();
     if (!redis) return;
@@ -86,14 +120,18 @@ export async function subscribeSessionToTrigger(
     const indexKey = RUNNER_TYPE_INDEX_KEY(runnerId, triggerType);
 
     try {
-        const prevRunnerId = await redis.hGet(sessionKey, triggerType);
-        if (prevRunnerId && prevRunnerId !== runnerId) {
-            const oldIndexKey = RUNNER_TYPE_INDEX_KEY(prevRunnerId, triggerType);
-            await redis.sRem(oldIndexKey, sessionId);
+        const prevRaw = await redis.hGet(sessionKey, triggerType);
+        if (prevRaw) {
+            const prev = parseSubValue(prevRaw);
+            if (prev.runnerId !== runnerId) {
+                const oldIndexKey = RUNNER_TYPE_INDEX_KEY(prev.runnerId, triggerType);
+                await redis.sRem(oldIndexKey, sessionId);
+            }
         }
 
+        const value = serializeSubValue({ runnerId, params });
         const pipeline = redis.multi();
-        pipeline.hSet(sessionKey, triggerType, runnerId);
+        pipeline.hSet(sessionKey, triggerType, value);
         pipeline.expire(sessionKey, ttlSeconds);
         pipeline.sAdd(indexKey, sessionId);
         pipeline.expire(indexKey, ttlSeconds);
@@ -118,9 +156,10 @@ export async function unsubscribeSessionFromTrigger(
     const sessionKey = SESSION_SUBS_KEY(sessionId);
 
     try {
-        const runnerId = await redis.hGet(sessionKey, triggerType);
+        const raw = await redis.hGet(sessionKey, triggerType);
         await redis.hDel(sessionKey, triggerType);
-        if (runnerId) {
+        if (raw) {
+            const { runnerId } = parseSubValue(raw);
             const indexKey = RUNNER_TYPE_INDEX_KEY(runnerId, triggerType);
             await redis.sRem(indexKey, sessionId);
         }
@@ -135,7 +174,7 @@ export async function unsubscribeSessionFromTrigger(
  */
 export async function listSessionSubscriptions(
     sessionId: string,
-): Promise<Array<{ triggerType: string; runnerId: string }>> {
+): Promise<Array<{ triggerType: string; runnerId: string; params?: SubscriptionParams }>> {
     const redis = await getClient();
     if (!redis) return [];
 
@@ -143,7 +182,10 @@ export async function listSessionSubscriptions(
 
     try {
         const hash = await redis.hGetAll(sessionKey);
-        return Object.entries(hash).map(([triggerType, runnerId]) => ({ triggerType, runnerId }));
+        return Object.entries(hash).map(([triggerType, raw]) => {
+            const { runnerId, params } = parseSubValue(raw);
+            return { triggerType, runnerId, ...(params ? { params } : {}) };
+        });
     } catch (err) {
         log.warn("Failed to list session subscriptions:", err);
         return [];
@@ -173,6 +215,30 @@ export async function getSubscribersForTrigger(
 }
 
 /**
+ * Get the subscription params for a specific session + trigger type.
+ * Returns undefined if the session is not subscribed or has no params.
+ * Used by the broadcast delivery path to filter by params.
+ */
+export async function getSubscriptionParams(
+    sessionId: string,
+    triggerType: string,
+): Promise<SubscriptionParams | undefined> {
+    const redis = await getClient();
+    if (!redis) return undefined;
+
+    const sessionKey = SESSION_SUBS_KEY(sessionId);
+    try {
+        const raw = await redis.hGet(sessionKey, triggerType);
+        if (!raw) return undefined;
+        const { params } = parseSubValue(raw);
+        return params;
+    } catch (err) {
+        log.warn("Failed to get subscription params:", err);
+        return undefined;
+    }
+}
+
+/**
  * Remove all subscriptions for a session (e.g. on session end).
  * Cleans up session hash and all reverse index entries.
  *
@@ -190,7 +256,8 @@ export async function clearSessionSubscriptions(sessionId: string): Promise<void
     try {
         const hash = await redis.hGetAll(sessionKey);
         const pipeline = redis.multi();
-        for (const [triggerType, runnerId] of Object.entries(hash)) {
+        for (const [triggerType, raw] of Object.entries(hash)) {
+            const { runnerId } = parseSubValue(raw);
             const indexKey = RUNNER_TYPE_INDEX_KEY(runnerId, triggerType);
             pipeline.sRem(indexKey, sessionId);
         }

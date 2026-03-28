@@ -43,7 +43,7 @@ import {
 } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
-import type { ServiceTriggerDef } from "@pizzapi/protocol";
+import type { ServiceTriggerDef, ServiceTriggerParamDef } from "@pizzapi/protocol";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -66,6 +66,7 @@ export interface TriggerHistoryEntry {
 export interface TriggerSubscription {
   triggerType: string;
   runnerId: string;
+  params?: Record<string, string | number | boolean>;
 }
 
 /** Ephemeral status update for a trigger (not persisted in history). */
@@ -724,31 +725,29 @@ interface TriggerCatalogSectionProps {
 function TriggerCatalogSection({ sessionId, triggerDefs, subscriptions, onSubscriptionsChange }: TriggerCatalogSectionProps) {
   const [collapsed, setCollapsed] = React.useState(false);
   const [pending, setPending] = React.useState<Set<string>>(new Set());
+  // Track which trigger type has its param form open
+  const [paramFormOpen, setParamFormOpen] = React.useState<string | null>(null);
+  // Track param form values keyed by trigger type
+  const [paramValues, setParamValues] = React.useState<Record<string, Record<string, string>>>({});
+  const [paramError, setParamError] = React.useState<string | null>(null);
 
   const subscribedTypes = React.useMemo(
     () => new Set(subscriptions.map((s) => s.triggerType)),
     [subscriptions],
   );
 
-  const handleToggle = React.useCallback(async (triggerType: string, isSubscribed: boolean) => {
+  const subscriptionMap = React.useMemo(
+    () => new Map(subscriptions.map((s) => [s.triggerType, s])),
+    [subscriptions],
+  );
+
+  const handleUnsubscribe = React.useCallback(async (triggerType: string) => {
     setPending((prev) => new Set([...prev, triggerType]));
     try {
-      if (isSubscribed) {
-        await fetch(
-          `/api/sessions/${encodeURIComponent(sessionId)}/trigger-subscriptions/${encodeURIComponent(triggerType)}`,
-          { method: "DELETE", credentials: "include" },
-        );
-      } else {
-        await fetch(
-          `/api/sessions/${encodeURIComponent(sessionId)}/trigger-subscriptions`,
-          {
-            method: "POST",
-            credentials: "include",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ triggerType }),
-          },
-        );
-      }
+      await fetch(
+        `/api/sessions/${encodeURIComponent(sessionId)}/trigger-subscriptions/${encodeURIComponent(triggerType)}`,
+        { method: "DELETE", credentials: "include" },
+      );
       onSubscriptionsChange();
     } catch {
       // ignore
@@ -760,6 +759,81 @@ function TriggerCatalogSection({ sessionId, triggerDefs, subscriptions, onSubscr
       });
     }
   }, [sessionId, onSubscriptionsChange]);
+
+  const handleSubscribe = React.useCallback(async (triggerType: string, params?: Record<string, unknown>) => {
+    setPending((prev) => new Set([...prev, triggerType]));
+    setParamError(null);
+    try {
+      const res = await fetch(
+        `/api/sessions/${encodeURIComponent(sessionId)}/trigger-subscriptions`,
+        {
+          method: "POST",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ triggerType, ...(params ? { params } : {}) }),
+        },
+      );
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({})) as { error?: string };
+        setParamError(data.error ?? `HTTP ${res.status}`);
+        return;
+      }
+      setParamFormOpen(null);
+      onSubscriptionsChange();
+    } catch {
+      // ignore
+    } finally {
+      setPending((prev) => {
+        const next = new Set(prev);
+        next.delete(triggerType);
+        return next;
+      });
+    }
+  }, [sessionId, onSubscriptionsChange]);
+
+  const handleToggle = React.useCallback((def: ServiceTriggerDef, isSubscribed: boolean) => {
+    if (isSubscribed) {
+      handleUnsubscribe(def.type);
+    } else if (def.params && def.params.length > 0) {
+      // Open param form instead of subscribing directly
+      setParamFormOpen(def.type);
+      setParamError(null);
+      // Pre-fill with defaults
+      const defaults: Record<string, string> = {};
+      for (const p of def.params) {
+        if (p.default !== undefined) defaults[p.name] = String(p.default);
+      }
+      setParamValues((prev) => ({ ...prev, [def.type]: { ...defaults, ...prev[def.type] } }));
+    } else {
+      handleSubscribe(def.type);
+    }
+  }, [handleUnsubscribe, handleSubscribe]);
+
+  const handleParamSubmit = React.useCallback((def: ServiceTriggerDef) => {
+    const vals = paramValues[def.type] ?? {};
+    const params: Record<string, unknown> = {};
+    for (const p of (def.params ?? [])) {
+      const raw = vals[p.name]?.trim();
+      if (!raw && p.required) {
+        setParamError(`'${p.label}' is required`);
+        return;
+      }
+      if (!raw) continue;
+      if (p.type === "number") {
+        const num = Number(raw);
+        if (isNaN(num)) {
+          setParamError(`'${p.label}' must be a number`);
+          return;
+        }
+        params[p.name] = num;
+      } else if (p.type === "boolean") {
+        params[p.name] = raw === "true";
+      } else {
+        params[p.name] = raw;
+      }
+    }
+    handleSubscribe(def.type, Object.keys(params).length > 0 ? params : undefined);
+  }, [paramValues, handleSubscribe]);
 
   if (triggerDefs.length === 0) return null;
 
@@ -786,50 +860,144 @@ function TriggerCatalogSection({ sessionId, triggerDefs, subscriptions, onSubscr
           {triggerDefs.map((def) => {
             const isSubscribed = subscribedTypes.has(def.type);
             const isPendingToggle = pending.has(def.type);
+            const isParamFormVisible = paramFormOpen === def.type;
+            const sub = subscriptionMap.get(def.type);
+            const hasParams = def.params && def.params.length > 0;
 
             return (
-              <div key={def.type} className="flex items-start gap-2 px-3 py-2">
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-1.5 flex-wrap">
-                    <span className="text-xs font-mono text-foreground truncate">{def.type}</span>
-                    <Badge variant="outline" className="px-1 py-0 text-[10px] h-4 shrink-0">
-                      {def.label}
-                    </Badge>
-                    {isSubscribed && (
-                      <Badge variant="outline" className="px-1 py-0 text-[10px] h-4 border-emerald-500/40 text-emerald-400 shrink-0">
-                        subscribed
+              <div key={def.type} className="px-3 py-2">
+                <div className="flex items-start gap-2">
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <span className="text-xs font-mono text-foreground truncate">{def.type}</span>
+                      <Badge variant="outline" className="px-1 py-0 text-[10px] h-4 shrink-0">
+                        {def.label}
                       </Badge>
+                      {isSubscribed && (
+                        <Badge variant="outline" className="px-1 py-0 text-[10px] h-4 border-emerald-500/40 text-emerald-400 shrink-0">
+                          subscribed
+                        </Badge>
+                      )}
+                      {hasParams && !isSubscribed && (
+                        <Badge variant="outline" className="px-1 py-0 text-[10px] h-4 border-violet-500/30 text-violet-400/70 shrink-0">
+                          configurable
+                        </Badge>
+                      )}
+                    </div>
+                    {def.description && (
+                      <p className="text-[10px] text-muted-foreground/70 mt-0.5 leading-snug">
+                        {def.description}
+                      </p>
+                    )}
+                    {/* Show current subscription params */}
+                    {isSubscribed && sub?.params && Object.keys(sub.params).length > 0 && (
+                      <div className="mt-1 flex items-center gap-1 flex-wrap">
+                        {Object.entries(sub.params).map(([k, v]) => (
+                          <Badge key={k} variant="outline" className="px-1 py-0 text-[9px] h-3.5 border-emerald-500/20 text-emerald-400/60">
+                            {k}={String(v)}
+                          </Badge>
+                        ))}
+                      </div>
+                    )}
+                    {/* Show param definitions when not subscribed */}
+                    {hasParams && !isSubscribed && !isParamFormVisible && (
+                      <div className="mt-1 space-y-0.5">
+                        {def.params!.map((p) => (
+                          <div key={p.name} className="text-[9px] text-muted-foreground/50">
+                            <span className="font-mono">{p.name}</span>
+                            <span className="text-muted-foreground/30">: {p.type}</span>
+                            {p.required && <span className="text-amber-400/50 ml-1">required</span>}
+                            {p.description && <span className="ml-1">— {p.description}</span>}
+                          </div>
+                        ))}
+                      </div>
                     )}
                   </div>
-                  {def.description && (
-                    <p className="text-[10px] text-muted-foreground/70 mt-0.5 leading-snug">
-                      {def.description}
-                    </p>
-                  )}
+
+                  <button
+                    type="button"
+                    onClick={() => handleToggle(def, isSubscribed)}
+                    disabled={isPendingToggle}
+                    className={cn(
+                      "shrink-0 p-1 rounded transition-colors",
+                      isSubscribed
+                        ? "text-emerald-400 hover:text-red-400 hover:bg-red-500/10"
+                        : "text-muted-foreground/50 hover:text-emerald-400 hover:bg-emerald-500/10",
+                      isPendingToggle && "opacity-50 cursor-not-allowed",
+                    )}
+                    title={isSubscribed ? "Unsubscribe" : "Subscribe"}
+                    aria-label={isSubscribed ? `Unsubscribe from ${def.type}` : `Subscribe to ${def.type}`}
+                  >
+                    {isPendingToggle ? (
+                      <Loader2 className="size-3.5 animate-spin" />
+                    ) : isSubscribed ? (
+                      <BellOff className="size-3.5" />
+                    ) : (
+                      <BellRing className="size-3.5" />
+                    )}
+                  </button>
                 </div>
 
-                <button
-                  type="button"
-                  onClick={() => handleToggle(def.type, isSubscribed)}
-                  disabled={isPendingToggle}
-                  className={cn(
-                    "shrink-0 p-1 rounded transition-colors",
-                    isSubscribed
-                      ? "text-emerald-400 hover:text-red-400 hover:bg-red-500/10"
-                      : "text-muted-foreground/50 hover:text-emerald-400 hover:bg-emerald-500/10",
-                    isPendingToggle && "opacity-50 cursor-not-allowed",
-                  )}
-                  title={isSubscribed ? "Unsubscribe" : "Subscribe"}
-                  aria-label={isSubscribed ? `Unsubscribe from ${def.type}` : `Subscribe to ${def.type}`}
-                >
-                  {isPendingToggle ? (
-                    <Loader2 className="size-3.5 animate-spin" />
-                  ) : isSubscribed ? (
-                    <BellOff className="size-3.5" />
-                  ) : (
-                    <BellRing className="size-3.5" />
-                  )}
-                </button>
+                {/* Inline param form */}
+                {isParamFormVisible && hasParams && (
+                  <div className="mt-2 rounded border border-violet-500/20 bg-violet-950/10 p-2 space-y-1.5">
+                    <div className="text-[10px] font-medium text-violet-300/80">Configure subscription params</div>
+                    {def.params!.map((p) => (
+                      <div key={p.name} className="flex items-center gap-1.5">
+                        <label className="text-[10px] text-muted-foreground/70 w-20 shrink-0 truncate" title={p.description ?? p.name}>
+                          {p.label}{p.required ? <span className="text-amber-400">*</span> : ""}
+                        </label>
+                        {p.type === "boolean" ? (
+                          <select
+                            value={paramValues[def.type]?.[p.name] ?? ""}
+                            onChange={(e) => setParamValues((prev) => ({
+                              ...prev,
+                              [def.type]: { ...prev[def.type], [p.name]: e.target.value },
+                            }))}
+                            className="flex-1 rounded border border-border bg-background px-1.5 py-0.5 text-[10px] focus:outline-none focus:ring-1 focus:ring-ring"
+                          >
+                            <option value="">—</option>
+                            <option value="true">true</option>
+                            <option value="false">false</option>
+                          </select>
+                        ) : (
+                          <input
+                            type={p.type === "number" ? "number" : "text"}
+                            placeholder={p.default !== undefined ? String(p.default) : undefined}
+                            value={paramValues[def.type]?.[p.name] ?? ""}
+                            onChange={(e) => setParamValues((prev) => ({
+                              ...prev,
+                              [def.type]: { ...prev[def.type], [p.name]: e.target.value },
+                            }))}
+                            className="flex-1 rounded border border-border bg-background px-1.5 py-0.5 text-[10px] focus:outline-none focus:ring-1 focus:ring-ring"
+                          />
+                        )}
+                      </div>
+                    ))}
+                    {paramError && (
+                      <p className="text-[9px] text-destructive">{paramError}</p>
+                    )}
+                    <div className="flex items-center gap-1.5 pt-0.5">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-5 text-[10px] px-1.5"
+                        onClick={() => { setParamFormOpen(null); setParamError(null); }}
+                      >
+                        Cancel
+                      </Button>
+                      <Button
+                        size="sm"
+                        className="h-5 text-[10px] px-1.5"
+                        disabled={isPendingToggle}
+                        onClick={() => handleParamSubmit(def)}
+                      >
+                        {isPendingToggle ? <Loader2 className="size-2.5 animate-spin mr-1" /> : null}
+                        Subscribe
+                      </Button>
+                    </div>
+                  </div>
+                )}
               </div>
             );
           })}
@@ -854,8 +1022,17 @@ function ActiveSubscriptionsSection({ subscriptions }: { subscriptions: TriggerS
       </div>
       <div className="divide-y divide-border/50">
         {subscriptions.map((sub) => (
-          <div key={sub.triggerType} className="flex items-center gap-2 px-3 py-1.5">
+          <div key={sub.triggerType} className="flex items-center gap-2 px-3 py-1.5 flex-wrap">
             <span className="text-xs font-mono text-foreground truncate flex-1">{sub.triggerType}</span>
+            {sub.params && Object.keys(sub.params).length > 0 && (
+              <div className="flex items-center gap-1 flex-wrap">
+                {Object.entries(sub.params).map(([k, v]) => (
+                  <Badge key={k} variant="outline" className="px-1 py-0 text-[9px] h-3.5 border-emerald-500/20 text-emerald-400/60">
+                    {k}={String(v)}
+                  </Badge>
+                ))}
+              </div>
+            )}
             <span className="text-[10px] text-muted-foreground/50 shrink-0">on {sub.runnerId.slice(0, 8)}</span>
           </div>
         ))}
