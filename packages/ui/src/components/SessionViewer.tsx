@@ -66,8 +66,9 @@ import {
   CommandItem,
   CommandList,
 } from "@/components/ui/command";
-import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
+import { PizzaLogo } from "@/components/PizzaLogo";
+import { getSessionEmptyStateUi } from "@/lib/session-empty-state";
 import { formatPathTail } from "@/lib/path";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { MultipleChoiceQuestions } from "@/components/ai-elements/multiple-choice";
@@ -552,27 +553,6 @@ function PaginationSentinel({ hasMore, onLoadMore }: { hasMore: boolean; onLoadM
         </div>
       )}
     </>
-  );
-}
-
-function SessionSkeleton() {
-  return (
-    <div className="flex flex-col gap-6 p-4 max-w-3xl mx-auto w-full animate-in fade-in duration-700">
-      <div className="flex flex-col items-end gap-1 opacity-40">
-        <Skeleton className="h-10 w-1/2 rounded-2xl rounded-br-sm" />
-      </div>
-      <div className="flex flex-col items-start gap-1 opacity-40">
-        <div className="flex items-center gap-2 mb-1 px-1">
-             <Skeleton className="h-2.5 w-12 rounded-sm" />
-             <Skeleton className="h-2.5 w-2.5 rounded-full" />
-             <Skeleton className="h-2.5 w-20 rounded-sm" />
-        </div>
-        <Skeleton className="h-24 w-3/4 rounded-2xl rounded-bl-sm" />
-      </div>
-       <div className="flex flex-col items-end gap-1 opacity-30 delay-100">
-        <Skeleton className="h-16 w-1/3 rounded-2xl rounded-br-sm" />
-      </div>
-    </div>
   );
 }
 
@@ -1846,19 +1826,25 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
             description="Open the sidebar and pick a session to get started."
           />
         ) : visibleMessages.length === 0 ? (
-          viewerStatus === "Connecting…" ? (
-            <SessionSkeleton />
-          ) : (
-            <ConversationEmptyState
-              icon={
-                <span className="inline-flex items-center justify-center h-10 w-10 rounded-full bg-muted/60 border border-border/60">
-                  <span className="inline-block h-2.5 w-2.5 rounded-full bg-slate-400 animate-pulse" />
-                </span>
-              }
-              title="Waiting for session events"
-              description="Messages will appear here in real time."
-            />
-          )
+          (() => {
+            const emptyUi = getSessionEmptyStateUi(viewerStatus);
+            return (
+              <ConversationEmptyState
+                icon={
+                  <span
+                    className={cn(
+                      "inline-flex items-center justify-center h-11 w-11 rounded-full bg-muted/60 border border-border/60",
+                      emptyUi.shouldSpinLogo && "animate-spin motion-reduce:animate-none",
+                    )}
+                  >
+                    <PizzaLogo className="h-7 w-7 sm:h-8 sm:w-8 pointer-events-none cursor-default select-none" />
+                  </span>
+                }
+                title={emptyUi.title}
+                description={emptyUi.description}
+              />
+            );
+          })()
         ) : (
           <Conversation key={sessionId} className="overflow-x-hidden">
             <ConversationContent className="w-full gap-0 p-0 py-2">
