@@ -147,7 +147,11 @@ export class GitService implements ServiceHandler {
             const statusOutput = statusResult.status === "fulfilled" ? statusResult.value.stdout : "";
             const diffStaged = diffStagedResult.status === "fulfilled" ? diffStagedResult.value.stdout : "";
 
-            // Parse porcelain v1 output
+            // Parse porcelain v1 output.
+            // IMPORTANT: preserve the raw 2-char XY status (e.g. " M", "M ", "MM", "??").
+            // The UI's partition logic depends on checking X (index) and Y (worktree)
+            // positions separately. Trimming collapses " M" and "M " into "M", breaking
+            // the staged/unstaged categorization.
             const changes: Array<{ status: string; path: string; originalPath?: string }> = [];
             for (const line of statusOutput.split("\n")) {
                 if (!line.trim()) continue;
@@ -156,12 +160,12 @@ export class GitService implements ServiceHandler {
                 const arrowIdx = rest.indexOf(" -> ");
                 if (arrowIdx >= 0) {
                     changes.push({
-                        status: xy.trim(),
+                        status: xy,
                         path: rest.substring(arrowIdx + 4),
                         originalPath: rest.substring(0, arrowIdx),
                     });
                 } else {
-                    changes.push({ status: xy.trim(), path: rest });
+                    changes.push({ status: xy, path: rest });
                 }
             }
 
@@ -492,9 +496,32 @@ export class GitService implements ServiceHandler {
             );
             const branch = branchName.trim();
 
-            const args = setUpstream
-                ? ["push", "--set-upstream", "origin", branch]
-                : ["push"];
+            let args: string[];
+            if (setUpstream) {
+                // Resolve the default remote dynamically instead of hardcoding "origin".
+                // Try the configured push remote, then fall back to the first remote.
+                let remote = "origin";
+                try {
+                    const { stdout } = await execFileAsync(
+                        "git", ["config", "--get", `branch.${branch}.remote`],
+                        { cwd, timeout: 5000 },
+                    );
+                    if (stdout.trim()) remote = stdout.trim();
+                } catch {
+                    // No tracked remote — try first remote in list
+                    try {
+                        const { stdout } = await execFileAsync(
+                            "git", ["remote"],
+                            { cwd, timeout: 5000 },
+                        );
+                        const firstRemote = stdout.trim().split("\n")[0]?.trim();
+                        if (firstRemote) remote = firstRemote;
+                    } catch { /* fall through to "origin" */ }
+                }
+                args = ["push", "--set-upstream", remote, branch];
+            } else {
+                args = ["push"];
+            }
 
             // git push writes to stderr (progress), use a larger timeout for network ops
             const result = await execFileAsync("git", args, { cwd, timeout: 60000 });
