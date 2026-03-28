@@ -66,7 +66,7 @@ export interface TriggerHistoryEntry {
 export interface TriggerSubscription {
   triggerType: string;
   runnerId: string;
-  params?: Record<string, string | number | boolean>;
+  params?: Record<string, string | number | boolean | Array<string | number | boolean>>;
 }
 
 /** Ephemeral status update for a trigger (not persisted in history). */
@@ -727,8 +727,8 @@ function TriggerCatalogSection({ sessionId, triggerDefs, subscriptions, onSubscr
   const [pending, setPending] = React.useState<Set<string>>(new Set());
   // Track which trigger type has its param form open
   const [paramFormOpen, setParamFormOpen] = React.useState<string | null>(null);
-  // Track param form values keyed by trigger type
-  const [paramValues, setParamValues] = React.useState<Record<string, Record<string, string>>>({});
+  // Track param form values keyed by trigger type (string for scalar, string[] for multiselect)
+  const [paramValues, setParamValues] = React.useState<Record<string, Record<string, string | string[]>>>({});
   const [paramError, setParamError] = React.useState<string | null>(null);
 
   const subscribedTypes = React.useMemo(
@@ -799,9 +799,14 @@ function TriggerCatalogSection({ sessionId, triggerDefs, subscriptions, onSubscr
       setParamFormOpen(def.type);
       setParamError(null);
       // Pre-fill with defaults
-      const defaults: Record<string, string> = {};
+      const defaults: Record<string, string | string[]> = {};
       for (const p of def.params) {
-        if (p.default !== undefined) defaults[p.name] = String(p.default);
+        if (p.multiselect) {
+          // Multiselect defaults to empty array (user picks)
+          defaults[p.name] = defaults[p.name] ?? [];
+        } else if (p.default !== undefined) {
+          defaults[p.name] = String(p.default);
+        }
       }
       setParamValues((prev) => ({ ...prev, [def.type]: { ...defaults, ...prev[def.type] } }));
     } else {
@@ -813,23 +818,45 @@ function TriggerCatalogSection({ sessionId, triggerDefs, subscriptions, onSubscr
     const vals = paramValues[def.type] ?? {};
     const params: Record<string, unknown> = {};
     for (const p of (def.params ?? [])) {
-      const raw = vals[p.name]?.trim();
-      if (!raw && p.required) {
+      const raw = vals[p.name];
+
+      // Multiselect: value is string[]
+      if (p.multiselect && p.enum) {
+        const selected = Array.isArray(raw) ? raw : [];
+        if (selected.length === 0 && p.required) {
+          setParamError(`'${p.label}' requires at least one selection`);
+          return;
+        }
+        if (selected.length === 0) continue;
+        // Coerce array items to the declared type
+        if (p.type === "number") {
+          params[p.name] = selected.map(Number).filter(n => !isNaN(n));
+        } else if (p.type === "boolean") {
+          params[p.name] = selected.map(v => v === "true");
+        } else {
+          params[p.name] = selected;
+        }
+        continue;
+      }
+
+      // Scalar
+      const str = (typeof raw === "string" ? raw : "").trim();
+      if (!str && p.required) {
         setParamError(`'${p.label}' is required`);
         return;
       }
-      if (!raw) continue;
+      if (!str) continue;
       if (p.type === "number") {
-        const num = Number(raw);
+        const num = Number(str);
         if (isNaN(num)) {
           setParamError(`'${p.label}' must be a number`);
           return;
         }
         params[p.name] = num;
       } else if (p.type === "boolean") {
-        params[p.name] = raw === "true";
+        params[p.name] = str === "true";
       } else {
-        params[p.name] = raw;
+        params[p.name] = str;
       }
     }
     handleSubscribe(def.type, Object.keys(params).length > 0 ? params : undefined);
@@ -894,7 +921,7 @@ function TriggerCatalogSection({ sessionId, triggerDefs, subscriptions, onSubscr
                       <div className="mt-1 flex items-center gap-1 flex-wrap">
                         {Object.entries(sub.params).map(([k, v]) => (
                           <Badge key={k} variant="outline" className="px-1 py-0 text-[9px] h-3.5 border-emerald-500/20 text-emerald-400/60">
-                            {k}={String(v)}
+                            {k}={Array.isArray(v) ? v.map(String).join(", ") : String(v)}
                           </Badge>
                         ))}
                       </div>
@@ -907,6 +934,12 @@ function TriggerCatalogSection({ sessionId, triggerDefs, subscriptions, onSubscr
                             <span className="font-mono">{p.name}</span>
                             <span className="text-muted-foreground/30">: {p.type}</span>
                             {p.required && <span className="text-amber-400/50 ml-1">required</span>}
+                            {p.multiselect && <span className="text-violet-400/50 ml-1">multiselect</span>}
+                            {p.enum && (
+                              <span className="text-muted-foreground/30 ml-1">
+                                {"{" + p.enum.map(String).join(", ") + "}"}
+                              </span>
+                            )}
                             {p.description && <span className="ml-1">— {p.description}</span>}
                           </div>
                         ))}
@@ -942,38 +975,89 @@ function TriggerCatalogSection({ sessionId, triggerDefs, subscriptions, onSubscr
                 {isParamFormVisible && hasParams && (
                   <div className="mt-2 rounded border border-violet-500/20 bg-violet-950/10 p-2 space-y-1.5">
                     <div className="text-[10px] font-medium text-violet-300/80">Configure subscription params</div>
-                    {def.params!.map((p) => (
-                      <div key={p.name} className="flex items-center gap-1.5">
-                        <label className="text-[10px] text-muted-foreground/70 w-20 shrink-0 truncate" title={p.description ?? p.name}>
-                          {p.label}{p.required ? <span className="text-amber-400">*</span> : ""}
-                        </label>
-                        {p.type === "boolean" ? (
-                          <select
-                            value={paramValues[def.type]?.[p.name] ?? ""}
-                            onChange={(e) => setParamValues((prev) => ({
-                              ...prev,
-                              [def.type]: { ...prev[def.type], [p.name]: e.target.value },
-                            }))}
-                            className="flex-1 rounded border border-border bg-background px-1.5 py-0.5 text-[10px] focus:outline-none focus:ring-1 focus:ring-ring"
-                          >
-                            <option value="">—</option>
-                            <option value="true">true</option>
-                            <option value="false">false</option>
-                          </select>
-                        ) : (
-                          <input
-                            type={p.type === "number" ? "number" : "text"}
-                            placeholder={p.default !== undefined ? String(p.default) : undefined}
-                            value={paramValues[def.type]?.[p.name] ?? ""}
-                            onChange={(e) => setParamValues((prev) => ({
-                              ...prev,
-                              [def.type]: { ...prev[def.type], [p.name]: e.target.value },
-                            }))}
-                            className="flex-1 rounded border border-border bg-background px-1.5 py-0.5 text-[10px] focus:outline-none focus:ring-1 focus:ring-ring"
-                          />
-                        )}
-                      </div>
-                    ))}
+                    {def.params!.map((p) => {
+                      const currentVal = paramValues[def.type]?.[p.name];
+                      const selectedArr = Array.isArray(currentVal) ? currentVal : [];
+
+                      return (
+                        <div key={p.name} className="flex items-start gap-1.5">
+                          <label className="text-[10px] text-muted-foreground/70 w-20 shrink-0 truncate pt-0.5" title={p.description ?? p.name}>
+                            {p.label}{p.required ? <span className="text-amber-400">*</span> : ""}
+                          </label>
+
+                          {/* Multiselect: checkboxes for each enum value */}
+                          {p.multiselect && p.enum ? (
+                            <div className="flex-1 flex flex-wrap gap-x-2.5 gap-y-1">
+                              {p.enum.map((opt) => {
+                                const optStr = String(opt);
+                                const checked = selectedArr.includes(optStr);
+                                return (
+                                  <label key={optStr} className="flex items-center gap-1 cursor-pointer text-[10px] text-foreground/80">
+                                    <input
+                                      type="checkbox"
+                                      checked={checked}
+                                      onChange={() => {
+                                        setParamValues((prev) => {
+                                          const cur = Array.isArray(prev[def.type]?.[p.name]) ? [...(prev[def.type][p.name] as string[])] : [];
+                                          const next = checked ? cur.filter(v => v !== optStr) : [...cur, optStr];
+                                          return { ...prev, [def.type]: { ...prev[def.type], [p.name]: next } };
+                                        });
+                                      }}
+                                      className="accent-primary size-3"
+                                    />
+                                    {optStr}
+                                  </label>
+                                );
+                              })}
+                            </div>
+
+                          /* Enum (single select): dropdown */
+                          ) : p.enum ? (
+                            <select
+                              value={typeof currentVal === "string" ? currentVal : ""}
+                              onChange={(e) => setParamValues((prev) => ({
+                                ...prev,
+                                [def.type]: { ...prev[def.type], [p.name]: e.target.value },
+                              }))}
+                              className="flex-1 rounded border border-border bg-background px-1.5 py-0.5 text-[10px] focus:outline-none focus:ring-1 focus:ring-ring"
+                            >
+                              <option value="">—</option>
+                              {p.enum.map((opt) => (
+                                <option key={String(opt)} value={String(opt)}>{String(opt)}</option>
+                              ))}
+                            </select>
+
+                          /* Boolean */
+                          ) : p.type === "boolean" ? (
+                            <select
+                              value={typeof currentVal === "string" ? currentVal : ""}
+                              onChange={(e) => setParamValues((prev) => ({
+                                ...prev,
+                                [def.type]: { ...prev[def.type], [p.name]: e.target.value },
+                              }))}
+                              className="flex-1 rounded border border-border bg-background px-1.5 py-0.5 text-[10px] focus:outline-none focus:ring-1 focus:ring-ring"
+                            >
+                              <option value="">—</option>
+                              <option value="true">true</option>
+                              <option value="false">false</option>
+                            </select>
+
+                          /* Default: text/number input */
+                          ) : (
+                            <input
+                              type={p.type === "number" ? "number" : "text"}
+                              placeholder={p.default !== undefined ? String(p.default) : undefined}
+                              value={typeof currentVal === "string" ? currentVal : ""}
+                              onChange={(e) => setParamValues((prev) => ({
+                                ...prev,
+                                [def.type]: { ...prev[def.type], [p.name]: e.target.value },
+                              }))}
+                              className="flex-1 rounded border border-border bg-background px-1.5 py-0.5 text-[10px] focus:outline-none focus:ring-1 focus:ring-ring"
+                            />
+                          )}
+                        </div>
+                      );
+                    })}
                     {paramError && (
                       <p className="text-[9px] text-destructive">{paramError}</p>
                     )}
@@ -1028,7 +1112,7 @@ function ActiveSubscriptionsSection({ subscriptions }: { subscriptions: TriggerS
               <div className="flex items-center gap-1 flex-wrap">
                 {Object.entries(sub.params).map(([k, v]) => (
                   <Badge key={k} variant="outline" className="px-1 py-0 text-[9px] h-3.5 border-emerald-500/20 text-emerald-400/60">
-                    {k}={String(v)}
+                    {k}={Array.isArray(v) ? v.map(String).join(", ") : String(v)}
                   </Badge>
                 ))}
               </div>

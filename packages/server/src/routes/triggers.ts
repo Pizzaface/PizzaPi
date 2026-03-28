@@ -322,18 +322,57 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
                     }
                     continue;
                 }
-                // Coerce to the declared type
+
+                // Multiselect: expect an array of values
+                if (def.multiselect && def.enum) {
+                    const arr = Array.isArray(raw) ? raw : [raw];
+                    const coerced: Array<string | number | boolean> = [];
+                    for (const item of arr) {
+                        if (def.type === "number") {
+                            const num = Number(item);
+                            if (!isNaN(num)) coerced.push(num);
+                        } else if (def.type === "boolean") {
+                            coerced.push(item === true || item === "true");
+                        } else {
+                            coerced.push(String(item));
+                        }
+                    }
+                    // Validate against enum values if present
+                    // eslint-disable-next-line eqeqeq
+                    const invalid = coerced.filter(v => !def.enum!.some(e => e == v));
+                    if (invalid.length > 0) {
+                        errors.push(`Param '${def.name}' contains invalid values: ${invalid.join(", ")}. Allowed: ${def.enum.join(", ")}`);
+                    } else if (coerced.length > 0) {
+                        validated[def.name] = coerced;
+                    }
+                    continue;
+                }
+
+                // Scalar: coerce to the declared type
                 if (def.type === "number") {
                     const num = Number(raw);
                     if (isNaN(num)) {
                         errors.push(`Param '${def.name}' must be a number`);
                     } else {
-                        validated[def.name] = num;
+                        // Validate against enum
+                        // eslint-disable-next-line eqeqeq
+                        if (def.enum && !def.enum.some(e => e == num)) {
+                            errors.push(`Param '${def.name}' must be one of: ${def.enum.join(", ")}`);
+                        } else {
+                            validated[def.name] = num;
+                        }
                     }
                 } else if (def.type === "boolean") {
-                    validated[def.name] = raw === true || raw === "true";
+                    const val = raw === true || raw === "true";
+                    validated[def.name] = val;
                 } else {
-                    validated[def.name] = String(raw);
+                    const val = String(raw);
+                    // eslint-disable-next-line eqeqeq
+                    if (def.enum && !def.enum.some(e => e == val)) {
+                        errors.push(`Param '${def.name}' must be one of: ${def.enum.join(", ")}`);
+                    } else {
+                        validated[def.name] = val;
+                    }
                 }
             }
 
@@ -344,6 +383,12 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
                 if (val === undefined || val === null) continue;
                 if (typeof val === "string" || typeof val === "number" || typeof val === "boolean") {
                     validated[key] = val;
+                } else if (Array.isArray(val)) {
+                    const primitives = val.filter(
+                        (v: unknown): v is string | number | boolean =>
+                            typeof v === "string" || typeof v === "number" || typeof v === "boolean",
+                    );
+                    if (primitives.length > 0) validated[key] = primitives;
                 }
             }
 
@@ -461,12 +506,20 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
                 let matches = true;
                 for (const [key, expected] of Object.entries(subParams)) {
                     const actual = body.payload[key];
-                    // Loose equality: compare after coercion to the same type.
-                    // This handles "42" == 42 for payloads that send numbers as strings.
-                    // eslint-disable-next-line eqeqeq
-                    if (actual != expected) {
-                        matches = false;
-                        break;
+                    if (Array.isArray(expected)) {
+                        // Multiselect: payload value must be in the subscriber's selected set.
+                        // eslint-disable-next-line eqeqeq
+                        if (!expected.some(e => e == actual)) {
+                            matches = false;
+                            break;
+                        }
+                    } else {
+                        // Scalar: loose equality (handles "42" == 42).
+                        // eslint-disable-next-line eqeqeq
+                        if (actual != expected) {
+                            matches = false;
+                            break;
+                        }
                     }
                 }
                 if (!matches) continue;

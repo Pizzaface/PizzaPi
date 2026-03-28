@@ -749,6 +749,36 @@ describe("POST /api/runners/:runnerId/trigger-broadcast", () => {
         expect(body.delivered).toBe(2);
         expect(emitMock).toHaveBeenCalledTimes(2);
     });
+
+    test("multiselect array params — matches when payload value is in subscriber's array", async () => {
+        mockGetSubscribersForTrigger.mockReturnValue(
+            Promise.resolve(["sess-multi", "sess-single", "sess-miss"]),
+        );
+        mockGetSharedSession.mockImplementation((id: string) =>
+            Promise.resolve({ userId: "user-1", sessionId: id } as any),
+        );
+        // sess-multi subscribed with channels=["alerts","debug"], sess-single with channel="alerts", sess-miss with channels=["info"]
+        mockGetSubscriptionParams.mockImplementation((sid: string, _type: string) => {
+            if (sid === "sess-multi") return Promise.resolve({ channel: ["alerts", "debug"] });
+            if (sid === "sess-single") return Promise.resolve({ channel: "alerts" });
+            if (sid === "sess-miss") return Promise.resolve({ channel: ["info", "warn"] });
+            return Promise.resolve(undefined);
+        });
+        const emitMock = mock(() => {});
+        mockGetLocalTuiSocket.mockReturnValue({ connected: true, emit: emitMock });
+
+        const [req, url] = makeReq(
+            "POST", "/api/runners/runner-A/trigger-broadcast",
+            { type: "demo:message_sent", payload: { channel: "alerts", message: "hi" }, source: "demo" },
+            { "x-api-key": "test-key" },
+        );
+        const res = await handleTriggersRoute(req, url);
+        const body = await res!.json();
+        // sess-multi matches ("alerts" in ["alerts","debug"]), sess-single matches ("alerts"=="alerts"),
+        // sess-miss does NOT match ("alerts" not in ["info","warn"])
+        expect(body.delivered).toBe(2);
+        expect(emitMock).toHaveBeenCalledTimes(2);
+    });
 });
 
 describe("non-matching routes", () => {

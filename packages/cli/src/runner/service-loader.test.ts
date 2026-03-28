@@ -720,4 +720,70 @@ describe("discoverServices — folder-based services", () => {
         const trigger = result.services[0].manifest!.triggers![0];
         expect(trigger.params).toBeUndefined();
     });
+
+    test("parses enum values from trigger params", async () => {
+        writeFolderService("enum-params", {
+            id: "enum-params",
+            label: "Enum Params",
+            triggers: [
+                {
+                    type: "test:event",
+                    label: "Test",
+                    params: [
+                        { name: "channel", label: "Channel", type: "string", enum: ["general", "alerts", "debug"] },
+                        { name: "level", label: "Level", type: "number", enum: [1, 2, 3] },
+                    ],
+                },
+            ],
+        });
+
+        const result = await discoverServices();
+        const trigger = result.services[0].manifest!.triggers![0];
+        expect(trigger.params![0].enum).toEqual(["general", "alerts", "debug"]);
+        expect(trigger.params![1].enum).toEqual([1, 2, 3]);
+    });
+
+    test("parses multiselect flag (requires enum)", async () => {
+        writeFolderService("multi-params", {
+            id: "multi-params",
+            label: "Multi Params",
+            triggers: [
+                {
+                    type: "test:event",
+                    label: "Test",
+                    params: [
+                        { name: "tags", label: "Tags", type: "string", enum: ["bug", "feature", "chore"], multiselect: true },
+                        { name: "solo", label: "Solo", type: "string", multiselect: true }, // no enum → multiselect ignored
+                    ],
+                },
+            ],
+        });
+
+        const result = await discoverServices();
+        const trigger = result.services[0].manifest!.triggers![0];
+        expect(trigger.params![0].enum).toEqual(["bug", "feature", "chore"]);
+        expect(trigger.params![0].multiselect).toBe(true);
+        // multiselect without enum is silently dropped
+        expect(trigger.params![1].multiselect).toBeUndefined();
+    });
+
+    test("skips non-primitive enum values", async () => {
+        writeFolderService("bad-enum", {
+            id: "bad-enum",
+            label: "Bad Enum",
+            triggers: [
+                {
+                    type: "test:event",
+                    label: "Test",
+                    params: [
+                        { name: "x", label: "X", type: "string", enum: ["valid", { bad: true }, null, "also-valid"] },
+                    ],
+                },
+            ],
+        });
+
+        const result = await discoverServices();
+        const trigger = result.services[0].manifest!.triggers![0];
+        expect(trigger.params![0].enum).toEqual(["valid", "also-valid"]);
+    });
 });

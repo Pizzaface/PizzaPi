@@ -298,7 +298,7 @@ export interface TriggerDef {
     label: string;
     description?: string;
     schema?: Record<string, unknown>;
-    params?: Array<{ name: string; label: string; type: string; description?: string; required?: boolean; default?: string | number | boolean }>;
+    params?: Array<{ name: string; label: string; type: string; description?: string; required?: boolean; default?: string | number | boolean; enum?: Array<string | number | boolean>; multiselect?: boolean }>;
 }
 
 export interface TriggerSubscription {
@@ -353,7 +353,7 @@ export async function subscribeTrigger(
     sessionId: string,
     triggerType: string,
     deps: Partial<TriggerClientDeps> = {},
-    params?: Record<string, string | number | boolean>,
+    params?: Record<string, string | number | boolean | Array<string | number | boolean>>,
 ): Promise<SubscriptionResult> {
     const d: TriggerClientDeps = { ...defaultDeps, ...deps };
     const baseUrl = d.getRelayHttpBaseUrl();

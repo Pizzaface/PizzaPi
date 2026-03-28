@@ -369,6 +369,15 @@ function parseServiceManifest(manifestPath: string): ServiceManifest {
                     const pType = typeof p.type === "string" && ["string", "number", "boolean"].includes(p.type)
                         ? p.type as "string" | "number" | "boolean"
                         : "string";
+                    // Parse enum — must be an array of primitives matching the param type.
+                    let enumVals: Array<string | number | boolean> | undefined;
+                    if (Array.isArray(p.enum) && p.enum.length > 0) {
+                        const valid = p.enum.filter(
+                            (v: unknown) => typeof v === "string" || typeof v === "number" || typeof v === "boolean",
+                        ) as Array<string | number | boolean>;
+                        if (valid.length > 0) enumVals = valid;
+                    }
+
                     params.push({
                         name: p.name,
                         label: p.label,
@@ -378,6 +387,9 @@ function parseServiceManifest(manifestPath: string): ServiceManifest {
                         default: (typeof p.default === "string" || typeof p.default === "number" || typeof p.default === "boolean")
                             ? p.default
                             : undefined,
+                        ...(enumVals ? { enum: enumVals } : {}),
+                        // multiselect only makes sense with enum
+                        ...(enumVals && p.multiselect === true ? { multiselect: true } : {}),
                     });
                 }
             }

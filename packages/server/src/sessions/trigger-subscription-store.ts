@@ -65,8 +65,12 @@ const DEFAULT_TTL_SECONDS = 24 * 60 * 60; // 24 hours
 
 // ── Public API ───────────────────────────────────────────────────────────
 
-/** Subscription params — values the subscriber provided to filter trigger delivery. */
-export type SubscriptionParams = Record<string, string | number | boolean>;
+/**
+ * Subscription params — values the subscriber provided to filter trigger delivery.
+ * Values can be primitives (exact match) or arrays (multiselect — payload value must be in the array).
+ */
+export type SubscriptionParamValue = string | number | boolean | Array<string | number | boolean>;
+export type SubscriptionParams = Record<string, SubscriptionParamValue>;
 
 /** Internal storage format for a subscription hash value. */
 interface SubscriptionValue {

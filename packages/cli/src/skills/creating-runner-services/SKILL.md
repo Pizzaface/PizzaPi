@@ -94,8 +94,10 @@ Each entry in `params`:
 | `description` | No | Help text for the subscriber |
 | `required` | No | If `true`, subscriber must provide this param |
 | `default` | No | Default value if not provided |
+| `enum` | No | Array of allowed values — renders as a dropdown in the UI |
+| `multiselect` | No | If `true` (requires `enum`), subscriber can pick multiple values. Delivery matches if payload value is **in** the selected set (OR semantics). |
 
-**Example:** A GitHub integration service might declare:
+**Example — scalar param with enum:**
 
 ```json
 {
@@ -103,14 +105,30 @@ Each entry in `params`:
   "label": "PR Comment Added",
   "params": [
     { "name": "prNumber", "label": "PR Number", "type": "number", "required": true },
-    { "name": "repo", "label": "Repository", "type": "string" }
+    { "name": "repo", "label": "Repository", "type": "string", "enum": ["pizzapi", "pi-mono", "docs"] }
   ]
 }
 ```
 
-An agent subscribes with: `subscribe_trigger(triggerType: "github:pr_comment_added", params: { prNumber: 42 })`
+An agent subscribes with: `subscribe_trigger(triggerType: "github:pr_comment_added", params: { prNumber: 42, repo: "pizzapi" })`
 
-Only events with `prNumber: 42` in their payload are delivered to that session. Other sessions subscribed with `prNumber: 99` won't receive it. Sessions subscribed without specifying `prNumber` receive all events.
+Only events with `prNumber: 42` **and** `repo: "pizzapi"` in their payload are delivered.
+
+**Example — multiselect param:**
+
+```json
+{
+  "type": "demo:message_sent",
+  "label": "Message Sent",
+  "params": [
+    { "name": "channel", "label": "Channels", "type": "string", "enum": ["general", "alerts", "debug"], "multiselect": true }
+  ]
+}
+```
+
+An agent subscribes with: `subscribe_trigger(triggerType: "demo:message_sent", params: { channel: ["alerts", "debug"] })`
+
+Events with `channel: "alerts"` **or** `channel: "debug"` in their payload are delivered. Events with `channel: "general"` are not. Sessions subscribed without specifying `channel` receive all events.
 
 Trigger types are advertised to agents via `service_announce` so they can be discovered with `list_available_triggers()` and subscribed to with `subscribe_trigger()`.
 

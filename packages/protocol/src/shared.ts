@@ -178,6 +178,14 @@ export interface ServiceTriggerParamDef {
   required?: boolean;
   /** Default value if not provided */
   default?: string | number | boolean;
+  /** Allowed values — renders as a dropdown in the UI */
+  enum?: Array<string | number | boolean>;
+  /**
+   * Allow selecting multiple enum values. Requires `enum` to be set.
+   * Stored as an array; at delivery time the trigger matches if the payload
+   * value is contained in the subscriber's selected set (OR semantics).
+   */
+  multiselect?: boolean;
 }
 
 /** Payload for the service_announce event. */

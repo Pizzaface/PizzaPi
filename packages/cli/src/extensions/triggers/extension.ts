@@ -504,7 +504,9 @@ export const triggersExtension: ExtensionFactory = (pi) => {
                     const paramParts = d.params.map((p: any) => {
                         const req = p.required ? " (required)" : "";
                         const def = p.default !== undefined ? ` [default: ${p.default}]` : "";
-                        return `    - ${p.name}: ${p.type}${req}${def}${p.description ? ` — ${p.description}` : ""}`;
+                        const enumInfo = p.enum ? ` {${p.enum.join(", ")}}` : "";
+                        const multi = p.multiselect ? " (multiselect)" : "";
+                        return `    - ${p.name}: ${p.type}${req}${def}${enumInfo}${multi}${p.description ? ` — ${p.description}` : ""}`;
                     });
                     paramInfo = `\n  Params:\n${paramParts.join("\n")}`;
                 }
@@ -574,13 +576,19 @@ export const triggersExtension: ExtensionFactory = (pi) => {
                 return { content: [{ type: "text" as const, text: "Error: Could not determine session ID." }], details: null as any };
             }
 
-            // Coerce param values to primitives
-            let subParams: Record<string, string | number | boolean> | undefined;
+            // Coerce param values to primitives or arrays of primitives (multiselect)
+            let subParams: Record<string, string | number | boolean | Array<string | number | boolean>> | undefined;
             if (params.params && typeof params.params === "object") {
                 subParams = {};
                 for (const [k, v] of Object.entries(params.params)) {
                     if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") {
                         subParams[k] = v;
+                    } else if (Array.isArray(v)) {
+                        const primitives = v.filter(
+                            (item): item is string | number | boolean =>
+                                typeof item === "string" || typeof item === "number" || typeof item === "boolean",
+                        );
+                        if (primitives.length > 0) subParams[k] = primitives;
                     } else if (v !== undefined && v !== null) {
                         subParams[k] = String(v);
                     }
