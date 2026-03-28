@@ -4,6 +4,7 @@ import { createTunnelToolsExtension } from "./tunnel-tools.js";
 const mockGetRelaySocket = mock(() => null as any);
 const mockGetRelaySessionId = mock(() => null as string | null);
 const mockLoadConfig = mock((_cwd: string) => ({ relayUrl: "ws://localhost:7492" } as any));
+const mockGetRunnerId = mock(() => null as string | null);
 
 // ── Test helpers ──────────────────────────────────────────────────────────────
 
@@ -60,6 +61,7 @@ describe("tunnelToolsExtension", () => {
         mockGetRelaySocket.mockReset();
         mockGetRelaySessionId.mockReset();
         mockLoadConfig.mockReset();
+        mockGetRunnerId.mockReset();
         mockLoadConfig.mockReturnValue({ relayUrl: "ws://localhost:7492" } as any);
 
         pi = createMockPi();
@@ -67,6 +69,7 @@ describe("tunnelToolsExtension", () => {
             getRelaySocket: mockGetRelaySocket as any,
             getRelaySessionId: mockGetRelaySessionId as any,
             loadConfig: mockLoadConfig as any,
+            getRunnerId: mockGetRunnerId as any,
         });
         extension(pi as any);
         tools = pi.tools;
@@ -133,6 +136,7 @@ describe("tunnelToolsExtension", () => {
             expect(text).toContain("3000");
             expect(result.details.port).toBe(3000);
             expect(result.details.name).toBe("dev");
+            // With no runner ID, falls back to session-based URL
             expect(result.details.publicUrl).toContain("/api/tunnel/sess-123/3000/");
         });
 
@@ -258,10 +262,49 @@ describe("buildPublicTunnelUrl", () => {
 
     beforeEach(() => {
         process.env.PIZZAPI_RELAY_URL = "ws://localhost:7492";
+        mockGetRelaySocket.mockReset();
+        mockGetRelaySessionId.mockReset();
+        mockGetRunnerId.mockReset();
+        mockLoadConfig.mockReset();
+        mockLoadConfig.mockReturnValue({ relayUrl: "ws://localhost:7492" } as any);
     });
 
-    // Restore env after the suite
-    test("generates correct URL with session ID and port", async () => {
+    test("prefers runner-based URL when runner ID is available", async () => {
+        const sock = mockSocket();
+        sock.emit = (_event: string, data: unknown) => {
+            setTimeout(() => {
+                sock.simulateMessage({
+                    serviceId: "tunnel",
+                    type: "tunnel_registered",
+                    requestId: (data as any).requestId,
+                    payload: { port: 8080, url: "/tunnel/8080" },
+                });
+            }, 10);
+        };
+
+        mockGetRelaySocket.mockReturnValue({ socket: sock, token: "t" });
+        mockGetRelaySessionId.mockReturnValue("sess-123");
+        mockGetRunnerId.mockReturnValue("runner-abc");
+
+        const pi = createMockPi();
+        const extension = createTunnelToolsExtension({
+            getRelaySocket: mockGetRelaySocket as any,
+            getRelaySessionId: mockGetRelaySessionId as any,
+            loadConfig: mockLoadConfig as any,
+            getRunnerId: mockGetRunnerId as any,
+        });
+        extension(pi as any);
+
+        const tool = pi.tools.get("create_tunnel")!;
+        const result = await tool.execute("call-1", { port: 8080 });
+
+        expect(result.details.publicUrl).toBe("http://localhost:7492/api/tunnel/runner/runner-abc/8080/");
+
+        if (savedRelayUrl !== undefined) process.env.PIZZAPI_RELAY_URL = savedRelayUrl;
+        else delete process.env.PIZZAPI_RELAY_URL;
+    });
+
+    test("falls back to session-based URL when runner ID is unavailable", async () => {
         const sock = mockSocket();
         sock.emit = (_event: string, data: unknown) => {
             setTimeout(() => {
@@ -282,12 +325,14 @@ describe("buildPublicTunnelUrl", () => {
             getRelaySocket: mockGetRelaySocket as any,
             getRelaySessionId: mockGetRelaySessionId as any,
             loadConfig: mockLoadConfig as any,
+            getRunnerId: mockGetRunnerId as any,
         });
         extension(pi as any);
 
         const tool = pi.tools.get("create_tunnel")!;
         const result = await tool.execute("call-1", { port: 8080 });
 
+        // No runner ID mocked, falls back to session-based URL
         expect(result.details.publicUrl).toBe("http://localhost:7492/api/tunnel/abc-def-123/8080/");
 
         // Restore
@@ -295,7 +340,7 @@ describe("buildPublicTunnelUrl", () => {
         else delete process.env.PIZZAPI_RELAY_URL;
     });
 
-    test("returns null publicUrl when session ID is missing", async () => {
+    test("returns null publicUrl when both runner ID and session ID are missing", async () => {
         const sock = mockSocket();
         sock.emit = (_event: string, data: unknown) => {
             setTimeout(() => {
@@ -316,6 +361,7 @@ describe("buildPublicTunnelUrl", () => {
             getRelaySocket: mockGetRelaySocket as any,
             getRelaySessionId: mockGetRelaySessionId as any,
             loadConfig: mockLoadConfig as any,
+            getRunnerId: mockGetRunnerId as any,
         });
         extension(pi as any);
 

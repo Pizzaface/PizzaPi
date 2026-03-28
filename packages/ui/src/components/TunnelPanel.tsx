@@ -11,9 +11,10 @@ interface TunnelInfo {
 
 interface TunnelPanelProps {
     sessionId: string;
+    runnerId?: string;
 }
 
-export function TunnelPanel({ sessionId }: TunnelPanelProps) {
+export function TunnelPanel({ sessionId, runnerId }: TunnelPanelProps) {
     const [tunnels, setTunnels] = useState<TunnelInfo[]>([]);
     const [portInput, setPortInput] = useState("");
     const [nameInput, setNameInput] = useState("");
@@ -78,7 +79,10 @@ export function TunnelPanel({ sessionId }: TunnelPanelProps) {
 
     if (!available) return null;
 
-    const tunnelUrl = (port: number) => `/api/tunnel/${sessionId}/${port}/`;
+    const tunnelUrl = (port: number) =>
+        runnerId
+            ? `/api/tunnel/runner/${encodeURIComponent(runnerId)}/${port}/`
+            : `/api/tunnel/${sessionId}/${port}/`;
 
     return (
         <div className="flex flex-col h-full">
