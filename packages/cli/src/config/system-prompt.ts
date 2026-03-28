@@ -61,6 +61,14 @@ export const BUILTIN_SYSTEM_PROMPT = [
     "The tunnel proxies HTTP and WebSocket traffic through the relay so the web UI can preview it.",
     "Tunnels only work when connected to a relay — they are unavailable in offline/local-only sessions.\n",
 
+    "## Service Triggers\n",
+    "Runner services can advertise custom trigger types that sessions can subscribe to.",
+    "Use `list_available_triggers` to discover what triggers are available on your runner —",
+    "it also shows which ones you're currently subscribed to.",
+    "Use `subscribe_trigger(triggerType)` to start receiving events and `unsubscribe_trigger(triggerType)` to stop.",
+    "Subscribed triggers arrive as injected messages in your conversation.",
+    "Use `fire_trigger` to send a trigger into any session (not just children).\n",
+
     "## Sandbox\n",
     "This session may run with OS-level sandbox restrictions that control which files you can read/write",
     "and which network domains are accessible. If a tool call is blocked by the sandbox,",
