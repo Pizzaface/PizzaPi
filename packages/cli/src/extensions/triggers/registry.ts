@@ -171,10 +171,13 @@ const externalRenderer: TriggerRenderer = {
             lines.push(`> ${summary}`);
         }
         lines.push(`Type: ${type}`);
-        // Include payload keys for context (but not full values to avoid noise)
-        const payloadKeys = Object.keys(trigger.payload).filter(k => k !== "summary" && k !== "eventType");
-        if (payloadKeys.length > 0) {
-            lines.push(`Payload keys: ${payloadKeys.join(", ")}`);
+        // Include payload data so the agent can act on the trigger content.
+        // Filter out keys already rendered above (summary, eventType).
+        const dataPayload = Object.fromEntries(
+            Object.entries(trigger.payload).filter(([k]) => k !== "summary" && k !== "eventType"),
+        );
+        if (Object.keys(dataPayload).length > 0) {
+            lines.push("", "```json", JSON.stringify(dataPayload, null, 2), "```");
         }
         if (trigger.expectsResponse) {
             lines.push("", respondLine(trigger.triggerId));
