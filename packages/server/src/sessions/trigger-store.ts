@@ -63,6 +63,9 @@ async function getClient(): Promise<RedisClient | null> {
         } catch (err) {
             log.warn("Failed to connect trigger store Redis:", err);
             client = null;
+            // Reset initPromise so the next call can retry the connection
+            // rather than staying permanently disabled after a transient failure.
+            initPromise = null;
         }
     })();
     await initPromise;

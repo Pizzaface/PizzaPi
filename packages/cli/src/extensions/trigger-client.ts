@@ -172,7 +172,15 @@ export async function fireTrigger(
         }
     }
 
-    // Socket.IO fallback (offline mode or HTTP transient failure)
+    // Socket.IO fallback (offline mode or HTTP transient failure).
+    //
+    // NOTE: session_trigger is fire-and-forget over Socket.IO — there is no
+    // server-side acknowledgement event for trigger delivery failures (unlike
+    // session_message which has session_message_error). This path returns
+    // { ok: true } as soon as the emit succeeds at the socket layer, which
+    // means a disconnected or non-existent target session will not surface as
+    // an error here. Prefer the HTTP path (which validates the session exists
+    // and returns 404/503 on failure) whenever a relay URL and API key are set.
     const conn = d.getRelaySocket();
     if (conn) {
         const triggerId = `ext_${randomUUID().replace(/-/g, "").slice(0, 16)}`;

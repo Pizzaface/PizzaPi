@@ -338,7 +338,16 @@ export const handleWebhooksRoute: RouteHandler = async (req, url) => {
         const updates: Record<string, unknown> = {};
         if (typeof body.name === "string" && body.name.trim()) updates.name = body.name.trim();
         if (typeof body.source === "string" && body.source.trim()) updates.source = body.source.trim();
-        if ("targetSessionId" in body) updates.targetSessionId = body.targetSessionId ?? null;
+        if ("targetSessionId" in body) {
+            const tsid = body.targetSessionId;
+            if (tsid !== null && tsid !== undefined && typeof tsid !== "string") {
+                return Response.json(
+                    { error: "'targetSessionId' must be a string or null" },
+                    { status: 400 },
+                );
+            }
+            updates.targetSessionId = typeof tsid === "string" ? tsid.trim() || null : null;
+        }
         if (eventFilter !== undefined) updates.eventFilter = eventFilter;
         if (typeof body.enabled === "boolean") updates.enabled = body.enabled;
 

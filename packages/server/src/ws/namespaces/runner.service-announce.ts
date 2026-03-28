@@ -50,6 +50,13 @@ export function isSameServiceAnnounce(
         ) {
             return false;
         }
+        // Compare schema via stable JSON stringify so schema-only changes
+        // are not silently dropped (e.g. adding a property to the schema).
+        const leftSchema = left.schema !== undefined ? JSON.stringify(left.schema) : undefined;
+        const rightSchema = right.schema !== undefined ? JSON.stringify(right.schema) : undefined;
+        if (leftSchema !== rightSchema) {
+            return false;
+        }
     }
 
     return true;

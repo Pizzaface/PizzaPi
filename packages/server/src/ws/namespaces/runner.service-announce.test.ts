@@ -117,4 +117,38 @@ describe("isSameServiceAnnounce", () => {
         expect(isSameServiceAnnounce(withEmpty, withUndefined)).toBe(true);
         expect(isSameServiceAnnounce(withUndefined, withEmpty)).toBe(true);
     });
+
+    test("returns false when triggerDef schema differs", () => {
+        const left = {
+            serviceIds: ["svc"],
+            triggerDefs: [{ type: "svc:event", label: "Event", schema: { type: "object", properties: { id: { type: "string" } } } }],
+        };
+        const right = {
+            serviceIds: ["svc"],
+            triggerDefs: [{ type: "svc:event", label: "Event", schema: { type: "object", properties: { id: { type: "number" } } } }],
+        };
+
+        expect(isSameServiceAnnounce(left, right)).toBe(false);
+    });
+
+    test("returns true when triggerDef schemas are identical", () => {
+        const schema = { type: "object", properties: { id: { type: "string" } } };
+        const left = { serviceIds: ["svc"], triggerDefs: [{ type: "svc:event", label: "Event", schema }] };
+        const right = { serviceIds: ["svc"], triggerDefs: [{ type: "svc:event", label: "Event", schema }] };
+
+        expect(isSameServiceAnnounce(left, right)).toBe(true);
+    });
+
+    test("returns false when one def has schema and the other does not", () => {
+        const left = {
+            serviceIds: ["svc"],
+            triggerDefs: [{ type: "svc:event", label: "Event", schema: { type: "object" } }],
+        };
+        const right = {
+            serviceIds: ["svc"],
+            triggerDefs: [{ type: "svc:event", label: "Event" }],
+        };
+
+        expect(isSameServiceAnnounce(left, right)).toBe(false);
+    });
 });
