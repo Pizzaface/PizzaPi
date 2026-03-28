@@ -1805,7 +1805,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
               <Tooltip>
                 <TooltipTrigger asChild>
                   <Button
-                    className="hidden md:inline-flex h-7 relative"
+                    className="hidden md:inline-flex h-7 w-7 relative"
                     onClick={onToggleTriggers}
                     size="icon"
                     type="button"

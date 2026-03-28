@@ -49,12 +49,16 @@ export function useTriggerCount(
   // Fetch on mount and session change
   useEffect(() => { void refresh(); }, [refresh]);
 
-  // Refresh on trigger_delivered events
+  // Refresh on trigger_delivered and trigger_subscriptions_changed events
   useEffect(() => {
     if (!viewerSocket) return;
     const handler = () => { void refresh(); };
     viewerSocket.on("trigger_delivered", handler);
-    return () => { viewerSocket.off("trigger_delivered", handler); };
+    viewerSocket.on("trigger_subscriptions_changed", handler);
+    return () => {
+      viewerSocket.off("trigger_delivered", handler);
+      viewerSocket.off("trigger_subscriptions_changed", handler);
+    };
   }, [viewerSocket, refresh]);
 
   return counts;
