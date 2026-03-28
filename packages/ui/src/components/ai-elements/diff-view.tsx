@@ -163,7 +163,7 @@ function DiffContent({
 
   return (
     <div className="overflow-x-auto min-h-full bg-background">
-      <pre className="m-0 p-0 text-xs font-mono leading-5 min-h-full">
+      <pre className="m-0 p-0 text-xs font-mono leading-5 min-h-full min-w-fit">
         <code>
           {rows.map((row, i) => (
             <span
@@ -234,6 +234,56 @@ export function DiffView({
   return (
     <EditFileCard path={path} additions={additions} deletions={deletions}>
       <DiffContent path={path} oldText={oldText} newText={newText} />
+    </EditFileCard>
+  );
+}
+
+export interface EditPair {
+  oldText: string;
+  newText: string;
+}
+
+/**
+ * Renders multiple disjoint edits (from the `edits[]` tool input mode) as
+ * consecutive diff hunks within a single EditFileCard, with a visual separator
+ * between each hunk.
+ */
+export function MultiDiffView({
+  path,
+  edits,
+}: {
+  path: string;
+  edits: EditPair[];
+}) {
+  const { additions, deletions } = React.useMemo(() => {
+    let add = 0;
+    let del = 0;
+    for (const edit of edits) {
+      const stats = countDiffStats(edit.oldText, edit.newText);
+      add += stats.additions;
+      del += stats.deletions;
+    }
+    return { additions: add, deletions: del };
+  }, [edits]);
+
+  return (
+    <EditFileCard path={path} additions={additions} deletions={deletions}>
+      <div className="overflow-x-auto min-h-full bg-background">
+        {edits.map((edit, i) => (
+          <React.Fragment key={i}>
+            {i > 0 && (
+              <div className="flex items-center gap-2 px-2 py-1 border-y border-border/40">
+                <span className="flex-1 border-t border-dashed border-muted-foreground/20" />
+                <span className="text-[10px] text-muted-foreground/50 select-none">
+                  hunk {i + 1} of {edits.length}
+                </span>
+                <span className="flex-1 border-t border-dashed border-muted-foreground/20" />
+              </div>
+            )}
+            <DiffContent path={path} oldText={edit.oldText} newText={edit.newText} />
+          </React.Fragment>
+        ))}
+      </div>
     </EditFileCard>
   );
 }
