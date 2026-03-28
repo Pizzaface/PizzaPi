@@ -171,10 +171,15 @@ const externalRenderer: TriggerRenderer = {
             lines.push(`> ${summary}`);
         }
         lines.push(`Type: ${type}`);
+        // Surface the webhook prompt (instructions) prominently when present.
+        const prompt = typeof trigger.payload.prompt === "string" ? trigger.payload.prompt : undefined;
+        if (prompt) {
+            lines.push("", `**Prompt:** ${prompt}`);
+        }
         // Include payload data so the agent can act on the trigger content.
-        // Filter out keys already rendered above (summary, eventType).
+        // Filter out keys already rendered above (summary, eventType, prompt).
         const dataPayload = Object.fromEntries(
-            Object.entries(trigger.payload).filter(([k]) => k !== "summary" && k !== "eventType"),
+            Object.entries(trigger.payload).filter(([k]) => k !== "summary" && k !== "eventType" && k !== "prompt"),
         );
         if (Object.keys(dataPayload).length > 0) {
             lines.push("", "```json", JSON.stringify(dataPayload, null, 2), "```");

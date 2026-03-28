@@ -152,16 +152,21 @@ async function fireWebhookTrigger(
     targetSessionId: string,
     userId: string,
     payload: Record<string, unknown>,
+    prompt: string | null,
 ): Promise<Response> {
     const triggerId = `wh_${randomUUID().replace(/-/g, "").slice(0, 16)}`;
     const ts = new Date().toISOString();
+
+    const triggerPayload = prompt
+        ? { ...payload, prompt }
+        : payload;
 
     const trigger = {
         type: "webhook",
         sourceSessionId: `external:${source}`,
         sourceSessionName: `Webhook: ${webhookName}`,
         targetSessionId,
-        payload,
+        payload: triggerPayload,
         deliverAs: "steer" as const,
         expectsResponse: false,
         triggerId,
@@ -175,7 +180,7 @@ async function fireWebhookTrigger(
         // doesn't misclassify webhook sources as child sessions.
         source: `external:${source}`,
         summary: webhookName,
-        payload,
+        payload: triggerPayload,
         deliverAs: "steer" as const,
         ts,
         direction: "inbound" as const,
@@ -468,6 +473,7 @@ export const handleWebhooksRoute: RouteHandler = async (req, url) => {
             sessionId,
             webhook.userId,
             body,
+            webhook.prompt,
         );
     }
 
