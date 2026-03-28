@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
     getTunnelBasePath,
+    getRunnerTunnelBasePath,
     rewriteTunnelHtml,
     rewriteInlineModuleScripts,
     rewriteTunnelUrl,
@@ -14,6 +15,10 @@ import {
 describe("tunnel route URL rewriting", () => {
     test("getTunnelBasePath builds the session-scoped proxy prefix", () => {
         expect(getTunnelBasePath("session-123", 60434)).toBe("/api/tunnel/session-123/60434");
+    });
+
+    test("getRunnerTunnelBasePath builds the runner-scoped proxy prefix", () => {
+        expect(getRunnerTunnelBasePath("runner-abc", 3000)).toBe("/api/tunnel/runner/runner-abc/3000");
     });
 
     test("rewriteTunnelUrl prefixes root-relative paths", () => {

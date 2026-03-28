@@ -4,9 +4,13 @@ import { WebSocketServer, WebSocket as NodeWebSocket } from "ws";
 import { getAuth } from "../auth.js";
 import { getTunnelRelay } from "../tunnel-relay.js";
 import { getSession } from "../ws/sio-state.js";
+import { getRunnerData } from "../ws/sio-registry.js";
 import { createLogger } from "@pizzapi/tools";
 
 const log = createLogger("tunnel-ws");
+
+/** Pattern: /api/tunnel/runner/:runnerId/:port/<rest> — checked first (more specific). */
+const RUNNER_TUNNEL_PATH_RE = /^\/api\/tunnel\/runner\/([^/]+)\/(\d+)(\/.*)?$/;
 
 /** Pattern: /api/tunnel/:sessionId/:port/<rest> */
 const TUNNEL_PATH_RE = /^\/api\/tunnel\/([^/]+)\/(\d+)(\/.*)?$/;
@@ -38,6 +42,17 @@ export function handleTunnelWsUpgrade(
 ): boolean {
     const url = req.url ?? "/";
     const pathname = url.split("?")[0];
+
+    // Try runner-based path first (more specific).
+    const runnerMatch = pathname.match(RUNNER_TUNNEL_PATH_RE);
+    if (runnerMatch) {
+        handleRunnerUpgradeAsync(req, socket, head, runnerMatch, url).catch((err) => {
+            log.error("Unexpected error in runner upgrade handler:", err);
+            if (!socket.destroyed) rejectUpgrade(socket, 500, "Internal Server Error");
+        });
+        return true;
+    }
+
     const match = pathname.match(TUNNEL_PATH_RE);
     if (!match) return false;
 
@@ -227,6 +242,141 @@ async function handleUpgradeAsync(
             proxy.cancel();
         }
     });
+}
+
+/** Runner-based WebSocket tunnel upgrade — resolves runnerId directly. */
+async function handleRunnerUpgradeAsync(
+    req: IncomingMessage,
+    rawSocket: Duplex,
+    head: Buffer,
+    match: RegExpMatchArray,
+    fullUrl: string,
+): Promise<void> {
+    let runnerId: string;
+    try {
+        runnerId = decodeURIComponent(match[1]);
+    } catch {
+        rejectUpgrade(rawSocket, 400, "Bad Request");
+        return;
+    }
+
+    const port = parseInt(match[2], 10);
+    const proxyPath = match[3] ?? "/";
+
+    let pathWithQuery: string;
+    const qIdx = fullUrl.indexOf("?");
+    if (qIdx >= 0) {
+        const qs = new URLSearchParams(fullUrl.slice(qIdx + 1));
+        qs.delete("apiKey");
+        const qsStr = qs.toString();
+        pathWithQuery = qsStr ? `${proxyPath}?${qsStr}` : proxyPath;
+    } else {
+        pathWithQuery = proxyPath;
+    }
+
+    if (!runnerId || !Number.isFinite(port) || port < 1 || port > 65535) {
+        rejectUpgrade(rawSocket, 400, "Bad Request");
+        return;
+    }
+
+    const identity = await authenticateUpgrade(req);
+    if (!identity) {
+        rejectUpgrade(rawSocket, 401, "Unauthorized");
+        return;
+    }
+
+    const runnerData = await getRunnerData(runnerId);
+    if (!runnerData) {
+        rejectUpgrade(rawSocket, 404, "Runner not found");
+        return;
+    }
+
+    if (!runnerData.userId || runnerData.userId !== identity.userId) {
+        rejectUpgrade(rawSocket, 403, "Forbidden");
+        return;
+    }
+
+    const relay = getTunnelRelay();
+    if (!relay?.hasRunner(runnerId)) {
+        rejectUpgrade(rawSocket, 503, "Runner not available");
+        return;
+    }
+
+    // Reuse the common WebSocket proxy setup from handleUpgradeAsync.
+    // We inline the proxy creation here to keep the code self-contained.
+    const protocols = req.headers["sec-websocket-protocol"]
+        ? req.headers["sec-websocket-protocol"].split(",").map((s) => s.trim()).filter(Boolean)
+        : undefined;
+
+    const forwardHeaders: Record<string, string> = {};
+    for (const [key, value] of Object.entries(req.headers)) {
+        if (value === undefined) continue;
+        const lowerKey = key.toLowerCase();
+        if (HOP_BY_HOP.has(lowerKey)) continue;
+        if (lowerKey === "cookie" || lowerKey === "authorization" || lowerKey === "x-api-key") continue;
+        forwardHeaders[key] = Array.isArray(value) ? value.join(", ") : value;
+    }
+
+    const tunnelWsId = `tws-runner-${runnerId}-${port}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    let viewerWs: NodeWebSocket | null = null;
+    let closingFromRelay = false;
+    let handshakeComplete = false;
+
+    const finalizeUpgrade = (protocol?: string): void => {
+        if (handshakeComplete || rawSocket.destroyed) {
+            if (rawSocket.destroyed) relay.sendWsClose(runnerId, tunnelWsId, 1001, "viewer disconnected");
+            return;
+        }
+        if (protocol) req.headers["sec-websocket-protocol"] = protocol;
+        handshakeComplete = true;
+        tunnelProxyWss.handleUpgrade(req, rawSocket, head, (ws) => {
+            viewerWs = ws;
+            ws.on("message", (data, isBinary) => {
+                relay.sendWsData(runnerId, tunnelWsId, isBinary ? Buffer.from(data as Buffer).toString("base64") : data.toString(), isBinary || undefined);
+            });
+            ws.on("close", (code, reason) => {
+                if (!closingFromRelay) relay.sendWsClose(runnerId, tunnelWsId, code, reason.toString());
+            });
+            ws.on("error", () => {
+                if (!closingFromRelay) relay.sendWsClose(runnerId, tunnelWsId, 1011, "viewer websocket error");
+            });
+        });
+    };
+
+    const closePendingSocket = (status: number, message: string): void => {
+        if (handshakeComplete || rawSocket.destroyed) return;
+        rejectUpgrade(rawSocket, status, message);
+    };
+
+    const proxy = relay.proxyWsOpen(
+        runnerId,
+        { id: tunnelWsId, port, path: pathWithQuery, protocols, headers: forwardHeaders },
+        {
+            onOpened: (protocol) => finalizeUpgrade(protocol),
+            onData: (data, binary) => {
+                if (!viewerWs || viewerWs.readyState !== NodeWebSocket.OPEN) return;
+                viewerWs.send(binary ? Buffer.from(data, "base64") : data);
+            },
+            onClose: (code, reason) => {
+                if (!handshakeComplete) { closePendingSocket(502, reason || "Tunnel WebSocket closed"); return; }
+                if (!viewerWs || viewerWs.readyState >= NodeWebSocket.CLOSING) return;
+                closingFromRelay = true;
+                viewerWs.close(code ?? 1000, reason ?? "");
+            },
+            onError: (message) => {
+                if (!handshakeComplete) {
+                    closePendingSocket(message.includes("not connected") || message.includes("disconnected") ? 503 : 502, message);
+                    return;
+                }
+                if (!viewerWs || viewerWs.readyState >= NodeWebSocket.CLOSING) return;
+                closingFromRelay = true;
+                viewerWs.close(1011, message);
+            },
+        },
+    );
+
+    rawSocket.once("close", () => { if (!handshakeComplete) proxy.cancel(); });
+    rawSocket.once("error", () => { if (!handshakeComplete) proxy.cancel(); });
 }
 
 async function authenticateUpgrade(req: IncomingMessage): Promise<{ userId: string } | null> {

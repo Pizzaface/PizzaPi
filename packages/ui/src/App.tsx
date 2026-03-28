@@ -3700,6 +3700,22 @@ export function App() {
   const { services: availableServices, panels: dynamicPanels } = useRunnerServices(viewerSocket);
   const { activePanelIds: activeServicePanels, togglePanel: toggleServicePanel, closePanelById: closeServicePanelById, closeAllPanels: closeAllServicePanels, getPanelPosition: getServicePanelPosition, setPanelPosition: setServicePanelPosition, setEphemeralPanelPosition: setEphemeralServicePanelPosition } = useServicePanelState();
 
+  // Auto-open Tunnel panel when a non-pinned tunnel is registered.
+  React.useEffect(() => {
+    if (!viewerSocket) return;
+    const handler = (envelope: { serviceId: string; type: string; payload: unknown }) => {
+      if (envelope.serviceId !== "tunnel" || envelope.type !== "tunnel_registered") return;
+      const info = envelope.payload as { pinned?: boolean } | undefined;
+      if (info?.pinned) return; // Don't auto-open for daemon-pinned panel ports
+      // Open the Tunnel panel if not already open
+      if (!activeServicePanels.has("tunnel")) {
+        toggleServicePanel("tunnel");
+      }
+    };
+    viewerSocket.on("service_message", handler);
+    return () => { viewerSocket.off("service_message", handler); };
+  }, [viewerSocket, activeServicePanels, toggleServicePanel]);
+
   const handleToggleServicePanel = React.useCallback((serviceId: string) => {
     if (activeServicePanels.has(serviceId)) {
       closeServicePanelById(serviceId);
@@ -3805,7 +3821,7 @@ export function App() {
       const label = staticDef?.label ?? dynamicDef!.label;
       const icon = staticDef?.icon ?? <DynamicLucideIcon name={dynamicDef!.icon} />;
       const content = staticDef
-        ? <staticDef.component sessionId={effectiveSessionId} />
+        ? <staticDef.component sessionId={effectiveSessionId} runnerId={activeSessionInfo?.runnerId ?? undefined} />
         : <IframeServicePanel sessionId={effectiveSessionId} port={dynamicDef!.port} />;
 
       tabs.push({

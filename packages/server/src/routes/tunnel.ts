@@ -1,16 +1,24 @@
 /**
- * Tunnel HTTP proxy route — /api/tunnel/:sessionId/:port/*
+ * Tunnel HTTP proxy route — /api/tunnel/:sessionId/:port/* and /api/tunnel/runner/:runnerId/:port/*
  *
  * Translates an authenticated viewer's HTTP request into a streamed relay
  * request sent to the runner daemon, then writes the streamed response back as
  * an HTTP response. WebSocket upgrades on this path are handled by tunnel-ws.ts.
+ *
+ * Two URL schemes:
+ *   - Session-based: /api/tunnel/:sessionId/:port/* (legacy, resolves sessionId → runnerId)
+ *   - Runner-based:  /api/tunnel/runner/:runnerId/:port/* (preferred, stable across session switches)
  */
 
 import type { TunnelRelay } from "@pizzapi/tunnel";
 import { requireSession } from "../middleware.js";
 import { getTunnelRelay } from "../tunnel-relay.js";
 import { getSession } from "../ws/sio-state.js";
+import { getRunnerData } from "../ws/sio-registry.js";
 import type { RouteHandler } from "./types.js";
+
+/** Pattern: /api/tunnel/runner/:runnerId/:port/<rest> — must be checked first (more specific). */
+const RUNNER_TUNNEL_PATH_RE = /^\/api\/tunnel\/runner\/([^/]+)\/(\d+)(\/.*)?$/;
 
 /** Pattern: /api/tunnel/:sessionId/:port/<rest> */
 const TUNNEL_PATH_RE = /^\/api\/tunnel\/([^/]+)\/(\d+)(\/.*)?$/;
@@ -19,14 +27,19 @@ function getTunnelBasePath(sessionId: string, port: number): string {
     return `/api/tunnel/${encodeURIComponent(sessionId)}/${port}`;
 }
 
-function rewriteTunnelUrl(value: string, sessionId: string, port: number): string {
+function getRunnerTunnelBasePath(runnerId: string, port: number): string {
+    return `/api/tunnel/runner/${encodeURIComponent(runnerId)}/${port}`;
+}
+
+/** Core URL rewriter — all variants delegate here. */
+function rewriteUrlByBasePath(value: string, basePath: string): string {
     if (!value) return value;
     if (value.startsWith("//")) return value;
     if (/^[a-zA-Z][a-zA-Z\d+.-]*:/.test(value)) {
         try {
             const parsed = new URL(value);
             if ((parsed.protocol === "http:" || parsed.protocol === "https:") && (parsed.hostname === "127.0.0.1" || parsed.hostname === "localhost")) {
-                return `${getTunnelBasePath(sessionId, port)}${parsed.pathname}${parsed.search}${parsed.hash}`;
+                return `${basePath}${parsed.pathname}${parsed.search}${parsed.hash}`;
             }
         } catch {
             return value;
@@ -34,7 +47,11 @@ function rewriteTunnelUrl(value: string, sessionId: string, port: number): strin
         return value;
     }
     if (!value.startsWith("/")) return value;
-    return `${getTunnelBasePath(sessionId, port)}${value}`;
+    return `${basePath}${value}`;
+}
+
+function rewriteTunnelUrl(value: string, sessionId: string, port: number): string {
+    return rewriteUrlByBasePath(value, getTunnelBasePath(sessionId, port));
 }
 
 /**
@@ -182,17 +199,18 @@ function buildTunnelInterceptScript(basePath: string): string {
 </script>`;
 }
 
-function rewriteInlineModuleScripts(html: string, sessionId: string, port: number): string {
+function rewriteInlineModuleScriptsByBasePath(html: string, basePath: string): string {
     return html.replace(/<script\b([^>]*)type=["']module["']([^>]*)>([\s\S]*?)<\/script>/gi, (match, before, after, scriptBody) => {
-        // Skip external module scripts; their src attribute is already rewritten separately.
         if (/\bsrc\s*=/i.test(before) || /\bsrc\s*=/i.test(after)) return match;
-        return `<script${before}type="module"${after}>${rewriteTunnelJsModule(scriptBody, sessionId, port)}</script>`;
+        return `<script${before}type="module"${after}>${rewriteJsModuleByBasePath(scriptBody, basePath)}</script>`;
     });
 }
 
-function rewriteTunnelHtml(html: string, sessionId: string, port: number, proxyPath?: string): string {
-    const basePath = getTunnelBasePath(sessionId, port);
+function rewriteInlineModuleScripts(html: string, sessionId: string, port: number): string {
+    return rewriteInlineModuleScriptsByBasePath(html, getTunnelBasePath(sessionId, port));
+}
 
+function rewriteHtmlByBasePath(html: string, basePath: string, proxyPath?: string): string {
     // Compute the base href from the actual document path so relative URLs
     // in apps served from sub-paths (e.g. Jellyfin at /web/) resolve correctly.
     // The interceptor script still uses the tunnel root for root-relative rewrites.
@@ -207,15 +225,14 @@ function rewriteTunnelHtml(html: string, sessionId: string, port: number, proxyP
     // must be the only <base> so it takes effect per the HTML spec (first wins).
     const cleaned = html.replace(/<base\b[^>]*>/gi, "");
 
-    const rewritten = rewriteInlineModuleScripts(
+    const rewritten = rewriteInlineModuleScriptsByBasePath(
         cleaned
-            .replace(/(<(?:img|script|iframe|audio|video|source|track|embed|input)\b[^>]*\bsrc=["'])(\/[^"']*)(["'])/gi, (_m, start, path, end) => `${start}${rewriteTunnelUrl(path, sessionId, port)}${end}`)
-            .replace(/(<(?:a|link|area)\b[^>]*\bhref=["'])(\/[^"']*)(["'])/gi, (_m, start, path, end) => `${start}${rewriteTunnelUrl(path, sessionId, port)}${end}`)
-            .replace(/(<(?:form)\b[^>]*\baction=["'])(\/[^"']*)(["'])/gi, (_m, start, path, end) => `${start}${rewriteTunnelUrl(path, sessionId, port)}${end}`)
-            .replace(/(<meta\b[^>]*\bcontent=["'][^"']*?url=)(\/[^"']*)(["'])/gi, (_m, start, path, end) => `${start}${rewriteTunnelUrl(path, sessionId, port)}${end}`)
-            .replace(/(\burl\(["']?)(\/[^)"']*)(["']?\))/gi, (_m, start, path, end) => `${start}${rewriteTunnelUrl(path, sessionId, port)}${end}`),
-        sessionId,
-        port,
+            .replace(/(<(?:img|script|iframe|audio|video|source|track|embed|input)\b[^>]*\bsrc=["'])(\/[^"']*)(["'])/gi, (_m, start, path, end) => `${start}${rewriteUrlByBasePath(path, basePath)}${end}`)
+            .replace(/(<(?:a|link|area)\b[^>]*\bhref=["'])(\/[^"']*)(["'])/gi, (_m, start, path, end) => `${start}${rewriteUrlByBasePath(path, basePath)}${end}`)
+            .replace(/(<(?:form)\b[^>]*\baction=["'])(\/[^"']*)(["'])/gi, (_m, start, path, end) => `${start}${rewriteUrlByBasePath(path, basePath)}${end}`)
+            .replace(/(<meta\b[^>]*\bcontent=["'][^"']*?url=)(\/[^"']*)(["'])/gi, (_m, start, path, end) => `${start}${rewriteUrlByBasePath(path, basePath)}${end}`)
+            .replace(/(\burl\(["']?)(\/[^)"']*)(["']?\))/gi, (_m, start, path, end) => `${start}${rewriteUrlByBasePath(path, basePath)}${end}`),
+        basePath,
     );
 
     const injection = `<base href="${baseHref}">${buildTunnelInterceptScript(basePath)}`;
@@ -225,6 +242,10 @@ function rewriteTunnelHtml(html: string, sessionId: string, port: number, proxyP
     }
 
     return `${injection}${rewritten}`;
+}
+
+function rewriteTunnelHtml(html: string, sessionId: string, port: number, proxyPath?: string): string {
+    return rewriteHtmlByBasePath(html, getTunnelBasePath(sessionId, port), proxyPath);
 }
 
 function shouldRewriteTunnelHtml(contentType: string | null): boolean {
@@ -261,9 +282,7 @@ function shouldRewriteTunnelCss(contentType: string | null): boolean {
  * Only rewrites root-relative paths (`/...`). Leaves relative paths, bare
  * specifiers, and full URLs (http://, //) untouched.
  */
-function rewriteTunnelJsModule(js: string, sessionId: string, port: number): string {
-    const basePath = getTunnelBasePath(sessionId, port);
-
+function rewriteJsModuleByBasePath(js: string, basePath: string): string {
     // Already-rewritten paths start with basePath — skip them.
     // The regex matches: (from/import)( whitespace "or' )( /path )( "or' )
     // We capture the absolute path and prefix it.
@@ -286,12 +305,14 @@ function rewriteTunnelJsModule(js: string, sessionId: string, port: number): str
         });
 }
 
+function rewriteTunnelJsModule(js: string, sessionId: string, port: number): string {
+    return rewriteJsModuleByBasePath(js, getTunnelBasePath(sessionId, port));
+}
+
 /**
  * Rewrite absolute paths in CSS — @import and url() references.
  */
-function rewriteTunnelCss(css: string, sessionId: string, port: number): string {
-    const basePath = getTunnelBasePath(sessionId, port);
-
+function rewriteCssByBasePath(css: string, basePath: string): string {
     return css
         // @import "/path" or @import '/path' or @import url("/path")
         .replace(/(@import\s+)(["'])(\/(?!\/)[^"']*)(["'])/g, (match, prefix, q1, path, q2) => {
@@ -305,49 +326,48 @@ function rewriteTunnelCss(css: string, sessionId: string, port: number): string 
         });
 }
 
+function rewriteTunnelCss(css: string, sessionId: string, port: number): string {
+    return rewriteCssByBasePath(css, getTunnelBasePath(sessionId, port));
+}
+
 function shouldBufferTunnelResponse(contentType: string | null): boolean {
     return shouldRewriteTunnelHtml(contentType)
         || shouldRewriteTunnelJs(contentType)
         || shouldRewriteTunnelCss(contentType);
 }
 
-function applyTunnelResponseHeaders(responseHeaders: Headers, sessionId: string, port: number): void {
+function applyResponseHeadersByBasePath(responseHeaders: Headers, basePath: string): void {
     const location = responseHeaders.get("location");
     if (location) {
-        responseHeaders.set("location", rewriteTunnelUrl(location, sessionId, port));
+        responseHeaders.set("location", rewriteUrlByBasePath(location, basePath));
     }
-
     responseHeaders.set("x-pizzapi-tunnel", "1");
 }
 
-function rewriteBufferedTunnelResponse(
+function rewriteBufferedResponseByBasePath(
     responseBody: Buffer,
     responseHeaders: Headers,
-    sessionId: string,
-    port: number,
+    basePath: string,
     proxyPath: string,
 ): Buffer {
     const contentType = responseHeaders.get("content-type");
 
     if (shouldRewriteTunnelHtml(contentType)) {
-        const html = responseBody.toString("utf8");
         responseHeaders.delete("content-length");
         responseHeaders.delete("content-encoding");
-        return Buffer.from(rewriteTunnelHtml(html, sessionId, port, proxyPath), "utf8");
+        return Buffer.from(rewriteHtmlByBasePath(responseBody.toString("utf8"), basePath, proxyPath), "utf8");
     }
 
     if (shouldRewriteTunnelJs(contentType)) {
-        const js = responseBody.toString("utf8");
         responseHeaders.delete("content-length");
         responseHeaders.delete("content-encoding");
-        return Buffer.from(rewriteTunnelJsModule(js, sessionId, port), "utf8");
+        return Buffer.from(rewriteJsModuleByBasePath(responseBody.toString("utf8"), basePath), "utf8");
     }
 
     if (shouldRewriteTunnelCss(contentType)) {
-        const css = responseBody.toString("utf8");
         responseHeaders.delete("content-length");
         responseHeaders.delete("content-encoding");
-        return Buffer.from(rewriteTunnelCss(css, sessionId, port), "utf8");
+        return Buffer.from(rewriteCssByBasePath(responseBody.toString("utf8"), basePath), "utf8");
     }
 
     return responseBody;
@@ -400,7 +420,7 @@ function proxyTunnelRequestViaRelay(
     relay: TunnelRelay,
     runnerId: string,
     requestId: string,
-    sessionId: string,
+    basePath: string,
     port: number,
     proxyPath: string,
     pathWithQuery: string,
@@ -446,7 +466,7 @@ function proxyTunnelRequestViaRelay(
                     shouldBuffer = shouldBufferTunnelResponse(responseHeaders.get("content-type"));
                     if (shouldBuffer) return;
 
-                    applyTunnelResponseHeaders(responseHeaders, sessionId, port);
+                    applyResponseHeadersByBasePath(responseHeaders, basePath);
                     const stream = new ReadableStream<Uint8Array>({
                         start(controller) {
                             streamController = controller;
@@ -478,14 +498,13 @@ function proxyTunnelRequestViaRelay(
                             return;
                         }
 
-                        const responseBody = rewriteBufferedTunnelResponse(
+                        const responseBody = rewriteBufferedResponseByBasePath(
                             Buffer.concat(bodyChunks),
                             responseHeaders,
-                            sessionId,
-                            port,
+                            basePath,
                             proxyPath,
                         );
-                        applyTunnelResponseHeaders(responseHeaders, sessionId, port);
+                        applyResponseHeadersByBasePath(responseHeaders, basePath);
                         resolveOnce(new Response(bufferToBodyInit(responseBody), {
                             status: statusCode,
                             headers: responseHeaders,
@@ -534,6 +553,10 @@ function proxyTunnelRequestViaRelay(
  * runner's localhost — they should not be openly accessible to all viewers.
  */
 export const handleTunnelRoute: RouteHandler = async (req, url) => {
+    // Try runner-based path first (more specific prefix avoids false matches).
+    const runnerMatch = url.pathname.match(RUNNER_TUNNEL_PATH_RE);
+    if (runnerMatch) return handleRunnerTunnel(req, url, runnerMatch);
+
     const match = url.pathname.match(TUNNEL_PATH_RE);
     if (!match) return undefined;
 
@@ -634,7 +657,7 @@ export const handleTunnelRoute: RouteHandler = async (req, url) => {
         relay,
         runnerId,
         requestId,
-        sessionId,
+        getTunnelBasePath(sessionId, port),
         port,
         proxyPath,
         pathWithQuery,
@@ -642,8 +665,97 @@ export const handleTunnelRoute: RouteHandler = async (req, url) => {
     );
 };
 
+// ── Hop-by-hop and auth header sets (shared between session and runner handlers) ──
+const HOP_BY_HOP_HEADERS = new Set([
+    "connection", "keep-alive", "transfer-encoding", "te", "trailer",
+    "upgrade", "proxy-authorization", "proxy-authenticate",
+    "host",        // Rewrite host to 127.0.0.1:{port} in the runner
+    "accept-encoding",  // Strip so local service returns uncompressed
+]);
+
+const STRIP_AUTH_HEADERS = new Set(["cookie", "authorization", "x-api-key"]);
+
+function buildForwardHeaders(req: Request): Record<string, string> {
+    const forwardHeaders: Record<string, string> = {};
+    req.headers.forEach((v, k) => {
+        const lk = k.toLowerCase();
+        if (!HOP_BY_HOP_HEADERS.has(lk) && !STRIP_AUTH_HEADERS.has(lk)) forwardHeaders[k] = v;
+    });
+    return forwardHeaders;
+}
+
+function buildPathWithQuery(url: URL, proxyPath: string): string {
+    if (url.search) {
+        const qs = new URLSearchParams(url.search.slice(1));
+        qs.delete("apiKey");
+        const qsStr = qs.toString();
+        return qsStr ? `${proxyPath}?${qsStr}` : proxyPath;
+    }
+    return proxyPath;
+}
+
+/**
+ * Runner-based tunnel route handler.
+ *
+ * URL: /api/tunnel/runner/:runnerId/:port/*
+ *
+ * Resolves the runner directly (no session lookup needed). This makes tunnel
+ * URLs stable across session switches — the URL survives session restarts as
+ * long as the runner daemon is alive.
+ */
+async function handleRunnerTunnel(req: Request, url: URL, match: RegExpMatchArray): Promise<Response> {
+    const method = req.method.toUpperCase();
+    if (!["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"].includes(method)) {
+        return new Response("Method not allowed", {
+            status: 405,
+            headers: { Allow: "GET, POST, PUT, DELETE, PATCH, HEAD, OPTIONS" },
+        });
+    }
+
+    const identity = await requireSession(req);
+    if (identity instanceof Response) return identity;
+
+    const runnerId = decodeURIComponent(match[1]);
+    const port = parseInt(match[2], 10);
+    const proxyPath = match[3] ?? "/";
+
+    if (!runnerId) return Response.json({ error: "Missing runner ID" }, { status: 400 });
+    if (!Number.isFinite(port) || port < 1 || port > 65535) {
+        return Response.json({ error: "Invalid port" }, { status: 400 });
+    }
+
+    const pathWithQuery = buildPathWithQuery(url, proxyPath);
+
+    // Verify runner ownership — tunnels expose localhost.
+    const runnerData = await getRunnerData(runnerId);
+    if (!runnerData) return Response.json({ error: "Runner not found" }, { status: 404 });
+    if (!runnerData.userId || runnerData.userId !== identity.userId) {
+        return Response.json({ error: "Forbidden" }, { status: 403 });
+    }
+
+    const relay = getTunnelRelay();
+    if (!relay?.hasRunner(runnerId)) {
+        return tunnelErrorResponse(`Runner ${runnerId} not connected`);
+    }
+
+    const requestId = `runner-${runnerId}-${port}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+    return proxyTunnelRequestViaRelay(
+        req,
+        relay,
+        runnerId,
+        requestId,
+        getRunnerTunnelBasePath(runnerId, port),
+        port,
+        proxyPath,
+        pathWithQuery,
+        buildForwardHeaders(req),
+    );
+}
+
 export {
     getTunnelBasePath,
+    getRunnerTunnelBasePath,
     rewriteTunnelUrl,
     rewriteTunnelHtml,
     rewriteInlineModuleScripts,

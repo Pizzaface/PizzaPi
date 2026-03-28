@@ -87,6 +87,7 @@ export function ServicePanelButtons({
 interface ServicePanelContainerProps {
     activePanelId: string | null;
     sessionId: string;
+    runnerId?: string;
     /** Dynamic panels from service_announce. */
     dynamicPanels?: ServicePanelInfo[];
     onClose: () => void;
@@ -96,6 +97,7 @@ interface ServicePanelContainerProps {
 export function ServicePanelContainer({
     activePanelId,
     sessionId,
+    runnerId,
     dynamicPanels = [],
     onClose,
     position = "bottom",
@@ -140,7 +142,7 @@ export function ServicePanelContainer({
             {/* Panel content */}
             <div className="flex-1 overflow-hidden">
                 {staticDef ? (
-                    <staticDef.component sessionId={sessionId} />
+                    <staticDef.component sessionId={sessionId} runnerId={runnerId} />
                 ) : (
                     <IframeServicePanel sessionId={sessionId} port={dynamicDef!.port} />
                 )}

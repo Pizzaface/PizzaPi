@@ -14,6 +14,9 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { homedir } from "node:os";
 import type { ExtensionFactory } from "@mariozechner/pi-coding-agent";
 import { Text } from "@mariozechner/pi-tui";
 import { getRelaySocket as getRelaySocketDefault, getRelaySessionId as getRelaySessionIdDefault } from "./remote.js";
@@ -33,12 +36,25 @@ interface TunnelToolsDeps {
     getRelaySocket: typeof getRelaySocketDefault;
     getRelaySessionId: typeof getRelaySessionIdDefault;
     loadConfig: typeof loadConfigDefault;
+    getRunnerId: () => string | null;
+}
+
+function getRunnerIdDefault(): string | null {
+    const statePath = process.env.PIZZAPI_RUNNER_STATE_PATH ?? join(homedir(), ".pizzapi", "runner.json");
+    try {
+        if (!existsSync(statePath)) return null;
+        const state = JSON.parse(readFileSync(statePath, "utf-8"));
+        return typeof state.runnerId === "string" ? state.runnerId : null;
+    } catch {
+        return null;
+    }
 }
 
 const defaultDeps: TunnelToolsDeps = {
     getRelaySocket: getRelaySocketDefault,
     getRelaySessionId: getRelaySessionIdDefault,
     loadConfig: loadConfigDefault,
+    getRunnerId: getRunnerIdDefault,
 };
 
 /** Minimal Component that renders nothing — keeps the tool call invisible in the TUI. */
@@ -106,10 +122,23 @@ function getRelayHttpBaseUrl(deps: TunnelToolsDeps): string | null {
     return `https://${trimmed}`;
 }
 
+/**
+ * Build the public tunnel URL. Prefers runner-based URLs (stable across session
+ * switches) and falls back to session-based URLs if runner ID is unavailable.
+ */
 function buildPublicTunnelUrl(deps: TunnelToolsDeps, port: number): string | null {
     const base = getRelayHttpBaseUrl(deps);
+    if (!base) return null;
+
+    // Prefer runner-based URL — stable across session switches.
+    const runnerId = deps.getRunnerId();
+    if (runnerId) {
+        return `${base}/api/tunnel/runner/${encodeURIComponent(runnerId)}/${port}/`;
+    }
+
+    // Fall back to session-based URL.
     const sessionId = deps.getRelaySessionId();
-    if (!base || !sessionId) return null;
+    if (!sessionId) return null;
     return `${base}/api/tunnel/${encodeURIComponent(sessionId)}/${port}/`;
 }
 

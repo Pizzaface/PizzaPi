@@ -31,8 +31,8 @@ export interface ServicePanelDef {
     label: string;
     /** Icon component (lucide) */
     icon: React.ReactNode;
-    /** The panel component to render. Receives sessionId as a prop. */
-    component: React.ComponentType<{ sessionId: string }>;
+    /** The panel component to render. Receives sessionId and optional runnerId as props. */
+    component: React.ComponentType<{ sessionId: string; runnerId?: string }>;
 }
 
 /**
