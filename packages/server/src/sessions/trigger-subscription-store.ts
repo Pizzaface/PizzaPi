@@ -10,6 +10,22 @@
  *
  * TTL for session subscriptions: 24h (refreshed on each subscribe call).
  * TTL for runner-type indexes:   24h (refreshed on each subscribe call).
+ *
+ * ## TTL race limitation
+ *
+ * Both the session hash and the reverse-index sets are given the same TTL on
+ * every subscribe() call, so they normally expire together. However, if the
+ * session hash expires (e.g. 24h of inactivity) before clearSessionSubscriptions()
+ * is called, the reverse-index entries become stale: getSubscribersForTrigger()
+ * may return dead session IDs until the reverse-index TTL expires independently.
+ *
+ * **Mitigation**: clearSessionSubscriptions() is called from endSharedSession()
+ * so subscriptions are cleaned up eagerly when a session ends. The 24h TTL is
+ * a last-resort safeguard for abnormal termination paths only.
+ *
+ * unsubscribeSessionFromTrigger() is also best-effort: if the session hash has
+ * already expired (losing the triggerType→runnerId mapping), it cannot remove
+ * the stale reverse-index entry. That entry will expire via its own TTL.
  */
 
 import { createClient } from "redis";
@@ -164,6 +180,11 @@ export async function getSubscribersForTrigger(
 /**
  * Remove all subscriptions for a session (e.g. on session end).
  * Cleans up session hash and all reverse index entries.
+ *
+ * Best-effort: if the session hash has already expired (TTL elapsed before
+ * this is called), the reverse-index entries are left to expire on their own.
+ * In normal operation this is called eagerly from endSharedSession() so the
+ * hash is still present.
  */
 export async function clearSessionSubscriptions(sessionId: string): Promise<void> {
     const redis = await getClient();
@@ -181,7 +202,7 @@ export async function clearSessionSubscriptions(sessionId: string): Promise<void
         pipeline.del(sessionKey);
         await pipeline.exec();
     } catch (err) {
-        log.warn("Failed to clear session subscriptions:", err);
+        log.warn("Failed to clear session subscriptions (best-effort):", err);
     }
 }
 

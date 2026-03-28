@@ -484,6 +484,22 @@ describe("POST /api/sessions/:id/trigger-subscriptions", () => {
         expect(body.error).toContain("not available");
     });
 
+    test("returns 503 when runner catalog is unavailable (runner restarted)", async () => {
+        mockGetSharedSession.mockReturnValue(
+            Promise.resolve({ userId: "user-1", sessionId: "sess-1", runnerId: "runner-A" } as any),
+        );
+        // Runner exists but hasn't re-announced → getRunnerServices returns null
+        mockGetRunnerServices.mockReturnValue(Promise.resolve(null));
+
+        const [req, url] = makeReq("POST", "/api/sessions/sess-1/trigger-subscriptions", {
+            triggerType: "svc:event",
+        });
+        const res = await handleTriggersRoute(req, url);
+        expect(res!.status).toBe(503);
+        const body = await res!.json();
+        expect(body.error).toContain("unavailable");
+    });
+
     test("returns 422 when session has no runner", async () => {
         mockGetSharedSession.mockReturnValue(
             Promise.resolve({ userId: "user-1", sessionId: "sess-1", runnerId: null } as any),

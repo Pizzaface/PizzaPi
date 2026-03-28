@@ -232,10 +232,6 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
             return Response.json({ error: "Session not found" }, { status: 404 });
         }
 
-        if (!session.runnerId) {
-            return Response.json({ error: "Session has no associated runner" }, { status: 422 });
-        }
-
         let body: { triggerType?: string };
         try {
             body = await req.json() as { triggerType?: string };
@@ -249,9 +245,22 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
 
         const triggerType = body.triggerType.trim();
 
-        // Validate that the trigger type is declared by the runner's services
+        if (!session.runnerId) {
+            return Response.json({ error: "Session has no associated runner" }, { status: 422 });
+        }
+
+        // Validate that the trigger type is declared by the runner's services.
+        // If the runner catalog is unavailable (e.g. runner restarted before
+        // re-announcing), return 503 so callers know to retry rather than
+        // treating it as a permanent "not available" failure (422).
         const services = await getRunnerServices(session.runnerId);
-        const available = services?.triggerDefs ?? [];
+        if (!services) {
+            return Response.json(
+                { error: "Runner service catalog is temporarily unavailable — the runner may be restarting. Retry in a moment." },
+                { status: 503 },
+            );
+        }
+        const available = services.triggerDefs ?? [];
         const isDeclared = available.some((def) => def.type === triggerType);
         if (!isDeclared) {
             return Response.json(

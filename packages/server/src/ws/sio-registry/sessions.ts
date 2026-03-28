@@ -61,6 +61,7 @@ import {
 } from "./context.js";
 import { broadcastToHub } from "./hub.js";
 import { createLogger } from "@pizzapi/tools";
+import { clearSessionSubscriptions } from "../../sessions/trigger-subscription-store.js";
 
 const log = createLogger("sio-registry");
 
@@ -727,6 +728,12 @@ export async function endSharedSession(sessionId: string, reason: string = "Sess
     if (session.runnerId) {
         emitToRunner(session.runnerId, "session_ended", { sessionId, reason });
     }
+
+    // Clean up trigger subscriptions eagerly so reverse-index entries don't
+    // outlive the session (best-effort — failures are logged, not thrown).
+    void clearSessionSubscriptions(sessionId).catch((err) => {
+        log.warn("Failed to clear trigger subscriptions for session", sessionId, ":", err);
+    });
 
     // Delete from Redis
     await deleteSession(sessionId);
