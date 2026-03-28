@@ -53,7 +53,6 @@ const mockEmitToRelaySessionVerified = mock(
     (_id: string, _event: string, _data: any) => Promise.resolve(false),
 );
 const mockBroadcastToSessionViewers = mock((_sid: string, _event: string, _data: any) => {});
-const mockGetRunners = mock((_userId?: string) => Promise.resolve([] as any[]));
 const mockGetLocalRunnerSocket = mock((_runnerId: string) => null as any);
 const mockRecordRunnerSession = mock((_runnerId: string, _sessionId: string) => Promise.resolve());
 const mockLinkSessionToRunner = mock((_runnerId: string, _sessionId: string) => Promise.resolve());
@@ -63,7 +62,6 @@ mock.module("../ws/sio-registry.js", () => ({
     getLocalTuiSocket: mockGetLocalTuiSocket,
     emitToRelaySessionVerified: mockEmitToRelaySessionVerified,
     broadcastToSessionViewers: mockBroadcastToSessionViewers,
-    getRunners: mockGetRunners,
     getLocalRunnerSocket: mockGetLocalRunnerSocket,
     recordRunnerSession: mockRecordRunnerSession,
     linkSessionToRunner: mockLinkSessionToRunner,
@@ -455,6 +453,7 @@ const ACTIVE_WEBHOOK = {
     secret: "test-secret-xyz",
     eventFilter: null,
     source: "custom",
+    runnerId: "runner-1",
     cwd: "/srv/project",
     prompt: "Handle this webhook",
     enabled: true,
@@ -462,13 +461,10 @@ const ACTIVE_WEBHOOK = {
     updatedAt: "2026-01-01T00:00:00Z",
 };
 
-const MOCK_RUNNER = { runnerId: "runner-1", userId: "user-1", name: "My Runner", roots: [] };
-
 /**
  * Set up mocks so that fire spawns a session and delivers the trigger.
  */
 function setupSpawnAndDeliverMocks() {
-    mockGetRunners.mockReturnValue(Promise.resolve([MOCK_RUNNER]));
     const runnerEmitMock = mock(() => {});
     mockGetLocalRunnerSocket.mockReturnValue({ emit: runnerEmitMock });
     mockWaitForSpawnAck.mockReturnValue(Promise.resolve({ ok: true }));
@@ -488,7 +484,6 @@ describe("POST /api/webhooks/:id/fire — HMAC validation", () => {
         mockGetLocalTuiSocket.mockReset();
         mockEmitToRelaySessionVerified.mockReset();
         mockPushTriggerHistory.mockReset();
-        mockGetRunners.mockReset();
         mockGetLocalRunnerSocket.mockReset();
         mockWaitForSpawnAck.mockReset();
         mockRecordRunnerSession.mockReset();
@@ -555,16 +550,27 @@ describe("POST /api/webhooks/:id/fire — HMAC validation", () => {
         expect(mockLinkSessionToRunner).toHaveBeenCalledTimes(1);
     });
 
-    test("returns 503 when no runner is connected", async () => {
+    test("returns 503 when runner is not connected", async () => {
         mockGetWebhook.mockReturnValue(Promise.resolve(ACTIVE_WEBHOOK));
-        mockGetRunners.mockReturnValue(Promise.resolve([]));
+        mockGetLocalRunnerSocket.mockReturnValue(null);
 
         const body = { event: "test" };
         const [req, url] = makeFireReq("/api/webhooks/wh-1/fire", body, ACTIVE_WEBHOOK.secret);
         const res = await handleWebhooksRoute(req, url);
         expect(res?.status).toBe(503);
         const resBody = await res!.json();
-        expect(resBody.error).toContain("runner");
+        expect(resBody.error).toContain("Runner");
+    });
+
+    test("returns 500 when webhook has no runnerId", async () => {
+        mockGetWebhook.mockReturnValue(Promise.resolve({ ...ACTIVE_WEBHOOK, runnerId: null }));
+
+        const body = { event: "test" };
+        const [req, url] = makeFireReq("/api/webhooks/wh-1/fire", body, ACTIVE_WEBHOOK.secret);
+        const res = await handleWebhooksRoute(req, url);
+        expect(res?.status).toBe(500);
+        const resBody = await res!.json();
+        expect(resBody.error).toContain("no runner");
     });
 });
 
@@ -575,7 +581,6 @@ describe("POST /api/webhooks/:id/fire — event filtering", () => {
         mockGetLocalTuiSocket.mockReset();
         mockEmitToRelaySessionVerified.mockReset();
         mockPushTriggerHistory.mockReset();
-        mockGetRunners.mockReset();
         mockGetLocalRunnerSocket.mockReset();
         mockWaitForSpawnAck.mockReset();
         mockRecordRunnerSession.mockReset();
@@ -613,7 +618,7 @@ describe("POST /api/webhooks/:id/fire — event filtering", () => {
         expect(resBody.ok).toBe(true);
         expect(resBody.filtered).toBe(true);
         // Should NOT have spawned or delivered anything
-        expect(mockGetRunners).not.toHaveBeenCalled();
+        expect(mockGetLocalRunnerSocket).not.toHaveBeenCalled();
         expect(mockPushTriggerHistory).not.toHaveBeenCalled();
     });
 });
@@ -625,7 +630,6 @@ describe("POST /api/webhooks/:id/fire — spawn behavior", () => {
         mockGetLocalTuiSocket.mockReset();
         mockEmitToRelaySessionVerified.mockReset();
         mockPushTriggerHistory.mockReset();
-        mockGetRunners.mockReset();
         mockGetLocalRunnerSocket.mockReset();
         mockWaitForSpawnAck.mockReset();
         mockRecordRunnerSession.mockReset();
@@ -636,7 +640,6 @@ describe("POST /api/webhooks/:id/fire — spawn behavior", () => {
         const hook = { ...ACTIVE_WEBHOOK, cwd: "/my/project", prompt: "Handle deploy" };
         mockGetWebhook.mockReturnValue(Promise.resolve(hook));
 
-        mockGetRunners.mockReturnValue(Promise.resolve([MOCK_RUNNER]));
         const runnerEmitMock = mock(() => {});
         mockGetLocalRunnerSocket.mockReturnValue({ emit: runnerEmitMock });
         mockWaitForSpawnAck.mockReturnValue(Promise.resolve({ ok: true }));
@@ -657,7 +660,6 @@ describe("POST /api/webhooks/:id/fire — spawn behavior", () => {
 
     test("returns 502 when runner rejects spawn", async () => {
         mockGetWebhook.mockReturnValue(Promise.resolve(ACTIVE_WEBHOOK));
-        mockGetRunners.mockReturnValue(Promise.resolve([MOCK_RUNNER]));
         const runnerEmitMock = mock(() => {});
         mockGetLocalRunnerSocket.mockReturnValue({ emit: runnerEmitMock });
         mockWaitForSpawnAck.mockReturnValue(Promise.resolve({ ok: false, message: "cwd not allowed" }));
@@ -670,7 +672,6 @@ describe("POST /api/webhooks/:id/fire — spawn behavior", () => {
 
     test("cross-node fallback delivery", async () => {
         mockGetWebhook.mockReturnValue(Promise.resolve(ACTIVE_WEBHOOK));
-        mockGetRunners.mockReturnValue(Promise.resolve([MOCK_RUNNER]));
         const runnerEmitMock = mock(() => {});
         mockGetLocalRunnerSocket.mockReturnValue({ emit: runnerEmitMock });
         mockWaitForSpawnAck.mockReturnValue(Promise.resolve({ ok: true }));

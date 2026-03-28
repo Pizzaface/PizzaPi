@@ -145,6 +145,7 @@ export interface WebhookTable {
     secret: string;
     eventFilter: string | null;
     source: string;
+    runnerId: string | null;
     cwd: string | null;
     prompt: string | null;
     enabled: number;

@@ -413,69 +413,6 @@ export function usePanelLayout(activeSessionId: string | null): PanelLayoutState
     handleFilesPositionChange(pos);
   }, [handleTerminalPositionChange, handleFilesPositionChange]);
 
-  // ── File explorer drag-to-reposition ──────────────────────────────────
-  const isFilesDragging = React.useRef(false);
-  const filesDragZoneRef = React.useRef<PanelPosition | null>(null);
-  const [filesDragActive, setFilesDragActive] = React.useState(false);
-  const [filesDragZone, setFilesDragZone] = React.useState<PanelPosition | null>(null);
-
-  const handleFilesDragStart = React.useCallback((e: React.PointerEvent) => {
-    e.preventDefault();
-    isFilesDragging.current = true;
-    filesDragZoneRef.current = null;
-    setFilesDragActive(true);
-    setFilesDragZone(null);
-    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-  }, []);
-  const handleFilesDragMove = React.useCallback((e: React.PointerEvent) => {
-    if (!isFilesDragging.current || !filesContainerRef.current) return;
-    const rect = filesContainerRef.current.getBoundingClientRect();
-    const pctX = (e.clientX - rect.left) / rect.width;
-    const pctY = (e.clientY - rect.top) / rect.height;
-    let zone: PanelPosition | null = null;
-    if (pctY > 0.55) zone = "bottom";
-    else if (pctX > 0.65) zone = "right";
-    else if (pctX < 0.35) zone = "left";
-    filesDragZoneRef.current = zone;
-    setFilesDragZone(zone);
-  }, []);
-  const handleFilesDragEnd = React.useCallback(() => {
-    if (!isFilesDragging.current) return;
-    isFilesDragging.current = false;
-    const zone = filesDragZoneRef.current;
-    filesDragZoneRef.current = null;
-    setFilesDragActive(false);
-    setFilesDragZone(null);
-    if (zone) handleFilesPositionChange(zone);
-  }, [handleFilesPositionChange]);
-  const handleFilesOuterPointerMove = React.useCallback((e: React.PointerEvent) => {
-    handleFilesResizeMove(e);
-    handleFilesDragMove(e);
-  }, [handleFilesResizeMove, handleFilesDragMove]);
-  const handleFilesOuterPointerUp = React.useCallback(() => {
-    handleFilesResizeEnd();
-    handleFilesDragEnd();
-  }, [handleFilesResizeEnd, handleFilesDragEnd]);
-
-  // ── Git panel state ───────────────────────────────────────────────────
-  const [showGit, setShowGit] = React.useState(false);
-  const [gitPosition, setGitPosition] = React.useState<PanelPosition>(() => {
-    try { return (localStorage.getItem("pp-git-position") as PanelPosition) ?? "left"; } catch { return "left"; }
-  });
-  const handleGitPositionChange = React.useCallback((pos: PanelPosition) => {
-    setGitPosition(pos);
-    try { localStorage.setItem("pp-git-position", pos); } catch {}
-  }, []);
-
-  // ── Triggers panel state ──────────────────────────────────────────────
-  const [showTriggers, setShowTriggers] = React.useState(false);
-  const [triggersPosition, setTriggersPosition] = React.useState<PanelPosition>(() => {
-    try { return (localStorage.getItem("pp-triggers-position") as PanelPosition) ?? "right"; } catch { return "right"; }
-  });
-  const handleTriggersPositionChange = React.useCallback((pos: PanelPosition) => {
-    setTriggersPosition(pos);
-    try { localStorage.setItem("pp-triggers-position", pos); } catch {}
-  }, []);
   return {
     leftColumnWidth,
     rightColumnWidth,
