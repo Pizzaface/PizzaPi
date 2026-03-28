@@ -233,7 +233,8 @@ function WebhookRow({
     const curlSnippet = [
         `BODY='{"type":"example","data":{}}'`,
         `SECRET="${webhook.secret}"`,
-        `SIG=$(echo -n "$BODY" | openssl dgst -sha256 -hmac "$SECRET" | awk '{print $2}')`,
+        `# Works with both LibreSSL (macOS default) and OpenSSL 3.x`,
+        `SIG=$(echo -n "$BODY" | openssl dgst -sha256 -hmac "$SECRET" | sed 's/^.*= //')`,
         ``,
         `curl -X POST ${fireUrl} \\`,
         `  -H "Content-Type: application/json" \\`,
