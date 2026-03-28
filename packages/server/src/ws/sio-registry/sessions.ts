@@ -58,10 +58,12 @@ import {
     safeJsonParse,
     modelFromHeartbeat,
     emitToRunner,
+    broadcastToSessionViewers,
 } from "./context.js";
 import { broadcastToHub } from "./hub.js";
 import { createLogger } from "@pizzapi/tools";
 import { clearSessionSubscriptions } from "../../sessions/trigger-subscription-store.js";
+import { pushTriggerHistory } from "../../sessions/trigger-store.js";
 
 const log = createLogger("sio-registry");
 
@@ -301,6 +303,23 @@ export async function registerTuiSession(
             // later delink_children hits re-delinking this child incorrectly.
             await removePendingParentDelinkChild(previousParentSessionId, sessionId);
         }
+
+        // Push a synthetic trigger history entry so the parent's TriggersPanel
+        // shows this child immediately (not only after the first real trigger).
+        const linkedTriggerId = `linked_${sessionId.replace(/-/g, "").slice(0, 16)}`;
+        void Promise.resolve(pushTriggerHistory(resolvedParentSessionId, {
+            triggerId: linkedTriggerId,
+            type: "session_linked",
+            source: sessionId,
+            summary: sessionName ?? undefined,
+            payload: {},
+            deliverAs: "followUp",
+            ts: new Date().toISOString(),
+            direction: "inbound",
+        })).catch(() => {});
+        broadcastToSessionViewers(resolvedParentSessionId, "trigger_delivered", {
+            triggerId: linkedTriggerId,
+        });
     }
 
     // Store local socket reference

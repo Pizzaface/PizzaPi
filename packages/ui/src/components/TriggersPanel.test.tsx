@@ -270,7 +270,6 @@ describe("TriggersPanel — grouped layout", () => {
       type: "session_complete",
       source: "child-sess-xyz",
       direction: "inbound",
-      // No response — pending
       ts: new Date(Date.now() - 30_000).toISOString(),
     });
     fetchState.response = { ok: true, body: { triggers: [t2, t1] } };
@@ -280,8 +279,9 @@ describe("TriggersPanel — grouped layout", () => {
       ({ container } = render(<TriggersPanel sessionId="sess-parent" />));
     });
 
-    // Should show session_complete as pending (Awaiting Response)
-    expect(container.textContent).toContain("Awaiting Response");
+    // session_complete is informational, not pending — shows under Linked Sessions
+    expect(container.textContent).toContain("Linked Sessions");
+    expect(container.textContent).toContain("completed");
     // Should show event count
     expect(container.textContent).toContain("2 events");
   });

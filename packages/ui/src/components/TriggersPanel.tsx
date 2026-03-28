@@ -137,7 +137,6 @@ function truncateId(id: string, maxLen = 12): string {
 const RESPONSE_TRIGGER_TYPES = new Set([
   "ask_user_question",
   "plan_review",
-  "session_complete",
   "escalate",
 ]);
 
@@ -181,6 +180,10 @@ function deriveSessionStatus(group: LinkedSessionGroup): {
       return { label: "completed", color: "zinc", icon: <CheckCircle2 className="size-3.5" /> };
     }
     return { label: "completed", color: "emerald", icon: <CheckCircle2 className="size-3.5" /> };
+  }
+
+  if (latest.type === "session_linked") {
+    return { label: "connected", color: "emerald", icon: <Link className="size-3.5" /> };
   }
 
   if (latest.response) {

@@ -12,7 +12,7 @@ import {
     isPendingParentDelinkChild,
     refreshChildSessionsTTL,
 } from "../../sio-state.js";
-import { pushTriggerHistory } from "../../../sessions/trigger-store.js";
+import { pushTriggerHistory, recordTriggerResponse } from "../../../sessions/trigger-store.js";
 import type { RelaySocket } from "./types.js";
 
 export function registerMessagingHandlers(socket: RelaySocket): void {
@@ -294,10 +294,17 @@ export function registerMessagingHandlers(socket: RelaySocket): void {
         // Try local socket first, then verified room delivery for cross-node
         // routing. We only ack success when at least one relay recipient is
         // actually present.
+        // The parent session ID (sender) owns the trigger history entry.
+        const parentSessionId = socket.data.sessionId!;
+
         const targetSocket = getLocalTuiSocket(targetSessionId);
         if (targetSocket?.connected) {
             try {
                 targetSocket.emit("trigger_response" as any, triggerPayload);
+                // Record the response in the parent's trigger history so the
+                // TriggersPanel shows it as responded (not perpetually pending).
+                void recordTriggerResponse(parentSessionId, triggerId, { action, text: response }).catch(() => {});
+                broadcastToSessionViewers(parentSessionId, "trigger_delivered", { triggerId });
                 if (typeof ack === "function") ack({ ok: true });
             } catch {
                 socket.emit("session_message_error", {
@@ -313,6 +320,8 @@ export function registerMessagingHandlers(socket: RelaySocket): void {
             });
             if (typeof ack === "function") ack({ ok: false, error: `Target session ${targetSessionId} is not connected` });
         } else {
+            void recordTriggerResponse(parentSessionId, triggerId, { action, text: response }).catch(() => {});
+            broadcastToSessionViewers(parentSessionId, "trigger_delivered", { triggerId });
             if (typeof ack === "function") ack({ ok: true });
         }
     });

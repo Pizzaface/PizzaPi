@@ -31,11 +31,13 @@ import {
     emitToRelaySession,
     emitToRelaySessionVerified,
     emitToRunner,
+    broadcastToSessionViewers,
 } from "../sio-registry.js";
 import { isChildOfParent } from "../sio-state.js";
 import { getPendingChunkedSnapshot } from "./relay/index.js";
 import { getPersistedRelaySessionSnapshot } from "../../sessions/store.js";
 import { getCachedRelayEvents } from "../../sessions/redis.js";
+import { recordTriggerResponse } from "../../sessions/trigger-store.js";
 import { createLogger } from "@pizzapi/tools";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -619,8 +621,14 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
                 const childSocket = getLocalTuiSocket(targetSessionId);
                 if (childSocket) {
                     childSocket.emit("trigger_response" as string, triggerPayload);
+                    // Record the response in the parent's trigger history so the
+                    // TriggersPanel shows it as responded (not perpetually pending).
+                    void recordTriggerResponse(currentSessionId, triggerId, { action, text: response }).catch(() => {});
+                    broadcastToSessionViewers(currentSessionId, "trigger_delivered", { triggerId });
                     if (typeof ack === "function") ack();
                 } else if (await emitToRelaySessionVerified(targetSessionId, "trigger_response", triggerPayload)) {
+                    void recordTriggerResponse(currentSessionId, triggerId, { action, text: response }).catch(() => {});
+                    broadcastToSessionViewers(currentSessionId, "trigger_delivered", { triggerId });
                     if (typeof ack === "function") ack();
                 } else {
                     socket.emit("trigger_error", { message: `Failed to deliver trigger response to child session ${targetSessionId}`, triggerId });
@@ -638,8 +646,12 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
             const tuiSocket = getLocalTuiSocket(currentSessionId);
             if (tuiSocket) {
                 tuiSocket.emit("trigger_response" as string, triggerPayloadForParent);
+                void recordTriggerResponse(currentSessionId, triggerId, { action, text: response }).catch(() => {});
+                broadcastToSessionViewers(currentSessionId, "trigger_delivered", { triggerId });
                 if (typeof ack === "function") ack();
             } else if (await emitToRelaySessionVerified(currentSessionId, "trigger_response", triggerPayloadForParent)) {
+                void recordTriggerResponse(currentSessionId, triggerId, { action, text: response }).catch(() => {});
+                broadcastToSessionViewers(currentSessionId, "trigger_delivered", { triggerId });
                 if (typeof ack === "function") ack();
             } else {
                 socket.emit("trigger_error", { message: `Failed to deliver trigger response to session ${currentSessionId}`, triggerId });
