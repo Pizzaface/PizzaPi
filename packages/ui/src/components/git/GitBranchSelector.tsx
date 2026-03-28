@@ -6,7 +6,7 @@ import type { GitBranch } from "@/hooks/useGitService";
 interface GitBranchSelectorProps {
     currentBranch: string;
     branches: GitBranch[];
-    onCheckout: (branch: string) => void;
+    onCheckout: (branch: string, isRemote: boolean) => void;
     onOpen: () => void;
     disabled?: boolean;
     isCheckingOut?: boolean;
@@ -71,7 +71,7 @@ export function GitBranchSelector({
             setSearch("");
             return;
         }
-        onCheckout(branch.name);
+        onCheckout(branch.name, branch.isRemote);
         setOpen(false);
         setSearch("");
     };
