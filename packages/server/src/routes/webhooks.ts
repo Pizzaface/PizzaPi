@@ -178,24 +178,25 @@ async function fireWebhookTrigger(
         ts,
     };
 
-    // Store in trigger history
-    await pushTriggerHistory(targetSessionId, {
+    const historyEntry = {
         triggerId,
         type: "webhook",
         source,
         summary: webhookName,
         payload: triggerPayload,
-        deliverAs: "steer",
+        deliverAs: "steer" as const,
         ts,
-        direction: "inbound",
-    });
+        direction: "inbound" as const,
+    };
 
-    // Deliver locally first
+    // Deliver locally first. Write trigger history only after confirmed delivery
+    // so the observability log reflects what was actually received.
     const targetSocket = getLocalTuiSocket(targetSessionId);
     if (targetSocket?.connected) {
         try {
             targetSocket.emit("session_trigger", { trigger });
             log.info(`Webhook trigger ${triggerId} delivered to session ${targetSessionId}`);
+            void Promise.resolve(pushTriggerHistory(targetSessionId, historyEntry)).catch(() => {});
             return Response.json({ ok: true, triggerId });
         } catch (err) {
             log.error(`Failed to deliver webhook trigger ${triggerId}:`, err);
@@ -207,6 +208,7 @@ async function fireWebhookTrigger(
     const delivered = await emitToRelaySessionVerified(targetSessionId, "session_trigger", { trigger });
     if (delivered) {
         log.info(`Webhook trigger ${triggerId} delivered cross-node to session ${targetSessionId}`);
+        void Promise.resolve(pushTriggerHistory(targetSessionId, historyEntry)).catch(() => {});
         return Response.json({ ok: true, triggerId });
     }
 

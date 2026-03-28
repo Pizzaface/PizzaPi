@@ -116,6 +116,7 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
         }
 
         const triggerId = `ext_${randomUUID().replace(/-/g, "").slice(0, 16)}`;
+        const ts = new Date().toISOString();
         const trigger = {
             type: body.type,
             sourceSessionId: `external:${body.source ?? "api"}`,
@@ -125,27 +126,29 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
             deliverAs,
             expectsResponse: body.expectsResponse ?? false,
             triggerId,
-            ts: new Date().toISOString(),
+            ts,
         };
 
-        // Store in trigger history
-        await pushTriggerHistory(sessionId, {
+        const historyEntry = {
             triggerId,
             type: body.type,
             source: body.source ?? "api",
             summary: body.summary,
             payload: body.payload,
             deliverAs,
-            ts: trigger.ts,
-            direction: "inbound",
-        });
+            ts,
+            direction: "inbound" as const,
+        };
 
-        // Deliver to the session via Socket.IO (same path as internal triggers)
+        // Deliver to the session via Socket.IO (same path as internal triggers).
+        // Write trigger history only after confirmed delivery so the history
+        // accurately reflects what the session actually received.
         const targetSocket = getLocalTuiSocket(sessionId);
         if (targetSocket?.connected) {
             try {
                 targetSocket.emit("session_trigger", { trigger });
                 log.info(`External trigger ${triggerId} delivered to session ${sessionId}`);
+                void Promise.resolve(pushTriggerHistory(sessionId, historyEntry)).catch(() => {});
                 return Response.json({ ok: true, triggerId });
             } catch (err) {
                 log.error(`Failed to deliver trigger ${triggerId} to session ${sessionId}:`, err);
@@ -157,6 +160,7 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
         const delivered = await emitToRelaySessionVerified(sessionId, "session_trigger", { trigger });
         if (delivered) {
             log.info(`External trigger ${triggerId} delivered cross-node to session ${sessionId}`);
+            void Promise.resolve(pushTriggerHistory(sessionId, historyEntry)).catch(() => {});
             return Response.json({ ok: true, triggerId });
         }
 
@@ -372,12 +376,14 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
                 ts,
                 direction: "inbound" as const,
             };
-            void Promise.resolve(pushTriggerHistory(targetSessionId, historyEntry)).catch(() => {});
 
+            // Write history only after confirmed delivery so the log reflects
+            // what the session actually received (not optimistically before delivery).
             const localSocket = getLocalTuiSocket(targetSessionId);
             if (localSocket?.connected) {
                 try {
                     localSocket.emit("session_trigger", { trigger: { ...trigger, targetSessionId } });
+                    void Promise.resolve(pushTriggerHistory(targetSessionId, historyEntry)).catch(() => {});
                     delivered++;
                     continue;
                 } catch {
@@ -387,7 +393,10 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
             const crossNode = await emitToRelaySessionVerified(
                 targetSessionId, "session_trigger", { trigger: { ...trigger, targetSessionId } },
             );
-            if (crossNode) delivered++;
+            if (crossNode) {
+                void Promise.resolve(pushTriggerHistory(targetSessionId, historyEntry)).catch(() => {});
+                delivered++;
+            }
         }
 
         log.info(`Broadcast trigger ${triggerId} (type=${body.type}) to ${delivered}/${subscriberIds.length} subscribers on runner ${runnerId}`);

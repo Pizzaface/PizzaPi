@@ -60,8 +60,20 @@ const mockRedisClient = {
         // Simple pipeline: collect ops and exec them
         const ops: Array<() => Promise<unknown>> = [];
         const pipeline = {
+            hSet: (key: string, field: string, value: string) => {
+                ops.push(() => mockRedisClient.hSet(key, field, value));
+                return pipeline;
+            },
+            sAdd: (key: string, member: string) => {
+                ops.push(() => mockRedisClient.sAdd(key, member));
+                return pipeline;
+            },
             sRem: (key: string, member: string) => {
                 ops.push(() => mockRedisClient.sRem(key, member));
+                return pipeline;
+            },
+            expire: (key: string, ttl: number) => {
+                ops.push(() => mockRedisClient.expire(key, ttl));
                 return pipeline;
             },
             del: (key: string) => {
@@ -145,6 +157,29 @@ describe("subscribeSessionToTrigger", () => {
         expect(subs).toHaveLength(2);
         const types = subs.map((s) => s.triggerType).sort();
         expect(types).toEqual(["svc:event-a", "svc:event-b"]);
+    });
+
+    test("rebinding to a different runner removes stale reverse-index from old runner", async () => {
+        // Subscribe via runner-A
+        await subscribeSessionToTrigger("session-1", "runner-A", "svc:event");
+        let subsA = await getSubscribersForTrigger("runner-A", "svc:event");
+        expect(subsA).toContain("session-1");
+
+        // Re-subscribe the same session+type via runner-B (e.g. session migrated runners)
+        await subscribeSessionToTrigger("session-1", "runner-B", "svc:event");
+
+        // runner-A index should no longer contain session-1
+        subsA = await getSubscribersForTrigger("runner-A", "svc:event");
+        expect(subsA).not.toContain("session-1");
+
+        // runner-B index should now contain session-1
+        const subsB = await getSubscribersForTrigger("runner-B", "svc:event");
+        expect(subsB).toContain("session-1");
+
+        // Subscription hash should reflect runner-B
+        const subs = await listSessionSubscriptions("session-1");
+        const match = subs.find((s) => s.triggerType === "svc:event");
+        expect(match?.runnerId).toBe("runner-B");
     });
 });
 

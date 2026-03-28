@@ -84,6 +84,8 @@ async function getClient(): Promise<RedisClient | null> {
 
 /**
  * Subscribe a session to a trigger type from a specific runner.
+ * - Cleans up the old reverse-index entry if the session was previously subscribed
+ *   to the same trigger type via a different runner (rebind case)
  * - Adds `triggerType → runnerId` to the session's subscription hash
  * - Adds `sessionId` to the runner+type reverse index set
  * - Refreshes TTL on both keys
@@ -101,10 +103,20 @@ export async function subscribeSessionToTrigger(
     const indexKey = RUNNER_TYPE_INDEX_KEY(runnerId, triggerType);
 
     try {
-        await redis.hSet(sessionKey, triggerType, runnerId);
-        await redis.expire(sessionKey, ttlSeconds);
-        await redis.sAdd(indexKey, sessionId);
-        await redis.expire(indexKey, ttlSeconds);
+        // If already subscribed via a different runner, remove stale reverse-index entry
+        // before writing the new one to prevent stale broadcasts from the old runner.
+        const prevRunnerId = await redis.hGet(sessionKey, triggerType);
+        if (prevRunnerId && prevRunnerId !== runnerId) {
+            const oldIndexKey = RUNNER_TYPE_INDEX_KEY(prevRunnerId, triggerType);
+            await redis.sRem(oldIndexKey, sessionId);
+        }
+
+        const pipeline = redis.multi();
+        pipeline.hSet(sessionKey, triggerType, runnerId);
+        pipeline.expire(sessionKey, ttlSeconds);
+        pipeline.sAdd(indexKey, sessionId);
+        pipeline.expire(indexKey, ttlSeconds);
+        await pipeline.exec();
     } catch (err) {
         log.warn("Failed to subscribe session to trigger:", err);
     }
