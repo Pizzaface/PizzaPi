@@ -1,8 +1,9 @@
 /**
- * Runners router — runner management, session spawn, skills, files, git.
+ * Runners router — runner management, session spawn, skills, files.
  *
+ * Git operations are handled via the service_message channel (see git-service.ts).
  * This is the largest router. If it exceeds 500 lines, split into sub-modules
- * (runners-core.ts, runners-skills.ts, runners-files.ts, runners-git.ts).
+ * (runners-core.ts, runners-skills.ts, runners-files.ts).
  */
 
 import {
@@ -658,69 +659,12 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
         }
     }
 
-    // ── Git status ─────────────────────────────────────────────────────
-    const gitStatusMatch = url.pathname.match(/^\/api\/runners\/([^/]+)\/git-status$/);
-    if (gitStatusMatch && req.method === "POST") {
-        const identity = await requireSession(req);
-        if (identity instanceof Response) return identity;
-
-        const runnerId = decodeURIComponent(gitStatusMatch[1]);
-        const runner = await getRunnerData(runnerId);
-        if (!runner) return Response.json({ error: "Runner not found" }, { status: 404 });
-        if (runner.userId !== identity.userId) return Response.json({ error: "Forbidden" }, { status: 403 });
-
-        let body: any = {};
-        try { body = await req.json(); } catch { body = {}; }
-
-        const cwd = typeof body.cwd === "string" ? body.cwd : "";
-        if (!cwd) return Response.json({ error: "Missing cwd" }, { status: 400 });
-
-        const gitStatusRoots = parseJsonArray(runner.roots);
-        if (gitStatusRoots.length > 0 && !cwdMatchesRoots(gitStatusRoots, cwd)) {
-            return Response.json({ error: `Runner cannot access cwd: ${cwd}` }, { status: 400 });
-        }
-
-        try {
-            const result = await sendRunnerCommand(runnerId, { type: "git_status", cwd });
-            if (!(result as any).ok) return Response.json({ error: (result as any).message ?? "Failed to get git status" }, { status: 500 });
-            return Response.json(result);
-        } catch (err) {
-            return Response.json({ error: err instanceof Error ? err.message : String(err) }, { status: 502 });
-        }
-    }
-
-    // ── Git diff ───────────────────────────────────────────────────────
-    const gitDiffMatch = url.pathname.match(/^\/api\/runners\/([^/]+)\/git-diff$/);
-    if (gitDiffMatch && req.method === "POST") {
-        const identity = await requireSession(req);
-        if (identity instanceof Response) return identity;
-
-        const runnerId = decodeURIComponent(gitDiffMatch[1]);
-        const runner = await getRunnerData(runnerId);
-        if (!runner) return Response.json({ error: "Runner not found" }, { status: 404 });
-        if (runner.userId !== identity.userId) return Response.json({ error: "Forbidden" }, { status: 403 });
-
-        let body: any = {};
-        try { body = await req.json(); } catch { body = {}; }
-
-        const cwd = typeof body.cwd === "string" ? body.cwd : "";
-        const path = typeof body.path === "string" ? body.path : "";
-        const staged = body.staged === true;
-        if (!cwd || !path) return Response.json({ error: "Missing cwd or path" }, { status: 400 });
-
-        const gitDiffRoots = parseJsonArray(runner.roots);
-        if (gitDiffRoots.length > 0 && !cwdMatchesRoots(gitDiffRoots, cwd)) {
-            return Response.json({ error: `Runner cannot access cwd: ${cwd}` }, { status: 400 });
-        }
-
-        try {
-            const result = await sendRunnerCommand(runnerId, { type: "git_diff", cwd, path, staged });
-            if (!(result as any).ok) return Response.json({ error: (result as any).message ?? "Failed to get diff" }, { status: 500 });
-            return Response.json(result);
-        } catch (err) {
-            return Response.json({ error: err instanceof Error ? err.message : String(err) }, { status: 502 });
-        }
-    }
+    // ── Git ───────────────────────────────────────────────────────────
+    // Git operations (status, diff, branches, checkout, stage, unstage,
+    // commit, push) are handled entirely through the service_message
+    // channel. The viewer sends service_message envelopes with
+    // serviceId="git" which are relayed to the runner's GitService.
+    // No REST routes needed — see git-service.ts on the runner side.
 
     // ── Sandbox ───────────────────────────────────────────────────────
 

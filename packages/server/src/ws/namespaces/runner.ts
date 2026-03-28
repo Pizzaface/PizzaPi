@@ -177,7 +177,7 @@ const pendingRunnerCommands = new Map<string, PendingRunnerCommand>();
  * Returns the runner's file_result payload or throws on timeout.
  *
  * The command object must include a `type` field that maps to the event name
- * (e.g. "list_files", "read_file", "git_status", "git_diff").
+ * (e.g. "list_files", "read_file", "search_files").
  */
 export async function sendRunnerCommand(
     runnerId: string,
@@ -464,7 +464,7 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
             }
         });
 
-        // ── file_result — runner responds to file/git commands ───────────────
+        // ── file_result — runner responds to file explorer commands ────────────
         socket.on("file_result", (data) => {
             const requestId = data.requestId;
             if (requestId) {

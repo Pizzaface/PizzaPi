@@ -382,15 +382,22 @@ describe("runner — RunnerServerToClientEvents payloads", () => {
     expect(typeof p.path).toBe("string");
   });
 
-  test("git_status and git_diff carry cwd", () => {
-    type GitStatusPayload = Parameters<RunnerServerToClientEvents["git_status"]>[0];
-    type GitDiffPayload = Parameters<RunnerServerToClientEvents["git_diff"]>[0];
+  test("git operations use service_message channel (no dedicated events)", () => {
+    // git_status and git_diff were removed from RunnerServerToClientEvents
+    // in favor of the generic service_message channel with serviceId="git".
+    type Events = RunnerServerToClientEvents;
+    type ServiceMsg = Parameters<Events["service_message"]>[0];
 
-    const status: GitStatusPayload = { cwd: "/home/user/project" };
-    const diff: GitDiffPayload = { cwd: "/home/user/project", requestId: "r1" };
+    const envelope: ServiceMsg = {
+      serviceId: "git",
+      type: "git_status",
+      payload: { cwd: "/home/user/project" },
+      requestId: "r1",
+    };
 
-    expect(typeof status.cwd).toBe("string");
-    expect(diff.requestId).toBe("r1");
+    expect(envelope.serviceId).toBe("git");
+    expect(envelope.type).toBe("git_status");
+    expect(envelope.requestId).toBe("r1");
   });
 
   test("sandbox_get_status has optional requestId", () => {
