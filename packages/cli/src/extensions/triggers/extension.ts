@@ -466,7 +466,8 @@ export const triggersExtension: ExtensionFactory = (pi) => {
         description:
             "List trigger types available on this session's runner. " +
             "Shows all triggers declared by runner services that can be subscribed to. " +
-            "Returns type, label, and optional description for each trigger.",
+            "Returns type, label, and optional description for each trigger. " +
+            "Also shows which triggers this session is currently subscribed to.",
         parameters: {
             type: "object",
             properties: {
@@ -484,7 +485,10 @@ export const triggersExtension: ExtensionFactory = (pi) => {
                 return { content: [{ type: "text" as const, text: "Error: Could not determine session ID." }], details: null as any };
             }
 
-            const defs = await getAvailableTriggers(targetId);
+            const [defs, subs] = await Promise.all([
+                getAvailableTriggers(targetId),
+                listTriggerSubscriptions(targetId),
+            ]);
             if (defs.length === 0) {
                 return {
                     content: [{ type: "text" as const, text: "No trigger types available. The runner may not have any services with declared triggers." }],
@@ -492,9 +496,11 @@ export const triggersExtension: ExtensionFactory = (pi) => {
                 };
             }
 
-            const lines = defs.map((d) =>
-                `• ${d.type} — ${d.label}${d.description ? `\n  ${d.description}` : ""}`,
-            );
+            const subscribedTypes = new Set(subs.map((s) => s.triggerType));
+            const lines = defs.map((d) => {
+                const badge = subscribedTypes.has(d.type) ? " ✅ subscribed" : "";
+                return `• ${d.type} — ${d.label}${badge}${d.description ? `\n  ${d.description}` : ""}`;
+            });
             return {
                 content: [{ type: "text" as const, text: `Available triggers (${defs.length}):\n${lines.join("\n")}` }],
                 details: null as any,
@@ -515,7 +521,9 @@ export const triggersExtension: ExtensionFactory = (pi) => {
                 return new Text(theme.fg("muted", preview(text, 60)), 0, 0);
             }
             const count = text.match(/Available triggers \((\d+)\)/)?.[1] ?? "?";
-            return new Text(theme.fg("success", "✓ ") + theme.fg("dim", `${count} trigger(s) available`), 0, 0);
+            const subCount = (text.match(/✅/g) ?? []).length;
+            const subLabel = subCount > 0 ? `, ${subCount} subscribed` : "";
+            return new Text(theme.fg("success", "✓ ") + theme.fg("dim", `${count} trigger(s) available${subLabel}`), 0, 0);
         },
     });
 
@@ -581,61 +589,6 @@ export const triggersExtension: ExtensionFactory = (pi) => {
                 return new Text(theme.fg("error", "✗ ") + theme.fg("muted", preview(text, 60)), 0, 0);
             }
             return new Text(theme.fg("success", "✓ ") + theme.fg("dim", "subscribed"), 0, 0);
-        },
-    });
-
-    // ── list_trigger_subscriptions ────────────────────────────────────────
-    pi.registerTool({
-        name: "list_trigger_subscriptions",
-        label: "List Trigger Subscriptions",
-        description: "List active trigger subscriptions for a session.",
-        parameters: {
-            type: "object",
-            properties: {
-                sessionId: {
-                    type: "string",
-                    description: "Session ID to query. Defaults to the current session if omitted.",
-                },
-            },
-            required: [],
-        } as any,
-        async execute(_toolCallId, rawParams) {
-            const params = rawParams as { sessionId?: string };
-            const targetId = params.sessionId ?? getOwnSessionId() ?? "";
-            if (!targetId) {
-                return { content: [{ type: "text" as const, text: "Error: Could not determine session ID." }], details: null as any };
-            }
-
-            const subs = await listTriggerSubscriptions(targetId);
-            if (subs.length === 0) {
-                return {
-                    content: [{ type: "text" as const, text: "No active trigger subscriptions." }],
-                    details: null as any,
-                };
-            }
-
-            const lines = subs.map((s) => `• ${s.triggerType} (runner: ${s.runnerId})`);
-            return {
-                content: [{ type: "text" as const, text: `Active subscriptions (${subs.length}):\n${lines.join("\n")}` }],
-                details: null as any,
-            };
-        },
-        renderCall: (args: any, theme: any) => {
-            const sid = args.sessionId ? shortId(args.sessionId, 8) : "self";
-            return new Text(
-                theme.fg("accent", "⚡") + " " +
-                theme.fg("muted", "list subscriptions for ") +
-                theme.fg("dim", sid),
-                0, 0,
-            );
-        },
-        renderResult: (result: any, _opts: any, theme: any) => {
-            const text: string = result?.content?.[0]?.text ?? "";
-            if (text.startsWith("Error") || text.startsWith("No active")) {
-                return new Text(theme.fg("muted", preview(text, 60)), 0, 0);
-            }
-            const count = text.match(/Active subscriptions \((\d+)\)/)?.[1] ?? "?";
-            return new Text(theme.fg("success", "✓ ") + theme.fg("dim", `${count} subscription(s)`), 0, 0);
         },
     });
 
