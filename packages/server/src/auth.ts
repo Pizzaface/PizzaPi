@@ -138,6 +138,19 @@ export interface ExtractedAttachmentTable {
     filePath: string;
 }
 
+export interface WebhookTable {
+    id: string;
+    userId: string;
+    name: string;
+    targetSessionId: string | null;
+    secret: string;
+    eventFilter: string | null;
+    source: string;
+    enabled: number;
+    createdAt: string;
+    updatedAt: string;
+}
+
 export interface DB {
     user: UserTable;
     session: SessionTable;
@@ -150,6 +163,7 @@ export interface DB {
     runner_recent_folder: RunnerRecentFolderTable;
     user_hidden_model: UserHiddenModelTable;
     extracted_attachment: ExtractedAttachmentTable;
+    webhook: WebhookTable;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

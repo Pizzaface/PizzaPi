@@ -1,0 +1,446 @@
+/**
+ * Webhooks router — registration, management, and inbound fire endpoint.
+ *
+ * CRUD (all require session-cookie auth):
+ *   POST   /api/webhooks            — create webhook
+ *   GET    /api/webhooks            — list user's webhooks
+ *   GET    /api/webhooks/:id        — get webhook details
+ *   PUT    /api/webhooks/:id        — update webhook
+ *   DELETE /api/webhooks/:id        — delete webhook
+ *
+ * Fire endpoint (no auth cookie — validated via HMAC):
+ *   POST /api/webhooks/:id/fire     — fire trigger into a session
+ *
+ * HMAC validation: SHA-256 of raw request body using webhook.secret.
+ * The caller must send the hex digest in X-Webhook-Signature header.
+ *
+ * GitHub integration: when source="github", X-GitHub-Event is used to map
+ * common events (push, pull_request, issues) to richer trigger payloads.
+ */
+
+import { requireSession } from "../middleware.js";
+import { getSharedSession, getLocalTuiSocket, emitToRelaySessionVerified } from "../ws/sio-registry.js";
+import type { RouteHandler } from "./types.js";
+import { randomUUID } from "crypto";
+import { createHmac, timingSafeEqual } from "crypto";
+import { createLogger } from "@pizzapi/tools";
+import { pushTriggerHistory } from "../sessions/trigger-store.js";
+import {
+    createWebhook,
+    getWebhook,
+    listWebhooksForUser,
+    updateWebhook,
+    deleteWebhook,
+    getMostRecentActiveSessionId,
+} from "../webhooks/store.js";
+
+const log = createLogger("webhooks-api");
+
+// ── HMAC helpers ─────────────────────────────────────────────────────────────
+
+/**
+ * Compute HMAC-SHA256 of body using secret, return hex string.
+ */
+function computeHmac(secret: string, body: Uint8Array | string): string {
+    return createHmac("sha256", secret).update(body).digest("hex");
+}
+
+/**
+ * Timing-safe comparison of two hex strings.
+ */
+function hmacEqual(a: string, b: string): boolean {
+    try {
+        const aBuf = Buffer.from(a, "utf8");
+        const bBuf = Buffer.from(b, "utf8");
+        if (aBuf.length !== bBuf.length) return false;
+        return timingSafeEqual(aBuf, bBuf);
+    } catch {
+        return false;
+    }
+}
+
+// ── GitHub event mapping ──────────────────────────────────────────────────────
+
+interface GitHubTriggerPayload {
+    event: string;
+    action?: string;
+    repository?: string;
+    sender?: string;
+    ref?: string;
+    commit?: string;
+    prNumber?: number;
+    prTitle?: string;
+    issueNumber?: number;
+    issueTitle?: string;
+    raw: Record<string, unknown>;
+}
+
+function mapGitHubEvent(
+    eventType: string,
+    body: Record<string, unknown>,
+): GitHubTriggerPayload {
+    const raw = body;
+    const repo =
+        (body.repository as Record<string, unknown> | undefined)?.full_name as string | undefined;
+    const sender =
+        (body.sender as Record<string, unknown> | undefined)?.login as string | undefined;
+
+    switch (eventType) {
+        case "push": {
+            return {
+                event: "push",
+                repository: repo,
+                sender,
+                ref: body.ref as string | undefined,
+                commit: (body.head_commit as Record<string, unknown> | undefined)
+                    ?.id as string | undefined,
+                raw,
+            };
+        }
+        case "pull_request": {
+            const pr = body.pull_request as Record<string, unknown> | undefined;
+            return {
+                event: "pull_request",
+                action: body.action as string | undefined,
+                repository: repo,
+                sender,
+                prNumber: pr?.number as number | undefined,
+                prTitle: pr?.title as string | undefined,
+                raw,
+            };
+        }
+        case "issues": {
+            const issue = body.issue as Record<string, unknown> | undefined;
+            return {
+                event: "issues",
+                action: body.action as string | undefined,
+                repository: repo,
+                sender,
+                issueNumber: issue?.number as number | undefined,
+                issueTitle: issue?.title as string | undefined,
+                raw,
+            };
+        }
+        default: {
+            return {
+                event: eventType,
+                repository: repo,
+                sender,
+                raw,
+            };
+        }
+    }
+}
+
+// ── Fire logic ────────────────────────────────────────────────────────────────
+
+async function fireWebhookTrigger(
+    webhookId: string,
+    webhookName: string,
+    source: string,
+    targetSessionId: string,
+    userId: string,
+    payload: Record<string, unknown>,
+    githubEvent?: string,
+): Promise<Response> {
+    // Validate the target session and ownership
+    const targetSession = await getSharedSession(targetSessionId);
+    if (!targetSession) {
+        return Response.json(
+            { error: "Target session not found or not connected" },
+            { status: 404 },
+        );
+    }
+    if (targetSession.userId !== userId) {
+        return Response.json(
+            { error: "Target session not found or not connected" },
+            { status: 404 },
+        );
+    }
+
+    const triggerId = `wh_${randomUUID().replace(/-/g, "").slice(0, 16)}`;
+    const ts = new Date().toISOString();
+
+    const triggerPayload: Record<string, unknown> =
+        source === "github" && githubEvent
+            ? (mapGitHubEvent(githubEvent, payload) as unknown as Record<string, unknown>)
+            : payload;
+
+    const trigger = {
+        type: "webhook",
+        sourceSessionId: `external:${source}`,
+        sourceSessionName: `Webhook: ${webhookName}`,
+        targetSessionId,
+        payload: triggerPayload,
+        deliverAs: "steer" as const,
+        expectsResponse: false,
+        triggerId,
+        ts,
+    };
+
+    // Store in trigger history
+    await pushTriggerHistory(targetSessionId, {
+        triggerId,
+        type: "webhook",
+        source,
+        summary: webhookName,
+        payload: triggerPayload,
+        deliverAs: "steer",
+        ts,
+        direction: "inbound",
+    });
+
+    // Deliver locally first
+    const targetSocket = getLocalTuiSocket(targetSessionId);
+    if (targetSocket?.connected) {
+        try {
+            targetSocket.emit("session_trigger", { trigger });
+            log.info(`Webhook trigger ${triggerId} delivered to session ${targetSessionId}`);
+            return Response.json({ ok: true, triggerId });
+        } catch (err) {
+            log.error(`Failed to deliver webhook trigger ${triggerId}:`, err);
+            return Response.json({ error: "Failed to deliver trigger to session" }, { status: 502 });
+        }
+    }
+
+    // Cross-node fallback
+    const delivered = await emitToRelaySessionVerified(targetSessionId, "session_trigger", { trigger });
+    if (delivered) {
+        log.info(`Webhook trigger ${triggerId} delivered cross-node to session ${targetSessionId}`);
+        return Response.json({ ok: true, triggerId });
+    }
+
+    return Response.json(
+        { error: "Session is registered but not currently connected" },
+        { status: 503 },
+    );
+}
+
+// ── Route handler ─────────────────────────────────────────────────────────────
+
+export const handleWebhooksRoute: RouteHandler = async (req, url) => {
+    // ── POST /api/webhooks ─────────────────────────────────────────────────
+    if (url.pathname === "/api/webhooks" && req.method === "POST") {
+        const identity = await requireSession(req);
+        if (identity instanceof Response) return identity;
+
+        let body: Record<string, unknown>;
+        try {
+            body = await req.json() as Record<string, unknown>;
+        } catch {
+            return Response.json({ error: "Invalid JSON body" }, { status: 400 });
+        }
+
+        const name = body.name;
+        const source = body.source;
+        if (!name || typeof name !== "string" || name.trim() === "") {
+            return Response.json({ error: "Missing or invalid 'name' field" }, { status: 400 });
+        }
+        if (!source || typeof source !== "string" || source.trim() === "") {
+            return Response.json({ error: "Missing or invalid 'source' field" }, { status: 400 });
+        }
+
+        // Validate eventFilter if provided
+        let eventFilter: string[] | null = null;
+        if (body.eventFilter !== undefined && body.eventFilter !== null) {
+            if (
+                !Array.isArray(body.eventFilter) ||
+                !(body.eventFilter as unknown[]).every((e) => typeof e === "string")
+            ) {
+                return Response.json(
+                    { error: "'eventFilter' must be an array of strings" },
+                    { status: 400 },
+                );
+            }
+            eventFilter = body.eventFilter as string[];
+        }
+
+        const targetSessionId =
+            body.targetSessionId !== undefined
+                ? (body.targetSessionId as string | null)
+                : null;
+
+        const webhook = await createWebhook({
+            userId: identity.userId,
+            name: name.trim(),
+            targetSessionId: typeof targetSessionId === "string" ? targetSessionId : null,
+            eventFilter,
+            source: source.trim(),
+        });
+
+        return Response.json({ webhook }, { status: 201 });
+    }
+
+    // ── GET /api/webhooks ──────────────────────────────────────────────────
+    if (url.pathname === "/api/webhooks" && req.method === "GET") {
+        const identity = await requireSession(req);
+        if (identity instanceof Response) return identity;
+
+        const webhooks = await listWebhooksForUser(identity.userId);
+        return Response.json({ webhooks });
+    }
+
+    // ── GET /api/webhooks/:id ──────────────────────────────────────────────
+    const idMatch = url.pathname.match(/^\/api\/webhooks\/([^/]+)$/);
+    if (idMatch && req.method === "GET") {
+        const identity = await requireSession(req);
+        if (identity instanceof Response) return identity;
+
+        const webhookId = decodeURIComponent(idMatch[1]);
+        const webhook = await getWebhook(webhookId);
+
+        if (!webhook || webhook.userId !== identity.userId) {
+            return Response.json({ error: "Webhook not found" }, { status: 404 });
+        }
+
+        return Response.json({ webhook });
+    }
+
+    // ── PUT /api/webhooks/:id ──────────────────────────────────────────────
+    const putMatch = url.pathname.match(/^\/api\/webhooks\/([^/]+)$/);
+    if (putMatch && req.method === "PUT") {
+        const identity = await requireSession(req);
+        if (identity instanceof Response) return identity;
+
+        const webhookId = decodeURIComponent(putMatch[1]);
+
+        // Confirm it exists and belongs to this user
+        const existing = await getWebhook(webhookId);
+        if (!existing || existing.userId !== identity.userId) {
+            return Response.json({ error: "Webhook not found" }, { status: 404 });
+        }
+
+        let body: Record<string, unknown>;
+        try {
+            body = await req.json() as Record<string, unknown>;
+        } catch {
+            return Response.json({ error: "Invalid JSON body" }, { status: 400 });
+        }
+
+        // Validate eventFilter if provided
+        let eventFilter: string[] | null | undefined = undefined;
+        if ("eventFilter" in body) {
+            if (body.eventFilter === null) {
+                eventFilter = null;
+            } else if (
+                Array.isArray(body.eventFilter) &&
+                (body.eventFilter as unknown[]).every((e) => typeof e === "string")
+            ) {
+                eventFilter = body.eventFilter as string[];
+            } else {
+                return Response.json(
+                    { error: "'eventFilter' must be an array of strings or null" },
+                    { status: 400 },
+                );
+            }
+        }
+
+        const updates: Record<string, unknown> = {};
+        if (typeof body.name === "string" && body.name.trim()) updates.name = body.name.trim();
+        if (typeof body.source === "string" && body.source.trim()) updates.source = body.source.trim();
+        if ("targetSessionId" in body) updates.targetSessionId = body.targetSessionId ?? null;
+        if (eventFilter !== undefined) updates.eventFilter = eventFilter;
+        if (typeof body.enabled === "boolean") updates.enabled = body.enabled;
+
+        const updated = await updateWebhook(webhookId, identity.userId, updates as any);
+        if (!updated) {
+            return Response.json({ error: "Webhook not found" }, { status: 404 });
+        }
+
+        return Response.json({ webhook: updated });
+    }
+
+    // ── DELETE /api/webhooks/:id ───────────────────────────────────────────
+    const deleteMatch = url.pathname.match(/^\/api\/webhooks\/([^/]+)$/);
+    if (deleteMatch && req.method === "DELETE") {
+        const identity = await requireSession(req);
+        if (identity instanceof Response) return identity;
+
+        const webhookId = decodeURIComponent(deleteMatch[1]);
+        const deleted = await deleteWebhook(webhookId, identity.userId);
+
+        if (!deleted) {
+            return Response.json({ error: "Webhook not found" }, { status: 404 });
+        }
+
+        return Response.json({ ok: true });
+    }
+
+    // ── POST /api/webhooks/:id/fire ────────────────────────────────────────
+    const fireMatch = url.pathname.match(/^\/api\/webhooks\/([^/]+)\/fire$/);
+    if (fireMatch && req.method === "POST") {
+        const webhookId = decodeURIComponent(fireMatch[1]);
+
+        // Load webhook (no auth cookie required — HMAC validates the caller)
+        const webhook = await getWebhook(webhookId);
+        if (!webhook) {
+            return Response.json({ error: "Webhook not found" }, { status: 404 });
+        }
+        if (!webhook.enabled) {
+            return Response.json({ error: "Webhook not found" }, { status: 404 });
+        }
+
+        // Read raw body for HMAC validation
+        let rawBody: ArrayBuffer;
+        try {
+            rawBody = await req.arrayBuffer();
+        } catch {
+            return Response.json({ error: "Failed to read request body" }, { status: 400 });
+        }
+
+        // Validate HMAC signature
+        const signature = req.headers.get("x-webhook-signature");
+        if (!signature) {
+            return Response.json({ error: "Missing X-Webhook-Signature header" }, { status: 401 });
+        }
+
+        const expected = computeHmac(webhook.secret, new Uint8Array(rawBody));
+        if (!hmacEqual(signature, expected)) {
+            log.warn(`Invalid HMAC for webhook ${webhookId}`);
+            return Response.json({ error: "Invalid signature" }, { status: 401 });
+        }
+
+        // Parse body JSON
+        let body: Record<string, unknown>;
+        try {
+            body = JSON.parse(new TextDecoder().decode(rawBody)) as Record<string, unknown>;
+        } catch {
+            return Response.json({ error: "Invalid JSON body" }, { status: 400 });
+        }
+
+        // Check event filter
+        const githubEvent = req.headers.get("x-github-event") ?? undefined;
+        const eventType = githubEvent ?? (body.type as string | undefined) ?? "webhook";
+
+        if (webhook.eventFilter && webhook.eventFilter.length > 0) {
+            if (!webhook.eventFilter.includes(eventType)) {
+                // Event filtered — silently accept but don't fire
+                return Response.json({ ok: true, filtered: true });
+            }
+        }
+
+        // Resolve target session
+        let targetSessionId = webhook.targetSessionId;
+        if (!targetSessionId) {
+            targetSessionId = await getMostRecentActiveSessionId(webhook.userId);
+        }
+        if (!targetSessionId) {
+            return Response.json(
+                { error: "No active session found for this webhook" },
+                { status: 404 },
+            );
+        }
+
+        return fireWebhookTrigger(
+            webhook.id,
+            webhook.name,
+            webhook.source,
+            targetSessionId,
+            webhook.userId,
+            body,
+            githubEvent,
+        );
+    }
+
+    return undefined;
+};
