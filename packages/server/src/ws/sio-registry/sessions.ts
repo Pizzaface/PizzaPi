@@ -731,9 +731,15 @@ export async function endSharedSession(sessionId: string, reason: string = "Sess
 
     // Clean up trigger subscriptions eagerly so reverse-index entries don't
     // outlive the session (best-effort — failures are logged, not thrown).
-    void clearSessionSubscriptions(sessionId).catch((err) => {
-        log.warn("Failed to clear trigger subscriptions for session", sessionId, ":", err);
-    });
+    // Skip on reconnect teardown: "Session reconnected" is called by
+    // registerTuiSession() during normal reconnects and the session
+    // immediately re-registers, so subscriptions must be preserved.
+    // Only clear on true termination paths (session ended, killed, expired).
+    if (reason !== "Session reconnected") {
+        void clearSessionSubscriptions(sessionId).catch((err) => {
+            log.warn("Failed to clear trigger subscriptions for session", sessionId, ":", err);
+        });
+    }
 
     // Delete from Redis
     await deleteSession(sessionId);
