@@ -68,7 +68,7 @@ import {
 } from "@/components/ui/command";
 import { cn } from "@/lib/utils";
 import { PizzaLogo } from "@/components/PizzaLogo";
-import { getSessionEmptyStateUi } from "@/lib/session-empty-state";
+import { getSessionEmptyStateUi, shouldShowSessionTranscript } from "@/lib/session-empty-state";
 import { formatPathTail } from "@/lib/path";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { MultipleChoiceQuestions } from "@/components/ai-elements/multiple-choice";
@@ -88,6 +88,7 @@ import { AtMentionPopover } from "@/components/AtMentionPopover";
 import type { Entry as AtMentionEntry } from "@/hooks/useAtMentionFiles";
 import { McpToggleContext, type McpToggleHandler } from "@/components/session-viewer/McpToggleContext";
 import { isTriggerMessage, renderTriggerCard } from "@/components/session-viewer/cards/InterAgentCards";
+import { type IncompleteTriggerItem, type TriggerHistoryEntry, getIncompleteTriggers } from "@/components/TriggersPanel";
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 
 
@@ -157,6 +158,14 @@ export interface SessionViewerProps {
   isFileExplorerOpen?: boolean;
   /** Whether the git panel is currently open (used for mobile overflow menu state indicator) */
   isGitOpen?: boolean;
+  /** Toggle the triggers panel */
+  onToggleTriggers?: () => void;
+  /** Whether to show the triggers button */
+  showTriggersButton?: boolean;
+  /** Whether the triggers panel is currently open (used for mobile overflow menu state indicator) */
+  isTriggersOpen?: boolean;
+  /** Number of incomplete/active triggers (for badge display) */
+  triggerCount?: number;
   /** Extra buttons to render in the header bar (e.g. service panel toggles) */
   extraHeaderButtons?: React.ReactNode;
   /** Current agent todo list */
@@ -566,12 +575,16 @@ interface HeaderOverflowMenuProps {
   showGitButton?: boolean;
   onToggleGit?: () => void;
   isGitOpen?: boolean;
+  showTriggersButton?: boolean;
+  onToggleTriggers?: () => void;
+  isTriggersOpen?: boolean;
+  triggerCount?: number;
   onDuplicateSession?: () => void;
   messages: RelayMessage[];
   sessionId: string | null;
 }
 
-function HeaderOverflowMenu({ showTerminalButton, onToggleTerminal, isTerminalOpen, showFileExplorerButton, onToggleFileExplorer, isFileExplorerOpen, showGitButton, onToggleGit, isGitOpen, onDuplicateSession, messages, sessionId }: HeaderOverflowMenuProps) {
+function HeaderOverflowMenu({ showTerminalButton, onToggleTerminal, isTerminalOpen, showFileExplorerButton, onToggleFileExplorer, isFileExplorerOpen, showGitButton, onToggleGit, isGitOpen, showTriggersButton, onToggleTriggers, isTriggersOpen, triggerCount, onDuplicateSession, messages, sessionId }: HeaderOverflowMenuProps) {
   const [copyState, setCopyState] = React.useState<"idle" | "copied">("idle");
   const timerRef = React.useRef<ReturnType<typeof setTimeout>>(undefined);
 
@@ -632,7 +645,19 @@ function HeaderOverflowMenu({ showTerminalButton, onToggleTerminal, isTerminalOp
             {isGitOpen && <Check className="size-3 ml-auto text-primary" />}
           </DropdownMenuItem>
         )}
-        {(showTerminalButton || showFileExplorerButton || showGitButton) && <DropdownMenuSeparator />}
+        {showTriggersButton && onToggleTriggers && (
+          <DropdownMenuItem onSelect={onToggleTriggers}>
+            <Zap className="size-3.5 mr-2 shrink-0" />
+            Triggers
+            {(triggerCount ?? 0) > 0 && (
+              <span className="ml-1 flex items-center justify-center min-w-[16px] h-4 rounded-full bg-amber-500 text-[10px] font-bold text-black px-1 leading-none">
+                {triggerCount! > 9 ? "9+" : triggerCount}
+              </span>
+            )}
+            {isTriggersOpen && <Check className="size-3 ml-auto text-primary" />}
+          </DropdownMenuItem>
+        )}
+        {(showTerminalButton || showFileExplorerButton || showGitButton || showTriggersButton) && <DropdownMenuSeparator />}
         <DropdownMenuItem onSelect={handleCopyExport}>
           <Copy className="size-3.5 mr-2 shrink-0" />
           {copyState === "copied" ? "Copied!" : "Copy as Markdown"}
@@ -655,7 +680,7 @@ function HeaderOverflowMenu({ showTerminalButton, onToggleTerminal, isTerminalOp
   );
 }
 
-export function SessionViewer({ sessionId, sessionName, messages, activeModel, activeToolCalls, pendingQuestion, pendingPlan, pluginTrustPrompt, onPluginTrustResponse, availableCommands, resumeSessions, resumeSessionsLoading, onRequestResumeSessions, onSendInput, onExec, onShowModelSelector, agentActive, isCompacting, effortLevel, tokenUsage, lastHeartbeatAt, viewerStatus, retryState, messageQueue, onRemoveQueuedMessage, onEditQueuedMessage, onClearMessageQueue, onToggleTerminal, showTerminalButton, onToggleFileExplorer, showFileExplorerButton, onToggleGit, showGitButton, isTerminalOpen, isFileExplorerOpen, isGitOpen, todoList = [], planModeEnabled, runnerId, sessionCwd, onAppendSystemMessage, onSpawnAgentSession, onTriggerResponse, onQuestionDismiss, onPlanDismiss, onDuplicateSession, runnerInfo, extraHeaderButtons, mcpOAuthPastes, onMcpOAuthPaste, onMcpOAuthPasteDismiss, onMcpServerDisable }: SessionViewerProps) {
+export function SessionViewer({ sessionId, sessionName, messages, activeModel, activeToolCalls, pendingQuestion, pendingPlan, pluginTrustPrompt, onPluginTrustResponse, availableCommands, resumeSessions, resumeSessionsLoading, onRequestResumeSessions, onSendInput, onExec, onShowModelSelector, agentActive, isCompacting, effortLevel, tokenUsage, lastHeartbeatAt, viewerStatus, retryState, messageQueue, onRemoveQueuedMessage, onEditQueuedMessage, onClearMessageQueue, onToggleTerminal, showTerminalButton, onToggleFileExplorer, showFileExplorerButton, onToggleGit, showGitButton, isTerminalOpen, isFileExplorerOpen, isGitOpen, onToggleTriggers, showTriggersButton, isTriggersOpen, triggerCount, todoList = [], planModeEnabled, runnerId, sessionCwd, onAppendSystemMessage, onSpawnAgentSession, onTriggerResponse, onQuestionDismiss, onPlanDismiss, onDuplicateSession, runnerInfo, extraHeaderButtons, mcpOAuthPastes, onMcpOAuthPaste, onMcpOAuthPasteDismiss, onMcpServerDisable }: SessionViewerProps) {
   const [input, setInput] = React.useState("");
   // Per-session draft storage so switching sessions preserves unsent text
   const draftsRef = React.useRef<Map<string, string>>(new Map());
@@ -665,8 +690,11 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
   const [editingQueuedText, setEditingQueuedText] = React.useState("");
   const prevSessionIdRef = React.useRef<string | null>(null);
   const [composerError, setComposerError] = React.useState<string | null>(null);
-  const [showClearDialog, setShowClearDialog] = React.useState(false);
   const [showEndSessionDialog, setShowEndSessionDialog] = React.useState(false);
+  const [incompleteTriggers, setIncompleteTriggers] = React.useState<IncompleteTriggerItem[]>([]);
+  const [showIncompleteTriggerDialog, setShowIncompleteTriggerDialog] = React.useState(false);
+  /** Pending action to run after the user confirms the incomplete triggers dialog. */
+  const pendingTriggerActionRef = React.useRef<(() => void) | null>(null);
   // Delivery mode for messages sent while agent is active: "steer" interrupts, "followUp" waits
   const [deliveryMode, setDeliveryMode] = React.useState<"steer" | "followUp">("followUp");
 
@@ -744,13 +772,13 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
     if (!agentActive || !onExec) return;
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
-      if (showClearDialog || showEndSessionDialog || commandOpen || atMentionOpen) return;
+      if (showEndSessionDialog || showIncompleteTriggerDialog || commandOpen || atMentionOpen) return;
       e.preventDefault();
       onExec({ type: "exec", id: `${Date.now()}-${Math.random().toString(16).slice(2)}`, command: "abort" });
     };
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [agentActive, onExec, showClearDialog, showEndSessionDialog, commandOpen, atMentionOpen]);
+  }, [agentActive, onExec, showEndSessionDialog, showIncompleteTriggerDialog, commandOpen, atMentionOpen]);
 
   // Commands from the CLI that the web UI already handles via executeSlashCommand.
   // These are excluded from the "CLI Commands" group to avoid duplicates.
@@ -793,6 +821,52 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
     return { extensionCommands: ext, skillCommands: skill, promptCommands: prompt };
   }, [availableCommands, webHandledCommands]);
 
+  /** Actually fire the new_session exec command (no confirmation). */
+  const fireNewSession = React.useCallback(() => {
+    if (onExec) {
+      onExec({ type: "exec", id: `${Date.now()}-${Math.random().toString(16).slice(2)}`, command: "new_session" });
+    } else if (onSendInput) {
+      void onSendInput({ text: "/new", files: [] });
+    }
+  }, [onExec, onSendInput]);
+
+  /**
+   * Check for incomplete triggers, then either show a warning or run the action.
+   * Used by both /new and /resume to guard against losing active linked sessions.
+   */
+  const checkTriggersAndRun = React.useCallback(async (action: () => void) => {
+    if (!sessionId) {
+      action();
+      return;
+    }
+    try {
+      const res = await fetch(
+        `/api/sessions/${encodeURIComponent(sessionId)}/triggers?limit=50`,
+        { credentials: "include" },
+      );
+      if (!res.ok) {
+        action();
+        return;
+      }
+      const data = await res.json() as { triggers: TriggerHistoryEntry[] };
+      const incomplete = getIncompleteTriggers(data.triggers ?? []);
+      if (incomplete.length > 0) {
+        pendingTriggerActionRef.current = action;
+        setIncompleteTriggers(incomplete);
+        setShowIncompleteTriggerDialog(true);
+      } else {
+        action();
+      }
+    } catch {
+      action();
+    }
+  }, [sessionId]);
+
+  /** Request /new — checks for incomplete triggers first. */
+  const requestNewSession = React.useCallback(() => {
+    void checkTriggersAndRun(fireNewSession);
+  }, [checkTriggersAndRun, fireNewSession]);
+
   const executeSlashCommand = React.useCallback((text: string): boolean => {
     const trimmed = text.trim();
     if (!trimmed.startsWith("/")) return false;
@@ -803,13 +877,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
     const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 
     if (rawCommand === "new") {
-      if (onExec) {
-        onExec({ type: "exec", id, command: "new_session" });
-      } else if (onSendInput) {
-        // Fallback: older runners/websocket paths may not support exec.
-        // Sending "/new" as a normal input at least triggers the built-in command.
-        void onSendInput({ text: "/new", files: [] });
-      }
+      void requestNewSession();
       setInput("");
       setCommandOpen(false);
       setCommandQuery("");
@@ -1023,11 +1091,14 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
 
     if (rawCommand === "resume") {
       const selected = !args ? resumeSessions?.[0] : undefined;
-      if (selected) {
-        onExec({ type: "exec", id, command: "resume_session", sessionPath: selected.path });
-      } else {
-        onExec({ type: "exec", id, command: "resume_session", query: args || undefined });
-      }
+      const resumeAction = () => {
+        if (selected) {
+          onExec({ type: "exec", id, command: "resume_session", sessionPath: selected.path });
+        } else {
+          onExec({ type: "exec", id, command: "resume_session", query: args || undefined });
+        }
+      };
+      void checkTriggersAndRun(resumeAction);
       setInput("");
       setCommandOpen(false);
       setCommandQuery("");
@@ -1111,7 +1182,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
     }
 
     return false;
-  }, [onExec, onSendInput, resumeSessions, runnerId, onAppendSystemMessage, skillCommands, sessionCwd, onShowModelSelector, isCompacting, sessionId, onSpawnAgentSession, runnerInfo]);
+  }, [onExec, onSendInput, resumeSessions, runnerId, onAppendSystemMessage, skillCommands, sessionCwd, onShowModelSelector, isCompacting, sessionId, onSpawnAgentSession, runnerInfo, requestNewSession, checkTriggersAndRun]);
 
   const handleSubmit = React.useCallback(
     (message: PromptInputMessage) => {
@@ -1764,6 +1835,10 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
               showGitButton={showGitButton}
               onToggleGit={onToggleGit}
               isGitOpen={isGitOpen}
+              showTriggersButton={showTriggersButton}
+              onToggleTriggers={onToggleTriggers}
+              isTriggersOpen={isTriggersOpen}
+              triggerCount={triggerCount}
               onDuplicateSession={onDuplicateSession}
               messages={sortedMessages}
               sessionId={sessionId}
@@ -1798,11 +1873,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                   disabled={!onExec}
                   onClick={() => {
                     if (!onExec) return;
-                    if (window.innerWidth < 640) {
-                      setShowClearDialog(true);
-                    } else {
-                      onExec({ type: "exec", id: `${Date.now()}-${Math.random().toString(16).slice(2)}`, command: "new_session" });
-                    }
+                    void requestNewSession();
                   }}
                   size="icon"
                   type="button"
@@ -1825,27 +1896,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
             title="No session selected"
             description="Open the sidebar and pick a session to get started."
           />
-        ) : visibleMessages.length === 0 ? (
-          (() => {
-            const emptyUi = getSessionEmptyStateUi(viewerStatus);
-            return (
-              <ConversationEmptyState
-                icon={
-                  <span
-                    className={cn(
-                      "inline-flex items-center justify-center h-11 w-11 rounded-full bg-muted/60 border border-border/60",
-                      emptyUi.shouldSpinLogo && "animate-spin motion-reduce:animate-none",
-                    )}
-                  >
-                    <PizzaLogo className="h-7 w-7 sm:h-8 sm:w-8 pointer-events-none cursor-default select-none" />
-                  </span>
-                }
-                title={emptyUi.title}
-                description={emptyUi.description}
-              />
-            );
-          })()
-        ) : (
+        ) : shouldShowSessionTranscript(sessionId, viewerStatus, visibleMessages.length > 0) ? (
           <Conversation key={sessionId} className="overflow-x-hidden">
             <ConversationContent className="w-full gap-0 p-0 py-2">
               <PaginationSentinel hasMore={hasMore} onLoadMore={loadMoreMessages} />
@@ -1863,7 +1914,25 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
             <WideNearBottomStick />
             <ConversationScrollButton />
           </Conversation>
-        )}
+        ) : (() => {
+          const emptyUi = getSessionEmptyStateUi(viewerStatus);
+          return (
+            <ConversationEmptyState
+              icon={
+                <span
+                  className={cn(
+                    "inline-flex items-center justify-center h-11 w-11 rounded-full bg-muted/60 border border-border/60",
+                    emptyUi.shouldSpinLogo && "animate-spin motion-reduce:animate-none",
+                  )}
+                >
+                  <PizzaLogo className="h-7 w-7 sm:h-8 sm:w-8 pointer-events-none cursor-default select-none" />
+                </span>
+              }
+              title={emptyUi.title}
+              description={emptyUi.description}
+            />
+          );
+        })()}
       </div>
 
       <div className="border-t border-border bg-background px-3 py-2 pp-safe-bottom">
@@ -2165,11 +2234,14 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                           value={session.path}
                           onSelect={() => {
                             if (onExec) {
-                              onExec({
-                                type: "exec",
-                                id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
-                                command: "resume_session",
-                                sessionPath: session.path,
+                              const path = session.path;
+                              void checkTriggersAndRun(() => {
+                                onExec({
+                                  type: "exec",
+                                  id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+                                  command: "resume_session",
+                                  sessionPath: path,
+                                });
                               });
                             }
                             setInput("");
@@ -2683,7 +2755,10 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                         const highlighted = resumeCandidates[commandHighlightedIndex];
                         if (highlighted && onExec) {
                           event.preventDefault();
-                          onExec({ type: "exec", id: `${Date.now()}-${Math.random().toString(16).slice(2)}`, command: "resume_session", sessionPath: highlighted.path });
+                          const path = highlighted.path;
+                          void checkTriggersAndRun(() => {
+                            onExec({ type: "exec", id: `${Date.now()}-${Math.random().toString(16).slice(2)}`, command: "resume_session", sessionPath: path });
+                          });
                           setInput("");
                           setCommandQuery("");
                           setCommandOpen(false);
@@ -2890,28 +2965,43 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
         </PromptInput>
       </div>
 
-      {/* Clear confirmation dialog — shown on mobile only */}
-      <Dialog open={showClearDialog} onOpenChange={setShowClearDialog}>
-        <DialogContent showCloseButton={false} className="max-w-sm">
+      {/* Incomplete triggers warning — shown before /new when linked sessions are active */}
+      <Dialog open={showIncompleteTriggerDialog} onOpenChange={setShowIncompleteTriggerDialog}>
+        <DialogContent showCloseButton={false} className="max-w-md">
           <DialogHeader>
-            <DialogTitle>Start a new conversation?</DialogTitle>
+            <DialogTitle className="flex items-center gap-2">
+              <AlertTriangleIcon className="size-4 text-amber-400" />
+              Active linked sessions
+            </DialogTitle>
             <DialogDescription>
-              This will clear the current conversation and start fresh.
+              Starting a new conversation will disconnect these linked sessions. Their triggers will be lost.
             </DialogDescription>
           </DialogHeader>
+          <div className="flex flex-col gap-1.5 max-h-48 overflow-y-auto py-1">
+            {incompleteTriggers.map((item) => (
+              <div key={item.source} className="flex items-start gap-2 rounded-md border border-border/50 bg-muted/30 px-3 py-2">
+                <div className="flex-1 min-w-0">
+                  <span className="text-sm font-medium text-foreground truncate block">{item.label}</span>
+                  <span className="text-xs text-muted-foreground">{item.reason}</span>
+                </div>
+              </div>
+            ))}
+          </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setShowClearDialog(false)}>
+            <Button variant="outline" onClick={() => { setShowIncompleteTriggerDialog(false); pendingTriggerActionRef.current = null; }}>
               Cancel
             </Button>
             <Button
+              variant="destructive"
               onClick={() => {
-                setShowClearDialog(false);
-                if (onExec) {
-                  onExec({ type: "exec", id: `${Date.now()}-${Math.random().toString(16).slice(2)}`, command: "new_session" });
-                }
+                setShowIncompleteTriggerDialog(false);
+                setIncompleteTriggers([]);
+                const action = pendingTriggerActionRef.current;
+                pendingTriggerActionRef.current = null;
+                action?.();
               }}
             >
-              Clear
+              Clear anyway
             </Button>
           </DialogFooter>
         </DialogContent>

@@ -54,7 +54,8 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { X, TerminalIcon, FolderTree, GitBranch, EyeOff } from "lucide-react";
+import { X, TerminalIcon, FolderTree, GitBranch, EyeOff, Zap } from "lucide-react";
+import { TriggersPanel } from "@/components/TriggersPanel";
 import type { ProviderUsageMap } from "@/components/UsageIndicator";
 import { TerminalManager } from "@/components/TerminalManager";
 import { FileExplorer } from "@/components/FileExplorer";
@@ -102,6 +103,7 @@ import { parsePendingQuestionDisplayMode, parsePendingQuestions, type QuestionDi
 import type { TodoItem, TokenUsage, ConfiguredModelInfo, ResumeSessionOption, QueuedMessage, SessionUiCacheEntry } from "@/lib/types";
 import { metaEventToStatePatch, type MetaStatePatch } from "@/lib/meta-state-apply";
 import { usePanelLayout } from "@/hooks/usePanelLayout";
+import { useTriggerCount } from "@/hooks/useTriggerCount";
 import { useMobileSidebar } from "@/hooks/useMobileSidebar";
 import {
   toRelayMessage,
@@ -425,6 +427,8 @@ export function App() {
     handleFilesPositionChange,
     showGit, setShowGit,
     gitPosition, handleGitPositionChange,
+    showTriggers, setShowTriggers,
+    triggersPosition, handleTriggersPositionChange,
   } = panelLayout;
 
   const [newSessionOpen, setNewSessionOpen] = React.useState(false);
@@ -1975,6 +1979,14 @@ export function App() {
           sessionName: null,
           agentActive: false,
         });
+        // Clear trigger history so the Triggers panel starts fresh
+        const sid = activeSessionRef.current;
+        if (sid) {
+          void fetch(`/api/sessions/${encodeURIComponent(sid)}/triggers`, {
+            method: "DELETE",
+            credentials: "include",
+          }).catch(() => {});
+        }
         setViewerStatus("New session started");
         return;
       }
@@ -3698,7 +3710,8 @@ export function App() {
   }, [activeSessionId, activeSessionInfo?.runnerId, liveSessions]);
 
   // Runner service panels — dynamically discovered
-  const { services: availableServices, panels: dynamicPanels } = useRunnerServices(viewerSocket);
+  const { services: availableServices, panels: dynamicPanels, triggerDefs: runnerTriggerDefs } = useRunnerServices(viewerSocket);
+  const triggerCount = useTriggerCount(activeSessionId, viewerSocket);
   const { activePanelIds: activeServicePanels, togglePanel: toggleServicePanel, closePanelById: closeServicePanelById, closeAllPanels: closeAllServicePanels, getPanelPosition: getServicePanelPosition, setPanelPosition: setServicePanelPosition, setEphemeralPanelPosition: setEphemeralServicePanelPosition } = useServicePanelState();
 
   // Auto-open Tunnel panel when a non-pinned tunnel is registered.
@@ -3803,6 +3816,17 @@ export function App() {
     ),
   } : null, [showGit, activeSessionInfo?.runnerId, activeSessionInfo?.cwd, startPanelDragWith, handleGitPositionChange]);
 
+  const triggersPanelTab = React.useMemo<CombinedPanelTab | null>(() => (showTriggers && activeSessionId) ? {
+    id: "triggers",
+    label: "Triggers",
+    icon: <Zap className="size-3.5" />,
+    onClose: () => setShowTriggers(false),
+    onDragStart: (e) => startPanelDragWith(e, handleTriggersPositionChange),
+    content: (
+      <TriggersPanel sessionId={activeSessionId} triggerDefs={runnerTriggerDefs} viewerSocket={viewerSocket} />
+    ),
+  } : null, [showTriggers, activeSessionId, runnerTriggerDefs, viewerSocket, startPanelDragWith, handleTriggersPositionChange, setShowTriggers]);
+
   const servicePanelTabs = React.useMemo<CombinedPanelTab[]>(() => {
     // Use tunnelSessionId (runner-stable) instead of activeSessionId so
     // iframe service panels don't reload on same-runner session switches.
@@ -3846,26 +3870,28 @@ export function App() {
     if (terminalPanelTab) groups[terminalPosition].push(terminalPanelTab);
     if (filesPanelTab) groups[filesPosition].push(filesPanelTab);
     if (gitPanelTab) groups[gitPosition].push(gitPanelTab);
+    if (triggersPanelTab) groups[triggersPosition].push(triggersPanelTab);
     for (const tab of servicePanelTabs) groups[getServicePanelPosition(tab.id)].push(tab);
     return groups;
-  }, [terminalPanelTab, terminalPosition, filesPanelTab, filesPosition, gitPanelTab, gitPosition, servicePanelTabs, getServicePanelPosition]);
+  }, [terminalPanelTab, terminalPosition, filesPanelTab, filesPosition, gitPanelTab, gitPosition, triggersPanelTab, triggersPosition, servicePanelTabs, getServicePanelPosition]);
 
   const handleGroupPositionChange = React.useCallback((tabIds: string[], pos: import("@/hooks/usePanelLayout").PanelPosition) => {
     if (tabIds.includes("terminal")) handleTerminalPositionChange(pos);
     if (tabIds.includes("files")) handleFilesPositionChange(pos);
     if (tabIds.includes("git")) handleGitPositionChange(pos);
+    if (tabIds.includes("triggers")) handleTriggersPositionChange(pos);
     for (const id of activeServicePanels) {
       if (tabIds.includes(id)) setServicePanelPosition(id, pos);
     }
-  }, [handleTerminalPositionChange, handleFilesPositionChange, handleGitPositionChange, activeServicePanels, setServicePanelPosition]);
+  }, [handleTerminalPositionChange, handleFilesPositionChange, handleGitPositionChange, handleTriggersPositionChange, activeServicePanels, setServicePanelPosition]);
 
   const handleGroupDragStart = React.useCallback((tabIds: string[]) => (e: React.PointerEvent) => {
     startPanelDragWith(e, (pos) => handleGroupPositionChange(tabIds, pos));
   }, [startPanelDragWith, handleGroupPositionChange]);
 
   const mobilePanelTabs = React.useMemo(() => {
-    return [terminalPanelTab, filesPanelTab, gitPanelTab, ...servicePanelTabs].filter(Boolean) as CombinedPanelTab[];
-  }, [terminalPanelTab, filesPanelTab, gitPanelTab, servicePanelTabs]);
+    return [terminalPanelTab, filesPanelTab, gitPanelTab, triggersPanelTab, ...servicePanelTabs].filter(Boolean) as CombinedPanelTab[];
+  }, [terminalPanelTab, filesPanelTab, gitPanelTab, triggersPanelTab, servicePanelTabs]);
 
   const resolveActiveTabId = React.useCallback((tabs: CombinedPanelTab[]) => {
     return resolveActiveTabIdFromIds(tabs.map((t) => t.id), combinedActiveTab);
@@ -4207,13 +4233,41 @@ export function App() {
                       onToggleGit={() => setShowGit((v) => !v)}
                       showGitButton={!!activeSessionInfo?.runnerId && !!activeSessionInfo?.cwd}
                       isGitOpen={showGit}
+                      onToggleTriggers={() => setShowTriggers((v) => !v)}
+                      showTriggersButton={!!activeSessionId}
+                      isTriggersOpen={showTriggers}
+                      triggerCount={triggerCount}
                       extraHeaderButtons={
-                        <ServicePanelButtons
-                          availableServices={availableServices}
-                          dynamicPanels={dynamicPanels}
-                          activePanelIds={activeServicePanels}
-                          onTogglePanel={handleToggleServicePanel}
-                        />
+                        <>
+                          {activeSessionId && (
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <Button
+                                  className="hidden md:inline-flex h-7 w-7 relative"
+                                  onClick={() => setShowTriggers((v) => !v)}
+                                  size="icon"
+                                  type="button"
+                                  variant={showTriggers ? "default" : "outline"}
+                                  aria-label="Toggle triggers panel"
+                                >
+                                  <Zap className="size-3.5" />
+                                  {triggerCount > 0 && (
+                                    <span className="absolute -top-1 -right-1 flex items-center justify-center min-w-[16px] h-4 rounded-full bg-amber-500 text-[10px] font-bold text-black px-1 leading-none">
+                                      {triggerCount > 9 ? "9+" : triggerCount}
+                                    </span>
+                                  )}
+                                </Button>
+                              </TooltipTrigger>
+                              <TooltipContent>Triggers</TooltipContent>
+                            </Tooltip>
+                          )}
+                          <ServicePanelButtons
+                            availableServices={availableServices}
+                            dynamicPanels={dynamicPanels}
+                            activePanelIds={activeServicePanels}
+                            onTogglePanel={handleToggleServicePanel}
+                          />
+                        </>
                       }
                       todoList={todoList}
                       planModeEnabled={planModeEnabled}

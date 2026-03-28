@@ -15,6 +15,21 @@ export function isSessionHydrating(viewerStatus: string | null | undefined): boo
 }
 
 /**
+ * Returns true when the transcript should be shown to the user.
+ *
+ * Hydrating sessions intentionally hide cached transcript content so a fast
+ * session switch never flashes the previous session's messages while waiting
+ * for the fresh snapshot.
+ */
+export function shouldShowSessionTranscript(
+  sessionId: string | null | undefined,
+  viewerStatus: string | null | undefined,
+  hasVisibleMessages: boolean,
+): boolean {
+  return !!sessionId && !isSessionHydrating(viewerStatus) && hasVisibleMessages;
+}
+
+/**
  * Copy + animation state for session-specific empty states.
  */
 export function getSessionEmptyStateUi(viewerStatus: string | null | undefined): SessionEmptyStateUi {

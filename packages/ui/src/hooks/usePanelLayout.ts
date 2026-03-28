@@ -64,6 +64,12 @@ export interface PanelLayoutState {
   setShowGit: React.Dispatch<React.SetStateAction<boolean>>;
   gitPosition: PanelPosition;
   handleGitPositionChange: (pos: PanelPosition) => void;
+
+  // ── Triggers panel ──────────────────────────────────────────────────────
+  showTriggers: boolean;
+  setShowTriggers: React.Dispatch<React.SetStateAction<boolean>>;
+  triggersPosition: PanelPosition;
+  handleTriggersPositionChange: (pos: PanelPosition) => void;
 }
 
 /**
@@ -390,6 +396,16 @@ export function usePanelLayout(activeSessionId: string | null): PanelLayoutState
     try { localStorage.setItem("pp-git-position", pos); } catch {}
   }, []);
 
+  // ── Triggers panel state ──────────────────────────────────────────────
+  const [showTriggers, setShowTriggers] = React.useState(false);
+  const [triggersPosition, setTriggersPosition] = React.useState<PanelPosition>(() => {
+    try { return (localStorage.getItem("pp-triggers-position") as PanelPosition) ?? "right"; } catch { return "right"; }
+  });
+  const handleTriggersPositionChange = React.useCallback((pos: PanelPosition) => {
+    setTriggersPosition(pos);
+    try { localStorage.setItem("pp-triggers-position", pos); } catch {}
+  }, []);
+
   return {
     showTerminal,
     setShowTerminal,
@@ -434,5 +450,9 @@ export function usePanelLayout(activeSessionId: string | null): PanelLayoutState
     setShowGit,
     gitPosition,
     handleGitPositionChange,
+    showTriggers,
+    setShowTriggers,
+    triggersPosition,
+    handleTriggersPositionChange,
   };
 }

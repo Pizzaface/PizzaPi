@@ -5,12 +5,14 @@ import {
     getSharedSession,
     getLocalTuiSocket,
     emitToRelaySessionVerified,
+    broadcastToSessionViewers,
 } from "../../sio-registry.js";
 import {
     isChildOfParent,
     isPendingParentDelinkChild,
     refreshChildSessionsTTL,
 } from "../../sio-state.js";
+import { pushTriggerHistory, recordTriggerResponse } from "../../../sessions/trigger-store.js";
 import type { RelaySocket } from "./types.js";
 
 export function registerMessagingHandlers(socket: RelaySocket): void {
@@ -194,22 +196,46 @@ export function registerMessagingHandlers(socket: RelaySocket): void {
             trigger.sourceSessionId = sessionId;
         }
 
+        let delivered = false;
         const targetSocket = getLocalTuiSocket(targetSessionId);
         if (targetSocket?.connected) {
             try {
                 targetSocket.emit("session_trigger" as any, { trigger });
+                delivered = true;
             } catch {
                 socket.emit("session_message_error", {
                     targetSessionId,
                     error: "Failed to deliver trigger to target session",
                 });
             }
-        } else if (!await emitToRelaySessionVerified(targetSessionId, "session_trigger", { trigger })) {
+        } else if (await emitToRelaySessionVerified(targetSessionId, "session_trigger", { trigger })) {
+            delivered = true;
+        } else {
             // Cross-node fallback: target TUI socket is on a different server node.
             // emitToRelaySessionVerified returns false when no relay recipient is present.
             socket.emit("session_message_error", {
                 targetSessionId,
                 error: `Target session ${targetSessionId} is not connected`,
+            });
+        }
+
+        // Record in trigger history so the history API and linked-sessions
+        // derivation have data to work with. Also poke viewers so the
+        // TriggersPanel can refresh immediately instead of waiting for the
+        // next 10s poll cycle.
+        if (delivered) {
+            void Promise.resolve(pushTriggerHistory(targetSessionId, {
+                triggerId: trigger.triggerId,
+                type: trigger.type ?? "session_trigger",
+                source: trigger.sourceSessionId ?? sessionId,
+                summary: trigger.sourceSessionName,
+                payload: trigger.payload ?? {},
+                deliverAs: trigger.deliverAs ?? "steer",
+                ts: trigger.ts ?? new Date().toISOString(),
+                direction: "inbound",
+            })).catch(() => {});
+            broadcastToSessionViewers(targetSessionId, "trigger_delivered", {
+                triggerId: trigger.triggerId,
             });
         }
     });
@@ -268,10 +294,17 @@ export function registerMessagingHandlers(socket: RelaySocket): void {
         // Try local socket first, then verified room delivery for cross-node
         // routing. We only ack success when at least one relay recipient is
         // actually present.
+        // The parent session ID (sender) owns the trigger history entry.
+        const parentSessionId = socket.data.sessionId!;
+
         const targetSocket = getLocalTuiSocket(targetSessionId);
         if (targetSocket?.connected) {
             try {
                 targetSocket.emit("trigger_response" as any, triggerPayload);
+                // Record the response in the parent's trigger history so the
+                // TriggersPanel shows it as responded (not perpetually pending).
+                void recordTriggerResponse(parentSessionId, triggerId, { action, text: response }).catch(() => {});
+                broadcastToSessionViewers(parentSessionId, "trigger_delivered", { triggerId });
                 if (typeof ack === "function") ack({ ok: true });
             } catch {
                 socket.emit("session_message_error", {
@@ -287,7 +320,48 @@ export function registerMessagingHandlers(socket: RelaySocket): void {
             });
             if (typeof ack === "function") ack({ ok: false, error: `Target session ${targetSessionId} is not connected` });
         } else {
+            void recordTriggerResponse(parentSessionId, triggerId, { action, text: response }).catch(() => {});
+            broadcastToSessionViewers(parentSessionId, "trigger_delivered", { triggerId });
             if (typeof ack === "function") ack({ ok: true });
         }
+    });
+
+    // ── trigger_status_update — ephemeral progress updates for triggers ──
+    // A child session can push status text for a trigger it previously sent
+    // to its parent. This is NOT stored in trigger history — it's a
+    // real-time-only update broadcast to the parent's viewers so the
+    // TriggersPanel can show live progress (e.g. "Working on step 3/7").
+    socket.on("trigger_status_update" as any, async (data: {
+        token: string;
+        triggerId: string;
+        targetSessionId: string;
+        statusText: string;
+    }) => {
+        const sessionId = socket.data.sessionId;
+        if (!sessionId || data?.token !== socket.data.token) {
+            socket.emit("error", { message: "Invalid token" });
+            return;
+        }
+
+        const { triggerId, targetSessionId, statusText } = data ?? {};
+        if (!triggerId || !targetSessionId || typeof statusText !== "string") {
+            socket.emit("error", { message: "trigger_status_update requires triggerId, targetSessionId, statusText" });
+            return;
+        }
+
+        // Validate same-user ownership
+        const senderSession = await getSharedSession(sessionId);
+        const targetSession = await getSharedSession(targetSessionId);
+        if (!senderSession?.userId || !targetSession?.userId || senderSession.userId !== targetSession.userId) {
+            return; // silently drop — not critical
+        }
+
+        // Broadcast to viewers of the target (parent) session
+        broadcastToSessionViewers(targetSessionId, "trigger_status_update", {
+            triggerId,
+            sourceSessionId: sessionId,
+            statusText,
+            ts: new Date().toISOString(),
+        });
     });
 }
