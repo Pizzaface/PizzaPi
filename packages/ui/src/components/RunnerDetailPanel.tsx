@@ -414,7 +414,7 @@ export function RunnerDetailPanel({
             tabContent = <HooksList hooks={runner.hooks} />;
             break;
         case "webhooks":
-            tabContent = <WebhooksManager bare />;
+            tabContent = <WebhooksManager bare runnerId={runner.runnerId} />;
             break;
         case "usage":
             tabContent = (

@@ -1,5 +1,6 @@
 import * as React from "react";
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
@@ -13,6 +14,8 @@ import {
     TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
+import { formatPathTail } from "@/lib/path";
+import { filterFolders } from "@/lib/filterFolders";
 import {
     Webhook as WebhookIcon,
     Plus,
@@ -24,6 +27,7 @@ import {
     FolderOpen,
     Filter,
     MessageSquare,
+    Loader2,
 } from "lucide-react";
 
 // ---------------------------------------------------------------------------
@@ -392,12 +396,22 @@ function WebhookRow({
 }
 
 // ---------------------------------------------------------------------------
+// Recent-folder picker constants
+// ---------------------------------------------------------------------------
+
+const FOLDER_ROW_HEIGHT = 36;
+const FOLDER_OVERSCAN = 8;
+const FOLDER_LIST_MAX_HEIGHT = 200;
+
+// ---------------------------------------------------------------------------
 // CreateWebhookForm
 // ---------------------------------------------------------------------------
 
 function CreateWebhookForm({
+    runnerId,
     onCreated,
 }: {
+    runnerId?: string | null;
     onCreated: (webhook: WebhookData) => void;
 }) {
     const [open, setOpen] = useState(false);
@@ -408,6 +422,44 @@ function CreateWebhookForm({
     const [eventFilter, setEventFilter] = useState("");
     const [creating, setCreating] = useState(false);
     const [error, setError] = useState<string | null>(null);
+
+    // ── Recent folders ──────────────────────────────────────────────────
+    const [recentFolders, setRecentFolders] = useState<string[]>([]);
+    const [recentFoldersLoading, setRecentFoldersLoading] = useState(false);
+
+    useEffect(() => {
+        if (!open || !runnerId) return;
+        let cancelled = false;
+        setRecentFoldersLoading(true);
+        fetch(`/api/runners/${encodeURIComponent(runnerId)}/recent-folders`, {
+            credentials: "include",
+        })
+            .then((res) => {
+                if (!res.ok) throw new Error();
+                return res.json();
+            })
+            .then((body: any) => {
+                if (!cancelled) {
+                    setRecentFolders(Array.isArray(body?.folders) ? body.folders : []);
+                }
+            })
+            .catch(() => { /* silent */ })
+            .finally(() => { if (!cancelled) setRecentFoldersLoading(false); });
+        return () => { cancelled = true; };
+    }, [open, runnerId]);
+
+    const filteredFolders = useMemo(
+        () => filterFolders(recentFolders, cwd),
+        [recentFolders, cwd],
+    );
+
+    const folderListRef = useRef<HTMLDivElement>(null);
+    const virtualizer = useVirtualizer({
+        count: filteredFolders.length,
+        getScrollElement: () => folderListRef.current,
+        estimateSize: () => FOLDER_ROW_HEIGHT,
+        overscan: FOLDER_OVERSCAN,
+    });
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
@@ -491,8 +543,8 @@ function CreateWebhookForm({
                 </div>
             </div>
 
-            {/* Project */}
-            <div className="space-y-1">
+            {/* Project / cwd */}
+            <div className="space-y-1.5">
                 <label className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">
                     Project{" "}
                     <span className="font-normal normal-case">(working directory for new sessions)</span>
@@ -503,6 +555,83 @@ function CreateWebhookForm({
                     placeholder="/path/to/project"
                     className="h-8 text-xs font-mono"
                 />
+
+                {/* Recent folders list */}
+                {recentFoldersLoading && (
+                    <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
+                        <Loader2 className="h-2.5 w-2.5 animate-spin" />
+                        Loading recent projects…
+                    </div>
+                )}
+                {!recentFoldersLoading && recentFolders.length > 0 && (
+                    <div className="flex flex-col gap-1">
+                        <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide">
+                            Recent projects
+                            {cwd.trim() && filteredFolders.length !== recentFolders.length && (
+                                <span className="normal-case tracking-normal ml-1 font-normal">
+                                    ({filteredFolders.length} of {recentFolders.length})
+                                </span>
+                            )}
+                        </p>
+                        <div
+                            ref={folderListRef}
+                            style={{ maxHeight: FOLDER_LIST_MAX_HEIGHT, overflowY: "auto" }}
+                            className="rounded-md border border-border"
+                        >
+                            {filteredFolders.length === 0 ? (
+                                <p className="px-3 py-2 text-[10px] text-muted-foreground">
+                                    No matches for &ldquo;{cwd}&rdquo;.
+                                </p>
+                            ) : (
+                                <div
+                                    style={{
+                                        height: virtualizer.getTotalSize(),
+                                        position: "relative",
+                                    }}
+                                >
+                                    {virtualizer.getVirtualItems().map((item) => {
+                                        const folder = filteredFolders[item.index];
+                                        const basename =
+                                            folder.split("/").filter(Boolean).pop() || folder;
+                                        const tail = formatPathTail(folder, 2);
+                                        const isSelected = cwd === folder;
+                                        return (
+                                            <button
+                                                key={folder}
+                                                type="button"
+                                                onClick={() => setCwd(folder)}
+                                                title={folder}
+                                                style={{
+                                                    position: "absolute",
+                                                    top: item.start,
+                                                    left: 0,
+                                                    right: 0,
+                                                    height: FOLDER_ROW_HEIGHT,
+                                                }}
+                                                className={cn(
+                                                    "flex items-center gap-2 px-2 text-left w-full",
+                                                    isSelected
+                                                        ? "bg-accent text-accent-foreground"
+                                                        : "hover:bg-muted",
+                                                )}
+                                            >
+                                                <FolderOpen className="h-3 w-3 flex-shrink-0 opacity-60" />
+                                                <span className="text-xs font-mono truncate">
+                                                    {basename}
+                                                </span>
+                                                {tail !== basename && (
+                                                    <span className="text-[10px] text-muted-foreground font-mono truncate">
+                                                        {tail}
+                                                    </span>
+                                                )}
+                                            </button>
+                                        );
+                                    })}
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                )}
             </div>
 
             {/* Prompt */}
@@ -570,7 +699,7 @@ function CreateWebhookForm({
 // WebhooksManager
 // ---------------------------------------------------------------------------
 
-export function WebhooksManager({ bare }: { bare?: boolean }) {
+export function WebhooksManager({ bare, runnerId }: { bare?: boolean; runnerId?: string | null }) {
     const [webhooks, setWebhooks] = useState<WebhookData[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
@@ -642,7 +771,7 @@ export function WebhooksManager({ bare }: { bare?: boolean }) {
             )}
 
             {/* Create form */}
-            <CreateWebhookForm onCreated={handleCreated} />
+            <CreateWebhookForm runnerId={runnerId} onCreated={handleCreated} />
 
             {/* Error */}
             {error && <p className="text-sm text-destructive">{error}</p>}
