@@ -1,7 +1,8 @@
 import * as React from "react";
 import type { BundledLanguage } from "shiki";
 
-import { DiffView } from "@/components/ai-elements/diff-view";
+import { DiffView, MultiDiffView } from "@/components/ai-elements/diff-view";
+import type { EditPair } from "@/components/ai-elements/diff-view";
 import {
   StatusBadge,
   type ToolPart,
@@ -566,8 +567,31 @@ export function renderGroupedToolExecution(
             ? contentObj.newText
             : null;
 
+    // Extract edits[] array for multi-edit mode
+    const editsArray: EditPair[] | null = (() => {
+      const raw = inputArgs.edits;
+      if (!Array.isArray(raw) || raw.length === 0) return null;
+      const pairs: EditPair[] = [];
+      for (const entry of raw) {
+        if (!entry || typeof entry !== "object") continue;
+        const e = entry as Record<string, unknown>;
+        const eOld =
+          typeof e.old_string === "string" ? e.old_string :
+          typeof e.oldText === "string" ? e.oldText : null;
+        const eNew =
+          typeof e.new_string === "string" ? e.new_string :
+          typeof e.newText === "string" ? e.newText : null;
+        if (eOld !== null && eNew !== null) {
+          pairs.push({ oldText: eOld, newText: eNew });
+        }
+      }
+      return pairs.length > 0 ? pairs : null;
+    })();
+
     if (editPath && oldText !== null && newText !== null) {
       card = <DiffView path={editPath} oldText={oldText} newText={newText} />;
+    } else if (editPath && editsArray) {
+      card = <MultiDiffView path={editPath} edits={editsArray} />;
     } else {
       const pendingPath = editPath ?? "file";
       const pendingName = pendingPath.split(/[\\/]/).filter(Boolean).pop() ?? "file";
