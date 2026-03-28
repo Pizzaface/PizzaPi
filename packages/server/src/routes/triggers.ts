@@ -7,11 +7,25 @@
  *
  * GET /api/sessions/:id/triggers
  *   Lists recent triggers for a session (from Redis trigger history).
+ *
+ * GET /api/sessions/:id/available-triggers
+ *   Returns trigger defs from the session's runner (what can be subscribed to).
+ *
+ * GET /api/sessions/:id/trigger-subscriptions
+ *   Lists active trigger subscriptions for this session.
+ *
+ * POST /api/sessions/:id/trigger-subscriptions
+ *   Subscribe this session to a trigger type: { triggerType: string }.
+ *   Validates that the trigger type is available on the session's runner.
+ *
+ * DELETE /api/sessions/:id/trigger-subscriptions/:triggerType
+ *   Unsubscribe this session from a trigger type.
  */
 
 import { requireSession, validateApiKey } from "../middleware.js";
 import { getSharedSession, getLocalTuiSocket } from "../ws/sio-registry.js";
 import { emitToRelaySessionVerified } from "../ws/sio-registry.js";
+import { getRunnerServices } from "../ws/sio-registry/runners.js";
 import type { RouteHandler } from "./types.js";
 import { randomUUID } from "crypto";
 import { createLogger } from "@pizzapi/tools";
@@ -19,6 +33,11 @@ import {
     pushTriggerHistory,
     getTriggerHistory,
 } from "../sessions/trigger-store.js";
+import {
+    subscribeSessionToTrigger,
+    unsubscribeSessionFromTrigger,
+    listSessionSubscriptions,
+} from "../sessions/trigger-subscription-store.js";
 
 const log = createLogger("triggers-api");
 
@@ -158,6 +177,111 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
         const history = await getTriggerHistory(sessionId, Math.min(limit, 200));
 
         return Response.json({ triggers: history });
+    }
+
+    // ── GET /api/sessions/:id/available-triggers ──────────────────────
+    // Returns trigger defs from the session's runner.
+    // The runner is the authoritative source — a session can only subscribe
+    // to trigger types declared by services on its own runner.
+    const availableMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/available-triggers$/);
+    if (availableMatch && req.method === "GET") {
+        const identity = await authenticate(req);
+        if (identity instanceof Response) return identity;
+
+        const sessionId = decodeURIComponent(availableMatch[1]);
+
+        const session = await getSharedSession(sessionId);
+        if (!session || session.userId !== identity.userId) {
+            return Response.json({ error: "Session not found" }, { status: 404 });
+        }
+
+        if (!session.runnerId) {
+            return Response.json({ triggerDefs: [] });
+        }
+
+        const services = await getRunnerServices(session.runnerId);
+        return Response.json({ triggerDefs: services?.triggerDefs ?? [] });
+    }
+
+    // ── GET /POST /api/sessions/:id/trigger-subscriptions ────────────
+    const subsMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/trigger-subscriptions$/);
+    if (subsMatch && req.method === "GET") {
+        const identity = await authenticate(req);
+        if (identity instanceof Response) return identity;
+
+        const sessionId = decodeURIComponent(subsMatch[1]);
+
+        const session = await getSharedSession(sessionId);
+        if (!session || session.userId !== identity.userId) {
+            return Response.json({ error: "Session not found" }, { status: 404 });
+        }
+
+        const subscriptions = await listSessionSubscriptions(sessionId);
+        return Response.json({ subscriptions });
+    }
+
+    // ── POST /api/sessions/:id/trigger-subscriptions ──────────────────
+    if (subsMatch && req.method === "POST") {
+        const identity = await authenticate(req);
+        if (identity instanceof Response) return identity;
+
+        const sessionId = decodeURIComponent(subsMatch[1]);
+
+        const session = await getSharedSession(sessionId);
+        if (!session || session.userId !== identity.userId) {
+            return Response.json({ error: "Session not found" }, { status: 404 });
+        }
+
+        if (!session.runnerId) {
+            return Response.json({ error: "Session has no associated runner" }, { status: 422 });
+        }
+
+        let body: { triggerType?: string };
+        try {
+            body = await req.json() as { triggerType?: string };
+        } catch {
+            return Response.json({ error: "Invalid JSON body" }, { status: 400 });
+        }
+
+        if (!body.triggerType || typeof body.triggerType !== "string") {
+            return Response.json({ error: "Missing or invalid 'triggerType' field" }, { status: 400 });
+        }
+
+        const triggerType = body.triggerType.trim();
+
+        // Validate that the trigger type is declared by the runner's services
+        const services = await getRunnerServices(session.runnerId);
+        const available = services?.triggerDefs ?? [];
+        const isDeclared = available.some((def) => def.type === triggerType);
+        if (!isDeclared) {
+            return Response.json(
+                { error: `Trigger type '${triggerType}' is not available on this session's runner` },
+                { status: 422 },
+            );
+        }
+
+        await subscribeSessionToTrigger(sessionId, session.runnerId, triggerType);
+        log.info(`Session ${sessionId} subscribed to trigger type '${triggerType}' on runner ${session.runnerId}`);
+        return Response.json({ ok: true, triggerType, runnerId: session.runnerId });
+    }
+
+    // ── DELETE /api/sessions/:id/trigger-subscriptions/:triggerType ───
+    const subsDeleteMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/trigger-subscriptions\/(.+)$/);
+    if (subsDeleteMatch && req.method === "DELETE") {
+        const identity = await authenticate(req);
+        if (identity instanceof Response) return identity;
+
+        const sessionId = decodeURIComponent(subsDeleteMatch[1]);
+        const triggerType = decodeURIComponent(subsDeleteMatch[2]);
+
+        const session = await getSharedSession(sessionId);
+        if (!session || session.userId !== identity.userId) {
+            return Response.json({ error: "Session not found" }, { status: 404 });
+        }
+
+        await unsubscribeSessionFromTrigger(sessionId, triggerType);
+        log.info(`Session ${sessionId} unsubscribed from trigger type '${triggerType}'`);
+        return Response.json({ ok: true, triggerType });
     }
 
     return undefined;

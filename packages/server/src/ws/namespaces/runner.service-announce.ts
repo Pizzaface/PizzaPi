@@ -7,7 +7,8 @@ import type { ServiceAnnounceData } from "@pizzapi/protocol";
 
 /**
  * Returns true when two ServiceAnnounceData payloads are semantically
- * identical (same serviceIds in the same order, same panel metadata).
+ * identical (same serviceIds in the same order, same panel metadata,
+ * same trigger defs in the same order).
  * Used by the service_announce handler to skip no-op fanouts.
  */
 export function isSameServiceAnnounce(
@@ -31,6 +32,21 @@ export function isSameServiceAnnounce(
             left.port !== right.port ||
             left.label !== right.label ||
             left.icon !== right.icon
+        ) {
+            return false;
+        }
+    }
+
+    const aDefs = a.triggerDefs ?? [];
+    const bDefs = b.triggerDefs ?? [];
+    if (aDefs.length !== bDefs.length) return false;
+    for (let i = 0; i < aDefs.length; i++) {
+        const left = aDefs[i];
+        const right = bDefs[i];
+        if (
+            left.type !== right.type ||
+            left.label !== right.label ||
+            left.description !== right.description
         ) {
             return false;
         }

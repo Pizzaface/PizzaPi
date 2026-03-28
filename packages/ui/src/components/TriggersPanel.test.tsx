@@ -54,11 +54,27 @@ interface MockFetchResponse {
   body?: unknown;
 }
 
-const fetchState: { response: MockFetchResponse } = {
+const fetchState: {
+  response: MockFetchResponse;
+  /** Per-URL response overrides (keyed by substring match). */
+  urlOverrides?: Record<string, MockFetchResponse>;
+} = {
   response: { ok: true, body: { triggers: [] } },
 };
 
-const fetchSpy = mock(async (_url: string, _opts?: RequestInit) => {
+const fetchSpy = mock(async (url: string, _opts?: RequestInit) => {
+  // Check per-URL overrides first
+  if (fetchState.urlOverrides) {
+    for (const [key, override] of Object.entries(fetchState.urlOverrides)) {
+      if (url.includes(key)) {
+        return {
+          ok: override.ok,
+          status: override.status ?? (override.ok ? 200 : 500),
+          json: async () => override.body,
+        } as Response;
+      }
+    }
+  }
   const { ok, status, body } = fetchState.response;
   return {
     ok,
@@ -118,6 +134,7 @@ afterEach(() => {
   document.body.innerHTML = "";
   fetchSpy.mockClear();
   fetchState.response = { ok: true, body: { triggers: [] } };
+  fetchState.urlOverrides = undefined;
 });
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -355,5 +372,118 @@ describe("TriggersPanel — Send Trigger dialog", () => {
     // After close: Radix Dialog removes portal content — dialog-only text is gone
     expect(document.body.textContent).not.toContain("Payload (JSON)");
     expect(document.body.textContent).not.toContain("Deliver As");
+  });
+});
+
+describe("TriggersPanel — trigger catalog", () => {
+  test("renders Available Triggers section when triggerDefs are provided", async () => {
+    fetchState.response = { ok: true, body: { triggers: [], subscriptions: [] } };
+
+    const triggerDefs = [
+      { type: "godmother:idea_moved", label: "Idea Status Changed", description: "Fires when an idea moves" },
+      { type: "godmother:idea_created", label: "Idea Created" },
+    ];
+
+    let container!: HTMLElement;
+    await act(async () => {
+      ({ container } = render(<TriggersPanel sessionId="sess-abc" triggerDefs={triggerDefs} />));
+    });
+
+    expect(container.textContent).toContain("Available Triggers");
+    expect(container.textContent).toContain("godmother:idea_moved");
+    expect(container.textContent).toContain("Idea Status Changed");
+    expect(container.textContent).toContain("godmother:idea_created");
+    expect(container.textContent).toContain("Fires when an idea moves");
+  });
+
+  test("does NOT render Available Triggers section when triggerDefs is empty", async () => {
+    fetchState.response = { ok: true, body: { triggers: [] } };
+
+    let container!: HTMLElement;
+    await act(async () => {
+      ({ container } = render(<TriggersPanel sessionId="sess-abc" triggerDefs={[]} />));
+    });
+
+    expect(container.textContent).not.toContain("Available Triggers");
+  });
+
+  test("does NOT render Available Triggers section when triggerDefs is not provided", async () => {
+    fetchState.response = { ok: true, body: { triggers: [] } };
+
+    let container!: HTMLElement;
+    await act(async () => {
+      ({ container } = render(<TriggersPanel sessionId="sess-abc" />));
+    });
+
+    expect(container.textContent).not.toContain("Available Triggers");
+  });
+
+  test("renders subscribe button for unsubscribed trigger types", async () => {
+    fetchState.urlOverrides = {
+      "trigger-subscriptions": { ok: true, body: { subscriptions: [] } },
+    };
+
+    const triggerDefs = [
+      { type: "svc:event", label: "Service Event" },
+    ];
+
+    let container!: HTMLElement;
+    await act(async () => {
+      ({ container } = render(<TriggersPanel sessionId="sess-abc" triggerDefs={triggerDefs} />));
+    });
+
+    // Subscribe button should be present (aria-label)
+    const buttons = Array.from(container.getElementsByTagName("button"));
+    const subscribeBtn = buttons.find((b) => b.getAttribute("aria-label")?.startsWith("Subscribe to"));
+    expect(subscribeBtn).toBeDefined();
+  });
+
+  test("renders subscribed badge when session is subscribed to a trigger type", async () => {
+    fetchState.urlOverrides = {
+      "trigger-subscriptions": { ok: true, body: { subscriptions: [{ triggerType: "svc:event", runnerId: "runner-A" }] } },
+    };
+
+    const triggerDefs = [
+      { type: "svc:event", label: "Service Event" },
+    ];
+
+    let container!: HTMLElement;
+    await act(async () => {
+      ({ container } = render(<TriggersPanel sessionId="sess-abc" triggerDefs={triggerDefs} />));
+    });
+
+    expect(container.textContent).toContain("subscribed");
+    // Unsubscribe button should be present
+    const buttons = Array.from(container.getElementsByTagName("button"));
+    const unsubBtn = buttons.find((b) => b.getAttribute("aria-label")?.startsWith("Unsubscribe from"));
+    expect(unsubBtn).toBeDefined();
+  });
+
+  test("catalog section can be collapsed", async () => {
+    fetchState.response = { ok: true, body: { triggers: [] } };
+
+    const triggerDefs = [
+      { type: "svc:event", label: "Service Event" },
+    ];
+
+    let container!: HTMLElement;
+    await act(async () => {
+      ({ container } = render(<TriggersPanel sessionId="sess-abc" triggerDefs={triggerDefs} />));
+    });
+
+    // Catalog initially visible
+    expect(container.textContent).toContain("svc:event");
+
+    // Click the "Available Triggers" header to collapse
+    const buttons = Array.from(container.getElementsByTagName("button"));
+    const collapseBtn = buttons.find((b) => b.textContent?.includes("Available Triggers"));
+    expect(collapseBtn).toBeDefined();
+
+    await act(async () => {
+      fireEvent.click(collapseBtn!);
+    });
+
+    // Catalog items should now be hidden
+    expect(container.textContent).not.toContain("svc:event");
   });
 });

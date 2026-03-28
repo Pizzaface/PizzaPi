@@ -10,7 +10,14 @@
 // ============================================================================
 
 import { describe, test, expect, mock, beforeEach } from "bun:test";
-import { fireTrigger, createTriggerClient } from "./trigger-client.js";
+import {
+    fireTrigger,
+    createTriggerClient,
+    getAvailableTriggers,
+    subscribeTrigger,
+    listTriggerSubscriptions,
+    unsubscribeTrigger,
+} from "./trigger-client.js";
 import type { TriggerClientDeps } from "./trigger-client.js";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -525,3 +532,182 @@ describe("createTriggerClient", () => {
         );
     });
 });
+
+// ── Subscription helpers ──────────────────────────────────────────────────────
+
+/** Build minimal deps for subscription tests. */
+function subsDeps(fetchImpl: TriggerClientDeps["fetch"]): TriggerClientDeps {
+    return {
+        getRelaySocket: () => null,
+        getRelayHttpBaseUrl: () => "http://localhost:7492",
+        getApiKey: () => "test-api-key",
+        fetch: fetchImpl,
+    };
+}
+
+describe("getAvailableTriggers", () => {
+    test("returns trigger defs from the runner", async () => {
+        const deps = subsDeps(async (_url, _init) => ({
+            ok: true,
+            status: 200,
+            json: async () => ({
+                triggerDefs: [
+                    { type: "godmother:idea_moved", label: "Idea Moved" },
+                    { type: "godmother:idea_created", label: "Idea Created" },
+                ],
+            }),
+        } as Response));
+
+        const defs = await getAvailableTriggers("session-1", deps);
+        expect(defs).toHaveLength(2);
+        expect(defs[0].type).toBe("godmother:idea_moved");
+        expect(defs[1].label).toBe("Idea Created");
+    });
+
+    test("returns empty array when response is not ok", async () => {
+        const deps = subsDeps(async () => ({ ok: false, status: 404, json: async () => ({}) } as Response));
+        const defs = await getAvailableTriggers("session-1", deps);
+        expect(defs).toEqual([]);
+    });
+
+    test("returns empty array when no base URL configured", async () => {
+        const deps: TriggerClientDeps = {
+            getRelaySocket: () => null,
+            getRelayHttpBaseUrl: () => null,
+            getApiKey: () => "key",
+            fetch: async () => { throw new Error("should not be called"); },
+        };
+        const defs = await getAvailableTriggers("session-1", deps);
+        expect(defs).toEqual([]);
+    });
+
+    test("sends request to correct endpoint with API key", async () => {
+        const captured: Array<{ url: string; headers: Record<string, string> }> = [];
+        const deps = subsDeps(async (url, init) => {
+            captured.push({ url, headers: (init?.headers ?? {}) as Record<string, string> });
+            return { ok: true, status: 200, json: async () => ({ triggerDefs: [] }) } as Response;
+        });
+
+        await getAvailableTriggers("session-abc", deps);
+        expect(captured).toHaveLength(1);
+        expect(captured[0].url).toBe("http://localhost:7492/api/sessions/session-abc/available-triggers");
+        expect(captured[0].headers["x-api-key"]).toBe("test-api-key");
+    });
+});
+
+describe("subscribeTrigger", () => {
+    test("subscribes to a trigger type successfully", async () => {
+        const deps = subsDeps(async () => ({
+            ok: true,
+            status: 200,
+            json: async () => ({ ok: true, triggerType: "godmother:idea_moved", runnerId: "runner-A" }),
+        } as Response));
+
+        const result = await subscribeTrigger("session-1", "godmother:idea_moved", deps);
+        expect(result.ok).toBe(true);
+        expect(result.triggerType).toBe("godmother:idea_moved");
+        expect(result.runnerId).toBe("runner-A");
+    });
+
+    test("returns error when server returns 422", async () => {
+        const deps = subsDeps(async () => ({
+            ok: false,
+            status: 422,
+            json: async () => ({ error: "Trigger type not available on runner" }),
+        } as Response));
+
+        const result = await subscribeTrigger("session-1", "bad:type", deps);
+        expect(result.ok).toBe(false);
+        expect(result.error).toContain("not available");
+    });
+
+    test("sends POST with correct body and API key header", async () => {
+        const captured: Array<{ url: string; method: string; body: unknown }> = [];
+        const deps = subsDeps(async (url, init) => {
+            captured.push({ url, method: init?.method ?? "GET", body: JSON.parse(init?.body as string ?? "{}") });
+            return { ok: true, status: 200, json: async () => ({ ok: true, triggerType: "svc:event", runnerId: "r-1" }) } as Response;
+        });
+
+        await subscribeTrigger("session-1", "svc:event", deps);
+        expect(captured[0].url).toBe("http://localhost:7492/api/sessions/session-1/trigger-subscriptions");
+        expect(captured[0].method).toBe("POST");
+        expect((captured[0].body as any).triggerType).toBe("svc:event");
+    });
+
+    test("returns error when no base URL configured", async () => {
+        const deps: TriggerClientDeps = {
+            getRelaySocket: () => null,
+            getRelayHttpBaseUrl: () => null,
+            getApiKey: () => "key",
+            fetch: async () => { throw new Error("should not be called"); },
+        };
+        const result = await subscribeTrigger("session-1", "svc:event", deps);
+        expect(result.ok).toBe(false);
+        expect(result.error).toBeTruthy();
+    });
+});
+
+describe("listTriggerSubscriptions", () => {
+    test("returns active subscriptions", async () => {
+        const deps = subsDeps(async () => ({
+            ok: true,
+            status: 200,
+            json: async () => ({
+                subscriptions: [
+                    { triggerType: "godmother:idea_moved", runnerId: "runner-A" },
+                ],
+            }),
+        } as Response));
+
+        const subs = await listTriggerSubscriptions("session-1", deps);
+        expect(subs).toHaveLength(1);
+        expect(subs[0].triggerType).toBe("godmother:idea_moved");
+        expect(subs[0].runnerId).toBe("runner-A");
+    });
+
+    test("returns empty array when not ok", async () => {
+        const deps = subsDeps(async () => ({ ok: false, status: 401, json: async () => ({}) } as Response));
+        const subs = await listTriggerSubscriptions("session-1", deps);
+        expect(subs).toEqual([]);
+    });
+});
+
+describe("unsubscribeTrigger", () => {
+    test("unsubscribes successfully", async () => {
+        const deps = subsDeps(async () => ({
+            ok: true,
+            status: 200,
+            json: async () => ({ ok: true, triggerType: "godmother:idea_moved" }),
+        } as Response));
+
+        const result = await unsubscribeTrigger("session-1", "godmother:idea_moved", deps);
+        expect(result.ok).toBe(true);
+        expect(result.triggerType).toBe("godmother:idea_moved");
+    });
+
+    test("sends DELETE to correct URL with encoded trigger type", async () => {
+        const captured: Array<{ url: string; method: string }> = [];
+        const deps = subsDeps(async (url, init) => {
+            captured.push({ url, method: init?.method ?? "GET" });
+            return { ok: true, status: 200, json: async () => ({ ok: true, triggerType: "godmother:idea_moved" }) } as Response;
+        });
+
+        await unsubscribeTrigger("session-1", "godmother:idea_moved", deps);
+        expect(captured[0].method).toBe("DELETE");
+        expect(captured[0].url).toBe(
+            "http://localhost:7492/api/sessions/session-1/trigger-subscriptions/godmother%3Aidea_moved",
+        );
+    });
+
+    test("returns error when server returns non-ok", async () => {
+        const deps = subsDeps(async () => ({
+            ok: false,
+            status: 404,
+            json: async () => ({ error: "Session not found" }),
+        } as Response));
+
+        const result = await unsubscribeTrigger("session-1", "svc:event", deps);
+        expect(result.ok).toBe(false);
+    });
+});
+

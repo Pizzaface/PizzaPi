@@ -232,3 +232,147 @@ export function createTriggerClient(deps: Partial<TriggerClientDeps> = {}) {
             fireTrigger(sessionId, params, deps),
     };
 }
+
+// ── Subscription helpers ──────────────────────────────────────────────────────
+
+export interface TriggerDef {
+    type: string;
+    label: string;
+    description?: string;
+    schema?: Record<string, unknown>;
+}
+
+export interface TriggerSubscription {
+    triggerType: string;
+    runnerId: string;
+}
+
+export interface SubscriptionResult {
+    ok: boolean;
+    triggerType?: string;
+    runnerId?: string;
+    error?: string;
+}
+
+/**
+ * Get available trigger types for a session (from its runner's service catalog).
+ */
+export async function getAvailableTriggers(
+    sessionId: string,
+    deps: Partial<TriggerClientDeps> = {},
+): Promise<TriggerDef[]> {
+    const d: TriggerClientDeps = { ...defaultDeps, ...deps };
+    const baseUrl = d.getRelayHttpBaseUrl();
+    const apiKey = d.getApiKey();
+
+    if (!baseUrl || !apiKey) {
+        log.info(`getAvailableTriggers: no baseUrl/apiKey, returning empty`);
+        return [];
+    }
+
+    try {
+        const url = `${baseUrl}/api/sessions/${encodeURIComponent(sessionId)}/available-triggers`;
+        const response = await d.fetch(url, {
+            headers: { "x-api-key": apiKey },
+        });
+        if (!response.ok) return [];
+        const data = await response.json() as { triggerDefs?: TriggerDef[] };
+        return data.triggerDefs ?? [];
+    } catch (err) {
+        log.info(`getAvailableTriggers failed: ${err instanceof Error ? err.message : String(err)}`);
+        return [];
+    }
+}
+
+/**
+ * Subscribe a session to a trigger type.
+ * The trigger type must be declared by a service on the session's runner.
+ */
+export async function subscribeTrigger(
+    sessionId: string,
+    triggerType: string,
+    deps: Partial<TriggerClientDeps> = {},
+): Promise<SubscriptionResult> {
+    const d: TriggerClientDeps = { ...defaultDeps, ...deps };
+    const baseUrl = d.getRelayHttpBaseUrl();
+    const apiKey = d.getApiKey();
+
+    if (!baseUrl || !apiKey) {
+        return { ok: false, error: "No relay URL or API key configured" };
+    }
+
+    try {
+        const url = `${baseUrl}/api/sessions/${encodeURIComponent(sessionId)}/trigger-subscriptions`;
+        const response = await d.fetch(url, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "x-api-key": apiKey },
+            body: JSON.stringify({ triggerType }),
+        });
+        const data = await response.json() as { ok?: boolean; triggerType?: string; runnerId?: string; error?: string };
+        if (response.ok && data.ok) {
+            return { ok: true, triggerType: data.triggerType, runnerId: data.runnerId };
+        }
+        return { ok: false, error: data.error ?? `HTTP ${response.status}` };
+    } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+}
+
+/**
+ * List active trigger subscriptions for a session.
+ */
+export async function listTriggerSubscriptions(
+    sessionId: string,
+    deps: Partial<TriggerClientDeps> = {},
+): Promise<TriggerSubscription[]> {
+    const d: TriggerClientDeps = { ...defaultDeps, ...deps };
+    const baseUrl = d.getRelayHttpBaseUrl();
+    const apiKey = d.getApiKey();
+
+    if (!baseUrl || !apiKey) return [];
+
+    try {
+        const url = `${baseUrl}/api/sessions/${encodeURIComponent(sessionId)}/trigger-subscriptions`;
+        const response = await d.fetch(url, {
+            headers: { "x-api-key": apiKey },
+        });
+        if (!response.ok) return [];
+        const data = await response.json() as { subscriptions?: TriggerSubscription[] };
+        return data.subscriptions ?? [];
+    } catch (err) {
+        log.info(`listTriggerSubscriptions failed: ${err instanceof Error ? err.message : String(err)}`);
+        return [];
+    }
+}
+
+/**
+ * Unsubscribe a session from a trigger type.
+ */
+export async function unsubscribeTrigger(
+    sessionId: string,
+    triggerType: string,
+    deps: Partial<TriggerClientDeps> = {},
+): Promise<SubscriptionResult> {
+    const d: TriggerClientDeps = { ...defaultDeps, ...deps };
+    const baseUrl = d.getRelayHttpBaseUrl();
+    const apiKey = d.getApiKey();
+
+    if (!baseUrl || !apiKey) {
+        return { ok: false, error: "No relay URL or API key configured" };
+    }
+
+    try {
+        const url = `${baseUrl}/api/sessions/${encodeURIComponent(sessionId)}/trigger-subscriptions/${encodeURIComponent(triggerType)}`;
+        const response = await d.fetch(url, {
+            method: "DELETE",
+            headers: { "x-api-key": apiKey },
+        });
+        const data = await response.json() as { ok?: boolean; triggerType?: string; error?: string };
+        if (response.ok && data.ok) {
+            return { ok: true, triggerType: data.triggerType };
+        }
+        return { ok: false, error: data.error ?? `HTTP ${response.status}` };
+    } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+}

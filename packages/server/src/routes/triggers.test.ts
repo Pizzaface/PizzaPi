@@ -37,6 +37,22 @@ mock.module("../sessions/trigger-store.js", () => ({
     getTriggerHistory: mockGetTriggerHistory,
 }));
 
+// ── Mock trigger subscription store ─────────────────────────────────────
+const mockSubscribeSessionToTrigger = mock((_sid: string, _rid: string, _type: string) => Promise.resolve());
+const mockUnsubscribeSessionFromTrigger = mock((_sid: string, _type: string) => Promise.resolve());
+const mockListSessionSubscriptions = mock((_sid: string) => Promise.resolve([] as any[]));
+mock.module("../sessions/trigger-subscription-store.js", () => ({
+    subscribeSessionToTrigger: mockSubscribeSessionToTrigger,
+    unsubscribeSessionFromTrigger: mockUnsubscribeSessionFromTrigger,
+    listSessionSubscriptions: mockListSessionSubscriptions,
+}));
+
+// ── Mock runners registry ────────────────────────────────────────────────
+const mockGetRunnerServices = mock((_rid: string) => Promise.resolve(null as any));
+mock.module("../ws/sio-registry/runners.js", () => ({
+    getRunnerServices: mockGetRunnerServices,
+}));
+
 // ── Mock logger ──────────────────────────────────────────────────────────
 mock.module("@pizzapi/tools", () => ({
     createLogger: () => ({
@@ -315,6 +331,225 @@ describe("GET /api/sessions/:id/triggers", () => {
         expect(res!.status).toBe(200);
         const body = await res!.json();
         expect(body.triggers).toHaveLength(0);
+    });
+});
+
+describe("GET /api/sessions/:id/available-triggers", () => {
+    beforeEach(() => {
+        mockGetSharedSession.mockReset();
+        mockGetRunnerServices.mockReset();
+        mockRequireSession.mockReturnValue(
+            Promise.resolve({ userId: "user-1", userName: "TestUser" }),
+        );
+    });
+
+    test("returns triggerDefs from the session's runner", async () => {
+        mockGetSharedSession.mockReturnValue(
+            Promise.resolve({ userId: "user-1", sessionId: "sess-1", runnerId: "runner-A" } as any),
+        );
+        mockGetRunnerServices.mockReturnValue(Promise.resolve({
+            serviceIds: ["godmother"],
+            triggerDefs: [
+                { type: "godmother:idea_moved", label: "Idea Status Changed" },
+                { type: "godmother:idea_created", label: "Idea Created" },
+            ],
+        }));
+
+        const [req, url] = makeReq("GET", "/api/sessions/sess-1/available-triggers");
+        const res = await handleTriggersRoute(req, url);
+        expect(res).toBeDefined();
+        expect(res!.status).toBe(200);
+        const body = await res!.json();
+        expect(body.triggerDefs).toHaveLength(2);
+        expect(body.triggerDefs[0].type).toBe("godmother:idea_moved");
+    });
+
+    test("returns empty array when session has no runner", async () => {
+        mockGetSharedSession.mockReturnValue(
+            Promise.resolve({ userId: "user-1", sessionId: "sess-1", runnerId: null } as any),
+        );
+
+        const [req, url] = makeReq("GET", "/api/sessions/sess-1/available-triggers");
+        const res = await handleTriggersRoute(req, url);
+        expect(res!.status).toBe(200);
+        const body = await res!.json();
+        expect(body.triggerDefs).toHaveLength(0);
+    });
+
+    test("returns 404 for wrong user", async () => {
+        mockGetSharedSession.mockReturnValue(
+            Promise.resolve({ userId: "user-2", sessionId: "sess-1" } as any),
+        );
+
+        const [req, url] = makeReq("GET", "/api/sessions/sess-1/available-triggers");
+        const res = await handleTriggersRoute(req, url);
+        expect(res!.status).toBe(404);
+    });
+
+    test("returns empty array when runner has no trigger defs", async () => {
+        mockGetSharedSession.mockReturnValue(
+            Promise.resolve({ userId: "user-1", sessionId: "sess-1", runnerId: "runner-A" } as any),
+        );
+        mockGetRunnerServices.mockReturnValue(Promise.resolve({ serviceIds: ["terminal"] }));
+
+        const [req, url] = makeReq("GET", "/api/sessions/sess-1/available-triggers");
+        const res = await handleTriggersRoute(req, url);
+        expect(res!.status).toBe(200);
+        const body = await res!.json();
+        expect(body.triggerDefs).toHaveLength(0);
+    });
+});
+
+describe("GET /api/sessions/:id/trigger-subscriptions", () => {
+    beforeEach(() => {
+        mockGetSharedSession.mockReset();
+        mockListSessionSubscriptions.mockReset();
+        mockRequireSession.mockReturnValue(
+            Promise.resolve({ userId: "user-1", userName: "TestUser" }),
+        );
+    });
+
+    test("returns active subscriptions", async () => {
+        mockGetSharedSession.mockReturnValue(
+            Promise.resolve({ userId: "user-1", sessionId: "sess-1", runnerId: "runner-A" } as any),
+        );
+        mockListSessionSubscriptions.mockReturnValue(Promise.resolve([
+            { triggerType: "godmother:idea_moved", runnerId: "runner-A" },
+        ]));
+
+        const [req, url] = makeReq("GET", "/api/sessions/sess-1/trigger-subscriptions");
+        const res = await handleTriggersRoute(req, url);
+        expect(res!.status).toBe(200);
+        const body = await res!.json();
+        expect(body.subscriptions).toHaveLength(1);
+        expect(body.subscriptions[0].triggerType).toBe("godmother:idea_moved");
+    });
+
+    test("returns 404 for wrong user", async () => {
+        mockGetSharedSession.mockReturnValue(
+            Promise.resolve({ userId: "user-2", sessionId: "sess-1" } as any),
+        );
+
+        const [req, url] = makeReq("GET", "/api/sessions/sess-1/trigger-subscriptions");
+        const res = await handleTriggersRoute(req, url);
+        expect(res!.status).toBe(404);
+    });
+});
+
+describe("POST /api/sessions/:id/trigger-subscriptions", () => {
+    beforeEach(() => {
+        mockGetSharedSession.mockReset();
+        mockGetRunnerServices.mockReset();
+        mockSubscribeSessionToTrigger.mockReset();
+        mockRequireSession.mockReturnValue(
+            Promise.resolve({ userId: "user-1", userName: "TestUser" }),
+        );
+    });
+
+    test("subscribes to a declared trigger type", async () => {
+        mockGetSharedSession.mockReturnValue(
+            Promise.resolve({ userId: "user-1", sessionId: "sess-1", runnerId: "runner-A" } as any),
+        );
+        mockGetRunnerServices.mockReturnValue(Promise.resolve({
+            serviceIds: ["godmother"],
+            triggerDefs: [{ type: "godmother:idea_moved", label: "Idea Moved" }],
+        }));
+
+        const [req, url] = makeReq("POST", "/api/sessions/sess-1/trigger-subscriptions", {
+            triggerType: "godmother:idea_moved",
+        });
+        const res = await handleTriggersRoute(req, url);
+        expect(res!.status).toBe(200);
+        const body = await res!.json();
+        expect(body.ok).toBe(true);
+        expect(body.triggerType).toBe("godmother:idea_moved");
+        expect(mockSubscribeSessionToTrigger).toHaveBeenCalledTimes(1);
+    });
+
+    test("returns 422 when trigger type is not declared on runner", async () => {
+        mockGetSharedSession.mockReturnValue(
+            Promise.resolve({ userId: "user-1", sessionId: "sess-1", runnerId: "runner-A" } as any),
+        );
+        mockGetRunnerServices.mockReturnValue(Promise.resolve({
+            serviceIds: ["godmother"],
+            triggerDefs: [{ type: "godmother:idea_moved", label: "Idea Moved" }],
+        }));
+
+        const [req, url] = makeReq("POST", "/api/sessions/sess-1/trigger-subscriptions", {
+            triggerType: "undeclared:event",
+        });
+        const res = await handleTriggersRoute(req, url);
+        expect(res!.status).toBe(422);
+        const body = await res!.json();
+        expect(body.error).toContain("not available");
+    });
+
+    test("returns 422 when session has no runner", async () => {
+        mockGetSharedSession.mockReturnValue(
+            Promise.resolve({ userId: "user-1", sessionId: "sess-1", runnerId: null } as any),
+        );
+
+        const [req, url] = makeReq("POST", "/api/sessions/sess-1/trigger-subscriptions", {
+            triggerType: "svc:event",
+        });
+        const res = await handleTriggersRoute(req, url);
+        expect(res!.status).toBe(422);
+    });
+
+    test("returns 400 when triggerType is missing", async () => {
+        mockGetSharedSession.mockReturnValue(
+            Promise.resolve({ userId: "user-1", sessionId: "sess-1", runnerId: "runner-A" } as any),
+        );
+
+        const [req, url] = makeReq("POST", "/api/sessions/sess-1/trigger-subscriptions", {});
+        const res = await handleTriggersRoute(req, url);
+        expect(res!.status).toBe(400);
+    });
+
+    test("returns 404 for wrong user", async () => {
+        mockGetSharedSession.mockReturnValue(
+            Promise.resolve({ userId: "user-2", sessionId: "sess-1" } as any),
+        );
+
+        const [req, url] = makeReq("POST", "/api/sessions/sess-1/trigger-subscriptions", {
+            triggerType: "svc:event",
+        });
+        const res = await handleTriggersRoute(req, url);
+        expect(res!.status).toBe(404);
+    });
+});
+
+describe("DELETE /api/sessions/:id/trigger-subscriptions/:triggerType", () => {
+    beforeEach(() => {
+        mockGetSharedSession.mockReset();
+        mockUnsubscribeSessionFromTrigger.mockReset();
+        mockRequireSession.mockReturnValue(
+            Promise.resolve({ userId: "user-1", userName: "TestUser" }),
+        );
+    });
+
+    test("unsubscribes from a trigger type", async () => {
+        mockGetSharedSession.mockReturnValue(
+            Promise.resolve({ userId: "user-1", sessionId: "sess-1", runnerId: "runner-A" } as any),
+        );
+
+        const [req, url] = makeReq("DELETE", "/api/sessions/sess-1/trigger-subscriptions/godmother:idea_moved");
+        const res = await handleTriggersRoute(req, url);
+        expect(res!.status).toBe(200);
+        const body = await res!.json();
+        expect(body.ok).toBe(true);
+        expect(body.triggerType).toBe("godmother:idea_moved");
+        expect(mockUnsubscribeSessionFromTrigger).toHaveBeenCalledTimes(1);
+    });
+
+    test("returns 404 for wrong user", async () => {
+        mockGetSharedSession.mockReturnValue(
+            Promise.resolve({ userId: "user-2", sessionId: "sess-1" } as any),
+        );
+
+        const [req, url] = makeReq("DELETE", "/api/sessions/sess-1/trigger-subscriptions/svc:event");
+        const res = await handleTriggersRoute(req, url);
+        expect(res!.status).toBe(404);
     });
 });
 

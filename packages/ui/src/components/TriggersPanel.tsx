@@ -2,6 +2,7 @@
  * TriggersPanel — shows trigger history, linked child sessions, and a manual send form.
  *
  * Fetches from GET /api/sessions/:id/triggers and auto-refreshes every 10s.
+ * Also shows the runner's trigger catalog (available trigger types) with subscribe/unsubscribe UI.
  */
 import * as React from "react";
 import {
@@ -18,6 +19,9 @@ import {
   ArrowDownCircle,
   ArrowUpCircle,
   Zap,
+  BellRing,
+  BellOff,
+  BookOpen,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -29,6 +33,7 @@ import {
 } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
+import type { ServiceTriggerDef } from "@pizzapi/protocol";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -46,6 +51,11 @@ export interface TriggerHistoryEntry {
     text?: string;
     ts: string;
   };
+}
+
+export interface TriggerSubscription {
+  triggerType: string;
+  runnerId: string;
 }
 
 interface LinkedSession {
@@ -120,9 +130,11 @@ interface SendTriggerDialogProps {
   onOpenChange: (open: boolean) => void;
   sessionId: string;
   onSent: () => void;
+  /** Trigger catalog for type auto-complete */
+  triggerDefs?: ServiceTriggerDef[];
 }
 
-function SendTriggerDialog({ open, onOpenChange, sessionId, onSent }: SendTriggerDialogProps) {
+function SendTriggerDialog({ open, onOpenChange, sessionId, onSent, triggerDefs }: SendTriggerDialogProps) {
   const [triggerType, setTriggerType] = React.useState("");
   const [source, setSource] = React.useState("");
   const [payloadText, setPayloadText] = React.useState("{}");
@@ -208,11 +220,19 @@ function SendTriggerDialog({ open, onOpenChange, sessionId, onSent }: SendTrigge
             </label>
             <input
               type="text"
+              {...(triggerDefs && triggerDefs.length > 0 ? { list: "trigger-type-suggestions" } : {})}
               placeholder="e.g. webhook, custom_event"
               value={triggerType}
               onChange={(e) => setTriggerType(e.target.value)}
               className="w-full rounded border border-border bg-background px-2.5 py-1.5 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring"
             />
+            {triggerDefs && triggerDefs.length > 0 && (
+              <datalist id="trigger-type-suggestions">
+                {triggerDefs.map((def) => (
+                  <option key={def.type} value={def.type}>{def.label}</option>
+                ))}
+              </datalist>
+            )}
           </div>
 
           {/* Source */}
@@ -418,32 +438,209 @@ function LinkedSessionsSection({ sessions }: { sessions: LinkedSession[] }) {
   );
 }
 
+// ── Trigger Catalog Section ────────────────────────────────────────────────
+
+interface TriggerCatalogSectionProps {
+  sessionId: string;
+  triggerDefs: ServiceTriggerDef[];
+  subscriptions: TriggerSubscription[];
+  onSubscriptionsChange: () => void;
+}
+
+function TriggerCatalogSection({ sessionId, triggerDefs, subscriptions, onSubscriptionsChange }: TriggerCatalogSectionProps) {
+  const [collapsed, setCollapsed] = React.useState(false);
+  const [pending, setPending] = React.useState<Set<string>>(new Set());
+
+  const subscribedTypes = React.useMemo(
+    () => new Set(subscriptions.map((s) => s.triggerType)),
+    [subscriptions],
+  );
+
+  const handleToggle = React.useCallback(async (triggerType: string, isSubscribed: boolean) => {
+    setPending((prev) => new Set([...prev, triggerType]));
+    try {
+      if (isSubscribed) {
+        await fetch(
+          `/api/sessions/${encodeURIComponent(sessionId)}/trigger-subscriptions/${encodeURIComponent(triggerType)}`,
+          { method: "DELETE", credentials: "include" },
+        );
+      } else {
+        await fetch(
+          `/api/sessions/${encodeURIComponent(sessionId)}/trigger-subscriptions`,
+          {
+            method: "POST",
+            credentials: "include",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ triggerType }),
+          },
+        );
+      }
+      onSubscriptionsChange();
+    } catch {
+      // ignore — the UI will reflect current state on next refresh
+    } finally {
+      setPending((prev) => {
+        const next = new Set(prev);
+        next.delete(triggerType);
+        return next;
+      });
+    }
+  }, [sessionId, onSubscriptionsChange]);
+
+  if (triggerDefs.length === 0) return null;
+
+  return (
+    <div className="border-b border-border">
+      <button
+        type="button"
+        onClick={() => setCollapsed((v) => !v)}
+        className="w-full flex items-center gap-1.5 px-3 py-2 hover:bg-muted/30 transition-colors"
+      >
+        <BookOpen className="size-3 text-muted-foreground" />
+        <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground flex-1 text-left">
+          Available Triggers ({triggerDefs.length})
+        </span>
+        {collapsed ? (
+          <ChevronRight className="size-3 text-muted-foreground/50" />
+        ) : (
+          <ChevronDown className="size-3 text-muted-foreground/50" />
+        )}
+      </button>
+
+      {!collapsed && (
+        <div className="divide-y divide-border/50">
+          {triggerDefs.map((def) => {
+            const isSubscribed = subscribedTypes.has(def.type);
+            const isPending = pending.has(def.type);
+
+            return (
+              <div key={def.type} className="flex items-start gap-2 px-3 py-2">
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <span className="text-xs font-mono text-foreground truncate">{def.type}</span>
+                    <Badge variant="outline" className="px-1 py-0 text-[10px] h-4 shrink-0">
+                      {def.label}
+                    </Badge>
+                    {isSubscribed && (
+                      <Badge variant="outline" className="px-1 py-0 text-[10px] h-4 border-emerald-500/40 text-emerald-400 shrink-0">
+                        subscribed
+                      </Badge>
+                    )}
+                  </div>
+                  {def.description && (
+                    <p className="text-[10px] text-muted-foreground/70 mt-0.5 leading-snug">
+                      {def.description}
+                    </p>
+                  )}
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => handleToggle(def.type, isSubscribed)}
+                  disabled={isPending}
+                  className={cn(
+                    "shrink-0 p-1 rounded transition-colors",
+                    isSubscribed
+                      ? "text-emerald-400 hover:text-red-400 hover:bg-red-500/10"
+                      : "text-muted-foreground/50 hover:text-emerald-400 hover:bg-emerald-500/10",
+                    isPending && "opacity-50 cursor-not-allowed",
+                  )}
+                  title={isSubscribed ? "Unsubscribe" : "Subscribe"}
+                  aria-label={isSubscribed ? `Unsubscribe from ${def.type}` : `Subscribe to ${def.type}`}
+                >
+                  {isPending ? (
+                    <Loader2 className="size-3.5 animate-spin" />
+                  ) : isSubscribed ? (
+                    <BellOff className="size-3.5" />
+                  ) : (
+                    <BellRing className="size-3.5" />
+                  )}
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Active Subscriptions Section ───────────────────────────────────────────
+
+interface ActiveSubscriptionsSectionProps {
+  subscriptions: TriggerSubscription[];
+}
+
+function ActiveSubscriptionsSection({ subscriptions }: ActiveSubscriptionsSectionProps) {
+  if (subscriptions.length === 0) return null;
+
+  return (
+    <div className="border-b border-border">
+      <div className="px-3 py-2 flex items-center gap-1.5">
+        <BellRing className="size-3 text-emerald-400" />
+        <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+          Active Subscriptions ({subscriptions.length})
+        </span>
+      </div>
+      <div className="divide-y divide-border/50">
+        {subscriptions.map((sub) => (
+          <div key={sub.triggerType} className="flex items-center gap-2 px-3 py-1.5">
+            <span className="text-xs font-mono text-foreground truncate flex-1">{sub.triggerType}</span>
+            <span className="text-[10px] text-muted-foreground/50 shrink-0">on {sub.runnerId.slice(0, 8)}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // ── Main Panel ─────────────────────────────────────────────────────────────
 
 export interface TriggersPanelProps {
   sessionId: string;
+  /** Trigger defs from the session's runner (via service_announce) */
+  triggerDefs?: ServiceTriggerDef[];
 }
 
-export function TriggersPanel({ sessionId }: TriggersPanelProps) {
+export function TriggersPanel({ sessionId, triggerDefs = [] }: TriggersPanelProps) {
   const [triggers, setTriggers] = React.useState<TriggerHistoryEntry[]>([]);
+  const [subscriptions, setSubscriptions] = React.useState<TriggerSubscription[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);
   const [sendOpen, setSendOpen] = React.useState(false);
   const [refreshing, setRefreshing] = React.useState(false);
+
+  const fetchSubscriptions = React.useCallback(async () => {
+    try {
+      const res = await fetch(
+        `/api/sessions/${encodeURIComponent(sessionId)}/trigger-subscriptions`,
+        { credentials: "include" },
+      );
+      if (res.ok) {
+        const data = await res.json() as { subscriptions: TriggerSubscription[] };
+        setSubscriptions(data.subscriptions ?? []);
+      }
+    } catch {
+      // best-effort — don't surface subscription fetch errors in the main UI
+    }
+  }, [sessionId]);
 
   const fetchTriggers = React.useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
     else setRefreshing(true);
 
     try {
-      const res = await fetch(
-        `/api/sessions/${encodeURIComponent(sessionId)}/triggers?limit=50`,
-        { credentials: "include" },
-      );
-      if (!res.ok) {
-        throw new Error(`HTTP ${res.status}`);
+      const [triggersRes] = await Promise.all([
+        fetch(
+          `/api/sessions/${encodeURIComponent(sessionId)}/triggers?limit=50`,
+          { credentials: "include" },
+        ),
+        fetchSubscriptions(),
+      ]);
+      if (!triggersRes.ok) {
+        throw new Error(`HTTP ${triggersRes.status}`);
       }
-      const data = await res.json() as { triggers: TriggerHistoryEntry[] };
+      const data = await triggersRes.json() as { triggers: TriggerHistoryEntry[] };
       setTriggers(data.triggers ?? []);
       setError(null);
     } catch (err) {
@@ -452,7 +649,7 @@ export function TriggersPanel({ sessionId }: TriggersPanelProps) {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [sessionId]);
+  }, [sessionId, fetchSubscriptions]);
 
   // Initial fetch
   React.useEffect(() => {
@@ -501,17 +698,32 @@ export function TriggersPanel({ sessionId }: TriggersPanelProps) {
 
       {/* Content */}
       <div className="flex-1 overflow-y-auto min-h-0">
+        {/* Trigger catalog — always shown when available, regardless of history */}
+        {triggerDefs.length > 0 && (
+          <TriggerCatalogSection
+            sessionId={sessionId}
+            triggerDefs={triggerDefs}
+            subscriptions={subscriptions}
+            onSubscriptionsChange={fetchSubscriptions}
+          />
+        )}
+
+        {/* Active subscriptions — shown when there are subscriptions but no catalog (edge case) */}
+        {triggerDefs.length === 0 && subscriptions.length > 0 && (
+          <ActiveSubscriptionsSection subscriptions={subscriptions} />
+        )}
+
         {loading ? (
-          <div className="flex items-center justify-center h-full gap-2 text-muted-foreground">
+          <div className="flex items-center justify-center h-32 gap-2 text-muted-foreground">
             <Loader2 className="size-4 animate-spin" />
             <span className="text-xs">Loading triggers…</span>
           </div>
         ) : error ? (
-          <div className="flex items-center justify-center h-full p-4">
+          <div className="flex items-center justify-center p-4">
             <p className="text-xs text-destructive text-center">{error}</p>
           </div>
         ) : triggers.length === 0 ? (
-          <div className="flex flex-col items-center justify-center h-full gap-2 p-6 text-center">
+          <div className="flex flex-col items-center justify-center gap-2 p-6 text-center">
             <Zap className="size-8 text-muted-foreground/30" />
             <p className="text-xs text-muted-foreground">
               No triggers yet. External systems can send triggers via the API.
@@ -534,6 +746,7 @@ export function TriggersPanel({ sessionId }: TriggersPanelProps) {
         open={sendOpen}
         onOpenChange={setSendOpen}
         sessionId={sessionId}
+        triggerDefs={triggerDefs}
         onSent={() => { void fetchTriggers(true); }}
       />
     </div>

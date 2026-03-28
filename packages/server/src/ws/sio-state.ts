@@ -223,6 +223,8 @@ export interface RedisRunnerData {
     serviceIds?: string;
     /** JSON-stringified ServicePanelInfo[] — panel metadata from last service_announce */
     panels?: string;
+    /** JSON-stringified ServiceTriggerDef[] — trigger defs from last service_announce */
+    triggerDefs?: string;
     /** JSON-stringified string[] — active warnings from the runner daemon */
     warnings?: string;
 }
@@ -358,6 +360,7 @@ function parseRunnerFromHash(hash: Record<string, string>): RedisRunnerData | nu
         platform: hash.platform || null,
         serviceIds: hash.serviceIds || undefined,
         panels: hash.panels || undefined,
+        triggerDefs: hash.triggerDefs || undefined,
     };
 }
 

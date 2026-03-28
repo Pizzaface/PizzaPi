@@ -3700,7 +3700,7 @@ export function App() {
   }, [activeSessionId, activeSessionInfo?.runnerId, liveSessions]);
 
   // Runner service panels — dynamically discovered
-  const { services: availableServices, panels: dynamicPanels } = useRunnerServices(viewerSocket);
+  const { services: availableServices, panels: dynamicPanels, triggerDefs: runnerTriggerDefs } = useRunnerServices(viewerSocket);
   const { activePanelIds: activeServicePanels, togglePanel: toggleServicePanel, closePanelById: closeServicePanelById, closeAllPanels: closeAllServicePanels, getPanelPosition: getServicePanelPosition, setPanelPosition: setServicePanelPosition, setEphemeralPanelPosition: setEphemeralServicePanelPosition } = useServicePanelState();
 
   const handleToggleServicePanel = React.useCallback((serviceId: string) => {
@@ -3797,9 +3797,9 @@ export function App() {
     onClose: () => setShowTriggers(false),
     onDragStart: (e) => startPanelDragWith(e, handleTriggersPositionChange),
     content: (
-      <TriggersPanel sessionId={activeSessionId} />
+      <TriggersPanel sessionId={activeSessionId} triggerDefs={runnerTriggerDefs} />
     ),
-  } : null, [showTriggers, activeSessionId, startPanelDragWith, handleTriggersPositionChange, setShowTriggers]);
+  } : null, [showTriggers, activeSessionId, runnerTriggerDefs, startPanelDragWith, handleTriggersPositionChange, setShowTriggers]);
 
   const servicePanelTabs = React.useMemo<CombinedPanelTab[]>(() => {
     // Use tunnelSessionId (runner-stable) instead of activeSessionId so
