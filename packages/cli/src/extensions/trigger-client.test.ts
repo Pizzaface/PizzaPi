@@ -17,6 +17,7 @@ import {
     subscribeTrigger,
     listTriggerSubscriptions,
     unsubscribeTrigger,
+    broadcastTrigger,
 } from "./trigger-client.js";
 import type { TriggerClientDeps } from "./trigger-client.js";
 
@@ -708,6 +709,45 @@ describe("unsubscribeTrigger", () => {
 
         const result = await unsubscribeTrigger("session-1", "svc:event", deps);
         expect(result.ok).toBe(false);
+    });
+});
+
+describe("broadcastTrigger", () => {
+    test("broadcasts trigger to runner subscribers and returns delivery count", async () => {
+        const deps = subsDeps(async () => ({
+            ok: true,
+            status: 200,
+            json: async () => ({ ok: true, delivered: 3, triggerId: "ext_abc" }),
+        } as Response));
+
+        const result = await broadcastTrigger("runner-A", { type: "svc:event", payload: { x: 1 } }, deps);
+        expect(result.ok).toBe(true);
+        expect(result.delivered).toBe(3);
+        expect(result.triggerId).toBe("ext_abc");
+    });
+
+    test("sends POST to correct broadcast endpoint", async () => {
+        const captured: Array<{ url: string; method: string; body: unknown }> = [];
+        const deps = subsDeps(async (url, init) => {
+            captured.push({ url, method: init?.method ?? "GET", body: JSON.parse(init?.body as string ?? "{}") });
+            return { ok: true, status: 200, json: async () => ({ ok: true, delivered: 0 }) } as Response;
+        });
+
+        await broadcastTrigger("runner-A", { type: "svc:event", payload: {} }, deps);
+        expect(captured[0].url).toBe("http://localhost:7492/api/runners/runner-A/trigger-broadcast");
+        expect(captured[0].method).toBe("POST");
+    });
+
+    test("returns error when no base URL configured", async () => {
+        const deps: TriggerClientDeps = {
+            getRelaySocket: () => null,
+            getRelayHttpBaseUrl: () => null,
+            getApiKey: () => "key",
+            fetch: async () => { throw new Error("should not be called"); },
+        };
+        const result = await broadcastTrigger("runner-A", { type: "svc:event", payload: {} }, deps);
+        expect(result.ok).toBe(false);
+        expect(result.error).toBeTruthy();
     });
 });
 

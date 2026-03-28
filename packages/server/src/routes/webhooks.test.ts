@@ -711,6 +711,71 @@ describe("POST /api/webhooks/:id/fire — targetSessionId fallback", () => {
     });
 });
 
+describe("POST /api/webhooks/:id/fire — GitHub X-Hub-Signature-256", () => {
+    function makeGitHubFireReq(
+        path: string,
+        body: object,
+        secret: string,
+    ): [Request, URL] {
+        const bodyStr = JSON.stringify(body);
+        const sig = `sha256=${signBody(secret, bodyStr)}`;
+        const url = new URL(`http://localhost${path}`);
+        const req = new Request(url.toString(), {
+            method: "POST",
+            headers: {
+                "content-type": "application/json",
+                "x-hub-signature-256": sig,
+                "x-github-event": "push",
+            },
+            body: bodyStr,
+        });
+        return [req, url];
+    }
+
+    test("accepts X-Hub-Signature-256 with sha256= prefix (GitHub format)", async () => {
+        mockGetWebhook.mockReturnValue(Promise.resolve(ACTIVE_WEBHOOK));
+        mockGetSharedSession.mockReturnValue(Promise.resolve(ACTIVE_SESSION));
+        const emitMock = mock(() => {});
+        mockGetLocalTuiSocket.mockReturnValue({ connected: true, emit: emitMock });
+
+        const body = { ref: "refs/heads/main", repository: { full_name: "org/repo" } };
+        const [req, url] = makeGitHubFireReq("/api/webhooks/wh-1/fire", body, ACTIVE_WEBHOOK.secret);
+        const res = await handleWebhooksRoute(req, url);
+        expect(res?.status).toBe(200);
+        const resBody = await res!.json();
+        expect(resBody.ok).toBe(true);
+        expect(emitMock).toHaveBeenCalledTimes(1);
+    });
+
+    test("rejects X-Hub-Signature-256 with wrong secret", async () => {
+        mockGetWebhook.mockReturnValue(Promise.resolve(ACTIVE_WEBHOOK));
+
+        const body = { ref: "refs/heads/main" };
+        const bodyStr = JSON.stringify(body);
+        const badSig = `sha256=${signBody("wrong-secret", bodyStr)}`;
+        const url = new URL("http://localhost/api/webhooks/wh-1/fire");
+        const req = new Request(url.toString(), {
+            method: "POST",
+            headers: {
+                "content-type": "application/json",
+                "x-hub-signature-256": badSig,
+            },
+            body: bodyStr,
+        });
+        const res = await handleWebhooksRoute(req, url);
+        expect(res?.status).toBe(401);
+    });
+
+    test("returns 401 when both x-webhook-signature and x-hub-signature-256 are absent", async () => {
+        mockGetWebhook.mockReturnValue(Promise.resolve(ACTIVE_WEBHOOK));
+        const [req, url] = makeReq("POST", "/api/webhooks/wh-1/fire", { event: "test" });
+        const res = await handleWebhooksRoute(req, url);
+        expect(res?.status).toBe(401);
+        const resBody = await res!.json();
+        expect(resBody.error).toContain("signature");
+    });
+});
+
 describe("non-matching routes", () => {
     test("returns undefined for unmatched paths", async () => {
         const [req, url] = makeReq("GET", "/api/something-else");

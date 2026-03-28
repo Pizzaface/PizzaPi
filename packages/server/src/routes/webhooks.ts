@@ -397,11 +397,18 @@ export const handleWebhooksRoute: RouteHandler = async (req, url) => {
             return Response.json({ error: "Failed to read request body" }, { status: 400 });
         }
 
-        // Validate HMAC signature
-        const signature = req.headers.get("x-webhook-signature");
-        if (!signature) {
-            return Response.json({ error: "Missing X-Webhook-Signature header" }, { status: 401 });
+        // Validate HMAC signature.
+        // Accept both our native header (x-webhook-signature) and GitHub's header
+        // (X-Hub-Signature-256: sha256=<hex>) so GitHub webhooks work without any
+        // extra configuration when source="github".
+        const rawSig =
+            req.headers.get("x-webhook-signature") ??
+            req.headers.get("x-hub-signature-256");
+        if (!rawSig) {
+            return Response.json({ error: "Missing signature header (X-Webhook-Signature or X-Hub-Signature-256)" }, { status: 401 });
         }
+        // Strip optional "sha256=" prefix from GitHub's format
+        const signature = rawSig.startsWith("sha256=") ? rawSig.slice(7) : rawSig;
 
         const expected = computeHmac(webhook.secret, new Uint8Array(rawBody));
         if (!hmacEqual(signature, expected)) {

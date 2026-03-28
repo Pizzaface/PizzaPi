@@ -20,6 +20,12 @@
  *
  * DELETE /api/sessions/:id/trigger-subscriptions/:triggerType
  *   Unsubscribe this session from a trigger type.
+ *
+ * POST /api/runners/:runnerId/trigger-broadcast
+ *   Broadcast a trigger by type to all sessions subscribed to that type on
+ *   this runner. API key auth only (called by runner services).
+ *   Body: { type, payload, deliverAs?, source?, summary? }
+ *   Returns: { ok, delivered: number, triggerId }
  */
 
 import { requireSession, validateApiKey } from "../middleware.js";
@@ -37,6 +43,7 @@ import {
     subscribeSessionToTrigger,
     unsubscribeSessionFromTrigger,
     listSessionSubscriptions,
+    getSubscribersForTrigger,
 } from "../sessions/trigger-subscription-store.js";
 
 const log = createLogger("triggers-api");
@@ -291,6 +298,100 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
         await unsubscribeSessionFromTrigger(sessionId, triggerType);
         log.info(`Session ${sessionId} unsubscribed from trigger type '${triggerType}'`);
         return Response.json({ ok: true, triggerType });
+    }
+
+    // ── POST /api/runners/:runnerId/trigger-broadcast ─────────────────
+    // Broadcast a trigger by type to all sessions subscribed to that type
+    // on this runner. API key only — called by runner services.
+    // This is the delivery path that closes the subscription loop:
+    // services fire typed triggers here and the server fans out to all
+    // subscriber sessions, making subscriptions useful in production.
+    const broadcastMatch = url.pathname.match(/^\/api\/runners\/([^/]+)\/trigger-broadcast$/);
+    if (broadcastMatch && req.method === "POST") {
+        const apiKey = req.headers.get("x-api-key");
+        if (!apiKey) {
+            return Response.json({ error: "API key required" }, { status: 401 });
+        }
+        const identity = await validateApiKey(req, apiKey);
+        if (identity instanceof Response) return identity;
+
+        const runnerId = decodeURIComponent(broadcastMatch[1]);
+
+        let body: TriggerRequest;
+        try {
+            body = await req.json() as TriggerRequest;
+        } catch {
+            return Response.json({ error: "Invalid JSON body" }, { status: 400 });
+        }
+
+        if (!body.type || typeof body.type !== "string") {
+            return Response.json({ error: "Missing or invalid 'type' field" }, { status: 400 });
+        }
+        if (!body.payload || typeof body.payload !== "object" || Array.isArray(body.payload)) {
+            return Response.json({ error: "Missing or invalid 'payload' field — must be an object" }, { status: 400 });
+        }
+
+        const deliverAs = body.deliverAs ?? "steer";
+        if (deliverAs !== "steer" && deliverAs !== "followUp") {
+            return Response.json({ error: "Invalid 'deliverAs' — must be 'steer' or 'followUp'" }, { status: 400 });
+        }
+
+        // Look up all sessions subscribed to this runner+type
+        const subscriberIds = await getSubscribersForTrigger(runnerId, body.type);
+        if (subscriberIds.length === 0) {
+            return Response.json({ ok: true, delivered: 0, triggerId: null });
+        }
+
+        const triggerId = `ext_${randomUUID().replace(/-/g, "").slice(0, 16)}`;
+        const ts = new Date().toISOString();
+        const trigger = {
+            type: body.type,
+            sourceSessionId: `external:${body.source ?? "service"}`,
+            sourceSessionName: body.summary ?? `Service (${body.source ?? "service"})`,
+            payload: body.payload,
+            deliverAs,
+            expectsResponse: body.expectsResponse ?? false,
+            triggerId,
+            ts,
+        };
+
+        let delivered = 0;
+        for (const targetSessionId of subscriberIds) {
+            const targetSession = await getSharedSession(targetSessionId);
+            // Only deliver to sessions belonging to the same user (ownership check)
+            // and sessions that are actually connected.
+            if (!targetSession || targetSession.userId !== identity.userId) continue;
+
+            const historyEntry = {
+                triggerId: `${triggerId}_${targetSessionId.slice(0, 8)}`,
+                type: body.type,
+                source: body.source ?? "service",
+                summary: body.summary,
+                payload: body.payload,
+                deliverAs,
+                ts,
+                direction: "inbound" as const,
+            };
+            void Promise.resolve(pushTriggerHistory(targetSessionId, historyEntry)).catch(() => {});
+
+            const localSocket = getLocalTuiSocket(targetSessionId);
+            if (localSocket?.connected) {
+                try {
+                    localSocket.emit("session_trigger", { trigger: { ...trigger, targetSessionId } });
+                    delivered++;
+                    continue;
+                } catch {
+                    // fall through to cross-node
+                }
+            }
+            const crossNode = await emitToRelaySessionVerified(
+                targetSessionId, "session_trigger", { trigger: { ...trigger, targetSessionId } },
+            );
+            if (crossNode) delivered++;
+        }
+
+        log.info(`Broadcast trigger ${triggerId} (type=${body.type}) to ${delivered}/${subscriberIds.length} subscribers on runner ${runnerId}`);
+        return Response.json({ ok: true, delivered, triggerId });
     }
 
     return undefined;

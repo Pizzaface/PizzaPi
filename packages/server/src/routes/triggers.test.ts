@@ -41,10 +41,12 @@ mock.module("../sessions/trigger-store.js", () => ({
 const mockSubscribeSessionToTrigger = mock((_sid: string, _rid: string, _type: string) => Promise.resolve());
 const mockUnsubscribeSessionFromTrigger = mock((_sid: string, _type: string) => Promise.resolve());
 const mockListSessionSubscriptions = mock((_sid: string) => Promise.resolve([] as any[]));
+const mockGetSubscribersForTrigger = mock((_rid: string, _type: string) => Promise.resolve([] as string[]));
 mock.module("../sessions/trigger-subscription-store.js", () => ({
     subscribeSessionToTrigger: mockSubscribeSessionToTrigger,
     unsubscribeSessionFromTrigger: mockUnsubscribeSessionFromTrigger,
     listSessionSubscriptions: mockListSessionSubscriptions,
+    getSubscribersForTrigger: mockGetSubscribersForTrigger,
 }));
 
 // ── Mock runners registry ────────────────────────────────────────────────
@@ -566,6 +568,118 @@ describe("DELETE /api/sessions/:id/trigger-subscriptions/:triggerType", () => {
         const [req, url] = makeReq("DELETE", "/api/sessions/sess-1/trigger-subscriptions/svc:event");
         const res = await handleTriggersRoute(req, url);
         expect(res!.status).toBe(404);
+    });
+});
+
+describe("POST /api/runners/:runnerId/trigger-broadcast", () => {
+    beforeEach(() => {
+        mockGetSharedSession.mockReset();
+        mockGetLocalTuiSocket.mockReset();
+        mockEmitToRelaySessionVerified.mockReset();
+        mockPushTriggerHistory.mockReset();
+        mockGetSubscribersForTrigger.mockReset();
+        mockValidateApiKey.mockReturnValue(
+            Promise.resolve({ userId: "user-1", userName: "TestUser" }),
+        );
+    });
+
+    test("returns 401 when no API key provided", async () => {
+        const [req, url] = makeReq("POST", "/api/runners/runner-A/trigger-broadcast", {
+            type: "svc:event",
+            payload: { x: 1 },
+        });
+        const res = await handleTriggersRoute(req, url);
+        expect(res?.status).toBe(401);
+    });
+
+    test("returns delivered=0 when no subscribers", async () => {
+        mockGetSubscribersForTrigger.mockReturnValue(Promise.resolve([]));
+
+        const [req, url] = makeReq(
+            "POST", "/api/runners/runner-A/trigger-broadcast",
+            { type: "svc:event", payload: { x: 1 } },
+            { "x-api-key": "test-key" },
+        );
+        const res = await handleTriggersRoute(req, url);
+        expect(res?.status).toBe(200);
+        const body = await res!.json();
+        expect(body.ok).toBe(true);
+        expect(body.delivered).toBe(0);
+    });
+
+    test("delivers to all subscribed sessions via local socket", async () => {
+        mockGetSubscribersForTrigger.mockReturnValue(
+            Promise.resolve(["sess-1", "sess-2"]),
+        );
+        mockGetSharedSession.mockImplementation((id: string) =>
+            Promise.resolve({ userId: "user-1", sessionId: id } as any),
+        );
+        const emitMock = mock(() => {});
+        mockGetLocalTuiSocket.mockReturnValue({ connected: true, emit: emitMock });
+
+        const [req, url] = makeReq(
+            "POST", "/api/runners/runner-A/trigger-broadcast",
+            { type: "svc:event", payload: { msg: "hello" }, source: "svc" },
+            { "x-api-key": "test-key" },
+        );
+        const res = await handleTriggersRoute(req, url);
+        expect(res?.status).toBe(200);
+        const body = await res!.json();
+        expect(body.ok).toBe(true);
+        expect(body.delivered).toBe(2);
+        expect(emitMock).toHaveBeenCalledTimes(2);
+    });
+
+    test("skips sessions belonging to a different user", async () => {
+        mockGetSubscribersForTrigger.mockReturnValue(
+            Promise.resolve(["sess-other", "sess-mine"]),
+        );
+        mockGetSharedSession.mockImplementation((id: string) =>
+            Promise.resolve({
+                userId: id === "sess-mine" ? "user-1" : "user-2",
+                sessionId: id,
+            } as any),
+        );
+        const emitMock = mock(() => {});
+        mockGetLocalTuiSocket.mockReturnValue({ connected: true, emit: emitMock });
+
+        const [req, url] = makeReq(
+            "POST", "/api/runners/runner-A/trigger-broadcast",
+            { type: "svc:event", payload: {} },
+            { "x-api-key": "test-key" },
+        );
+        const res = await handleTriggersRoute(req, url);
+        const body = await res!.json();
+        expect(body.delivered).toBe(1); // only sess-mine
+    });
+
+    test("falls back to cross-node delivery when local socket absent", async () => {
+        mockGetSubscribersForTrigger.mockReturnValue(Promise.resolve(["sess-1"]));
+        mockGetSharedSession.mockReturnValue(
+            Promise.resolve({ userId: "user-1", sessionId: "sess-1" } as any),
+        );
+        mockGetLocalTuiSocket.mockReturnValue(null);
+        mockEmitToRelaySessionVerified.mockReturnValue(Promise.resolve(true));
+
+        const [req, url] = makeReq(
+            "POST", "/api/runners/runner-A/trigger-broadcast",
+            { type: "svc:event", payload: {} },
+            { "x-api-key": "test-key" },
+        );
+        const res = await handleTriggersRoute(req, url);
+        const body = await res!.json();
+        expect(body.delivered).toBe(1);
+        expect(mockEmitToRelaySessionVerified).toHaveBeenCalledTimes(1);
+    });
+
+    test("returns 400 for missing type field", async () => {
+        const [req, url] = makeReq(
+            "POST", "/api/runners/runner-A/trigger-broadcast",
+            { payload: {} },
+            { "x-api-key": "test-key" },
+        );
+        const res = await handleTriggersRoute(req, url);
+        expect(res?.status).toBe(400);
     });
 });
 

@@ -218,6 +218,54 @@ export async function fireTrigger(
 }
 
 /**
+ * Broadcast a trigger by type to all sessions subscribed to that type on a runner.
+ * This is the delivery path that makes subscriptions useful: instead of firing to
+ * a specific session, a service fires to "all subscribers of type X on my runner."
+ *
+ * @param runnerId  The runner whose subscribers should receive the trigger.
+ * @param params    Trigger parameters (type, payload, etc.)
+ * @param deps      Optional dependency injection for testing.
+ */
+export async function broadcastTrigger(
+    runnerId: string,
+    params: FireTriggerParams,
+    deps: Partial<TriggerClientDeps> = {},
+): Promise<{ ok: boolean; delivered?: number; triggerId?: string; error?: string }> {
+    const d: TriggerClientDeps = { ...defaultDeps, ...deps };
+    const baseUrl = d.getRelayHttpBaseUrl();
+    const apiKey = d.getApiKey();
+
+    if (!baseUrl || !apiKey) {
+        return { ok: false, error: "No relay URL or API key configured" };
+    }
+
+    try {
+        const url = `${baseUrl}/api/runners/${encodeURIComponent(runnerId)}/trigger-broadcast`;
+        const response = await d.fetch(url, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "x-api-key": apiKey },
+            body: JSON.stringify({
+                type: params.type,
+                payload: params.payload,
+                deliverAs: params.deliverAs ?? "steer",
+                expectsResponse: params.expectsResponse ?? false,
+                ...(params.source ? { source: params.source } : {}),
+                ...(params.summary ? { summary: params.summary } : {}),
+            }),
+        });
+
+        const data = await response.json() as { ok?: boolean; delivered?: number; triggerId?: string; error?: string };
+        if (response.ok && data.ok) {
+            log.info(`Broadcast trigger ${data.triggerId} (type=${params.type}) delivered to ${data.delivered} subscriber(s) on runner ${runnerId}`);
+            return { ok: true, delivered: data.delivered, triggerId: data.triggerId ?? undefined };
+        }
+        return { ok: false, error: data.error ?? `HTTP ${response.status}` };
+    } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+}
+
+/**
  * Create a bound trigger client with pre-configured dependencies.
  * Useful for services that need to fire triggers repeatedly without
  * passing deps on every call.
@@ -238,6 +286,8 @@ export function createTriggerClient(deps: Partial<TriggerClientDeps> = {}) {
     return {
         fire: (sessionId: string, params: FireTriggerParams) =>
             fireTrigger(sessionId, params, deps),
+        broadcast: (runnerId: string, params: FireTriggerParams) =>
+            broadcastTrigger(runnerId, params, deps),
     };
 }
 
