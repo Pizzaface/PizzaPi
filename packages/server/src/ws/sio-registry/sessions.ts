@@ -11,8 +11,10 @@ import type { Socket } from "socket.io";
 import { randomBytes, randomUUID } from "crypto";
 import {
     type RedisSessionData,
+    type RedisSessionSummaryData,
     setSession,
     getSession,
+    getSessionSummary,
     updateSessionFields,
     deleteSession,
     getAllSessionSummaries,
@@ -397,6 +399,11 @@ export async function getSharedSession(sessionId: string): Promise<RedisSessionD
     return getSession(sessionId);
 }
 
+/** Get a lightweight session summary (without lastState). */
+export async function getSharedSessionSummary(sessionId: string): Promise<RedisSessionSummaryData | null> {
+    return getSessionSummary(sessionId);
+}
+
 /** Update session state (lastState + sessionName detection). */
 export async function updateSessionState(sessionId: string, state: unknown): Promise<void> {
     const session = await getSession(sessionId);
@@ -459,7 +466,15 @@ export async function getSessionState(sessionId: string): Promise<unknown | unde
 }
 
 /** Refresh ephemeral session expiry and SQLite touch. */
-export async function touchSessionActivity(sessionId: string, sessionHint?: RedisSessionData | null): Promise<void> {
+interface SessionActivityHint {
+    isEphemeral: boolean;
+    runnerId: string | null;
+}
+
+export async function touchSessionActivity(
+    sessionId: string,
+    sessionHint?: SessionActivityHint | null,
+): Promise<void> {
     const now = Date.now();
     const lastTouch = lastTouchTimes.get(sessionId) || 0;
 
@@ -835,9 +850,13 @@ export async function sweepOrphanedSessions(nowMs: number): Promise<void> {
  */
 export interface AddViewerOptions {
     /**
-     * Optional already-fetched session data to avoid a redundant Redis read.
+     * Optional already-fetched full session data to avoid a redundant Redis read.
      */
     sessionHint?: RedisSessionData | null;
+    /**
+     * Optional lightweight summary hint for paths that only fetched summary fields.
+     */
+    sessionSummaryHint?: RedisSessionSummaryData | null;
     /**
      * When true, viewer join acks are not blocked on activity bookkeeping.
      */
@@ -849,7 +868,7 @@ export async function addViewer(
     socket: Socket,
     options: AddViewerOptions = {},
 ): Promise<boolean> {
-    const session = options.sessionHint ?? await getSession(sessionId);
+    const session = options.sessionHint ?? options.sessionSummaryHint ?? await getSession(sessionId);
     if (!session) return false;
 
     await socket.join(viewerSessionRoom(sessionId));

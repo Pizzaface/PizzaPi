@@ -23,6 +23,7 @@ import { sessionCookieAuthMiddleware } from "./auth.js";
 import { getRunnerServiceAnnounce } from "./runner.js";
 import {
     getSharedSession,
+    getSharedSessionSummary,
     addViewer,
     removeViewer,
     getSessionSeq,
@@ -268,16 +269,16 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
                 if (!isViewerSwitchCurrent(getCurrentGeneration(), generation)) return;
             }
 
-            const session = await getSharedSession(nextSessionId);
+            const sessionSummary = await getSharedSessionSummary(nextSessionId);
             if (!isViewerSwitchCurrent(getCurrentGeneration(), generation)) return;
 
-            if (!session) {
+            if (!sessionSummary) {
                 socket.data.sessionId = undefined;
                 socket.emit("disconnected", { reason: "Session ended", code: "session_ended", generation });
                 return;
             }
 
-            if (!session.userId || session.userId !== viewerUserId) {
+            if (!sessionSummary.userId || sessionSummary.userId !== viewerUserId) {
                 socket.data.sessionId = undefined;
                 socket.emit("error", { message: "Session not found", generation });
                 return;
@@ -287,7 +288,7 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
             // reach the runner. This avoids losing the first live snapshot/chunks
             // and reduces startup resync churn.
             const ok = await addViewer(nextSessionId, socket, {
-                sessionHint: session,
+                sessionSummaryHint: sessionSummary,
                 touchAsync: true,
             });
             if (!isViewerSwitchCurrent(getCurrentGeneration(), generation)) {

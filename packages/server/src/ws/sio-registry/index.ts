@@ -14,6 +14,7 @@ export {
     removeLocalTuiSocket,
     getSessions,
     getSharedSession,
+    getSharedSessionSummary,
     updateSessionState,
     getSessionState,
     touchSessionActivity,

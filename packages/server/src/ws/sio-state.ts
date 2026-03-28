@@ -414,6 +414,31 @@ export async function getSession(sessionId: string): Promise<RedisSessionData | 
     return parseSessionFromHash(hash);
 }
 
+/**
+ * Fetch only the lightweight session summary fields for a single session.
+ * Avoids pulling large lastState blobs from Redis on hot paths that only
+ * need identity/liveness metadata.
+ */
+export async function getSessionSummary(sessionId: string): Promise<RedisSessionSummaryData | null> {
+    const r = requireRedis();
+    const key = sessionKey(sessionId);
+
+    if (typeof (r as unknown as { hmGet?: unknown }).hmGet === "function") {
+        const row = await (
+            r as unknown as { hmGet: (key: string, fields: readonly string[]) => Promise<unknown> }
+        ).hmGet(key, SESSION_SUMMARY_FIELDS);
+
+        const hash = rowToSummaryHash(row);
+        if (!hash || Object.keys(hash).length === 0) return null;
+        return parseSessionSummaryFromHash(hash);
+    }
+
+    // Fallback for clients/mocks that do not expose hmGet.
+    const hash = await r.hGetAll(key);
+    if (!hash || Object.keys(hash).length === 0) return null;
+    return parseSessionSummaryFromHash(hash);
+}
+
 export async function updateSessionFields(
     sessionId: string,
     fields: Partial<RedisSessionData>,
