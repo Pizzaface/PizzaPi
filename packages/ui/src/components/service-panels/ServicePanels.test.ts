@@ -34,11 +34,11 @@ describe("resolveNewPanelPosition — adding bug", () => {
         // After fix: godmother is placed at "bottom" (same as tunnel).
         const activeServicePanels = new Set(["tunnel"]);
         const positions = new Map([
-            ["tunnel", "bottom"],
+            ["tunnel", "center-bottom"],
             // godmother has a *different* stored position
-            ["godmother", "right"],
+            ["godmother", "right-middle"],
         ] as const);
-        const getPanelPosition = (id: string) => positions.get(id) ?? "right";
+        const getPanelPosition = (id: string) => positions.get(id) ?? "right-middle";
 
         const result = resolveNewPanelPosition(
             "godmother",
@@ -47,15 +47,15 @@ describe("resolveNewPanelPosition — adding bug", () => {
             getPanelPosition,
         );
 
-        expect(result).toBe("bottom"); // same group as the active panel (tunnel)
+        expect(result).toBe("center-bottom"); // same group as the active panel (tunnel)
     });
 
     test("uses stored position when no service panel is currently active", () => {
         // No service panels open yet.  combinedActiveTab = "terminal".
         // The new panel should use its stored/default position.
         const activeServicePanels = new Set<string>(); // empty
-        const positions = new Map([["godmother", "left"]] as const);
-        const getPanelPosition = (id: string) => positions.get(id) ?? "right";
+        const positions = new Map([["godmother", "left-middle"]] as const);
+        const getPanelPosition = (id: string) => positions.get(id) ?? "right-middle";
 
         const result = resolveNewPanelPosition(
             "godmother",
@@ -64,12 +64,12 @@ describe("resolveNewPanelPosition — adding bug", () => {
             getPanelPosition,
         );
 
-        expect(result).toBe("left"); // godmother's own stored position
+        expect(result).toBe("left-middle"); // godmother's own stored position
     });
 
     test("uses default 'right' position when no service panel is active and no stored position", () => {
         const activeServicePanels = new Set<string>();
-        const getPanelPosition = (_id: string) => "right" as const; // default
+        const getPanelPosition = (_id: string) => "right-middle" as const; // default
 
         const result = resolveNewPanelPosition(
             "godmother",
@@ -78,7 +78,7 @@ describe("resolveNewPanelPosition — adding bug", () => {
             getPanelPosition,
         );
 
-        expect(result).toBe("right");
+        expect(result).toBe("right-middle");
     });
 
     test("opening a second panel while the first is active puts it in the same group", () => {
@@ -86,10 +86,10 @@ describe("resolveNewPanelPosition — adding bug", () => {
         // User clicks godmother button → should appear at "right" (same group as tunnel).
         const activeServicePanels = new Set(["tunnel"]);
         const positions = new Map([
-            ["tunnel", "right"],
-            ["godmother", "bottom"], // stale stored position
+            ["tunnel", "right-middle"],
+            ["godmother", "center-bottom"], // stale stored position
         ] as const);
-        const getPanelPosition = (id: string) => positions.get(id) ?? "right";
+        const getPanelPosition = (id: string) => positions.get(id) ?? "right-middle";
 
         const result = resolveNewPanelPosition(
             "godmother",
@@ -98,17 +98,17 @@ describe("resolveNewPanelPosition — adding bug", () => {
             getPanelPosition,
         );
 
-        expect(result).toBe("right"); // follows tunnel, not the stale stored position
+        expect(result).toBe("right-middle"); // follows tunnel, not the stale stored position
     });
 
     test("does not change position when new panel is already in the same group", () => {
         // Both panels default to "right" — the fix is a no-op in this case.
         const activeServicePanels = new Set(["tunnel"]);
         const positions = new Map([
-            ["tunnel", "right"],
-            ["godmother", "right"],
+            ["tunnel", "right-middle"],
+            ["godmother", "right-middle"],
         ] as const);
-        const getPanelPosition = (id: string) => positions.get(id) ?? "right";
+        const getPanelPosition = (id: string) => positions.get(id) ?? "right-middle";
 
         const result = resolveNewPanelPosition(
             "godmother",
@@ -117,7 +117,7 @@ describe("resolveNewPanelPosition — adding bug", () => {
             getPanelPosition,
         );
 
-        expect(result).toBe("right"); // no change needed
+        expect(result).toBe("right-middle"); // no change needed
     });
 });
 
@@ -132,10 +132,10 @@ describe("resolveNewPanelPosition — persistence safety", () => {
         // The fix: use setEphemeralPanelPosition (non-persisted) in this case.
         const activeServicePanels = new Set(["tunnel"]);
         const positions = new Map([
-            ["tunnel", "bottom"],
-            ["godmother", "right"], // godmother's OWN saved preference
+            ["tunnel", "center-bottom"],
+            ["godmother", "right-middle"], // godmother's OWN saved preference
         ] as const);
-        const getPanelPosition = (id: string) => positions.get(id) ?? "right";
+        const getPanelPosition = (id: string) => positions.get(id) ?? "right-middle";
 
         const autoPlacedPosition = resolveNewPanelPosition(
             "godmother",
@@ -144,9 +144,9 @@ describe("resolveNewPanelPosition — persistence safety", () => {
             getPanelPosition,
         );
 
-        // Auto-placement correctly returns "bottom" (same group as tunnel)…
-        expect(autoPlacedPosition).toBe("bottom");
-        // …but this DIFFERS from godmother's own stored preference ("right"),
+        // Auto-placement correctly returns "center-bottom" (same group as tunnel)…
+        expect(autoPlacedPosition).toBe("center-bottom");
+        // …but this DIFFERS from godmother's own stored preference ("right-middle"),
         // so persisting it would permanently corrupt the saved dock position.
         expect(autoPlacedPosition).not.toBe(getPanelPosition("godmother"));
     });
@@ -156,8 +156,8 @@ describe("resolveNewPanelPosition — persistence safety", () => {
         // returns the panel's own stored preference, making any persist call a no-op.
         // The fix: skip the setServicePanelPosition call entirely in this path.
         const activeServicePanels = new Set<string>();
-        const positions = new Map([["godmother", "left"]] as const);
-        const getPanelPosition = (id: string) => positions.get(id) ?? "right";
+        const positions = new Map([["godmother", "left-middle"]] as const);
+        const getPanelPosition = (id: string) => positions.get(id) ?? "right-middle";
 
         const position = resolveNewPanelPosition(
             "godmother",
@@ -166,7 +166,7 @@ describe("resolveNewPanelPosition — persistence safety", () => {
             getPanelPosition,
         );
 
-        expect(position).toBe("left");
+        expect(position).toBe("left-middle");
         // Position equals the panel's own stored preference — no corruption possible.
         expect(position).toBe(getPanelPosition("godmother"));
     });
@@ -180,8 +180,8 @@ describe("resolveNewPanelPosition — persistence safety", () => {
         // Scenario: godmother stored at "right". Opened next to tunnel ("bottom")
         // → auto-placed ephemeral="bottom". Closed. Opened again standalone.
         // Expected: uses stored "right", NOT the stale "bottom".
-        const positions = new Map([["godmother", "right"]] as const);
-        const getPanelPosition = (id: string) => positions.get(id) ?? "right";
+        const positions = new Map([["godmother", "right-middle"]] as const);
+        const getPanelPosition = (id: string) => positions.get(id) ?? "right-middle";
 
         // Second open: active tab is NOT a service panel (tunnel closed)
         const activeServicePanels = new Set<string>();
@@ -192,7 +192,7 @@ describe("resolveNewPanelPosition — persistence safety", () => {
             getPanelPosition,
         );
         // Returns stored preference, not any stale ephemeral value
-        expect(position).toBe("right");
+        expect(position).toBe("right-middle");
     });
 });
 

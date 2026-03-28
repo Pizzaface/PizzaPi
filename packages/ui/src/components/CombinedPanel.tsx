@@ -1,22 +1,77 @@
 import * as React from "react";
 import * as ReactDOM from "react-dom";
 import { cn } from "@/lib/utils";
-import { GripHorizontal, PanelBottom, PanelLeft, PanelRight, X } from "lucide-react";
+import { GripHorizontal, X } from "lucide-react";
+import type { PanelPosition } from "@/hooks/usePanelLayout";
 
-// ── Position Picker (shared with TerminalManager / FileExplorer) ─────────────
+// ── 9-zone grid definition ───────────────────────────────────────────────────
+// Row 0 = top, Row 1 = middle (center-middle is main content), Row 2 = bottom.
+// Col 0 = left, Col 1 = center, Col 2 = right.
 
-const POSITION_OPTIONS = [
-  { pos: "left" as const, Icon: PanelLeft, label: "Left" },
-  { pos: "bottom" as const, Icon: PanelBottom, label: "Bottom" },
-  { pos: "right" as const, Icon: PanelRight, label: "Right" },
-] as const;
+interface ZoneCell {
+  pos: PanelPosition | null;   // null → center-middle (main content, not selectable)
+  label: string;
+}
+
+const ZONE_GRID: ZoneCell[][] = [
+  [
+    { pos: "left-top",      label: "Left — top"    },
+    { pos: "center-top",    label: "Top"           },
+    { pos: "right-top",     label: "Right — top"   },
+  ],
+  [
+    { pos: "left-middle",   label: "Left"          },
+    { pos: null,            label: "Main"          },
+    { pos: "right-middle",  label: "Right"         },
+  ],
+  [
+    { pos: "left-bottom",   label: "Left — bottom" },
+    { pos: "center-bottom", label: "Bottom"        },
+    { pos: "right-bottom",  label: "Right — bottom"},
+  ],
+];
+
+// ── Inline SVG: mini 3×3 grid icon showing active zone ──────────────────────
+function PositionGridIcon({ position }: { position: PanelPosition }) {
+  const colIdx = position.startsWith("left-") ? 0 : position.startsWith("right-") ? 2 : 1;
+  const rowIdx = position.endsWith("-top")    ? 0 : position.endsWith("-bottom") ? 2 : 1;
+
+  const CELL = 4;
+  const GAP  = 1;
+  const SIZE  = 3 * CELL + 2 * GAP; // 14
+
+  return (
+    <svg viewBox={`0 0 ${SIZE} ${SIZE}`} width="13" height="13" aria-hidden="true">
+      {ZONE_GRID.map((row, r) =>
+        row.map((cell, c) => {
+          const isActive = c === colIdx && r === rowIdx;
+          const isMain   = cell.pos === null;
+          return (
+            <rect
+              key={`${r}-${c}`}
+              x={c * (CELL + GAP)}
+              y={r * (CELL + GAP)}
+              width={CELL}
+              height={CELL}
+              rx={0.75}
+              fill="currentColor"
+              opacity={isActive ? 1 : isMain ? 0.12 : 0.3}
+            />
+          );
+        })
+      )}
+    </svg>
+  );
+}
+
+// ── Position Picker ──────────────────────────────────────────────────────────
 
 const PositionDropdown = React.forwardRef<
   HTMLDivElement,
   {
     containerRef: React.RefObject<HTMLDivElement | null>;
-    position: "left" | "right" | "bottom";
-    onSelect: (pos: "left" | "right" | "bottom") => void;
+    position: PanelPosition;
+    onSelect: (pos: PanelPosition) => void;
   }
 >(function PositionDropdown({ containerRef, position, onSelect }, ref) {
   const [coords, setCoords] = React.useState<{ top: number; left: number } | null>(null);
@@ -24,11 +79,13 @@ const PositionDropdown = React.forwardRef<
   React.useLayoutEffect(() => {
     const el = containerRef.current;
     if (!el) return;
-    const rect = el.getBoundingClientRect();
-    const dropdownWidth = 3 * 28 + 2 * 2 + 8;
+    const rect   = el.getBoundingClientRect();
+    // 3 cols × 26px + 2 gaps × 2px + 8px padding
+    const width  = 3 * 26 + 2 * 2 + 8;
+    const height = 3 * 26 + 2 * 2 + 8;
     setCoords({
-      top: rect.top - 6 - 36,
-      left: rect.left + rect.width / 2 - dropdownWidth / 2,
+      top:  rect.top - 6 - height,
+      left: rect.left + rect.width / 2 - width / 2,
     });
   }, [containerRef]);
 
@@ -37,26 +94,38 @@ const PositionDropdown = React.forwardRef<
   return (
     <div
       ref={ref}
-      className="fixed flex items-center gap-0.5 rounded-lg bg-popover border border-border p-1 shadow-xl z-[9999] animate-in fade-in zoom-in-95 duration-100"
+      className="fixed rounded-lg bg-popover border border-border p-1 shadow-xl z-[9999] animate-in fade-in zoom-in-95 duration-100"
       style={{ top: coords.top, left: coords.left }}
     >
-      {POSITION_OPTIONS.map(({ pos, Icon, label }) => (
-        <button
-          key={pos}
-          type="button"
-          onClick={() => onSelect(pos)}
-          className={cn(
-            "flex items-center justify-center size-7 rounded transition-colors",
-            position === pos
-              ? "bg-accent text-foreground"
-              : "text-muted-foreground hover:text-foreground hover:bg-accent",
-          )}
-          title={label}
-          aria-label={`Move panel to ${label}`}
-        >
-          <Icon size={14} />
-        </button>
-      ))}
+      <div className="grid grid-cols-3 gap-0.5">
+        {ZONE_GRID.map((row, r) =>
+          row.map((cell, c) => {
+            const isActive = cell.pos === position;
+            const isMain   = cell.pos === null;
+            return (
+              <button
+                key={`${r}-${c}`}
+                type="button"
+                disabled={isMain}
+                onClick={isMain ? undefined : () => onSelect(cell.pos!)}
+                className={cn(
+                  "flex items-center justify-center size-[26px] rounded text-[9px] font-medium transition-colors leading-none",
+                  isMain
+                    ? "text-muted-foreground/30 cursor-default"
+                    : isActive
+                      ? "bg-primary text-primary-foreground"
+                      : "text-muted-foreground hover:text-foreground hover:bg-accent",
+                )}
+                title={cell.label}
+                aria-label={isMain ? "Main content (not a dock target)" : `Move panel to ${cell.label}`}
+                aria-pressed={isActive}
+              >
+                {isMain ? "●" : <PositionGridIcon position={cell.pos!} />}
+              </button>
+            );
+          })
+        )}
+      </div>
     </div>
   );
 });
@@ -65,16 +134,14 @@ function PositionPicker({
   position,
   onPositionChange,
 }: {
-  position: "left" | "right" | "bottom";
-  onPositionChange: (pos: "left" | "right" | "bottom") => void;
+  position: PanelPosition;
+  onPositionChange: (pos: PanelPosition) => void;
 }) {
   const [open, setOpen] = React.useState(false);
-  const holdTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const holdTimer    = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const containerRef = React.useRef<HTMLDivElement>(null);
-  const dropdownRef = React.useRef<HTMLDivElement>(null);
-  const wasHeld = React.useRef(false);
-
-  const ActiveIcon = POSITION_OPTIONS.find((o) => o.pos === position)!.Icon;
+  const dropdownRef  = React.useRef<HTMLDivElement>(null);
+  const wasHeld      = React.useRef(false);
 
   React.useEffect(() => {
     if (!open) return;
@@ -93,40 +160,26 @@ function PositionPicker({
 
   React.useEffect(() => {
     if (!open) return;
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
-    };
+    const handler = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
     document.addEventListener("keydown", handler);
     return () => document.removeEventListener("keydown", handler);
   }, [open]);
 
   const clearHold = () => {
-    if (holdTimer.current) {
-      clearTimeout(holdTimer.current);
-      holdTimer.current = null;
-    }
+    if (holdTimer.current) { clearTimeout(holdTimer.current); holdTimer.current = null; }
   };
 
   const handlePointerDown = () => {
     wasHeld.current = false;
-    holdTimer.current = setTimeout(() => {
-      wasHeld.current = true;
-      setOpen(true);
-    }, 300);
+    holdTimer.current = setTimeout(() => { wasHeld.current = true; setOpen(true); }, 300);
   };
-
   const handlePointerUp = () => {
     clearHold();
-    if (!wasHeld.current) {
-      setOpen((v) => !v);
-    }
+    if (!wasHeld.current) setOpen((v) => !v);
   };
+  const handlePointerLeave = () => clearHold();
 
-  const handlePointerLeave = () => {
-    clearHold();
-  };
-
-  const handleSelect = (pos: "left" | "right" | "bottom") => {
+  const handleSelect = (pos: PanelPosition) => {
     onPositionChange(pos);
     setOpen(false);
   };
@@ -146,8 +199,9 @@ function PositionPicker({
         )}
         title="Panel position"
         aria-label="Panel position"
+        aria-expanded={open}
       >
-        <ActiveIcon size={13} />
+        <PositionGridIcon position={position} />
       </button>
 
       {open && ReactDOM.createPortal(
@@ -179,9 +233,11 @@ export interface CombinedPanelProps {
   tabs: CombinedPanelTab[];
   activeTabId: string;
   onActiveTabChange: (id: string) => void;
-  position: "left" | "right" | "bottom";
-  onPositionChange?: (pos: "left" | "right" | "bottom") => void;
+  position: PanelPosition;
+  onPositionChange?: (pos: PanelPosition) => void;
   onDragStart?: (e: React.PointerEvent) => void;
+  /** Called when a tab is double-clicked — typically used to toggle panel collapse */
+  onCollapseToggle?: () => void;
   className?: string;
 }
 
@@ -192,6 +248,7 @@ export function CombinedPanel({
   position,
   onPositionChange,
   onDragStart,
+  onCollapseToggle,
   className,
 }: CombinedPanelProps) {
   // Track per-tab drag gestures so that dragging a tab detaches it
@@ -204,6 +261,8 @@ export function CombinedPanel({
     activated: boolean;
   } | null>(null);
 
+  const activeTab = tabs.find((t) => t.id === activeTabId);
+
   return (
     <div className={cn("flex flex-col bg-background text-foreground", className)}>
       {/* Tab bar */}
@@ -211,7 +270,7 @@ export function CombinedPanel({
         <div className="flex items-center flex-1 min-w-0 overflow-x-auto gap-0.5 px-1 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
           {tabs.map((tab) => {
             const isActive = activeTabId === tab.id;
-            const hasDrag = !!tab.onDragStart;
+            const hasDrag  = !!tab.onDragStart;
             return (
               <div
                 key={tab.id}
@@ -223,12 +282,13 @@ export function CombinedPanel({
                   hasDrag ? "cursor-grab active:cursor-grabbing" : "cursor-pointer",
                 )}
                 onClick={() => {
-                  // Suppress click if this pointer-down became a drag
-                  if (tabDragRef.current?.activated) {
-                    tabDragRef.current = null;
-                    return;
-                  }
+                  if (tabDragRef.current?.activated) { tabDragRef.current = null; return; }
                   onActiveTabChange(tab.id);
+                }}
+                onDoubleClick={() => onCollapseToggle?.()}
+                onMouseDown={(e) => {
+                  // Middle-click to close
+                  if (e.button === 1) { e.preventDefault(); tab.onClose?.(); }
                 }}
                 onPointerDown={hasDrag ? (e) => {
                   if (e.button !== 0) return;
@@ -240,7 +300,6 @@ export function CombinedPanel({
                     pointerId: e.pointerId,
                     activated: false,
                   };
-                  // Capture so move/up are reliable even if pointer leaves the tab
                   (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
                 } : undefined}
                 onPointerMove={hasDrag ? (e) => {
@@ -248,51 +307,17 @@ export function CombinedPanel({
                   if (!drag || drag.tabId !== tab.id || drag.pointerId !== e.pointerId || drag.activated) return;
                   const dx = e.clientX - drag.startX;
                   const dy = e.clientY - drag.startY;
-                  // 4 px threshold to distinguish drag from click
-                  if (dx * dx + dy * dy > 16) {
-                    drag.activated = true;
-                    drag.onDragStart(e);
-                  }
+                  if (dx * dx + dy * dy > 16) { drag.activated = true; drag.onDragStart(e); }
                 } : undefined}
                 onPointerUp={hasDrag ? (e) => {
                   const drag = tabDragRef.current;
                   if (!drag || drag.tabId !== tab.id || drag.pointerId !== e.pointerId) return;
-                  if (!drag.activated) {
-                    // Was a click — null the ref so onClick fires normally
-                    tabDragRef.current = null;
-                  }
-                  // If activated, keep ref alive so onClick can detect and suppress it
+                  if (!drag.activated) tabDragRef.current = null;
                 } : undefined}
-                onPointerCancel={hasDrag ? () => {
-                  tabDragRef.current = null;
-                } : undefined}
+                onPointerCancel={hasDrag ? () => { tabDragRef.current = null; } : undefined}
               >
                 {tab.icon}
                 <span>{tab.label}</span>
-                {tab.onClose && (
-                  <button
-                    type="button"
-                    onPointerDown={(e) => {
-                      e.stopPropagation();
-                    }}
-                    onPointerUp={(e) => {
-                      e.stopPropagation();
-                    }}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      tab.onClose!();
-                    }}
-                    className={cn(
-                      "rounded p-0.5 transition-colors ml-0.5",
-                      isActive
-                        ? "text-muted-foreground hover:text-foreground hover:bg-accent"
-                        : "text-transparent group-hover:text-muted-foreground hover:!text-foreground hover:bg-accent",
-                    )}
-                    aria-label={`Close ${tab.label}`}
-                  >
-                    <X size={10} />
-                  </button>
-                )}
               </div>
             );
           })}
@@ -314,6 +339,21 @@ export function CombinedPanel({
             <>
               <div className="w-px h-4 bg-border mx-1 shrink-0" />
               <PositionPicker position={position} onPositionChange={onPositionChange} />
+            </>
+          )}
+          {/* Close button for the active tab */}
+          {activeTab?.onClose && (
+            <>
+              <div className="w-px h-4 bg-border mx-1 shrink-0" />
+              <button
+                type="button"
+                onClick={() => activeTab.onClose!()}
+                className="flex items-center justify-center size-7 rounded text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+                aria-label={`Close ${activeTab.label}`}
+                title={`Close ${activeTab.label}`}
+              >
+                <X size={13} />
+              </button>
             </>
           )}
         </div>

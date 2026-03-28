@@ -412,8 +412,9 @@ export function App() {
   const panelLayout = usePanelLayout(activeSessionId);
   const {
     showTerminal, setShowTerminal,
-    terminalPosition, terminalHeight, terminalWidth, terminalColumnRef,
-    handleTerminalPositionChange, startPanelResizeForPosition,
+    terminalPosition,
+    terminalColumnRef,
+    handleTerminalPositionChange,
     panelDragActive, panelDragZone,
     startPanelDragWith,
     handleOuterPointerMove, handleOuterPointerUp,
@@ -421,10 +422,15 @@ export function App() {
     terminalTabs, activeTerminalId, setActiveTerminalId,
     handleTerminalTabAdd, handleTerminalTabClose,
     showFileExplorer, setShowFileExplorer,
-    filesPosition, filesContainerRef,
+    filesPosition,
     handleFilesPositionChange,
     showGit, setShowGit,
     gitPosition, handleGitPositionChange,
+    leftColumnWidth, rightColumnWidth,
+    leftTopHeight, leftBottomHeight,
+    rightTopHeight, rightBottomHeight,
+    centerTopHeight, centerBottomHeight,
+    startColumnWidthResize, startZoneHeightResize,
   } = panelLayout;
 
   const [newSessionOpen, setNewSessionOpen] = React.useState(false);
@@ -3842,13 +3848,47 @@ export function App() {
   }, [activeServicePanels, tunnelSessionId, activeSessionId, dynamicPanels, startPanelDragWith, setServicePanelPosition, closeServicePanelById, handleCombinedTabChange]);
 
   const panelGroups = React.useMemo(() => {
-    const groups: Record<"left" | "right" | "bottom", CombinedPanelTab[]> = { left: [], right: [], bottom: [] };
+    type PG = import("@/hooks/usePanelLayout").PanelPosition;
+    const groups: Record<PG, CombinedPanelTab[]> = {
+      "left-top": [], "left-middle": [], "left-bottom": [],
+      "center-top": [], "center-bottom": [],
+      "right-top": [], "right-middle": [], "right-bottom": [],
+    };
     if (terminalPanelTab) groups[terminalPosition].push(terminalPanelTab);
     if (filesPanelTab) groups[filesPosition].push(filesPanelTab);
     if (gitPanelTab) groups[gitPosition].push(gitPanelTab);
     for (const tab of servicePanelTabs) groups[getServicePanelPosition(tab.id)].push(tab);
     return groups;
   }, [terminalPanelTab, terminalPosition, filesPanelTab, filesPosition, gitPanelTab, gitPosition, servicePanelTabs, getServicePanelPosition]);
+
+  // ── Derived column zone arrays ─────────────────────────────────────────────
+  // Each side column orders its zones top→middle→bottom. Middle zone fills the
+  // remaining vertical space; if absent, the first visible zone fills.
+  const leftColZones = React.useMemo(() => {
+    const candidates = [
+      { pos: "left-top"    as const, tabs: panelGroups["left-top"],    storedHeight: leftTopHeight },
+      { pos: "left-middle" as const, tabs: panelGroups["left-middle"],  storedHeight: 0 },
+      { pos: "left-bottom" as const, tabs: panelGroups["left-bottom"],  storedHeight: leftBottomHeight },
+    ].filter(z => z.tabs.length > 0);
+    const midIdx = candidates.findIndex(z => z.pos === "left-middle");
+    const fillIdx = midIdx >= 0 ? midIdx : 0;
+    return candidates.map((z, i) => ({ ...z, fills: i === fillIdx }));
+  }, [panelGroups, leftTopHeight, leftBottomHeight]);
+
+  const rightColZones = React.useMemo(() => {
+    const candidates = [
+      { pos: "right-top"    as const, tabs: panelGroups["right-top"],    storedHeight: rightTopHeight },
+      { pos: "right-middle" as const, tabs: panelGroups["right-middle"],  storedHeight: 0 },
+      { pos: "right-bottom" as const, tabs: panelGroups["right-bottom"],  storedHeight: rightBottomHeight },
+    ].filter(z => z.tabs.length > 0);
+    const midIdx = candidates.findIndex(z => z.pos === "right-middle");
+    const fillIdx = midIdx >= 0 ? midIdx : 0;
+    return candidates.map((z, i) => ({ ...z, fills: i === fillIdx }));
+  }, [panelGroups, rightTopHeight, rightBottomHeight]);
+
+  const hasPanels = React.useMemo(() =>
+    Object.values(panelGroups).some(g => g.length > 0),
+  [panelGroups]);
 
   const handleGroupPositionChange = React.useCallback((tabIds: string[], pos: import("@/hooks/usePanelLayout").PanelPosition) => {
     if (tabIds.includes("terminal")) handleTerminalPositionChange(pos);
@@ -4134,31 +4174,84 @@ export function App() {
         />
 
         <div
-          ref={filesContainerRef}
+          ref={terminalColumnRef}
           className="relative flex flex-1 min-w-0 h-full overflow-hidden"
+          onPointerMove={hasPanels ? handleOuterPointerMove : undefined}
+          onPointerUp={hasPanels ? handleOuterPointerUp : undefined}
+          onPointerCancel={hasPanels ? handleOuterPointerUp : undefined}
         >
-          <div
-            ref={terminalColumnRef}
-            className="relative flex flex-1 min-w-0 h-full flex-col"
-            onPointerMove={mobilePanelTabs.length > 0 ? handleOuterPointerMove : undefined}
-            onPointerUp={mobilePanelTabs.length > 0 ? handleOuterPointerUp : undefined}
-            onPointerCancel={mobilePanelTabs.length > 0 ? handleOuterPointerUp : undefined}
-          >
-            <div className="flex flex-1 min-w-0 min-h-0">
-              {panelGroups.left.length > 0 && (
-                <DockedPanelGroup
-                  position="left"
-                  size={terminalWidth}
-                  tabs={panelGroups.left}
-                  activeTabId={resolveActiveTabId(panelGroups.left)}
-                  onActiveTabChange={handleCombinedTabChange}
-                  onPositionChange={(pos) => handleGroupPositionChange(panelGroups.left.map(tab => tab.id), pos)}
-                  onDragStart={handleGroupDragStart(panelGroups.left.map(tab => tab.id))}
-                  onResizeStart={(e) => startPanelResizeForPosition("left", e)}
-                />
-              )}
+          {/* ── LEFT COLUMN ─────────────────────────────────────────────── */}
+          {leftColZones.length > 0 && (
+            <>
+              <div className="hidden md:flex flex-col shrink-0 min-h-0" style={{ width: leftColumnWidth }}>
+                {leftColZones.map((zone, i) => {
+                  const nextZone = leftColZones[i + 1];
+                  const handleZonePos = nextZone
+                    ? (zone.fills ? nextZone.pos : zone.pos)
+                    : undefined;
+                  return (
+                    <React.Fragment key={zone.pos}>
+                      <div
+                        className={cn(zone.fills ? "flex-1 min-h-0" : "shrink-0")}
+                        style={!zone.fills ? { height: zone.storedHeight } : undefined}
+                      >
+                        <CombinedPanel
+                          position={zone.pos}
+                          tabs={zone.tabs}
+                          activeTabId={resolveActiveTabId(zone.tabs)}
+                          onActiveTabChange={handleCombinedTabChange}
+                          onPositionChange={(pos) => handleGroupPositionChange(zone.tabs.map(t => t.id), pos)}
+                          onDragStart={handleGroupDragStart(zone.tabs.map(t => t.id))}
+                          className="h-full"
+                        />
+                      </div>
+                      {nextZone && (
+                        <div
+                          className="hidden md:flex h-[5px] cursor-row-resize shrink-0 items-center justify-center group"
+                          onPointerDown={handleZonePos ? (e) => startZoneHeightResize(handleZonePos, e) : undefined}
+                        >
+                          <div className="bg-zinc-800 group-hover:bg-blue-500/60 group-active:bg-blue-500 transition-colors w-full h-px" />
+                        </div>
+                      )}
+                    </React.Fragment>
+                  );
+                })}
+              </div>
+              <div
+                className="hidden md:flex w-[5px] cursor-col-resize shrink-0 items-center justify-center group"
+                onPointerDown={(e) => startColumnWidthResize("left", e)}
+              >
+                <div className="bg-zinc-800 group-hover:bg-blue-500/60 group-active:bg-blue-500 transition-colors h-full w-px" />
+              </div>
+            </>
+          )}
 
-              <div id="main-content" tabIndex={-1} className="flex flex-col flex-1 min-w-0 min-h-0 overflow-hidden">
+          {/* ── CENTER COLUMN ───────────────────────────────────────────── */}
+          <div className="flex flex-col flex-1 min-w-0 min-h-0">
+            {/* center-top zone */}
+            {panelGroups["center-top"].length > 0 && (
+              <>
+                <div className="hidden md:flex flex-col shrink-0" style={{ height: centerTopHeight }}>
+                  <CombinedPanel
+                    position="center-top"
+                    tabs={panelGroups["center-top"]}
+                    activeTabId={resolveActiveTabId(panelGroups["center-top"])}
+                    onActiveTabChange={handleCombinedTabChange}
+                    onPositionChange={(pos) => handleGroupPositionChange(panelGroups["center-top"].map(t => t.id), pos)}
+                    onDragStart={handleGroupDragStart(panelGroups["center-top"].map(t => t.id))}
+                    className="h-full"
+                  />
+                </div>
+                <div
+                  className="hidden md:flex h-[5px] cursor-row-resize shrink-0 items-center justify-center group"
+                  onPointerDown={(e) => startZoneHeightResize("center-top", e)}
+                >
+                  <div className="bg-zinc-800 group-hover:bg-blue-500/60 group-active:bg-blue-500 transition-colors w-full h-px" />
+                </div>
+              </>
+            )}
+
+            <div id="main-content" tabIndex={-1} className="flex flex-col flex-1 min-w-0 min-h-0 overflow-hidden">
                 {showRunners ? (
                   <RunnerManager
                     runners={feedRunners}
@@ -4277,74 +4370,131 @@ export function App() {
                 )}
               </div>
 
-              {panelGroups.right.length > 0 && (
-                <DockedPanelGroup
-                  position="right"
-                  size={terminalWidth}
-                  tabs={panelGroups.right}
-                  activeTabId={resolveActiveTabId(panelGroups.right)}
-                  onActiveTabChange={handleCombinedTabChange}
-                  onPositionChange={(pos) => handleGroupPositionChange(panelGroups.right.map(tab => tab.id), pos)}
-                  onDragStart={handleGroupDragStart(panelGroups.right.map(tab => tab.id))}
-                  onResizeStart={(e) => startPanelResizeForPosition("right", e)}
-                />
-              )}
-            </div>
-
-            {panelGroups.bottom.length > 0 && (
-              <DockedPanelGroup
-                position="bottom"
-                size={terminalHeight}
-                tabs={panelGroups.bottom}
-                activeTabId={resolveActiveTabId(panelGroups.bottom)}
-                onActiveTabChange={handleCombinedTabChange}
-                onPositionChange={(pos) => handleGroupPositionChange(panelGroups.bottom.map(tab => tab.id), pos)}
-                onDragStart={handleGroupDragStart(panelGroups.bottom.map(tab => tab.id))}
-                onResizeStart={(e) => startPanelResizeForPosition("bottom", e)}
-              />
+            {/* center-bottom zone */}
+            {panelGroups["center-bottom"].length > 0 && (
+              <>
+                <div
+                  className="hidden md:flex h-[5px] cursor-row-resize shrink-0 items-center justify-center group"
+                  onPointerDown={(e) => startZoneHeightResize("center-bottom", e)}
+                >
+                  <div className="bg-zinc-800 group-hover:bg-blue-500/60 group-active:bg-blue-500 transition-colors w-full h-px" />
+                </div>
+                <div className="hidden md:flex flex-col shrink-0" style={{ height: centerBottomHeight }}>
+                  <CombinedPanel
+                    position="center-bottom"
+                    tabs={panelGroups["center-bottom"]}
+                    activeTabId={resolveActiveTabId(panelGroups["center-bottom"])}
+                    onActiveTabChange={handleCombinedTabChange}
+                    onPositionChange={(pos) => handleGroupPositionChange(panelGroups["center-bottom"].map(t => t.id), pos)}
+                    onDragStart={handleGroupDragStart(panelGroups["center-bottom"].map(t => t.id))}
+                    className="h-full"
+                  />
+                </div>
+              </>
             )}
+          </div>{/* end center column */}
 
-            {mobilePanelTabs.length > 0 && (
+          {/* ── RIGHT COLUMN ────────────────────────────────────────────── */}
+          {rightColZones.length > 0 && (
+            <>
               <div
-                className="md:hidden fixed inset-0 z-[60] flex flex-col bg-background pp-safe-left pp-safe-right"
-                style={{ paddingTop: 'env(safe-area-inset-top)', paddingBottom: 'env(safe-area-inset-bottom)' }}
+                className="hidden md:flex w-[5px] cursor-col-resize shrink-0 items-center justify-center group"
+                onPointerDown={(e) => startColumnWidthResize("right", e)}
               >
-                <CombinedPanel
-                  activeTabId={resolveActiveTabId(mobilePanelTabs)}
-                  onActiveTabChange={handleCombinedTabChange}
-                  position="bottom"
-                  className="h-full"
-                  tabs={mobilePanelTabs}
-                />
+                <div className="bg-zinc-800 group-hover:bg-blue-500/60 group-active:bg-blue-500 transition-colors h-full w-px" />
               </div>
-            )}
+              <div className="hidden md:flex flex-col shrink-0 min-h-0" style={{ width: rightColumnWidth }}>
+                {rightColZones.map((zone, i) => {
+                  const nextZone = rightColZones[i + 1];
+                  const handleZonePos = nextZone
+                    ? (zone.fills ? nextZone.pos : zone.pos)
+                    : undefined;
+                  return (
+                    <React.Fragment key={zone.pos}>
+                      <div
+                        className={cn(zone.fills ? "flex-1 min-h-0" : "shrink-0")}
+                        style={!zone.fills ? { height: zone.storedHeight } : undefined}
+                      >
+                        <CombinedPanel
+                          position={zone.pos}
+                          tabs={zone.tabs}
+                          activeTabId={resolveActiveTabId(zone.tabs)}
+                          onActiveTabChange={handleCombinedTabChange}
+                          onPositionChange={(pos) => handleGroupPositionChange(zone.tabs.map(t => t.id), pos)}
+                          onDragStart={handleGroupDragStart(zone.tabs.map(t => t.id))}
+                          className="h-full"
+                        />
+                      </div>
+                      {nextZone && (
+                        <div
+                          className="hidden md:flex h-[5px] cursor-row-resize shrink-0 items-center justify-center group"
+                          onPointerDown={handleZonePos ? (e) => startZoneHeightResize(handleZonePos, e) : undefined}
+                        >
+                          <div className="bg-zinc-800 group-hover:bg-blue-500/60 group-active:bg-blue-500 transition-colors w-full h-px" />
+                        </div>
+                      )}
+                    </React.Fragment>
+                  );
+                })}
+              </div>
+            </>
+          )}
 
-            {panelDragActive && (
-              <div className="absolute inset-0 z-50 pointer-events-none hidden md:block">
-                <div className={cn(
-                  "absolute bottom-0 left-0 right-0 h-[40%] flex flex-col items-center justify-center gap-2 border-t-2 transition-colors duration-100",
-                  panelDragZone === "bottom" ? "bg-blue-500/20 border-blue-500" : "bg-zinc-900/60 border-zinc-700/60",
-                )}>
-                  <svg className={cn("size-6 transition-colors", panelDragZone === "bottom" ? "text-blue-400" : "text-zinc-500")} viewBox="0 0 16 16" fill="currentColor"><rect x="1" y="9" width="14" height="6" rx="1.5"/><rect x="1" y="1" width="14" height="6" rx="1.5" opacity=".3"/></svg>
-                  <span className={cn("text-xs font-medium transition-colors", panelDragZone === "bottom" ? "text-blue-300" : "text-zinc-500")}>Bottom</span>
-                </div>
-                <div className={cn(
-                  "absolute top-0 right-0 w-[35%] h-[55%] flex flex-col items-center justify-center gap-2 border-l-2 transition-colors duration-100",
-                  panelDragZone === "right" ? "bg-blue-500/20 border-blue-500" : "bg-zinc-900/60 border-zinc-700/60",
-                )}>
-                  <svg className={cn("size-6 transition-colors", panelDragZone === "right" ? "text-blue-400" : "text-zinc-500")} viewBox="0 0 16 16" fill="currentColor"><rect x="9" y="1" width="6" height="14" rx="1.5"/><rect x="1" y="1" width="6" height="14" rx="1.5" opacity=".3"/></svg>
-                  <span className={cn("text-xs font-medium transition-colors", panelDragZone === "right" ? "text-blue-300" : "text-zinc-500")}>Right</span>
-                </div>
-                <div className={cn(
-                  "absolute top-0 left-0 w-[35%] h-[55%] flex flex-col items-center justify-center gap-2 border-r-2 transition-colors duration-100",
-                  panelDragZone === "left" ? "bg-blue-500/20 border-blue-500" : "bg-zinc-900/60 border-zinc-700/60",
-                )}>
-                  <svg className={cn("size-6 transition-colors", panelDragZone === "left" ? "text-blue-400" : "text-zinc-500")} viewBox="0 0 16 16" fill="currentColor"><rect x="1" y="1" width="6" height="14" rx="1.5"/><rect x="9" y="1" width="6" height="14" rx="1.5" opacity=".3"/></svg>
-                  <span className={cn("text-xs font-medium transition-colors", panelDragZone === "left" ? "text-blue-300" : "text-zinc-500")}>Left</span>
-                </div>
-              </div>
-            )}
-          </div>
+          {/* ── MOBILE OVERLAY ──────────────────────────────────────────── */}
+          {mobilePanelTabs.length > 0 && (
+            <div
+              className="md:hidden fixed inset-0 z-[60] flex flex-col bg-background pp-safe-left pp-safe-right"
+              style={{ paddingTop: 'env(safe-area-inset-top)', paddingBottom: 'env(safe-area-inset-bottom)' }}
+            >
+              <CombinedPanel
+                activeTabId={resolveActiveTabId(mobilePanelTabs)}
+                onActiveTabChange={handleCombinedTabChange}
+                position="center-bottom"
+                className="h-full"
+                tabs={mobilePanelTabs}
+              />
+            </div>
+          )}
+
+          {/* ── 3×3 DRAG OVERLAY ────────────────────────────────────────── */}
+          {panelDragActive && (
+            <div className="absolute inset-0 z-50 pointer-events-none hidden md:grid grid-cols-3 grid-rows-3">
+              {([
+                { pos: "left-top",      label: "Left\ntop"    },
+                { pos: "center-top",    label: "Top"          },
+                { pos: "right-top",     label: "Right\ntop"   },
+                { pos: "left-middle",   label: "Left"         },
+                { pos: null,            label: ""             },
+                { pos: "right-middle",  label: "Right"        },
+                { pos: "left-bottom",   label: "Left\nbottom" },
+                { pos: "center-bottom", label: "Bottom"       },
+                { pos: "right-bottom",  label: "Right\nbottom"},
+              ] as const).map((zone, idx) => {
+                if (zone.pos === null) {
+                  return <div key={idx} />;
+                }
+                const isActive = panelDragZone === zone.pos;
+                return (
+                  <div
+                    key={zone.pos}
+                    className={cn(
+                      "flex items-center justify-center border transition-colors duration-100",
+                      isActive
+                        ? "bg-blue-500/20 border-blue-500"
+                        : "bg-zinc-900/40 border-zinc-700/30",
+                    )}
+                  >
+                    <span className={cn(
+                      "text-[10px] font-medium text-center transition-colors whitespace-pre-line leading-tight",
+                      isActive ? "text-blue-300" : "text-zinc-600",
+                    )}>
+                      {zone.label}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
         <NewSessionWizardDialog
           open={newSessionOpen}
