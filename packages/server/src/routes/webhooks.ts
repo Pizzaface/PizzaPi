@@ -9,14 +9,27 @@
  *   DELETE /api/webhooks/:id        — delete webhook
  *
  * Fire endpoint (no auth cookie — validated via HMAC):
- *   POST /api/webhooks/:id/fire     — fire trigger into a session
+ *   POST /api/webhooks/:id/fire     — spawn a new session + fire trigger
  *
  * HMAC validation: SHA-256 of raw request body using webhook.secret.
  * The caller must send the hex digest in X-Webhook-Signature header.
+ *
+ * Every fire spawns a fresh session on the user's connected runner,
+ * then delivers the webhook payload as a trigger into that session.
  */
 
 import { requireSession } from "../middleware.js";
-import { getSharedSession, getLocalTuiSocket, emitToRelaySessionVerified, broadcastToSessionViewers } from "../ws/sio-registry.js";
+import {
+    getSharedSession,
+    getLocalTuiSocket,
+    emitToRelaySessionVerified,
+    broadcastToSessionViewers,
+    getRunners,
+    getLocalRunnerSocket,
+    recordRunnerSession,
+    linkSessionToRunner,
+} from "../ws/sio-registry.js";
+import { waitForSpawnAck } from "../ws/runner-control.js";
 import type { RouteHandler } from "./types.js";
 import { randomUUID } from "crypto";
 import { createHmac, timingSafeEqual } from "crypto";
@@ -28,10 +41,15 @@ import {
     listWebhooksForUser,
     updateWebhook,
     deleteWebhook,
-    getMostRecentActiveSessionId,
 } from "../webhooks/store.js";
 
 const log = createLogger("webhooks-api");
+
+/** Timeout for waiting for a spawned session to register (ms). */
+const SPAWN_ACK_TIMEOUT_MS = 10_000;
+
+/** How long to wait after spawn for the session socket to appear (ms). */
+const SESSION_CONNECT_TIMEOUT_MS = 15_000;
 
 // ── HMAC helpers ─────────────────────────────────────────────────────────────
 
@@ -56,6 +74,86 @@ function hmacEqual(a: string, b: string): boolean {
     }
 }
 
+// ── Spawn helper ──────────────────────────────────────────────────────────────
+
+/**
+ * Find the user's first connected runner and spawn a session on it.
+ * Returns the new sessionId, or an error Response.
+ */
+async function spawnSessionForWebhook(
+    userId: string,
+    cwd: string | null,
+    prompt: string | null,
+): Promise<{ sessionId: string } | Response> {
+    const runners = await getRunners(userId);
+    if (runners.length === 0) {
+        return Response.json(
+            { error: "No connected runner found for this user" },
+            { status: 503 },
+        );
+    }
+
+    // Use the first online runner.
+    const runner = runners[0];
+    const runnerSocket = getLocalRunnerSocket(runner.runnerId);
+    if (!runnerSocket) {
+        return Response.json(
+            { error: "Runner is not connected to this server" },
+            { status: 503 },
+        );
+    }
+
+    const sessionId = randomUUID();
+    const ackPromise = waitForSpawnAck(sessionId, SPAWN_ACK_TIMEOUT_MS);
+
+    try {
+        runnerSocket.emit("new_session", {
+            sessionId,
+            ...(cwd ? { cwd } : {}),
+            ...(prompt ? { prompt } : {}),
+        });
+    } catch {
+        return Response.json(
+            { error: "Failed to send spawn request to runner" },
+            { status: 502 },
+        );
+    }
+
+    const ack = await ackPromise;
+    if (ack.ok === false && !(ack as any).timeout) {
+        return Response.json(
+            { error: (ack as any).message ?? "Runner rejected the spawn request" },
+            { status: 502 },
+        );
+    }
+
+    await recordRunnerSession(runner.runnerId, sessionId);
+    await linkSessionToRunner(runner.runnerId, sessionId);
+
+    return { sessionId };
+}
+
+/**
+ * Wait for a session's TUI socket to appear (it registers after spawn).
+ * Polls every 200ms up to the timeout.
+ */
+async function waitForSessionSocket(
+    sessionId: string,
+    timeoutMs: number = SESSION_CONNECT_TIMEOUT_MS,
+): Promise<boolean> {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+        // Check local socket first
+        const local = getLocalTuiSocket(sessionId);
+        if (local?.connected) return true;
+        // Check shared session (cross-node)
+        const shared = await getSharedSession(sessionId);
+        if (shared) return true;
+        await new Promise((r) => setTimeout(r, 200));
+    }
+    return false;
+}
+
 // ── Fire logic ────────────────────────────────────────────────────────────────
 
 async function fireWebhookTrigger(
@@ -66,32 +164,15 @@ async function fireWebhookTrigger(
     userId: string,
     payload: Record<string, unknown>,
 ): Promise<Response> {
-    // Validate the target session and ownership
-    const targetSession = await getSharedSession(targetSessionId);
-    if (!targetSession) {
-        return Response.json(
-            { error: "Target session not found or not connected" },
-            { status: 404 },
-        );
-    }
-    if (targetSession.userId !== userId) {
-        return Response.json(
-            { error: "Target session not found or not connected" },
-            { status: 404 },
-        );
-    }
-
     const triggerId = `wh_${randomUUID().replace(/-/g, "").slice(0, 16)}`;
     const ts = new Date().toISOString();
-
-    const triggerPayload: Record<string, unknown> = payload;
 
     const trigger = {
         type: "webhook",
         sourceSessionId: `external:${source}`,
         sourceSessionName: `Webhook: ${webhookName}`,
         targetSessionId,
-        payload: triggerPayload,
+        payload,
         deliverAs: "steer" as const,
         expectsResponse: false,
         triggerId,
@@ -105,7 +186,7 @@ async function fireWebhookTrigger(
         // doesn't misclassify webhook sources as child sessions.
         source: `external:${source}`,
         summary: webhookName,
-        payload: triggerPayload,
+        payload,
         deliverAs: "steer" as const,
         ts,
         direction: "inbound" as const,
@@ -120,7 +201,7 @@ async function fireWebhookTrigger(
             log.info(`Webhook trigger ${triggerId} delivered to session ${targetSessionId}`);
             void Promise.resolve(pushTriggerHistory(targetSessionId, historyEntry)).catch(() => {});
             broadcastToSessionViewers(targetSessionId, "trigger_delivered", { triggerId });
-            return Response.json({ ok: true, triggerId });
+            return Response.json({ ok: true, triggerId, sessionId: targetSessionId });
         } catch (err) {
             log.error(`Failed to deliver webhook trigger ${triggerId}:`, err);
             return Response.json({ error: "Failed to deliver trigger to session" }, { status: 502 });
@@ -133,11 +214,11 @@ async function fireWebhookTrigger(
         log.info(`Webhook trigger ${triggerId} delivered cross-node to session ${targetSessionId}`);
         void Promise.resolve(pushTriggerHistory(targetSessionId, historyEntry)).catch(() => {});
         broadcastToSessionViewers(targetSessionId, "trigger_delivered", { triggerId });
-        return Response.json({ ok: true, triggerId });
+        return Response.json({ ok: true, triggerId, sessionId: targetSessionId });
     }
 
     return Response.json(
-        { error: "Session is registered but not currently connected" },
+        { error: "Session was spawned but is not yet connected — trigger could not be delivered" },
         { status: 503 },
     );
 }
@@ -181,17 +262,22 @@ export const handleWebhooksRoute: RouteHandler = async (req, url) => {
             eventFilter = body.eventFilter as string[];
         }
 
-        const targetSessionId =
-            body.targetSessionId !== undefined
-                ? (body.targetSessionId as string | null)
+        const cwd =
+            typeof body.cwd === "string" && body.cwd.trim()
+                ? body.cwd.trim()
+                : null;
+        const prompt =
+            typeof body.prompt === "string" && body.prompt.trim()
+                ? body.prompt.trim()
                 : null;
 
         const webhook = await createWebhook({
             userId: identity.userId,
             name: name.trim(),
-            targetSessionId: typeof targetSessionId === "string" ? targetSessionId : null,
             eventFilter,
             source: source.trim(),
+            cwd,
+            prompt,
         });
 
         return Response.json({ webhook }, { status: 201 });
@@ -264,18 +350,14 @@ export const handleWebhooksRoute: RouteHandler = async (req, url) => {
         const updates: Record<string, unknown> = {};
         if (typeof body.name === "string" && body.name.trim()) updates.name = body.name.trim();
         if (typeof body.source === "string" && body.source.trim()) updates.source = body.source.trim();
-        if ("targetSessionId" in body) {
-            const tsid = body.targetSessionId;
-            if (tsid !== null && tsid !== undefined && typeof tsid !== "string") {
-                return Response.json(
-                    { error: "'targetSessionId' must be a string or null" },
-                    { status: 400 },
-                );
-            }
-            updates.targetSessionId = typeof tsid === "string" ? tsid.trim() || null : null;
-        }
         if (eventFilter !== undefined) updates.eventFilter = eventFilter;
         if (typeof body.enabled === "boolean") updates.enabled = body.enabled;
+        if ("cwd" in body) {
+            updates.cwd = typeof body.cwd === "string" && body.cwd.trim() ? body.cwd.trim() : null;
+        }
+        if ("prompt" in body) {
+            updates.prompt = typeof body.prompt === "string" && body.prompt.trim() ? body.prompt.trim() : null;
+        }
 
         const updated = await updateWebhook(webhookId, identity.userId, updates as any);
         if (!updated) {
@@ -353,15 +435,24 @@ export const handleWebhooksRoute: RouteHandler = async (req, url) => {
             }
         }
 
-        // Resolve target session
-        let targetSessionId = webhook.targetSessionId;
-        if (!targetSessionId) {
-            targetSessionId = await getMostRecentActiveSessionId(webhook.userId);
-        }
-        if (!targetSessionId) {
+        // Spawn a new session on the user's runner
+        const spawnResult = await spawnSessionForWebhook(
+            webhook.userId,
+            webhook.cwd,
+            webhook.prompt,
+        );
+        if (spawnResult instanceof Response) return spawnResult;
+
+        const { sessionId } = spawnResult;
+        log.info(`Webhook ${webhookId} spawned session ${sessionId}`);
+
+        // Wait for the session to connect before firing the trigger
+        const connected = await waitForSessionSocket(sessionId);
+        if (!connected) {
+            log.warn(`Webhook ${webhookId}: session ${sessionId} spawned but never connected`);
             return Response.json(
-                { error: "No active session found for this webhook" },
-                { status: 404 },
+                { error: "Session was spawned but did not connect in time" },
+                { status: 504 },
             );
         }
 
@@ -369,7 +460,7 @@ export const handleWebhooksRoute: RouteHandler = async (req, url) => {
             webhook.id,
             webhook.name,
             webhook.source,
-            targetSessionId,
+            sessionId,
             webhook.userId,
             body,
         );
