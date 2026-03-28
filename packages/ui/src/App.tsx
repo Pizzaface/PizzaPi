@@ -57,7 +57,8 @@ import {
 import { X, TerminalIcon, FolderTree, GitBranch, EyeOff } from "lucide-react";
 import type { ProviderUsageMap } from "@/components/UsageIndicator";
 import { TerminalManager } from "@/components/TerminalManager";
-import { FileExplorer, GitChangesView } from "@/components/FileExplorer";
+import { FileExplorer } from "@/components/FileExplorer";
+import { GitPanel } from "@/components/git";
 import { CombinedPanel, type CombinedPanelTab } from "@/components/CombinedPanel";
 import { DockedPanelGroup } from "@/components/DockedPanelGroup";
 import { ViewerSocketContext } from "@/lib/viewer-socket-context";
@@ -3780,8 +3781,7 @@ export function App() {
     onClose: () => setShowGit(false),
     onDragStart: (e) => startPanelDragWith(e, handleGitPositionChange),
     content: (
-      <GitChangesView
-        runnerId={activeSessionInfo.runnerId}
+      <GitPanel
         cwd={activeSessionInfo.cwd}
       />
     ),

@@ -333,17 +333,9 @@ export interface RunnerServerToClientEvents {
     path: string;
   }) => void;
 
-  /** Requests git status */
-  git_status: (data: {
-    requestId?: string;
-    cwd: string;
-  }) => void;
-
-  /** Requests git diff */
-  git_diff: (data: {
-    requestId?: string;
-    cwd: string;
-  }) => void;
+  // Git operations (status, diff, branches, checkout, stage, unstage,
+  // commit, push) are handled via the service_message channel with
+  // serviceId="git". No dedicated socket events needed.
 
   /** Requests current sandbox status */
   sandbox_get_status: (data: {

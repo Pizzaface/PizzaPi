@@ -37,6 +37,8 @@ export interface ServiceEnvelope {
     serviceId: string;
     type: string;
     requestId?: string;
+    /** Attached by the relay when forwarding viewer→runner, so services can route responses back. */
+    sessionId?: string;
     payload: unknown;
 }
 

@@ -838,47 +838,91 @@ export async function createMockRunner(
         });
     });
 
-    // --- Git Operations ---
+    // --- Git Operations (via service_message channel) ---
 
-    socket.on("git_status", (data: any) => {
+    socket.on("service_message", (envelope: any) => {
         if (isShuttingDown) return;
-        const requestId = data?.requestId;
-        const cwd = data?.cwd ?? "";
+        if (envelope?.serviceId !== "git") return;
 
-        if (!cwd) {
-            socket.emit("file_result", { requestId, ok: false, message: "Missing cwd" });
-            return;
+        const payload = (envelope.payload ?? {}) as Record<string, unknown>;
+        const requestId = envelope.requestId;
+        const sessionId = envelope.sessionId;
+
+        const emitGit = (type: string, data: Record<string, unknown>) => {
+            socket.emit("service_message", {
+                serviceId: "git",
+                type,
+                ...(requestId ? { requestId } : {}),
+                ...(sessionId ? { sessionId } : {}),
+                payload: data,
+            });
+        };
+
+        switch (envelope.type) {
+            case "git_status": {
+                const cwd = payload.cwd;
+                if (!cwd) {
+                    emitGit("git_status_result", { ok: false, message: "Missing cwd" });
+                    return;
+                }
+                emitGit("git_status_result", {
+                    ok: true,
+                    branch: gitStatus.branch,
+                    changes: gitStatus.changes,
+                    ahead: gitStatus.ahead,
+                    behind: gitStatus.behind,
+                    diffStaged: gitStatus.diffStaged,
+                });
+                break;
+            }
+            case "git_diff": {
+                const cwd = payload.cwd;
+                const filePath = payload.path;
+                if (!cwd || !filePath) {
+                    emitGit("git_diff_result", { ok: false, message: "Missing cwd or path" });
+                    return;
+                }
+                const change = gitStatus.changes.find((c) => c.path === filePath);
+                const diff = change
+                    ? `diff --git a/${filePath} b/${filePath}\nindex abc1234..def5678 100644\n--- a/${filePath}\n+++ b/${filePath}\n@@ -1,3 +1,3 @@\n-old line\n+new line`
+                    : "";
+                emitGit("git_diff_result", { ok: true, diff });
+                break;
+            }
+            case "git_branches": {
+                emitGit("git_branches_result", {
+                    ok: true,
+                    currentBranch: gitStatus.branch,
+                    branches: [
+                        { name: gitStatus.branch, shortHash: "abc1234", lastCommit: "2 hours ago", isCurrent: true, isRemote: false },
+                        { name: "main", shortHash: "def5678", lastCommit: "1 day ago", isCurrent: false, isRemote: false },
+                    ],
+                });
+                break;
+            }
+            case "git_checkout": {
+                const branch = payload.branch;
+                if (!branch) {
+                    emitGit("git_checkout_result", { ok: false, message: "Invalid branch name" });
+                    return;
+                }
+                gitStatus.branch = branch as string;
+                emitGit("git_checkout_result", { ok: true, branch });
+                break;
+            }
+            case "git_stage":
+                emitGit("git_stage_result", { ok: true });
+                break;
+            case "git_unstage":
+                emitGit("git_unstage_result", { ok: true });
+                break;
+            case "git_commit":
+                emitGit("git_commit_result", { ok: true, summary: "[main abc1234] Mock commit" });
+                break;
+            case "git_push":
+                emitGit("git_push_result", { ok: true, output: "Everything up-to-date" });
+                break;
         }
-
-        socket.emit("file_result", {
-            requestId,
-            ok: true,
-            branch: gitStatus.branch,
-            changes: gitStatus.changes,
-            ahead: gitStatus.ahead,
-            behind: gitStatus.behind,
-            diffStaged: gitStatus.diffStaged,
-        });
-    });
-
-    socket.on("git_diff", (data: any) => {
-        if (isShuttingDown) return;
-        const requestId = data?.requestId;
-        const cwd = data?.cwd ?? "";
-        const filePath = data?.path ?? "";
-
-        if (!cwd || !filePath) {
-            socket.emit("file_result", { requestId, ok: false, message: "Missing cwd or path" });
-            return;
-        }
-
-        // Return a mock diff for any file in the git changes list
-        const change = gitStatus.changes.find((c) => c.path === filePath);
-        const diff = change
-            ? `diff --git a/${filePath} b/${filePath}\nindex abc1234..def5678 100644\n--- a/${filePath}\n+++ b/${filePath}\n@@ -1,3 +1,3 @@\n-old line\n+new line`
-            : "";
-
-        socket.emit("file_result", { requestId, ok: true, diff });
     });
 
     // --- Sandbox ---
