@@ -55,9 +55,9 @@ export function DegradedBanner({ relayStatus }: { relayStatus?: RelayStatus }) {
     return (
         <div
             role="alert"
-            className="flex items-center justify-between gap-3 px-4 py-2 text-sm bg-amber-500/10 text-amber-600 dark:text-amber-400 border-b border-amber-500/20"
+            className="flex flex-wrap items-start sm:items-center justify-between gap-x-3 gap-y-2 px-3 sm:px-4 py-2 text-sm bg-amber-500/10 text-amber-600 dark:text-amber-400 border-b border-amber-500/20"
         >
-            <span>
+            <span className="min-w-0 flex-1 leading-snug">
                 <span aria-hidden="true">⚠️</span>{" "}
                 Server running in degraded mode — real-time updates unavailable
             </span>
@@ -65,7 +65,7 @@ export function DegradedBanner({ relayStatus }: { relayStatus?: RelayStatus }) {
                 type="button"
                 aria-label="Dismiss"
                 onClick={() => setDismissed(true)}
-                className="shrink-0 rounded p-0.5 hover:bg-amber-500/20 transition-colors"
+                className="shrink-0 self-start sm:self-auto rounded p-1 hover:bg-amber-500/20 transition-colors"
             >
                 <X className="size-4" />
             </button>

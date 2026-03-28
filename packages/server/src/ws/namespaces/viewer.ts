@@ -23,6 +23,7 @@ import { sessionCookieAuthMiddleware } from "./auth.js";
 import { getRunnerServiceAnnounce } from "./runner.js";
 import {
     getSharedSession,
+    getSharedSessionSummary,
     addViewer,
     removeViewer,
     getSessionSeq,
@@ -35,7 +36,7 @@ import {
 import { isChildOfParent } from "../sio-state.js";
 import { getPendingChunkedSnapshot } from "./relay/index.js";
 import { getPersistedRelaySessionSnapshot } from "../../sessions/store.js";
-import { getCachedRelayEvents } from "../../sessions/redis.js";
+import { getLatestCachedSnapshotEvent } from "../../sessions/redis.js";
 import { createLogger } from "@pizzapi/tools";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -132,10 +133,7 @@ async function sendLatestSnapshotFromCache(
     sessionId: string,
     generation?: number,
 ): Promise<boolean> {
-    const cachedEvents = await getCachedRelayEvents(sessionId);
-    if (cachedEvents.length === 0) return false;
-
-    const snapshotEvent = findLatestSnapshotEvent(cachedEvents);
+    const snapshotEvent = await getLatestCachedSnapshotEvent(sessionId);
     if (!snapshotEvent) return false;
 
     socket.emit("event", { event: snapshotEvent, replay: true, generation });
@@ -271,16 +269,16 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
                 if (!isViewerSwitchCurrent(getCurrentGeneration(), generation)) return;
             }
 
-            const session = await getSharedSession(nextSessionId);
+            const sessionSummary = await getSharedSessionSummary(nextSessionId);
             if (!isViewerSwitchCurrent(getCurrentGeneration(), generation)) return;
 
-            if (!session) {
+            if (!sessionSummary) {
                 socket.data.sessionId = undefined;
                 socket.emit("disconnected", { reason: "Session ended", code: "session_ended", generation });
                 return;
             }
 
-            if (!session.userId || session.userId !== viewerUserId) {
+            if (!sessionSummary.userId || sessionSummary.userId !== viewerUserId) {
                 socket.data.sessionId = undefined;
                 socket.emit("error", { message: "Session not found", generation });
                 return;
@@ -289,7 +287,10 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
             // Join the room first, then allow the viewer's "connected" signal to
             // reach the runner. This avoids losing the first live snapshot/chunks
             // and reduces startup resync churn.
-            const ok = await addViewer(nextSessionId, socket);
+            const ok = await addViewer(nextSessionId, socket, {
+                sessionSummaryHint: sessionSummary,
+                touchAsync: true,
+            });
             if (!isViewerSwitchCurrent(getCurrentGeneration(), generation)) {
                 if (ok) {
                     await removeViewer(nextSessionId, socket);
