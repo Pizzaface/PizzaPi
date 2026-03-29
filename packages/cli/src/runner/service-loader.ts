@@ -17,7 +17,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, extname, join, resolve } from "node:path";
 import type { ServiceHandler } from "./service-handler.js";
-import type { ServiceTriggerDef, ServiceTriggerParamDef } from "@pizzapi/protocol";
+import type { ServiceTriggerDef, ServiceTriggerParamDef, ServiceSigilDef } from "@pizzapi/protocol";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -30,8 +30,10 @@ export interface ServiceManifest {
     panel?: {
         dir?: string;
     };
-    /** Trigger types this service can emit. Declared statically in manifest.json. */
+    /** Trigger types this service can emit. Declared in triggers.json or manifest.json. */
     triggers?: ServiceTriggerDef[];
+    /** Sigil types this service defines. Declared in sigils.json or manifest.json. */
+    sigils?: ServiceSigilDef[];
 }
 
 export interface ServicePluginResult {
