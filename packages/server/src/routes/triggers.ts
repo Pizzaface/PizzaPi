@@ -449,6 +449,8 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
                         errors.push(`Param '${def.name}' contains invalid values: ${invalid.join(", ")}. Allowed: ${def.enum.join(", ")}`);
                     } else if (coerced.length > 0) {
                         validated[def.name] = coerced;
+                    } else if (def.required) {
+                        errors.push(`Param '${def.name}' requires at least one valid value`);
                     }
                     continue;
                 }
