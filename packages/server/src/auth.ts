@@ -118,6 +118,14 @@ export interface RunnerRecentFolderTable {
     lastUsedAt: string;
 }
 
+export interface RunnerTriggerListenerTable {
+    id: string;
+    runnerId: string;
+    triggerType: string;
+    listenerJson: string;
+    updatedAt: string;
+}
+
 export interface UserHiddenModelTable {
     id: string;
     userId: string;
@@ -165,6 +173,7 @@ export interface DB {
     relay_session_state: RelaySessionStateTable;
     push_subscription: PushSubscriptionTable;
     runner_recent_folder: RunnerRecentFolderTable;
+    runner_trigger_listener: RunnerTriggerListenerTable;
     user_hidden_model: UserHiddenModelTable;
     extracted_attachment: ExtractedAttachmentTable;
     webhook: WebhookTable;
