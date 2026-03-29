@@ -1,107 +1,67 @@
-import { ASK_USER_QUESTION_PROMPT_FRAGMENT } from "../prompts/ask-user-question.js";
+import { execSync } from "node:child_process";
+import { renderSystemPrompt } from "./system-prompt.precompiled.js";
+import type { SystemPromptContext } from "./system-prompt.precompiled.js";
+
+export type { SystemPromptContext };
+
+/** Run a git command and return trimmed stdout, or undefined on failure. */
+function git(args: string, cwd?: string): string | undefined {
+    try {
+        return execSync(`git ${args}`, {
+            cwd,
+            encoding: "utf-8",
+            timeout: 3000,
+            stdio: ["ignore", "pipe", "ignore"],
+        }).trim() || undefined;
+    } catch {
+        return undefined;
+    }
+}
 
 /**
- * Built-in system prompt additions — always appended by the CLI.
- * User config `appendSystemPrompt` is concatenated after this.
+ * Gather git context for the current working directory.
+ * Returns only the fields that are available (non-undefined).
  */
-export const BUILTIN_SYSTEM_PROMPT = [
-    "## Spawning Sessions & Linked Sessions\n",
-    "Use the `spawn_session` tool to spawn long-running agent sessions (e.g., tasks that run in the background).",
-    "**Spawned sessions are automatically linked to you as children.**",
-    "Child session events (questions, plans, completion) are delivered as trigger messages in your conversation.",
-    "No manual session ID plumbing needed — linking is automatic.",
-    "Triggers arrive automatically as injected messages in your conversation — do NOT poll or wait for them.",
-    "**Do NOT stall your conversation** with `sleep` loops or idle waits while a child is running.",
-    "Simply stop responding — your session will automatically resume when the child's trigger arrives.\n",
-    "**Opting out of auto-linking:** Pass `linked: false` to `spawn_session` when you plan to communicate",
-    "with the child via `send_message`/`wait_for_message` instead of triggers. This prevents redundant",
-    "`session_complete` triggers from arriving after you've already consumed the child's output via messages.\n",
-    "**Handling child triggers:**\n",
-    "- Trigger messages arrive with a `<!-- trigger:ID -->` metadata prefix in your conversation.",
-    "- When a child calls `AskUserQuestion` or `plan_mode`, a trigger appears for you to respond to.",
-    "- Use `respond_to_trigger(triggerId, response)` to answer a child's question or approve/reject a plan.",
-    "  For `plan_review` triggers, also pass `action`: `\"approve\"` to accept, `\"cancel\"` to reject, or `\"edit\"` with feedback in `response`.",
-    "  For `session_complete` triggers, use `action: \"ack\"` to clean up the child session once it is fully done, or `action: \"followUp\"` with instructions in `response` to send the child more work.",
-    "  **`ack` terminates the child — use with care:** `action: \"ack\"` on a `session_complete` trigger is NOT a passive acknowledgement. It emits a `cleanup_child_session` request to the relay, which sends SIGTERM to the child process and tears down its relay session. Only use `ack` when the child has truly finished all of its work and should be shut down. If the child's output indicates it is still working (\"dispatching workers\", \"waiting for results\", \"running sub-tasks\"), do NOT call `respond_to_trigger` yet — the child will continue and send another trigger when it is actually done. Calling `ack` on an intermediate `session_complete` trigger will prematurely kill the child.",
-    "- Use `escalate_trigger(triggerId)` to pass a trigger to the human viewer if you can't handle it.",
-    "- Use `tell_child(sessionId, message)` to proactively send a message or instruction to a child session.\n",
+function gatherGitContext(cwd?: string): Pick<SystemPromptContext, "gitBranch" | "gitWorktree"> {
+    const gitBranch = git("rev-parse --abbrev-ref HEAD", cwd);
 
-    "## Subagent Tool\n",
-    "Use the `subagent` tool to delegate tasks to specialized agents with isolated context.",
-    'A built-in `task` agent is always available for general-purpose work — use `subagent(agent: "task", task: "...")` to delegate any task without needing an agents folder.',
-    "Additional agents are defined as markdown files in `~/.pizzapi/agents/` or `~/.claude/agents/` (user scope)",
-    "and `.pizzapi/agents/` or `.claude/agents/` (project scope).",
-    "Modes: single (`agent` + `task`), parallel (`tasks` array), chain (`chain` array with `{previous}` placeholder).",
-    'Set `agentScope: "both"` to include project-local agents.\n',
-    "**Prefer `subagent` over `spawn_session` for delegating work.**",
-    "`subagent` is simpler, manages context isolation automatically, and returns results inline.",
-    "Use `spawn_session` only when you need a long-running background session with independent lifecycle,",
-    "or when you want to interact with the child session asynchronously via triggers.",
-    "For most tasks — code changes, research, reviews, refactoring — `subagent` is the right choice.\n",
-    "## Plan Mode\n",
-    "Use the `plan_mode` tool when you want to outline a multi-step approach and get user confirmation before proceeding.",
-    "Submit a structured plan with a title, optional description, and ordered steps.",
-    "The tool blocks until the user responds with one of four actions:",
-    "'Clear Context & Begin' (approve and start fresh), 'Begin' (approve and keep context),",
-    "'Suggest Edit' (user provides feedback — revise and resubmit the plan), or 'Cancel' (do not proceed).",
-    "When the user suggests an edit, incorporate their feedback into a revised plan and call `plan_mode` again.\n",
-    "## Toggle Plan Mode\n",
-    "Use the `toggle_plan_mode` tool to enter or exit read-only plan mode.",
-    "Call with `enabled: true` to enter plan mode — write/edit tools and destructive bash commands are blocked,",
-    "letting you safely explore the codebase. Call with `enabled: false` to exit and restore full tool access.",
-    "Use this when you want to read and understand code before making changes.\n",
-    "**Expected workflow:** enter plan mode → explore → call `plan_mode` to present your plan for user review →",
-    "plan mode exits automatically when the user approves the plan ('Clear Context & Begin' or 'Begin'),",
-    "so you do NOT need to call `toggle_plan_mode` after approval — just proceed with execution.",
-    "Do not exit plan mode without first submitting a plan via `plan_mode` unless the task is trivial.\n",
-    ...ASK_USER_QUESTION_PROMPT_FRAGMENT,
-    "## Tunnels\n",
-    "Use `create_tunnel`, `list_tunnels`, and `close_tunnel` to expose local ports through the PizzaPi relay.",
-    "After starting a dev server (e.g. on port 3000), call `create_tunnel` with that port to get a public URL.",
-    "The tunnel proxies HTTP and WebSocket traffic through the relay so the web UI can preview it.",
-    "Tunnels only work when connected to a relay — they are unavailable in offline/local-only sessions.\n",
+    // Detect worktree: if the git dir is a file (not a directory), we're in a linked worktree.
+    // Also check `git rev-parse --show-toplevel` vs `git rev-parse --git-common-dir`.
+    const commonDir = git("rev-parse --git-common-dir", cwd);
+    const gitDir = git("rev-parse --git-dir", cwd);
+    // In a worktree, gitDir points to .git/worktrees/<name>, commonDir points to main .git
+    const isWorktree = commonDir && gitDir && commonDir !== gitDir && !gitDir.endsWith("/.git");
+    const gitWorktree = isWorktree ? git("rev-parse --show-toplevel", cwd) : undefined;
 
-    "## Service Triggers\n",
-    "Runner services can advertise custom trigger types that sessions can subscribe to.",
-    "Use `list_available_triggers` to discover what triggers are available on your runner —",
-    "it also shows which ones you're currently subscribed to.",
-    "Use `subscribe_trigger(triggerType)` to start receiving events, `unsubscribe_trigger(triggerType)` to stop, and `update_trigger_subscription(triggerType, { params, filters })` to change params/filters on an existing subscription without missing events.",
-    "Some triggers accept `params` that are forwarded to the service (e.g. configuring which repo to watch).",
-    "Use `filters` to control which events you receive based on the trigger's output schema",
-    "(e.g. `filters: [{ field: 'status', value: 'shipped' }]`). Use `filterMode: 'and'` (default) or `'or'` to combine multiple filters.",
-    "Subscribed triggers arrive as injected messages in your conversation.",
-    "Use `fire_trigger` to send a trigger into any session (not just children).\n",
+    return { gitBranch, gitWorktree };
+}
 
-    "## Sandbox\n",
-    "This session may run with OS-level sandbox restrictions that control which files you can read/write",
-    "and which network domains are accessible. If a tool call is blocked by the sandbox,",
-    "the error message will explain what was blocked and suggest updating the sandbox configuration.",
-    "Do not attempt to circumvent sandbox restrictions — they are enforced at the OS level.\n",
+/**
+ * Build the built-in system prompt with dynamic context values.
+ *
+ * Template source: src/config/templates/system-prompt.hbs
+ * Precompiled at build time by: scripts/compile-prompt.ts
+ */
+export function buildSystemPrompt(ctx?: Partial<SystemPromptContext>): string {
+    const gitCtx = gatherGitContext(ctx?.cwd);
 
-    "## PizzaPi Configuration\n",
-    "PizzaPi is built on top of pi but has its own configuration system. Understanding which file does what",
-    "is critical — putting settings in the wrong file will silently have no effect.\n",
-    "**`~/.pizzapi/config.json`** — PizzaPi's main configuration file. This is where you configure:\n",
-    "- `hooks` — Shell-script hooks (PreToolUse, PostToolUse, Input, etc.) that run at agent lifecycle points.",
-    "  Example: RTK token-optimization hooks go here under `hooks.PreToolUse`, NOT in settings.json.",
-    "- `mcp` — MCP server definitions (stdio or streamable transports).",
-    "- `sandbox` — Sandbox mode and filesystem/network overrides.",
-    "- `skills` — Additional skill paths beyond the defaults.",
-    "- `appendSystemPrompt` — Extra system prompt text appended after the built-in prompt.",
-    "- `allowProjectHooks` — Trust gate for project-local hooks (must be set in global config).",
-    "- `trustedPlugins` — Trusted Claude Code plugin directories.\n",
-    "**`~/.pizzapi/settings.json`** — Pi TUI settings (model, provider, theme, terminal preferences).",
-    "This file is managed by pi's settings UI. Do NOT put hooks, MCP servers, or other PizzaPi config here —",
-    "PizzaPi does not read hooks from this file.\n",
-    "**Project-local config:** `.pizzapi/config.json` in the project root can define project-specific hooks,",
-    "MCP servers, and skills. Project hooks only run when `allowProjectHooks: true` is set in the GLOBAL",
-    "`~/.pizzapi/config.json` (projects cannot self-authorize).\n",
-    "**Key directories:**\n",
-    "- `~/.pizzapi/hooks/` — Global hook scripts referenced by config.json",
-    "- `~/.pizzapi/agents/` — Global agent definitions (markdown files)",
-    "- `~/.pizzapi/skills/` — Global skill definitions",
-    "- `.pizzapi/agents/` — Project-local agents",
-    "- `.pizzapi/skills/` — Project-local skills\n",
-    "**Claude Code compatibility:** PizzaPi also reads from `~/.claude/` paths (agents, skills) for",
-    "backward compatibility, but PizzaPi-specific config (hooks, MCP, sandbox) must go in `~/.pizzapi/config.json`.",
-].join(" ");
+    return renderSystemPrompt({
+        dateTime: ctx?.dateTime ?? new Date().toLocaleString("en-US", {
+            year: "numeric",
+            month: "long",
+            day: "numeric",
+            hour: "numeric",
+            minute: "2-digit",
+            hour12: true,
+        }),
+        gitBranch: ctx?.gitBranch ?? gitCtx.gitBranch,
+        gitWorktree: ctx?.gitWorktree ?? gitCtx.gitWorktree,
+        cwd: ctx?.cwd,
+    });
+}
+
+/**
+ * @deprecated Use `buildSystemPrompt()` for dynamic context support.
+ * Kept for backward compatibility — evaluates with current date/time.
+ */
+export const BUILTIN_SYSTEM_PROMPT = buildSystemPrompt();

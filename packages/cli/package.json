@@ -17,6 +17,7 @@
   "scripts": {
     "dev": "bun src/index.ts",
     "dev:runner": "bun src/index.ts runner",
+    "prebuild": "bun scripts/compile-prompt.ts",
     "build": "tsc --build --force && rm -rf dist/templates && cp -r src/templates dist/templates && rm -rf dist/skills && cp -r src/skills dist/skills",
     "start": "bun dist/index.js",
     "build:binary": "bun build-binaries.ts --target",
@@ -34,6 +35,7 @@
     "@pizzapi/tools": "workspace:*",
     "@pizzapi/tunnel": "workspace:*",
     "@zenyr/bun-pty": "^0.4.4",
+    "handlebars": "^4.7.9",
     "socket.io-client": "^4.8.1"
   },
   "devDependencies": {
