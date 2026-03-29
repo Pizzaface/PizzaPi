@@ -1,5 +1,7 @@
 import * as React from "react";
 
+// ── Types ─────────────────────────────────────────────────────────────────────
+
 export interface FileEntry {
   name: string;
   path: string;
@@ -34,5 +36,3 @@ export interface FileExplorerProps {
   /** Called when the user starts dragging the panel grip to reposition it. */
   onDragStart?: (e: React.PointerEvent) => void;
 }
-
-export const IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "ico", "avif"]);
