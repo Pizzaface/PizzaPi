@@ -15,8 +15,10 @@ import {
 // Instead we use sync fs variants (from the "fs" module, which is not mocked)
 // as the real-I/O implementation for smoke / permitted-path tests.
 //
-// Include readFile stub so this mock doesn't break read-file.test.ts when both
-// files share a Bun process and this mock.module() call runs first.
+// IMPORTANT: We must spread ALL original exports so other test files that share
+// this Bun process (e.g. event-pipeline.test.ts importing `rm`, `stat`) still
+// get the real implementations. Only override the functions we actually mock.
+const _originalFsPromises = await import("node:fs/promises");
 const mockMkdir = mock(async (path: string, opts?: unknown): Promise<string | undefined> => {
     mkdirSync(String(path), opts as Parameters<typeof mkdirSync>[1]);
     return undefined;
@@ -24,9 +26,8 @@ const mockMkdir = mock(async (path: string, opts?: unknown): Promise<string | un
 const mockWriteFile = mock(async (path: string, data: string, enc?: unknown): Promise<void> => {
     writeFileSyncFs(String(path), data, (enc as BufferEncoding) ?? "utf-8");
 });
-const _readFileStub = mock(async (_path: string, _enc?: unknown): Promise<string> => "");
 mock.module("fs/promises", () => ({
-    readFile: _readFileStub,
+    ..._originalFsPromises,
     writeFile: mockWriteFile,
     mkdir: mockMkdir,
 }));

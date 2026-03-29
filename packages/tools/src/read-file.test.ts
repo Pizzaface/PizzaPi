@@ -15,17 +15,16 @@ import {
 // entry, so we cannot use the named import as the default impl (infinite loop).
 // Instead we default to Bun.file().text() which is a completely separate API.
 //
-// Include writeFile/mkdir stubs so this mock doesn't break write-file.test.ts
-// when both files share a Bun process and this mock.module() call runs first.
+// IMPORTANT: We must spread ALL original exports so other test files that share
+// this Bun process (e.g. event-pipeline.test.ts importing `rm`, `stat`) still
+// get the real implementations. Only override the functions we actually mock.
+const _originalFsPromises = await import("node:fs/promises");
 const mockReadFile = mock(async (path: string, _enc?: unknown): Promise<string> =>
     Bun.file(String(path)).text()
 );
-const _writeFileStub = mock(async (): Promise<void> => {});
-const _mkdirStub = mock(async (): Promise<string | undefined> => undefined);
 mock.module("fs/promises", () => ({
+    ..._originalFsPromises,
     readFile: mockReadFile,
-    writeFile: _writeFileStub,
-    mkdir: _mkdirStub,
 }));
 
 // ── SUT — dynamically imported so it binds the mocked fs/promises ─────────────
