@@ -34,12 +34,13 @@ import {
 } from "lucide-react";
 import { RunnerTriggersPanel } from "@/components/RunnerTriggersPanel";
 import { RunnerServicesPanel } from "@/components/RunnerServicesPanel";
+import { RunnerSettingsPanel } from "@/components/runner-settings/RunnerSettingsPanel";
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
-export type RunnerTab = "sessions" | "skills" | "agents" | "plugins" | "sandbox" | "hooks" | "webhooks" | "services" | "triggers" | "usage";
+export type RunnerTab = "sessions" | "skills" | "agents" | "plugins" | "sandbox" | "hooks" | "webhooks" | "services" | "triggers" | "usage" | "settings";
 
 interface RunnerHook {
     type: string;
@@ -268,6 +269,7 @@ const TABS: { key: RunnerTab; label: string; countKey?: "skills" | "agents" | "p
     { key: "triggers", label: "Triggers" },
     { key: "usage", label: "Usage" },
     { key: "sandbox", label: "Sandbox" },
+    { key: "settings", label: "Settings" },
 ];
 
 function TabBar({
@@ -446,6 +448,9 @@ export function RunnerDetailPanel({
             break;
         case "sandbox":
             tabContent = <SandboxManager runnerId={runner.runnerId} bare />;
+            break;
+        case "settings":
+            tabContent = <RunnerSettingsPanel runnerId={runner.runnerId} />;
             break;
     }
 

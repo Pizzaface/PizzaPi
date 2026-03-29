@@ -372,6 +372,20 @@ export interface RunnerServerToClientEvents {
     range?: "7d" | "30d" | "90d" | "all";
   }) => void;
 
+  /** Requests the full runner settings (config.json + settings.json) */
+  settings_get_config: (data: {
+    requestId?: string;
+  }) => void;
+
+  /** Updates a specific section of the runner settings */
+  settings_update_section: (data: {
+    requestId?: string;
+    /** Which config section to update */
+    section: string;
+    /** The new value for that section */
+    value: unknown;
+  }) => void;
+
   /** Generic service message from viewer → relay → runner.
    *  The relay forwards this verbatim; it does not inspect serviceId. */
   service_message: (envelope: ServiceEnvelope) => void;

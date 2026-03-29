@@ -1070,6 +1070,155 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             }
         });
 
+        // ── Settings ───────────────────────────────────────────────────────
+
+        socket.on("settings_get_config", async (data: any) => {
+            if (isShuttingDown) return;
+            const requestId = data?.requestId;
+            try {
+                const { loadGlobalConfig: loadGlobal } = await import("../config.js");
+                const globalConfig = loadGlobal();
+
+                // Also read settings.json (TUI preferences)
+                const settingsPath = join(homedir(), ".pizzapi", "settings.json");
+                let tuiSettings: Record<string, unknown> = {};
+                try {
+                    const { readFileSync, existsSync } = await import("fs");
+                    if (existsSync(settingsPath)) {
+                        tuiSettings = JSON.parse(readFileSync(settingsPath, "utf-8"));
+                    }
+                } catch {
+                    // settings.json may not exist yet
+                }
+
+                socket.emit("file_result", {
+                    requestId,
+                    ok: true,
+                    config: globalConfig,
+                    tuiSettings,
+                });
+            } catch (err) {
+                socket.emit("file_result", {
+                    requestId,
+                    ok: false,
+                    message: err instanceof Error ? err.message : String(err),
+                });
+            }
+        });
+
+        socket.on("settings_update_section", async (data: any) => {
+            if (isShuttingDown) return;
+            const requestId = data?.requestId;
+            const section = data?.section;
+            const value = data?.value;
+            try {
+                if (!section || typeof section !== "string") {
+                    socket.emit("file_result", { requestId, ok: false, message: "Missing section name" });
+                    return;
+                }
+
+                // Sections that go into settings.json (TUI preferences)
+                const tuiSections = new Set(["tuiPreferences"]);
+
+                if (tuiSections.has(section)) {
+                    // Read/merge/write settings.json
+                    const settingsPath = join(homedir(), ".pizzapi", "settings.json");
+                    const { readFileSync, writeFileSync, existsSync, mkdirSync } = await import("fs");
+                    const dir = join(homedir(), ".pizzapi");
+                    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+                    let existing: Record<string, unknown> = {};
+                    try {
+                        if (existsSync(settingsPath)) {
+                            existing = JSON.parse(readFileSync(settingsPath, "utf-8"));
+                        }
+                    } catch { /* start fresh */ }
+
+                    // Merge TUI settings at top level
+                    if (value && typeof value === "object" && !Array.isArray(value)) {
+                        Object.assign(existing, value);
+                    }
+                    writeFileSync(settingsPath, JSON.stringify(existing, null, 2), "utf-8");
+                    socket.emit("file_result", {
+                        requestId,
+                        ok: true,
+                        saved: true,
+                        message: "TUI settings saved. Changes apply on next session start.",
+                    });
+                } else {
+                    // All other sections go into config.json
+                    const { saveGlobalConfig: saveGlobal, loadGlobalConfig: loadGlobal } = await import("../config.js");
+
+                    // Map section names to config.json keys
+                    const sectionToConfigKey: Record<string, string> = {
+                        models: "_models",            // virtual — handled specially below
+                        mcpServers: "mcpServers",
+                        hooks: "hooks",
+                        sandbox: "sandbox",
+                        webSearch: "providerSettings",
+                        security: "_security",        // virtual — handled specially
+                        envVars: "_envVars",          // virtual — handled specially
+                        systemPrompt: "_systemPrompt", // virtual — handled specially
+                    };
+
+                    const configKey = sectionToConfigKey[section] ?? section;
+                    const existing = loadGlobal();
+
+                    if (section === "models") {
+                        // Models section updates multiple top-level keys
+                        const v = value as any;
+                        const updates: Record<string, any> = {};
+                        if (v?.defaultProvider !== undefined) updates.defaultProvider = v.defaultProvider;
+                        if (v?.defaultModel !== undefined) updates.defaultModel = v.defaultModel;
+                        if (v?.defaultThinkingLevel !== undefined) updates.defaultThinkingLevel = v.defaultThinkingLevel;
+                        saveGlobal(updates);
+                    } else if (section === "security") {
+                        const v = value as any;
+                        const updates: Record<string, any> = {};
+                        if (v?.allowProjectHooks !== undefined) updates.allowProjectHooks = v.allowProjectHooks;
+                        if (v?.trustedPlugins !== undefined) updates.trustedPlugins = v.trustedPlugins;
+                        saveGlobal(updates);
+                    } else if (section === "systemPrompt") {
+                        const v = value as any;
+                        const updates: Record<string, any> = {};
+                        if (v?.appendSystemPrompt !== undefined) updates.appendSystemPrompt = v.appendSystemPrompt;
+                        if (v?.skills !== undefined) updates.skills = v.skills;
+                        saveGlobal(updates);
+                    } else if (section === "envVars") {
+                        // Env vars are stored in a custom key in config.json
+                        const updates: Record<string, any> = { envOverrides: value };
+                        saveGlobal(updates);
+                    } else if (section === "webSearch") {
+                        // Web search config goes into providerSettings
+                        const v = value as any;
+                        const ps = (existing as any).providerSettings ?? {};
+                        if (v?.anthropic?.webSearch) {
+                            ps.anthropic = { ...ps.anthropic, webSearch: v.anthropic.webSearch };
+                        }
+                        saveGlobal({ providerSettings: ps } as any);
+                    } else {
+                        // Direct key mapping
+                        saveGlobal({ [configKey]: value } as any);
+                    }
+
+                    // Reload and return the updated config
+                    const updatedConfig = loadGlobal();
+                    socket.emit("file_result", {
+                        requestId,
+                        ok: true,
+                        saved: true,
+                        config: updatedConfig,
+                        message: "Settings saved. Changes apply on next session start.",
+                    });
+                }
+            } catch (err) {
+                socket.emit("file_result", {
+                    requestId,
+                    ok: false,
+                    message: err instanceof Error ? err.message : String(err),
+                });
+            }
+        });
+
         // ── Error handling ────────────────────────────────────────────────
 
         socket.on("error", (data: any) => {
