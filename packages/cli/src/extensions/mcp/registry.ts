@@ -558,6 +558,14 @@ export async function registerMcpTools(
               },
             });
           }
+
+          // Notify extensions that the registry snapshot changed so they can
+          // resync against late or background MCP completion.
+          pi.events?.emit?.("mcp:registry_updated", {
+            server: client.name,
+            toolCount: serverToolList.length,
+            totalToolCount: toolCount,
+          });
         }
 
         return { name: client.name, tools, durationMs, timedOut };

@@ -162,6 +162,12 @@ export const toolSearchExtension: ExtensionFactory = (pi: any) => {
     active: false,
   };
 
+  function clearState(): void {
+    state.deferredTools.clear();
+    state.loadedTools.clear();
+    state.active = false;
+  }
+
   /**
    * Evaluate whether tool search should activate, and if so, which tools to defer.
    * Called after MCP tools are loaded (on session_start, after MCP extension runs).
@@ -171,7 +177,7 @@ export const toolSearchExtension: ExtensionFactory = (pi: any) => {
     const tsConfig = config.toolSearch;
 
     if (!tsConfig?.enabled) {
-      state.active = false;
+      clearState();
       return;
     }
 
@@ -188,7 +194,7 @@ export const toolSearchExtension: ExtensionFactory = (pi: any) => {
 
     if (!snapshot?.serverTools) {
       log.info("No MCP tools found, tool search not needed");
-      state.active = false;
+      clearState();
       return;
     }
 
@@ -242,14 +248,14 @@ export const toolSearchExtension: ExtensionFactory = (pi: any) => {
 
     if (toolsToDefer.length === 0) {
       log.info(`Tool search: no tools to defer (${totalMcpChars} chars, threshold ${threshold})`);
-      state.active = false;
+      clearState();
       return;
     }
 
+    const previousLoadedTools = new Set(state.loadedTools);
+
     // Build deferred tool info map
     state.deferredTools.clear();
-    state.loadedTools.clear();
-
     for (const toolName of toolsToDefer) {
       const tool = allTools.find((t) => t.name === toolName);
       if (!tool) continue;
@@ -263,8 +269,16 @@ export const toolSearchExtension: ExtensionFactory = (pi: any) => {
       });
     }
 
-    // Deactivate deferred tools
+    // Preserve any tools that were previously loaded on-demand and are still active.
     const currentActive = new Set(pi.getActiveTools() as string[]);
+    state.loadedTools.clear();
+    for (const name of previousLoadedTools) {
+      if (currentActive.has(name)) {
+        state.loadedTools.add(name);
+      }
+    }
+
+    // Deactivate deferred tools
     for (const name of toolsToDefer) {
       currentActive.delete(name);
     }
@@ -437,6 +451,11 @@ export const toolSearchExtension: ExtensionFactory = (pi: any) => {
   });
 
   // ── Session lifecycle ───────────────────────────────────────────────────
+
+  // Keep tool search synchronized with MCP registry changes, including
+  // background completion of slow servers and /mcp reload.
+  pi.events?.on?.("mcp:startup_report", evaluateAndDefer);
+  pi.events?.on?.("mcp:registry_updated", evaluateAndDefer);
 
   // Use a small delay after session_start to let MCP extension finish loading.
   // The MCP extension also runs on session_start, and extension factories are
