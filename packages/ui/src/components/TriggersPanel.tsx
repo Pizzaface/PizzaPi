@@ -925,29 +925,109 @@ function TriggerCatalogSection({ sessionId, triggerDefs, subscriptions, onSubscr
     handleSubscribe(def.type, Object.keys(params).length > 0 ? params : undefined);
   }, [paramValues, handleSubscribe]);
 
+  // Group trigger defs by service prefix (part before ':')
+  const serviceGroups = React.useMemo(() => {
+    const map = new Map<string, ServiceTriggerDef[]>();
+    for (const def of triggerDefs) {
+      const colonIdx = def.type.indexOf(":");
+      const service = colonIdx > 0 ? def.type.slice(0, colonIdx) : def.type;
+      const existing = map.get(service);
+      if (existing) {
+        existing.push(def);
+      } else {
+        map.set(service, [def]);
+      }
+    }
+    return Array.from(map.entries()).map(([service, defs]) => ({
+      service,
+      defs,
+      subscribedCount: defs.filter((d) => subscribedTypes.has(d.type)).length,
+    }));
+  }, [triggerDefs, subscribedTypes]);
+
   if (triggerDefs.length === 0) return null;
 
   return (
-    <div className="border-b border-border">
+    <div className="flex flex-col gap-1.5 p-2">
+      {serviceGroups.map(({ service, defs, subscribedCount }) => (
+        <ServiceCatalogAccordion
+          key={service}
+          service={service}
+          defs={defs}
+          subscribedCount={subscribedCount}
+          subscribedTypes={subscribedTypes}
+          subscriptionMap={subscriptionMap}
+          pending={pending}
+          paramFormOpen={paramFormOpen}
+          paramValues={paramValues}
+          paramError={paramError}
+          onToggle={handleToggle}
+          onParamSubmit={handleParamSubmit}
+          onParamFormOpen={setParamFormOpen}
+          onParamFormClose={() => { setParamFormOpen(null); setParamError(null); }}
+          onParamValuesChange={setParamValues}
+        />
+      ))}
+    </div>
+  );
+}
+
+// ── Service Catalog Accordion (one per service prefix) ─────────────────────
+
+interface ServiceCatalogAccordionProps {
+  service: string;
+  defs: ServiceTriggerDef[];
+  subscribedCount: number;
+  subscribedTypes: Set<string>;
+  subscriptionMap: Map<string, TriggerSubscription>;
+  pending: Set<string>;
+  paramFormOpen: string | null;
+  paramValues: Record<string, Record<string, string | string[]>>;
+  paramError: string | null;
+  onToggle: (def: ServiceTriggerDef, isSubscribed: boolean) => void;
+  onParamSubmit: (def: ServiceTriggerDef) => void;
+  onParamFormOpen: (type: string) => void;
+  onParamFormClose: () => void;
+  onParamValuesChange: React.Dispatch<React.SetStateAction<Record<string, Record<string, string | string[]>>>>;
+}
+
+function ServiceCatalogAccordion({
+  service, defs, subscribedCount, subscribedTypes, subscriptionMap,
+  pending, paramFormOpen, paramValues, paramError,
+  onToggle, onParamSubmit, onParamFormOpen, onParamFormClose, onParamValuesChange,
+}: ServiceCatalogAccordionProps) {
+  const [expanded, setExpanded] = React.useState(false);
+
+  return (
+    <div className={cn(
+      "rounded-lg border overflow-hidden",
+      subscribedCount > 0 ? "border-emerald-500/20 bg-emerald-950/10" : "border-border/50 bg-muted/10",
+    )}>
       <button
         type="button"
-        onClick={() => setCollapsed((v) => !v)}
-        className="w-full flex items-center gap-1.5 px-3 py-2 hover:bg-muted/30 transition-colors"
+        onClick={() => setExpanded((v) => !v)}
+        className="w-full flex items-center gap-2 px-3 py-2.5 hover:bg-white/[0.02] transition-colors"
       >
-        <BookOpen className="size-3 text-muted-foreground" />
-        <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground flex-1 text-left">
-          Available Triggers ({triggerDefs.length})
+        <Settings className="size-3.5 text-muted-foreground" />
+        <span className="text-xs font-medium text-foreground/90 flex-1 text-left capitalize">
+          {service}
         </span>
-        {collapsed ? (
-          <ChevronRight className="size-3 text-muted-foreground/50" />
-        ) : (
-          <ChevronDown className="size-3 text-muted-foreground/50" />
+        <span className="text-[10px] text-muted-foreground/50">
+          {defs.length} trigger{defs.length !== 1 ? "s" : ""}
+        </span>
+        {subscribedCount > 0 && (
+          <span className="inline-flex items-center justify-center size-4 rounded-full bg-emerald-500/20 text-emerald-400 text-[9px] font-bold">
+            {subscribedCount}
+          </span>
         )}
+        <div className="shrink-0 text-muted-foreground/40">
+          {expanded ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
+        </div>
       </button>
 
-      {!collapsed && (
-        <div className="divide-y divide-border/50">
-          {triggerDefs.map((def) => {
+      {expanded && (
+        <div className="border-t border-border/30 divide-y divide-border/50">
+          {defs.map((def) => {
             const isSubscribed = subscribedTypes.has(def.type);
             const isPendingToggle = pending.has(def.type);
             const isParamFormVisible = paramFormOpen === def.type;
@@ -1012,7 +1092,7 @@ function TriggerCatalogSection({ sessionId, triggerDefs, subscriptions, onSubscr
 
                   <button
                     type="button"
-                    onClick={() => handleToggle(def, isSubscribed)}
+                    onClick={() => onToggle(def, isSubscribed)}
                     disabled={isPendingToggle}
                     className={cn(
                       "shrink-0 p-1 rounded transition-colors",
@@ -1060,7 +1140,7 @@ function TriggerCatalogSection({ sessionId, triggerDefs, subscriptions, onSubscr
                                       type="checkbox"
                                       checked={checked}
                                       onChange={() => {
-                                        setParamValues((prev) => {
+                                        onParamValuesChange((prev) => {
                                           const cur = Array.isArray(prev[def.type]?.[p.name]) ? [...(prev[def.type][p.name] as string[])] : [];
                                           const next = checked ? cur.filter(v => v !== optStr) : [...cur, optStr];
                                           return { ...prev, [def.type]: { ...prev[def.type], [p.name]: next } };
@@ -1078,7 +1158,7 @@ function TriggerCatalogSection({ sessionId, triggerDefs, subscriptions, onSubscr
                           ) : p.enum ? (
                             <select
                               value={typeof currentVal === "string" ? currentVal : ""}
-                              onChange={(e) => setParamValues((prev) => ({
+                              onChange={(e) => onParamValuesChange((prev) => ({
                                 ...prev,
                                 [def.type]: { ...prev[def.type], [p.name]: e.target.value },
                               }))}
@@ -1094,7 +1174,7 @@ function TriggerCatalogSection({ sessionId, triggerDefs, subscriptions, onSubscr
                           ) : p.type === "boolean" ? (
                             <select
                               value={typeof currentVal === "string" ? currentVal : ""}
-                              onChange={(e) => setParamValues((prev) => ({
+                              onChange={(e) => onParamValuesChange((prev) => ({
                                 ...prev,
                                 [def.type]: { ...prev[def.type], [p.name]: e.target.value },
                               }))}
@@ -1111,7 +1191,7 @@ function TriggerCatalogSection({ sessionId, triggerDefs, subscriptions, onSubscr
                               type={p.type === "number" ? "number" : "text"}
                               placeholder={p.default !== undefined ? String(p.default) : undefined}
                               value={typeof currentVal === "string" ? currentVal : ""}
-                              onChange={(e) => setParamValues((prev) => ({
+                              onChange={(e) => onParamValuesChange((prev) => ({
                                 ...prev,
                                 [def.type]: { ...prev[def.type], [p.name]: e.target.value },
                               }))}
@@ -1129,7 +1209,7 @@ function TriggerCatalogSection({ sessionId, triggerDefs, subscriptions, onSubscr
                         size="sm"
                         variant="outline"
                         className="h-5 text-[10px] px-1.5"
-                        onClick={() => { setParamFormOpen(null); setParamError(null); }}
+                        onClick={onParamFormClose}
                       >
                         Cancel
                       </Button>
@@ -1137,7 +1217,7 @@ function TriggerCatalogSection({ sessionId, triggerDefs, subscriptions, onSubscr
                         size="sm"
                         className="h-5 text-[10px] px-1.5"
                         disabled={isPendingToggle}
-                        onClick={() => handleParamSubmit(def)}
+                        onClick={() => onParamSubmit(def)}
                       >
                         {isPendingToggle ? <Loader2 className="size-2.5 animate-spin mr-1" /> : null}
                         Subscribe
@@ -1153,6 +1233,10 @@ function TriggerCatalogSection({ sessionId, triggerDefs, subscriptions, onSubscr
     </div>
   );
 }
+
+// ── Catalog Section (wraps service accordions) ─────────────────────────────
+// TriggerCatalogSection is the parent that holds subscribe/param logic
+// and delegates rendering per-service to ServiceCatalogAccordion above.
 
 // ── Active Subscriptions Section ───────────────────────────────────────────
 
@@ -1568,7 +1652,7 @@ export function TriggersPanel({ sessionId, triggerDefs = [], viewerSocket }: Tri
 
   // Tab state: "history" or "catalog"
   const hasCatalog = triggerDefs.length > 0 || subscriptions.length > 0;
-  const [activeTab, setActiveTab] = React.useState<"history" | "catalog">("history");
+  const [activeTab, setActiveTab] = React.useState<"history" | "catalog">(hasCatalog ? "catalog" : "history");
 
   // Count for badges
   const pendingCount = pendingGroups.length;
