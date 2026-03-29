@@ -395,6 +395,36 @@ function parseTriggers(raw: unknown): ServiceTriggerDef[] {
     return triggers;
 }
 
+/**
+ * Parse a raw sigils array (from manifest.json or sigils.json).
+ * Invalid entries are skipped defensively.
+ */
+function parseSigils(raw: unknown): ServiceSigilDef[] {
+    if (!Array.isArray(raw)) return [];
+    const sigils: ServiceSigilDef[] = [];
+    for (const s of raw) {
+        if (!s || typeof s !== "object") continue;
+        if (typeof s.type !== "string" || !s.type) continue;
+        if (typeof s.label !== "string" || !s.label) continue;
+        let aliases: string[] | undefined;
+        if (Array.isArray(s.aliases)) {
+            const valid = s.aliases.filter((a: unknown) => typeof a === "string" && a.length > 0) as string[];
+            if (valid.length > 0) aliases = valid;
+        }
+        sigils.push({
+            type: s.type,
+            label: s.label,
+            description: typeof s.description === "string" ? s.description : undefined,
+            resolve: typeof s.resolve === "string" ? s.resolve : undefined,
+            schema: s.schema && typeof s.schema === "object" && !Array.isArray(s.schema)
+                ? s.schema as Record<string, unknown>
+                : undefined,
+            ...(aliases ? { aliases } : {}),
+        });
+    }
+    return sigils;
+}
+
 function parseServiceManifest(manifestPath: string): ServiceManifest {
     const raw = JSON.parse(readFileSync(manifestPath, "utf-8"));
     if (!raw || typeof raw !== "object") {
