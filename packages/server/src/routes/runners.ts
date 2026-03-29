@@ -309,6 +309,24 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
         return undefined;
     }
 
+    // ── Runner services ─────────────────────────────────────────────
+    const servicesMatch = url.pathname.match(/^\/api\/runners\/([^/]+)\/services$/);
+    if (servicesMatch && req.method === "GET") {
+        const identity = await requireSession(req);
+        if (identity instanceof Response) return identity;
+
+        const runnerId = decodeURIComponent(servicesMatch[1]);
+        const runner = await getRunnerData(runnerId);
+        if (!runner) return Response.json({ error: "Runner not found" }, { status: 404 });
+        if (runner.userId !== identity.userId) return Response.json({ error: "Forbidden" }, { status: 403 });
+
+        const services = await getRunnerServices(runnerId);
+        return Response.json({
+            serviceIds: services?.serviceIds ?? [],
+            panels: services?.panels ?? [],
+        });
+    }
+
     // ── Trigger definitions + listeners ──────────────────────────────
     const triggersMatch = url.pathname.match(/^\/api\/runners\/([^/]+)\/triggers$/);
     if (triggersMatch && req.method === "GET") {
