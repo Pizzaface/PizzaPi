@@ -39,6 +39,16 @@ These are set automatically by the runner daemon on spawned worker sessions.
 | `PIZZAPI_WORKER_CWD` | Working directory for the worker session. | — |
 | `PIZZAPI_WORKER_INITIAL_PROMPT` | Initial prompt to inject into the session. | — |
 
+### Session Attachment Variables
+
+These control where the runner stores session attachments (images and files sent from the web UI to the agent).
+
+| Variable | Description | Default |
+|---|---|---|
+| `PIZZAPI_SESSION_ATTACHMENTS_DIR` | Override the directory where session attachments are persisted on the runner. Each session gets a subdirectory keyed by session ID. Files are stored alongside a `.meta.json` sidecar containing the original filename, MIME type, size, and timestamp. | `~/.pizzapi/session-attachments/` |
+
+**Attachment pipeline:** When a user uploads a file via the web UI, the relay server stores it temporarily (see `PIZZAPI_ATTACHMENT_DIR` / `PIZZAPI_ATTACHMENT_TTL_MS` in the Server section). The runner's remote extension then downloads the attachment and persists it into the session attachments directory, making it available to the agent as a local file path. Attachments live as long as the session — there is no independent TTL on the runner side.
+
 ### Sandbox Variables
 
 These variables control the [Agent Sandbox](/PizzaPi/security/sandbox/) behavior.

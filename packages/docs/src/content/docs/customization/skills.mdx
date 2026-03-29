@@ -200,6 +200,43 @@ description: Use when implementing any feature or bugfix, before writing impleme
 
 ---
 
+## Managing Skills via the API
+
+PizzaPi exposes a full CRUD API for managing skills on a connected runner. This lets you create, edit, and delete skills from the web UI without touching the filesystem directly.
+
+### API Endpoints
+
+All endpoints are scoped to a specific runner and require an authenticated session.
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/api/runners/{runnerId}/skills` | List all discovered skills (from Redis cache) |
+| `GET` | `/api/runners/{runnerId}/skills/{name}` | Get full content of a specific skill |
+| `POST` | `/api/runners/{runnerId}/skills` | Create a new skill (body: `{ name, content }`) |
+| `PUT` | `/api/runners/{runnerId}/skills/{name}` | Update an existing skill (body: `{ content }`) |
+| `DELETE` | `/api/runners/{runnerId}/skills/{name}` | Delete a skill |
+| `POST` | `/api/runners/{runnerId}/skills/refresh` | Re-scan the filesystem and refresh the skill list |
+
+### Using the Web UI
+
+In the PizzaPi web interface, navigate to a runner's detail page and open the **Skills** tab. From there you can:
+
+- **Browse** all skills discovered from the runner's skill directories
+- **Create** a new skill with the in-browser editor
+- **Edit** an existing skill's content (including frontmatter)
+- **Delete** skills you no longer need
+- **Refresh** to re-scan the filesystem if you've added skills outside the UI
+
+### Relationship to File-Based Discovery
+
+The API writes directly to the same directories used by file-based discovery (`~/.pizzapi/skills/`, etc.). A skill created via the API is a regular `SKILL.md` file on disk — there's no separate "API-only" storage. Similarly, skills added to the filesystem can be picked up by hitting the **Refresh** button or calling the `/refresh` endpoint.
+
+<Aside type="note">
+  Skill names are validated to prevent path traversal — only alphanumeric characters, hyphens, and underscores are allowed.
+</Aside>
+
+---
+
 ## Agent Skills Standard
 
 PizzaPi's skill format is compatible with the [Agent Skills](https://agentskills.io) open standard. Skills written for other compatible tools (like Claude Code) work in PizzaPi without modification, and vice versa.

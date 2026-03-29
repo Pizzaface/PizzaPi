@@ -130,19 +130,70 @@ Spawn a new agent session on a runner.
 
 ### `POST /api/runners/restart`
 
-Restart an agent session.
+Restart an agent session on a runner. Sends a restart signal to the runner daemon.
+
+**Auth:** Session cookie.
+
+**Request body:**
+
+```json
+{
+  "runnerId": "runner_a1b2c3"
+}
+```
+
+**Response:**
+
+```json
+{ "ok": true }
+```
 
 ---
 
 ### `POST /api/runners/stop`
 
-Stop a running session.
+Stop (shut down) a runner daemon.
+
+**Auth:** Session cookie.
+
+**Request body:**
+
+```json
+{
+  "runnerId": "runner_a1b2c3"
+}
+```
+
+**Response:**
+
+```json
+{ "ok": true }
+```
 
 ---
 
 ### `POST /api/runners/terminal`
 
-Register a terminal (xterm) for a session.
+Register a new terminal (xterm) session on a runner.
+
+**Auth:** Session cookie.
+
+**Request body:**
+
+```json
+{
+  "runnerId": "runner_a1b2c3",
+  "cwd": "/path/to/project",   // optional
+  "cols": 80,                   // optional, default 80
+  "rows": 24                    // optional, default 24
+}
+```
+
+**Response:**
+
+```json
+{ "ok": true, "terminalId": "uuid", "runnerId": "runner_a1b2c3" }
+```
 
 ---
 
@@ -150,35 +201,548 @@ Register a terminal (xterm) for a session.
 
 Get recently used working directories for a runner.
 
+**Auth:** Session cookie.
+
+**Response:**
+
+```json
+{
+  "folders": ["/Users/jordan/Projects/app", "/Users/jordan/Projects/lib"]
+}
+```
+
+---
+
+### `DELETE /api/runners/{runnerId}/recent-folders`
+
+Remove a folder from the recent-folders list.
+
+**Auth:** Session cookie.
+
+**Request body:**
+
+```json
+{ "path": "/Users/jordan/Projects/old-project" }
+```
+
+**Response:**
+
+```json
+{ "ok": true, "deleted": true }
+```
+
+---
+
+### `GET /api/runners/{runnerId}/models`
+
+List available AI models on a runner, excluding user-hidden models.
+
+**Auth:** Session cookie.
+
+**Response:**
+
+```json
+{
+  "models": [
+    { "provider": "anthropic", "id": "claude-sonnet-4-20250514" },
+    { "provider": "openai", "id": "gpt-4o" }
+  ]
+}
+```
+
+---
+
+### `GET /api/runners/{runnerId}/services`
+
+List registered services and UI panels for a runner.
+
+**Auth:** Session cookie.
+
+**Response:**
+
+```json
+{
+  "serviceIds": ["git", "godmother"],
+  "panels": [{ "id": "panel-1", "title": "Service Panel" }]
+}
+```
+
 ---
 
 ### `GET /api/runners/{runnerId}/skills`
 
-List available skills on a runner.
+List available skills on a runner (from Redis cache).
+
+**Auth:** Session cookie.
+
+**Response:**
+
+```json
+{
+  "skills": ["deploy", "review-pr", "run-tests"]
+}
+```
 
 ---
 
-### `GET /api/runners/{runnerId}/files`
+### `GET /api/runners/{runnerId}/skills/{name}`
 
-List files in a directory on the runner.
+Get the full content of a specific skill.
 
----
+**Auth:** Session cookie.
 
-### `GET /api/runners/{runnerId}/read-file`
+**Response:**
 
-Read the contents of a file on the runner.
-
----
-
-### `GET /api/runners/{runnerId}/git-status`
-
-Get the Git status of the runner's working directory.
+```json
+{ "name": "deploy", "content": "# Deploy Skill\n..." }
+```
 
 ---
 
-### `GET /api/runners/{runnerId}/git-diff`
+### `POST /api/runners/{runnerId}/skills`
 
-Get a Git diff for the runner's working directory.
+Create a new skill on the runner.
+
+**Auth:** Session cookie.
+
+**Request body:**
+
+```json
+{ "name": "my-skill", "content": "# Skill instructions..." }
+```
+
+**Response:**
+
+```json
+{ "ok": true, "skills": ["my-skill", "deploy", "review-pr"] }
+```
+
+---
+
+### `POST /api/runners/{runnerId}/skills/refresh`
+
+Ask the runner to re-scan skills from disk.
+
+**Auth:** Session cookie.
+
+**Response:**
+
+```json
+{ "ok": true, "skills": ["deploy", "review-pr"] }
+```
+
+---
+
+### `PUT /api/runners/{runnerId}/skills/{name}`
+
+Update an existing skill.
+
+**Auth:** Session cookie.
+
+**Request body:**
+
+```json
+{ "content": "# Updated skill content..." }
+```
+
+**Response:**
+
+```json
+{ "ok": true, "skills": ["deploy", "review-pr"] }
+```
+
+---
+
+### `DELETE /api/runners/{runnerId}/skills/{name}`
+
+Delete a skill from the runner.
+
+**Auth:** Session cookie.
+
+**Response:**
+
+```json
+{ "ok": true, "skills": ["deploy"] }
+```
+
+---
+
+### `POST /api/runners/{runnerId}/files`
+
+List files in a directory on the runner. Path must be within the runner's allowed workspace roots.
+
+**Auth:** Session cookie.
+
+**Request body:**
+
+```json
+{ "path": "/Users/jordan/Projects/app" }
+```
+
+**Response:**
+
+```json
+{
+  "ok": true,
+  "files": [
+    { "name": "src", "type": "directory" },
+    { "name": "package.json", "type": "file" }
+  ]
+}
+```
+
+---
+
+### `POST /api/runners/{runnerId}/search-files`
+
+Search for files by name within a directory on the runner.
+
+**Auth:** Session cookie.
+
+**Request body:**
+
+```json
+{
+  "cwd": "/Users/jordan/Projects/app",
+  "query": "component",
+  "limit": 100   // optional, default 100
+}
+```
+
+**Response:**
+
+```json
+{
+  "ok": true,
+  "files": ["src/components/Button.tsx", "src/components/Modal.tsx"]
+}
+```
+
+---
+
+### `POST /api/runners/{runnerId}/read-file`
+
+Read the contents of a file on the runner. Supports UTF-8 text and base64-encoded binary.
+
+**Auth:** Session cookie.
+
+**Request body:**
+
+```json
+{
+  "path": "/Users/jordan/Projects/app/src/index.ts",
+  "encoding": "utf8"   // "utf8" (default, 512KB max) or "base64" (10MB max)
+}
+```
+
+**Response:**
+
+```json
+{ "ok": true, "content": "import express from 'express';\n..." }
+```
+
+---
+
+### Git Operations
+
+Git operations (status, diff, branches, checkout, stage, unstage, commit, push) are handled entirely through the WebSocket `service_message` channel with `serviceId="git"`, not via REST endpoints. See the WebSocket section below.
+
+---
+
+### `GET /api/runners/{runnerId}/sandbox-status`
+
+Get the current sandbox configuration and status for a runner.
+
+**Auth:** Session cookie.
+
+**Response:**
+
+```json
+{
+  "ok": true,
+  "mode": "basic",
+  "filesystem": { "denyRead": [], "allowWrite": ["/tmp"], "denyWrite": [] },
+  "network": { "allowedDomains": [], "deniedDomains": [] }
+}
+```
+
+---
+
+### `PUT /api/runners/{runnerId}/sandbox-config`
+
+Update the sandbox configuration for a runner.
+
+**Auth:** Session cookie.
+
+**Request body:**
+
+```json
+{
+  "mode": "basic",                       // "none" | "basic" | "full"
+  "filesystem": {
+    "denyRead": [],
+    "allowWrite": ["/tmp", "/Users/jordan/Projects"],
+    "denyWrite": ["/etc"]
+  },
+  "network": {
+    "allowedDomains": ["api.github.com"],
+    "deniedDomains": []
+  }
+}
+```
+
+**Response:**
+
+```json
+{ "ok": true }
+```
+
+---
+
+### `GET /api/runners/{runnerId}/usage`
+
+Get token/cost usage statistics from the runner.
+
+**Auth:** Session cookie.
+
+**Query params:**
+
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| `range` | string | `90d` | Time range: `7d`, `30d`, `90d`, or `all` |
+
+**Response:**
+
+```json
+{
+  "ok": true,
+  "totalInputTokens": 1234567,
+  "totalOutputTokens": 456789,
+  "totalCostUsd": 12.34,
+  "sessions": []
+}
+```
+
+---
+
+### `GET /api/runners/{runnerId}/triggers`
+
+List trigger definitions and active listeners for a runner.
+
+**Auth:** Session cookie.
+
+**Response:**
+
+```json
+{
+  "triggerDefs": [
+    { "type": "github_push", "description": "Fires on git push" }
+  ],
+  "listeners": [
+    { "triggerType": "github_push", "prompt": "Review the push", "cwd": "/project" }
+  ]
+}
+```
+
+---
+
+### `GET /api/runners/{runnerId}/trigger-listeners`
+
+List active trigger listeners (auto-spawn subscriptions) for a runner.
+
+**Auth:** Session cookie.
+
+**Response:**
+
+```json
+{ "listeners": [{ "triggerType": "github_push", "prompt": "...", "cwd": "..." }] }
+```
+
+---
+
+### `POST /api/runners/{runnerId}/trigger-listeners`
+
+Add a trigger listener that auto-spawns sessions when a trigger fires.
+
+**Auth:** Session cookie.
+
+**Request body:**
+
+```json
+{
+  "triggerType": "github_push",
+  "prompt": "Review the changes",     // optional
+  "cwd": "/path/to/project",          // optional
+  "model": { "provider": "anthropic", "id": "claude-sonnet-4-20250514" },  // optional
+  "params": { "branch": "main" }      // optional filter params
+}
+```
+
+**Response:**
+
+```json
+{ "ok": true }
+```
+
+---
+
+### `PUT /api/runners/{runnerId}/trigger-listeners/{triggerType}`
+
+Update an existing trigger listener's configuration.
+
+**Auth:** Session cookie.
+
+**Request body:** Same fields as POST (all optional).
+
+**Response:**
+
+```json
+{ "ok": true }
+```
+
+---
+
+### `DELETE /api/runners/{runnerId}/trigger-listeners/{triggerType}`
+
+Remove a trigger listener.
+
+**Auth:** Session cookie.
+
+**Response:**
+
+```json
+{ "ok": true, "removed": true }
+```
+
+---
+
+### `GET /api/runners/{runnerId}/agents`
+
+List available agent definitions on a runner (from Redis cache).
+
+**Auth:** Session cookie.
+
+**Response:**
+
+```json
+{ "agents": ["reviewer", "deployer"] }
+```
+
+---
+
+### `GET /api/runners/{runnerId}/agents/{name}`
+
+Get the full content of a specific agent definition.
+
+**Auth:** Session cookie.
+
+**Response:**
+
+```json
+{ "name": "reviewer", "content": "# Agent definition..." }
+```
+
+---
+
+### `POST /api/runners/{runnerId}/agents`
+
+Create a new agent definition.
+
+**Auth:** Session cookie.
+
+**Request body:**
+
+```json
+{ "name": "my-agent", "content": "# Agent instructions..." }
+```
+
+**Response:**
+
+```json
+{ "ok": true, "agents": ["my-agent", "reviewer"] }
+```
+
+---
+
+### `POST /api/runners/{runnerId}/agents/refresh`
+
+Ask the runner to re-scan agent definitions from disk.
+
+**Auth:** Session cookie.
+
+**Response:**
+
+```json
+{ "ok": true, "agents": ["reviewer", "deployer"] }
+```
+
+---
+
+### `PUT /api/runners/{runnerId}/agents/{name}`
+
+Update an existing agent definition.
+
+**Auth:** Session cookie.
+
+**Request body:**
+
+```json
+{ "content": "# Updated agent content..." }
+```
+
+**Response:**
+
+```json
+{ "ok": true, "agents": ["reviewer", "deployer"] }
+```
+
+---
+
+### `DELETE /api/runners/{runnerId}/agents/{name}`
+
+Delete an agent definition.
+
+**Auth:** Session cookie.
+
+**Response:**
+
+```json
+{ "ok": true, "agents": ["deployer"] }
+```
+
+---
+
+### `GET /api/runners/{runnerId}/plugins`
+
+List Claude Code plugins available on the runner. Optionally pass `?cwd=` to scan from a specific directory.
+
+**Auth:** Session cookie.
+
+**Query params:**
+
+| Param | Type | Description |
+|-------|------|-------------|
+| `cwd` | string | Optional absolute path to scan for project-local plugins |
+
+**Response:**
+
+```json
+{ "plugins": [{ "name": "my-plugin", "path": "/path/to/plugin" }] }
+```
+
+---
+
+### `POST /api/runners/{runnerId}/plugins/refresh`
+
+Ask the runner to re-scan plugins from disk.
+
+**Auth:** Session cookie.
+
+**Response:**
+
+```json
+{ "ok": true, "plugins": [] }
+```
 
 ---
 
@@ -186,27 +750,461 @@ Get a Git diff for the runner's working directory.
 
 ### `GET /api/sessions`
 
-List all sessions for the authenticated user.
+List all sessions for the authenticated user, including both live (in-memory) and persisted sessions.
 
 **Auth:** Session cookie.
+
+**Query params:**
+
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| `includePersisted` | string | `true` | Set to `false` or `0` to exclude persisted (historical) sessions |
+
+**Response:**
+
+```json
+{
+  "sessions": [
+    {
+      "sessionId": "session_x1y2z3",
+      "runnerId": "runner_a1b2c3",
+      "status": "running"
+    }
+  ],
+  "persistedSessions": []
+}
+```
+
+---
+
+### `GET /api/sessions/pinned`
+
+List pinned sessions for the authenticated user.
+
+**Auth:** Session cookie.
+
+**Response:**
+
+```json
+{ "pinnedSessions": [{ "sessionId": "session_x1y2z3", "isPinned": true }] }
+```
+
+---
+
+### `PUT /api/sessions/{sessionId}/pin`
+
+Pin a session so it persists in the session list.
+
+**Auth:** Session cookie.
+
+**Response:**
+
+```json
+{ "ok": true, "isPinned": true }
+```
+
+---
+
+### `DELETE /api/sessions/{sessionId}/pin`
+
+Unpin a session.
+
+**Auth:** Session cookie.
+
+**Response:**
+
+```json
+{ "ok": true, "isPinned": false }
+```
 
 ---
 
 ### `POST /api/sessions/{sessionId}/attachments`
 
-Upload a file attachment to a session (e.g. for the agent to process).
+Upload file attachments to a session (e.g. for the agent to process). Accepts one or more files.
 
 **Auth:** Session cookie.
 
 **Content-Type:** `multipart/form-data`
 
+**Form fields:** `file` or `files` (one or more `File` entries).
+
 **Max file size:** Configured by the server (default: 10 MB).
+
+**Response:**
+
+```json
+{
+  "attachments": [
+    {
+      "attachmentId": "att_uuid",
+      "filename": "screenshot.png",
+      "mimeType": "image/png",
+      "size": 54321,
+      "expiresAt": "2025-01-15T12:00:00Z"
+    }
+  ]
+}
+```
 
 ---
 
 ### `GET /api/attachments/{attachmentId}`
 
-Download a previously uploaded attachment.
+Download a previously uploaded attachment. Returns the file with appropriate content headers.
+
+**Auth:** Session cookie or API key (via `x-api-key` header or `?apiKey=` query param).
+
+**Response:** Binary file with headers:
+- `Content-Type` — the attachment's MIME type
+- `Content-Disposition` — `inline; filename="..."`
+- `X-Attachment-Id` — the attachment ID
+- `X-Attachment-Filename` — percent-encoded original filename
+
+---
+
+## Triggers
+
+### `POST /api/sessions/{sessionId}/trigger`
+
+Fire a trigger into a connected session. Used by external integrations to send events to running agents.
+
+**Auth:** API key (`x-api-key` header) or session cookie.
+
+**Request body:**
+
+```json
+{
+  "type": "webhook",                   // trigger type identifier
+  "payload": { "repo": "my/repo" },    // arbitrary payload object
+  "deliverAs": "steer",                // optional: "steer" (default, interrupts) or "followUp" (queues)
+  "expectsResponse": false,            // optional, default false
+  "source": "github",                  // optional source identifier
+  "summary": "New push to main"        // optional human-readable summary
+}
+```
+
+**Response:**
+
+```json
+{ "ok": true, "triggerId": "ext_abc123" }
+```
+
+---
+
+### `GET /api/sessions/{sessionId}/triggers`
+
+List recent trigger history for a session.
+
+**Auth:** API key or session cookie.
+
+**Query params:**
+
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| `limit` | number | `50` | Max triggers to return (capped at 200) |
+
+**Response:**
+
+```json
+{
+  "triggers": [
+    {
+      "triggerId": "ext_abc123",
+      "type": "webhook",
+      "source": "external:github",
+      "summary": "New push to main",
+      "payload": {},
+      "deliverAs": "steer",
+      "ts": "2025-01-15T12:00:00Z",
+      "direction": "inbound"
+    }
+  ]
+}
+```
+
+---
+
+### `DELETE /api/sessions/{sessionId}/triggers`
+
+Clear trigger history for a session.
+
+**Auth:** API key or session cookie.
+
+**Response:**
+
+```json
+{ "ok": true }
+```
+
+---
+
+### `GET /api/sessions/{sessionId}/available-triggers`
+
+List trigger types available on the session's runner (from runner service catalog).
+
+**Auth:** API key or session cookie.
+
+**Response:**
+
+```json
+{
+  "triggerDefs": [
+    {
+      "type": "github_push",
+      "description": "Fires on git push events",
+      "params": [{ "name": "branch", "type": "string" }],
+      "schema": {}
+    }
+  ]
+}
+```
+
+---
+
+### `GET /api/sessions/{sessionId}/trigger-subscriptions`
+
+List active trigger subscriptions for a session.
+
+**Auth:** API key or session cookie.
+
+**Response:**
+
+```json
+{
+  "subscriptions": [
+    { "triggerType": "github_push", "runnerId": "runner_a1b2c3" }
+  ]
+}
+```
+
+---
+
+### `POST /api/sessions/{sessionId}/trigger-subscriptions`
+
+Subscribe a session to a trigger type. The trigger type must be available on the session's runner.
+
+**Auth:** API key or session cookie.
+
+**Request body:**
+
+```json
+{
+  "triggerType": "github_push",
+  "params": { "branch": "main" },           // optional, validated against trigger def
+  "filters": [                               // optional output filters
+    { "field": "repo", "value": "my/repo", "op": "eq" }
+  ],
+  "filterMode": "and"                        // optional: "and" (default) or "or"
+}
+```
+
+**Response:**
+
+```json
+{
+  "ok": true,
+  "triggerType": "github_push",
+  "runnerId": "runner_a1b2c3"
+}
+```
+
+---
+
+### `PUT /api/sessions/{sessionId}/trigger-subscriptions/{triggerType}`
+
+Update params/filters on an existing trigger subscription.
+
+**Auth:** API key or session cookie.
+
+**Request body:**
+
+```json
+{
+  "params": { "branch": "develop" },
+  "filters": [{ "field": "author", "value": "bot", "op": "contains" }],
+  "filterMode": "and"
+}
+```
+
+**Response:**
+
+```json
+{ "ok": true, "triggerType": "github_push", "runnerId": "runner_a1b2c3" }
+```
+
+---
+
+### `DELETE /api/sessions/{sessionId}/trigger-subscriptions/{triggerType}`
+
+Unsubscribe a session from a trigger type.
+
+**Auth:** API key or session cookie.
+
+**Response:**
+
+```json
+{ "ok": true, "triggerType": "github_push" }
+```
+
+---
+
+### `POST /api/runners/{runnerId}/trigger-broadcast`
+
+Broadcast a trigger to all sessions subscribed to a trigger type on this runner. Intended for runner services.
+
+**Auth:** API key only (`x-api-key` header).
+
+**Request body:**
+
+```json
+{
+  "type": "github_push",
+  "payload": { "repo": "my/repo", "branch": "main" },
+  "deliverAs": "steer",        // optional: "steer" or "followUp"
+  "source": "github",          // optional
+  "summary": "Push to main"    // optional
+}
+```
+
+**Response:**
+
+```json
+{
+  "ok": true,
+  "delivered": 3,       // number of existing sessions that received the trigger
+  "spawned": 1,         // number of auto-spawned sessions from listeners
+  "triggerId": "ext_abc123"
+}
+```
+
+---
+
+## Webhooks
+
+Webhooks allow external services to spawn sessions and fire triggers via HMAC-authenticated HTTP requests.
+
+### `POST /api/webhooks`
+
+Create a new webhook.
+
+**Auth:** Session cookie.
+
+**Request body:**
+
+```json
+{
+  "name": "Deploy on push",
+  "source": "github",
+  "runnerId": "runner_a1b2c3",     // optional — runner to spawn sessions on
+  "cwd": "/path/to/project",       // optional
+  "prompt": "Review the changes",   // optional — initial prompt for spawned sessions
+  "model": { "provider": "anthropic", "id": "claude-sonnet-4-20250514" },  // optional
+  "eventFilter": ["push", "pull_request"]  // optional — only fire for these event types
+}
+```
+
+**Response (201):**
+
+```json
+{
+  "webhook": {
+    "id": "wh_uuid",
+    "name": "Deploy on push",
+    "source": "github",
+    "secret": "whsec_...",
+    "enabled": true,
+    "runnerId": "runner_a1b2c3"
+  }
+}
+```
+
+---
+
+### `GET /api/webhooks`
+
+List all webhooks for the authenticated user.
+
+**Auth:** Session cookie.
+
+**Response:**
+
+```json
+{ "webhooks": [{ "id": "wh_uuid", "name": "Deploy on push", "source": "github", "enabled": true }] }
+```
+
+---
+
+### `GET /api/webhooks/{id}`
+
+Get details of a specific webhook.
+
+**Auth:** Session cookie.
+
+**Response:**
+
+```json
+{ "webhook": { "id": "wh_uuid", "name": "...", "source": "...", "secret": "whsec_...", "enabled": true } }
+```
+
+---
+
+### `PUT /api/webhooks/{id}`
+
+Update a webhook's configuration.
+
+**Auth:** Session cookie.
+
+**Request body:** Any subset of the creation fields (`name`, `source`, `runnerId`, `cwd`, `prompt`, `model`, `eventFilter`, `enabled`).
+
+**Response:**
+
+```json
+{ "webhook": { "id": "wh_uuid", "name": "Updated name", "enabled": true } }
+```
+
+---
+
+### `DELETE /api/webhooks/{id}`
+
+Delete a webhook.
+
+**Auth:** Session cookie.
+
+**Response:**
+
+```json
+{ "ok": true }
+```
+
+---
+
+### `POST /api/webhooks/{id}/fire`
+
+Fire a webhook — spawns a new session and delivers the payload as a trigger. **No session cookie required** — authenticated via HMAC signature.
+
+**Auth:** HMAC-SHA256 signature of the raw request body using the webhook's `secret`, sent in the `X-Webhook-Signature` header.
+
+**Request body:** Any JSON object. If the body contains a `type` field, it's checked against the webhook's `eventFilter`.
+
+**Headers:**
+
+```http
+X-Webhook-Signature: <hex-encoded HMAC-SHA256>
+Content-Type: application/json
+```
+
+**Response:**
+
+```json
+{ "ok": true, "triggerId": "wh_abc123", "sessionId": "session_x1y2z3" }
+```
+
+If the event type is filtered out:
+
+```json
+{ "ok": true, "filtered": true }
+```
 
 ---
 
@@ -214,20 +1212,214 @@ Download a previously uploaded attachment.
 
 ### `GET /api/push/vapid-public-key`
 
-Get the VAPID public key for Web Push subscription.
+Get the VAPID public key for Web Push subscription. No authentication required.
+
+**Response:**
+
+```json
+{ "publicKey": "BNx..." }
+```
+
+---
 
 ### `POST /api/push/subscribe`
 
 Subscribe the browser to push notifications.
 
+**Auth:** Session cookie.
+
+**Request body:**
+
+```json
+{
+  "endpoint": "https://fcm.googleapis.com/fcm/send/...",
+  "keys": {
+    "p256dh": "base64-encoded-key",
+    "auth": "base64-encoded-auth"
+  },
+  "enabledEvents": "question,error"   // optional comma-separated event list
+}
+```
+
+**Response:**
+
+```json
+{ "ok": true, "id": "sub_uuid" }
+```
+
+---
+
 ### `POST /api/push/unsubscribe`
 
 Unsubscribe the browser from push notifications.
+
+**Auth:** Session cookie.
+
+**Request body:**
+
+```json
+{ "endpoint": "https://fcm.googleapis.com/fcm/send/..." }
+```
+
+**Response:**
+
+```json
+{ "ok": true }
+```
+
+---
 
 ### `GET /api/push/subscriptions`
 
 List push subscriptions for the authenticated user.
 
+**Auth:** Session cookie.
+
+**Response:**
+
+```json
+{
+  "subscriptions": [
+    {
+      "id": "sub_uuid",
+      "endpoint": "https://fcm.googleapis.com/...",
+      "createdAt": "2025-01-15T12:00:00Z",
+      "enabledEvents": "question,error",
+      "suppressChildNotifications": false
+    }
+  ]
+}
+```
+
+---
+
 ### `PUT /api/push/events`
 
-Update which events trigger push notifications.
+Update which events trigger push notifications for a subscription.
+
+**Auth:** Session cookie.
+
+**Request body:**
+
+```json
+{
+  "endpoint": "https://fcm.googleapis.com/...",
+  "enabledEvents": "question,error,completion"
+}
+```
+
+**Response:**
+
+```json
+{ "ok": true }
+```
+
+---
+
+### `PUT /api/push/child-notifications`
+
+Control whether child (sub-agent) sessions trigger push notifications.
+
+**Auth:** Session cookie.
+
+**Request body:**
+
+```json
+{
+  "endpoint": "https://fcm.googleapis.com/...",
+  "suppress": true
+}
+```
+
+**Response:**
+
+```json
+{ "ok": true }
+```
+
+---
+
+### `POST /api/push/answer`
+
+Answer a pending agent question directly from a push notification (e.g. from mobile).
+
+**Auth:** Session cookie.
+
+**Request body:**
+
+```json
+{
+  "sessionId": "session_x1y2z3",
+  "toolCallId": "tc_abc123",
+  "text": "Yes, proceed with the deployment"
+}
+```
+
+**Response:**
+
+```json
+{ "ok": true }
+```
+
+**Error codes:**
+- `409` — No question pending, or answer already submitted
+- `403` — Session not in collab mode
+- `502` — Runner not connected
+
+---
+
+## Settings
+
+### `GET /api/settings/hidden-models`
+
+Get the list of hidden (disabled) models for the authenticated user.
+
+**Auth:** Session cookie.
+
+**Response:**
+
+```json
+{ "hiddenModels": ["openai/gpt-4", "anthropic/claude-2"] }
+```
+
+---
+
+### `PUT /api/settings/hidden-models`
+
+Update the list of hidden models.
+
+**Auth:** Session cookie.
+
+**Request body:**
+
+```json
+{ "hiddenModels": ["openai/gpt-4"] }
+```
+
+**Response:**
+
+```json
+{ "ok": true, "hiddenModels": ["openai/gpt-4"] }
+```
+
+---
+
+## Tunnel (HTTP Proxy)
+
+The tunnel endpoints proxy HTTP requests to services running on the runner's localhost. This allows the web UI to access dev servers, databases, or any local service through the relay.
+
+### `* /api/tunnel/{sessionId}/{port}/*`
+
+Session-based tunnel proxy. All HTTP methods are supported (GET, POST, PUT, DELETE, PATCH, HEAD, OPTIONS).
+
+**Auth:** Session cookie (must be the session owner).
+
+The request is forwarded to `127.0.0.1:{port}` on the runner. HTML, JS, and CSS responses are rewritten to route absolute paths through the tunnel prefix. Auth headers (`Cookie`, `Authorization`, `x-api-key`) are stripped before forwarding.
+
+---
+
+### `* /api/tunnel/runner/{runnerId}/{port}/*`
+
+Runner-based tunnel proxy (preferred). Same as above but addressed by runner ID instead of session ID, making the URL stable across session restarts.
+
+**Auth:** Session cookie (must own the runner).
