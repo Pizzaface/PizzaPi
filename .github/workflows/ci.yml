@@ -60,6 +60,9 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      - name: Generate precompiled prompt template
+        run: bun packages/cli/scripts/compile-prompt.ts
+
       - name: Typecheck
         run: bun run typecheck
 
