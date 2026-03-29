@@ -1839,10 +1839,13 @@ export function TriggersPanel({ sessionId, triggerDefs = [], viewerSocket }: Tri
   const hasCatalog = triggerDefs.length > 0 || subscriptions.length > 0;
   const [activeTab, setActiveTab] = React.useState<"history" | "catalog">(hasCatalog ? "catalog" : "history");
 
-  // Switch to catalog when data arrives asynchronously
+  // Auto-switch to catalog only on the first transition from no-catalog to catalog.
+  // Once catalog data has appeared (or user has interacted), don't override their tab choice.
+  const catalogSeenRef = React.useRef(false);
   React.useEffect(() => {
-    if (hasCatalog) {
-      setActiveTab((prev) => prev === "history" ? "catalog" : prev);
+    if (hasCatalog && !catalogSeenRef.current) {
+      catalogSeenRef.current = true;
+      setActiveTab("catalog");
     }
   }, [hasCatalog]);
 
