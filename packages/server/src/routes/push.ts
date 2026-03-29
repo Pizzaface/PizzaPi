@@ -12,7 +12,7 @@ import {
     updateSuppressChildNotifications,
 } from "../push.js";
 import { getSharedSession, getLocalTuiSocket } from "../ws/sio-registry.js";
-import { getPushPendingQuestion, consumePushPendingQuestionIfMatches } from "../ws/sio-state.js";
+import { getPushPendingQuestion, consumePushPendingQuestionIfMatches } from "../ws/sio-state/index.js";
 import type { RouteHandler } from "./types.js";
 
 export const handlePushRoute: RouteHandler = async (req, url) => {

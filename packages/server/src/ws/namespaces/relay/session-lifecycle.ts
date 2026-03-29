@@ -12,7 +12,7 @@ import {
 import {
     clearPushPendingQuestion,
     deleteRunnerAssociation,
-} from "../../sio-state.js";
+} from "../../sio-state/index.js";
 import { socketAckedSeqs } from "./ack-tracker.js";
 import { clearThinkingMaps } from "./thinking-tracker.js";
 import { pendingChunkedStates, enqueueSessionEvent } from "./event-pipeline.js";

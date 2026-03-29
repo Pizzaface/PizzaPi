@@ -34,7 +34,7 @@ import {
     emitToRunner,
     broadcastToSessionViewers,
 } from "../sio-registry.js";
-import { isChildOfParent } from "../sio-state.js";
+import { isChildOfParent } from "../sio-state/index.js";
 import { getPendingChunkedSnapshot } from "./relay/index.js";
 import { getPersistedRelaySessionSnapshot } from "../../sessions/store.js";
 import { getCachedRelayEvents, getLatestCachedSnapshotEvent } from "../../sessions/redis.js";

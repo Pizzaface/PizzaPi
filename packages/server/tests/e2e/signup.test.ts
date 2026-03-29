@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import { initAuth, getAuth, getKysely, type AuthConfig } from "../../src/auth.js";
 import { runAllMigrations } from "../../src/migrations.js";
 import { handleFetch } from "../../src/handler.js";
-import { initStateRedis } from "../../src/ws/sio-state.js";
+import { initStateRedis } from "../../src/ws/sio-state/index.js";
 
 // Save and restore PIZZAPI_TRUST_PROXY so we don't pollute other test files
 const savedTrustProxy = process.env.PIZZAPI_TRUST_PROXY;

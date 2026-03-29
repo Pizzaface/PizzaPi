@@ -126,7 +126,7 @@ mock.module("./hub.js", () => ({
 // test files running in the same worker process.
 afterAll(() => mock.restore());
 
-const { initStateRedis, markChildAsDelinked } = await import("../sio-state.js");
+const { initStateRedis, markChildAsDelinked } = await import("../sio-state/index.js");
 const { registerTuiSession } = await import("./sessions.js");
 
 describe("registerTuiSession parent resolution", () => {

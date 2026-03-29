@@ -52,7 +52,7 @@ const {
     getRunnerAssociation,
     deleteRunnerAssociation,
     refreshRunnerAssociationTTL,
-} = await import("./sio-state.js");
+} = await import("./sio-state/index.js");
 
 // ── Tests ───────────────────────────────────────────────────────────────────
 

@@ -21,7 +21,7 @@ import type { RedisClientType } from "redis";
 import { initAuth, getTrustedOrigins } from "../../src/auth.js";
 import { runAllMigrations } from "../../src/migrations.js";
 import { handleFetch } from "../../src/handler.js";
-import { initStateRedis, closeStateRedis } from "../../src/ws/sio-state.js";
+import { initStateRedis, closeStateRedis } from "../../src/ws/sio-state/index.js";
 import { serverHealth } from "../../src/health.js";
 import { initSioRegistry } from "../../src/ws/sio-registry.js";
 import { registerNamespaces } from "../../src/ws/namespaces/index.js";

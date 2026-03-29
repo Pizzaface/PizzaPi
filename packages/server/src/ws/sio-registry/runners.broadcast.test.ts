@@ -140,7 +140,7 @@ function createFakeIo() {
 }
 
 const { initSioRegistry, runnersUserRoom } = await import("./context.js");
-const { initStateRedis } = await import("../sio-state.js");
+const { initStateRedis } = await import("../sio-state/index.js");
 const { registerRunner, removeRunner, updateRunnerSkills, updateRunnerAgents, updateRunnerPlugins, updateRunnerServices, getRunnerServices } =
     await import("./runners.js");
 

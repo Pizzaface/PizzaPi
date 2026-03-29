@@ -21,7 +21,7 @@ import {
     isChildDelinked,
     isChildOfParent,
     clearParentSessionId,
-} from "../../sio-state.js";
+} from "../../sio-state/index.js";
 import type { RelaySocket } from "./types.js";
 import { createLogger } from "@pizzapi/tools";
 

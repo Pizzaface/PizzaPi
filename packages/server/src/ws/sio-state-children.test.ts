@@ -135,7 +135,7 @@ const {
     markChildAsDelinked,
     isChildDelinked,
     clearDelinkedMark,
-} = await import("./sio-state.js");
+} = await import("./sio-state/index.js");
 
 // ── Tests ───────────────────────────────────────────────────────────────────
 

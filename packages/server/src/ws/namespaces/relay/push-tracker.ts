@@ -4,7 +4,7 @@ import {
     setPushPendingQuestion,
     clearPushPendingQuestion,
     isLinkedChildForSuppression,
-} from "../../sio-state.js";
+} from "../../sio-state/index.js";
 import {
     notifyAgentFinished,
     notifyAgentNeedsInput,

@@ -15,7 +15,7 @@ import { appendRelayEventToCache } from "../../../sessions/redis.js";
 import { storeAndReplaceImagesInEvent } from "../../strip-images.js";
 import { updateSessionMetaState, broadcastToSessionMeta, getSessionMetaState } from "../../sio-registry/meta.js";
 import { isMetaRelayEvent, metaEventToPatch, type MetaRelayEvent, type SessionMetaState } from "@pizzapi/protocol";
-import { updateSessionFields } from "../../sio-state.js";
+import { updateSessionFields } from "../../sio-state/index.js";
 import {
     trackThinkingDeltas,
     augmentMessageThinkingDurations,
