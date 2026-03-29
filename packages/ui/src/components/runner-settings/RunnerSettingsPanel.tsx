@@ -1,34 +1,24 @@
 import * as React from "react";
 import { useState, useEffect, useCallback } from "react";
-import { Loader2, Settings, AlertTriangle, Save, RotateCcw } from "lucide-react";
+import { Loader2, RotateCcw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ErrorAlert } from "@/components/ui/error-alert";
 import { cn } from "@/lib/utils";
 
 // Sub-tab components — lazy loaded
 const ModelsSettings = React.lazy(() => import("./ModelsSettings"));
-const McpServersSettings = React.lazy(() => import("./McpServersSettings"));
-const HooksSettings = React.lazy(() => import("./HooksSettings"));
-const SandboxSettings = React.lazy(() => import("./SandboxSettings"));
 const WebSearchSettings = React.lazy(() => import("./WebSearchSettings"));
-const SecuritySettings = React.lazy(() => import("./SecuritySettings"));
 const EnvVarsSettings = React.lazy(() => import("./EnvVarsSettings"));
 const SystemPromptSettings = React.lazy(() => import("./SystemPromptSettings"));
-const AgentRulesSettings = React.lazy(() => import("./AgentRulesSettings"));
 const TuiPrefsSettings = React.lazy(() => import("./TuiPrefsSettings"));
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 export type SettingsSection =
     | "models"
-    | "mcpServers"
-    | "hooks"
-    | "sandbox"
     | "webSearch"
-    | "security"
     | "envVars"
     | "systemPrompt"
-    | "agentsMd"
     | "tuiPreferences";
 
 export interface RunnerSettingsPanelProps {
@@ -52,14 +42,9 @@ export interface SectionProps {
 
 const SETTINGS_TABS: { key: SettingsSection; label: string }[] = [
     { key: "models", label: "Models" },
-    { key: "mcpServers", label: "MCP Servers" },
-    { key: "hooks", label: "Hooks" },
-    { key: "sandbox", label: "Sandbox" },
     { key: "webSearch", label: "Web Search" },
-    { key: "security", label: "Security" },
     { key: "envVars", label: "Env Vars" },
     { key: "systemPrompt", label: "System Prompt" },
-    { key: "agentsMd", label: "Agent Rules" },
     { key: "tuiPreferences", label: "TUI Prefs" },
 ];
 
@@ -83,12 +68,7 @@ export function RunnerSettingsPanel({ runnerId }: RunnerSettingsPanelProps) {
                 throw new Error(body.error ?? `HTTP ${res.status}`);
             }
             const result = await res.json();
-            // Stash agentsMd in config as __agentsMd so section components can access it
-            const config = result.config ?? {};
-            if (result.agentsMd !== undefined) {
-                config.__agentsMd = result.agentsMd;
-            }
-            setData({ config, tuiSettings: result.tuiSettings ?? {} });
+            setData({ config: result.config ?? {}, tuiSettings: result.tuiSettings ?? {} });
         } catch (err) {
             setError(err instanceof Error ? err.message : String(err));
         } finally {
@@ -166,29 +146,14 @@ export function RunnerSettingsPanel({ runnerId }: RunnerSettingsPanelProps) {
         case "models":
             content = <ModelsSettings {...sectionProps} />;
             break;
-        case "mcpServers":
-            content = <McpServersSettings {...sectionProps} />;
-            break;
-        case "hooks":
-            content = <HooksSettings {...sectionProps} />;
-            break;
-        case "sandbox":
-            content = <SandboxSettings {...sectionProps} />;
-            break;
         case "webSearch":
             content = <WebSearchSettings {...sectionProps} />;
-            break;
-        case "security":
-            content = <SecuritySettings {...sectionProps} />;
             break;
         case "envVars":
             content = <EnvVarsSettings {...sectionProps} />;
             break;
         case "systemPrompt":
             content = <SystemPromptSettings {...sectionProps} />;
-            break;
-        case "agentsMd":
-            content = <AgentRulesSettings {...sectionProps} />;
             break;
         case "tuiPreferences":
             content = <TuiPrefsSettings {...sectionProps} />;

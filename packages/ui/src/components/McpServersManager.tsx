@@ -1,13 +1,37 @@
-import { useState } from "react";
-import { Plus, Save, Server, ChevronDown, Trash2, Globe, Terminal } from "lucide-react";
+/**
+ * McpServersManager — standalone MCP server config editor.
+ *
+ * Self-contained: fetches config from the runner settings API and saves back.
+ * Validates server entries and shows reload hints after save.
+ */
+import { useState, useEffect, useCallback } from "react";
+import {
+    Plus,
+    Save,
+    Server,
+    ChevronDown,
+    Trash2,
+    Globe,
+    Terminal,
+    CheckCircle,
+    Loader2,
+    RotateCcw,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
+import { ErrorAlert } from "@/components/ui/error-alert";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
-import type { SectionProps } from "./RunnerSettingsPanel";
+
+// ── Types ─────────────────────────────────────────────────────────────────────
+
+export interface McpServersManagerProps {
+    runnerId: string;
+    bare?: boolean;
+}
 
 interface McpServerEntry {
     command?: string;
@@ -20,14 +44,46 @@ interface McpServerEntry {
 
 type ServersMap = Record<string, McpServerEntry>;
 
-function parseServers(config: Record<string, any>): ServersMap {
-    const raw = config.mcpServers;
-    if (raw == null || typeof raw !== "object" || Array.isArray(raw)) return {};
-    return { ...raw } as ServersMap;
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+function parseArgs(input: string): string[] {
+    return input
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean);
 }
 
-export default function McpServersSettings({ config, onSave, saving }: SectionProps) {
-    const [servers, setServers] = useState<ServersMap>(() => parseServers(config));
+function envToText(env?: Record<string, string>): string {
+    if (!env) return "";
+    return Object.entries(env)
+        .map(([k, v]) => `${k}=${v}`)
+        .join("\n");
+}
+
+function textToEnv(text: string): Record<string, string> {
+    const result: Record<string, string> = {};
+    for (const line of text.split("\n")) {
+        const eq = line.indexOf("=");
+        if (eq <= 0) continue;
+        const key = line.slice(0, eq).trim();
+        const value = line.slice(eq + 1);
+        if (key) result[key] = value;
+    }
+    return result;
+}
+
+// ── Component ─────────────────────────────────────────────────────────────────
+
+export function McpServersManager({ runnerId, bare }: McpServersManagerProps) {
+    // Data
+    const [servers, setServers] = useState<ServersMap>({});
+    const [savedServers, setSavedServers] = useState<ServersMap>({});
+    const [loading, setLoading] = useState(true);
+    const [saving, setSaving] = useState(false);
+    const [error, setError] = useState<string | null>(null);
+    const [saveMessage, setSaveMessage] = useState<string | null>(null);
+
+    // Expand/delete state
     const [expandedServer, setExpandedServer] = useState<string | null>(null);
     const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
 
@@ -39,13 +95,69 @@ export default function McpServersSettings({ config, onSave, saving }: SectionPr
     const [newArgs, setNewArgs] = useState("");
     const [newUrl, setNewUrl] = useState("");
 
+    // ── Fetch ─────────────────────────────────────────────────────────────────
+
+    const fetchConfig = useCallback(async () => {
+        setLoading(true);
+        setError(null);
+        try {
+            const res = await fetch(`/api/runners/${encodeURIComponent(runnerId)}/settings`);
+            if (!res.ok) {
+                const body = await res.json().catch(() => ({}));
+                throw new Error(body.error ?? `HTTP ${res.status}`);
+            }
+            const result = await res.json();
+            const cfg = result.config ?? {};
+            const raw = cfg.mcpServers;
+            const parsed: ServersMap =
+                raw != null && typeof raw === "object" && !Array.isArray(raw) ? { ...raw } : {};
+            setServers(parsed);
+            setSavedServers(parsed);
+        } catch (err) {
+            setError(err instanceof Error ? err.message : String(err));
+        } finally {
+            setLoading(false);
+        }
+    }, [runnerId]);
+
+    useEffect(() => {
+        fetchConfig();
+    }, [fetchConfig]);
+
+    // ── Save ──────────────────────────────────────────────────────────────────
+
+    const handleSave = async () => {
+        setSaving(true);
+        setSaveMessage(null);
+        setError(null);
+        try {
+            const res = await fetch(`/api/runners/${encodeURIComponent(runnerId)}/settings`, {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ section: "mcpServers", value: servers }),
+            });
+            if (!res.ok) {
+                const body = await res.json().catch(() => ({}));
+                throw new Error(body.error ?? `HTTP ${res.status}`);
+            }
+            setSavedServers({ ...servers });
+            setSaveMessage(
+                "MCP server config saved. Active sessions can run /mcp reload to pick up changes.",
+            );
+        } catch (err) {
+            setError(err instanceof Error ? err.message : String(err));
+        } finally {
+            setSaving(false);
+        }
+    };
+
+    // ── Editing helpers ───────────────────────────────────────────────────────
+
     const serverNames = Object.keys(servers).sort((a, b) => a.localeCompare(b));
+    const isStdio = (s: McpServerEntry) => !!s.command || !!s.args;
 
     function updateServer(name: string, patch: Partial<McpServerEntry>) {
-        setServers((prev) => ({
-            ...prev,
-            [name]: { ...prev[name], ...patch },
-        }));
+        setServers((prev) => ({ ...prev, [name]: { ...prev[name], ...patch } }));
     }
 
     function toggleDisabled(name: string) {
@@ -65,7 +177,6 @@ export default function McpServersSettings({ config, onSave, saving }: SectionPr
     function addServer() {
         const name = newName.trim();
         if (!name || servers[name]) return;
-
         const entry: McpServerEntry = {};
         if (newType === "stdio") {
             entry.command = newCommand.trim();
@@ -73,7 +184,6 @@ export default function McpServersSettings({ config, onSave, saving }: SectionPr
         } else {
             entry.url = newUrl.trim();
         }
-
         setServers((prev) => ({ ...prev, [name]: entry }));
         setNewName("");
         setNewCommand("");
@@ -83,14 +193,47 @@ export default function McpServersSettings({ config, onSave, saving }: SectionPr
         setExpandedServer(name);
     }
 
-    async function handleSave() {
-        await onSave("mcpServers", servers);
+    // ── Loading / error ───────────────────────────────────────────────────────
+
+    if (loading) {
+        return (
+            <div className="flex items-center justify-center p-8">
+                <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+                <span className="ml-2 text-sm text-muted-foreground">Loading MCP servers…</span>
+            </div>
+        );
     }
 
-    const isStdio = (s: McpServerEntry) => !!s.command || !!s.args;
+    if (error && Object.keys(servers).length === 0 && Object.keys(savedServers).length === 0) {
+        return (
+            <div className="p-4">
+                <ErrorAlert>{error}</ErrorAlert>
+                <Button variant="outline" size="sm" className="mt-3" onClick={fetchConfig}>
+                    <RotateCcw className="h-3.5 w-3.5 mr-1" />
+                    Retry
+                </Button>
+            </div>
+        );
+    }
+
+    // ── Render ────────────────────────────────────────────────────────────────
 
     return (
-        <div className="flex flex-col gap-6">
+        <div className={cn("flex flex-col gap-6", !bare && "p-4")}>
+            {/* Error banner */}
+            {error && (
+                <div className="flex items-center justify-between">
+                    <ErrorAlert className="flex-1">{error}</ErrorAlert>
+                    <button
+                        type="button"
+                        onClick={() => setError(null)}
+                        className="ml-2 text-xs text-muted-foreground hover:text-foreground"
+                    >
+                        ✕
+                    </button>
+                </div>
+            )}
+
             {/* Header */}
             <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
@@ -128,7 +271,9 @@ export default function McpServersSettings({ config, onSave, saving }: SectionPr
                             className="font-mono text-sm"
                         />
                         {newName.trim() && servers[newName.trim()] && (
-                            <p className="text-xs text-destructive">A server with this name already exists.</p>
+                            <p className="text-xs text-destructive">
+                                A server with this name already exists.
+                            </p>
                         )}
                     </div>
 
@@ -260,13 +405,21 @@ export default function McpServersSettings({ config, onSave, saving }: SectionPr
                                     />
                                     <div className="flex-1 min-w-0">
                                         <div className="flex items-center gap-2">
-                                            <span className="text-sm font-semibold truncate">{name}</span>
+                                            <span className="text-sm font-semibold truncate">
+                                                {name}
+                                            </span>
                                             {server.disabled && (
-                                                <Badge variant="outline" className="text-[10px] px-1.5 py-0">
+                                                <Badge
+                                                    variant="outline"
+                                                    className="text-[10px] px-1.5 py-0"
+                                                >
                                                     disabled
                                                 </Badge>
                                             )}
-                                            <Badge variant="secondary" className="text-[10px] px-1.5 py-0">
+                                            <Badge
+                                                variant="secondary"
+                                                className="text-[10px] px-1.5 py-0"
+                                            >
                                                 {serverIsStdio ? "stdio" : "http"}
                                             </Badge>
                                         </div>
@@ -282,7 +435,10 @@ export default function McpServersSettings({ config, onSave, saving }: SectionPr
                                 <div className="border-t border-border px-4 py-4 flex flex-col gap-4">
                                     {/* Disabled toggle */}
                                     <div className="flex items-center justify-between">
-                                        <Label htmlFor={`mcp-disabled-${name}`} className="text-xs">
+                                        <Label
+                                            htmlFor={`mcp-disabled-${name}`}
+                                            className="text-xs"
+                                        >
                                             Enabled
                                         </Label>
                                         <Switch
@@ -294,22 +450,23 @@ export default function McpServersSettings({ config, onSave, saving }: SectionPr
 
                                     {serverIsStdio ? (
                                         <>
-                                            {/* Command */}
                                             <div className="flex flex-col gap-1.5">
                                                 <Label className="text-xs">Command</Label>
                                                 <Input
                                                     value={server.command ?? ""}
                                                     onChange={(e) =>
-                                                        updateServer(name, { command: e.target.value })
+                                                        updateServer(name, {
+                                                            command: e.target.value,
+                                                        })
                                                     }
                                                     className="font-mono text-sm"
                                                     placeholder="npx"
                                                 />
                                             </div>
-
-                                            {/* Args */}
                                             <div className="flex flex-col gap-1.5">
-                                                <Label className="text-xs">Args (comma-separated)</Label>
+                                                <Label className="text-xs">
+                                                    Args (comma-separated)
+                                                </Label>
                                                 <Input
                                                     value={(server.args ?? []).join(", ")}
                                                     onChange={(e) =>
@@ -323,7 +480,6 @@ export default function McpServersSettings({ config, onSave, saving }: SectionPr
                                             </div>
                                         </>
                                     ) : (
-                                        /* URL */
                                         <div className="flex flex-col gap-1.5">
                                             <Label className="text-xs">URL</Label>
                                             <Input
@@ -341,14 +497,21 @@ export default function McpServersSettings({ config, onSave, saving }: SectionPr
                                     <div className="flex flex-col gap-1.5">
                                         <Label className="text-xs">
                                             Environment Variables{" "}
-                                            <span className="text-muted-foreground">(KEY=VALUE, one per line)</span>
+                                            <span className="text-muted-foreground">
+                                                (KEY=VALUE, one per line)
+                                            </span>
                                         </Label>
                                         <textarea
                                             value={envToText(server.env)}
                                             onChange={(e) =>
-                                                updateServer(name, { env: textToEnv(e.target.value) })
+                                                updateServer(name, {
+                                                    env: textToEnv(e.target.value),
+                                                })
                                             }
-                                            rows={Math.max(2, Object.keys(server.env ?? {}).length + 1)}
+                                            rows={Math.max(
+                                                2,
+                                                Object.keys(server.env ?? {}).length + 1,
+                                            )}
                                             className="flex w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm font-mono ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 resize-y"
                                             placeholder={"API_KEY=your-key\nANOTHER_VAR=value"}
                                         />
@@ -373,7 +536,9 @@ export default function McpServersSettings({ config, onSave, saving }: SectionPr
                                     <div className="flex justify-end pt-1">
                                         {confirmDelete === name ? (
                                             <div className="flex items-center gap-2">
-                                                <span className="text-xs text-destructive">Delete this server?</span>
+                                                <span className="text-xs text-destructive">
+                                                    Delete this server?
+                                                </span>
                                                 <Button
                                                     variant="destructive"
                                                     size="sm"
@@ -408,10 +573,18 @@ export default function McpServersSettings({ config, onSave, saving }: SectionPr
                 );
             })}
 
+            {/* Success message */}
+            {saveMessage && (
+                <div className="flex items-start gap-2 rounded-md border border-green-500/30 bg-green-500/5 px-4 py-3 text-sm text-green-400">
+                    <CheckCircle className="mt-0.5 size-4 shrink-0" />
+                    <span>{saveMessage}</span>
+                </div>
+            )}
+
             {/* Footer */}
             <div className="flex items-center justify-between pt-2">
                 <p className="text-xs text-muted-foreground italic">
-                    Changes apply on next runner restart.
+                    Active sessions can run /mcp reload to pick up changes.
                 </p>
                 <Button onClick={handleSave} disabled={saving} size="sm" className="gap-1.5">
                     <Save className="h-3.5 w-3.5" />
@@ -420,35 +593,4 @@ export default function McpServersSettings({ config, onSave, saving }: SectionPr
             </div>
         </div>
     );
-}
-
-/* ── Helpers ───────────────────────────────────────────────────────────────── */
-
-/** Parse a comma-separated string into a trimmed args array. */
-function parseArgs(input: string): string[] {
-    return input
-        .split(",")
-        .map((s) => s.trim())
-        .filter(Boolean);
-}
-
-/** Convert env record to "KEY=VALUE\n" text. */
-function envToText(env?: Record<string, string>): string {
-    if (!env) return "";
-    return Object.entries(env)
-        .map(([k, v]) => `${k}=${v}`)
-        .join("\n");
-}
-
-/** Parse "KEY=VALUE\n" text back into an env record. */
-function textToEnv(text: string): Record<string, string> {
-    const result: Record<string, string> = {};
-    for (const line of text.split("\n")) {
-        const eq = line.indexOf("=");
-        if (eq <= 0) continue;
-        const key = line.slice(0, eq).trim();
-        const value = line.slice(eq + 1);
-        if (key) result[key] = value;
-    }
-    return result;
 }

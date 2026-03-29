@@ -1,14 +1,39 @@
+/**
+ * HooksManager — standalone hook editor for the top-level Hooks tab.
+ *
+ * Fetches global config from the runner settings API, renders the hook editor
+ * (same as HooksSettings) plus the "Allow Project Hooks" toggle, and saves
+ * back via the same API.
+ */
+import * as React from "react";
 import { useState, useEffect, useCallback } from "react";
-import { Plus, Save, Webhook, ChevronDown, Trash2, Info } from "lucide-react";
-import { Loader2 } from "lucide-react";
+import {
+    Plus,
+    Save,
+    Webhook,
+    ChevronDown,
+    Trash2,
+    Info,
+    Loader2,
+    RotateCcw,
+    Lock,
+    AlertTriangle,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
+import { ErrorAlert } from "@/components/ui/error-alert";
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
-import type { SectionProps } from "./RunnerSettingsPanel";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
+
+export interface HooksManagerProps {
+    runnerId: string;
+    /** When true, render without outer padding (for tab/panel use) */
+    bare?: boolean;
+}
 
 interface HookEntry {
     command: string;
@@ -52,24 +77,121 @@ function isMatcherType(type: HookType): type is MatcherHookType {
     return MATCHER_HOOK_TYPES.includes(type as MatcherHookType);
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
 function cloneHooks(hooks: Record<string, any>): Record<string, any> {
     return JSON.parse(JSON.stringify(hooks ?? {}));
 }
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
-export default function HooksSettings({ config, onSave, saving }: SectionProps) {
-    const [hooks, setHooks] = useState<Record<string, any>>(() => cloneHooks(config.hooks));
+export function HooksManager({ runnerId, bare }: HooksManagerProps) {
+    // Data from the runner
+    const [config, setConfig] = useState<Record<string, any> | null>(null);
+    const [loading, setLoading] = useState(true);
+    const [error, setError] = useState<string | null>(null);
+    const [saving, setSaving] = useState(false);
+
+    // Hook editor state
+    const [hooks, setHooks] = useState<Record<string, any>>({});
     const [openSections, setOpenSections] = useState<Set<HookType>>(new Set());
 
-    // Re-sync when config changes externally
-    useEffect(() => {
-        setHooks(cloneHooks(config.hooks));
-    }, [config.hooks]);
+    // allowProjectHooks state
+    const [allowProjectHooks, setAllowProjectHooks] = useState(false);
 
-    const isDirty = JSON.stringify(hooks) !== JSON.stringify(config.hooks ?? {});
+    // ── Fetch ─────────────────────────────────────────────────────────────────
+
+    const fetchSettings = useCallback(async () => {
+        setLoading(true);
+        setError(null);
+        try {
+            const res = await fetch(`/api/runners/${encodeURIComponent(runnerId)}/settings`);
+            if (!res.ok) {
+                const body = await res.json().catch(() => ({}));
+                throw new Error(body.error ?? `HTTP ${res.status}`);
+            }
+            const result = await res.json();
+            const cfg = result.config ?? {};
+            setConfig(cfg);
+            setHooks(cloneHooks(cfg.hooks));
+            setAllowProjectHooks(cfg.allowProjectHooks === true);
+        } catch (err) {
+            setError(err instanceof Error ? err.message : String(err));
+        } finally {
+            setLoading(false);
+        }
+    }, [runnerId]);
+
+    useEffect(() => {
+        fetchSettings();
+    }, [fetchSettings]);
+
+    // ── Save ──────────────────────────────────────────────────────────────────
+
+    const handleSave = useCallback(async () => {
+        setSaving(true);
+        setError(null);
+        try {
+            // Strip empty entries before saving
+            const cleaned = cloneHooks(hooks);
+            for (const type of ALL_HOOK_TYPES) {
+                if (!(type in cleaned)) continue;
+                if (isMatcherType(type)) {
+                    const groups = cleaned[type] as MatcherHookGroup[];
+                    const filtered = groups
+                        .map((g) => ({
+                            ...g,
+                            hooks: g.hooks.filter((h: HookEntry) => h.command.trim() !== ""),
+                        }))
+                        .filter((g) => g.hooks.length > 0 && g.matcher.trim() !== "");
+                    if (filtered.length === 0) delete cleaned[type];
+                    else cleaned[type] = filtered;
+                } else {
+                    const entries = (cleaned[type] as HookEntry[]).filter(
+                        (h) => h.command.trim() !== "",
+                    );
+                    if (entries.length === 0) delete cleaned[type];
+                    else cleaned[type] = entries;
+                }
+            }
+
+            // Save hooks
+            const hooksRes = await fetch(`/api/runners/${encodeURIComponent(runnerId)}/settings`, {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ section: "hooks", value: cleaned }),
+            });
+            if (!hooksRes.ok) {
+                const body = await hooksRes.json().catch(() => ({}));
+                throw new Error(body.error ?? `HTTP ${hooksRes.status}`);
+            }
+
+            // Save allowProjectHooks (security section)
+            const secRes = await fetch(`/api/runners/${encodeURIComponent(runnerId)}/settings`, {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ section: "security", value: { allowProjectHooks, trustedPlugins: config?.trustedPlugins } }),
+            });
+            if (!secRes.ok) {
+                const body = await secRes.json().catch(() => ({}));
+                throw new Error(body.error ?? `HTTP ${secRes.status}`);
+            }
+
+            // Refresh
+            await fetchSettings();
+        } catch (err) {
+            setError(err instanceof Error ? err.message : String(err));
+        } finally {
+            setSaving(false);
+        }
+    }, [runnerId, hooks, allowProjectHooks, config, fetchSettings]);
+
+    // ── Dirty check ───────────────────────────────────────────────────────────
+
+    const isDirty =
+        config !== null &&
+        (JSON.stringify(hooks) !== JSON.stringify(config.hooks ?? {}) ||
+            allowProjectHooks !== (config.allowProjectHooks === true));
+
+    // ── Hook editing helpers ──────────────────────────────────────────────────
 
     const toggleSection = useCallback((type: HookType) => {
         setOpenSections((prev) => {
@@ -80,8 +202,7 @@ export default function HooksSettings({ config, onSave, saving }: SectionProps) 
         });
     }, []);
 
-    // ── Matcher hook types (PreToolUse / PostToolUse) ─────────────────────────
-
+    // Matcher hook types (PreToolUse / PostToolUse)
     const addMatcherGroup = (type: MatcherHookType) => {
         setHooks((prev) => {
             const next = cloneHooks(prev);
@@ -131,7 +252,6 @@ export default function HooksSettings({ config, onSave, saving }: SectionProps) 
             const entries: HookEntry[] = next[type][groupIdx].hooks;
             entries.splice(hookIdx, 1);
             if (entries.length === 0) {
-                // Remove the entire group if no hooks remain
                 next[type].splice(groupIdx, 1);
                 if (next[type].length === 0) delete next[type];
             }
@@ -159,8 +279,7 @@ export default function HooksSettings({ config, onSave, saving }: SectionProps) 
         });
     };
 
-    // ── Simple hook types ─────────────────────────────────────────────────────
-
+    // Simple hook types
     const addSimpleHook = (type: SimpleHookType) => {
         setHooks((prev) => {
             const next = cloneHooks(prev);
@@ -202,36 +321,7 @@ export default function HooksSettings({ config, onSave, saving }: SectionProps) 
         });
     };
 
-    // ── Save ──────────────────────────────────────────────────────────────────
-
-    const handleSave = () => {
-        // Strip empty entries before saving
-        const cleaned = cloneHooks(hooks);
-        for (const type of ALL_HOOK_TYPES) {
-            if (!(type in cleaned)) continue;
-            if (isMatcherType(type)) {
-                const groups = cleaned[type] as MatcherHookGroup[];
-                const filtered = groups
-                    .map((g) => ({
-                        ...g,
-                        hooks: g.hooks.filter((h: HookEntry) => h.command.trim() !== ""),
-                    }))
-                    .filter((g) => g.hooks.length > 0 && g.matcher.trim() !== "");
-                if (filtered.length === 0) delete cleaned[type];
-                else cleaned[type] = filtered;
-            } else {
-                const entries = (cleaned[type] as HookEntry[]).filter(
-                    (h) => h.command.trim() !== "",
-                );
-                if (entries.length === 0) delete cleaned[type];
-                else cleaned[type] = entries;
-            }
-        }
-        onSave("hooks", cleaned);
-    };
-
-    // ── Counts ────────────────────────────────────────────────────────────────
-
+    // Counts
     const countForType = (type: HookType): number => {
         const data = hooks[type];
         if (!data) return 0;
@@ -244,10 +334,77 @@ export default function HooksSettings({ config, onSave, saving }: SectionProps) 
         return (data as HookEntry[]).length;
     };
 
+    // ── Loading / error states ────────────────────────────────────────────────
+
+    if (loading && !config) {
+        return (
+            <div className="flex items-center justify-center p-8">
+                <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+                <span className="ml-2 text-sm text-muted-foreground">Loading hooks…</span>
+            </div>
+        );
+    }
+
+    if (error && !config) {
+        return (
+            <div className="p-4">
+                <ErrorAlert>{error}</ErrorAlert>
+                <Button variant="outline" size="sm" className="mt-3" onClick={fetchSettings}>
+                    <RotateCcw className="h-3.5 w-3.5 mr-1" />
+                    Retry
+                </Button>
+            </div>
+        );
+    }
+
+    if (!config) return null;
+
     // ── Render ────────────────────────────────────────────────────────────────
 
     return (
-        <div className="flex flex-col gap-4">
+        <div className={cn("flex flex-col gap-4", !bare && "p-4")}>
+            {/* Error banner */}
+            {error && (
+                <div className="flex items-center justify-between">
+                    <ErrorAlert className="flex-1">{error}</ErrorAlert>
+                    <button
+                        type="button"
+                        onClick={() => setError(null)}
+                        className="ml-2 text-xs text-muted-foreground hover:text-foreground"
+                    >
+                        ✕
+                    </button>
+                </div>
+            )}
+
+            {/* ── Allow Project Hooks toggle ──────────────────────────── */}
+            <div className="rounded-lg border border-border bg-card p-4 flex flex-col gap-3">
+                <div className="flex items-center justify-between">
+                    <Label htmlFor="allow-project-hooks" className="flex items-center gap-2">
+                        <Lock className="h-4 w-4 text-muted-foreground" />
+                        Allow Project Hooks
+                    </Label>
+                    <Switch
+                        id="allow-project-hooks"
+                        checked={allowProjectHooks}
+                        onCheckedChange={setAllowProjectHooks}
+                    />
+                </div>
+                <div
+                    className={cn(
+                        "flex items-start gap-2 rounded-md border px-3 py-2",
+                        "border-amber-500/30 bg-amber-500/5 text-amber-400/90",
+                    )}
+                >
+                    <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
+                    <p className="text-xs">
+                        When enabled, hooks defined in project-local .pizzapi/config.json files will
+                        run. This allows any project you open to execute arbitrary shell commands.
+                    </p>
+                </div>
+            </div>
+
+            {/* ── Hook types ──────────────────────────────────────────── */}
             {ALL_HOOK_TYPES.map((type) => {
                 const isOpen = openSections.has(type);
                 const count = countForType(type);
@@ -256,7 +413,6 @@ export default function HooksSettings({ config, onSave, saving }: SectionProps) 
                 return (
                     <Collapsible key={type} open={isOpen} onOpenChange={() => toggleSection(type)}>
                         <div className="rounded-lg border border-border bg-card">
-                            {/* Header */}
                             <CollapsibleTrigger asChild>
                                 <button
                                     type="button"
@@ -282,7 +438,6 @@ export default function HooksSettings({ config, onSave, saving }: SectionProps) 
                                 </button>
                             </CollapsibleTrigger>
 
-                            {/* Content */}
                             <CollapsibleContent>
                                 <div className="flex flex-col gap-3 p-4">
                                     {isMatcher
@@ -298,9 +453,7 @@ export default function HooksSettings({ config, onSave, saving }: SectionProps) 
             {/* Info note */}
             <div className="flex items-start gap-2 rounded-md border border-border bg-muted/50 px-4 py-3 text-sm text-muted-foreground">
                 <Info className="mt-0.5 size-4 shrink-0" />
-                <span>
-                    Changes apply on next session start. These are global hooks only.
-                </span>
+                <span>Changes apply on next session start. These are global hooks only.</span>
             </div>
 
             {/* Save */}
@@ -329,12 +482,9 @@ export default function HooksSettings({ config, onSave, saving }: SectionProps) 
                         key={groupIdx}
                         className="flex flex-col gap-3 rounded-md border border-border bg-muted/30 p-3"
                     >
-                        {/* Matcher */}
                         <div className="flex items-end gap-2">
                             <div className="flex flex-1 flex-col gap-1.5">
-                                <Label className="text-xs text-muted-foreground">
-                                    Matcher pattern
-                                </Label>
+                                <Label className="text-xs text-muted-foreground">Matcher pattern</Label>
                                 <Input
                                     value={group.matcher}
                                     onChange={(e) =>
@@ -355,7 +505,6 @@ export default function HooksSettings({ config, onSave, saving }: SectionProps) 
                             </Button>
                         </div>
 
-                        {/* Hook entries */}
                         {group.hooks.map((hook: HookEntry, hookIdx: number) => (
                             <div key={hookIdx} className="flex items-end gap-2 pl-4">
                                 <div className="flex flex-1 flex-col gap-1.5">
@@ -363,22 +512,14 @@ export default function HooksSettings({ config, onSave, saving }: SectionProps) 
                                     <Input
                                         value={hook.command}
                                         onChange={(e) =>
-                                            updateMatcherHookEntry(
-                                                type,
-                                                groupIdx,
-                                                hookIdx,
-                                                "command",
-                                                e.target.value,
-                                            )
+                                            updateMatcherHookEntry(type, groupIdx, hookIdx, "command", e.target.value)
                                         }
                                         placeholder="/path/to/hook.sh"
                                         className="font-mono text-sm"
                                     />
                                 </div>
                                 <div className="flex w-28 flex-col gap-1.5">
-                                    <Label className="text-xs text-muted-foreground">
-                                        Timeout (ms)
-                                    </Label>
+                                    <Label className="text-xs text-muted-foreground">Timeout (ms)</Label>
                                     <Input
                                         type="number"
                                         value={hook.timeout ?? ""}
@@ -399,9 +540,7 @@ export default function HooksSettings({ config, onSave, saving }: SectionProps) 
                                     variant="ghost"
                                     size="icon"
                                     className="shrink-0 text-muted-foreground hover:text-destructive"
-                                    onClick={() =>
-                                        removeMatcherHookEntry(type, groupIdx, hookIdx)
-                                    }
+                                    onClick={() => removeMatcherHookEntry(type, groupIdx, hookIdx)}
                                     title="Remove hook"
                                 >
                                     <Trash2 className="size-4" />
@@ -409,7 +548,6 @@ export default function HooksSettings({ config, onSave, saving }: SectionProps) 
                             </div>
                         ))}
 
-                        {/* Add hook entry */}
                         <Button
                             variant="ghost"
                             size="sm"
@@ -422,7 +560,6 @@ export default function HooksSettings({ config, onSave, saving }: SectionProps) 
                     </div>
                 ))}
 
-                {/* Add matcher group */}
                 <Button
                     variant="outline"
                     size="sm"
@@ -453,9 +590,7 @@ export default function HooksSettings({ config, onSave, saving }: SectionProps) 
                             <Label className="text-xs text-muted-foreground">Command</Label>
                             <Input
                                 value={hook.command}
-                                onChange={(e) =>
-                                    updateSimpleHook(type, idx, "command", e.target.value)
-                                }
+                                onChange={(e) => updateSimpleHook(type, idx, "command", e.target.value)}
                                 placeholder="/path/to/hook.sh"
                                 className="font-mono text-sm"
                             />
@@ -489,7 +624,6 @@ export default function HooksSettings({ config, onSave, saving }: SectionProps) 
                     </div>
                 ))}
 
-                {/* Add hook */}
                 <Button
                     variant="outline"
                     size="sm"

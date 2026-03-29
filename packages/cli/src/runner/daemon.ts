@@ -1216,6 +1216,38 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                             ps.anthropic = { ...ps.anthropic, webSearch: v.anthropic.webSearch };
                         }
                         saveGlobal({ providerSettings: ps } as any);
+                    } else if (section === "mcpServers") {
+                        // Validate MCP server config before saving
+                        if (value != null && (typeof value !== "object" || Array.isArray(value))) {
+                            socket.emit("file_result", {
+                                requestId,
+                                ok: false,
+                                message: "mcpServers must be a JSON object (Record<string, ServerEntry>)",
+                            });
+                            return;
+                        }
+                        const servers = (value ?? {}) as Record<string, any>;
+                        const errors: string[] = [];
+                        for (const [name, entry] of Object.entries(servers)) {
+                            if (entry == null || typeof entry !== "object" || Array.isArray(entry)) {
+                                errors.push(`"${name}": must be an object`);
+                                continue;
+                            }
+                            const hasCommand = typeof entry.command === "string" && entry.command.trim() !== "";
+                            const hasUrl = typeof entry.url === "string" && entry.url.trim() !== "";
+                            if (!hasCommand && !hasUrl) {
+                                errors.push(`"${name}": must have a "command" (stdio) or "url" (http) field`);
+                            }
+                        }
+                        if (errors.length > 0) {
+                            socket.emit("file_result", {
+                                requestId,
+                                ok: false,
+                                message: `Invalid MCP server config:\n${errors.join("\n")}`,
+                            });
+                            return;
+                        }
+                        saveGlobal({ mcpServers: servers } as any);
                     } else {
                         // Direct key mapping
                         saveGlobal({ [configKey]: value } as any);
@@ -1223,12 +1255,16 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
 
                     // Reload and return the updated config
                     const updatedConfig = loadGlobal();
+                    const reloadHint = section === "mcpServers"
+                        ? "MCP server config saved. Active sessions can run /mcp reload to pick up changes."
+                        : "Settings saved. Changes apply on next session start.";
                     socket.emit("file_result", {
                         requestId,
                         ok: true,
                         saved: true,
                         config: updatedConfig,
-                        message: "Settings saved. Changes apply on next session start.",
+                        message: reloadHint,
+                        reloadHint: section === "mcpServers",
                     });
                 }
             } catch (err) {
