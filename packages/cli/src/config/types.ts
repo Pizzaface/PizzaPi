@@ -253,6 +253,36 @@ export interface ProviderSettings {
     };
 }
 
+/**
+ * Tool search configuration — enables dynamic tool discovery to reduce
+ * context window bloat when many MCP tools are registered.
+ *
+ * When enabled, MCP tools that exceed the token threshold are deactivated
+ * from the context window. A `search_tools` tool is registered that the
+ * LLM can call to discover and load deferred tools on-demand.
+ */
+export interface ToolSearchConfig {
+    /** Enable tool search. Default: false. */
+    enabled?: boolean;
+    /**
+     * Character threshold for MCP tool descriptions. If the total character
+     * count of all MCP tool definitions (name + description + schema) exceeds
+     * this, tools are deferred. Default: 10000.
+     *
+     * Roughly 4 characters ≈ 1 token, so 10000 chars ≈ 2500 tokens.
+     */
+    tokenThreshold?: number;
+    /** Maximum number of tools to return per search. Default: 5. */
+    maxResults?: number;
+    /**
+     * Keep tools loaded after they are discovered via search.
+     * When true, discovered tools remain active for the rest of the session.
+     * When false, tools are deactivated after each turn.
+     * Default: true.
+     */
+    keepLoadedTools?: boolean;
+}
+
 export interface PizzaPiConfig {
     /** Override the default system prompt */
     systemPrompt?: string;
@@ -370,4 +400,14 @@ export interface PizzaPiConfig {
      * ```
      */
     providerSettings?: ProviderSettings;
+
+    /**
+     * Tool search configuration — dynamic MCP tool discovery.
+     *
+     * When enabled, defers MCP tools that exceed a token threshold
+     * and provides a `search_tools` tool for on-demand discovery.
+     *
+     * Also supports per-server `deferLoading: true` in mcpServers entries.
+     */
+    toolSearch?: ToolSearchConfig;
 }
