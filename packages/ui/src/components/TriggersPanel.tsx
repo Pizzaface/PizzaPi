@@ -67,6 +67,8 @@ export interface TriggerSubscription {
   triggerType: string;
   runnerId: string;
   params?: Record<string, string | number | boolean | Array<string | number | boolean>>;
+  filters?: Array<{ field: string; value: string | number | boolean | Array<string | number | boolean>; op?: "eq" | "contains" }>;
+  filterMode?: "and" | "or";
 }
 
 /** Ephemeral status update for a trigger (not persisted in history). */
@@ -788,11 +790,14 @@ interface TriggerCatalogSectionProps {
 function TriggerCatalogSection({ sessionId, triggerDefs, subscriptions, onSubscriptionsChange }: TriggerCatalogSectionProps) {
   const [collapsed, setCollapsed] = React.useState(true);
   const [pending, setPending] = React.useState<Set<string>>(new Set());
-  // Track which trigger type has its param form open
+  // Track which trigger type has its param/filter form open
   const [paramFormOpen, setParamFormOpen] = React.useState<string | null>(null);
   // Track param form values keyed by trigger type (string for scalar, string[] for multiselect)
   const [paramValues, setParamValues] = React.useState<Record<string, Record<string, string | string[]>>>({});
   const [paramError, setParamError] = React.useState<string | null>(null);
+  // Track filter form values keyed by trigger type → field → value
+  const [filterValues, setFilterValues] = React.useState<Record<string, Record<string, string>>>({});
+  const [filterMode, setFilterMode] = React.useState<Record<string, "and" | "or">>({});
 
   const subscribedTypes = React.useMemo(
     () => new Set(subscriptions.map((s) => s.triggerType)),
@@ -823,7 +828,12 @@ function TriggerCatalogSection({ sessionId, triggerDefs, subscriptions, onSubscr
     }
   }, [sessionId, onSubscriptionsChange]);
 
-  const handleSubscribe = React.useCallback(async (triggerType: string, params?: Record<string, unknown>) => {
+  const handleSubscribe = React.useCallback(async (
+    triggerType: string,
+    params?: Record<string, unknown>,
+    filters?: Array<{ field: string; value: unknown; op?: string }>,
+    filterMode?: string,
+  ) => {
     setPending((prev) => new Set([...prev, triggerType]));
     setParamError(null);
     try {
@@ -833,7 +843,12 @@ function TriggerCatalogSection({ sessionId, triggerDefs, subscriptions, onSubscr
           method: "POST",
           credentials: "include",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ triggerType, ...(params ? { params } : {}) }),
+          body: JSON.stringify({
+            triggerType,
+            ...(params ? { params } : {}),
+            ...(filters && filters.length > 0 ? { filters } : {}),
+            ...(filterMode ? { filterMode } : {}),
+          }),
         },
       );
       if (!res.ok) {
@@ -855,23 +870,28 @@ function TriggerCatalogSection({ sessionId, triggerDefs, subscriptions, onSubscr
   }, [sessionId, onSubscriptionsChange]);
 
   const handleToggle = React.useCallback((def: ServiceTriggerDef, isSubscribed: boolean) => {
+    const hasParams = def.params && def.params.length > 0;
+    const schemaProps = (def.schema as any)?.properties ?? {};
+    const hasFilterableFields = Object.keys(schemaProps).length > 0;
+
     if (isSubscribed) {
       handleUnsubscribe(def.type);
-    } else if (def.params && def.params.length > 0) {
-      // Open param form instead of subscribing directly
+    } else if (hasParams || hasFilterableFields) {
+      // Open param/filter form instead of subscribing directly
       setParamFormOpen(def.type);
       setParamError(null);
-      // Pre-fill with defaults
-      const defaults: Record<string, string | string[]> = {};
-      for (const p of def.params) {
-        if (p.multiselect) {
-          // Multiselect defaults to empty array (user picks)
-          defaults[p.name] = defaults[p.name] ?? [];
-        } else if (p.default !== undefined) {
-          defaults[p.name] = String(p.default);
+      // Pre-fill param defaults
+      if (hasParams) {
+        const defaults: Record<string, string | string[]> = {};
+        for (const p of def.params!) {
+          if (p.multiselect) {
+            defaults[p.name] = defaults[p.name] ?? [];
+          } else if (p.default !== undefined) {
+            defaults[p.name] = String(p.default);
+          }
         }
+        setParamValues((prev) => ({ ...prev, [def.type]: { ...defaults, ...prev[def.type] } }));
       }
-      setParamValues((prev) => ({ ...prev, [def.type]: { ...defaults, ...prev[def.type] } }));
     } else {
       handleSubscribe(def.type);
     }
@@ -922,8 +942,25 @@ function TriggerCatalogSection({ sessionId, triggerDefs, subscriptions, onSubscr
         params[p.name] = str;
       }
     }
-    handleSubscribe(def.type, Object.keys(params).length > 0 ? params : undefined);
-  }, [paramValues, handleSubscribe]);
+    // Build filters from filterValues
+    const schemaProps = (def.schema as any)?.properties ?? {};
+    const filterableFields = Object.keys(schemaProps);
+    const filters: Array<{ field: string; value: string; op?: string }> = [];
+    const fVals = filterValues[def.type] ?? {};
+    for (const field of filterableFields) {
+      const val = (fVals[field] ?? "").trim();
+      if (!val) continue;
+      filters.push({ field, value: val });
+    }
+    const fMode = filterMode[def.type] ?? "and";
+
+    handleSubscribe(
+      def.type,
+      Object.keys(params).length > 0 ? params : undefined,
+      filters.length > 0 ? filters : undefined,
+      filters.length > 1 ? fMode : undefined,
+    );
+  }, [paramValues, filterValues, filterMode, handleSubscribe]);
 
   // Group trigger defs by service prefix (part before ':')
   const serviceGroups = React.useMemo(() => {
@@ -961,11 +998,15 @@ function TriggerCatalogSection({ sessionId, triggerDefs, subscriptions, onSubscr
           paramFormOpen={paramFormOpen}
           paramValues={paramValues}
           paramError={paramError}
+          filterValues={filterValues}
+          filterModeValues={filterMode}
           onToggle={handleToggle}
           onParamSubmit={handleParamSubmit}
           onParamFormOpen={setParamFormOpen}
           onParamFormClose={() => { setParamFormOpen(null); setParamError(null); }}
           onParamValuesChange={setParamValues}
+          onFilterValuesChange={setFilterValues}
+          onFilterModeChange={setFilterMode}
         />
       ))}
     </div>
@@ -984,11 +1025,15 @@ interface ServiceCatalogAccordionProps {
   paramFormOpen: string | null;
   paramValues: Record<string, Record<string, string | string[]>>;
   paramError: string | null;
+  filterValues: Record<string, Record<string, string>>;
+  filterModeValues: Record<string, "and" | "or">;
   onToggle: (def: ServiceTriggerDef, isSubscribed: boolean) => void;
   onParamSubmit: (def: ServiceTriggerDef) => void;
   onParamFormOpen: (type: string) => void;
   onParamFormClose: () => void;
   onParamValuesChange: React.Dispatch<React.SetStateAction<Record<string, Record<string, string | string[]>>>>;
+  onFilterValuesChange: React.Dispatch<React.SetStateAction<Record<string, Record<string, string>>>>;
+  onFilterModeChange: React.Dispatch<React.SetStateAction<Record<string, "and" | "or">>>;
 }
 
 // ── Collapsible Param Definitions ──────────────────────────────────────────
@@ -1031,7 +1076,9 @@ function CollapsibleParamDefs({ params }: { params: ServiceTriggerParamDef[] }) 
 function ServiceCatalogAccordion({
   service, defs, subscribedCount, subscribedTypes, subscriptionMap,
   pending, paramFormOpen, paramValues, paramError,
+  filterValues, filterModeValues,
   onToggle, onParamSubmit, onParamFormOpen, onParamFormClose, onParamValuesChange,
+  onFilterValuesChange, onFilterModeChange,
 }: ServiceCatalogAccordionProps) {
   const [expanded, setExpanded] = React.useState(false);
 
@@ -1137,9 +1184,9 @@ function ServiceCatalogAccordion({
                 </div>
 
                 {/* Inline param form */}
-                {isParamFormVisible && hasParams && (
+                {isParamFormVisible && (hasParams || Object.keys((def.schema as any)?.properties ?? {}).length > 0) && (
                   <div className="mt-2 rounded border border-violet-500/20 bg-violet-950/10 p-2 space-y-1.5">
-                    <div className="text-[10px] font-medium text-violet-300/80">Configure subscription params</div>
+                    {hasParams && <div className="text-[10px] font-medium text-violet-300/80">Service params</div>}
                     {def.params!.map((p) => {
                       const currentVal = paramValues[def.type]?.[p.name];
                       const selectedArr = Array.isArray(currentVal) ? currentVal : [];
@@ -1223,6 +1270,89 @@ function ServiceCatalogAccordion({
                         </div>
                       );
                     })}
+                    {/* Filter fields (from output schema) */}
+                    {(() => {
+                      const schemaProps = (def.schema as any)?.properties ?? {};
+                      const fields = Object.keys(schemaProps);
+                      if (fields.length === 0) return null;
+                      const currentMode = filterModeValues[def.type] ?? "and";
+                      return (
+                        <>
+                          <div className="border-t border-border/30 mt-1.5 pt-1.5">
+                            <div className="flex items-center gap-2 mb-1">
+                              <span className="text-[10px] font-medium text-blue-300/80">Delivery Filters</span>
+                              {fields.length > 1 && (
+                                <div className="flex items-center gap-1">
+                                  <button
+                                    type="button"
+                                    onClick={() => onFilterModeChange((prev) => ({ ...prev, [def.type]: "and" }))}
+                                    className={cn(
+                                      "text-[9px] px-1.5 py-0.5 rounded transition-colors",
+                                      currentMode === "and"
+                                        ? "bg-blue-500/20 text-blue-300"
+                                        : "text-muted-foreground/50 hover:text-muted-foreground",
+                                    )}
+                                  >
+                                    AND
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => onFilterModeChange((prev) => ({ ...prev, [def.type]: "or" }))}
+                                    className={cn(
+                                      "text-[9px] px-1.5 py-0.5 rounded transition-colors",
+                                      currentMode === "or"
+                                        ? "bg-blue-500/20 text-blue-300"
+                                        : "text-muted-foreground/50 hover:text-muted-foreground",
+                                    )}
+                                  >
+                                    OR
+                                  </button>
+                                </div>
+                              )}
+                            </div>
+                            {fields.map((field) => {
+                              const propDef = schemaProps[field];
+                              const desc = propDef?.description ?? field;
+                              const enumVals = propDef?.enum as string[] | undefined;
+                              const currentVal = filterValues[def.type]?.[field] ?? "";
+                              return (
+                                <div key={field} className="flex items-start gap-1.5 mb-1">
+                                  <label className="text-[10px] text-muted-foreground/70 w-20 shrink-0 truncate pt-0.5" title={desc}>
+                                    {field}
+                                  </label>
+                                  {enumVals ? (
+                                    <select
+                                      value={currentVal}
+                                      onChange={(e) => onFilterValuesChange((prev) => ({
+                                        ...prev,
+                                        [def.type]: { ...prev[def.type], [field]: e.target.value },
+                                      }))}
+                                      className="flex-1 rounded border border-border bg-background px-1.5 py-0.5 text-[10px] focus:outline-none focus:ring-1 focus:ring-ring"
+                                    >
+                                      <option value="">— any —</option>
+                                      {enumVals.map((v) => (
+                                        <option key={String(v)} value={String(v)}>{String(v)}</option>
+                                      ))}
+                                    </select>
+                                  ) : (
+                                    <input
+                                      type="text"
+                                      placeholder={`filter by ${field}`}
+                                      value={currentVal}
+                                      onChange={(e) => onFilterValuesChange((prev) => ({
+                                        ...prev,
+                                        [def.type]: { ...prev[def.type], [field]: e.target.value },
+                                      }))}
+                                      className="flex-1 rounded border border-border bg-background px-1.5 py-0.5 text-[10px] focus:outline-none focus:ring-1 focus:ring-ring"
+                                    />
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </>
+                      );
+                    })()}
                     {paramError && (
                       <p className="text-[9px] text-destructive">{paramError}</p>
                     )}
@@ -1282,6 +1412,18 @@ function ActiveSubscriptionsSection({ subscriptions }: { subscriptions: TriggerS
                 {Object.entries(sub.params).map(([k, v]) => (
                   <Badge key={k} variant="outline" className="px-1 py-0 text-[9px] h-3.5 border-emerald-500/20 text-emerald-400/60">
                     {k}={Array.isArray(v) ? v.map(String).join(", ") : String(v)}
+                  </Badge>
+                ))}
+              </div>
+            )}
+            {sub.filters && sub.filters.length > 0 && (
+              <div className="flex items-center gap-1 flex-wrap">
+                <Badge variant="outline" className="px-1 py-0 text-[9px] h-3.5 border-blue-500/20 text-blue-400/60">
+                  {sub.filterMode === "or" ? "OR" : "AND"}
+                </Badge>
+                {sub.filters.map((f, i) => (
+                  <Badge key={i} variant="outline" className="px-1 py-0 text-[9px] h-3.5 border-blue-500/20 text-blue-400/60">
+                    {f.field}{f.op === "contains" ? "~" : "="}{Array.isArray(f.value) ? f.value.map(String).join("|") : String(f.value)}
                   </Badge>
                 ))}
               </div>

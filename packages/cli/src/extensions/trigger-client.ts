@@ -347,13 +347,17 @@ export async function getAvailableTriggers(
  * Subscribe a session to a trigger type.
  * The trigger type must be declared by a service on the session's runner.
  *
- * @param params Optional subscription params — values to match against the trigger payload at delivery time.
+ * @param params Optional subscription params — forwarded to the service (not used for filtering).
+ * @param filters Optional delivery filters — conditions on the output payload fields.
+ * @param filterMode How filters combine: "and" (default) or "or".
  */
 export async function subscribeTrigger(
     sessionId: string,
     triggerType: string,
     deps: Partial<TriggerClientDeps> = {},
     params?: Record<string, string | number | boolean | Array<string | number | boolean>>,
+    filters?: Array<{ field: string; value: string | number | boolean | Array<string | number | boolean>; op?: "eq" | "contains" }>,
+    filterMode?: "and" | "or",
 ): Promise<SubscriptionResult> {
     const d: TriggerClientDeps = { ...defaultDeps, ...deps };
     const baseUrl = d.getRelayHttpBaseUrl();
@@ -371,6 +375,8 @@ export async function subscribeTrigger(
             body: JSON.stringify({
                 triggerType,
                 ...(params && Object.keys(params).length > 0 ? { params } : {}),
+                ...(filters && filters.length > 0 ? { filters } : {}),
+                ...(filterMode ? { filterMode } : {}),
             }),
         });
         const data = await response.json() as { ok?: boolean; triggerType?: string; runnerId?: string; params?: Record<string, unknown>; error?: string };

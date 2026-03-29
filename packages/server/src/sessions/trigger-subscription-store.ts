@@ -66,16 +66,31 @@ const DEFAULT_TTL_SECONDS = 24 * 60 * 60; // 24 hours
 // ── Public API ───────────────────────────────────────────────────────────
 
 /**
- * Subscription params — values the subscriber provided to filter trigger delivery.
- * Values can be primitives (exact match) or arrays (multiselect — payload value must be in the array).
+ * Subscription params — values the subscriber provided for the service to handle.
+ * These are NOT used for server-side delivery filtering (use filters for that).
  */
 export type SubscriptionParamValue = string | number | boolean | Array<string | number | boolean>;
 export type SubscriptionParams = Record<string, SubscriptionParamValue>;
+
+/** A single filter condition on the trigger's output payload. */
+export interface SubscriptionFilter {
+    /** Field name in the trigger payload to match against */
+    field: string;
+    /** Expected value(s). Arrays use OR semantics within this filter. */
+    value: string | number | boolean | Array<string | number | boolean>;
+    /** Match operator. "eq" (default) or "contains" (substring match). */
+    op?: "eq" | "contains";
+}
+
+/** How multiple filters combine: "and" = all must match, "or" = any must match. */
+export type SubscriptionFilterMode = "and" | "or";
 
 /** Internal storage format for a subscription hash value. */
 interface SubscriptionValue {
     runnerId: string;
     params?: SubscriptionParams;
+    filters?: SubscriptionFilter[];
+    filterMode?: SubscriptionFilterMode;
 }
 
 /** Parse a subscription hash value (backward-compatible with plain runnerId strings). */
@@ -108,7 +123,9 @@ function serializeSubValue(value: SubscriptionValue): string {
  * - Adds `sessionId` to the runner+type reverse index set
  * - Refreshes TTL on both keys
  *
- * @param params Optional subscription params — values to match against the trigger payload at delivery time.
+ * @param params Optional subscription params — forwarded to the service (not used for filtering).
+ * @param filters Optional delivery filters — conditions on the output payload.
+ * @param filterMode How filters combine: "and" (default) or "or".
  */
 export async function subscribeSessionToTrigger(
     sessionId: string,
@@ -116,6 +133,8 @@ export async function subscribeSessionToTrigger(
     triggerType: string,
     ttlSeconds = DEFAULT_TTL_SECONDS,
     params?: SubscriptionParams,
+    filters?: SubscriptionFilter[],
+    filterMode?: SubscriptionFilterMode,
 ): Promise<void> {
     const redis = await getClient();
     if (!redis) return;
@@ -133,7 +152,12 @@ export async function subscribeSessionToTrigger(
             }
         }
 
-        const value = serializeSubValue({ runnerId, params });
+        const value = serializeSubValue({
+            runnerId,
+            params,
+            ...(filters && filters.length > 0 ? { filters } : {}),
+            ...(filterMode && filterMode !== "and" ? { filterMode } : {}),
+        });
         const pipeline = redis.multi();
         pipeline.hSet(sessionKey, triggerType, value);
         pipeline.expire(sessionKey, ttlSeconds);
@@ -178,7 +202,7 @@ export async function unsubscribeSessionFromTrigger(
  */
 export async function listSessionSubscriptions(
     sessionId: string,
-): Promise<Array<{ triggerType: string; runnerId: string; params?: SubscriptionParams }>> {
+): Promise<Array<{ triggerType: string; runnerId: string; params?: SubscriptionParams; filters?: SubscriptionFilter[]; filterMode?: SubscriptionFilterMode }>> {
     const redis = await getClient();
     if (!redis) return [];
 
@@ -187,8 +211,14 @@ export async function listSessionSubscriptions(
     try {
         const hash = await redis.hGetAll(sessionKey);
         return Object.entries(hash).map(([triggerType, raw]) => {
-            const { runnerId, params } = parseSubValue(raw);
-            return { triggerType, runnerId, ...(params ? { params } : {}) };
+            const { runnerId, params, filters, filterMode } = parseSubValue(raw);
+            return {
+                triggerType,
+                runnerId,
+                ...(params ? { params } : {}),
+                ...(filters && filters.length > 0 ? { filters } : {}),
+                ...(filterMode ? { filterMode } : {}),
+            };
         });
     } catch (err) {
         log.warn("Failed to list session subscriptions:", err);
@@ -221,7 +251,7 @@ export async function getSubscribersForTrigger(
 /**
  * Get the subscription params for a specific session + trigger type.
  * Returns undefined if the session is not subscribed or has no params.
- * Used by the broadcast delivery path to filter by params.
+ * Params are forwarded to the service — not used for delivery filtering.
  */
 export async function getSubscriptionParams(
     sessionId: string,
@@ -238,6 +268,30 @@ export async function getSubscriptionParams(
         return params;
     } catch (err) {
         log.warn("Failed to get subscription params:", err);
+        return undefined;
+    }
+}
+
+/**
+ * Get the subscription filters and filter mode for a specific session + trigger type.
+ * Used by the broadcast delivery path to filter by output schema fields.
+ */
+export async function getSubscriptionFilters(
+    sessionId: string,
+    triggerType: string,
+): Promise<{ filters?: SubscriptionFilter[]; filterMode?: SubscriptionFilterMode } | undefined> {
+    const redis = await getClient();
+    if (!redis) return undefined;
+
+    const sessionKey = SESSION_SUBS_KEY(sessionId);
+    try {
+        const raw = await redis.hGet(sessionKey, triggerType);
+        if (!raw) return undefined;
+        const { filters, filterMode } = parseSubValue(raw);
+        if (!filters || filters.length === 0) return undefined;
+        return { filters, filterMode };
+    } catch (err) {
+        log.warn("Failed to get subscription filters:", err);
         return undefined;
     }
 }

@@ -53,7 +53,10 @@ import {
     listSessionSubscriptions,
     getSubscribersForTrigger,
     getSubscriptionParams,
+    getSubscriptionFilters,
     type SubscriptionParams,
+    type SubscriptionFilter,
+    type SubscriptionFilterMode,
 } from "../sessions/trigger-subscription-store.js";
 import {
     getRunnerListenerTypes,
@@ -64,23 +67,14 @@ import { waitForSpawnAck } from "../ws/runner-control.js";
 const log = createLogger("triggers-api");
 
 /**
- * Resolve the payload key for a subscription param.
- *
- * Params whose name ends with "Contains" (e.g. "bodyContains") are
- * substring-match filters — the actual payload key is the prefix
- * (e.g. "body"). All other params map directly to the payload key.
+ * Check whether a single filter condition matches a trigger payload field.
  */
-function resolvePayloadKey(paramKey: string): string {
-    const lower = paramKey.toLowerCase();
-    if (lower.endsWith("contains") && paramKey.length > "contains".length) {
-        // Strip "Contains" suffix → "bodyContains" → "body"
-        return paramKey.slice(0, -"Contains".length);
-    }
-    return paramKey;
-}
+function matchesSingleFilter(filter: SubscriptionFilter, payload: Record<string, unknown>): boolean {
+    const actual = payload[filter.field];
+    const expected = filter.value;
+    const op = filter.op ?? "eq";
 
-function matchesSubscriptionParam(expected: unknown, actual: unknown, key: string): boolean {
-    if (key.toLowerCase().endsWith("contains")) {
+    if (op === "contains") {
         if (typeof expected !== "string") return false;
         if (typeof actual === "string") return actual.toLowerCase().includes(expected.toLowerCase());
         if (Array.isArray(actual)) {
@@ -89,15 +83,19 @@ function matchesSubscriptionParam(expected: unknown, actual: unknown, key: strin
         return false;
     }
 
+    // op === "eq" — exact match / set membership
     if (Array.isArray(actual)) {
         if (Array.isArray(expected)) {
-            return expected.some((expectedItem) => actual.some((actualItem) => actualItem == expectedItem));
+            // eslint-disable-next-line eqeqeq
+            return expected.some((e) => actual.some((a) => a == e));
         }
-        return actual.some((actualItem) => actualItem == expected);
+        // eslint-disable-next-line eqeqeq
+        return actual.some((a) => a == expected);
     }
 
     if (Array.isArray(expected)) {
-        return expected.some((expectedItem) => expectedItem == actual);
+        // eslint-disable-next-line eqeqeq
+        return expected.some((e) => e == actual);
     }
 
     // eslint-disable-next-line eqeqeq
@@ -105,21 +103,41 @@ function matchesSubscriptionParam(expected: unknown, actual: unknown, key: strin
 }
 
 /**
- * Check whether a trigger payload matches ALL subscription params (AND logic).
- * Returns true if every param the subscriber specified matches the payload.
+ * Check whether a trigger payload matches subscription filters.
+ *
+ * @param filters  Array of filter conditions from the subscription.
+ * @param filterMode  "and" (default) = all must match, "or" = any must match.
  */
-function payloadMatchesParams(
+function payloadMatchesFilters(
     payload: Record<string, unknown>,
-    params: Record<string, unknown>,
+    filters: SubscriptionFilter[],
+    filterMode: SubscriptionFilterMode = "and",
 ): boolean {
-    for (const [key, expected] of Object.entries(params)) {
-        const payloadKey = resolvePayloadKey(key);
-        const actual = payload[payloadKey];
-        if (!matchesSubscriptionParam(expected, actual, key)) {
-            return false;
-        }
+    if (filters.length === 0) return true;
+    if (filterMode === "or") {
+        return filters.some((f) => matchesSingleFilter(f, payload));
     }
-    return true;
+    // "and" — all must match
+    return filters.every((f) => matchesSingleFilter(f, payload));
+}
+
+/**
+ * Legacy compat — convert old-style subscription params into filters (AND logic).
+ * Used for backward-compatible subscriptions that have params but no filters.
+ */
+function legacyParamsToFilters(params: Record<string, unknown>): SubscriptionFilter[] {
+    const filters: SubscriptionFilter[] = [];
+    for (const [key, expected] of Object.entries(params)) {
+        const lower = key.toLowerCase();
+        const isContains = lower.endsWith("contains") && key.length > "contains".length;
+        const field = isContains ? key.slice(0, -"Contains".length) : key;
+        filters.push({
+            field,
+            value: expected as any,
+            op: isContains ? "contains" : "eq",
+        });
+    }
+    return filters;
 }
 
 /** Poll for a session socket to appear after spawn (same pattern as webhooks). */
@@ -354,9 +372,9 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
             return Response.json({ error: "Session not found" }, { status: 404 });
         }
 
-        let body: { triggerType?: string; params?: Record<string, unknown> };
+        let body: { triggerType?: string; params?: Record<string, unknown>; filters?: unknown[]; filterMode?: string };
         try {
-            body = await req.json() as { triggerType?: string; params?: Record<string, unknown> };
+            body = await req.json() as { triggerType?: string; params?: Record<string, unknown>; filters?: unknown[]; filterMode?: string };
         } catch {
             return Response.json({ error: "Invalid JSON body" }, { status: 400 });
         }
@@ -494,10 +512,74 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
             }
         }
 
-        await subscribeSessionToTrigger(sessionId, session.runnerId, triggerType, undefined, subParams);
-        log.info(`Session ${sessionId} subscribed to trigger type '${triggerType}' on runner ${session.runnerId}${subParams ? ` with params ${JSON.stringify(subParams)}` : ""}`);
+        // Validate and coerce subscription filters against the trigger def's output schema.
+        let subFilters: SubscriptionFilter[] | undefined;
+        let subFilterMode: SubscriptionFilterMode | undefined;
+        if (Array.isArray(body.filters) && body.filters.length > 0) {
+            const schemaProps = (triggerDef.schema as any)?.properties ?? {};
+            const validatedFilters: SubscriptionFilter[] = [];
+            const filterErrors: string[] = [];
+
+            for (const raw of body.filters) {
+                if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+                    filterErrors.push("Each filter must be an object with { field, value }");
+                    continue;
+                }
+                const f = raw as Record<string, unknown>;
+                if (typeof f.field !== "string" || !f.field) {
+                    filterErrors.push("Filter missing 'field'");
+                    continue;
+                }
+                if (f.value === undefined || f.value === null) {
+                    filterErrors.push(`Filter on '${f.field}' missing 'value'`);
+                    continue;
+                }
+                // Validate field exists in the output schema (if schema is provided)
+                if (triggerDef.schema && Object.keys(schemaProps).length > 0 && !(f.field in schemaProps)) {
+                    filterErrors.push(`Filter field '${f.field}' is not in the trigger's output schema. Available: ${Object.keys(schemaProps).join(", ")}`);
+                    continue;
+                }
+                const op = f.op === "contains" ? "contains" as const : "eq" as const;
+                // Coerce value to primitive or array of primitives
+                let value: string | number | boolean | Array<string | number | boolean>;
+                if (Array.isArray(f.value)) {
+                    value = f.value.filter(
+                        (v: unknown): v is string | number | boolean =>
+                            typeof v === "string" || typeof v === "number" || typeof v === "boolean",
+                    );
+                } else if (typeof f.value === "string" || typeof f.value === "number" || typeof f.value === "boolean") {
+                    value = f.value;
+                } else {
+                    value = String(f.value);
+                }
+                validatedFilters.push({ field: f.field, value, op });
+            }
+
+            if (filterErrors.length > 0) {
+                return Response.json({ error: filterErrors.join("; ") }, { status: 400 });
+            }
+            if (validatedFilters.length > 0) {
+                subFilters = validatedFilters;
+            }
+        }
+        if (body.filterMode === "or" || body.filterMode === "and") {
+            subFilterMode = body.filterMode;
+        }
+
+        await subscribeSessionToTrigger(sessionId, session.runnerId, triggerType, undefined, subParams, subFilters, subFilterMode);
+        const logParts: string[] = [];
+        if (subParams) logParts.push(`params=${JSON.stringify(subParams)}`);
+        if (subFilters) logParts.push(`filters=${JSON.stringify(subFilters)} mode=${subFilterMode ?? "and"}`);
+        log.info(`Session ${sessionId} subscribed to trigger type '${triggerType}' on runner ${session.runnerId}${logParts.length > 0 ? ` with ${logParts.join(", ")}` : ""}`);
         broadcastToSessionViewers(sessionId, "trigger_subscriptions_changed", { triggerType, action: "subscribe" });
-        return Response.json({ ok: true, triggerType, runnerId: session.runnerId, ...(subParams ? { params: subParams } : {}) });
+        return Response.json({
+            ok: true,
+            triggerType,
+            runnerId: session.runnerId,
+            ...(subParams ? { params: subParams } : {}),
+            ...(subFilters ? { filters: subFilters } : {}),
+            ...(subFilterMode ? { filterMode: subFilterMode } : {}),
+        });
     }
 
     // ── DELETE /api/sessions/:id/trigger-subscriptions/:triggerType ───
@@ -579,11 +661,19 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
             // and sessions that are actually connected.
             if (!targetSession || targetSession.userId !== identity.userId) continue;
 
-            // Filter by subscription params (AND — every param must match).
-            // Params ending in "Contains" do substring matching against the
-            // base key (e.g. "bodyContains" checks payload["body"]).
-            const subParams = await getSubscriptionParams(targetSessionId, body.type);
-            if (subParams && !payloadMatchesParams(body.payload, subParams)) continue;
+            // Filter by subscription filters (based on output schema fields).
+            // New subscriptions use explicit filters; legacy ones fall back to params.
+            const filterData = await getSubscriptionFilters(targetSessionId, body.type);
+            if (filterData?.filters && filterData.filters.length > 0) {
+                if (!payloadMatchesFilters(body.payload, filterData.filters, filterData.filterMode)) continue;
+            } else {
+                // Legacy compat: old subscriptions stored params as filters
+                const subParams = await getSubscriptionParams(targetSessionId, body.type);
+                if (subParams) {
+                    const legacyFilters = legacyParamsToFilters(subParams);
+                    if (!payloadMatchesFilters(body.payload, legacyFilters, "and")) continue;
+                }
+            }
 
             const historyEntry = {
                 triggerId: `${triggerId}_${targetSessionId.slice(0, 8)}`,
@@ -628,10 +718,11 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
         if (listenerTypes.includes(body.type)) {
             const listener = await getRunnerTriggerListener(runnerId, body.type);
             if (listener) {
-                // Filter by listener params before spawning (AND — every param must match).
+                // Filter by listener params before spawning (AND — every filter must match).
                 if (listener.params && Object.keys(listener.params).length > 0) {
-                    if (!payloadMatchesParams(body.payload, listener.params)) {
-                        log.info(`Auto-spawn listener for ${body.type} skipped — params did not match payload`);
+                    const listenerFilters = legacyParamsToFilters(listener.params);
+                    if (!payloadMatchesFilters(body.payload, listenerFilters, "and")) {
+                        log.info(`Auto-spawn listener for ${body.type} skipped — filters did not match payload`);
                         // Fall through to return (don't spawn)
                         log.info(`Broadcast trigger ${triggerId} (type=${body.type}) to ${delivered}/${subscriberIds.length} subscribers + 0 spawned on runner ${runnerId}`);
                         return Response.json({ ok: true, delivered, spawned: 0, triggerId });
