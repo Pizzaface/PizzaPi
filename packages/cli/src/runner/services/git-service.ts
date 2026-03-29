@@ -82,6 +82,9 @@ export class GitService implements ServiceHandler {
                 case "git_pull":
                     void this.handlePull(payload, requestId, sessionId);
                     break;
+                case "git_worktrees":
+                    void this.handleWorktrees(payload, requestId, sessionId);
+                    break;
             }
         };
 
@@ -499,6 +502,129 @@ export class GitService implements ServiceHandler {
             }, requestId, sessionId);
         } catch (err) {
             this.emitError("git_commit_result", err instanceof Error ? err.message : String(err), requestId, sessionId);
+        }
+    }
+
+    // ── git worktrees ─────────────────────────────────────────────────
+
+    private async handleWorktrees(
+        payload: Record<string, unknown>,
+        requestId?: string,
+        sessionId?: string,
+    ): Promise<void> {
+        const cwd = this.validateCwd(payload.cwd, "git_worktrees_result", requestId, sessionId);
+        if (!cwd) return;
+
+        try {
+            // Get repo root so we can show relative paths
+            const { stdout: toplevel } = await execFileAsync(
+                "git", ["rev-parse", "--show-toplevel"], { cwd, timeout: 5000 },
+            );
+            const repoRoot = toplevel.trim();
+
+            // Parse porcelain output — each worktree block is separated by a blank line
+            const { stdout: listOutput } = await execFileAsync(
+                "git", ["worktree", "list", "--porcelain"],
+                { cwd, timeout: 10000 },
+            );
+
+            interface WorktreeEntry {
+                path: string;
+                head: string;
+                branch: string;
+                isBare: boolean;
+                isDetached: boolean;
+            }
+
+            const worktrees: WorktreeEntry[] = [];
+            let current: Partial<WorktreeEntry> = {};
+
+            for (const line of listOutput.split("\n")) {
+                if (line === "") {
+                    if (current.path) {
+                        worktrees.push({
+                            path: current.path,
+                            head: current.head ?? "",
+                            branch: current.branch ?? "",
+                            isBare: current.isBare ?? false,
+                            isDetached: current.isDetached ?? false,
+                        });
+                    }
+                    current = {};
+                    continue;
+                }
+                if (line.startsWith("worktree ")) current.path = line.substring(9);
+                else if (line.startsWith("HEAD ")) current.head = line.substring(5);
+                else if (line.startsWith("branch ")) {
+                    // Strip refs/heads/ prefix for display
+                    const ref = line.substring(7);
+                    current.branch = ref.startsWith("refs/heads/") ? ref.substring(11) : ref;
+                } else if (line === "bare") current.isBare = true;
+                else if (line === "detached") current.isDetached = true;
+            }
+            // Handle last entry if no trailing newline
+            if (current.path) {
+                worktrees.push({
+                    path: current.path,
+                    head: current.head ?? "",
+                    branch: current.branch ?? "",
+                    isBare: current.isBare ?? false,
+                    isDetached: current.isDetached ?? false,
+                });
+            }
+
+            // For each worktree, get change count in parallel
+            const enriched = await Promise.all(
+                worktrees.filter((w) => !w.isBare).map(async (wt) => {
+                    let changeCount = 0;
+                    let ahead = 0;
+                    let behind = 0;
+                    try {
+                        const { stdout } = await execFileAsync(
+                            "git", ["status", "--porcelain=v1", "-uall"],
+                            { cwd: wt.path, timeout: 5000 },
+                        );
+                        changeCount = stdout.split("\n").filter((l) => l.length > 0).length;
+                    } catch { /* ignore — worktree might be mid-operation */ }
+
+                    try {
+                        const { stdout } = await execFileAsync(
+                            "git", ["rev-list", "--left-right", "--count", "HEAD...@{u}"],
+                            { cwd: wt.path, timeout: 5000 },
+                        );
+                        const [a, b] = stdout.trim().split(/\s+/);
+                        ahead = parseInt(a, 10) || 0;
+                        behind = parseInt(b, 10) || 0;
+                    } catch { /* no upstream */ }
+
+                    // Build a relative display path from the repo root
+                    let displayPath = wt.path;
+                    if (wt.path.startsWith(repoRoot)) {
+                        const rel = wt.path.substring(repoRoot.length);
+                        displayPath = rel.startsWith("/") ? rel.substring(1) : rel;
+                        if (!displayPath) displayPath = "."; // main worktree
+                    }
+
+                    return {
+                        path: wt.path,
+                        displayPath,
+                        branch: wt.branch,
+                        shortHash: wt.head.substring(0, 7),
+                        isDetached: wt.isDetached,
+                        isMain: wt.path === repoRoot,
+                        changeCount,
+                        ahead,
+                        behind,
+                    };
+                }),
+            );
+
+            this.emit("git_worktrees_result", {
+                ok: true,
+                worktrees: enriched,
+            }, requestId, sessionId);
+        } catch (err) {
+            this.emitError("git_worktrees_result", err instanceof Error ? err.message : String(err), requestId, sessionId);
         }
     }
 

@@ -24,6 +24,7 @@ import { GitBranchSelector } from "./GitBranchSelector";
 import { GitStagingArea, partitionChanges } from "./GitStagingArea";
 import { GitCommitForm } from "./GitCommitForm";
 import { GitDiffView } from "./GitDiffView";
+import { GitWorktreeList } from "./GitWorktreeList";
 
 // ── Props ───────────────────────────────────────────────────────────────────
 
@@ -296,6 +297,12 @@ export function GitPanel({ cwd, className }: GitPanelProps) {
                     />
                 )}
             </div>
+
+            {/* Worktrees section */}
+            <GitWorktreeList
+                worktrees={git.worktrees}
+                onOpen={git.fetchWorktrees}
+            />
 
             {/* Commit form — always visible at bottom when there are changes */}
             {hasChanges && (

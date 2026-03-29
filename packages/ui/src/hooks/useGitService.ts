@@ -34,6 +34,18 @@ export interface GitBranch {
     isRemote: boolean;
 }
 
+export interface GitWorktree {
+    path: string;
+    displayPath: string;
+    branch: string;
+    shortHash: string;
+    isDetached: boolean;
+    isMain: boolean;
+    changeCount: number;
+    ahead: number;
+    behind: number;
+}
+
 export interface GitOperationResult {
     ok: boolean;
     message?: string;
@@ -48,6 +60,7 @@ export interface UseGitServiceReturn {
     // State
     status: GitStatus | null;
     branches: GitBranch[];
+    worktrees: GitWorktree[];
     currentBranch: string;
     loading: boolean;
     error: string | null;
@@ -58,6 +71,7 @@ export interface UseGitServiceReturn {
 
     // Actions
     fetchStatus: () => void;
+    fetchWorktrees: () => void;
     fetchDiff: (path: string, staged?: boolean) => Promise<string>;
     fetchBranches: () => void;
     checkout: (branch: string, isRemote?: boolean) => void;
@@ -74,6 +88,7 @@ export interface UseGitServiceReturn {
 export function useGitService(cwd: string): UseGitServiceReturn {
     const [status, setStatus] = useState<GitStatus | null>(null);
     const [branches, setBranches] = useState<GitBranch[]>([]);
+    const [worktrees, setWorktrees] = useState<GitWorktree[]>([]);
     const [currentBranch, setCurrentBranch] = useState("");
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
@@ -144,6 +159,12 @@ export function useGitService(cwd: string): UseGitServiceReturn {
                     }
                     break;
                 }
+                case "git_worktrees_result": {
+                    if (payload.ok) {
+                        setWorktrees((payload.worktrees as GitWorktree[]) ?? []);
+                    }
+                    break;
+                }
                 case "git_checkout_result":
                 case "git_stage_result":
                 case "git_unstage_result":
@@ -207,6 +228,11 @@ export function useGitService(cwd: string): UseGitServiceReturn {
     const fetchBranches = useCallback(() => {
         if (!available) return;
         send("git_branches", { cwd }, makeRequestId());
+    }, [available, send, cwd, makeRequestId]);
+
+    const fetchWorktrees = useCallback(() => {
+        if (!available) return;
+        send("git_worktrees", { cwd }, makeRequestId());
     }, [available, send, cwd, makeRequestId]);
 
     const checkout = useCallback((branch: string, isRemote = false) => {
@@ -276,6 +302,7 @@ export function useGitService(cwd: string): UseGitServiceReturn {
         // Clear state immediately so old data doesn't flash
         setStatus(null);
         setBranches([]);
+        setWorktrees([]);
         setCurrentBranch("");
         setError(null);
         setOperationInProgress(null);
@@ -293,6 +320,7 @@ export function useGitService(cwd: string): UseGitServiceReturn {
         available,
         status,
         branches,
+        worktrees,
         currentBranch,
         loading,
         error,
@@ -301,6 +329,7 @@ export function useGitService(cwd: string): UseGitServiceReturn {
         fetchStatus,
         fetchDiff,
         fetchBranches,
+        fetchWorktrees,
         checkout,
         stage,
         stageAll,
