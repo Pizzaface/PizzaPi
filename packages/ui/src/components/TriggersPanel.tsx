@@ -955,7 +955,11 @@ function TriggerCatalogSection({ sessionId, triggerDefs, subscriptions, onSubscr
         filters.push({ field, value: val === "true" });
       } else if (propDef?.type === "number" || propDef?.type === "integer") {
         const num = Number(val);
-        if (!isNaN(num)) filters.push({ field, value: num });
+        if (isNaN(num)) {
+          setParamError(`Filter '${field}' must be a valid number`);
+          return;
+        }
+        filters.push({ field, value: num });
       } else {
         filters.push({ field, value: val });
       }
