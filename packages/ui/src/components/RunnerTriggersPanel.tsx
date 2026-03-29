@@ -618,21 +618,25 @@ export function RunnerTriggersPanel({ runnerId, triggerDefs: propDefs }: RunnerT
   }, [runnerId]);
 
   React.useEffect(() => {
+    let cancelled = false;
+    setListeners([]); // Clear stale data from previous runner
     if (propDefs && propDefs.length > 0) {
       void (async () => {
         try {
           const res = await fetch(`/api/runners/${encodeURIComponent(runnerId)}/trigger-listeners`, {
             credentials: "include",
           });
+          if (cancelled) return;
           if (res.ok) {
             const data = await res.json() as { listeners?: ListenerInfo[] };
-            setListeners(data.listeners ?? []);
+            if (!cancelled) setListeners(data.listeners ?? []);
           }
         } catch { /* best-effort */ }
       })();
-      return;
+      return () => { cancelled = true; };
     }
     void fetchData();
+    return () => { cancelled = true; };
   }, [runnerId, propDefs, fetchData]);
 
   const triggerDefs = (propDefs && propDefs.length > 0) ? propDefs : fetchedDefs;
