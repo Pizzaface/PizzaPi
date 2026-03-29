@@ -7,7 +7,7 @@
 // We mock the Redis client at module level so no live Redis is needed.
 // ============================================================================
 
-import { afterAll, describe, it, expect, beforeEach, mock } from "bun:test";
+import { describe, it, expect, beforeEach, mock } from "bun:test";
 
 // ── Minimal Redis mock ──────────────────────────────────────────────────────
 
@@ -109,15 +109,8 @@ const mockRedis = {
     eval: mock(async () => 0),
 };
 
-mock.module("redis", () => ({
-    createClient: () => mockRedis,
-}));
-
-// Restore all module mocks after this file so they don't bleed into other
-// test files running in the same worker process.
-afterAll(() => mock.restore());
-
-const {
+// No mock.module needed — mock Redis client is injected directly via initStateRedis().
+import {
     initStateRedis,
     addChildSession,
     addChildSessionMembership,
@@ -135,7 +128,7 @@ const {
     markChildAsDelinked,
     isChildDelinked,
     clearDelinkedMark,
-} = await import("./sio-state/index.js");
+} from "./sio-state.js";
 
 // ── Tests ───────────────────────────────────────────────────────────────────
 
@@ -144,7 +137,7 @@ describe("child session helpers (sio-state)", () => {
         store.clear();
         setStore.clear();
         ttlStore.clear();
-        await initStateRedis();
+        await initStateRedis(mockRedis as never);
     });
 
     it("addChildSession adds a child to the parent's set", async () => {

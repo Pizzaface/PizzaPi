@@ -99,9 +99,7 @@ const mockRedis = {
     eval: mock(async () => 0),
 };
 
-mock.module("redis", () => ({
-    createClient: () => mockRedis,
-}));
+// No mock.module for redis — mock client is injected directly via initStateRedis().
 
 // Prevent this unit test from touching the real SQLite-backed session store or
 // the global Socket.IO hub registry. Those are covered by separate integration
@@ -126,7 +124,10 @@ mock.module("./hub.js", () => ({
 // test files running in the same worker process.
 afterAll(() => mock.restore());
 
-const { initStateRedis, markChildAsDelinked } = await import("../sio-state/index.js");
+// Dynamic imports so that mock.module("../../sessions/store.js", …) is in place
+// before sessions.js (and its transitive store.js dependency) is resolved.
+// The redis mock has been removed — mockRedis is injected via initStateRedis() instead.
+const { initStateRedis, markChildAsDelinked } = await import("../sio-state.js");
 const { registerTuiSession } = await import("./sessions.js");
 
 describe("registerTuiSession parent resolution", () => {
@@ -136,7 +137,7 @@ describe("registerTuiSession parent resolution", () => {
         ttlStore.clear();
         mockGetPersistedRelaySessionRunner.mockReset();
         mockGetPersistedRelaySessionRunner.mockImplementation(async () => null);
-        await initStateRedis();
+        await initStateRedis(mockRedis as never);
     });
 
     it("keeps membership when parent is transiently offline", async () => {

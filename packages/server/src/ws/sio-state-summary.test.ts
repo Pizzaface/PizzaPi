@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, describe, expect, it, mock } from "bun:test";
+import { beforeEach, describe, expect, it, mock } from "bun:test";
 
 const hashStore = new Map<string, Record<string, string>>();
 const setStore = new Map<string, Set<string>>();
@@ -57,15 +57,8 @@ const mockRedis = {
     eval: mock(async () => 0),
 };
 
-mock.module("redis", () => ({
-    createClient: () => mockRedis,
-}));
-
-afterAll(() => {
-    mock.restore();
-});
-
-const { initStateRedis, setSession, getSessionSummary } = await import("./sio-state/index.js");
+// No mock.module needed — mock Redis client is injected directly via initStateRedis().
+import { initStateRedis, setSession, getSessionSummary } from "./sio-state.js";
 
 describe("getSessionSummary", () => {
     beforeEach(async () => {
@@ -73,7 +66,7 @@ describe("getSessionSummary", () => {
         setStore.clear();
         mockRedis.hmGet.mockClear();
         mockRedis.hGetAll.mockClear();
-        await initStateRedis();
+        await initStateRedis(mockRedis as never);
     });
 
     it("uses hmGet fast path when available", async () => {

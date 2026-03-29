@@ -9,7 +9,7 @@
 // We mock the Redis client at module level so no live Redis is needed.
 // ============================================================================
 
-import { afterAll, describe, it, expect, beforeEach, mock } from "bun:test";
+import { describe, it, expect, beforeEach, mock } from "bun:test";
 
 // ── Minimal Redis mock ──────────────────────────────────────────────────────
 
@@ -35,24 +35,15 @@ const mockRedis = {
     connect: mock(async () => {}),
 };
 
-// Mock the module so requireRedis() returns our mock
-mock.module("redis", () => ({
-    createClient: () => mockRedis,
-}));
-
-// Restore all module mocks after this file so they don't bleed into other
-// test files running in the same worker process.
-afterAll(() => mock.restore());
-
-// Now import the functions under test (they'll use the mocked Redis)
-// We need to init the state redis first
-const {
+// Import the functions under test — no mock.module needed; we pass mockRedis
+// directly to initStateRedis() (dependency injection).
+import {
     initStateRedis,
     setRunnerAssociation,
     getRunnerAssociation,
     deleteRunnerAssociation,
     refreshRunnerAssociationTTL,
-} = await import("./sio-state/index.js");
+} from "./sio-state.js";
 
 // ── Tests ───────────────────────────────────────────────────────────────────
 
@@ -64,8 +55,8 @@ describe("runner association (sio-state)", () => {
         mockRedis.del.mockClear();
         mockRedis.expire.mockClear();
 
-        // Init the Redis client (uses our mock)
-        await initStateRedis();
+        // Inject the mock Redis client directly (no mock.module needed).
+        await initStateRedis(mockRedis as never);
     });
 
     describe("setRunnerAssociation", () => {
