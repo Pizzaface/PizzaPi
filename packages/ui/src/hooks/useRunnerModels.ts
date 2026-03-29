@@ -17,8 +17,12 @@ export function useRunnerModels(runnerId: string | null | undefined, enabled = t
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    if (!runnerId || !enabled) return;
+    if (!runnerId || !enabled) {
+      setModels([]);
+      return;
+    }
     let cancelled = false;
+    setModels([]); // Clear stale models from previous runner
     setLoading(true);
     fetch(`/api/runners/${encodeURIComponent(runnerId)}/models`, {
       credentials: "include",
