@@ -83,11 +83,34 @@ export default defineConfig({
                     ],
                 },
                 {
+                    label: "Web UI",
+                    items: [
+                        { label: "Overview", slug: "web-ui/overview" },
+                        { label: "File Explorer", slug: "web-ui/file-explorer" },
+                        { label: "Git Panel", slug: "web-ui/git-panel" },
+                        { label: "Web Terminal", slug: "web-ui/terminal" },
+                        { label: "Usage Dashboard", slug: "web-ui/usage-dashboard" },
+                        { label: "Push Notifications", slug: "web-ui/push-notifications" },
+                    ],
+                },
+                {
+                    label: "Features",
+                    items: [
+                        { label: "Slash Commands", slug: "features/slash-commands" },
+                        { label: "Plan Mode", slug: "features/plan-mode" },
+                        { label: "Multi-Agent Sessions", slug: "features/multi-agent" },
+                        { label: "Webhooks", slug: "features/webhooks" },
+                        { label: "Tunnel Tools", slug: "features/tunnels" },
+                    ],
+                },
+                {
                     label: "Customization",
                     items: [
                         { label: "Configuration", slug: "customization/configuration" },
                         { label: "MCP Servers", slug: "customization/mcp-servers" },
                         { label: "Hooks", slug: "customization/hooks" },
+                        { label: "Tool Search", slug: "customization/tool-search" },
+                        { label: "Prompt Templates", slug: "customization/prompt-templates" },
                         { label: "Skills", slug: "customization/skills" },
                         { label: "Agent Definitions", slug: "customization/agent-definitions" },
                         { label: "Claude Code Plugins", slug: "customization/claude-plugins" },
