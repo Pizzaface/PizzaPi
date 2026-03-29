@@ -353,9 +353,13 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
             const triggerType = typeof body?.triggerType === "string" ? body.triggerType.trim() : "";
             if (!triggerType) return Response.json({ error: "Missing triggerType" }, { status: 400 });
 
+            const params = body?.params && typeof body.params === "object" && !Array.isArray(body.params)
+                ? body.params as Record<string, unknown>
+                : undefined;
             await addRunnerTriggerListener(runnerId, triggerType, {
                 prompt: typeof body?.prompt === "string" ? body.prompt : undefined,
                 cwd: typeof body?.cwd === "string" ? body.cwd : undefined,
+                params,
             });
             return Response.json({ ok: true });
         }

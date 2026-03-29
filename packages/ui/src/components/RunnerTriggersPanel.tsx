@@ -5,6 +5,9 @@
  * prefix as collapsible accordions. Each trigger type has a subscribe toggle
  * that creates an auto-spawn listener — when that trigger fires, the server
  * spawns a new session and delivers the trigger into it.
+ *
+ * Triggers with configurable params show an inline form (dropdowns, checkboxes,
+ * text inputs) before subscribing, so listeners can filter which events spawn.
  */
 import * as React from "react";
 import {
@@ -19,7 +22,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
-import type { ServiceTriggerDef } from "@pizzapi/protocol";
+import type { ServiceTriggerDef, ServiceTriggerParamDef } from "@pizzapi/protocol";
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -51,16 +54,139 @@ function groupByService(defs: ServiceTriggerDef[]): ServiceGroup[] {
   return Array.from(map.entries()).map(([service, d]) => ({ service, defs: d }));
 }
 
+// ── Param Form ─────────────────────────────────────────────────────────────
+
+interface ParamFormProps {
+  params: ServiceTriggerParamDef[];
+  values: Record<string, string | string[]>;
+  onChange: (values: Record<string, string | string[]>) => void;
+  error: string | null;
+  onSubmit: () => void;
+  onCancel: () => void;
+  isPending: boolean;
+}
+
+function ParamForm({ params, values, onChange, error, onSubmit, onCancel, isPending }: ParamFormProps) {
+  const updateValue = (name: string, value: string | string[]) => {
+    onChange({ ...values, [name]: value });
+  };
+
+  return (
+    <div className="mt-2 rounded border border-violet-500/20 bg-violet-950/10 p-2.5 space-y-2">
+      <div className="text-[11px] font-medium text-violet-300/80">Configure listener params</div>
+      {params.map((p) => {
+        const currentVal = values[p.name];
+        const selectedArr = Array.isArray(currentVal) ? currentVal : [];
+
+        return (
+          <div key={p.name} className="flex items-start gap-2">
+            <label
+              className="text-[11px] text-muted-foreground/70 w-24 shrink-0 truncate pt-0.5"
+              title={p.description ?? p.name}
+            >
+              {p.label}{p.required ? <span className="text-amber-400">*</span> : ""}
+            </label>
+
+            {/* Multiselect: checkboxes */}
+            {p.multiselect && p.enum ? (
+              <div className="flex-1 flex flex-wrap gap-x-3 gap-y-1">
+                {p.enum.map((opt) => {
+                  const optStr = String(opt);
+                  const checked = selectedArr.includes(optStr);
+                  return (
+                    <label key={optStr} className="flex items-center gap-1 cursor-pointer text-[11px] text-foreground/80">
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => {
+                          const next = checked
+                            ? selectedArr.filter(v => v !== optStr)
+                            : [...selectedArr, optStr];
+                          updateValue(p.name, next);
+                        }}
+                        className="accent-primary size-3"
+                      />
+                      {optStr}
+                    </label>
+                  );
+                })}
+              </div>
+
+            /* Enum single select: dropdown */
+            ) : p.enum ? (
+              <select
+                value={typeof currentVal === "string" ? currentVal : ""}
+                onChange={(e) => updateValue(p.name, e.target.value)}
+                className="flex-1 rounded border border-border bg-background px-2 py-1 text-[11px] focus:outline-none focus:ring-1 focus:ring-ring"
+              >
+                <option value="">—</option>
+                {p.enum.map((opt) => (
+                  <option key={String(opt)} value={String(opt)}>{String(opt)}</option>
+                ))}
+              </select>
+
+            /* Boolean */
+            ) : p.type === "boolean" ? (
+              <select
+                value={typeof currentVal === "string" ? currentVal : ""}
+                onChange={(e) => updateValue(p.name, e.target.value)}
+                className="flex-1 rounded border border-border bg-background px-2 py-1 text-[11px] focus:outline-none focus:ring-1 focus:ring-ring"
+              >
+                <option value="">—</option>
+                <option value="true">true</option>
+                <option value="false">false</option>
+              </select>
+
+            /* Default: text/number input */
+            ) : (
+              <input
+                type={p.type === "number" ? "number" : "text"}
+                placeholder={p.default !== undefined ? String(p.default) : undefined}
+                value={typeof currentVal === "string" ? currentVal : ""}
+                onChange={(e) => updateValue(p.name, e.target.value)}
+                className="flex-1 rounded border border-border bg-background px-2 py-1 text-[11px] focus:outline-none focus:ring-1 focus:ring-ring"
+              />
+            )}
+          </div>
+        );
+      })}
+
+      {error && <p className="text-[10px] text-destructive">{error}</p>}
+
+      <div className="flex items-center gap-2 pt-1">
+        <Button size="sm" variant="outline" className="h-6 text-[11px] px-2" onClick={onCancel}>
+          Cancel
+        </Button>
+        <Button size="sm" className="h-6 text-[11px] px-2" disabled={isPending} onClick={onSubmit}>
+          {isPending ? <Loader2 className="size-3 animate-spin mr-1" /> : null}
+          Subscribe
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 // ── Trigger Item ───────────────────────────────────────────────────────────
 
 interface TriggerItemProps {
   def: ServiceTriggerDef;
   isListening: boolean;
   isPending: boolean;
-  onToggle: (triggerType: string, isListening: boolean) => void;
+  listenerParams?: Record<string, unknown>;
+  paramFormOpen: boolean;
+  paramValues: Record<string, string | string[]>;
+  paramError: string | null;
+  onToggle: (def: ServiceTriggerDef, isListening: boolean) => void;
+  onParamValuesChange: (values: Record<string, string | string[]>) => void;
+  onParamSubmit: (def: ServiceTriggerDef) => void;
+  onParamCancel: () => void;
 }
 
-function TriggerItem({ def, isListening, isPending, onToggle }: TriggerItemProps) {
+function TriggerItem({
+  def, isListening, isPending, listenerParams,
+  paramFormOpen, paramValues, paramError,
+  onToggle, onParamValuesChange, onParamSubmit, onParamCancel,
+}: TriggerItemProps) {
   const hasParams = def.params && def.params.length > 0;
 
   return (
@@ -94,8 +220,19 @@ function TriggerItem({ def, isListening, isPending, onToggle }: TriggerItemProps
             </p>
           )}
 
-          {/* Params listing */}
-          {hasParams && (
+          {/* Current listener params (when subscribed) */}
+          {isListening && listenerParams && Object.keys(listenerParams).length > 0 && (
+            <div className="mt-1 flex items-center gap-1 flex-wrap">
+              {Object.entries(listenerParams).map(([k, v]) => (
+                <Badge key={k} variant="outline" className="px-1 py-0 text-[9px] h-3.5 border-emerald-500/20 text-emerald-400/60">
+                  {k}={Array.isArray(v) ? v.map(String).join(", ") : String(v)}
+                </Badge>
+              ))}
+            </div>
+          )}
+
+          {/* Param definitions (when not subscribed and form not open) */}
+          {hasParams && !isListening && !paramFormOpen && (
             <div className="mt-1.5 space-y-0.5">
               {def.params!.map((p) => (
                 <div key={p.name} className="text-[10px] text-muted-foreground/60">
@@ -118,7 +255,7 @@ function TriggerItem({ def, isListening, isPending, onToggle }: TriggerItemProps
         {/* Toggle button */}
         <button
           type="button"
-          onClick={() => onToggle(def.type, isListening)}
+          onClick={() => onToggle(def, isListening)}
           disabled={isPending}
           className={cn(
             "shrink-0 p-1.5 rounded transition-colors",
@@ -139,6 +276,19 @@ function TriggerItem({ def, isListening, isPending, onToggle }: TriggerItemProps
           )}
         </button>
       </div>
+
+      {/* Inline param form */}
+      {paramFormOpen && hasParams && (
+        <ParamForm
+          params={def.params!}
+          values={paramValues}
+          onChange={onParamValuesChange}
+          error={paramError}
+          onSubmit={() => onParamSubmit(def)}
+          onCancel={onParamCancel}
+          isPending={isPending}
+        />
+      )}
     </div>
   );
 }
@@ -148,11 +298,22 @@ function TriggerItem({ def, isListening, isPending, onToggle }: TriggerItemProps
 interface ServiceAccordionProps {
   group: ServiceGroup;
   listenedTypes: Set<string>;
+  listenerParamsMap: Map<string, Record<string, unknown>>;
   pendingTypes: Set<string>;
-  onToggleListener: (triggerType: string, isListening: boolean) => void;
+  paramFormOpen: string | null;
+  paramValues: Record<string, Record<string, string | string[]>>;
+  paramError: string | null;
+  onToggle: (def: ServiceTriggerDef, isListening: boolean) => void;
+  onParamValuesChange: (triggerType: string, values: Record<string, string | string[]>) => void;
+  onParamSubmit: (def: ServiceTriggerDef) => void;
+  onParamCancel: () => void;
 }
 
-function ServiceAccordion({ group, listenedTypes, pendingTypes, onToggleListener }: ServiceAccordionProps) {
+function ServiceAccordion({
+  group, listenedTypes, listenerParamsMap, pendingTypes,
+  paramFormOpen, paramValues, paramError,
+  onToggle, onParamValuesChange, onParamSubmit, onParamCancel,
+}: ServiceAccordionProps) {
   const [expanded, setExpanded] = React.useState(false);
   const listenedCount = group.defs.filter((d) => listenedTypes.has(d.type)).length;
 
@@ -191,7 +352,14 @@ function ServiceAccordion({ group, listenedTypes, pendingTypes, onToggleListener
               def={def}
               isListening={listenedTypes.has(def.type)}
               isPending={pendingTypes.has(def.type)}
-              onToggle={onToggleListener}
+              listenerParams={listenerParamsMap.get(def.type)}
+              paramFormOpen={paramFormOpen === def.type}
+              paramValues={paramValues[def.type] ?? {}}
+              paramError={paramFormOpen === def.type ? paramError : null}
+              onToggle={onToggle}
+              onParamValuesChange={(vals) => onParamValuesChange(def.type, vals)}
+              onParamSubmit={onParamSubmit}
+              onParamCancel={onParamCancel}
             />
           ))}
         </div>
@@ -211,6 +379,7 @@ interface ListenerInfo {
   triggerType: string;
   prompt?: string;
   cwd?: string;
+  params?: Record<string, unknown>;
   createdAt: string;
 }
 
@@ -220,6 +389,11 @@ export function RunnerTriggersPanel({ runnerId, triggerDefs: propDefs }: RunnerT
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [pendingTypes, setPendingTypes] = React.useState<Set<string>>(new Set());
+
+  // Param form state
+  const [paramFormOpen, setParamFormOpen] = React.useState<string | null>(null);
+  const [paramValues, setParamValues] = React.useState<Record<string, Record<string, string | string[]>>>({});
+  const [paramError, setParamError] = React.useState<string | null>(null);
 
   const fetchData = React.useCallback(async () => {
     setLoading(true);
@@ -260,36 +434,140 @@ export function RunnerTriggersPanel({ runnerId, triggerDefs: propDefs }: RunnerT
   const triggerDefs = (propDefs && propDefs.length > 0) ? propDefs : fetchedDefs;
   const serviceGroups = React.useMemo(() => groupByService(triggerDefs), [triggerDefs]);
   const listenedTypes = React.useMemo(() => new Set(listeners.map((l) => l.triggerType)), [listeners]);
+  const listenerParamsMap = React.useMemo(() => {
+    const map = new Map<string, Record<string, unknown>>();
+    for (const l of listeners) {
+      if (l.params && Object.keys(l.params).length > 0) {
+        map.set(l.triggerType, l.params);
+      }
+    }
+    return map;
+  }, [listeners]);
 
-  const handleToggleListener = React.useCallback(async (triggerType: string, isListening: boolean) => {
-    setPendingTypes((prev) => new Set([...prev, triggerType]));
-    try {
-      if (isListening) {
-        await fetch(
-          `/api/runners/${encodeURIComponent(runnerId)}/trigger-listeners/${encodeURIComponent(triggerType)}`,
-          { method: "DELETE", credentials: "include" },
-        );
-        setListeners((prev) => prev.filter((l) => l.triggerType !== triggerType));
+  // Find trigger def by type (for param validation)
+  const defsByType = React.useMemo(() => {
+    const map = new Map<string, ServiceTriggerDef>();
+    for (const d of triggerDefs) map.set(d.type, d);
+    return map;
+  }, [triggerDefs]);
+
+  const handleToggle = React.useCallback((def: ServiceTriggerDef, isListening: boolean) => {
+    if (isListening) {
+      // Unsubscribe directly
+      setPendingTypes((prev) => new Set([...prev, def.type]));
+      void (async () => {
+        try {
+          await fetch(
+            `/api/runners/${encodeURIComponent(runnerId)}/trigger-listeners/${encodeURIComponent(def.type)}`,
+            { method: "DELETE", credentials: "include" },
+          );
+          setListeners((prev) => prev.filter((l) => l.triggerType !== def.type));
+        } catch { /* best-effort */ } finally {
+          setPendingTypes((prev) => { const n = new Set(prev); n.delete(def.type); return n; });
+        }
+      })();
+    } else if (def.params && def.params.length > 0) {
+      // Open param form
+      setParamFormOpen(def.type);
+      setParamError(null);
+      // Pre-fill defaults
+      const defaults: Record<string, string | string[]> = {};
+      for (const p of def.params) {
+        if (p.multiselect) defaults[p.name] = [];
+        else if (p.default !== undefined) defaults[p.name] = String(p.default);
+      }
+      setParamValues((prev) => ({ ...prev, [def.type]: { ...defaults, ...prev[def.type] } }));
+    } else {
+      // No params — subscribe directly
+      setPendingTypes((prev) => new Set([...prev, def.type]));
+      void (async () => {
+        try {
+          await fetch(
+            `/api/runners/${encodeURIComponent(runnerId)}/trigger-listeners`,
+            {
+              method: "POST",
+              credentials: "include",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ triggerType: def.type }),
+            },
+          );
+          setListeners((prev) => [...prev, { triggerType: def.type, createdAt: new Date().toISOString() }]);
+        } catch { /* best-effort */ } finally {
+          setPendingTypes((prev) => { const n = new Set(prev); n.delete(def.type); return n; });
+        }
+      })();
+    }
+  }, [runnerId]);
+
+  const handleParamSubmit = React.useCallback((def: ServiceTriggerDef) => {
+    const vals = paramValues[def.type] ?? {};
+    const params: Record<string, unknown> = {};
+    for (const p of (def.params ?? [])) {
+      const raw = vals[p.name];
+
+      // Multiselect
+      if (p.multiselect && p.enum) {
+        const selected = Array.isArray(raw) ? raw : [];
+        if (selected.length === 0 && p.required) {
+          setParamError(`'${p.label}' requires at least one selection`);
+          return;
+        }
+        if (selected.length === 0) continue;
+        if (p.type === "number") params[p.name] = selected.map(Number).filter(n => !isNaN(n));
+        else if (p.type === "boolean") params[p.name] = selected.map(v => v === "true");
+        else params[p.name] = selected;
+        continue;
+      }
+
+      // Scalar
+      const str = (typeof raw === "string" ? raw : "").trim();
+      if (!str && p.required) {
+        setParamError(`'${p.label}' is required`);
+        return;
+      }
+      if (!str) continue;
+      if (p.type === "number") {
+        const num = Number(str);
+        if (isNaN(num)) { setParamError(`'${p.label}' must be a number`); return; }
+        params[p.name] = num;
+      } else if (p.type === "boolean") {
+        params[p.name] = str === "true";
       } else {
-        await fetch(
+        params[p.name] = str;
+      }
+    }
+
+    setPendingTypes((prev) => new Set([...prev, def.type]));
+    setParamError(null);
+    void (async () => {
+      try {
+        const res = await fetch(
           `/api/runners/${encodeURIComponent(runnerId)}/trigger-listeners`,
           {
             method: "POST",
             credentials: "include",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ triggerType }),
+            body: JSON.stringify({
+              triggerType: def.type,
+              ...(Object.keys(params).length > 0 ? { params } : {}),
+            }),
           },
         );
-        setListeners((prev) => [...prev, { triggerType, createdAt: new Date().toISOString() }]);
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({})) as { error?: string };
+          setParamError(data.error ?? `HTTP ${res.status}`);
+          return;
+        }
+        setParamFormOpen(null);
+        setListeners((prev) => [
+          ...prev.filter(l => l.triggerType !== def.type),
+          { triggerType: def.type, params: Object.keys(params).length > 0 ? params : undefined, createdAt: new Date().toISOString() },
+        ]);
+      } catch { /* best-effort */ } finally {
+        setPendingTypes((prev) => { const n = new Set(prev); n.delete(def.type); return n; });
       }
-    } catch { /* best-effort */ } finally {
-      setPendingTypes((prev) => {
-        const next = new Set(prev);
-        next.delete(triggerType);
-        return next;
-      });
-    }
-  }, [runnerId]);
+    })();
+  }, [runnerId, paramValues]);
 
   if (loading) {
     return (
@@ -329,8 +607,15 @@ export function RunnerTriggersPanel({ runnerId, triggerDefs: propDefs }: RunnerT
           key={group.service}
           group={group}
           listenedTypes={listenedTypes}
+          listenerParamsMap={listenerParamsMap}
           pendingTypes={pendingTypes}
-          onToggleListener={handleToggleListener}
+          paramFormOpen={paramFormOpen}
+          paramValues={paramValues}
+          paramError={paramError}
+          onToggle={handleToggle}
+          onParamValuesChange={(type, vals) => setParamValues((prev) => ({ ...prev, [type]: vals }))}
+          onParamSubmit={handleParamSubmit}
+          onParamCancel={() => { setParamFormOpen(null); setParamError(null); }}
         />
       ))}
     </div>
