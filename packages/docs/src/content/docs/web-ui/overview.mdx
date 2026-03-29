@@ -1,0 +1,206 @@
+---
+title: Web UI Overview
+description: A tour of PizzaPi's web interface features — PWA support, keyboard shortcuts, panels, chat enhancements, and settings.
+---
+
+import { Aside } from "@astrojs/starlight/components";
+
+PizzaPi's web UI is a React 19 PWA that works on desktop, tablet, and phone. This page covers the smaller features that don't have their own dedicated doc page — from install-to-home-screen to keyboard shortcuts to the animated pizza task tracker.
+
+## PWA & mobile
+
+PizzaPi is a Progressive Web App. You can install it to your home screen on any platform for a native-app-like experience:
+
+- **iOS**: Tap the Share button in Safari → **Add to Home Screen**.
+- **Android**: Tap the browser menu → **Install app** (or the install banner if shown).
+- **Desktop**: Click the install icon in the address bar (Chrome/Edge) or use **File → Install** in supported browsers.
+
+Once installed, PizzaPi opens in its own window without browser chrome. The app shell and UI assets are cached for fast startup, but an active network connection to the relay server is required for session streaming.
+
+### Haptic feedback
+
+On devices that support the [Vibration API](https://developer.mozilla.org/en-US/docs/Web/API/Vibration_API) (primarily Android), PizzaPi can provide haptic feedback as agent text streams in. The vibration pulse scales with the length of each text chunk — short tokens get a light tap, longer chunks get a bigger buzz.
+
+Toggle haptics with the vibration icon button in the toolbar, or from the mobile dropdown menu. A quick test buzz fires when you enable it. The preference is saved in `localStorage` and persists across sessions.
+
+<Aside type="note">
+iOS Safari ignores `navigator.vibrate()` silently, so the haptics toggle won't appear on iPhones or iPads.
+</Aside>
+
+## Keyboard shortcuts
+
+Press **<kbd>?</kbd>** anywhere in the UI to open the keyboard shortcuts dialog. The dialog automatically shows the correct modifier keys for your platform (⌘ on Mac, Ctrl on Windows/Linux).
+
+| Shortcut | Action |
+|----------|--------|
+| <kbd>⌘K</kbd> / <kbd>Ctrl+K</kbd> | Focus the prompt input |
+| <kbd>Ctrl+`</kbd> | Toggle the terminal panel |
+| <kbd>⌘⇧E</kbd> / <kbd>Ctrl+Shift+E</kbd> | Toggle the file explorer |
+| <kbd>⌘.</kbd> / <kbd>Ctrl+.</kbd> | Abort the active agent |
+| <kbd>?</kbd> | Show the shortcuts dialog |
+
+<Aside type="tip">
+The terminal shortcut intentionally uses <kbd>Ctrl</kbd> (not <kbd>⌘</kbd>) on macOS to avoid conflicting with the system's <kbd>⌘+`</kbd> window-switching shortcut.
+</Aside>
+
+## Panel positioning & resize
+
+Panels (terminal, file explorer, and any future panels) can be docked into a **9-zone grid** around the main session view:
+
+```
+┌────────────┬────────────┬────────────┐
+│ left-top   │ center-top │ right-top  │
+├────────────┼────────────┼────────────┤
+│ left-mid   │   (main)   │ right-mid  │
+├────────────┼────────────┼────────────┤
+│ left-btm   │ center-btm │ right-btm  │
+└────────────┴────────────┴────────────┘
+```
+
+The center cell is always the main session view and cannot hold a panel.
+
+### Moving panels
+
+There are three ways to reposition a panel:
+
+1. **Position picker** — Click the mini 3×3 grid icon in the panel toolbar. A dropdown shows all 8 available zones with the current one highlighted. Click a zone to move the panel there.
+2. **Drag handle** — Grab the grip handle (⠿) in the panel toolbar and drag the panel to a new zone.
+3. **Tab dragging** — Drag an individual tab out of a panel to detach it to a different zone.
+
+### Collapsing & resizing
+
+- **Double-click** a panel tab to collapse the panel down to just its tab bar (32px). Double-click again to expand.
+- **Drag the resize handle** between the panel and the main content area to adjust the panel's height (for top/bottom zones) or the column width (for left/right zones).
+- Panel sizes are remembered per-position. On mobile, panels display as full-screen overlays instead of docked zones.
+
+## Session pinning
+
+Pin important sessions so they stay accessible even after the agent finishes and the session would normally scroll out of view.
+
+- **Swipe left** on a session card in the sidebar to reveal action buttons, including **Pin**.
+- Pinned sessions float to the top of their project group in the sidebar.
+- Pinned sessions that have ended remain visible in the sidebar (fetched from the server) until you unpin them.
+- The pin state is stored server-side (`PUT /api/sessions/:id/pin` and `DELETE /api/sessions/:id/pin`), so your pins persist across browser tabs and devices.
+
+<Aside type="tip">
+Long-press a session card (500ms) to open the **End Session** confirmation dialog — useful on touch devices where swipe gestures may be awkward.
+</Aside>
+
+## Context window donut
+
+The **context donut** is a small ring indicator that shows how much of the model's context window the current session has consumed. It appears in the session toolbar whenever context token data is available.
+
+### Color coding
+
+| Usage | Color | Meaning |
+|-------|-------|---------|
+| < 65% | 🟢 Green | Plenty of room |
+| 65–84% | 🟡 Amber | Getting full |
+| ≥ 85% | 🔴 Red | Near capacity |
+
+### Tooltip details
+
+Hover over the donut to see a breakdown:
+
+- **Context** — tokens in the current context window vs. the model's maximum
+- **Output** — tokens generated by the model
+- **Cache read / write** — cache hit statistics (when available)
+
+### Compacting
+
+Click the donut to open a confirmation dialog for **context compaction**. Compacting summarizes the conversation so far and replaces it with a compact summary, freeing up context window space. The full history is preserved — the agent just sees the summary going forward. While compacting is in progress, the donut ring animates with a spin.
+
+<Aside type="caution">
+The donut only appears when the model reports `contextTokens` data. Cumulative input token counts are not used because they can be wildly inflated after compaction.
+</Aside>
+
+## Pizza progress tracker
+
+When an agent uses the `update_todo` tool, PizzaPi renders an animated **pizza** that builds itself as tasks are completed. Each todo item maps to a pizza-making stage:
+
+| Tasks done | Stage |
+|-----------|-------|
+| 0 | Empty plate — "get cooking!" |
+| 1 | Crust appears (animated expanding circle) |
+| 2 | Sauce layer |
+| 3 | Cheese (with texture blobs) |
+| 4+ | Toppings: pepperoni, mushrooms, olives, peppers, basil, onions |
+| Near end | Bake (golden overlay) |
+| All done | Serve — sparkle animation ✨ and "Pizza complete! 🎉" |
+
+The pizza scales its stages to match the total number of tasks. A 2-item todo gets "dough → bake"; a 3-item todo gets "crust → sauce & cheese → bake"; larger lists add individual toppings between the base layers and the final bake/serve stages.
+
+Each topping type has a distinct SVG rendering — red circles for pepperoni, tan ovals for mushrooms, dark rings for olives, green crescents for peppers, leaf shapes for basil, and purple rings for onions.
+
+## Web search results card
+
+When the agent performs a web search (via Anthropic's server-side web search tool), the results are rendered as a styled card in the conversation:
+
+- **Query card** — A compact inline pill showing the search query (e.g., *Searched for "bun test runner"*).
+- **Results card** — A list of results showing the page title, domain name, and a favicon fetched from Google's favicon service. Each result is a clickable link that opens in a new tab.
+
+The results card shows a count badge (e.g., "8 results") and groups results in a clean list with hover highlighting.
+
+## @mention & file attachment
+
+The chat input supports **@mentions** for referencing files and agents in your messages.
+
+### @mention popover
+
+Type **@** in the prompt to open the mention popover. It provides:
+
+- **File browsing** — Navigate the runner's filesystem with a directory browser. Folders show a → arrow and can be drilled into by clicking or pressing <kbd>Tab</kbd>. Files are shown with type-appropriate emoji icons (🟦 for `.ts`, 🐍 for `.py`, 🎨 for `.css`, etc.).
+- **Recursive search** — Type a query after `@` (without navigating into a directory) to search across all files recursively.
+- **Agent references** — Available agents appear at the top of the root-level popover. Select one to mention it in your prompt.
+
+### Navigation
+
+- <kbd>↑</kbd> / <kbd>↓</kbd> — Navigate the list
+- <kbd>Tab</kbd> — Drill into highlighted folder
+- <kbd>Backspace</kbd> (with empty filter) — Go up one directory
+- <kbd>Enter</kbd> — Select the highlighted file or agent
+- <kbd>Esc</kbd> — Close the popover
+
+A breadcrumb header shows your current location in the file tree, with a **Back** button for returning to the parent directory.
+
+### File attachments
+
+You can also attach files directly to your message using the file upload button in the chat input. Attachments are uploaded to the relay server and included in the agent's context.
+
+## Hidden models manager
+
+The **Model Visibility** dialog lets you control which models appear in the model selector dropdown. Open it from the settings panel.
+
+- Models are grouped by provider (Anthropic, OpenAI, etc.) with provider logos.
+- Click any model row to toggle its visibility — hidden models show a strikethrough and dimmed eye icon.
+- Click a **provider header** to hide/show all models from that provider at once.
+- Use the **search box** to filter models by name, ID, or provider.
+- A **"Show all"** button appears when any models are hidden, showing the count (e.g., "Show all (3 hidden)").
+
+Hidden model preferences are saved to both `localStorage` (for instant load) and the server (for cross-device sync). The server is the source of truth — on load, the UI fetches from the server and updates `localStorage` to match.
+
+## API keys & runner tokens
+
+PizzaPi provides two credential management panels in the settings area, each with its own card UI.
+
+### API keys
+
+The **API Keys** card manages personal access tokens for programmatic access to the PizzaPi API.
+
+- Create a new key with an optional name. Keys are generated with a `pzpe` prefix.
+- The full key value is shown **once** immediately after creation in a highlighted banner — copy it before dismissing, as it cannot be retrieved again.
+- Existing keys show their name, key prefix (first few characters), and expiry status.
+- Revoke a key with the trash icon — a "Sure?" confirmation appears for 3 seconds before auto-dismissing.
+- Pass API keys in the `x-api-key` HTTP header for authenticated requests.
+
+### Runner tokens
+
+The **Runner Tokens** card manages authentication tokens used by `pizzapi runner` to connect to the relay server.
+
+- Create tokens with one click. Runner tokens use the `ppru` prefix and are named `runner` by convention.
+- The card includes a **How to use** snippet showing the environment variables needed to configure a runner:
+  - `PIZZAPI_RELAY_URL` — the relay WebSocket URL
+  - `PIZZAPI_API_KEY` — the runner token
+  - `PIZZAPI_WORKSPACE_ROOT` — (optional) constrain allowed working directories
+
+Runner tokens are separated from API keys in the UI but share the same underlying key infrastructure. They're distinguished by their name prefix (`runner`, `runner:*`, or `runner-*`).

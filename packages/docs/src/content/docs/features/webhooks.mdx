@@ -1,0 +1,396 @@
+---
+title: Webhooks
+description: Trigger agent sessions from external services via HTTP webhooks with HMAC-SHA256 authentication.
+---
+
+import { Aside, Steps, Tabs, TabItem } from "@astrojs/starlight/components";
+
+Webhooks let external services — CI/CD pipelines, chatops bots, cron jobs, monitoring alerts — **automatically spawn a fresh agent session** and deliver a JSON payload into it. Each webhook has an HMAC-SHA256 secret so only authorized callers can fire it.
+
+When a webhook fires, PizzaPi:
+
+1. Validates the HMAC signature against the webhook's secret
+2. Spawns a new session on the webhook's assigned runner
+3. Delivers the request body as a trigger into that session
+
+The agent receives the payload and can act on it immediately — run tests, triage an alert, process a deployment notification, or anything else you configure via the webhook's prompt.
+
+---
+
+## When to use webhooks
+
+- **CI/CD integration** — GitHub Actions, GitLab CI, or Jenkins fires a webhook after a failed build; the agent investigates and opens a fix PR.
+- **ChatOps** — A Slack bot forwards a message to PizzaPi; the agent processes it and responds.
+- **Scheduled tasks** — A cron job fires a webhook periodically to run maintenance scripts.
+- **Monitoring** — An alerting system (PagerDuty, Datadog) triggers an agent to diagnose an incident.
+
+---
+
+## Creating a webhook
+
+Webhooks are managed from the **Webhooks** tab in the runner detail view of the web UI.
+
+<Steps>
+
+1. **Open your runner** in the PizzaPi web interface and switch to the **Webhooks** tab.
+
+2. Click **New Webhook** to expand the creation form.
+
+3. Fill in the fields:
+
+   | Field | Required | Description |
+   |-------|----------|-------------|
+   | **Name** | Yes | A human-readable label (e.g. "GitHub Deploy Hook"). |
+   | **Source** | Yes | An identifier for the origin system (e.g. `github`, `slack`, `cron`, `custom`). Defaults to `custom`. |
+   | **Project** | No | Working directory (`cwd`) for spawned sessions. You can pick from recent projects or type a path. |
+   | **Prompt** | No | Initial instructions sent to the spawned session. This is where you tell the agent what to do with the payload. |
+   | **Model** | No | Override the model for spawned sessions (`provider`/`id`). If empty, the runner's default model is used. If available models are detected from the runner, a dropdown is shown. |
+   | **Event Filter** | No | Comma-separated list of event types (e.g. `deploy, build`). When set, the webhook only fires for payloads whose `type` field matches one of these values. Non-matching events return `200 OK` with `"filtered": true` and do not spawn a session. |
+
+4. Click **Create**. PizzaPi generates a unique **webhook ID** and a random **HMAC secret** (64-character hex string, 32 bytes of entropy).
+
+5. **Copy the secret immediately.** It's shown in a banner after creation. You'll need it to sign requests.
+
+</Steps>
+
+<Aside type="caution">
+  The HMAC secret is shown once when the webhook is created and is always visible in the expanded webhook detail. Treat it like a password — anyone with the secret and webhook URL can fire sessions on your runner.
+</Aside>
+
+---
+
+## Webhook fields reference
+
+Each webhook object contains:
+
+```json
+{
+  "id": "uuid",
+  "userId": "owner-user-id",
+  "name": "My Webhook",
+  "secret": "64-char-hex-hmac-secret",
+  "source": "github",
+  "runnerId": "runner-uuid",
+  "cwd": "/path/to/project",
+  "prompt": "Process the incoming webhook event.",
+  "model": { "provider": "anthropic", "id": "claude-sonnet-4-20250514" },
+  "eventFilter": ["push", "pull_request"],
+  "enabled": true,
+  "createdAt": "2025-01-15T10:30:00.000Z",
+  "updatedAt": "2025-01-15T10:30:00.000Z"
+}
+```
+
+- **`enabled`** — Toggle a webhook on/off from the UI without deleting it. Disabled webhooks return `404` on fire attempts.
+- **`eventFilter`** — When non-empty, the `type` field of the incoming JSON body is checked against this list. Unmatched events are silently accepted (HTTP 200) but don't spawn a session.
+- **`model`** — An object with `provider` (e.g. `"anthropic"`) and `id` (e.g. `"claude-sonnet-4-20250514"`). Set to `null` to use the runner default.
+
+---
+
+## Firing a webhook
+
+The fire endpoint does **not** require session cookie authentication — it's validated entirely via HMAC-SHA256.
+
+### Endpoint
+
+```
+POST /api/webhooks/:id/fire
+```
+
+### Headers
+
+| Header | Required | Description |
+|--------|----------|-------------|
+| `Content-Type` | Yes | Must be `application/json` |
+| `X-Webhook-Signature` | Yes | HMAC-SHA256 hex digest of the raw request body, using the webhook's secret as the key |
+
+### Request body
+
+Any valid JSON object. If you're using event filters, include a `type` field:
+
+```json
+{
+  "type": "deploy",
+  "repo": "myorg/myapp",
+  "branch": "main",
+  "commit": "abc123",
+  "status": "failure",
+  "url": "https://github.com/myorg/myapp/actions/runs/12345"
+}
+```
+
+### Response
+
+**Success (session spawned and trigger delivered):**
+```json
+{ "ok": true, "triggerId": "wh_a1b2c3d4e5f6g7h8", "sessionId": "uuid" }
+```
+
+**Filtered (event type didn't match the filter — no session spawned):**
+```json
+{ "ok": true, "filtered": true }
+```
+
+**Errors:**
+
+| Status | Meaning |
+|--------|---------|
+| `401` | Missing `X-Webhook-Signature` header, or signature doesn't match |
+| `400` | Invalid JSON body |
+| `404` | Webhook not found or disabled |
+| `500` | Webhook has no runner assigned |
+| `502` | Runner rejected the spawn request or is unreachable |
+| `503` | Runner is not connected to the server |
+| `504` | Session was spawned but didn't connect within the timeout (~15s) |
+
+---
+
+## Computing the HMAC signature
+
+The signature is an HMAC-SHA256 hex digest of the **raw request body** using the webhook secret as the key.
+
+<Tabs>
+  <TabItem label="Bash (curl)">
+    ```bash
+    # Set your variables
+    WEBHOOK_URL="https://pizza.example.com/api/webhooks/YOUR_WEBHOOK_ID/fire"
+    SECRET="your-64-char-hex-secret"
+    BODY='{"type":"deploy","repo":"myorg/myapp","status":"failure"}'
+
+    # Compute HMAC-SHA256 signature
+    # Works with both LibreSSL (macOS default) and OpenSSL 3.x
+    SIG=$(echo -n "$BODY" | openssl dgst -sha256 -hmac "$SECRET" | sed 's/^.*= //')
+
+    # Fire the webhook
+    curl -X POST "$WEBHOOK_URL" \
+      -H "Content-Type: application/json" \
+      -H "X-Webhook-Signature: $SIG" \
+      -d "$BODY"
+    ```
+  </TabItem>
+  <TabItem label="Node.js">
+    ```javascript
+    import { createHmac } from "crypto";
+
+    const secret = "your-64-char-hex-secret";
+    const body = JSON.stringify({ type: "deploy", repo: "myorg/myapp", status: "failure" });
+    const signature = createHmac("sha256", secret).update(body).digest("hex");
+
+    const res = await fetch("https://pizza.example.com/api/webhooks/YOUR_WEBHOOK_ID/fire", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Webhook-Signature": signature,
+      },
+      body,
+    });
+    console.log(await res.json());
+    ```
+  </TabItem>
+  <TabItem label="Python">
+    ```python
+    import hmac, hashlib, json, requests
+
+    secret = "your-64-char-hex-secret"
+    body = json.dumps({"type": "deploy", "repo": "myorg/myapp", "status": "failure"})
+    signature = hmac.new(secret.encode(), body.encode(), hashlib.sha256).hexdigest()
+
+    res = requests.post(
+        "https://pizza.example.com/api/webhooks/YOUR_WEBHOOK_ID/fire",
+        headers={
+            "Content-Type": "application/json",
+            "X-Webhook-Signature": signature,
+        },
+        data=body,
+    )
+    print(res.json())
+    ```
+  </TabItem>
+</Tabs>
+
+<Aside type="tip">
+  The signature is compared using **timing-safe comparison** on the server, which prevents timing attacks that could leak the secret.
+</Aside>
+
+---
+
+## Example: GitHub Actions → PizzaPi
+
+This workflow fires a PizzaPi webhook when a CI build fails, so the agent can investigate and propose a fix.
+
+```yaml title=".github/workflows/notify-pizzapi.yml"
+name: Notify PizzaPi on failure
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+
+jobs:
+  notify:
+    if: ${{ github.event.workflow_run.conclusion == 'failure' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fire PizzaPi webhook
+        env:
+          WEBHOOK_URL: ${{ secrets.PIZZAPI_WEBHOOK_URL }}
+          WEBHOOK_SECRET: ${{ secrets.PIZZAPI_WEBHOOK_SECRET }}
+        run: |
+          BODY=$(jq -n \
+            --arg type "ci_failure" \
+            --arg repo "${{ github.repository }}" \
+            --arg branch "${{ github.event.workflow_run.head_branch }}" \
+            --arg commit "${{ github.event.workflow_run.head_sha }}" \
+            --arg run_url "${{ github.event.workflow_run.html_url }}" \
+            '{type: $type, repo: $repo, branch: $branch, commit: $commit, run_url: $run_url}')
+
+          SIG=$(echo -n "$BODY" | openssl dgst -sha256 -hmac "$WEBHOOK_SECRET" | sed 's/^.*= //')
+
+          curl -sf -X POST "$WEBHOOK_URL" \
+            -H "Content-Type: application/json" \
+            -H "X-Webhook-Signature: $SIG" \
+            -d "$BODY"
+    ```
+
+**Setup steps:**
+
+<Steps>
+
+1. Create a webhook in PizzaPi with:
+   - **Name:** `GitHub CI Failure`
+   - **Source:** `github`
+   - **Project:** path to the repo on your runner
+   - **Prompt:** `A CI build failed. The trigger payload has the repo, branch, commit, and run URL. Clone the repo if needed, check out the failing branch, read the CI logs at the run URL, diagnose the failure, and open a PR with a fix.`
+   - **Event Filter:** `ci_failure`
+
+2. Copy the **fire URL** and **secret** from the expanded webhook in the UI.
+
+3. In your GitHub repo, go to **Settings → Secrets and variables → Actions** and add:
+   - `PIZZAPI_WEBHOOK_URL` — the fire URL
+   - `PIZZAPI_WEBHOOK_SECRET` — the HMAC secret
+
+4. Add the workflow file above to your repo.
+
+</Steps>
+
+---
+
+## Managing webhooks
+
+### Enable / disable
+
+Each webhook has a toggle switch in the UI. Disabled webhooks return `404` on fire attempts — the caller sees no difference from a non-existent webhook, which avoids leaking information about your webhook IDs.
+
+### Editing
+
+Click the expand arrow (chevron) on any webhook row to see its details. Currently, webhooks can be toggled on/off via the UI. To change other fields (name, source, prompt, cwd, model, event filter), use the REST API:
+
+```bash
+curl -X PUT "https://pizza.example.com/api/webhooks/WEBHOOK_ID" \
+  -H "Content-Type: application/json" \
+  -H "Cookie: your-session-cookie" \
+  -d '{"prompt": "Updated instructions for the agent."}'
+```
+
+### Deleting
+
+Click the trash icon on a webhook row. You'll see a **"Sure?"** confirmation button (auto-dismisses after 3 seconds). Deletion is permanent — the webhook ID and secret are gone forever.
+
+---
+
+## REST API reference
+
+All CRUD endpoints require **session cookie authentication** (i.e., you must be logged into the PizzaPi web UI). The fire endpoint uses HMAC authentication instead.
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/api/webhooks` | Create a new webhook |
+| `GET` | `/api/webhooks` | List all your webhooks |
+| `GET` | `/api/webhooks/:id` | Get a single webhook |
+| `PUT` | `/api/webhooks/:id` | Update webhook fields |
+| `DELETE` | `/api/webhooks/:id` | Delete a webhook |
+| `POST` | `/api/webhooks/:id/fire` | Fire webhook (HMAC auth) |
+
+### Create webhook
+
+```bash
+curl -X POST "https://pizza.example.com/api/webhooks" \
+  -H "Content-Type: application/json" \
+  -H "Cookie: your-session-cookie" \
+  -d '{
+    "name": "Deploy Hook",
+    "source": "github",
+    "runnerId": "runner-uuid",
+    "cwd": "/Users/me/projects/myapp",
+    "prompt": "Process the deploy event.",
+    "model": { "provider": "anthropic", "id": "claude-sonnet-4-20250514" },
+    "eventFilter": ["deploy"]
+  }'
+```
+
+**Required fields:** `name`, `source`. All other fields are optional.
+
+The response includes the full webhook object with the generated `id` and `secret`.
+
+### Update webhook
+
+Send only the fields you want to change:
+
+```bash
+curl -X PUT "https://pizza.example.com/api/webhooks/WEBHOOK_ID" \
+  -H "Content-Type: application/json" \
+  -H "Cookie: your-session-cookie" \
+  -d '{"enabled": false, "prompt": "New instructions."}'
+```
+
+Set a field to `null` to clear it (e.g., `"model": null` to revert to the runner default).
+
+---
+
+## Security guidance
+
+### Protect your secrets
+
+- **Store webhook secrets in your CI/CD platform's secret manager** (GitHub Actions Secrets, GitLab CI Variables, etc.). Never hardcode them in workflow files or commit them to a repository.
+- **Use HTTPS** for your PizzaPi server. HMAC authenticates the payload but doesn't encrypt it — without TLS, the payload and signature are visible to network observers.
+
+### Secret rotation
+
+PizzaPi doesn't currently have a one-click secret rotation in the UI. To rotate a secret:
+
+<Steps>
+
+1. Create a **new webhook** with the same configuration (name, source, prompt, cwd, model, event filter).
+2. Update your external service (GitHub Actions, etc.) to use the **new webhook URL and secret**.
+3. Verify the new webhook fires successfully.
+4. **Disable** the old webhook (toggle it off), then **delete** it once you're confident the new one works.
+
+</Steps>
+
+<Aside type="tip">
+  Keep the old webhook enabled during the transition so in-flight requests still succeed. Disable it only after all callers have been updated.
+</Aside>
+
+### Signature verification details
+
+- The server uses **timing-safe comparison** (`crypto.timingSafeEqual`) to prevent timing side-channel attacks.
+- The HMAC is computed over the **raw request body bytes**, not a parsed-and-re-serialized version. Your client must sign the exact bytes it sends.
+- Disabled webhooks return `404` (not `403`), so attackers cannot distinguish disabled webhooks from non-existent ones.
+
+### Runner assignment
+
+A webhook **must have a runner assigned** (`runnerId`) to fire successfully. If no runner is assigned, fire attempts return `500`. When creating webhooks from the runner detail view in the UI, the runner is automatically assigned.
+
+---
+
+## Troubleshooting
+
+| Symptom | Likely cause |
+|---------|-------------|
+| `401 Invalid signature` | Secret mismatch, or the body was modified between signing and sending (e.g., re-serialized by a proxy). Sign the **exact** bytes you send. |
+| `401 Missing X-Webhook-Signature` | The header name is case-insensitive but must be present. Check for typos. |
+| `404 Webhook not found` | Webhook ID is wrong, webhook was deleted, or webhook is disabled. |
+| `500 Webhook has no runner assigned` | The webhook's `runnerId` is `null`. Update it via the API or recreate from the runner detail view. |
+| `503 Runner is not connected` | The assigned runner is offline. Start the runner daemon or check connectivity. |
+| `504 Session did not connect in time` | The session was spawned on the runner but didn't register with the server within ~15 seconds. Check runner logs for errors. |
+| Session spawns but agent does nothing | The webhook's **prompt** field is empty, so the agent has no instructions. Set a prompt that tells the agent what to do with the payload. |

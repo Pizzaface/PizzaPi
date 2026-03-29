@@ -219,6 +219,180 @@ Once triggers are advertised, agents can interact with them using built-in tools
 
 Subscribed triggers arrive as injected messages in the agent's conversation, with the payload and metadata from the broadcast.
 
+### Trigger Subscription Filters
+
+By default, subscribing to a trigger type delivers **every** event of that type. Filters let you narrow delivery to only payloads that match specific criteria — evaluated server-side before the trigger reaches the agent.
+
+#### Filters vs Params
+
+| Concept | Where evaluated | Purpose |
+|---------|----------------|---------|
+| `params` | Passed to the service | Subscription parameters forwarded to the service (e.g. which repo to watch) |
+| `filters` | Server-side, on delivery | Evaluated against the trigger payload — only matching events are delivered |
+
+You can use both on the same subscription. Params tell the service *what to emit*; filters tell the relay *what to deliver*.
+
+#### Filter objects
+
+Each filter is a `{field, value, op}` object:
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `field` | Yes | Dot-path into the trigger payload (e.g. `"status"`, `"meta.priority"`) |
+| `value` | Yes | Expected value — string, number, boolean, or array (array = OR within this filter) |
+| `op` | No | `"eq"` (exact match, default) or `"contains"` (substring match on string fields) |
+
+#### Filter mode
+
+When a subscription has multiple filters, `filterMode` controls how they combine:
+
+| Mode | Behavior |
+|------|----------|
+| `"and"` (default) | **All** filters must match for the trigger to be delivered |
+| `"or"` | **Any** filter matching is enough |
+
+#### Example: subscribe to only shipped orders
+
+```
+subscribe_trigger("orders:status_changed", {
+  filters: [
+    { field: "status", value: "shipped", op: "eq" }
+  ],
+  filterMode: "and"
+})
+```
+
+Only `orders:status_changed` events whose payload contains `status === "shipped"` will reach the agent.
+
+#### Updating filters without re-subscribing
+
+Use the `update_trigger_subscription` tool to change filters or filterMode on an existing subscription without unsubscribing and re-subscribing:
+
+```
+update_trigger_subscription("orders:status_changed", {
+  filters: [
+    { field: "status", value: "delivered", op: "eq" }
+  ],
+  filterMode: "or"
+})
+```
+
+This preserves the runner binding and only updates the filter criteria.
+
+---
+
+### Runner Trigger Listeners
+
+Trigger listeners are **persistent configurations** on a runner that automatically spawn a new agent session when a matching trigger fires. Unlike regular subscriptions (which deliver events into an existing session), listeners create a fresh session for each event.
+
+#### Use cases
+
+- **Auto-review:** Spawn a code review session whenever a `git:push` trigger fires
+- **Scheduled runs:** Pair with a cron service to auto-spawn sessions on a schedule
+- **Reactive automation:** Kick off deployment, test, or analysis sessions in response to service events
+
+#### Listeners vs Webhooks
+
+| | Trigger Listeners | Webhooks |
+|--|-------------------|----------|
+| **Input** | Internal PizzaPi triggers | External HTTP POST requests |
+| **Scope** | Bound to a runner | Bound to a user/org |
+| **Action** | Spawns a new agent session on the runner | Fires a trigger into existing subscribed sessions |
+
+#### CRUD API
+
+All endpoints require runner authentication (`x-api-key` header).
+
+**List listeners:**
+```
+GET /api/runners/{runnerId}/trigger-listeners
+```
+
+**Add a listener:**
+```
+POST /api/runners/{runnerId}/trigger-listeners
+Content-Type: application/json
+
+{
+  "triggerType": "my-service:deploy_requested",
+  "prompt": "Run the deploy checklist for the provided payload.",
+  "cwd": "/home/user/project",
+  "model": { "provider": "anthropic", "id": "claude-sonnet-4-20250514" },
+  "params": { "environment": "production" }
+}
+```
+
+**Update a listener:**
+```
+PUT /api/runners/{runnerId}/trigger-listeners/{triggerType}
+```
+
+**Remove a listener:**
+```
+DELETE /api/runners/{runnerId}/trigger-listeners/{triggerType}
+```
+
+#### `RunnerTriggerListener` fields
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `triggerType` | Yes | The trigger type to listen for (e.g. `"my-service:event_name"`) |
+| `prompt` | No | Initial prompt for the spawned session |
+| `cwd` | No | Working directory for the spawned session |
+| `model` | No | Model override (`{ provider, id }`) |
+| `params` | No | Subscription params — only triggers matching these params will spawn a session |
+| `createdAt` | Auto | ISO timestamp set when the listener is created |
+
+Listeners are stored durably in both SQLite and Redis, so they survive runner restarts.
+
+---
+
+### Trigger History
+
+Every trigger delivered to a session is recorded in a per-session history log. This provides an audit trail of what events reached the agent and how they were handled.
+
+#### Storage details
+
+- Backed by Redis (list per session)
+- Maximum **200 entries** per session (oldest trimmed on insert)
+- **24-hour TTL** — history expires automatically if the session is idle
+
+#### REST API
+
+**Get trigger history:**
+```
+GET /api/sessions/{sessionId}/triggers?limit=50
+```
+
+Returns `{ triggers: TriggerHistoryEntry[] }`, most recent first. The `limit` query parameter defaults to 50 (max 200).
+
+**Clear trigger history:**
+```
+DELETE /api/sessions/{sessionId}/triggers
+```
+
+Removes all history entries for the session.
+
+#### `TriggerHistoryEntry` fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `triggerId` | `string` | Unique ID for this trigger delivery |
+| `type` | `string` | Trigger type (e.g. `"my-service:file_changed"`) |
+| `source` | `string` | Who fired the trigger (service name or `"external:api"`) |
+| `summary` | `string?` | Human-readable one-liner |
+| `payload` | `object` | The full trigger payload |
+| `deliverAs` | `"steer" \| "followUp"` | Delivery mode used |
+| `ts` | `string` | ISO timestamp of delivery |
+| `direction` | `"inbound" \| "outbound"` | Whether the trigger was received or sent by this session |
+| `response` | `object?` | Agent's response — `{ action?, text?, ts }` |
+
+#### Viewing in the UI
+
+The **Triggers panel** in the session viewer shows the live trigger history for the active session. Each entry displays the trigger type, summary, timestamp, and delivery status. Entries update in real time as triggers are delivered.
+
+---
+
 ### Services Without Panels
 
 A service doesn't need a UI panel. Omit `panel` from the manifest and skip `announcePanel()`. The service still runs in the background and can fire triggers:

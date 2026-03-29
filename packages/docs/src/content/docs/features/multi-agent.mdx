@@ -1,0 +1,418 @@
+---
+title: Multi-Agent Sessions
+description: Spawn child sessions, communicate via triggers and messages, and orchestrate multi-agent workflows.
+---
+
+import { Aside, Steps, Tabs, TabItem } from "@astrojs/starlight/components";
+
+PizzaPi supports multiple agent sessions running in parallel, communicating through two complementary systems: **triggers** (automatic parent↔child events) and **messages** (explicit inter-session messaging). This guide covers all multi-agent communication primitives and when to use each.
+
+---
+
+## Communication model
+
+```
+┌─────────────────────────────────────────────────────┐
+│  Parent Session                                     │
+│                                                     │
+│  spawn_session(prompt, linked: true)                │
+│       │                                             │
+│       │ ◄── ask_user_question trigger ──┐           │
+│       │ ◄── plan_review trigger ────────┤           │
+│       │ ◄── session_error trigger ──────┤           │
+│       │ ◄── session_complete trigger ───┤           │
+│       │                                 │           │
+│  respond_to_trigger(id, response)       │           │
+│  tell_child(sessionId, message)  ──►    │           │
+│  escalate_trigger(id)  ──► human        │           │
+│                                         │           │
+│                              ┌──────────┴─────────┐ │
+│                              │  Child Session     │ │
+│                              │  (linked)          │ │
+│                              └────────────────────┘ │
+└─────────────────────────────────────────────────────┘
+```
+
+**Linked sessions** use triggers — structured events that arrive automatically in the parent's conversation. The parent responds with `respond_to_trigger`, `tell_child`, or `escalate_trigger`.
+
+**Unlinked sessions** use the message bus — explicit `send_message` / `wait_for_message` calls between any two sessions, regardless of parent-child relationship.
+
+---
+
+## `spawn_session`
+
+Spawn a new independent agent session on the runner. The new session runs in parallel and can be monitored through the PizzaPi web UI.
+
+### Parameters
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `prompt` | `string` | ✅ | — | Initial prompt for the new session. Must be self-contained — the child has no context from the parent. |
+| `model` | `{ provider, id }` | | Runner default | Model to use. Call `list_models` to discover available values. |
+| `cwd` | `string` | | Parent's cwd | Working directory for the new session. |
+| `linked` | `boolean` | | `true` | Whether to auto-link as a child session (enables trigger system). |
+| `runnerId` | `string` | | Current runner | Target runner ID. Usually not needed. |
+
+### Return value
+
+On success, returns the session ID, runner ID, working directory, status (`Pending` or `Ready`), and a web UI share URL.
+
+### Linked vs. unlinked
+
+<Tabs>
+  <TabItem label="Linked (default)">
+    ```json
+    {
+      "prompt": "Refactor the auth module to use JWTs",
+      "model": { "provider": "anthropic", "id": "claude-sonnet-4-20250514" }
+    }
+    ```
+
+    - `linked` defaults to `true`
+    - Parent's session ID is sent as `parentSessionId`
+    - Child events (questions, plans, completion, errors) arrive as triggers in the parent's conversation
+    - No manual polling needed — triggers are injected automatically
+  </TabItem>
+  <TabItem label="Unlinked">
+    ```json
+    {
+      "prompt": "Run the test suite and report results",
+      "linked": false
+    }
+    ```
+
+    - No trigger system — use `send_message` / `wait_for_message` for communication
+    - Avoids redundant `session_complete` triggers when you're already consuming output via messages
+    - Useful for peer-to-peer session communication patterns
+  </TabItem>
+</Tabs>
+
+<Aside type="caution">
+  **Don't stall while waiting for children.** Triggers arrive automatically as injected messages — do not use `sleep` loops or idle waits. Simply stop responding and your session will resume when the child's trigger arrives.
+</Aside>
+
+---
+
+## Trigger system
+
+When a linked child session hits certain lifecycle events, it fires a **trigger** to the parent. Triggers arrive in the parent's conversation prefixed with `<!-- trigger:ID -->` metadata.
+
+### Trigger types
+
+#### `ask_user_question`
+
+Fired when a child session calls `AskUserQuestion`. The trigger payload includes the question text, options, and the full structured `questions` array. The parent can answer on behalf of the user with `respond_to_trigger`.
+
+```
+<!-- trigger:abc123 -->
+Child session "auth-refactor" is asking:
+  "Should I use RS256 or HS256 for JWT signing?"
+  Options: RS256, HS256
+
+Use respond_to_trigger(triggerId, response) to answer.
+```
+
+#### `plan_review`
+
+Fired when a child calls `plan_mode` to propose a multi-step plan. The payload includes the plan's `title`, `steps`, and optional `description`.
+
+Respond with an `action`:
+- **`approve`** — Accept the plan. The child proceeds with execution.
+- **`cancel`** — Reject the plan. The child stops.
+- **`edit`** — Provide feedback in `response`. The child revises and resubmits.
+
+#### `session_complete`
+
+Fired when the child session finishes. The payload includes the child's final output and an `exitReason`:
+- `exitReason: "completed"` — Normal completion.
+- `exitReason: "error"` — The child hit a usage limit or provider failure.
+
+Respond with an `action`:
+- **`ack`** — Acknowledge and **terminate the child process**. This sends `SIGTERM` to the child and tears down its relay session. Only use when the child is truly finished.
+- **`followUp`** — Send more work to the child in `response`. The child resumes with a new turn.
+
+<Aside type="danger">
+  **`ack` terminates the child.** It is not a passive acknowledgement — it kills the child process and cleans up relay resources. If the child's output says it's still dispatching workers or waiting for sub-tasks, do **not** call `ack`. Wait for the next `session_complete` trigger.
+</Aside>
+
+#### `session_error`
+
+Fired **before** `session_complete` when a child hits a usage limit or provider error. This gives the parent an early signal to react — retry with a different model, skip the task, or escalate to the user. Check the `exitReason` field on the subsequent `session_complete` to distinguish error exits from successful completions.
+
+### Trigger lifecycle
+
+<Steps>
+1. Child hits a lifecycle event (asks a question, proposes a plan, completes, or errors)
+2. Child emits a `session_trigger` event over the relay WebSocket
+3. Relay routes the trigger to the parent session
+4. Trigger is injected into the parent's conversation with a `<!-- trigger:ID -->` prefix
+5. Parent responds via `respond_to_trigger`, `escalate_trigger`, or `tell_child`
+6. Response is routed back to the child, which unblocks and continues
+</Steps>
+
+Triggers have a **10-minute TTL**. If the parent doesn't respond within that window, the trigger expires and the child times out (5-minute default for `ask_user_question` and `plan_review`).
+
+---
+
+## `respond_to_trigger`
+
+Respond to a pending trigger from a child session.
+
+### Parameters
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `triggerId` | `string` | ✅ | The trigger ID from the `<!-- trigger:ID -->` prefix |
+| `response` | `string` | ✅ | Response text sent to the child |
+| `action` | `string` | | Structured intent — see below |
+
+### Actions
+
+| Action | Used with | Effect |
+|--------|-----------|--------|
+| `approve` | `plan_review` | Accept the child's plan; child proceeds with execution |
+| `cancel` | `plan_review` | Reject the plan; child stops |
+| `edit` | `plan_review` | Provide feedback in `response`; child revises the plan |
+| `ack` | `session_complete` | Acknowledge completion and **terminate** the child process |
+| `followUp` | `session_complete` | Send `response` as new input to resume the child |
+
+For `ask_user_question` triggers, `action` is not required — just provide the `response` text.
+
+### Example
+
+```
+// Child asks a question
+respond_to_trigger("abc-123", "Use RS256 — it supports key rotation")
+
+// Child proposes a plan
+respond_to_trigger("def-456", "Approved", "approve")
+
+// Child completes — send follow-up work
+respond_to_trigger("ghi-789", "Now add unit tests for the JWT module", "followUp")
+
+// Child completes — done, clean up
+respond_to_trigger("jkl-012", "Looks good, shutting down", "ack")
+```
+
+---
+
+## `escalate_trigger`
+
+Pass a child's trigger to the human viewer when the parent agent can't or shouldn't handle it.
+
+### Parameters
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `triggerId` | `string` | ✅ | The trigger ID to escalate |
+| `context` | `string` | | Additional context for the human |
+
+The trigger is re-emitted as an `escalate` type trigger targeting the parent's own session, where it surfaces in the web UI for the human to respond. The original trigger remains pending — when the human responds (via the web UI), the response routes back through `respond_to_trigger` to the child.
+
+---
+
+## `tell_child`
+
+Proactively send a message to a linked child session. Unlike `respond_to_trigger` (which responds to a child's request), `tell_child` initiates a new turn in the child's conversation — the message is delivered as agent input.
+
+### Parameters
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `sessionId` | `string` | ✅ | Child session ID |
+| `message` | `string` | ✅ | Message to send |
+
+### Use cases
+
+- Redirect a child mid-task: `tell_child(id, "Stop the refactor — focus on the auth bug instead")`
+- Provide additional context the child didn't ask for
+- Coordinate between multiple children by relaying information
+
+---
+
+## Manual messaging: `send_message`, `wait_for_message`, `check_messages`
+
+For **unlinked sessions** or peer-to-peer communication, use the message bus. These tools work between any two sessions — no parent-child relationship required.
+
+### `send_message`
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `sessionId` | `string` | ✅ | Target session ID |
+| `message` | `string` | ✅ | Message text |
+
+Sends a message to the target session's message queue. The recipient reads it with `wait_for_message` or `check_messages`.
+
+### `wait_for_message`
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `fromSessionId` | `string` | | Any session | Only accept messages from this sender |
+| `timeout` | `number` | | `120` | Max wait time in seconds |
+
+**Blocking.** Waits until a message arrives or the timeout expires. If a matching message is already queued, it resolves immediately.
+
+### `check_messages`
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `fromSessionId` | `string` | | Only check messages from this sender |
+
+**Non-blocking.** Drains all pending messages from the queue and returns them. Returns an empty list if no messages are waiting. Useful for polling between other work.
+
+### `get_session_id`
+
+Takes no parameters. Returns this session's own session ID — useful when you need to tell another agent your ID so they can send messages to you.
+
+### Example: two-session ping-pong
+
+```
+// Session A (spawner)
+spawn_session({ prompt: "...", linked: false })
+// → gets back sessionId: "child-xyz"
+
+send_message({ sessionId: "child-xyz", message: "Here's the data you need: ..." })
+response = wait_for_message({ fromSessionId: "child-xyz", timeout: 300 })
+```
+
+```
+// Session B (spawned with linked: false)
+myId = get_session_id()
+// wait for parent to send data
+data = wait_for_message({ timeout: 300 })
+// ... do work ...
+send_message({ sessionId: data.fromSessionId, message: "Results: ..." })
+```
+
+---
+
+## `fire_trigger`
+
+Fire a trigger into **any** session — not just children. This enables peer-to-peer trigger communication between sessions that aren't in a parent-child relationship.
+
+### Parameters
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `sessionId` | `string` | ✅ | Target session ID |
+| `type` | `string` | ✅ | Trigger type (e.g. `"service"`, `"webhook"`, `"godmother:idea_started"`) |
+| `payload` | `object` | ✅ | Arbitrary payload delivered to the target session |
+| `source` | `string` | | Source identifier shown in trigger history |
+| `deliverAs` | `string` | | `"steer"` (default, interrupts current turn) or `"followUp"` (queued after turn) |
+
+### Delivery modes
+
+- **`steer`** (default) — Interrupts the target session's current turn. The trigger is injected immediately into the conversation.
+- **`followUp`** — Queued and delivered after the target's current turn completes. Use this when the trigger isn't urgent and shouldn't disrupt ongoing work.
+
+`fire_trigger` uses the HTTP Trigger API with API key auth, with a Socket.IO fallback for offline/local mode.
+
+---
+
+## Pattern comparison
+
+| | `subagent` tool | `spawn_session` (linked) | `spawn_session` (unlinked) + messages |
+|---|---|---|---|
+| **Communication** | Tool call → result (synchronous) | Triggers (automatic) | `send_message` / `wait_for_message` (manual) |
+| **Blocking** | Yes — parent waits for result | No — parent continues, triggers arrive async | Depends on `wait_for_message` usage |
+| **Context** | Isolated in-process session | Fully independent session + process | Fully independent session + process |
+| **UI** | Inline card in parent session | Separate session in web UI | Separate session in web UI |
+| **Overhead** | Near-zero (in-process SDK) | Higher (relay round-trip, new PTY) | Higher + manual coordination |
+| **Model selection** | Via agent definition `model` field | Via `model` parameter | Via `model` parameter |
+| **Best for** | Quick tasks: research, review, refactor | Long-running parallel work, background tasks | Peer-to-peer coordination, custom protocols |
+| **Agent definitions** | File-based (`~/.pizzapi/agents/`) | Prompt-based (inline) | Prompt-based (inline) |
+| **Modes** | Single, parallel, chain | One session per call | One session per call |
+
+<Aside type="tip">
+  **Prefer `subagent` for most delegation.** It's simpler, manages context isolation automatically, and returns results inline. Use `spawn_session` only when you need independent lifecycle, background execution, or async trigger-based coordination. See the [Subagents guide](/PizzaPi/customization/subagents/) for full details.
+</Aside>
+
+---
+
+## Real-world patterns
+
+### Orchestrator → workers
+
+A parent spawns multiple linked children to work in parallel, then synthesizes their results:
+
+```
+// 1. Spawn workers
+spawn_session({ prompt: "Review packages/server/ for security issues" })
+// → sessionId: "worker-1"
+
+spawn_session({ prompt: "Review packages/ui/ for accessibility issues" })
+// → sessionId: "worker-2"
+
+// 2. Triggers arrive automatically as children complete:
+//    <!-- trigger:t1 --> session_complete from worker-1
+//    <!-- trigger:t2 --> session_complete from worker-2
+
+// 3. Acknowledge each worker
+respond_to_trigger("t1", "Received security review", "ack")
+respond_to_trigger("t2", "Received a11y review", "ack")
+
+// 4. Synthesize results into a summary
+```
+
+If a worker asks a question mid-task, the parent gets an `ask_user_question` trigger and can answer directly or escalate to the human:
+
+```
+// Worker asks: "The auth module uses both bcrypt and argon2. Which should I focus on?"
+respond_to_trigger("t3", "Focus on argon2 — that's the active path")
+
+// Or if unsure:
+escalate_trigger("t3", "Worker needs domain knowledge about our crypto choices")
+```
+
+### Review ping-pong
+
+A parent spawns a reviewer and iterates on feedback:
+
+```
+// 1. Spawn reviewer
+spawn_session({ prompt: "Review this PR diff for bugs: ..." })
+// → sessionId: "reviewer-1"
+
+// 2. Reviewer proposes a plan (plan_review trigger)
+respond_to_trigger("plan-t1", "Skip the style checks, focus on logic bugs", "edit")
+
+// 3. Reviewer revises plan and resubmits (another plan_review trigger)
+respond_to_trigger("plan-t2", "Looks good", "approve")
+
+// 4. Reviewer completes (session_complete trigger)
+// If findings need action:
+respond_to_trigger("complete-t1", "Fix the null check bug you found in auth.ts", "followUp")
+
+// 5. Reviewer fixes and completes again
+respond_to_trigger("complete-t2", "Done, thanks", "ack")
+```
+
+### Error recovery
+
+When a child hits a usage limit, the parent gets a `session_error` trigger before `session_complete`:
+
+```
+// session_error arrives: "Rate limit exceeded for claude-sonnet-4"
+// Option 1: Retry with a different model
+spawn_session({
+  prompt: "Continue this task: ...",
+  model: { provider: "google", id: "gemini-2.5-pro" }
+})
+
+// Option 2: Escalate to human
+escalate_trigger("err-t1", "Child hit rate limit — need human to decide next steps")
+```
+
+---
+
+## Push notification behavior
+
+Linked child sessions **do not trigger push notifications**. Only top-level sessions — those started by a user or the runner daemon directly — send push notifications. This prevents notification spam when orchestrating multiple child sessions.
+
+---
+
+## Related guides
+
+- [Subagents](/PizzaPi/customization/subagents/) — File-based agent definitions, parallel/chain modes, model routing
+- [Runner Daemon](/PizzaPi/running/runner-daemon/) — How sessions are spawned on runners
+- [CLI Reference](/PizzaPi/running/cli-reference/) — Full tool parameter reference

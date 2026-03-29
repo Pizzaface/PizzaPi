@@ -1,0 +1,417 @@
+---
+title: Protocol Package
+description: Shared wire protocol types for relay communication between runners, server, and web UI.
+sidebar:
+  order: 2
+---
+
+import { Aside } from "@astrojs/starlight/components";
+
+## Overview
+
+The `@pizzapi/protocol` package (`packages/protocol`) contains the shared TypeScript type definitions that every PizzaPi component — CLI runner, relay server, and web UI — uses to communicate over Socket.IO. It has **zero runtime dependencies** (dev-only `typescript`) and exports only types, constants, and small pure-function helpers.
+
+By keeping wire types in a single package, any breaking change to the protocol surfaces as a compile error everywhere it matters, before anything ships.
+
+```
+packages/protocol/
+├── src/
+│   ├── index.ts        # Re-exports everything
+│   ├── shared.ts       # Types used across multiple namespaces
+│   ├── relay.ts        # /relay namespace (CLI ↔ Server)
+│   ├── runner.ts       # /runner namespace (Runner daemon ↔ Server)
+│   ├── runners.ts      # /runners namespace (Browser runner feed)
+│   ├── viewer.ts       # /viewer namespace (Browser viewer ↔ Server)
+│   ├── hub.ts          # /hub namespace (Session list feed)
+│   ├── terminal.ts     # /terminal namespace (Browser terminal ↔ Server)
+│   ├── meta.ts         # Session meta-state & meta relay events
+│   ├── password.ts     # Password validation (shared UI/server/CLI)
+│   └── version.ts      # Socket protocol versioning & semver helpers
+└── package.json        # @pizzapi/protocol
+```
+
+## Socket.IO Namespaces
+
+PizzaPi uses **six Socket.IO namespaces**, each with strongly-typed event maps for client→server, server→client, inter-server (Redis adapter), and per-socket metadata. Every namespace interface follows the same four-interface pattern:
+
+| Interface suffix | Direction | Purpose |
+|---|---|---|
+| `ClientToServerEvents` | Client → Server | Events the client emits |
+| `ServerToClientEvents` | Server → Client | Events the server emits |
+| `InterServerEvents` | Server → Server | Reserved for Redis adapter cross-node communication |
+| `SocketData` | — | Per-socket metadata attached during handshake |
+
+### `/relay` — CLI Agent ↔ Server
+
+**File:** `relay.ts`
+
+The primary control channel between a running `pi` agent session (TUI) and the relay server. This is the highest-traffic namespace — every agent event (heartbeats, message updates, tool calls) flows through here.
+
+**Key client→server events:**
+
+| Event | Purpose |
+|---|---|
+| `register` | Register a new or existing session (sends `cwd`, `sessionName`, optional `parentSessionId`) |
+| `event` | Forward an agent event with a sequence number for ordering |
+| `session_end` | Signal that a session has ended |
+| `session_message` | Send an inter-session message (with optional `deliverAs: "input"`) |
+| `session_trigger` | Fire a child→parent trigger (questions, plans, completion) |
+| `trigger_response` | Parent responds to a child trigger |
+| `cleanup_child_session` | Request teardown of a completed child session |
+| `delink_children` | Sever all child links (e.g. on `/new`) |
+| `delink_own_parent` | Child severs its own parent link |
+| `exec_result` | Return the result of a remote exec command |
+
+**Key server→client events:**
+
+| Event | Purpose |
+|---|---|
+| `registered` | Confirm registration — returns `sessionId`, `token`, `shareUrl` |
+| `event_ack` | Acknowledge receipt of a sequenced event |
+| `input` | Deliver viewer input to the agent (with optional attachments) |
+| `model_set` | Instruct agent to switch model |
+| `exec` | Remote command execution request |
+| `session_trigger` | Deliver a child trigger to the target session |
+| `trigger_response` | Deliver a trigger response back to source child |
+| `parent_delinked` | Notify child that its parent ran `/new` |
+| `session_expired` | Notify that a session has expired |
+
+### `/viewer` — Browser ↔ Server
+
+**File:** `viewer.ts`
+
+Connects the web UI to a specific session. Viewers receive replayed event history on connect and live events afterwards.
+
+**Key client→server events:**
+
+| Event | Purpose |
+|---|---|
+| `switch_session` | Logically switch the socket to a different session (with generation counter) |
+| `resync` | Request a fresh snapshot replay |
+| `input` | Send user input (collab mode) |
+| `model_set` | Switch model (collab mode) |
+| `exec` | Remote exec command |
+| `service_message` | Forward a service message to the runner |
+| `trigger_response` | Human viewer responds to a child trigger (with Socket.IO ack) |
+| `mcp_oauth_paste` | Submit a pasted OAuth callback code for MCP servers |
+
+**Key server→client events:**
+
+| Event | Purpose |
+|---|---|
+| `connected` | Confirm viewer attachment — includes `lastSeq`, `replayOnly`, `isActive` |
+| `event` | Forward an agent event (with optional `replay` flag and `generation`) |
+| `disconnected` | Agent disconnected (with reason code) |
+| `service_message` | Service message from runner |
+| `service_announce` | Available services on the connected runner |
+| `trigger_error` | Error delivering a trigger response (carries `triggerId` for UI matching) |
+
+<Aside type="tip">
+  The `generation` field on viewer events prevents stale events from a previous session leaking into the current view after a `switch_session` call. The viewer discards any event whose generation doesn't match the latest requested switch.
+</Aside>
+
+### `/runner` — Runner Daemon ↔ Server
+
+**File:** `runner.ts`
+
+The largest namespace — handles runner lifecycle, session spawning, terminal management, file operations, skill/agent/plugin CRUD, model listing, usage data, and service messaging.
+
+**Key client→server events:**
+
+| Event | Purpose |
+|---|---|
+| `register_runner` | Register with name, roots, skills, agents, plugins, hooks, version, platform |
+| `runner_session_event` | Forward a session event from a worker process |
+| `session_ready` / `session_error` / `session_killed` | Worker lifecycle signals |
+| `skills_list` / `agents_list` / `plugins_list` | Respond to listing requests |
+| `skill_result` / `agent_result` / `file_result` | Respond to CRUD operations |
+| `models_list` | Return available models |
+| `usage_data` / `usage_error` | Usage dashboard data |
+| `service_message` / `service_announce` | Service communication and discovery |
+| `runner_warning` / `runner_warning_clear` | Report/clear runner warnings |
+| `terminal_ready` / `terminal_data` / `terminal_exit` / `terminal_error` | Terminal PTY output |
+| `disconnect_session` | Request relay to disconnect an adopted session |
+
+**Key server→client events:**
+
+| Event | Purpose |
+|---|---|
+| `runner_registered` | Confirm registration — includes `existingSessions` for re-adoption |
+| `new_session` | Spawn a session (with cwd, prompt, model, skills, agent config, hiddenModels) |
+| `kill_session` / `session_ended` | Session lifecycle commands |
+| `list_skills` / `create_skill` / `update_skill` / `delete_skill` / `get_skill` | Skill CRUD |
+| `list_agents` / `create_agent` / `update_agent` / `delete_agent` / `get_agent` | Agent CRUD |
+| `list_plugins` | Plugin discovery |
+| `list_files` / `search_files` / `read_file` | File operations |
+| `list_models` / `get_usage` | Model and usage queries |
+| `new_terminal` / `terminal_input` / `terminal_resize` / `kill_terminal` | Terminal PTY control |
+| `service_message` | Forward a service message from a viewer |
+| `sandbox_get_status` / `sandbox_update_config` | Sandbox configuration |
+| `restart` / `shutdown` / `ping` | Runner lifecycle |
+
+### `/hub` — Session List Feed
+
+**File:** `hub.ts`
+
+A mostly read-only feed that pushes session list updates to the web UI dashboard.
+
+**Server→client events:**
+
+| Event | Purpose |
+|---|---|
+| `sessions` | Full session list snapshot (sent on connect) |
+| `session_added` / `session_removed` | Session lifecycle |
+| `session_status` | Status change (active/inactive, model, runner, name) |
+| `state_snapshot` | Full `SessionMetaState` for a subscribed session |
+| `meta_event` | Incremental meta-state patch for a subscribed session |
+
+**Client→server events:**
+
+| Event | Purpose |
+|---|---|
+| `subscribe_session_meta` | Start receiving meta-state updates for a session |
+| `unsubscribe_session_meta` | Stop receiving meta-state updates |
+
+### `/runners` — Runner Feed
+
+**File:** `runners.ts`
+
+A read-only feed that pushes runner daemon status to the web UI. Clients emit no events.
+
+| Event | Purpose |
+|---|---|
+| `runners` | Full runner list snapshot (sent on connect) |
+| `runner_added` | A runner daemon connected |
+| `runner_removed` | A runner daemon disconnected |
+| `runner_updated` | Runner metadata changed (skills, agents, plugins, hooks, warnings) |
+
+### `/terminal` — Browser Terminal ↔ Server
+
+**File:** `terminal.ts`
+
+Connects the web UI's terminal panel to a PTY process spawned on the runner.
+
+**Client→server:** `terminal_input`, `terminal_resize`, `kill_terminal`
+
+**Server→client:** `terminal_connected`, `terminal_ready`, `terminal_data`, `terminal_exit`, `terminal_error`
+
+## Shared Types
+
+**File:** `shared.ts`
+
+Types used across multiple namespaces. These are the core data structures of the protocol.
+
+### Session & Runner Identity
+
+```ts
+interface SessionInfo {
+  sessionId: string;
+  shareUrl: string;
+  cwd: string;
+  startedAt: string;
+  sessionName: string | null;
+  isEphemeral: boolean;
+  isActive: boolean;
+  lastHeartbeatAt: string | null;
+  model: ModelInfo | null;
+  runnerId: string | null;
+  runnerName: string | null;
+  parentSessionId?: string | null;
+  viewerCount?: number;
+  userId?: string;
+  userName?: string;
+  expiresAt?: string | null;
+}
+
+interface ModelInfo {
+  provider: string;
+  id: string;
+  name?: string;
+}
+
+interface RunnerInfo {
+  runnerId: string;
+  name: string | null;
+  roots: string[];
+  sessionCount: number;
+  skills: RunnerSkill[];
+  agents: RunnerAgent[];
+  plugins?: RunnerPlugin[];
+  hooks?: RunnerHook[];
+  version: string | null;
+  platform?: string | null;
+  serviceIds?: string[];
+  panels?: ServicePanelInfo[];
+  triggerDefs?: ServiceTriggerDef[];
+  warnings?: string[];
+}
+```
+
+### Attachments
+
+```ts
+interface Attachment {
+  attachmentId?: string;
+  mediaType?: string;
+  filename?: string;
+  url?: string;
+}
+```
+
+### Service System
+
+The service system enables runner-side plugins to communicate with the web UI without the relay needing to understand service-specific semantics. Messages are wrapped in a generic `ServiceEnvelope`:
+
+```ts
+interface ServiceEnvelope {
+  serviceId: string;
+  type: string;
+  requestId?: string;
+  sessionId?: string;  // Attached by relay when forwarding viewer→runner
+  payload: unknown;
+}
+```
+
+Services can expose UI panels (proxied via WebSocket tunnels) and declare trigger types:
+
+```ts
+interface ServicePanelInfo {
+  serviceId: string;
+  port: number;       // Local port, proxied via tunnel
+  label: string;      // Button label in UI
+  icon: string;       // Lucide icon name
+}
+
+interface ServiceTriggerDef {
+  type: string;        // e.g. "godmother:idea_moved"
+  label: string;
+  description?: string;
+  schema?: Record<string, unknown>;   // JSON Schema for output payload
+  params?: ServiceTriggerParamDef[];  // Subscriber-provided config params
+}
+```
+
+### Tunnel Info
+
+```ts
+interface TunnelInfo {
+  port: number;
+  name?: string;
+  url: string;       // Relay tunnel URL fragment
+  pinned?: boolean;  // Auto-registered by daemon — hidden from UI tunnel list
+}
+```
+
+## Session Meta-State
+
+**File:** `meta.ts`
+
+The meta-state system tracks ephemeral session UI state — todo lists, pending questions, token usage, model info, etc. — and synchronizes it from CLI to server to viewers via discrete events.
+
+### `SessionMetaState`
+
+The authoritative shape stored in Redis. Key fields:
+
+| Field | Type | Description |
+|---|---|---|
+| `todoList` | `MetaTodoItem[]` | Agent's task list |
+| `pendingQuestion` | `MetaPendingQuestion \| null` | Active `AskUserQuestion` prompt |
+| `pendingPlan` | `MetaPendingPlan \| null` | Active plan awaiting approval |
+| `planModeEnabled` | `boolean` | Whether plan mode is on |
+| `isCompacting` | `boolean` | Context compaction in progress |
+| `retryState` | `MetaRetryState \| null` | API retry error info |
+| `pendingPluginTrust` | `MetaPluginTrustPrompt \| null` | Plugin trust prompt |
+| `mcpStartupReport` | `MetaMcpReport \| null` | MCP server startup timing/errors |
+| `tokenUsage` | `MetaTokenUsage \| null` | Input/output/cache token counts + cost |
+| `providerUsage` | `MetaProviderUsage \| null` | Per-provider usage breakdown |
+| `model` | `MetaModelInfo \| null` | Current model |
+| `version` | `number` | Monotonic counter for change ordering |
+
+### `MetaRelayEvent`
+
+A discriminated union of 17 event types. The CLI emits these as regular relay events; the server intercepts them (via `isMetaRelayEvent()`), applies them to Redis state (via `metaEventToPatch()`), and broadcasts to hub subscribers.
+
+Event types: `todo_updated`, `question_pending`, `question_cleared`, `plan_pending`, `plan_cleared`, `plan_mode_toggled`, `compact_started`, `compact_ended`, `retry_state_changed`, `plugin_trust_required`, `plugin_trust_resolved`, `mcp_startup_report`, `token_usage_updated`, `thinking_level_changed`, `auth_source_changed`, `model_changed`.
+
+## Password Validation
+
+**File:** `password.ts`
+
+Shared password validation used by the server, UI, and CLI. Ensures consistent enforcement of password rules everywhere.
+
+- Minimum 8 characters, maximum 128 characters (scrypt DoS protection)
+- At least one uppercase, one lowercase, and one digit
+- Uses Unicode codepoint counting (emoji = 1 character)
+
+Exports `validatePassword()` (detailed per-rule results) and `isValidPassword()` (simple boolean).
+
+## Protocol Versioning
+
+**File:** `version.ts`
+
+The `SOCKET_PROTOCOL_VERSION` constant (currently `1`) is sent during Socket.IO handshake. The server checks it via `isSocketProtocolCompatible()` — missing or unparseable versions are treated as compatible (graceful degradation), while mismatched integer versions are flagged so the UI can show an update banner.
+
+Also exports semver utilities (`parseSemverTriplet`, `compareSemver`) used for runner version comparisons.
+
+## Data Flow
+
+Here's how the pieces fit together:
+
+```
+CLI Agent                   Relay Server                  Web UI
+─────────                   ────────────                  ──────
+
+  /relay register ──────────►  Store in Redis  ◄──────── /hub sessions
+                               (session hash)
+
+  /relay event ─────────────►  Append to stream ────────► /viewer event
+   (seq N)                     event_ack(N)               (replay: false)
+                               ▼
+                            isMetaRelayEvent?
+                               ▼ yes
+                            metaEventToPatch()
+                               ▼
+                            Update Redis meta ──────────► /hub meta_event
+                                                          state_snapshot
+
+  Runner daemon              /runner namespace
+  register_runner ──────────►  Store RunnerInfo  ────────► /runners runner_added
+  service_announce ─────────►  Cache panels/triggers ───► /viewer service_announce
+  service_message ──────────►  Forward verbatim ────────► /viewer service_message
+                            ◄──────── /viewer service_message (reverse path)
+
+  /viewer input ────────────►  Forward to relay  ────────► /relay input → CLI
+  /viewer trigger_response ─►  Route to child    ────────► /relay trigger_response
+```
+
+## Extending the Protocol
+
+When adding new events or types:
+
+1. **Add the type in `packages/protocol/src/`** — put it in the appropriate namespace file, or `shared.ts` if used across namespaces.
+
+2. **Re-export from `index.ts`** — every public type must be re-exported.
+
+3. **Run typecheck across all packages** — `bun run typecheck` from the repo root. The server, UI, and CLI all import from `@pizzapi/protocol`, so any breaking change surfaces immediately.
+
+4. **Update both sides** — every event needs a sender and a handler. Adding a client→server event means updating the server's socket handler. Adding a server→client event means updating the consuming component (UI store, CLI handler, etc.).
+
+5. **Bump `SOCKET_PROTOCOL_VERSION`** only for handshake-level breaking changes (new required auth fields, incompatible connection semantics). New events added to existing namespaces do NOT require a version bump — unknown events are simply ignored by older clients.
+
+<Aside type="caution">
+  The protocol package has **zero runtime dependencies** by design. Do not add imports from `@pizzapi/server`, `@pizzapi/ui`, or any other package. Types flow outward from protocol — never inward.
+</Aside>
+
+## Relationship to Server & CLI
+
+| Protocol file | Server handler | CLI extension |
+|---|---|---|
+| `relay.ts` | `packages/server/src/socket/relay.ts` | Remote extension (`packages/cli/src/extensions/remote/`) |
+| `runner.ts` | `packages/server/src/socket/runner.ts` | Runner daemon (`packages/cli/src/runner/`) |
+| `viewer.ts` | `packages/server/src/socket/viewer.ts` | — (consumed by `packages/ui/`) |
+| `hub.ts` | `packages/server/src/socket/hub.ts` | — (consumed by `packages/ui/`) |
+| `runners.ts` | `packages/server/src/socket/runners.ts` | — (consumed by `packages/ui/`) |
+| `terminal.ts` | `packages/server/src/socket/terminal.ts` | Runner daemon terminal handler |
+| `meta.ts` | `packages/server/src/socket/relay.ts` (meta interception) | Remote extension (meta event emission) |
+| `password.ts` | Auth routes | CLI auth commands, UI signup/password forms |
+| `version.ts` | Socket handshake middleware | CLI/runner connect handshake |

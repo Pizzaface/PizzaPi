@@ -125,8 +125,27 @@ PizzaPi stores all its data under `~/.pizzapi/`. Here's what each file is for:
 | `~/.pizzapi/web/data/` | `pizzapi web` | Persistent SQLite database for user accounts |
 | `~/.pizzapi/web/repo/` | `pizzapi web` | Cloned PizzaPi source repo |
 | `~/.pizzapi/skills/` | manual | Global personal skills |
+| `~/.pizzapi/usage.db` | first session | SQLite database tracking token consumption, costs, and session analytics. Safe to delete (loses analytics history). |
+| `~/.pizzapi/session-list-cache.json` | `pizzapi runner` | Cache of session metadata with mtime-based invalidation. Safe to delete (rebuilds automatically on next session list). |
 
 Project-local config (`.pizzapi/config.json`) is stored in each project's directory and is not part of the global `~/.pizzapi/` tree.
+
+---
+
+## Upgrading from pi
+
+If you previously used the raw [`pi` coding agent](https://github.com/badlogic/pi-mono), PizzaPi automatically migrates your existing data on first startup. No manual steps are required.
+
+The migration runs in two phases:
+
+1. **Phase 1 — `~/.pi/agent/` → `~/.pizzapi/`**: Copies sessions, auth, and other data from a legacy `pi` install into the PizzaPi config directory.
+2. **Phase 2 — `~/.pizzapi/agent/` → `~/.pizzapi/`**: Flattens an older PizzaPi layout where data was nested under `~/.pizzapi/agent/` (caused by an earlier upstream `getAgentDir()` path). Files are merged into the flat `~/.pizzapi/` structure.
+
+Both phases are **idempotent** — they skip files that already exist at the destination and write a `.migrated` marker so they don't re-scan on subsequent startups. It's safe to re-run (e.g., if you reinstall).
+
+<Aside type="tip">
+  If something looks wrong after migration, you can safely delete `~/.pizzapi/agent/.migrated` and restart PizzaPi to re-run Phase 2. Phase 1 re-runs automatically if `~/.pizzapi/sessions/` doesn't exist yet.
+</Aside>
 
 ---
 

@@ -203,3 +203,40 @@ For each issue found, report:
 
 Prioritize security issues and correctness bugs over style nits.
 ```
+
+---
+
+## Managing Agent Definitions via the API
+
+PizzaPi provides a full CRUD API for managing agent definitions on a connected runner. You can create, edit, and delete agents from the web UI without manually editing files on disk.
+
+### API Endpoints
+
+All endpoints require an authenticated session and are scoped to a specific runner.
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/api/runners/{runnerId}/agents` | List all discovered agent definitions (from Redis cache) |
+| `GET` | `/api/runners/{runnerId}/agents/{name}` | Get full content of a specific agent definition |
+| `POST` | `/api/runners/{runnerId}/agents` | Create a new agent (body: `{ name, content }`) |
+| `PUT` | `/api/runners/{runnerId}/agents/{name}` | Update an existing agent (body: `{ content }`) |
+| `DELETE` | `/api/runners/{runnerId}/agents/{name}` | Delete an agent definition |
+| `POST` | `/api/runners/{runnerId}/agents/refresh` | Re-scan the filesystem and refresh the agent list |
+
+### Using the Web UI
+
+In the PizzaPi web interface, navigate to a runner's detail page and open the **Agents** tab. From there you can:
+
+- **Browse** all agent definitions discovered from the runner's agent directories
+- **Create** a new agent definition with the in-browser editor (including frontmatter for `name`, `description`, `tools`, `model`, etc.)
+- **Edit** an existing agent's content and configuration
+- **Delete** agent definitions you no longer need
+- **Refresh** to re-scan the filesystem if you've added definitions outside the UI
+
+### Relationship to File-Based Discovery
+
+The API writes directly to the same directories used by file-based discovery (`~/.pizzapi/agents/`, `~/.claude/agents/`, etc.). An agent created via the API is a regular `.md` file on disk — there's no separate "API-only" storage. Similarly, agents added to the filesystem can be picked up by hitting the **Refresh** button or calling the `/refresh` endpoint.
+
+<Aside type="note">
+  Agent names are validated to prevent path traversal — only alphanumeric characters, hyphens, and underscores are allowed.
+</Aside>

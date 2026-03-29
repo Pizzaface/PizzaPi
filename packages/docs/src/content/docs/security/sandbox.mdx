@@ -223,6 +223,161 @@ Use the `/sandbox` slash command in a session to view status and recent violatio
 
 ---
 
+## Runtime Inspection & Configuration API
+
+PizzaPi exposes REST endpoints and a slash command to inspect and update sandbox configuration at runtime — no restart required.
+
+### `GET /api/runners/{runnerId}/sandbox-status`
+
+Returns the current sandbox state for a runner. Requires an authenticated session owned by the runner's user.
+
+**Response:**
+
+```json
+{
+  "mode": "basic",
+  "active": true,
+  "platform": "darwin",
+  "violations": 3,
+  "recentViolations": [
+    {
+      "timestamp": "2026-03-29T14:22:01.000Z",
+      "operation": "read",
+      "target": "~/.ssh/id_ed25519",
+      "reason": "Path in denyRead"
+    }
+  ],
+  "config": { "mode": "basic", "filesystem": { "..." : "..." } }
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `mode` | Active sandbox mode (`none`, `basic`, `full`) |
+| `active` | Whether enforcement is actually running (may be `false` on unsupported platforms) |
+| `platform` | Runner's OS (`darwin`, `linux`, `win32`) |
+| `violations` | Total violation count since runner start |
+| `recentViolations` | Last 20 violations (newest first) |
+| `config` | Fully resolved sandbox config (global + project merged) |
+
+### `PUT /api/runners/{runnerId}/sandbox-config`
+
+Update sandbox configuration at runtime without restarting the runner. The body is deep-merged with the existing global config in `~/.pizzapi/config.json`.
+
+**Request body:**
+
+```json
+{
+  "mode": "full",
+  "network": {
+    "allowedDomains": ["*.github.com", "api.anthropic.com"]
+  }
+}
+```
+
+**Response:**
+
+```json
+{
+  "saved": true,
+  "resolvedConfig": { "..." : "..." },
+  "message": "Changes will apply on next session start."
+}
+```
+
+- Send `null` for a key to remove it from the config (e.g., clearing stale network rules when downgrading from `full` to `basic`).
+- Nested objects are shallow-merged; arrays and scalars are replaced.
+- Validation rejects invalid modes and non-string array entries with a `400` status.
+
+<Aside type="note">
+  Config changes are persisted to `~/.pizzapi/config.json` immediately but take effect on the **next session start** — active sessions keep their resolved config.
+</Aside>
+
+### Violation events in the web UI
+
+When a runner is connected to the PizzaPi relay, every `sandbox:violation` event is forwarded in real time. In the web UI:
+
+- Violations appear as **warning badges** in the session timeline.
+- The **runner detail panel** shows a live violation counter and a filterable violation log.
+- Clicking a violation expands it to show the full operation, target path, and denial reason.
+
+### `/sandbox` slash command
+
+The `/sandbox` command is available inside any active session:
+
+| Command | Description |
+|---------|-------------|
+| `/sandbox` | Status overview — mode, active state, platform, violation count |
+| `/sandbox violations` | Full violation log (last 100 entries) |
+| `/sandbox config` | Show the fully resolved config (global + project merged) |
+
+---
+
+## Runner Workspace Roots
+
+The `PIZZAPI_WORKSPACE_ROOTS` environment variable restricts which working directories the runner daemon will accept when spawning new sessions. Any spawn request whose `cwd` is outside the allowed roots is **rejected** before a session starts.
+
+This is useful for **shared or team runners** that should only work within specific project directories — e.g., a CI runner locked to `/srv/projects` or a team Mac Mini restricted to a few repos.
+
+### Setting workspace roots
+
+Set a comma-separated list of allowed directories:
+
+```bash
+export PIZZAPI_WORKSPACE_ROOTS="/Users/jordan/Projects,/tmp/scratch"
+```
+
+**Aliases** (checked in priority order):
+
+| Variable | Notes |
+|----------|-------|
+| `PIZZAPI_WORKSPACE_ROOTS` | Preferred — comma-separated list |
+| `PIZZAPI_WORKSPACE_ROOT` | Convenience alias for a single root |
+| `PIZZAPI_RUNNER_ROOTS` | Legacy alias (back-compat) |
+
+If `PIZZAPI_WORKSPACE_ROOTS` is set, the other variables are ignored. If none are set, the runner is **unscoped** and accepts any `cwd`.
+
+### Behavior
+
+- Paths are normalized — trailing slashes are stripped, symlinks are resolved.
+- A session's `cwd` must be **equal to or a subdirectory of** at least one root.
+- Path traversal attacks (`/../`) are neutralized via `realpathSync` before comparison.
+- On Windows, comparisons are case-insensitive.
+- The filesystem root (`/`) as a root allows everything (equivalent to unscoped).
+
+### LaunchAgent integration
+
+To persist workspace roots for the runner daemon, add them to the LaunchAgent plist:
+
+```xml
+<!-- ~/Library/LaunchAgents/com.pizzapi.runner.plist -->
+<key>EnvironmentVariables</key>
+<dict>
+  <key>PIZZAPI_WORKSPACE_ROOTS</key>
+  <string>/Users/jordan/Projects,/Users/jordan/Clients</string>
+</dict>
+```
+
+After editing the plist, reload the LaunchAgent:
+
+```bash
+launchctl unload ~/Library/LaunchAgents/com.pizzapi.runner.plist
+launchctl load ~/Library/LaunchAgents/com.pizzapi.runner.plist
+```
+
+### Relationship to sandbox filesystem restrictions
+
+Workspace roots and sandbox restrictions are **complementary**:
+
+| Mechanism | Scope | Enforces |
+|-----------|-------|----------|
+| Workspace roots | **Runner level** — controls which directories the daemon will start sessions in | Where sessions can be *created* |
+| Sandbox filesystem | **Session level** — controls what the agent can read/write during execution | What the agent can *access* at runtime |
+
+A session must pass **both** checks: the runner must allow the `cwd` (workspace roots), and then the sandbox must allow each individual file operation (filesystem rules). Neither replaces the other.
+
+---
+
 ## Troubleshooting
 
 ### "Sandbox blocked: Read denied"

@@ -1,0 +1,185 @@
+---
+title: Usage Dashboard
+description: Monitor token usage, costs, and session analytics from the PizzaPi web interface.
+---
+
+import { Aside } from "@astrojs/starlight/components";
+
+The **Usage Dashboard** gives you a bird's-eye view of your token consumption, costs, and session activity across all projects on a runner. It's the fastest way to answer questions like "how much did I spend this week?" or "which model is eating my budget?"
+
+---
+
+## Opening the Dashboard
+
+1. Open the PizzaPi web UI.
+2. Navigate to a **runner detail** page (click a runner in the sidebar).
+3. Select the **Usage** tab.
+
+The dashboard loads data for the selected runner and defaults to the **90-day** view.
+
+---
+
+## Summary Cards
+
+At the top of the dashboard, four summary cards give you headline numbers for the selected period:
+
+| Card | What it shows |
+|------|--------------|
+| **Total Cost** | Sum of all token costs (input, output, cache read, cache write) across sessions that have cost data. Shows how many sessions had cost data out of the total. |
+| **Sessions** | Total session count, with average cost per session. |
+| **Total Tokens** | Combined input + output tokens (excludes cache read/write). |
+| **Avg Cost / Active Day** | Average daily spend on days that had at least one session. Inactive days are excluded, so this is higher than a simple calendar-day average. |
+
+Below the summary cards, a second row of **Session Stats** cards shows per-session averages:
+
+- **Avg Duration** — average wall-clock time per session
+- **Avg Tokens** — average total tokens per session
+- **Avg Cost** — average cost per session (only sessions with cost data)
+- **Avg Input Tokens** — average input tokens per session
+
+---
+
+## Charts
+
+### Cost Over Time
+
+A **stacked bar chart** showing daily cost broken down into four categories:
+
+- **Input Cost** — cost of input (prompt) tokens
+- **Output Cost** — cost of output (completion) tokens
+- **Cache Read Cost** — cost of reading from the prompt cache
+- **Cache Write Cost** — cost of writing to the prompt cache
+
+Hover over any bar to see the exact breakdown and daily total.
+
+### Token Usage Over Time
+
+An **area chart** showing daily token volume across four series:
+
+- **Input** — prompt tokens sent to the model
+- **Output** — completion tokens received
+- **Cache Read** — tokens served from the prompt cache
+- **Cache Write** — tokens written into the prompt cache
+
+Each series can be toggled on/off by clicking its name in the legend — useful when cache read volume dwarfs other series.
+
+---
+
+## Model Breakdown
+
+A **donut chart** with an accompanying table showing cost distribution across models. For each model you can see:
+
+- Provider name (e.g. Anthropic, OpenAI)
+- Total cost and percentage share
+- Number of sessions
+
+The top 20 models by cost are shown.
+
+---
+
+## Project Breakdown
+
+Two side-by-side **horizontal bar charts**:
+
+- **Sessions by Project** — which projects generated the most sessions
+- **Cost by Project** — which projects cost the most
+
+By default the top 8 projects are shown. Click **+N more** to expand the full list. Project names are shortened to the last path component (e.g. `/Users/jordan/Projects/PizzaPi` → `PizzaPi`).
+
+---
+
+## Recent Sessions Table
+
+A sortable table of the most recent 50 sessions in the selected period. Columns:
+
+| Column | Description |
+|--------|-------------|
+| **Session** | Session name (if set via `set_session_name`) or truncated session ID |
+| **Project** | Short project directory name |
+| **Model** | Primary model used (most-used model by message count) |
+| **Started** | Relative timestamp (e.g. "2h ago", "3d ago") — hover for absolute time |
+| **Cost** | Total session cost, or "—" if unavailable |
+| **Messages** | Number of assistant messages with usage data |
+
+Click any column header to sort ascending/descending.
+
+---
+
+## Period Selector
+
+The period selector appears at the top of the dashboard. Choose from:
+
+| Button | Date range |
+|--------|-----------|
+| **7 days** | Last 7 days |
+| **30 days** | Last 30 days |
+| **90 days** | Last 90 days (default) |
+| **All time** | Everything since the first recorded session |
+
+Changing the period re-fetches all charts and summaries for the new range.
+
+---
+
+## How Data Is Collected
+
+The usage pipeline works in three stages:
+
+1. **Session JSONL files** — Every pi session writes a JSONL log to `~/.pizzapi/sessions/<session-id>/`. Each assistant message includes a `usage` object with token counts and (when available) per-category costs.
+
+2. **Scanner → SQLite** — The runner periodically scans these JSONL files and extracts usage events into a local SQLite database at `~/.pizzapi/usage.db`. The scanner is incremental — it tracks byte offsets per file so re-scans only process new lines. A background scan triggers automatically if data is more than 60 seconds stale.
+
+3. **API → Charts** — The web UI fetches aggregated data from `GET /api/runners/:id/usage?range=<range>`. The server forwards this request to the runner over WebSocket, which queries SQLite and returns the result. The UI renders it with Recharts.
+
+<Aside type="tip">
+  The scanner also checks legacy session directories (`~/.pizzapi/agent/sessions/` and `~/.pi/agent/sessions/`) for installations that haven't been migrated.
+</Aside>
+
+---
+
+## CLI: `pizza usage`
+
+You can check **provider rate-limit usage** (not the same as the historical dashboard) from the command line:
+
+```bash
+# Show usage for all authenticated providers
+pizza usage
+
+# Show only Anthropic usage
+pizza usage anthropic
+
+# Show only Gemini usage
+pizza usage gemini
+
+# Output as JSON (for scripting)
+pizza usage --json
+pizza usage anthropic --json
+```
+
+For **Anthropic**, this shows your OAuth subscription rate-limit windows (5-hour, 7-day, Opus, Sonnet, co-work) with utilization bars and reset times. If extra usage is enabled, it also shows your monthly limit and credits used.
+
+For **Gemini** (Google Cloud Code Assist), this shows quota buckets with remaining fractions and reset times.
+
+<Aside type="note">
+  `pizza usage` queries **live provider APIs** for current rate-limit status. It does not read from `usage.db`. The Usage Dashboard in the web UI shows **historical** token and cost data from your local sessions.
+</Aside>
+
+---
+
+## Where Data Lives
+
+| Path | Contents |
+|------|----------|
+| `~/.pizzapi/usage.db` | SQLite database with `usage_events`, `sessions`, and `processing_state` tables. WAL mode enabled for concurrent reads. |
+| `~/.pizzapi/sessions/` | Raw session JSONL files that the scanner reads from. |
+
+The database is created automatically on first use. You can safely delete `usage.db` to reset all historical data — it will be rebuilt from the JSONL files on the next scan.
+
+---
+
+## Limitations
+
+- **Runner-scoped data** — The dashboard only shows sessions that ran on the selected runner. If you have multiple runners, each has its own `usage.db` with only its own sessions.
+- **Accumulates from first run** — Data starts accumulating from the first time the scanner runs. There is no way to import historical data from before PizzaPi was installed.
+- **Cost data depends on the provider** — Not all providers return per-token cost breakdowns. Sessions without cost data are counted in session/token totals but excluded from cost averages and charts.
+- **50-session cap on the recent table** — Only the 50 most recent sessions in the selected period are shown in the table. Aggregated charts and summaries include all sessions.
+- **Top 20 models/projects** — The model and project breakdowns are capped at the top 20 by cost.

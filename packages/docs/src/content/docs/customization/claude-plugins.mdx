@@ -1,6 +1,6 @@
 ---
 title: Claude Code Plugins
-description: Use Claude Code plugins with PizzaPi — commands, hooks, and skills from the Claude ecosystem.
+description: Use Claude Code plugins with PizzaPi — commands, hooks, rules, and skills from the Claude ecosystem.
 ---
 
 import { Aside, FileTree, Steps } from "@astrojs/starlight/components";
@@ -40,7 +40,7 @@ PizzaPi includes a **Claude Code plugin adapter** that discovers plugins designe
 
 ## Plugin Structure
 
-A Claude Code plugin is a directory with any combination of commands, hooks, skills, and metadata:
+A Claude Code plugin is a directory with any combination of commands, hooks, skills, rules, and metadata:
 
 <FileTree>
 - my-plugin/
@@ -53,6 +53,9 @@ A Claude Code plugin is a directory with any combination of commands, hooks, ski
   - skills/
     - my-skill/
       - SKILL.md
+  - rules/
+    - no-console-log.md
+    - prefer-const.md
   - mcp.json *(not adapted — shown as warning)*
 </FileTree>
 
@@ -216,6 +219,52 @@ Plugin skills follow the [Agent Skills standard](https://agentskills.io/specific
 <Aside type="tip">
   Skills are the most portable part of Claude Code plugins — they work identically in both ecosystems because both implement the Agent Skills open standard.
 </Aside>
+
+---
+
+## Rules
+
+Plugin rules are **static markdown files** that are injected into the system prompt as always-on context. They're the plugin equivalent of project-level `.claude/CLAUDE.md` rules — guidelines, conventions, and constraints that the agent follows for every message.
+
+<FileTree>
+- my-plugin/
+  - rules/
+    - no-console-log.md
+    - prefer-const.md
+    - error-handling.md
+</FileTree>
+
+Every `.md` file in the `rules/` directory is loaded and injected under a `# Plugin Rules (plugin-name)` heading in the system prompt. There's no frontmatter, no registration step — just write markdown.
+
+### Example rule file
+
+```markdown title="rules/no-console-log.md"
+## No console.log in production code
+
+Never use `console.log()` for logging in source files under `src/`.
+Use the structured logger (`import { log } from '@lib/logger'`) instead.
+
+`console.log` is acceptable only in:
+- Test files (`*.test.ts`)
+- Build scripts (`scripts/`)
+```
+
+### Rules vs. skills
+
+Rules and skills serve different purposes:
+
+| | Rules | Skills |
+|---|---|---|
+| **Loaded** | Always — injected into every session automatically | On-demand — agent activates when relevant |
+| **Format** | Plain markdown (no frontmatter needed) | `SKILL.md` with structured frontmatter |
+| **Purpose** | Constraints, conventions, guidelines | Capabilities, how-to knowledge |
+| **Analogy** | `.claude/CLAUDE.md` | Tool documentation |
+
+Use rules for things the agent should **always** know ("never commit to main", "use bun not npm"). Use skills for things the agent should know **when relevant** ("how to deploy to staging").
+
+### Rules in the web UI
+
+The plugin detail view in the web UI shows a **rules badge** with the count of loaded rule files, alongside the existing badges for commands, hooks, and skills.
 
 ---
 

@@ -1,0 +1,139 @@
+---
+title: Git Panel
+description: Stage, diff, and commit code changes from the PizzaPi web interface without leaving the browser.
+---
+
+import { Aside } from "@astrojs/starlight/components";
+
+The Git panel gives you a visual overview of your repository's working tree and lets you stage files, review diffs, commit, push, and switch branches — all from the browser.
+
+## Opening the panel
+
+The Git panel is available whenever a session is connected to a runner with a working directory.
+
+- **Desktop** — click the **branch icon** button in the session header toolbar.
+- **Mobile** — open the session overflow menu (⋯) and tap **Git**.
+
+The panel opens as a docked side panel. You can drag it to reposition it (left, right, or bottom) just like the Files or Terminal panels. Click the branch icon again (or the panel's close button) to hide it.
+
+<Aside>
+The Git panel communicates with the runner's GitService over a real-time WebSocket channel — there are no REST endpoints involved. All operations are scoped to the session's working directory.
+</Aside>
+
+## Panel overview
+
+When the panel opens, it automatically fetches `git status` for the session's working directory and displays:
+
+- **Branch name** — shown at the top-left with a branch icon. Click it to open the branch selector.
+- **Ahead / behind badges** — green arrow-up (commits ahead of remote) and amber arrow-down (commits behind).
+- **Push / Publish button** — appears when you have commits to push. If the branch has no upstream tracking branch yet, the button reads **Publish** and sets the upstream automatically.
+- **Refresh button** — manually re-fetches git status at any time.
+
+Below the header, changes are split into two collapsible groups:
+
+| Section | What it shows |
+|---------|---------------|
+| **Staged Changes** | Files already added to the index (ready to commit). |
+| **Changes** | Modified, added, deleted, renamed, or untracked files in the working tree. |
+
+Each file row shows a status icon and letter code that matches `git status --porcelain` output:
+
+| Code | Meaning |
+|------|---------|
+| **M** | Modified |
+| **A** | Added |
+| **D** | Deleted |
+| **R** | Renamed |
+| **C** | Copied |
+| **??** | Untracked |
+| **MM** | Modified in both index and working tree |
+| **AM** | Added to index, then modified in working tree |
+
+When the working tree is clean, the panel shows a **"Working tree clean"** message.
+
+## Staging and unstaging files
+
+Each file row has a **+** (stage) or **−** (unstage) button on its left side:
+
+- Click **+** on an unstaged file to run `git add` on that file.
+- Click **−** on a staged file to run `git reset HEAD` on that file.
+
+Bulk actions are available in each section header:
+
+- **Stage All** — stages every file in the Changes section.
+- **Unstage All** — unstages every file in the Staged Changes section.
+
+After any stage/unstage operation, the panel automatically refreshes the status.
+
+## Writing a commit
+
+The commit form is pinned to the bottom of the panel whenever there are changes in the working tree.
+
+1. Stage the files you want to include.
+2. Type a commit message in the text area. It auto-resizes as you type (up to a maximum height).
+3. Click **Commit** or press <kbd>⌘</kbd><kbd>Enter</kbd> (macOS) / <kbd>Ctrl</kbd><kbd>Enter</kbd> (Windows/Linux).
+
+The Commit button is disabled until at least one file is staged and the message is non-empty. While the commit is in progress, a spinner replaces the button icon.
+
+After a successful commit, the message field clears and the status refreshes automatically.
+
+## Pushing changes
+
+When your local branch is ahead of the remote (or has no upstream at all), a push button appears in the header bar:
+
+- **Push** — pushes to the existing upstream branch.
+- **Publish** — pushes and sets the upstream tracking branch (`--set-upstream`) for branches that haven't been pushed before.
+
+If the push fails because there is no upstream, the panel shows a toast suggesting you click **Publish** to retry with `--set-upstream`.
+
+## Branch selector
+
+Click the branch name in the header to open the branch selector dropdown. It lists both local and remote branches, grouped under **Local** and **Remote** headings.
+
+- **Search** — a search field at the top filters branches by name as you type.
+- **Current branch** — highlighted with a green check mark.
+- **Switch branches** — click any branch to check it out. For remote branches, the panel creates a local tracking branch automatically.
+- **Keyboard** — press <kbd>Escape</kbd> to close the dropdown without switching.
+
+While a checkout is in progress, a spinner replaces the dropdown chevron. After a successful checkout, the panel refreshes to show the new branch's status.
+
+## Diff view
+
+Click any tracked file name in the staging area to open an inline diff view. (Untracked files don't have a diff to show, so their rows are not clickable.)
+
+The diff view displays a unified diff with color-coded lines:
+
+| Color | Meaning |
+|-------|---------|
+| **Green** | Added lines (`+`) |
+| **Red** | Removed lines (`-`) |
+| **Blue** | Hunk headers (`@@`) |
+| **Muted** | Context lines and diff metadata |
+
+The file path is shown in the header. Click the **back arrow** or press <kbd>Escape</kbd> to return to the staging area.
+
+You can view diffs for both staged and unstaged versions of a file — clicking a file in the **Staged Changes** section shows the staged diff, while clicking one in **Changes** shows the working-tree diff.
+
+## Toast notifications
+
+After each operation (commit, push, checkout, stage, unstage), a brief toast appears below the header:
+
+- **Green** — operation succeeded, with a short summary.
+- **Red** — operation failed, with the error message.
+
+Toasts dismiss automatically after 5 seconds or can be closed manually.
+
+## Limitations
+
+The Git panel covers common day-to-day operations but is not a full replacement for the terminal or the agent's own git usage:
+
+- **No interactive rebase, merge conflict resolution, or stash management.** Use the terminal panel or ask the agent for complex git workflows.
+- **No file-level discard (checkout -- file).** You can unstage files but cannot discard working-tree changes from the panel.
+- **No commit amend or history browsing.** The panel only shows the current working-tree state, not the commit log.
+- **No partial staging (hunk-level).** Staging operates on whole files — you cannot stage individual hunks or lines.
+- **Single-remote push only.** The push button pushes to the default remote; multi-remote setups need the terminal.
+- **Requires a connected runner.** The panel is unavailable in read-only or disconnected sessions because it needs the runner's GitService to execute commands.
+
+<Aside type="tip">
+For anything beyond basic stage-commit-push, use the **Terminal** panel or ask the agent directly — it has full git access and can handle rebases, cherry-picks, and conflict resolution.
+</Aside>

@@ -1,0 +1,224 @@
+---
+title: File Explorer
+description: Browse, search, and read files on the runner machine from the PizzaPi web interface.
+---
+
+import { Aside } from "@astrojs/starlight/components";
+
+The File Explorer lets you browse the runner's filesystem directly from the PizzaPi web UI — no terminal or SSH required. It appears as a docked side panel alongside the session viewer, showing the directory tree rooted at the agent's current working directory.
+
+---
+
+## Opening the File Explorer
+
+Toggle the File Explorer with the keyboard shortcut **⌘⇧E** (macOS) or **Ctrl+Shift+E** (Windows/Linux). You can also click the folder icon button in the session viewer header bar.
+
+The button only appears when the active session has a connected runner with a known working directory (`cwd`). If no runner is connected, the button is hidden.
+
+---
+
+## Panel Position
+
+On desktop, the File Explorer opens as a docked panel inside the combined panel area. You can reposition it to the **left**, **right**, or **bottom** of the session viewer using the position picker in the panel header. Your position preference persists across sessions.
+
+The panel also supports drag-to-reposition — click and hold the grip handle, then drag to a new edge.
+
+---
+
+## Navigating Directories
+
+The explorer displays the agent's working directory as a collapsible tree. Each entry shows:
+
+- **Folders** — click to expand and lazy-load the directory contents from the runner. Folders show an amber folder icon that switches between closed and open states.
+- **Files** — click to open a read-only preview. Files display a type-specific emoji icon (e.g. 🟦 for `.ts`, 🐍 for `.py`, 🎨 for `.css`) and their size in human-readable format.
+- **Symlinks** — indicated with a `→` suffix on the file name.
+
+The breadcrumb bar at the top shows the current root path (`cwd`). Use the **refresh** button (↻) to re-fetch the directory listing if the filesystem has changed.
+
+<Aside type="note">
+  The tree root is always the agent's working directory. You cannot navigate above it — the server enforces workspace root boundaries (see [Security](#workspace-root-enforcement) below).
+</Aside>
+
+---
+
+## Viewing Files
+
+Click any file to open it in the built-in viewer. Press **Escape** to return to the directory tree.
+
+### Text Files
+
+Text files open in a read-only monospaced preview with syntax-appropriate formatting. If the file exceeds **512 KB**, it is truncated and a warning banner appears:
+
+> File truncated (showing first 512 KB of _total size_)
+
+### Images
+
+Image files (`.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, `.svg`, `.bmp`, `.ico`, `.avif`) open in a dedicated image viewer with:
+
+- **Zoom controls** — zoom in, zoom out, and reset buttons with a percentage indicator
+- **Fit modes** — toggle between "fit to view" (contain) and "actual size"
+- **Transparency checkerboard** — images with alpha channels display over a checkerboard background
+- **Dimensions** — natural width × height shown in the header
+
+Images are fetched as base64-encoded data with a **10 MB** size limit.
+
+<Aside type="tip">
+  The file explorer is **read-only**. You cannot edit, rename, or delete files through it — it's designed for browsing and inspecting the agent's workspace. Use the agent itself (or a terminal) to make changes.
+</Aside>
+
+---
+
+## File Search (@ Mentions)
+
+The file search API powers the **@-mention** autocomplete in the message composer. When you type `@` followed by a filename fragment, PizzaPi searches the runner's workspace and presents matching files as suggestions. This uses the same `search-files` endpoint described below.
+
+---
+
+## REST API
+
+The File Explorer is backed by three server endpoints. All require an authenticated session (cookie-based auth) and verify that the requesting user owns the runner.
+
+### List files
+
+```
+POST /api/runners/:runnerId/files
+```
+
+**Request body:**
+
+```json
+{
+  "path": "/home/user/project/src"
+}
+```
+
+**Response:**
+
+```json
+{
+  "ok": true,
+  "files": [
+    {
+      "name": "index.ts",
+      "path": "/home/user/project/src/index.ts",
+      "isDirectory": false,
+      "isSymlink": false,
+      "size": 2048
+    },
+    {
+      "name": "components",
+      "path": "/home/user/project/src/components",
+      "isDirectory": true
+    }
+  ]
+}
+```
+
+Each entry in `files` includes `name`, `path`, `isDirectory`, an optional `isSymlink` flag, and `size` in bytes (for files).
+
+### Read file
+
+```
+POST /api/runners/:runnerId/read-file
+```
+
+**Request body:**
+
+```json
+{
+  "path": "/home/user/project/src/index.ts",
+  "encoding": "utf8"
+}
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `path` | `string` | _(required)_ | Absolute path to the file |
+| `encoding` | `"utf8"` \| `"base64"` | `"utf8"` | Response encoding — use `base64` for images and binary files |
+
+**Response:**
+
+```json
+{
+  "ok": true,
+  "content": "import React from 'react';\n...",
+  "truncated": false,
+  "size": 2048
+}
+```
+
+Size limits depend on encoding:
+
+| Encoding | Max size | Timeout |
+|----------|----------|---------|
+| `utf8` | 512 KB | 15 s |
+| `base64` | 10 MB | 30 s |
+
+If the file exceeds the limit, `content` contains the first N bytes and `truncated` is `true`.
+
+### Search files
+
+```
+POST /api/runners/:runnerId/search-files
+```
+
+**Request body:**
+
+```json
+{
+  "cwd": "/home/user/project",
+  "query": "Button",
+  "limit": 50
+}
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `cwd` | `string` | _(required)_ | Directory to search within |
+| `query` | `string` | _(required)_ | Filename search string (fuzzy match) |
+| `limit` | `number` | `100` | Maximum number of results to return |
+
+**Response:**
+
+```json
+{
+  "ok": true,
+  "files": [
+    { "name": "Button.tsx", "path": "/home/user/project/src/components/Button.tsx" },
+    { "name": "ButtonGroup.tsx", "path": "/home/user/project/src/components/ButtonGroup.tsx" }
+  ]
+}
+```
+
+If `query` is empty, the endpoint returns `{ "ok": true, "files": [] }` immediately without hitting the runner.
+
+---
+
+## Workspace Root Enforcement
+
+All three endpoints enforce **workspace root boundaries**. The server checks the runner's configured `roots` (the allowed workspace directories) and rejects any request where the `path` or `cwd` falls outside those roots.
+
+If a request targets a path outside the allowed roots, the server responds with:
+
+```json
+{
+  "error": "Runner cannot access path: /etc/passwd"
+}
+```
+
+This returns HTTP **400**. The check uses the `cwdMatchesRoots()` helper on the server side, ensuring that even crafted API requests cannot escape the workspace sandbox.
+
+<Aside type="caution">
+  Workspace roots are set by the runner when it connects. If a runner has no roots configured, path restrictions are not enforced — any absolute path is accessible. Configure roots in your runner setup for defense in depth.
+</Aside>
+
+---
+
+## Known Limitations
+
+- **Large text files** are truncated at 512 KB. The full file cannot be streamed through the explorer — use the agent's `read` tool or a terminal for large files.
+- **Binary files** (executables, archives, databases) will either fail to render or display garbled content in the text viewer. Only images have dedicated rendering support.
+- **No editing** — the explorer is strictly read-only. There is no write-back capability.
+- **No file search UI in the explorer panel** — file search is currently available only through the @-mention autocomplete in the composer. A dedicated search bar in the explorer panel is planned.
+- **Symlink targets** are indicated with a `→` marker but the target path is not displayed.
+- **No syntax highlighting** — text files render as plain monospaced text without language-aware coloring.
