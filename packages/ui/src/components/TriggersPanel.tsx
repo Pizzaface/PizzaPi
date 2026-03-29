@@ -67,6 +67,8 @@ export interface TriggerSubscription {
   triggerType: string;
   runnerId: string;
   params?: Record<string, string | number | boolean | Array<string | number | boolean>>;
+  filters?: Array<{ field: string; value: string | number | boolean | Array<string | number | boolean>; op?: "eq" | "contains" }>;
+  filterMode?: "and" | "or";
 }
 
 /** Ephemeral status update for a trigger (not persisted in history). */
@@ -238,6 +240,69 @@ export function groupByLinkedSession(triggers: TriggerHistoryEntry[]): {
   });
 
   return { sessionGroups, otherEvents };
+}
+
+/**
+ * Unified source grouping — groups ALL triggers by source, regardless of
+ * direction or whether they're from child sessions, services, or external.
+ * Each source gets one accordion. Pending sources float to the top.
+ */
+export interface SourceGroup {
+  /** Raw source value */
+  source: string;
+  /** Human-readable label */
+  label: string;
+  /** All trigger events from this source, most recent first */
+  events: TriggerHistoryEntry[];
+  /** The most recent pending trigger (no response), if any */
+  pendingTrigger: TriggerHistoryEntry | null;
+  /** Whether this source looks like a linked child session (vs service/external) */
+  isLinkedSession: boolean;
+  /** Most recent trigger timestamp */
+  lastTs: string;
+  /** Summary from the most recent trigger */
+  lastSummary?: string;
+}
+
+export function groupTriggersBySource(triggers: TriggerHistoryEntry[]): SourceGroup[] {
+  const map = new Map<string, TriggerHistoryEntry[]>();
+
+  for (const t of triggers) {
+    const key = t.source || "unknown";
+    const existing = map.get(key);
+    if (existing) {
+      existing.push(t);
+    } else {
+      map.set(key, [t]);
+    }
+  }
+
+  const groups: SourceGroup[] = [];
+  for (const [source, events] of map) {
+    const pendingTrigger = events.find(isPendingTrigger) ?? null;
+    // A source looks like a linked session if it has inbound triggers and isn't "api" or "external:*"
+    const isLinkedSession = events.some(
+      (e) => e.direction === "inbound" && source !== "api" && !source.startsWith("external:"),
+    );
+    groups.push({
+      source,
+      label: sourceLabel(source),
+      events,
+      pendingTrigger,
+      isLinkedSession,
+      lastTs: events[0].ts,
+      lastSummary: events[0].summary,
+    });
+  }
+
+  // Sort: pending first, then by most recent event
+  groups.sort((a, b) => {
+    if (a.pendingTrigger && !b.pendingTrigger) return -1;
+    if (!a.pendingTrigger && b.pendingTrigger) return 1;
+    return new Date(b.lastTs).getTime() - new Date(a.lastTs).getTime();
+  });
+
+  return groups;
 }
 
 // ── Incomplete trigger detection (used by /new warning) ────────────────────
@@ -723,13 +788,16 @@ interface TriggerCatalogSectionProps {
 }
 
 function TriggerCatalogSection({ sessionId, triggerDefs, subscriptions, onSubscriptionsChange }: TriggerCatalogSectionProps) {
-  const [collapsed, setCollapsed] = React.useState(false);
+  const [collapsed, setCollapsed] = React.useState(true);
   const [pending, setPending] = React.useState<Set<string>>(new Set());
-  // Track which trigger type has its param form open
+  // Track which trigger type has its param/filter form open
   const [paramFormOpen, setParamFormOpen] = React.useState<string | null>(null);
   // Track param form values keyed by trigger type (string for scalar, string[] for multiselect)
   const [paramValues, setParamValues] = React.useState<Record<string, Record<string, string | string[]>>>({});
   const [paramError, setParamError] = React.useState<string | null>(null);
+  // Track filter form values keyed by trigger type → field → value
+  const [filterValues, setFilterValues] = React.useState<Record<string, Record<string, string>>>({});
+  const [filterMode, setFilterMode] = React.useState<Record<string, "and" | "or">>({});
 
   const subscribedTypes = React.useMemo(
     () => new Set(subscriptions.map((s) => s.triggerType)),
@@ -760,7 +828,12 @@ function TriggerCatalogSection({ sessionId, triggerDefs, subscriptions, onSubscr
     }
   }, [sessionId, onSubscriptionsChange]);
 
-  const handleSubscribe = React.useCallback(async (triggerType: string, params?: Record<string, unknown>) => {
+  const handleSubscribe = React.useCallback(async (
+    triggerType: string,
+    params?: Record<string, unknown>,
+    filters?: Array<{ field: string; value: unknown; op?: string }>,
+    filterMode?: string,
+  ) => {
     setPending((prev) => new Set([...prev, triggerType]));
     setParamError(null);
     try {
@@ -770,7 +843,12 @@ function TriggerCatalogSection({ sessionId, triggerDefs, subscriptions, onSubscr
           method: "POST",
           credentials: "include",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ triggerType, ...(params ? { params } : {}) }),
+          body: JSON.stringify({
+            triggerType,
+            ...(params ? { params } : {}),
+            ...(filters && filters.length > 0 ? { filters } : {}),
+            ...(filterMode ? { filterMode } : {}),
+          }),
         },
       );
       if (!res.ok) {
@@ -792,23 +870,28 @@ function TriggerCatalogSection({ sessionId, triggerDefs, subscriptions, onSubscr
   }, [sessionId, onSubscriptionsChange]);
 
   const handleToggle = React.useCallback((def: ServiceTriggerDef, isSubscribed: boolean) => {
+    const hasParams = def.params && def.params.length > 0;
+    const schemaProps = (def.schema as any)?.properties ?? {};
+    const hasFilterableFields = Object.keys(schemaProps).length > 0;
+
     if (isSubscribed) {
       handleUnsubscribe(def.type);
-    } else if (def.params && def.params.length > 0) {
-      // Open param form instead of subscribing directly
+    } else if (hasParams || hasFilterableFields) {
+      // Open param/filter form instead of subscribing directly
       setParamFormOpen(def.type);
       setParamError(null);
-      // Pre-fill with defaults
-      const defaults: Record<string, string | string[]> = {};
-      for (const p of def.params) {
-        if (p.multiselect) {
-          // Multiselect defaults to empty array (user picks)
-          defaults[p.name] = defaults[p.name] ?? [];
-        } else if (p.default !== undefined) {
-          defaults[p.name] = String(p.default);
+      // Pre-fill param defaults
+      if (hasParams) {
+        const defaults: Record<string, string | string[]> = {};
+        for (const p of def.params!) {
+          if (p.multiselect) {
+            defaults[p.name] = defaults[p.name] ?? [];
+          } else if (p.default !== undefined) {
+            defaults[p.name] = String(p.default);
+          }
         }
+        setParamValues((prev) => ({ ...prev, [def.type]: { ...defaults, ...prev[def.type] } }));
       }
-      setParamValues((prev) => ({ ...prev, [def.type]: { ...defaults, ...prev[def.type] } }));
     } else {
       handleSubscribe(def.type);
     }
@@ -859,32 +942,188 @@ function TriggerCatalogSection({ sessionId, triggerDefs, subscriptions, onSubscr
         params[p.name] = str;
       }
     }
-    handleSubscribe(def.type, Object.keys(params).length > 0 ? params : undefined);
-  }, [paramValues, handleSubscribe]);
+    // Build filters from filterValues, coercing to the schema's declared type
+    const schemaProps = (def.schema as any)?.properties ?? {};
+    const filterableFields = Object.keys(schemaProps);
+    const filters: Array<{ field: string; value: string | number | boolean; op?: string }> = [];
+    const fVals = filterValues[def.type] ?? {};
+    for (const field of filterableFields) {
+      const val = (fVals[field] ?? "").trim();
+      if (!val) continue;
+      const propDef = schemaProps[field];
+      if (propDef?.type === "boolean") {
+        filters.push({ field, value: val === "true" });
+      } else if (propDef?.type === "number" || propDef?.type === "integer") {
+        const num = Number(val);
+        if (isNaN(num)) {
+          setParamError(`Filter '${field}' must be a valid number`);
+          return;
+        }
+        filters.push({ field, value: num });
+      } else {
+        filters.push({ field, value: val });
+      }
+    }
+    const fMode = filterMode[def.type] ?? "and";
+
+    handleSubscribe(
+      def.type,
+      Object.keys(params).length > 0 ? params : undefined,
+      filters.length > 0 ? filters : undefined,
+      filters.length > 1 ? fMode : undefined,
+    );
+  }, [paramValues, filterValues, filterMode, handleSubscribe]);
+
+  // Group trigger defs by service prefix (part before ':')
+  const serviceGroups = React.useMemo(() => {
+    const map = new Map<string, ServiceTriggerDef[]>();
+    for (const def of triggerDefs) {
+      const colonIdx = def.type.indexOf(":");
+      const service = colonIdx > 0 ? def.type.slice(0, colonIdx) : def.type;
+      const existing = map.get(service);
+      if (existing) {
+        existing.push(def);
+      } else {
+        map.set(service, [def]);
+      }
+    }
+    return Array.from(map.entries()).map(([service, defs]) => ({
+      service,
+      defs,
+      subscribedCount: defs.filter((d) => subscribedTypes.has(d.type)).length,
+    }));
+  }, [triggerDefs, subscribedTypes]);
 
   if (triggerDefs.length === 0) return null;
 
   return (
-    <div className="border-b border-border">
+    <div className="flex flex-col gap-1.5 p-2">
+      {serviceGroups.map(({ service, defs, subscribedCount }) => (
+        <ServiceCatalogAccordion
+          key={service}
+          service={service}
+          defs={defs}
+          subscribedCount={subscribedCount}
+          subscribedTypes={subscribedTypes}
+          subscriptionMap={subscriptionMap}
+          pending={pending}
+          paramFormOpen={paramFormOpen}
+          paramValues={paramValues}
+          paramError={paramError}
+          filterValues={filterValues}
+          filterModeValues={filterMode}
+          onToggle={handleToggle}
+          onParamSubmit={handleParamSubmit}
+          onParamFormOpen={setParamFormOpen}
+          onParamFormClose={() => { setParamFormOpen(null); setParamError(null); }}
+          onParamValuesChange={setParamValues}
+          onFilterValuesChange={setFilterValues}
+          onFilterModeChange={setFilterMode}
+        />
+      ))}
+    </div>
+  );
+}
+
+// ── Service Catalog Accordion (one per service prefix) ─────────────────────
+
+interface ServiceCatalogAccordionProps {
+  service: string;
+  defs: ServiceTriggerDef[];
+  subscribedCount: number;
+  subscribedTypes: Set<string>;
+  subscriptionMap: Map<string, TriggerSubscription>;
+  pending: Set<string>;
+  paramFormOpen: string | null;
+  paramValues: Record<string, Record<string, string | string[]>>;
+  paramError: string | null;
+  filterValues: Record<string, Record<string, string>>;
+  filterModeValues: Record<string, "and" | "or">;
+  onToggle: (def: ServiceTriggerDef, isSubscribed: boolean) => void;
+  onParamSubmit: (def: ServiceTriggerDef) => void;
+  onParamFormOpen: (type: string) => void;
+  onParamFormClose: () => void;
+  onParamValuesChange: React.Dispatch<React.SetStateAction<Record<string, Record<string, string | string[]>>>>;
+  onFilterValuesChange: React.Dispatch<React.SetStateAction<Record<string, Record<string, string>>>>;
+  onFilterModeChange: React.Dispatch<React.SetStateAction<Record<string, "and" | "or">>>;
+}
+
+// ── Collapsible Param Definitions ──────────────────────────────────────────
+
+function CollapsibleParamDefs({ params }: { params: ServiceTriggerParamDef[] }) {
+  const [expanded, setExpanded] = React.useState(false);
+
+  return (
+    <div className="mt-1">
       <button
         type="button"
-        onClick={() => setCollapsed((v) => !v)}
-        className="w-full flex items-center gap-1.5 px-3 py-2 hover:bg-muted/30 transition-colors"
+        onClick={() => setExpanded((v) => !v)}
+        className="flex items-center gap-1 text-[9px] text-muted-foreground/50 hover:text-muted-foreground/70 transition-colors"
       >
-        <BookOpen className="size-3 text-muted-foreground" />
-        <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground flex-1 text-left">
-          Available Triggers ({triggerDefs.length})
+        {expanded ? <ChevronDown className="size-2.5" /> : <ChevronRight className="size-2.5" />}
+        <span>{params.length} param{params.length !== 1 ? "s" : ""}</span>
+      </button>
+      {expanded && (
+        <div className="mt-0.5 space-y-0.5 pl-3.5">
+          {params.map((p) => (
+            <div key={p.name} className="text-[9px] text-muted-foreground/50">
+              <span className="font-mono">{p.name}</span>
+              <span className="text-muted-foreground/30">: {p.type}</span>
+              {p.required && <span className="text-amber-400/50 ml-1">required</span>}
+              {p.multiselect && <span className="text-violet-400/50 ml-1">multiselect</span>}
+              {p.enum && (
+                <span className="text-muted-foreground/30 ml-1">
+                  {"{" + p.enum.map(String).join(", ") + "}"}
+                </span>
+              )}
+              {p.description && <span className="ml-1">— {p.description}</span>}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ServiceCatalogAccordion({
+  service, defs, subscribedCount, subscribedTypes, subscriptionMap,
+  pending, paramFormOpen, paramValues, paramError,
+  filterValues, filterModeValues,
+  onToggle, onParamSubmit, onParamFormOpen, onParamFormClose, onParamValuesChange,
+  onFilterValuesChange, onFilterModeChange,
+}: ServiceCatalogAccordionProps) {
+  const [expanded, setExpanded] = React.useState(false);
+
+  return (
+    <div className={cn(
+      "rounded-lg border overflow-hidden",
+      subscribedCount > 0 ? "border-emerald-500/20 bg-emerald-950/10" : "border-border/50 bg-muted/10",
+    )}>
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        className="w-full flex items-center gap-2 px-3 py-2.5 hover:bg-white/[0.02] transition-colors"
+      >
+        <Settings className="size-3.5 text-muted-foreground" />
+        <span className="text-xs font-medium text-foreground/90 flex-1 text-left capitalize">
+          {service}
         </span>
-        {collapsed ? (
-          <ChevronRight className="size-3 text-muted-foreground/50" />
-        ) : (
-          <ChevronDown className="size-3 text-muted-foreground/50" />
+        <span className="text-[10px] text-muted-foreground/50">
+          {defs.length} trigger{defs.length !== 1 ? "s" : ""}
+        </span>
+        {subscribedCount > 0 && (
+          <span className="inline-flex items-center justify-center size-4 rounded-full bg-emerald-500/20 text-emerald-400 text-[9px] font-bold">
+            {subscribedCount}
+          </span>
         )}
+        <div className="shrink-0 text-muted-foreground/40">
+          {expanded ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
+        </div>
       </button>
 
-      {!collapsed && (
-        <div className="divide-y divide-border/50">
-          {triggerDefs.map((def) => {
+      {expanded && (
+        <div className="border-t border-border/30 divide-y divide-border/50">
+          {defs.map((def) => {
             const isSubscribed = subscribedTypes.has(def.type);
             const isPendingToggle = pending.has(def.type);
             const isParamFormVisible = paramFormOpen === def.type;
@@ -926,30 +1165,15 @@ function TriggerCatalogSection({ sessionId, triggerDefs, subscriptions, onSubscr
                         ))}
                       </div>
                     )}
-                    {/* Show param definitions when not subscribed */}
-                    {hasParams && !isSubscribed && !isParamFormVisible && (
-                      <div className="mt-1 space-y-0.5">
-                        {def.params!.map((p) => (
-                          <div key={p.name} className="text-[9px] text-muted-foreground/50">
-                            <span className="font-mono">{p.name}</span>
-                            <span className="text-muted-foreground/30">: {p.type}</span>
-                            {p.required && <span className="text-amber-400/50 ml-1">required</span>}
-                            {p.multiselect && <span className="text-violet-400/50 ml-1">multiselect</span>}
-                            {p.enum && (
-                              <span className="text-muted-foreground/30 ml-1">
-                                {"{" + p.enum.map(String).join(", ") + "}"}
-                              </span>
-                            )}
-                            {p.description && <span className="ml-1">— {p.description}</span>}
-                          </div>
-                        ))}
-                      </div>
+                    {/* Collapsible param definitions when not subscribed */}
+                    {hasParams && !isSubscribed && !isParamFormVisible && def.params && (
+                      <CollapsibleParamDefs params={def.params} />
                     )}
                   </div>
 
                   <button
                     type="button"
-                    onClick={() => handleToggle(def, isSubscribed)}
+                    onClick={() => onToggle(def, isSubscribed)}
                     disabled={isPendingToggle}
                     className={cn(
                       "shrink-0 p-1 rounded transition-colors",
@@ -972,10 +1196,10 @@ function TriggerCatalogSection({ sessionId, triggerDefs, subscriptions, onSubscr
                 </div>
 
                 {/* Inline param form */}
-                {isParamFormVisible && hasParams && (
+                {isParamFormVisible && (hasParams || Object.keys((def.schema as any)?.properties ?? {}).length > 0) && (
                   <div className="mt-2 rounded border border-violet-500/20 bg-violet-950/10 p-2 space-y-1.5">
-                    <div className="text-[10px] font-medium text-violet-300/80">Configure subscription params</div>
-                    {def.params!.map((p) => {
+                    {hasParams && <div className="text-[10px] font-medium text-violet-300/80">Service params</div>}
+                    {hasParams && def.params!.map((p) => {
                       const currentVal = paramValues[def.type]?.[p.name];
                       const selectedArr = Array.isArray(currentVal) ? currentVal : [];
 
@@ -997,7 +1221,7 @@ function TriggerCatalogSection({ sessionId, triggerDefs, subscriptions, onSubscr
                                       type="checkbox"
                                       checked={checked}
                                       onChange={() => {
-                                        setParamValues((prev) => {
+                                        onParamValuesChange((prev) => {
                                           const cur = Array.isArray(prev[def.type]?.[p.name]) ? [...(prev[def.type][p.name] as string[])] : [];
                                           const next = checked ? cur.filter(v => v !== optStr) : [...cur, optStr];
                                           return { ...prev, [def.type]: { ...prev[def.type], [p.name]: next } };
@@ -1015,7 +1239,7 @@ function TriggerCatalogSection({ sessionId, triggerDefs, subscriptions, onSubscr
                           ) : p.enum ? (
                             <select
                               value={typeof currentVal === "string" ? currentVal : ""}
-                              onChange={(e) => setParamValues((prev) => ({
+                              onChange={(e) => onParamValuesChange((prev) => ({
                                 ...prev,
                                 [def.type]: { ...prev[def.type], [p.name]: e.target.value },
                               }))}
@@ -1031,7 +1255,7 @@ function TriggerCatalogSection({ sessionId, triggerDefs, subscriptions, onSubscr
                           ) : p.type === "boolean" ? (
                             <select
                               value={typeof currentVal === "string" ? currentVal : ""}
-                              onChange={(e) => setParamValues((prev) => ({
+                              onChange={(e) => onParamValuesChange((prev) => ({
                                 ...prev,
                                 [def.type]: { ...prev[def.type], [p.name]: e.target.value },
                               }))}
@@ -1048,7 +1272,7 @@ function TriggerCatalogSection({ sessionId, triggerDefs, subscriptions, onSubscr
                               type={p.type === "number" ? "number" : "text"}
                               placeholder={p.default !== undefined ? String(p.default) : undefined}
                               value={typeof currentVal === "string" ? currentVal : ""}
-                              onChange={(e) => setParamValues((prev) => ({
+                              onChange={(e) => onParamValuesChange((prev) => ({
                                 ...prev,
                                 [def.type]: { ...prev[def.type], [p.name]: e.target.value },
                               }))}
@@ -1058,6 +1282,102 @@ function TriggerCatalogSection({ sessionId, triggerDefs, subscriptions, onSubscr
                         </div>
                       );
                     })}
+                    {/* Filter fields (from output schema) */}
+                    {(() => {
+                      const schemaProps = (def.schema as any)?.properties ?? {};
+                      const fields = Object.keys(schemaProps);
+                      if (fields.length === 0) return null;
+                      const currentMode = filterModeValues[def.type] ?? "and";
+                      return (
+                        <>
+                          <div className="border-t border-border/30 mt-1.5 pt-1.5">
+                            <div className="flex items-center gap-2 mb-1">
+                              <span className="text-[10px] font-medium text-blue-300/80">Delivery Filters</span>
+                              {fields.length > 1 && (
+                                <div className="flex items-center gap-1">
+                                  <button
+                                    type="button"
+                                    onClick={() => onFilterModeChange((prev) => ({ ...prev, [def.type]: "and" }))}
+                                    className={cn(
+                                      "text-[9px] px-1.5 py-0.5 rounded transition-colors",
+                                      currentMode === "and"
+                                        ? "bg-blue-500/20 text-blue-300"
+                                        : "text-muted-foreground/50 hover:text-muted-foreground",
+                                    )}
+                                  >
+                                    AND
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => onFilterModeChange((prev) => ({ ...prev, [def.type]: "or" }))}
+                                    className={cn(
+                                      "text-[9px] px-1.5 py-0.5 rounded transition-colors",
+                                      currentMode === "or"
+                                        ? "bg-blue-500/20 text-blue-300"
+                                        : "text-muted-foreground/50 hover:text-muted-foreground",
+                                    )}
+                                  >
+                                    OR
+                                  </button>
+                                </div>
+                              )}
+                            </div>
+                            {fields.map((field) => {
+                              const propDef = schemaProps[field];
+                              const desc = propDef?.description ?? field;
+                              const enumVals = propDef?.enum as string[] | undefined;
+                              const currentVal = filterValues[def.type]?.[field] ?? "";
+                              return (
+                                <div key={field} className="flex items-start gap-1.5 mb-1">
+                                  <label className="text-[10px] text-muted-foreground/70 w-20 shrink-0 truncate pt-0.5" title={desc}>
+                                    {field}
+                                  </label>
+                                  {enumVals ? (
+                                    <select
+                                      value={currentVal}
+                                      onChange={(e) => onFilterValuesChange((prev) => ({
+                                        ...prev,
+                                        [def.type]: { ...prev[def.type], [field]: e.target.value },
+                                      }))}
+                                      className="flex-1 rounded border border-border bg-background px-1.5 py-0.5 text-[10px] focus:outline-none focus:ring-1 focus:ring-ring"
+                                    >
+                                      <option value="">— any —</option>
+                                      {enumVals.map((v) => (
+                                        <option key={String(v)} value={String(v)}>{String(v)}</option>
+                                      ))}
+                                    </select>
+                                  ) : propDef?.type === "boolean" ? (
+                                    <select
+                                      value={currentVal}
+                                      onChange={(e) => onFilterValuesChange((prev) => ({
+                                        ...prev,
+                                        [def.type]: { ...prev[def.type], [field]: e.target.value },
+                                      }))}
+                                      className="flex-1 rounded border border-border bg-background px-1.5 py-0.5 text-[10px] focus:outline-none focus:ring-1 focus:ring-ring"
+                                    >
+                                      <option value="">— any —</option>
+                                      <option value="true">true</option>
+                                      <option value="false">false</option>
+                                    </select>
+                                  ) : (
+                                    <input
+                                      type="text"
+                                      placeholder={`filter by ${field}`}
+                                      value={currentVal}
+                                      onChange={(e) => onFilterValuesChange((prev) => ({
+                                        ...prev,
+                                        [def.type]: { ...prev[def.type], [field]: e.target.value },
+                                      }))}
+                                      className="flex-1 rounded border border-border bg-background px-1.5 py-0.5 text-[10px] focus:outline-none focus:ring-1 focus:ring-ring"
+                                    />
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </>
+                      );
+                    })()}
                     {paramError && (
                       <p className="text-[9px] text-destructive">{paramError}</p>
                     )}
@@ -1066,7 +1386,7 @@ function TriggerCatalogSection({ sessionId, triggerDefs, subscriptions, onSubscr
                         size="sm"
                         variant="outline"
                         className="h-5 text-[10px] px-1.5"
-                        onClick={() => { setParamFormOpen(null); setParamError(null); }}
+                        onClick={onParamFormClose}
                       >
                         Cancel
                       </Button>
@@ -1074,7 +1394,7 @@ function TriggerCatalogSection({ sessionId, triggerDefs, subscriptions, onSubscr
                         size="sm"
                         className="h-5 text-[10px] px-1.5"
                         disabled={isPendingToggle}
-                        onClick={() => handleParamSubmit(def)}
+                        onClick={() => onParamSubmit(def)}
                       >
                         {isPendingToggle ? <Loader2 className="size-2.5 animate-spin mr-1" /> : null}
                         Subscribe
@@ -1091,13 +1411,17 @@ function TriggerCatalogSection({ sessionId, triggerDefs, subscriptions, onSubscr
   );
 }
 
+// ── Catalog Section (wraps service accordions) ─────────────────────────────
+// TriggerCatalogSection is the parent that holds subscribe/param logic
+// and delegates rendering per-service to ServiceCatalogAccordion above.
+
 // ── Active Subscriptions Section ───────────────────────────────────────────
 
 function ActiveSubscriptionsSection({ subscriptions }: { subscriptions: TriggerSubscription[] }) {
   if (subscriptions.length === 0) return null;
 
   return (
-    <div className="border-b border-border">
+    <div>
       <div className="px-3 py-2 flex items-center gap-1.5">
         <BellRing className="size-3 text-emerald-400" />
         <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
@@ -1113,6 +1437,18 @@ function ActiveSubscriptionsSection({ subscriptions }: { subscriptions: TriggerS
                 {Object.entries(sub.params).map(([k, v]) => (
                   <Badge key={k} variant="outline" className="px-1 py-0 text-[9px] h-3.5 border-emerald-500/20 text-emerald-400/60">
                     {k}={Array.isArray(v) ? v.map(String).join(", ") : String(v)}
+                  </Badge>
+                ))}
+              </div>
+            )}
+            {sub.filters && sub.filters.length > 0 && (
+              <div className="flex items-center gap-1 flex-wrap">
+                <Badge variant="outline" className="px-1 py-0 text-[9px] h-3.5 border-blue-500/20 text-blue-400/60">
+                  {sub.filterMode === "or" ? "OR" : "AND"}
+                </Badge>
+                {sub.filters.map((f, i) => (
+                  <Badge key={i} variant="outline" className="px-1 py-0 text-[9px] h-3.5 border-blue-500/20 text-blue-400/60">
+                    {f.field}{f.op === "contains" ? "~" : "="}{Array.isArray(f.value) ? f.value.map(String).join("|") : String(f.value)}
                   </Badge>
                 ))}
               </div>
@@ -1195,6 +1531,186 @@ function OtherTriggerRow({ entry }: { entry: TriggerHistoryEntry }) {
           <pre className="rounded bg-muted/60 border border-border/50 px-2.5 py-2 text-[10px] font-mono text-foreground/80 overflow-auto max-h-40 whitespace-pre-wrap break-all">
             {payloadStr}
           </pre>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Other Source Group (collapsible group of events from the same source) ──
+
+interface OtherSourceGroupProps {
+  group: { source: string; label: string; events: TriggerHistoryEntry[] };
+}
+
+function OtherSourceGroup({ group }: OtherSourceGroupProps) {
+  const [expanded, setExpanded] = React.useState(false);
+
+  return (
+    <div className="rounded-lg border border-border/50 bg-muted/10 overflow-hidden">
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        className="w-full flex items-center gap-2 px-3 py-2 hover:bg-muted/30 transition-colors"
+      >
+        <SourceIcon source={group.source} className="text-muted-foreground" />
+        <span className="text-[11px] font-medium text-foreground/90 flex-1 text-left truncate">
+          {group.label}
+        </span>
+        <span className="text-[10px] text-muted-foreground/50 shrink-0">
+          {group.events.length} event{group.events.length !== 1 ? "s" : ""}
+        </span>
+        <div className="shrink-0 text-muted-foreground/40">
+          {expanded ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />}
+        </div>
+      </button>
+
+      {expanded && (
+        <div className="border-t border-border/30">
+          {group.events.map((entry) => (
+            <OtherTriggerRow key={entry.triggerId} entry={entry} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Source Accordion (unified accordion for any source) ────────────────────
+
+interface SourceAccordionProps {
+  group: SourceGroup;
+  statusUpdates: Map<string, TriggerStatusUpdate>;
+  tick: number;
+}
+
+function SourceAccordion({ group, statusUpdates, tick: _tick }: SourceAccordionProps) {
+  const [expanded, setExpanded] = React.useState(false);
+  const isPending = !!group.pendingTrigger;
+
+  // Derive status for linked sessions
+  const status = group.isLinkedSession
+    ? deriveSessionStatus({
+        source: group.source,
+        events: group.events,
+        pendingTrigger: group.pendingTrigger,
+        lastType: group.events[0]?.type ?? "",
+        lastTs: group.lastTs,
+        lastSummary: group.lastSummary,
+      })
+    : null;
+
+  // Find the most recent status update for any trigger in this group
+  const latestStatusUpdate = React.useMemo(() => {
+    let latest: TriggerStatusUpdate | null = null;
+    for (const event of group.events) {
+      const update = statusUpdates.get(event.triggerId);
+      if (update && (!latest || new Date(update.ts) > new Date(latest.ts))) {
+        latest = update;
+      }
+    }
+    return latest;
+  }, [group.events, statusUpdates]);
+
+  const colorMap = {
+    amber: { border: "border-amber-500/30", bg: "bg-amber-950/20", badge: "border-amber-500/40 text-amber-400", icon: "text-amber-400", pulse: true },
+    blue: { border: "border-blue-500/30", bg: "bg-blue-950/20", badge: "border-blue-500/40 text-blue-400", icon: "text-blue-400", pulse: true },
+    red: { border: "border-red-500/30", bg: "bg-red-950/20", badge: "border-red-500/40 text-red-400", icon: "text-red-400", pulse: true },
+    emerald: { border: "border-emerald-500/20", bg: "bg-emerald-950/10", badge: "border-emerald-500/40 text-emerald-400", icon: "text-emerald-400", pulse: false },
+    zinc: { border: "border-border/50", bg: "bg-muted/10", badge: "border-border text-muted-foreground", icon: "text-muted-foreground", pulse: false },
+  };
+
+  const colors = status ? colorMap[status.color] : { border: "border-border/50", bg: "bg-muted/10", badge: "border-border text-muted-foreground", icon: "text-muted-foreground", pulse: false };
+
+  return (
+    <div className={cn("rounded-lg border overflow-hidden", colors.border, colors.bg)}>
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        className="w-full flex items-start gap-2.5 px-3 py-2.5 text-left transition-colors hover:bg-white/[0.02]"
+      >
+        {/* Icon */}
+        <div className={cn("mt-0.5 shrink-0", colors.icon, colors.pulse && "animate-pulse")}>
+          {status ? status.icon : <SourceIcon source={group.source} />}
+        </div>
+
+        {/* Content */}
+        <div className="flex-1 min-w-0">
+          {/* Name + status badge */}
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <span className="text-xs font-mono text-foreground/90 truncate">
+              {group.lastSummary || group.label || truncateId(group.source)}
+            </span>
+            {status && (
+              <Badge variant="outline" className={cn("px-1.5 py-0 text-[10px] h-4 shrink-0", colors.badge)}>
+                {status.label}
+              </Badge>
+            )}
+          </div>
+
+          {/* Pending trigger detail */}
+          {isPending && group.isLinkedSession && (
+            <div className="mt-1">
+              <span className={cn("text-[11px] font-medium", status ? `text-${status.color}-300` : "text-amber-300")}>
+                {group.pendingTrigger!.type === "ask_user_question" && "Waiting for your answer"}
+                {group.pendingTrigger!.type === "plan_review" && "Waiting for plan approval"}
+                {group.pendingTrigger!.type === "session_complete" && "Session finished — needs acknowledgement"}
+                {group.pendingTrigger!.type === "escalate" && "Escalated — needs human attention"}
+                {!["ask_user_question", "plan_review", "session_complete", "escalate"].includes(group.pendingTrigger!.type) && `Awaiting response to ${group.pendingTrigger!.type}`}
+              </span>
+              <span className="text-[10px] text-muted-foreground/60 ml-2">
+                {formatRelativeTime(group.pendingTrigger!.ts)}
+              </span>
+            </div>
+          )}
+
+          {/* Streaming status update */}
+          {latestStatusUpdate && (
+            <div className="mt-1 flex items-center gap-1.5">
+              <Loader2 className="size-2.5 animate-spin text-muted-foreground/60 shrink-0" />
+              <span className="text-[10px] text-muted-foreground/80 italic truncate">
+                {latestStatusUpdate.statusText}
+              </span>
+            </div>
+          )}
+
+          {/* Last event + time */}
+          {!isPending && !latestStatusUpdate && (
+            <div className="flex items-center gap-2 mt-0.5">
+              <span className="text-[10px] text-muted-foreground/60">
+                Last: <span className="text-muted-foreground/80">{group.events[0]?.type}</span>
+              </span>
+              <span className="text-[10px] text-muted-foreground/40">
+                {formatRelativeTime(group.lastTs)}
+              </span>
+            </div>
+          )}
+
+          {/* Event count + source ID hint */}
+          <div className="flex items-center gap-2 mt-0.5">
+            <span className="text-[10px] text-muted-foreground/40">
+              {group.events.length} event{group.events.length !== 1 ? "s" : ""}
+            </span>
+            {group.lastSummary && group.isLinkedSession && (
+              <span className="text-[10px] font-mono text-muted-foreground/30 truncate">
+                {truncateId(group.source)}
+              </span>
+            )}
+          </div>
+        </div>
+
+        {/* Expand chevron */}
+        <div className="mt-0.5 shrink-0 text-muted-foreground/40">
+          {expanded ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
+        </div>
+      </button>
+
+      {/* Expanded event history */}
+      {expanded && (
+        <div className={cn("border-t", colors.border)}>
+          {group.events.map((event) => (
+            <EventRow key={event.triggerId} entry={event} />
+          ))}
         </div>
       )}
     </div>
@@ -1306,143 +1822,175 @@ export function TriggersPanel({ sessionId, triggerDefs = [], viewerSocket }: Tri
     return () => { viewerSocket.off("trigger_status_update", handler); };
   }, [viewerSocket]);
 
-  // Derive grouped layout
-  const { sessionGroups, otherEvents } = React.useMemo(
-    () => groupByLinkedSession(triggers),
+  // Derive grouped layout — all triggers grouped by source
+  const sourceGroups = React.useMemo(
+    () => groupTriggersBySource(triggers),
     [triggers],
   );
 
+  // Legacy grouping still needed for getIncompleteTriggers and pending count
+  const { sessionGroups } = React.useMemo(
+    () => groupByLinkedSession(triggers),
+    [triggers],
+  );
   const pendingGroups = sessionGroups.filter((g) => g.pendingTrigger);
-  const otherGroups = sessionGroups.filter((g) => !g.pendingTrigger);
 
   const handleRefresh = React.useCallback(() => {
     void fetchTriggers(true);
   }, [fetchTriggers]);
 
+  // Tab state: "history" or "catalog"
+  const hasCatalog = triggerDefs.length > 0 || subscriptions.length > 0;
+  const [activeTab, setActiveTab] = React.useState<"history" | "catalog">(hasCatalog ? "catalog" : "history");
+
+  // Auto-switch to catalog only on the first transition from no-catalog to catalog.
+  // Once catalog data has appeared (or user has interacted), don't override their tab choice.
+  const catalogSeenRef = React.useRef(false);
+  React.useEffect(() => {
+    if (hasCatalog && !catalogSeenRef.current) {
+      catalogSeenRef.current = true;
+      setActiveTab("catalog");
+    }
+  }, [hasCatalog]);
+
+  // Count for badges
+  const pendingCount = pendingGroups.length;
+
   return (
     <div className="flex flex-col h-full">
-      {/* Toolbar */}
-      <div className="flex items-center gap-1.5 px-3 py-1.5 border-b border-border bg-muted/20 shrink-0">
-        <span className="text-xs font-medium text-muted-foreground flex-1">Triggers</span>
+      {/* Toolbar with tabs */}
+      <div className="flex items-center border-b border-border bg-muted/20 shrink-0">
+        {/* Tab buttons */}
+        <div className="flex items-center flex-1 min-w-0 gap-0">
+          <button
+            type="button"
+            onClick={() => { catalogSeenRef.current = true; setActiveTab("history"); }}
+            className={cn(
+              "flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium transition-colors border-b-2",
+              activeTab === "history"
+                ? "text-foreground border-primary"
+                : "text-muted-foreground hover:text-foreground border-transparent",
+            )}
+          >
+            <Clock className="size-3" />
+            History
+            {pendingCount > 0 && (
+              <span className="inline-flex items-center justify-center size-4 rounded-full bg-amber-500/20 text-amber-400 text-[9px] font-bold">
+                {pendingCount}
+              </span>
+            )}
+          </button>
 
-        <button
-          type="button"
-          onClick={handleRefresh}
-          disabled={refreshing}
-          className="p-1 rounded text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
-          title="Refresh"
-          aria-label="Refresh trigger history"
-        >
-          <RefreshCw className={cn("size-3.5", refreshing && "animate-spin")} />
-        </button>
+          {hasCatalog && (
+            <button
+              type="button"
+              onClick={() => { catalogSeenRef.current = true; setActiveTab("catalog"); }}
+              className={cn(
+                "flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium transition-colors border-b-2",
+                activeTab === "catalog"
+                  ? "text-foreground border-primary"
+                  : "text-muted-foreground hover:text-foreground border-transparent",
+              )}
+            >
+              <BookOpen className="size-3" />
+              Catalog
+              {subscriptions.length > 0 && (
+                <span className="inline-flex items-center justify-center size-4 rounded-full bg-emerald-500/20 text-emerald-400 text-[9px] font-bold">
+                  {subscriptions.length}
+                </span>
+              )}
+            </button>
+          )}
+        </div>
 
-        <Button
-          size="sm"
-          variant="outline"
-          className="h-6 text-[11px] px-2 gap-1"
-          onClick={() => setSendOpen(true)}
-        >
-          <Send className="size-3" />
-          Send Trigger
-        </Button>
+        {/* Actions */}
+        <div className="flex items-center gap-1 px-2 shrink-0">
+          <button
+            type="button"
+            onClick={handleRefresh}
+            disabled={refreshing}
+            className="p-1 rounded text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+            title="Refresh"
+            aria-label="Refresh trigger history"
+          >
+            <RefreshCw className={cn("size-3.5", refreshing && "animate-spin")} />
+          </button>
+
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-6 text-[11px] px-2 gap-1"
+            onClick={() => setSendOpen(true)}
+          >
+            <Send className="size-3" />
+            Send
+          </Button>
+        </div>
       </div>
 
-      {/* Content */}
+      {/* Tab content */}
       <div className="flex-1 overflow-y-auto min-h-0">
-        {/* Trigger catalog */}
-        {triggerDefs.length > 0 && (
-          <TriggerCatalogSection
-            sessionId={sessionId}
-            triggerDefs={triggerDefs}
-            subscriptions={subscriptions}
-            onSubscriptionsChange={fetchSubscriptions}
-          />
+        {/* ─── History tab ─── */}
+        {activeTab === "history" && (
+          <>
+            {loading ? (
+              <div className="flex items-center justify-center h-32 gap-2 text-muted-foreground">
+                <Loader2 className="size-4 animate-spin" />
+                <span className="text-xs">Loading triggers…</span>
+              </div>
+            ) : error ? (
+              <div className="flex items-center justify-center p-4">
+                <p className="text-xs text-destructive text-center">{error}</p>
+              </div>
+            ) : triggers.length === 0 ? (
+              <div className="flex flex-col items-center justify-center gap-2 p-6 text-center">
+                <Zap className="size-8 text-muted-foreground/30" />
+                <p className="text-xs text-muted-foreground">
+                  No triggers yet. External systems can send triggers via the API.
+                </p>
+              </div>
+            ) : (
+              <div className="flex flex-col gap-1.5 p-2">
+                {sourceGroups.map((group) => (
+                  <SourceAccordion
+                    key={group.source}
+                    group={group}
+                    statusUpdates={statusUpdates}
+                    tick={tick}
+                  />
+                ))}
+              </div>
+            )}
+          </>
         )}
 
-        {/* Active subscriptions (only when no catalog) */}
-        {triggerDefs.length === 0 && subscriptions.length > 0 && (
-          <ActiveSubscriptionsSection subscriptions={subscriptions} />
-        )}
-
-        {loading ? (
-          <div className="flex items-center justify-center h-32 gap-2 text-muted-foreground">
-            <Loader2 className="size-4 animate-spin" />
-            <span className="text-xs">Loading triggers…</span>
-          </div>
-        ) : error ? (
-          <div className="flex items-center justify-center p-4">
-            <p className="text-xs text-destructive text-center">{error}</p>
-          </div>
-        ) : triggers.length === 0 ? (
-          <div className="flex flex-col items-center justify-center gap-2 p-6 text-center">
-            <Zap className="size-8 text-muted-foreground/30" />
-            <p className="text-xs text-muted-foreground">
-              No triggers yet. External systems can send triggers via the API.
-            </p>
-          </div>
-        ) : (
-          <div className="flex flex-col gap-2 p-2">
-            {/* Awaiting Response section */}
-            {pendingGroups.length > 0 && (
-              <div>
-                <div className="px-1 pb-1.5 flex items-center gap-1.5">
-                  <Clock className="size-3 text-amber-400 animate-pulse" />
-                  <span className="text-[10px] font-semibold uppercase tracking-wider text-amber-400/80">
-                    Awaiting Response ({pendingGroups.length})
-                  </span>
-                </div>
-                <div className="flex flex-col gap-1.5">
-                  {pendingGroups.map((group) => (
-                    <LinkedSessionCard
-                      key={group.source}
-                      group={group}
-                      statusUpdates={statusUpdates}
-                      tick={tick}
-                    />
-                  ))}
-                </div>
-              </div>
+        {/* ─── Catalog tab ─── */}
+        {activeTab === "catalog" && (
+          <>
+            {/* Trigger catalog */}
+            {triggerDefs.length > 0 && (
+              <TriggerCatalogSection
+                sessionId={sessionId}
+                triggerDefs={triggerDefs}
+                subscriptions={subscriptions}
+                onSubscriptionsChange={fetchSubscriptions}
+              />
             )}
 
-            {/* Other linked sessions */}
-            {otherGroups.length > 0 && (
-              <div>
-                <div className="px-1 pb-1.5 flex items-center gap-1.5">
-                  <Link className="size-3 text-muted-foreground" />
-                  <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-                    Linked Sessions ({otherGroups.length})
-                  </span>
-                </div>
-                <div className="flex flex-col gap-1.5">
-                  {otherGroups.map((group) => (
-                    <LinkedSessionCard
-                      key={group.source}
-                      group={group}
-                      statusUpdates={statusUpdates}
-                      tick={tick}
-                    />
-                  ))}
-                </div>
-              </div>
+            {/* Active subscriptions */}
+            {subscriptions.length > 0 && (
+              <ActiveSubscriptionsSection subscriptions={subscriptions} />
             )}
 
-            {/* Other events (external/API triggers) */}
-            {otherEvents.length > 0 && (
-              <div>
-                <div className="px-1 pb-1.5 flex items-center gap-1.5">
-                  <Globe className="size-3 text-muted-foreground" />
-                  <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-                    Other Events ({otherEvents.length})
-                  </span>
-                </div>
-                <div className="rounded-lg border border-border/50 bg-muted/10 overflow-hidden">
-                  {otherEvents.map((entry) => (
-                    <OtherTriggerRow key={entry.triggerId} entry={entry} />
-                  ))}
-                </div>
+            {triggerDefs.length === 0 && subscriptions.length === 0 && (
+              <div className="flex flex-col items-center justify-center gap-2 p-6 text-center">
+                <BookOpen className="size-8 text-muted-foreground/30" />
+                <p className="text-xs text-muted-foreground">
+                  No trigger types available. Runner services can declare triggers for agents to subscribe to.
+                </p>
               </div>
             )}
-          </div>
+          </>
         )}
       </div>
 

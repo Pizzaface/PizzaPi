@@ -18,8 +18,9 @@ import {
     type RunnerServerToClientEvents,
 } from "@pizzapi/protocol";
 import { TunnelClient } from "@pizzapi/tunnel";
-import { loadGlobalConfig } from "../config.js";
+import { loadGlobalConfig, defaultAgentDir, expandHome, loadConfig } from "../config.js";
 import { cleanupSessionAttachments, sweepOrphanedAttachments } from "../extensions/session-attachments.js";
+import { AuthStorage, ModelRegistry } from "@mariozechner/pi-coding-agent";
 import type { ServiceTriggerDef } from "@pizzapi/protocol";
 import { setLogComponent, logInfo, logWarn, logError } from "./logger.js";
 import { extractHookSummary } from "./hook-summary.js";
@@ -1015,6 +1016,37 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
         });
 
         // ── Usage dashboard ───────────────────────────────────────────────
+
+        // ── Models ──────────────────────────────────────────────────────
+
+        socket.on("list_models", (data: any) => {
+            if (isShuttingDown) return;
+            const requestId = data?.requestId;
+            try {
+                const config = loadConfig(process.cwd());
+                const agentDir = config.agentDir ? expandHome(config.agentDir) : defaultAgentDir();
+                const authStorage = AuthStorage.create(join(agentDir, "auth.json"));
+                const modelRegistry = new ModelRegistry(authStorage, join(agentDir, "models.json"));
+                const models = modelRegistry
+                    .getAvailable()
+                    .map((model: any) => ({
+                        provider: model.provider,
+                        id: model.id,
+                        name: model.name,
+                        reasoning: model.reasoning,
+                        contextWindow: model.contextWindow,
+                    }))
+                    .sort((a: any, b: any) => {
+                        if (a.provider !== b.provider) return a.provider.localeCompare(b.provider);
+                        return a.id.localeCompare(b.id);
+                    });
+                socket.emit("models_list", { requestId, models });
+            } catch (e: any) {
+                socket.emit("models_list", { requestId, models: [], error: e.message ?? "Failed to list models" });
+            }
+        });
+
+        // ── Usage ─────────────────────────────────────────────────────────
 
         socket.on("get_usage", (data: any) => {
             if (isShuttingDown) return;

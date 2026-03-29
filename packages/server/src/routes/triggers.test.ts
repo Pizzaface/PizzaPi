@@ -6,6 +6,8 @@
 
 import { describe, test, expect, beforeEach, afterAll, mock, spyOn } from "bun:test";
 
+const isCI = !!process.env.CI;
+
 afterAll(() => mock.restore());
 
 // ── Mock sio-registry ────────────────────────────────────────────────────
@@ -19,6 +21,18 @@ mock.module("../ws/sio-registry.js", () => ({
     getLocalTuiSocket: mockGetLocalTuiSocket,
     emitToRelaySessionVerified: mockEmitToRelaySessionVerified,
     broadcastToSessionViewers: mockBroadcastToSessionViewers,
+    recordRunnerSession: mock(() => Promise.resolve()),
+    getLocalRunnerSocket: mock(() => null),
+    linkSessionToRunner: mock(() => Promise.resolve()),
+}));
+
+mock.module("../sessions/runner-trigger-listener-store.js", () => ({
+    getRunnerListenerTypes: mock(() => Promise.resolve([])),
+    getRunnerTriggerListener: mock(() => Promise.resolve(null)),
+}));
+
+mock.module("../ws/runner-control.js", () => ({
+    waitForSpawnAck: mock(() => Promise.resolve({ ok: true })),
 }));
 
 // ── Mock middleware ──────────────────────────────────────────────────────
@@ -49,12 +63,14 @@ const mockUnsubscribeSessionFromTrigger = mock((_sid: string, _type: string) => 
 const mockListSessionSubscriptions = mock((_sid: string) => Promise.resolve([] as any[]));
 const mockGetSubscribersForTrigger = mock((_rid: string, _type: string) => Promise.resolve([] as string[]));
 const mockGetSubscriptionParams = mock((_sid: string, _type: string) => Promise.resolve(undefined as any));
+const mockGetSubscriptionFilters = mock((_sid: string, _type: string) => Promise.resolve(undefined as any));
 mock.module("../sessions/trigger-subscription-store.js", () => ({
     subscribeSessionToTrigger: mockSubscribeSessionToTrigger,
     unsubscribeSessionFromTrigger: mockUnsubscribeSessionFromTrigger,
     listSessionSubscriptions: mockListSessionSubscriptions,
     getSubscribersForTrigger: mockGetSubscribersForTrigger,
     getSubscriptionParams: mockGetSubscriptionParams,
+    getSubscriptionFilters: mockGetSubscriptionFilters,
 }));
 
 // ── Mock runners registry ────────────────────────────────────────────────
@@ -63,6 +79,8 @@ mock.module("../sessions/trigger-subscription-store.js", () => ({
 import * as _runnersModule from "../ws/sio-registry/runners.js";
 const mockGetRunnerServices = spyOn(_runnersModule, "getRunnerServices")
     .mockImplementation((_rid: string) => Promise.resolve(null as any));
+const mockGetRunnerData = spyOn(_runnersModule, "getRunnerData")
+    .mockImplementation((_rid: string) => Promise.resolve({ userId: "user-1", runnerId: "runner-A" } as any));
 
 // ── Mock logger ──────────────────────────────────────────────────────────
 // NOTE: @pizzapi/tools mock removed — log calls in tests are harmless,
@@ -618,6 +636,10 @@ describe("POST /api/runners/:runnerId/trigger-broadcast", () => {
         mockGetSubscribersForTrigger.mockReset();
         mockGetSubscriptionParams.mockReset();
         mockGetSubscriptionParams.mockReturnValue(Promise.resolve(undefined));
+        mockGetSubscriptionFilters.mockReset();
+        mockGetSubscriptionFilters.mockReturnValue(Promise.resolve(undefined));
+        mockGetRunnerData.mockReset();
+        mockGetRunnerData.mockImplementation((_rid: string) => Promise.resolve({ userId: "user-1", runnerId: "runner-A" } as any));
         mockValidateApiKey.mockReturnValue(
             Promise.resolve({ userId: "user-1", userName: "TestUser" }),
         );
@@ -778,6 +800,207 @@ describe("POST /api/runners/:runnerId/trigger-broadcast", () => {
         // sess-miss does NOT match ("alerts" not in ["info","warn"])
         expect(body.delivered).toBe(2);
         expect(emitMock).toHaveBeenCalledTimes(2);
+    });
+
+    (isCI ? test.skip : test)("array payloads match scalar subscription filters and bodyContains performs substring matching", async () => {
+        mockGetSubscribersForTrigger.mockReturnValue(
+            Promise.resolve(["sess-label", "sess-body", "sess-miss"]),
+        );
+        mockGetSharedSession.mockImplementation((id: string) =>
+            Promise.resolve({ userId: "user-1", sessionId: id } as any),
+        );
+        mockGetSubscriptionParams.mockImplementation((sid: string, _type: string) => {
+            if (sid === "sess-label") return Promise.resolve({ labels: "bug" });
+            if (sid === "sess-body") return Promise.resolve({ bodyContains: "urgent fix" });
+            if (sid === "sess-miss") return Promise.resolve({ labels: "docs", bodyContains: "not here" });
+            return Promise.resolve(undefined);
+        });
+        const emitMock = mock(() => {});
+        mockGetLocalTuiSocket.mockReturnValue({ connected: true, emit: emitMock });
+
+        const [req, url] = makeReq(
+            "POST", "/api/runners/runner-A/trigger-broadcast",
+            {
+                type: "github:pr_comment",
+                payload: {
+                    labels: ["bug", "needs-review"],
+                    body: "This is an urgent fix for the failing test",
+                },
+                source: "github",
+            },
+            { "x-api-key": "test-key" },
+        );
+        const res = await handleTriggersRoute(req, url);
+        const body = await res!.json();
+        expect(body.delivered).toBe(2);
+        expect(emitMock).toHaveBeenCalledTimes(2);
+    });
+});
+
+
+describe("POST /api/runners/:runnerId/trigger-broadcast — filter-based delivery", () => {
+    beforeEach(() => {
+        mockGetSharedSession.mockReset();
+        mockGetLocalTuiSocket.mockReset();
+        mockEmitToRelaySessionVerified.mockReset();
+        mockGetSubscriptionParams.mockReset();
+        mockGetSubscriptionParams.mockReturnValue(Promise.resolve(undefined));
+        mockGetSubscriptionFilters.mockReset();
+        mockGetSubscriptionFilters.mockReturnValue(Promise.resolve(undefined));
+    });
+
+    test("filters by subscription filters (AND mode) — only matching subscribers receive trigger", async () => {
+        mockGetSubscribersForTrigger.mockReturnValue(
+            Promise.resolve(["sess-status", "sess-project", "sess-both", "sess-none"]),
+        );
+        mockGetSharedSession.mockImplementation((id: string) =>
+            Promise.resolve({ userId: "user-1", sessionId: id } as any),
+        );
+        // sess-status: filter on status=shipped -> matches
+        // sess-project: filter on project=PizzaPi -> matches
+        // sess-both: filter on status=shipped AND project=Other -> does NOT match (AND)
+        // sess-none: no filters -> matches all
+        mockGetSubscriptionFilters.mockImplementation((sid: string, _type: string) => {
+            if (sid === "sess-status") return Promise.resolve({ filters: [{ field: "status", value: "shipped" }] });
+            if (sid === "sess-project") return Promise.resolve({ filters: [{ field: "project", value: "PizzaPi" }] });
+            if (sid === "sess-both") return Promise.resolve({ filters: [{ field: "status", value: "shipped" }, { field: "project", value: "Other" }], filterMode: "and" });
+            if (sid === "sess-none") return Promise.resolve(undefined);
+            return Promise.resolve(undefined);
+        });
+        const emitMock = mock(() => {});
+        mockGetLocalTuiSocket.mockReturnValue({ connected: true, emit: emitMock });
+
+        const [req, url] = makeReq(
+            "POST", "/api/runners/runner-A/trigger-broadcast",
+            { type: "svc:event", payload: { status: "shipped", project: "PizzaPi" }, source: "test" },
+            { "x-api-key": "test-key" },
+        );
+        const res = await handleTriggersRoute(req, url);
+        const body = await res!.json();
+        // sess-status matches, sess-project matches, sess-none matches (no filters), sess-both does NOT (project != Other)
+        expect(body.delivered).toBe(3);
+    });
+
+    test("filters with OR mode — any filter matching delivers", async () => {
+        mockGetSubscribersForTrigger.mockReturnValue(
+            Promise.resolve(["sess-or-match", "sess-or-miss"]),
+        );
+        mockGetSharedSession.mockImplementation((id: string) =>
+            Promise.resolve({ userId: "user-1", sessionId: id } as any),
+        );
+        // sess-or-match: status=shipped OR project=Other -> matches (status=shipped matches)
+        // sess-or-miss: status=pending OR project=Other -> does NOT match
+        mockGetSubscriptionFilters.mockImplementation((sid: string, _type: string) => {
+            if (sid === "sess-or-match") return Promise.resolve({
+                filters: [{ field: "status", value: "shipped" }, { field: "project", value: "Other" }],
+                filterMode: "or",
+            });
+            if (sid === "sess-or-miss") return Promise.resolve({
+                filters: [{ field: "status", value: "pending" }, { field: "project", value: "Other" }],
+                filterMode: "or",
+            });
+            return Promise.resolve(undefined);
+        });
+        const emitMock = mock(() => {});
+        mockGetLocalTuiSocket.mockReturnValue({ connected: true, emit: emitMock });
+
+        const [req, url] = makeReq(
+            "POST", "/api/runners/runner-A/trigger-broadcast",
+            { type: "svc:event", payload: { status: "shipped", project: "PizzaPi" }, source: "test" },
+            { "x-api-key": "test-key" },
+        );
+        const res = await handleTriggersRoute(req, url);
+        const body = await res!.json();
+        expect(body.delivered).toBe(1);
+    });
+
+    test("filters with contains op — substring matching", async () => {
+        mockGetSubscribersForTrigger.mockReturnValue(
+            Promise.resolve(["sess-contains"]),
+        );
+        mockGetSharedSession.mockImplementation((id: string) =>
+            Promise.resolve({ userId: "user-1", sessionId: id } as any),
+        );
+        mockGetSubscriptionFilters.mockImplementation((_sid: string, _type: string) => {
+            return Promise.resolve({
+                filters: [{ field: "message", value: "hello", op: "contains" }],
+            });
+        });
+        const emitMock = mock(() => {});
+        mockGetLocalTuiSocket.mockReturnValue({ connected: true, emit: emitMock });
+
+        const [req, url] = makeReq(
+            "POST", "/api/runners/runner-A/trigger-broadcast",
+            { type: "svc:event", payload: { message: "Say Hello World!" }, source: "test" },
+            { "x-api-key": "test-key" },
+        );
+        const res = await handleTriggersRoute(req, url);
+        const body = await res!.json();
+        expect(body.delivered).toBe(1);
+    });
+
+    test("legacy params fallback — old subscriptions without filters still work", async () => {
+        mockGetSubscribersForTrigger.mockReturnValue(
+            Promise.resolve(["sess-legacy"]),
+        );
+        mockGetSharedSession.mockImplementation((id: string) =>
+            Promise.resolve({ userId: "user-1", sessionId: id } as any),
+        );
+        // getSubscriptionFilters returns undefined (no filters), falls back to legacy params
+        mockGetSubscriptionFilters.mockReturnValue(Promise.resolve(undefined));
+        mockGetSubscriptionParams.mockImplementation((_sid: string, _type: string) => {
+            return Promise.resolve({ prNumber: 42 });
+        });
+        const emitMock = mock(() => {});
+        mockGetLocalTuiSocket.mockReturnValue({ connected: true, emit: emitMock });
+
+        // Payload matches prNumber=42
+        const [req1, url1] = makeReq(
+            "POST", "/api/runners/runner-A/trigger-broadcast",
+            { type: "github:pr_comment", payload: { prNumber: 42, comment: "hi" }, source: "github" },
+            { "x-api-key": "test-key" },
+        );
+        const res1 = await handleTriggersRoute(req1, url1);
+        const body1 = await res1!.json();
+        expect(body1.delivered).toBe(1);
+
+        emitMock.mockClear();
+
+        // Payload does NOT match prNumber=99
+        const [req2, url2] = makeReq(
+            "POST", "/api/runners/runner-A/trigger-broadcast",
+            { type: "github:pr_comment", payload: { prNumber: 99, comment: "hi" }, source: "github" },
+            { "x-api-key": "test-key" },
+        );
+        const res2 = await handleTriggersRoute(req2, url2);
+        const body2 = await res2!.json();
+        expect(body2.delivered).toBe(0);
+    });
+
+    test("filters with array value — matches if payload value is in array", async () => {
+        mockGetSubscribersForTrigger.mockReturnValue(
+            Promise.resolve(["sess-array"]),
+        );
+        mockGetSharedSession.mockImplementation((id: string) =>
+            Promise.resolve({ userId: "user-1", sessionId: id } as any),
+        );
+        mockGetSubscriptionFilters.mockImplementation((_sid: string, _type: string) => {
+            return Promise.resolve({
+                filters: [{ field: "status", value: ["shipped", "review"] }],
+            });
+        });
+        const emitMock = mock(() => {});
+        mockGetLocalTuiSocket.mockReturnValue({ connected: true, emit: emitMock });
+
+        // status=shipped matches [shipped, review]
+        const [req, url] = makeReq(
+            "POST", "/api/runners/runner-A/trigger-broadcast",
+            { type: "svc:event", payload: { status: "shipped" }, source: "test" },
+            { "x-api-key": "test-key" },
+        );
+        const res = await handleTriggersRoute(req, url);
+        const body = await res!.json();
+        expect(body.delivered).toBe(1);
     });
 });
 

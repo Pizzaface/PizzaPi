@@ -150,23 +150,29 @@ export interface ServiceTriggerDef {
   label: string;
   /** Optional description of when/why this trigger fires */
   description?: string;
-  /** Optional JSON Schema for the trigger payload */
+  /**
+   * JSON Schema for the trigger's output payload. Defines the shape of data
+   * the service emits when firing this trigger. Properties declared here are
+   * available as filterable fields — subscribers can set filters on these
+   * fields to control which trigger events they receive.
+   */
   schema?: Record<string, unknown>;
   /**
    * Configurable parameters that subscribers provide when subscribing.
-   * At broadcast time, delivery is filtered: a subscriber only receives the
-   * trigger if every param they specified matches the corresponding payload field.
+   * These are passed to the service for its own handling (e.g. "which repo
+   * to watch") and are NOT used for server-side delivery filtering.
+   * For delivery filtering, subscribers use `filters` based on the output `schema`.
    */
   params?: ServiceTriggerParamDef[];
 }
 
 /**
  * A configurable parameter on a trigger type.
- * Subscribers provide values for these when subscribing, and the broadcast
- * delivery path filters based on matches.
+ * Subscribers provide values for these when subscribing. These are forwarded
+ * to the service for its own use — they do NOT filter trigger delivery.
  */
 export interface ServiceTriggerParamDef {
-  /** Parameter name — must match a key in the trigger payload */
+  /** Parameter name — identifies this param to the service */
   name: string;
   /** Human-readable label for the UI */
   label: string;
@@ -182,11 +188,30 @@ export interface ServiceTriggerParamDef {
   enum?: Array<string | number | boolean>;
   /**
    * Allow selecting multiple enum values. Requires `enum` to be set.
-   * Stored as an array; at delivery time the trigger matches if the payload
-   * value is contained in the subscriber's selected set (OR semantics).
+   * Stored as an array; the service receives all selected values.
    */
   multiselect?: boolean;
 }
+
+/**
+ * A single filter condition on a trigger's output payload.
+ * Subscribers specify these to control which trigger events they receive.
+ * The `field` must correspond to a property in the trigger's output `schema`.
+ */
+export interface TriggerFilter {
+  /** Field name in the trigger payload to match against */
+  field: string;
+  /** Expected value(s). Arrays use OR semantics (payload value must be in the set). */
+  value: string | number | boolean | Array<string | number | boolean>;
+  /**
+   * Match operator. Defaults to "eq" (exact match / set membership).
+   * "contains" does case-insensitive substring matching on string fields.
+   */
+  op?: "eq" | "contains";
+}
+
+/** How multiple filters combine: "and" = all must match, "or" = any must match. */
+export type TriggerFilterMode = "and" | "or";
 
 /** Payload for the service_announce event. */
 export interface ServiceAnnounceData {

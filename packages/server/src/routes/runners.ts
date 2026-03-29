@@ -14,6 +14,12 @@ import {
     recordRunnerSession,
     registerTerminal,
 } from "../ws/sio-registry.js";
+import { getRunnerServices } from "../ws/sio-registry/runners.js";
+import {
+    addRunnerTriggerListener,
+    removeRunnerTriggerListener,
+    listRunnerTriggerListeners,
+} from "../sessions/runner-trigger-listener-store.js";
 import { getSession } from "../ws/sio-state/index.js";
 import { sendSkillCommand, sendAgentCommand, sendRunnerCommand } from "../ws/namespaces/runner.js";
 import { waitForSpawnAck } from "../ws/runner-control.js";
@@ -298,6 +304,137 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
             if (!path) return Response.json({ error: "Missing path" }, { status: 400 });
             const deleted = await deleteRecentFolder(identity.userId, runnerId, path);
             return Response.json({ ok: true, deleted });
+        }
+
+        return undefined;
+    }
+
+    // ── Available models ───────────────────────────────────────────
+    const modelsMatch = url.pathname.match(/^\/api\/runners\/([^/]+)\/models$/);
+    if (modelsMatch && req.method === "GET") {
+        const identity = await requireSession(req);
+        if (identity instanceof Response) return identity;
+
+        const runnerId = decodeURIComponent(modelsMatch[1]);
+        const runner = await getRunnerData(runnerId);
+        if (!runner) return Response.json({ error: "Runner not found" }, { status: 404 });
+        if (runner.userId !== identity.userId) return Response.json({ error: "Forbidden" }, { status: 403 });
+
+        try {
+            const result = await sendRunnerCommand(runnerId, { type: "list_models" }) as any;
+            const models = Array.isArray(result?.models) ? result.models : [];
+            // Filter out hidden models
+            let hiddenModels: string[];
+            try {
+                hiddenModels = await getHiddenModels(identity.userId);
+            } catch {
+                hiddenModels = [];
+            }
+            const visible = models.filter((m: any) =>
+                !hiddenModels.includes(`${m.provider}/${m.id}`)
+            );
+            return Response.json({ models: visible });
+        } catch {
+            return Response.json({ models: [] });
+        }
+    }
+
+    // ── Runner services ─────────────────────────────────────────────
+    const servicesMatch = url.pathname.match(/^\/api\/runners\/([^/]+)\/services$/);
+    if (servicesMatch && req.method === "GET") {
+        const identity = await requireSession(req);
+        if (identity instanceof Response) return identity;
+
+        const runnerId = decodeURIComponent(servicesMatch[1]);
+        const runner = await getRunnerData(runnerId);
+        if (!runner) return Response.json({ error: "Runner not found" }, { status: 404 });
+        if (runner.userId !== identity.userId) return Response.json({ error: "Forbidden" }, { status: 403 });
+
+        const services = await getRunnerServices(runnerId);
+        return Response.json({
+            serviceIds: services?.serviceIds ?? [],
+            panels: services?.panels ?? [],
+        });
+    }
+
+    // ── Trigger definitions + listeners ──────────────────────────────
+    const triggersMatch = url.pathname.match(/^\/api\/runners\/([^/]+)\/triggers$/);
+    if (triggersMatch && req.method === "GET") {
+        const identity = await requireSession(req);
+        if (identity instanceof Response) return identity;
+
+        const runnerId = decodeURIComponent(triggersMatch[1]);
+        const runner = await getRunnerData(runnerId);
+        if (!runner) return Response.json({ error: "Runner not found" }, { status: 404 });
+        if (runner.userId !== identity.userId) return Response.json({ error: "Forbidden" }, { status: 403 });
+
+        const [services, listeners] = await Promise.all([
+            getRunnerServices(runnerId),
+            listRunnerTriggerListeners(runnerId),
+        ]);
+        return Response.json({
+            triggerDefs: services?.triggerDefs ?? [],
+            listeners,
+        });
+    }
+
+    // ── Runner trigger listeners (subscribe/unsubscribe) ──────────────
+    const listenerMatch = url.pathname.match(/^\/api\/runners\/([^/]+)\/trigger-listeners(?:\/([^/]+))?$/);
+    if (listenerMatch) {
+        const identity = await requireSession(req);
+        if (identity instanceof Response) return identity;
+
+        const runnerId = decodeURIComponent(listenerMatch[1]);
+        const runner = await getRunnerData(runnerId);
+        if (!runner) return Response.json({ error: "Runner not found" }, { status: 404 });
+        if (runner.userId !== identity.userId) return Response.json({ error: "Forbidden" }, { status: 403 });
+
+        // GET /api/runners/:id/trigger-listeners — list
+        if (req.method === "GET" && !listenerMatch[2]) {
+            const listeners = await listRunnerTriggerListeners(runnerId);
+            return Response.json({ listeners });
+        }
+
+        // POST /api/runners/:id/trigger-listeners — add
+        if (req.method === "POST" && !listenerMatch[2]) {
+            const body = await req.json().catch(() => null) as Record<string, unknown> | null;
+            const triggerType = typeof body?.triggerType === "string" ? body.triggerType.trim() : "";
+            if (!triggerType) return Response.json({ error: "Missing triggerType" }, { status: 400 });
+
+            const params = body?.params && typeof body.params === "object" && !Array.isArray(body.params)
+                ? body.params as Record<string, unknown>
+                : undefined;
+            const model = body?.model && typeof body.model === "object" && !Array.isArray(body.model)
+                && typeof (body.model as Record<string, unknown>).provider === "string"
+                && typeof (body.model as Record<string, unknown>).id === "string"
+                ? body.model as { provider: string; id: string }
+                : undefined;
+            // Validate model against hidden-models list (same check as /api/runners/spawn)
+            if (model) {
+                try {
+                    const hiddenModels = await getHiddenModels(identity.userId);
+                    if (isHiddenModel(hiddenModels, model)) {
+                        return Response.json({ error: "Model is hidden and cannot be used" }, { status: 403 });
+                    }
+                } catch {
+                    // If hidden-models check fails, allow — same fallback as spawn route
+                }
+            }
+
+            await addRunnerTriggerListener(runnerId, triggerType, {
+                prompt: typeof body?.prompt === "string" ? body.prompt : undefined,
+                cwd: typeof body?.cwd === "string" ? body.cwd : undefined,
+                model,
+                params,
+            });
+            return Response.json({ ok: true });
+        }
+
+        // DELETE /api/runners/:id/trigger-listeners/:type — remove
+        if (req.method === "DELETE" && listenerMatch[2]) {
+            const triggerType = decodeURIComponent(listenerMatch[2]);
+            const removed = await removeRunnerTriggerListener(runnerId, triggerType);
+            return Response.json({ ok: true, removed });
         }
 
         return undefined;

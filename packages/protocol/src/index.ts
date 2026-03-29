@@ -19,6 +19,8 @@ export type {
   ServicePanelInfo,
   ServiceTriggerDef,
   ServiceTriggerParamDef,
+  TriggerFilter,
+  TriggerFilterMode,
   ServiceAnnounceData,
   TunnelInfo,
 } from "./shared.js";

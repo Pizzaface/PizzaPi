@@ -186,6 +186,8 @@ await fetch(`${relayUrl}/api/runners/${runnerId}/trigger-broadcast`, {
 
 The relay fans out the trigger to every session subscribed to that type on this runner.
 
+Subscription params are matched against the trigger payload at delivery time. Scalar params use loose equality, array payload fields match if they contain the subscriber's value, and param names ending in `Contains` do substring matching against string payload fields.
+
 <Aside type="tip">
   Use `"followUp"` (default) for non-urgent events. Use `"steer"` only when the trigger needs to interrupt whatever the agent is currently doing.
 </Aside>

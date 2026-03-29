@@ -538,7 +538,7 @@ export const triggersExtension: ExtensionFactory = (pi) => {
         },
     });
 
-    // ── subscribe_trigger ─────────────────────────────────────────────────
+    // ── subscribe_trigger ─────────────────────────────────────────────────────────────
     pi.registerTool({
         name: "subscribe_trigger",
         label: "Subscribe to Trigger",
@@ -548,9 +548,11 @@ export const triggersExtension: ExtensionFactory = (pi) => {
             "The trigger type must be declared by a service on the session's runner " +
             "(use list_available_triggers to discover valid types). " +
             "To subscribe a child session, pass its sessionId. " +
-            "Some triggers accept params that filter which events you receive " +
-            "(e.g. { prNumber: 42 } to only get events for PR #42). " +
-            "Use list_available_triggers to see available params for each trigger type.",
+            "Some triggers accept params that are forwarded to the service for its own handling " +
+            "(e.g. configuring which repo to watch). " +
+            "Use filters to control which trigger events you receive based on the output schema " +
+            "(e.g. filters: [{ field: 'status', value: 'shipped' }]). " +
+            "Use filterMode 'and' (default) or 'or' to control how multiple filters combine.",
         parameters: {
             type: "object",
             properties: {
@@ -564,13 +566,37 @@ export const triggersExtension: ExtensionFactory = (pi) => {
                 },
                 params: {
                     type: "object",
-                    description: "Optional subscription params to filter trigger delivery. Keys must match the trigger's declared param names. Values are matched against the trigger payload at delivery time.",
+                    description: "Optional subscription params forwarded to the service. Keys must match the trigger's declared param names. These are NOT used for filtering — use 'filters' for that.",
+                },
+                filters: {
+                    type: "array",
+                    description: "Optional delivery filters based on the trigger's output schema. Each filter is { field, value, op? }. 'field' is a payload property name, 'value' is the expected value (or array for OR), 'op' is 'eq' (default) or 'contains'.",
+                    items: {
+                        type: "object",
+                        properties: {
+                            field: { type: "string", description: "Payload field name to filter on" },
+                            value: { description: "Expected value or array of values (OR within this filter)" },
+                            op: { type: "string", enum: ["eq", "contains"], description: "Match operator: 'eq' (default) or 'contains' (substring)" },
+                        },
+                        required: ["field", "value"],
+                    },
+                },
+                filterMode: {
+                    type: "string",
+                    enum: ["and", "or"],
+                    description: "How multiple filters combine: 'and' (all must match, default) or 'or' (any must match).",
                 },
             },
             required: ["triggerType"],
         } as any,
         async execute(_toolCallId, rawParams) {
-            const params = rawParams as { triggerType: string; sessionId?: string; params?: Record<string, unknown> };
+            const params = rawParams as {
+                triggerType: string;
+                sessionId?: string;
+                params?: Record<string, unknown>;
+                filters?: Array<{ field: string; value: unknown; op?: string }>;
+                filterMode?: string;
+            };
             const targetId = params.sessionId ?? getOwnSessionId() ?? "";
             if (!targetId) {
                 return { content: [{ type: "text" as const, text: "Error: Could not determine session ID." }], details: null as any };
@@ -596,12 +622,40 @@ export const triggersExtension: ExtensionFactory = (pi) => {
                 if (Object.keys(subParams).length === 0) subParams = undefined;
             }
 
-            const result = await subscribeTrigger(targetId, params.triggerType, {}, subParams);
+            // Coerce filter values
+            let subFilters: Array<{ field: string; value: string | number | boolean | Array<string | number | boolean>; op?: "eq" | "contains" }> | undefined;
+            if (Array.isArray(params.filters) && params.filters.length > 0) {
+                subFilters = [];
+                for (const f of params.filters) {
+                    if (!f.field || f.value === undefined || f.value === null) continue;
+                    let value: string | number | boolean | Array<string | number | boolean>;
+                    if (Array.isArray(f.value)) {
+                        value = f.value.filter(
+                            (v): v is string | number | boolean =>
+                                typeof v === "string" || typeof v === "number" || typeof v === "boolean",
+                        );
+                    } else if (typeof f.value === "string" || typeof f.value === "number" || typeof f.value === "boolean") {
+                        value = f.value;
+                    } else {
+                        value = String(f.value);
+                    }
+                    const op = f.op === "contains" ? "contains" as const : "eq" as const;
+                    subFilters.push({ field: f.field, value, op });
+                }
+                if (subFilters.length === 0) subFilters = undefined;
+            }
+
+            const subFilterMode = params.filterMode === "or" ? "or" as const : params.filterMode === "and" ? "and" as const : undefined;
+
+            const result = await subscribeTrigger(targetId, params.triggerType, {}, subParams, subFilters, subFilterMode);
 
             if (result.ok) {
-                const paramSuffix = subParams ? ` with params ${JSON.stringify(subParams)}` : "";
+                const parts: string[] = [];
+                if (subParams) parts.push(`params: ${JSON.stringify(subParams)}`);
+                if (subFilters) parts.push(`filters: ${JSON.stringify(subFilters)} (${subFilterMode ?? "and"})`);
+                const suffix = parts.length > 0 ? ` with ${parts.join(", ")}` : "";
                 return {
-                    content: [{ type: "text" as const, text: `Subscribed to '${result.triggerType}' on runner ${result.runnerId}${paramSuffix}` }],
+                    content: [{ type: "text" as const, text: `Subscribed to '${result.triggerType}' on runner ${result.runnerId}${suffix}` }],
                     details: null as any,
                 };
             }

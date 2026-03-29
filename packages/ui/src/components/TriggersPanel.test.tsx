@@ -231,7 +231,6 @@ describe("TriggersPanel — grouped layout", () => {
       ({ container } = render(<TriggersPanel sessionId="sess-parent" />));
     });
 
-    expect(container.textContent).toContain("Awaiting Response");
     expect(container.textContent).toContain("asking question");
     expect(container.textContent).toContain("Waiting for your answer");
   });
@@ -251,13 +250,10 @@ describe("TriggersPanel — grouped layout", () => {
       ({ container } = render(<TriggersPanel sessionId="sess-parent" />));
     });
 
-    // Should appear under Linked Sessions, not Awaiting Response
-    expect(container.textContent).not.toContain("Awaiting Response");
-    expect(container.textContent).toContain("Linked Sessions");
     expect(container.textContent).toContain("responded");
   });
 
-  test("shows external/API triggers under Other Events", async () => {
+  test("shows external/API triggers under Other Events grouped by source", async () => {
     const trigger = makeTrigger({
       triggerId: "t-ext",
       type: "webhook",
@@ -271,9 +267,16 @@ describe("TriggersPanel — grouped layout", () => {
       ({ container } = render(<TriggersPanel sessionId="sess-abc" />));
     });
 
-    expect(container.textContent).toContain("Other Events");
-    expect(container.textContent).toContain("webhook");
+    // Source group accordion shows source label
     expect(container.textContent).toContain("github");
+    expect(container.textContent).toContain("1 event");
+
+    // Expand the source group to see the trigger type
+    const buttons = Array.from(container.getElementsByTagName("button"));
+    const groupBtn = buttons.find((b) => b.textContent?.includes("github"));
+    expect(groupBtn).toBeDefined();
+    await act(async () => { fireEvent.click(groupBtn!); });
+    expect(container.textContent).toContain("webhook");
   });
 
   test("shows multiple events from same child in one group", async () => {
@@ -299,8 +302,6 @@ describe("TriggersPanel — grouped layout", () => {
       ({ container } = render(<TriggersPanel sessionId="sess-parent" />));
     });
 
-    // session_complete is informational, not pending — shows under Linked Sessions
-    expect(container.textContent).toContain("Linked Sessions");
     expect(container.textContent).toContain("completed");
     // Should show event count
     expect(container.textContent).toContain("2 events");
@@ -371,7 +372,7 @@ describe("TriggersPanel — Send Trigger dialog", () => {
     expect(document.body.textContent).not.toContain("Deliver As");
   });
 
-  test("dialog opens when Send Trigger button is clicked", async () => {
+  test("dialog opens when Send button is clicked", async () => {
     fetchState.response = { ok: true, body: { triggers: [] } };
 
     let container!: HTMLElement;
@@ -380,7 +381,7 @@ describe("TriggersPanel — Send Trigger dialog", () => {
     });
 
     const buttons = Array.from(container.getElementsByTagName("button"));
-    const sendBtn = buttons.find((b) => b.textContent?.includes("Send Trigger"));
+    const sendBtn = buttons.find((b) => b.textContent?.includes("Send"));
     expect(sendBtn).toBeDefined();
 
     await act(async () => {
@@ -400,7 +401,7 @@ describe("TriggersPanel — Send Trigger dialog", () => {
     });
 
     const buttons = Array.from(container.getElementsByTagName("button"));
-    const sendBtn = buttons.find((b) => b.textContent?.includes("Send Trigger"));
+    const sendBtn = buttons.find((b) => b.textContent?.includes("Send"));
 
     await act(async () => {
       fireEvent.click(sendBtn!);
@@ -422,7 +423,7 @@ describe("TriggersPanel — Send Trigger dialog", () => {
 });
 
 describe("TriggersPanel — trigger catalog", () => {
-  test("renders Available Triggers section when triggerDefs are provided", async () => {
+  test("renders service accordions when triggerDefs are provided", async () => {
     fetchState.response = { ok: true, body: { triggers: [], subscriptions: [] } };
 
     const triggerDefs = [
@@ -435,7 +436,15 @@ describe("TriggersPanel — trigger catalog", () => {
       ({ container } = render(<TriggersPanel sessionId="sess-abc" triggerDefs={triggerDefs} />));
     });
 
-    expect(container.textContent).toContain("Available Triggers");
+    // Catalog is default tab when triggerDefs exist — shows service accordion
+    expect(container.textContent).toContain("godmother");
+    expect(container.textContent).toContain("2 triggers");
+
+    // Expand the godmother accordion
+    const accordionBtn = Array.from(container.getElementsByTagName("button")).find((b) => b.textContent?.includes("godmother"));
+    expect(accordionBtn).toBeDefined();
+    await act(async () => { fireEvent.click(accordionBtn!); });
+
     expect(container.textContent).toContain("godmother:idea_moved");
     expect(container.textContent).toContain("Idea Status Changed");
     expect(container.textContent).toContain("godmother:idea_created");
@@ -465,6 +474,10 @@ describe("TriggersPanel — trigger catalog", () => {
       ({ container } = render(<TriggersPanel sessionId="sess-abc" triggerDefs={triggerDefs} />));
     });
 
+    // Catalog is default tab — expand the "svc" service accordion
+    const accordionBtn = Array.from(container.getElementsByTagName("button")).find((b) => b.textContent?.includes("svc"));
+    await act(async () => { fireEvent.click(accordionBtn!); });
+
     const buttons = Array.from(container.getElementsByTagName("button"));
     const subscribeBtn = buttons.find((b) => b.getAttribute("aria-label")?.startsWith("Subscribe to"));
     expect(subscribeBtn).toBeDefined();
@@ -481,6 +494,10 @@ describe("TriggersPanel — trigger catalog", () => {
     await act(async () => {
       ({ container } = render(<TriggersPanel sessionId="sess-abc" triggerDefs={triggerDefs} />));
     });
+
+    // Catalog is default tab — expand the "svc" service accordion
+    const accordionBtn = Array.from(container.getElementsByTagName("button")).find((b) => b.textContent?.includes("svc"));
+    await act(async () => { fireEvent.click(accordionBtn!); });
 
     expect(container.textContent).toContain("subscribed");
     const buttons = Array.from(container.getElementsByTagName("button"));
@@ -535,7 +552,7 @@ describe("TriggersPanel — trigger catalog", () => {
     expect(fetchSpy).toHaveBeenCalled();
   });
 
-  test("catalog section can be collapsed", async () => {
+  test("service accordion can be expanded and collapsed", async () => {
     fetchState.response = { ok: true, body: { triggers: [] } };
 
     const triggerDefs = [{ type: "svc:event", label: "Service Event" }];
@@ -545,16 +562,19 @@ describe("TriggersPanel — trigger catalog", () => {
       ({ container } = render(<TriggersPanel sessionId="sess-abc" triggerDefs={triggerDefs} />));
     });
 
+    // Catalog is default tab — service accordion header visible but collapsed
+    expect(container.textContent).toContain("svc");
+    expect(container.textContent).not.toContain("svc:event");
+
+    // Expand
+    const accordionBtn = Array.from(container.getElementsByTagName("button")).find((b) => b.textContent?.includes("svc"));
+    expect(accordionBtn).toBeDefined();
+    await act(async () => { fireEvent.click(accordionBtn!); });
     expect(container.textContent).toContain("svc:event");
 
-    const buttons = Array.from(container.getElementsByTagName("button"));
-    const collapseBtn = buttons.find((b) => b.textContent?.includes("Available Triggers"));
-    expect(collapseBtn).toBeDefined();
-
-    await act(async () => {
-      fireEvent.click(collapseBtn!);
-    });
-
+    // Collapse again
+    const collapseBtn = Array.from(container.getElementsByTagName("button")).find((b) => b.textContent?.includes("svc"));
+    await act(async () => { fireEvent.click(collapseBtn!); });
     expect(container.textContent).not.toContain("svc:event");
   });
 });

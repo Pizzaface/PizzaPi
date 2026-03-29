@@ -130,6 +130,10 @@ An agent subscribes with: `subscribe_trigger(triggerType: "demo:message_sent", p
 
 Events with `channel: "alerts"` **or** `channel: "debug"` in their payload are delivered. Events with `channel: "general"` are not. Sessions subscribed without specifying `channel` receive all events.
 
+Array-valued payload fields also work with scalar subscription params: if the payload has `labels: ["bug", "urgent"]`, a subscriber with `labels: "bug"` receives the event.
+
+For substring filtering, name the param with a `Contains` suffix. For example, a trigger with `bodyContains` will match when the payload's `body` field includes the subscriber's text.
+
 Trigger types are advertised to agents via `service_announce` so they can be discovered with `list_available_triggers()` and subscribed to with `subscribe_trigger()`.
 
 ## ServiceHandler Template

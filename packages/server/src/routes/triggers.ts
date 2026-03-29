@@ -29,9 +29,16 @@
  */
 
 import { requireSession, validateApiKey } from "../middleware.js";
-import { getSharedSession, getLocalTuiSocket, broadcastToSessionViewers } from "../ws/sio-registry.js";
-import { emitToRelaySessionVerified } from "../ws/sio-registry.js";
-import { getRunnerServices } from "../ws/sio-registry/runners.js";
+import {
+    getSharedSession,
+    getLocalTuiSocket,
+    broadcastToSessionViewers,
+    emitToRelaySessionVerified,
+    getLocalRunnerSocket,
+    recordRunnerSession,
+    linkSessionToRunner,
+} from "../ws/sio-registry.js";
+import { getRunnerServices, getRunnerData } from "../ws/sio-registry/runners.js";
 import type { RouteHandler } from "./types.js";
 import { randomUUID } from "crypto";
 import { createLogger } from "@pizzapi/tools";
@@ -46,10 +53,106 @@ import {
     listSessionSubscriptions,
     getSubscribersForTrigger,
     getSubscriptionParams,
+    getSubscriptionFilters,
     type SubscriptionParams,
+    type SubscriptionFilter,
+    type SubscriptionFilterMode,
 } from "../sessions/trigger-subscription-store.js";
+import {
+    getRunnerListenerTypes,
+    getRunnerTriggerListener,
+} from "../sessions/runner-trigger-listener-store.js";
+import { waitForSpawnAck } from "../ws/runner-control.js";
 
 const log = createLogger("triggers-api");
+
+/**
+ * Check whether a single filter condition matches a trigger payload field.
+ */
+function matchesSingleFilter(filter: SubscriptionFilter, payload: Record<string, unknown>): boolean {
+    const actual = payload[filter.field];
+    const expected = filter.value;
+    const op = filter.op ?? "eq";
+
+    if (op === "contains") {
+        if (typeof expected !== "string") return false;
+        if (typeof actual === "string") return actual.toLowerCase().includes(expected.toLowerCase());
+        if (Array.isArray(actual)) {
+            return actual.some((item) => typeof item === "string" && item.toLowerCase().includes(expected.toLowerCase()));
+        }
+        return false;
+    }
+
+    // op === "eq" — exact match / set membership
+    if (Array.isArray(actual)) {
+        if (Array.isArray(expected)) {
+            // eslint-disable-next-line eqeqeq
+            return expected.some((e) => actual.some((a) => a == e));
+        }
+        // eslint-disable-next-line eqeqeq
+        return actual.some((a) => a == expected);
+    }
+
+    if (Array.isArray(expected)) {
+        // eslint-disable-next-line eqeqeq
+        return expected.some((e) => e == actual);
+    }
+
+    // eslint-disable-next-line eqeqeq
+    return actual == expected;
+}
+
+/**
+ * Check whether a trigger payload matches subscription filters.
+ *
+ * @param filters  Array of filter conditions from the subscription.
+ * @param filterMode  "and" (default) = all must match, "or" = any must match.
+ */
+function payloadMatchesFilters(
+    payload: Record<string, unknown>,
+    filters: SubscriptionFilter[],
+    filterMode: SubscriptionFilterMode = "and",
+): boolean {
+    if (filters.length === 0) return true;
+    if (filterMode === "or") {
+        return filters.some((f) => matchesSingleFilter(f, payload));
+    }
+    // "and" — all must match
+    return filters.every((f) => matchesSingleFilter(f, payload));
+}
+
+/**
+ * Legacy compat — convert old-style subscription params into filters (AND logic).
+ * Used for backward-compatible subscriptions that have params but no filters.
+ */
+function legacyParamsToFilters(params: Record<string, unknown>): SubscriptionFilter[] {
+    const filters: SubscriptionFilter[] = [];
+    for (const [key, expected] of Object.entries(params)) {
+        const lower = key.toLowerCase();
+        const isContains = lower.endsWith("contains") && key.length > "contains".length;
+        const field = isContains ? key.slice(0, -"Contains".length) : key;
+        filters.push({
+            field,
+            value: expected as any,
+            op: isContains ? "contains" : "eq",
+        });
+    }
+    return filters;
+}
+
+/** Poll for a session socket to appear after spawn (same pattern as webhooks). */
+async function waitForSessionSocket(sessionId: string, timeoutMs: number): Promise<boolean> {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+        // Only consider the session ready when its TUI socket is actually connected.
+        // The Redis session record (getSharedSession) is created before the socket
+        // connects, so checking it would cause premature return and dropped triggers.
+        const local = getLocalTuiSocket(sessionId);
+        if (local?.connected) return true;
+        await new Promise((r) => setTimeout(r, 200));
+    }
+    return false;
+}
 
 /** Shape of the POST /api/sessions/:id/trigger request body. */
 interface TriggerRequest {
@@ -270,9 +373,9 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
             return Response.json({ error: "Session not found" }, { status: 404 });
         }
 
-        let body: { triggerType?: string; params?: Record<string, unknown> };
+        let body: { triggerType?: string; params?: Record<string, unknown>; filters?: unknown[]; filterMode?: string };
         try {
-            body = await req.json() as { triggerType?: string; params?: Record<string, unknown> };
+            body = await req.json() as { triggerType?: string; params?: Record<string, unknown>; filters?: unknown[]; filterMode?: string };
         } catch {
             return Response.json({ error: "Invalid JSON body" }, { status: 400 });
         }
@@ -332,7 +435,9 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
                             const num = Number(item);
                             if (!isNaN(num)) coerced.push(num);
                         } else if (def.type === "boolean") {
-                            coerced.push(item === true || item === "true");
+                            if (item === true || item === "true") coerced.push(true);
+                            else if (item === false || item === "false") coerced.push(false);
+                            // else: skip invalid boolean values (filtered out by enum validation below)
                         } else {
                             coerced.push(String(item));
                         }
@@ -344,6 +449,8 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
                         errors.push(`Param '${def.name}' contains invalid values: ${invalid.join(", ")}. Allowed: ${def.enum.join(", ")}`);
                     } else if (coerced.length > 0) {
                         validated[def.name] = coerced;
+                    } else if (def.required) {
+                        errors.push(`Param '${def.name}' requires at least one valid value`);
                     }
                     continue;
                 }
@@ -363,8 +470,13 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
                         }
                     }
                 } else if (def.type === "boolean") {
-                    const val = raw === true || raw === "true";
-                    validated[def.name] = val;
+                    if (raw === true || raw === "true") {
+                        validated[def.name] = true;
+                    } else if (raw === false || raw === "false") {
+                        validated[def.name] = false;
+                    } else {
+                        errors.push(`Param '${def.name}' must be a boolean (true/false)`);
+                    }
                 } else {
                     const val = String(raw);
                     // eslint-disable-next-line eqeqeq
@@ -410,10 +522,74 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
             }
         }
 
-        await subscribeSessionToTrigger(sessionId, session.runnerId, triggerType, undefined, subParams);
-        log.info(`Session ${sessionId} subscribed to trigger type '${triggerType}' on runner ${session.runnerId}${subParams ? ` with params ${JSON.stringify(subParams)}` : ""}`);
+        // Validate and coerce subscription filters against the trigger def's output schema.
+        let subFilters: SubscriptionFilter[] | undefined;
+        let subFilterMode: SubscriptionFilterMode | undefined;
+        if (Array.isArray(body.filters) && body.filters.length > 0) {
+            const schemaProps = (triggerDef.schema as any)?.properties ?? {};
+            const validatedFilters: SubscriptionFilter[] = [];
+            const filterErrors: string[] = [];
+
+            for (const raw of body.filters) {
+                if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+                    filterErrors.push("Each filter must be an object with { field, value }");
+                    continue;
+                }
+                const f = raw as Record<string, unknown>;
+                if (typeof f.field !== "string" || !f.field) {
+                    filterErrors.push("Filter missing 'field'");
+                    continue;
+                }
+                if (f.value === undefined || f.value === null) {
+                    filterErrors.push(`Filter on '${f.field}' missing 'value'`);
+                    continue;
+                }
+                // Validate field exists in the output schema (if schema is provided)
+                if (triggerDef.schema && Object.keys(schemaProps).length > 0 && !(f.field in schemaProps)) {
+                    filterErrors.push(`Filter field '${f.field}' is not in the trigger's output schema. Available: ${Object.keys(schemaProps).join(", ")}`);
+                    continue;
+                }
+                const op = f.op === "contains" ? "contains" as const : "eq" as const;
+                // Coerce value to primitive or array of primitives
+                let value: string | number | boolean | Array<string | number | boolean>;
+                if (Array.isArray(f.value)) {
+                    value = f.value.filter(
+                        (v: unknown): v is string | number | boolean =>
+                            typeof v === "string" || typeof v === "number" || typeof v === "boolean",
+                    );
+                } else if (typeof f.value === "string" || typeof f.value === "number" || typeof f.value === "boolean") {
+                    value = f.value;
+                } else {
+                    value = String(f.value);
+                }
+                validatedFilters.push({ field: f.field, value, op });
+            }
+
+            if (filterErrors.length > 0) {
+                return Response.json({ error: filterErrors.join("; ") }, { status: 400 });
+            }
+            if (validatedFilters.length > 0) {
+                subFilters = validatedFilters;
+            }
+        }
+        if (body.filterMode === "or" || body.filterMode === "and") {
+            subFilterMode = body.filterMode;
+        }
+
+        await subscribeSessionToTrigger(sessionId, session.runnerId, triggerType, undefined, subParams, subFilters, subFilterMode);
+        const logParts: string[] = [];
+        if (subParams) logParts.push(`params=${JSON.stringify(subParams)}`);
+        if (subFilters) logParts.push(`filters=${JSON.stringify(subFilters)} mode=${subFilterMode ?? "and"}`);
+        log.info(`Session ${sessionId} subscribed to trigger type '${triggerType}' on runner ${session.runnerId}${logParts.length > 0 ? ` with ${logParts.join(", ")}` : ""}`);
         broadcastToSessionViewers(sessionId, "trigger_subscriptions_changed", { triggerType, action: "subscribe" });
-        return Response.json({ ok: true, triggerType, runnerId: session.runnerId, ...(subParams ? { params: subParams } : {}) });
+        return Response.json({
+            ok: true,
+            triggerType,
+            runnerId: session.runnerId,
+            ...(subParams ? { params: subParams } : {}),
+            ...(subFilters ? { filters: subFilters } : {}),
+            ...(subFilterMode ? { filterMode: subFilterMode } : {}),
+        });
     }
 
     // ── DELETE /api/sessions/:id/trigger-subscriptions/:triggerType ───
@@ -453,6 +629,12 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
 
         const runnerId = decodeURIComponent(broadcastMatch[1]);
 
+        // Verify the runner belongs to the authenticated user
+        const runnerData = await getRunnerData(runnerId);
+        if (!runnerData || runnerData.userId !== identity.userId) {
+            return Response.json({ error: "Runner not found" }, { status: 404 });
+        }
+
         let body: TriggerRequest;
         try {
             body = await req.json() as TriggerRequest;
@@ -474,9 +656,6 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
 
         // Look up all sessions subscribed to this runner+type
         const subscriberIds = await getSubscribersForTrigger(runnerId, body.type);
-        if (subscriberIds.length === 0) {
-            return Response.json({ ok: true, delivered: 0, triggerId: null });
-        }
 
         const triggerId = `ext_${randomUUID().replace(/-/g, "").slice(0, 16)}`;
         const ts = new Date().toISOString();
@@ -498,31 +677,23 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
             // and sessions that are actually connected.
             if (!targetSession || targetSession.userId !== identity.userId) continue;
 
-            // Filter by subscription params: each param the subscriber specified
-            // must match the corresponding field in the trigger payload.
-            // Subscribers with no params receive all triggers (no filtering).
-            const subParams = await getSubscriptionParams(targetSessionId, body.type);
-            if (subParams) {
-                let matches = true;
-                for (const [key, expected] of Object.entries(subParams)) {
-                    const actual = body.payload[key];
-                    if (Array.isArray(expected)) {
-                        // Multiselect: payload value must be in the subscriber's selected set.
-                        // eslint-disable-next-line eqeqeq
-                        if (!expected.some(e => e == actual)) {
-                            matches = false;
-                            break;
-                        }
-                    } else {
-                        // Scalar: loose equality (handles "42" == 42).
-                        // eslint-disable-next-line eqeqeq
-                        if (actual != expected) {
-                            matches = false;
-                            break;
-                        }
-                    }
+            // Filter by subscription filters (based on output schema fields).
+            // New subscriptions always have a filterData result (even with filters=[]).
+            // Legacy subscriptions return undefined and fall back to param matching.
+            const filterData = await getSubscriptionFilters(targetSessionId, body.type);
+            if (filterData) {
+                // New-format subscription — use filters (empty filters = deliver all)
+                if (filterData.filters && filterData.filters.length > 0) {
+                    if (!payloadMatchesFilters(body.payload, filterData.filters, filterData.filterMode)) continue;
                 }
-                if (!matches) continue;
+                // else: new subscription with no filters — deliver everything
+            } else {
+                // Legacy compat: old subscriptions stored params as filters
+                const subParams = await getSubscriptionParams(targetSessionId, body.type);
+                if (subParams) {
+                    const legacyFilters = legacyParamsToFilters(subParams);
+                    if (!payloadMatchesFilters(body.payload, legacyFilters, "and")) continue;
+                }
             }
 
             const historyEntry = {
@@ -562,8 +733,86 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
             }
         }
 
-        log.info(`Broadcast trigger ${triggerId} (type=${body.type}) to ${delivered}/${subscriberIds.length} subscribers on runner ${runnerId}`);
-        return Response.json({ ok: true, delivered, triggerId });
+        // ── Runner-level auto-spawn listeners ──────────────────────────
+        let spawned = 0;
+        const listenerTypes = await getRunnerListenerTypes(runnerId);
+        if (listenerTypes.includes(body.type)) {
+            const listener = await getRunnerTriggerListener(runnerId, body.type);
+            if (listener) {
+                // Filter by listener params before spawning (AND — every filter must match).
+                if (listener.params && Object.keys(listener.params).length > 0) {
+                    const listenerFilters = legacyParamsToFilters(listener.params);
+                    if (!payloadMatchesFilters(body.payload, listenerFilters, "and")) {
+                        log.info(`Auto-spawn listener for ${body.type} skipped — filters did not match payload`);
+                        // Fall through to return (don't spawn)
+                        log.info(`Broadcast trigger ${triggerId} (type=${body.type}) to ${delivered}/${subscriberIds.length} subscribers + 0 spawned on runner ${runnerId}`);
+                        return Response.json({ ok: true, delivered, spawned: 0, triggerId });
+                    }
+                }
+                const runnerSocket = getLocalRunnerSocket(runnerId);
+                if (runnerSocket) {
+                    const spawnedSessionId = randomUUID();
+                    const ackPromise = waitForSpawnAck(spawnedSessionId, 10_000);
+                    try {
+                        runnerSocket.emit("new_session", {
+                            sessionId: spawnedSessionId,
+                            ...(listener.cwd ? { cwd: listener.cwd } : {}),
+                            ...(listener.prompt ? { prompt: listener.prompt } : {}),
+                            ...(listener.model ? { model: listener.model } : {}),
+                        });
+                        const ack = await ackPromise;
+                        if (ack.ok !== false) {
+                            await recordRunnerSession(runnerId, spawnedSessionId);
+                            await linkSessionToRunner(runnerId, spawnedSessionId);
+
+                            // Poll for the session socket to register (like webhooks do)
+                            const ready = await waitForSessionSocket(spawnedSessionId, 15_000);
+                            if (!ready) {
+                                log.warn(`Auto-spawn listener: session ${spawnedSessionId} socket never appeared`);
+                            }
+
+                            const spawnTrigger = {
+                                ...trigger,
+                                targetSessionId: spawnedSessionId,
+                            };
+                            const spawnHistory = {
+                                triggerId: `${triggerId}_spawn`,
+                                type: body.type,
+                                source: `external:${body.source ?? "service"}`,
+                                summary: body.summary,
+                                payload: body.payload,
+                                deliverAs,
+                                ts,
+                                direction: "inbound" as const,
+                            };
+
+                            const spawnSocket = getLocalTuiSocket(spawnedSessionId);
+                            if (spawnSocket?.connected) {
+                                spawnSocket.emit("session_trigger", { trigger: spawnTrigger });
+                                void pushTriggerHistory(spawnedSessionId, spawnHistory).catch(() => {});
+                                broadcastToSessionViewers(spawnedSessionId, "trigger_delivered", { triggerId: spawnHistory.triggerId });
+                                spawned++;
+                            } else {
+                                const cross = await emitToRelaySessionVerified(
+                                    spawnedSessionId, "session_trigger", { trigger: spawnTrigger },
+                                );
+                                if (cross) {
+                                    void pushTriggerHistory(spawnedSessionId, spawnHistory).catch(() => {});
+                                    broadcastToSessionViewers(spawnedSessionId, "trigger_delivered", { triggerId: spawnHistory.triggerId });
+                                    spawned++;
+                                }
+                            }
+                            log.info(`Auto-spawned session ${spawnedSessionId} for listener ${body.type} on runner ${runnerId}`);
+                        }
+                    } catch (err) {
+                        log.warn(`Failed to auto-spawn session for listener ${body.type}: ${err}`);
+                    }
+                }
+            }
+        }
+
+        log.info(`Broadcast trigger ${triggerId} (type=${body.type}) to ${delivered}/${subscriberIds.length} subscribers + ${spawned} spawned on runner ${runnerId}`);
+        return Response.json({ ok: true, delivered, spawned, triggerId });
     }
 
     return undefined;
