@@ -231,7 +231,6 @@ describe("TriggersPanel — grouped layout", () => {
       ({ container } = render(<TriggersPanel sessionId="sess-parent" />));
     });
 
-    expect(container.textContent).toContain("Awaiting Response");
     expect(container.textContent).toContain("asking question");
     expect(container.textContent).toContain("Waiting for your answer");
   });
@@ -251,9 +250,6 @@ describe("TriggersPanel — grouped layout", () => {
       ({ container } = render(<TriggersPanel sessionId="sess-parent" />));
     });
 
-    // Should appear under Linked Sessions, not Awaiting Response
-    expect(container.textContent).not.toContain("Awaiting Response");
-    expect(container.textContent).toContain("Linked Sessions");
     expect(container.textContent).toContain("responded");
   });
 
@@ -271,8 +267,7 @@ describe("TriggersPanel — grouped layout", () => {
       ({ container } = render(<TriggersPanel sessionId="sess-abc" />));
     });
 
-    expect(container.textContent).toContain("Other Events");
-    // Source group header shows source label
+    // Source group accordion shows source label
     expect(container.textContent).toContain("github");
     expect(container.textContent).toContain("1 event");
 
@@ -307,8 +302,6 @@ describe("TriggersPanel — grouped layout", () => {
       ({ container } = render(<TriggersPanel sessionId="sess-parent" />));
     });
 
-    // session_complete is informational, not pending — shows under Linked Sessions
-    expect(container.textContent).toContain("Linked Sessions");
     expect(container.textContent).toContain("completed");
     // Should show event count
     expect(container.textContent).toContain("2 events");

@@ -1485,67 +1485,27 @@ export function TriggersPanel({ sessionId, triggerDefs = [], viewerSocket }: Tri
                 </p>
               </div>
             ) : (
-              <div className="flex flex-col gap-2 p-2">
-                {/* Awaiting Response section */}
-                {pendingGroups.length > 0 && (
-                  <div>
-                    <div className="px-1 pb-1.5 flex items-center gap-1.5">
-                      <Clock className="size-3 text-amber-400 animate-pulse" />
-                      <span className="text-[10px] font-semibold uppercase tracking-wider text-amber-400/80">
-                        Awaiting Response ({pendingGroups.length})
-                      </span>
-                    </div>
-                    <div className="flex flex-col gap-1.5">
-                      {pendingGroups.map((group) => (
-                        <LinkedSessionCard
-                          key={group.source}
-                          group={group}
-                          statusUpdates={statusUpdates}
-                          tick={tick}
-                        />
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {/* Other linked sessions */}
-                {otherGroups.length > 0 && (
-                  <div>
-                    <div className="px-1 pb-1.5 flex items-center gap-1.5">
-                      <Link className="size-3 text-muted-foreground" />
-                      <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-                        Linked Sessions ({otherGroups.length})
-                      </span>
-                    </div>
-                    <div className="flex flex-col gap-1.5">
-                      {otherGroups.map((group) => (
-                        <LinkedSessionCard
-                          key={group.source}
-                          group={group}
-                          statusUpdates={statusUpdates}
-                          tick={tick}
-                        />
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {/* Other events (external/API triggers), grouped by source */}
-                {otherEvents.length > 0 && (
-                  <div>
-                    <div className="px-1 pb-1.5 flex items-center gap-1.5">
-                      <Globe className="size-3 text-muted-foreground" />
-                      <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-                        Other Events ({otherEvents.length})
-                      </span>
-                    </div>
-                    <div className="flex flex-col gap-1.5">
-                      {groupOtherEventsBySource(otherEvents).map((sourceGroup) => (
-                        <OtherSourceGroup key={sourceGroup.source} group={sourceGroup} />
-                      ))}
-                    </div>
-                  </div>
-                )}
+              <div className="flex flex-col gap-1.5 p-2">
+                {/* All sources as accordions — pending first, then sessions, then other */}
+                {pendingGroups.map((group) => (
+                  <LinkedSessionCard
+                    key={group.source}
+                    group={group}
+                    statusUpdates={statusUpdates}
+                    tick={tick}
+                  />
+                ))}
+                {otherGroups.map((group) => (
+                  <LinkedSessionCard
+                    key={group.source}
+                    group={group}
+                    statusUpdates={statusUpdates}
+                    tick={tick}
+                  />
+                ))}
+                {groupOtherEventsBySource(otherEvents).map((sourceGroup) => (
+                  <OtherSourceGroup key={sourceGroup.source} group={sourceGroup} />
+                ))}
               </div>
             )}
           </>
