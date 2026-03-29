@@ -265,7 +265,20 @@ export function registerMessagingHandlers(socket: RelaySocket): void {
         // Validate that the target session belongs to the same user
         const senderSession = await getSharedSession(socket.data.sessionId);
         const targetSession = await getSharedSession(targetSessionId);
-        if (!senderSession?.userId || !targetSession?.userId || senderSession.userId !== targetSession.userId) {
+
+        // If the target session no longer exists (e.g. runner/server restarted
+        // and the old child session was already cleaned up), treat the
+        // trigger_response as a no-op success.  The trigger is implicitly
+        // cancelled when its session is gone — retrying forever would just
+        // spam the logs.  We specifically check for a missing target session
+        // (as opposed to a userId mismatch) to keep the security guard for
+        // cross-user access intact.
+        if (!targetSession) {
+            if (typeof ack === "function") ack({ ok: true });
+            return;
+        }
+
+        if (!senderSession?.userId || !targetSession.userId || senderSession.userId !== targetSession.userId) {
             socket.emit("error", { message: "Target session belongs to a different user" });
             if (typeof ack === "function") ack({ ok: false, error: "Target session belongs to a different user" });
             return;
