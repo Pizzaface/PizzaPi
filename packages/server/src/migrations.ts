@@ -3,6 +3,7 @@ import { getAuth } from "./auth.js";
 import { ensureRelaySessionTables } from "./sessions/store.js";
 import { ensurePushSubscriptionTable } from "./push.js";
 import { ensureRunnerRecentFoldersTable } from "./runner-recent-folders.js";
+import { ensureRunnerTriggerListenersTable } from "./sessions/runner-trigger-listener-store.js";
 import { ensureUserHiddenModelTable } from "./user-hidden-models.js";
 import { ensureExtractedAttachmentTable } from "./attachments/store.js";
 import { ensureWebhookTable } from "./webhooks/store.js";
@@ -53,6 +54,7 @@ export async function runAllMigrations(): Promise<void> {
         await ensurePushSubscriptionTable();
         await ensureUserHiddenModelTable();
         await ensureRunnerRecentFoldersTable();
+        await ensureRunnerTriggerListenersTable();
         await ensureExtractedAttachmentTable();
         await ensureWebhookTable();
         log.info("All database migrations complete.");
