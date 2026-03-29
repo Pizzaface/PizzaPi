@@ -290,7 +290,7 @@ export function SessionViewer({
   });
 
   // ── @-mention handlers ────────────────────────────────────────────────────
-  const atMention = useAtMentionHandlers(inputRef, setInput, runnerId, runnerInfo);
+  const atMention = useAtMentionHandlers(sessionId, inputRef, setInput, runnerId, runnerInfo);
 
   const {
     atMentionOpen,

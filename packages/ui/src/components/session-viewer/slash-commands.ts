@@ -189,6 +189,13 @@ export function useSlashCommands(
     return names;
   }, [supportedWebCommands]);
 
+  // Reset all command picker state when the active session changes
+  React.useEffect(() => {
+    setCommandOpen(false);
+    setCommandQuery("");
+    setCommandHighlightedIndex(0);
+  }, [sessionId]);
+
   // Reset highlighted index when the query changes
   React.useEffect(() => {
     setCommandHighlightedIndex(0);

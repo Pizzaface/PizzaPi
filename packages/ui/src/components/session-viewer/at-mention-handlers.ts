@@ -40,6 +40,7 @@ export interface AtMentionResult extends AtMentionState, AtMentionHandlers {}
  * with a REST fallback) when the popover opens.
  */
 export function useAtMentionHandlers(
+  sessionId: string | null,
   inputRef: React.MutableRefObject<string>,
   setInput: (value: string) => void,
   runnerId: string | undefined,
@@ -58,6 +59,17 @@ export function useAtMentionHandlers(
     Array<{ name: string; description?: string }>
   >([]);
   const atMentionAgentsFetchedForRef = React.useRef<string | null>(null);
+
+  // Reset all @-mention state when the active session changes
+  React.useEffect(() => {
+    setAtMentionOpen(false);
+    setAtMentionQuery("");
+    setAtMentionPath("");
+    setAtMentionTriggerOffset(0);
+    setAtMentionHighlightedIndex(0);
+    setAtMentionHighlightedEntry(null);
+    setAtMentionHighlightedAgent(null);
+  }, [sessionId]);
 
   // Populate agents when the @-mention popover opens
   React.useEffect(() => {
