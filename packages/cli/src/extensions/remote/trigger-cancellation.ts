@@ -13,10 +13,21 @@ import { createLogger } from "@pizzapi/tools";
 import type { RelayContext } from "../remote-types.js";
 
 const TRIGGER_CANCELLATION_RETRY_INTERVAL_MS = 3_000;
+/** Max attempts before dropping a cancellation as permanently failed. */
+const MAX_CANCELLATION_RETRIES = 10;
+/**
+ * Error messages that indicate the cancellation will never succeed,
+ * regardless of how many times we retry (e.g. the target session no
+ * longer exists under this user, or the parent relationship is broken).
+ */
+const PERMANENT_ERRORS = [
+    "Target session belongs to a different user",
+    "Sender is not the parent of the target session",
+];
 const log = createLogger("remote");
 
 export interface CancellationState {
-    pendingCancellations: Array<{ triggerId: string; childSessionId: string }>;
+    pendingCancellations: Array<{ triggerId: string; childSessionId: string; retryCount?: number }>;
     pendingCancellationRetryTimer: ReturnType<typeof setInterval> | null;
     pendingCancellationRetryInFlight: boolean;
 }
@@ -102,10 +113,35 @@ export function createCancellationManager(rctx: RelayContext, state: Cancellatio
                         state.pendingCancellations.splice(index, 1);
                     }
                 } else {
-                    failedCancellations++;
-                    log.info(
-                        `pizzapi: trigger cancellation failed for ${triggerId}: ${result?.error ?? "unknown"} — will retry`,
+                    const errorMsg = result?.error ?? "unknown";
+                    const isPermanent = PERMANENT_ERRORS.some((pe) => errorMsg.includes(pe));
+                    const entry = state.pendingCancellations.find(
+                        (c) => c.triggerId === triggerId && c.childSessionId === childSessionId,
                     );
+                    if (entry) {
+                        entry.retryCount = (entry.retryCount ?? 0) + 1;
+                    }
+                    const retries = entry?.retryCount ?? 1;
+
+                    if (isPermanent || retries >= MAX_CANCELLATION_RETRIES) {
+                        // Permanent error or exceeded max retries — drop it
+                        const reason = isPermanent ? "permanent error" : `exceeded ${MAX_CANCELLATION_RETRIES} retries`;
+                        log.info(
+                            `pizzapi: trigger cancellation for ${triggerId} dropped (${reason}: ${errorMsg})`,
+                        );
+                        const index = state.pendingCancellations.findIndex(
+                            (c) => c.triggerId === triggerId && c.childSessionId === childSessionId,
+                        );
+                        if (index >= 0) {
+                            state.pendingCancellations.splice(index, 1);
+                        }
+                        successfulCancellations++; // Count as resolved for batch logging
+                    } else {
+                        failedCancellations++;
+                        log.info(
+                            `pizzapi: trigger cancellation failed for ${triggerId}: ${errorMsg} — will retry (${retries}/${MAX_CANCELLATION_RETRIES})`,
+                        );
+                    }
                 }
 
                 if (completedResponses === cancellationsToRetry.length) {
