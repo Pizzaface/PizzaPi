@@ -38,7 +38,7 @@ import {
     recordRunnerSession,
     linkSessionToRunner,
 } from "../ws/sio-registry.js";
-import { getRunnerServices } from "../ws/sio-registry/runners.js";
+import { getRunnerServices, getRunnerData } from "../ws/sio-registry/runners.js";
 import type { RouteHandler } from "./types.js";
 import { randomUUID } from "crypto";
 import { createLogger } from "@pizzapi/tools";
@@ -618,6 +618,12 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
         if (identity instanceof Response) return identity;
 
         const runnerId = decodeURIComponent(broadcastMatch[1]);
+
+        // Verify the runner belongs to the authenticated user
+        const runnerData = await getRunnerData(runnerId);
+        if (!runnerData || runnerData.userId !== identity.userId) {
+            return Response.json({ error: "Runner not found" }, { status: 404 });
+        }
 
         let body: TriggerRequest;
         try {

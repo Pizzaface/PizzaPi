@@ -1162,8 +1162,8 @@ function ServiceCatalogAccordion({
                       </div>
                     )}
                     {/* Collapsible param definitions when not subscribed */}
-                    {hasParams && !isSubscribed && !isParamFormVisible && (
-                      <CollapsibleParamDefs params={def.params!} />
+                    {hasParams && !isSubscribed && !isParamFormVisible && def.params && (
+                      <CollapsibleParamDefs params={def.params} />
                     )}
                   </div>
 
@@ -1195,7 +1195,7 @@ function ServiceCatalogAccordion({
                 {isParamFormVisible && (hasParams || Object.keys((def.schema as any)?.properties ?? {}).length > 0) && (
                   <div className="mt-2 rounded border border-violet-500/20 bg-violet-950/10 p-2 space-y-1.5">
                     {hasParams && <div className="text-[10px] font-medium text-violet-300/80">Service params</div>}
-                    {def.params!.map((p) => {
+                    {hasParams && def.params!.map((p) => {
                       const currentVal = paramValues[def.type]?.[p.name];
                       const selectedArr = Array.isArray(currentVal) ? currentVal : [];
 

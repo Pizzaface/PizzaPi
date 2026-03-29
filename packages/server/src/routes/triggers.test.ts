@@ -79,6 +79,8 @@ mock.module("../sessions/trigger-subscription-store.js", () => ({
 import * as _runnersModule from "../ws/sio-registry/runners.js";
 const mockGetRunnerServices = spyOn(_runnersModule, "getRunnerServices")
     .mockImplementation((_rid: string) => Promise.resolve(null as any));
+const mockGetRunnerData = spyOn(_runnersModule, "getRunnerData")
+    .mockImplementation((_rid: string) => Promise.resolve({ userId: "user-1", runnerId: "runner-A" } as any));
 
 // ── Mock logger ──────────────────────────────────────────────────────────
 // NOTE: @pizzapi/tools mock removed — log calls in tests are harmless,
@@ -636,6 +638,8 @@ describe("POST /api/runners/:runnerId/trigger-broadcast", () => {
         mockGetSubscriptionParams.mockReturnValue(Promise.resolve(undefined));
         mockGetSubscriptionFilters.mockReset();
         mockGetSubscriptionFilters.mockReturnValue(Promise.resolve(undefined));
+        mockGetRunnerData.mockReset();
+        mockGetRunnerData.mockImplementation((_rid: string) => Promise.resolve({ userId: "user-1", runnerId: "runner-A" } as any));
         mockValidateApiKey.mockReturnValue(
             Promise.resolve({ userId: "user-1", userName: "TestUser" }),
         );
