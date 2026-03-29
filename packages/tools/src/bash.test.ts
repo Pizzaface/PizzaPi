@@ -1,16 +1,18 @@
 /**
- * bash.test.ts — unit coverage for bashTool with mocked child_process.
+ * bash.test.ts — unit coverage for bashTool with injected dependencies.
  *
  * Strategy:
- *  - mock.module("child_process", ...) is hoisted by Bun before static imports,
- *    so we cannot rely on `import { exec as realExec }` being the real exec.
- *  - We attach util.promisify.custom to the mock exec so promisify(exec) returns
- *    { stdout, stderr } exactly as the real child_process.exec does.
- *  - Integration smoke test uses Bun.spawnSync (bypasses child_process entirely).
+ *  - Uses createBashTool(deps) DI factory instead of mock.module(), so no
+ *    module-level mocks leak into other test files.
+ *  - exec is replaced via the execFn dep; sandbox via isSandboxActiveFn,
+ *    getSandboxEnvFn, and wrapCommandFn.
+ *  - Integration smoke test calls the real bashTool (no DI overrides) via
+ *    Bun.spawnSync to verify actual shell execution works end-to-end.
  */
 
-import { describe, test, expect, afterAll, mock } from "bun:test";
+import { describe, test, expect } from "bun:test";
 import { promisify } from "util";
+import { createBashTool, bashTool } from "./bash.js";
 
 // ── Mock State ────────────────────────────────────────────────────────────────
 
@@ -48,10 +50,15 @@ function setError(err: MockError) {
     mockError = err;
     mockSuccess = null;
 }
-/** Passthrough mode: integration smoke test uses Bun.spawnSync directly. */
-function passthrough() {
+/** Passthrough mode: integration smoke test uses the real bashTool. */
+function resetMockState() {
     mockSuccess = null;
     mockError = null;
+    capturedCmd = "";
+    capturedOpts = {};
+    sandboxActive = false;
+    sandboxEnvVars = {};
+    wrapCommandThrows = false;
 }
 
 // ── Build the mock exec function ──────────────────────────────────────────────
@@ -60,6 +67,8 @@ function passthrough() {
 // We must replicate this or `const { stdout, stderr } = await execAsync(...)` in
 // bash.ts will destructure undefined from a plain string.
 
+import { exec } from "child_process";
+
 function mockExecCallback(
     cmd: string,
     opts: any,
@@ -67,15 +76,6 @@ function mockExecCallback(
 ): void {
     capturedCmd = cmd;
     capturedOpts = { timeout: opts?.timeout, env: opts?.env };
-
-    if (mockSuccess === null && mockError === null) {
-        // Passthrough: run the real shell via Bun.spawnSync (no child_process).
-        const proc = Bun.spawnSync(["bash", "-c", cmd], { env: opts?.env ?? process.env });
-        const stdout = proc.stdout.toString();
-        const stderr = proc.stderr.toString();
-        callback(null, stdout, stderr);
-        return;
-    }
 
     if (mockError) {
         const err = Object.assign(new Error(mockError.message), {
@@ -106,47 +106,33 @@ function mockExecCallback(
         });
     });
 
-// ── Module Mocks (declared before dynamic imports of bash.ts) ─────────────────
+// ── DI-based tool instance ────────────────────────────────────────────────────
 
-mock.module("child_process", () => ({
-    exec: mockExecCallback,
-}));
-
-mock.module("./sandbox.js", () => ({
-    isSandboxActive: () => sandboxActive,
-    getSandboxEnv: () => ({ ...sandboxEnvVars }),
-    wrapCommand: async (cmd: string) => {
+const testTool = createBashTool({
+    execFn: mockExecCallback as typeof exec,
+    isSandboxActiveFn: () => sandboxActive,
+    getSandboxEnvFn: () => ({ ...sandboxEnvVars }),
+    wrapCommandFn: async (cmd: string) => {
         if (wrapCommandThrows) throw new Error("sandbox denied: path not allowed");
         return cmd;
     },
-    initSandbox: async () => {},
-    cleanupSandbox: async () => {},
-    _resetState: () => {},
-}));
-
-// ── Load bash.ts after mocks are registered ───────────────────────────────────
-
-const { bashTool } = await import("./bash.js");
+});
 
 // ── Helper ────────────────────────────────────────────────────────────────────
 
 async function execBash(command: string, timeout?: number) {
-    return bashTool.execute("test-call", { command, timeout });
+    return testTool.execute("test-call", { command, timeout });
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 describe("bashTool", () => {
-    afterAll(() => {
-        mock.restore();
-    });
-
     // ── Integration smoke test ─────────────────────────────────────────────
 
     describe("integration smoke test", () => {
         test("runs real `echo hello` through the actual shell", async () => {
-            passthrough();
-            const result = await execBash("echo hello");
+            // Use the real bashTool (no DI), which runs through the real shell
+            const result = await bashTool.execute("test-call", { command: "echo hello" });
             expect(result.content[0].text).toContain("hello");
             expect(result.details.stdout).toContain("hello");
         });
@@ -208,7 +194,6 @@ describe("bashTool", () => {
         test("returns sandboxBlocked=true when wrapCommand throws", async () => {
             sandboxActive = true;
             wrapCommandThrows = true;
-            // exec should never be reached — mock result doesn't matter
             const result = await execBash("echo ok");
             expect(result.details.sandboxBlocked).toBe(true);
             expect(result.content[0].text).toContain("Sandbox blocked");

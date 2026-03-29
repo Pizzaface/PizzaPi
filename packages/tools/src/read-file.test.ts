@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeEach, afterEach, afterAll, mock } from "bun:test";
+import { describe, test, expect, beforeEach, afterEach, mock } from "bun:test";
 import { mkdtempSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -159,7 +159,4 @@ describe("readFileTool", () => {
         expect(readFileTool.label).toBe("Read File");
     });
 
-    afterAll(() => {
-        mock.restore();
-    });
 });

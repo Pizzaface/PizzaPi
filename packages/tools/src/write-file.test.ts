@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeEach, afterEach, afterAll, mock } from "bun:test";
+import { describe, test, expect, beforeEach, afterEach, mock } from "bun:test";
 import { mkdtempSync, existsSync, readFileSync, mkdirSync, writeFileSync as writeFileSyncFs } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -178,7 +178,4 @@ describe("writeFileTool", () => {
         expect(writeFileTool.label).toBe("Write File");
     });
 
-    afterAll(() => {
-        mock.restore();
-    });
 });
