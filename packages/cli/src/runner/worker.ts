@@ -2,7 +2,7 @@ import { createAgentSession, DefaultResourceLoader, AuthStorage } from "@marioze
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
-import { BUILTIN_SYSTEM_PROMPT, defaultAgentDir, expandHome, loadConfig, resolveSandboxConfig, validateSandboxOverride, applyProviderSettingsEnv } from "../config.js";
+import { buildSystemPrompt, defaultAgentDir, expandHome, loadConfig, resolveSandboxConfig, validateSandboxOverride, applyProviderSettingsEnv } from "../config.js";
 import { buildWorkerSkillPaths } from "../skills.js";
 import { getPluginSkillPaths } from "../extensions/claude-plugins.js";
 import { initSandbox, cleanupSandbox, isSandboxActive } from "@pizzapi/tools";
@@ -284,7 +284,7 @@ async function main(): Promise<void> {
         ...(config.systemPrompt !== undefined && {
             systemPromptOverride: () => config.systemPrompt,
         }),
-        appendSystemPrompt: [BUILTIN_SYSTEM_PROMPT, config.appendSystemPrompt, agentSystemPrompt].filter(Boolean).join("\n\n"),
+        appendSystemPrompt: [buildSystemPrompt(), config.appendSystemPrompt, agentSystemPrompt].filter(Boolean).join("\n\n"),
         ...(agentFiles.length > 0 && {
             agentsFilesOverride: (base) => ({
                 agentsFiles: [...base.agentsFiles, ...agentFiles],

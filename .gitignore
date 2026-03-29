@@ -21,6 +21,9 @@ Library/Caches/
 # Night Shift reports (local-only, not committed)
 /reports/
 
+# Generated files
+packages/cli/src/config/system-prompt.precompiled.ts
+
 # Tool artifacts
 .playwright-cli/
 .python-version
