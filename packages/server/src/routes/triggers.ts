@@ -29,8 +29,15 @@
  */
 
 import { requireSession, validateApiKey } from "../middleware.js";
-import { getSharedSession, getLocalTuiSocket, broadcastToSessionViewers } from "../ws/sio-registry.js";
-import { emitToRelaySessionVerified } from "../ws/sio-registry.js";
+import {
+    getSharedSession,
+    getLocalTuiSocket,
+    broadcastToSessionViewers,
+    emitToRelaySessionVerified,
+    getLocalRunnerSocket,
+    recordRunnerSession,
+    linkSessionToRunner,
+} from "../ws/sio-registry.js";
 import { getRunnerServices } from "../ws/sio-registry/runners.js";
 import type { RouteHandler } from "./types.js";
 import { randomUUID } from "crypto";
@@ -48,8 +55,26 @@ import {
     getSubscriptionParams,
     type SubscriptionParams,
 } from "../sessions/trigger-subscription-store.js";
+import {
+    getRunnerListenerTypes,
+    getRunnerTriggerListener,
+} from "../sessions/runner-trigger-listener-store.js";
+import { waitForSpawnAck } from "../ws/runner-control.js";
 
 const log = createLogger("triggers-api");
+
+/** Poll for a session socket to appear after spawn (same pattern as webhooks). */
+async function waitForSessionSocket(sessionId: string, timeoutMs: number): Promise<boolean> {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+        const local = getLocalTuiSocket(sessionId);
+        if (local?.connected) return true;
+        const shared = await getSharedSession(sessionId);
+        if (shared) return true;
+        await new Promise((r) => setTimeout(r, 200));
+    }
+    return false;
+}
 
 /** Shape of the POST /api/sessions/:id/trigger request body. */
 interface TriggerRequest {
@@ -562,8 +587,75 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
             }
         }
 
-        log.info(`Broadcast trigger ${triggerId} (type=${body.type}) to ${delivered}/${subscriberIds.length} subscribers on runner ${runnerId}`);
-        return Response.json({ ok: true, delivered, triggerId });
+        // ── Runner-level auto-spawn listeners ──────────────────────────
+        let spawned = 0;
+        const listenerTypes = await getRunnerListenerTypes(runnerId);
+        if (listenerTypes.includes(body.type)) {
+            const listener = await getRunnerTriggerListener(runnerId, body.type);
+            if (listener) {
+                const runnerSocket = getLocalRunnerSocket(runnerId);
+                if (runnerSocket) {
+                    const spawnedSessionId = randomUUID();
+                    const ackPromise = waitForSpawnAck(spawnedSessionId, 10_000);
+                    try {
+                        runnerSocket.emit("new_session", {
+                            sessionId: spawnedSessionId,
+                            ...(listener.cwd ? { cwd: listener.cwd } : {}),
+                            ...(listener.prompt ? { prompt: listener.prompt } : {}),
+                        });
+                        const ack = await ackPromise;
+                        if (ack.ok !== false) {
+                            await recordRunnerSession(runnerId, spawnedSessionId);
+                            await linkSessionToRunner(runnerId, spawnedSessionId);
+
+                            // Poll for the session socket to register (like webhooks do)
+                            const ready = await waitForSessionSocket(spawnedSessionId, 15_000);
+                            if (!ready) {
+                                log.warn(`Auto-spawn listener: session ${spawnedSessionId} socket never appeared`);
+                            }
+
+                            const spawnTrigger = {
+                                ...trigger,
+                                targetSessionId: spawnedSessionId,
+                            };
+                            const spawnHistory = {
+                                triggerId: `${triggerId}_spawn`,
+                                type: body.type,
+                                source: `external:${body.source ?? "service"}`,
+                                summary: body.summary,
+                                payload: body.payload,
+                                deliverAs,
+                                ts,
+                                direction: "inbound" as const,
+                            };
+
+                            const spawnSocket = getLocalTuiSocket(spawnedSessionId);
+                            if (spawnSocket?.connected) {
+                                spawnSocket.emit("session_trigger", { trigger: spawnTrigger });
+                                void pushTriggerHistory(spawnedSessionId, spawnHistory).catch(() => {});
+                                broadcastToSessionViewers(spawnedSessionId, "trigger_delivered", { triggerId: spawnHistory.triggerId });
+                                spawned++;
+                            } else {
+                                const cross = await emitToRelaySessionVerified(
+                                    spawnedSessionId, "session_trigger", { trigger: spawnTrigger },
+                                );
+                                if (cross) {
+                                    void pushTriggerHistory(spawnedSessionId, spawnHistory).catch(() => {});
+                                    broadcastToSessionViewers(spawnedSessionId, "trigger_delivered", { triggerId: spawnHistory.triggerId });
+                                    spawned++;
+                                }
+                            }
+                            log.info(`Auto-spawned session ${spawnedSessionId} for listener ${body.type} on runner ${runnerId}`);
+                        }
+                    } catch (err) {
+                        log.warn(`Failed to auto-spawn session for listener ${body.type}: ${err}`);
+                    }
+                }
+            }
+        }
+
+        log.info(`Broadcast trigger ${triggerId} (type=${body.type}) to ${delivered}/${subscriberIds.length} subscribers + ${spawned} spawned on runner ${runnerId}`);
+        return Response.json({ ok: true, delivered, spawned, triggerId });
     }
 
     return undefined;

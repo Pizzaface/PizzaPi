@@ -14,6 +14,12 @@ import {
     recordRunnerSession,
     registerTerminal,
 } from "../ws/sio-registry.js";
+import { getRunnerServices } from "../ws/sio-registry/runners.js";
+import {
+    addRunnerTriggerListener,
+    removeRunnerTriggerListener,
+    listRunnerTriggerListeners,
+} from "../sessions/runner-trigger-listener-store.js";
 import { getSession } from "../ws/sio-state/index.js";
 import { sendSkillCommand, sendAgentCommand, sendRunnerCommand } from "../ws/namespaces/runner.js";
 import { waitForSpawnAck } from "../ws/runner-control.js";
@@ -298,6 +304,67 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
             if (!path) return Response.json({ error: "Missing path" }, { status: 400 });
             const deleted = await deleteRecentFolder(identity.userId, runnerId, path);
             return Response.json({ ok: true, deleted });
+        }
+
+        return undefined;
+    }
+
+    // ── Trigger definitions + listeners ──────────────────────────────
+    const triggersMatch = url.pathname.match(/^\/api\/runners\/([^/]+)\/triggers$/);
+    if (triggersMatch && req.method === "GET") {
+        const identity = await requireSession(req);
+        if (identity instanceof Response) return identity;
+
+        const runnerId = decodeURIComponent(triggersMatch[1]);
+        const runner = await getRunnerData(runnerId);
+        if (!runner) return Response.json({ error: "Runner not found" }, { status: 404 });
+        if (runner.userId !== identity.userId) return Response.json({ error: "Forbidden" }, { status: 403 });
+
+        const [services, listeners] = await Promise.all([
+            getRunnerServices(runnerId),
+            listRunnerTriggerListeners(runnerId),
+        ]);
+        return Response.json({
+            triggerDefs: services?.triggerDefs ?? [],
+            listeners,
+        });
+    }
+
+    // ── Runner trigger listeners (subscribe/unsubscribe) ──────────────
+    const listenerMatch = url.pathname.match(/^\/api\/runners\/([^/]+)\/trigger-listeners(?:\/([^/]+))?$/);
+    if (listenerMatch) {
+        const identity = await requireSession(req);
+        if (identity instanceof Response) return identity;
+
+        const runnerId = decodeURIComponent(listenerMatch[1]);
+        const runner = await getRunnerData(runnerId);
+        if (!runner) return Response.json({ error: "Runner not found" }, { status: 404 });
+        if (runner.userId !== identity.userId) return Response.json({ error: "Forbidden" }, { status: 403 });
+
+        // GET /api/runners/:id/trigger-listeners — list
+        if (req.method === "GET" && !listenerMatch[2]) {
+            const listeners = await listRunnerTriggerListeners(runnerId);
+            return Response.json({ listeners });
+        }
+
+        // POST /api/runners/:id/trigger-listeners — add
+        if (req.method === "POST" && !listenerMatch[2]) {
+            const body = await req.json().catch(() => null) as Record<string, unknown> | null;
+            const triggerType = typeof body?.triggerType === "string" ? body.triggerType.trim() : "";
+            if (!triggerType) return Response.json({ error: "Missing triggerType" }, { status: 400 });
+
+            await addRunnerTriggerListener(runnerId, triggerType, {
+                prompt: typeof body?.prompt === "string" ? body.prompt : undefined,
+                cwd: typeof body?.cwd === "string" ? body.cwd : undefined,
+            });
+            return Response.json({ ok: true });
+        }
+
+        // DELETE /api/runners/:id/trigger-listeners/:type — remove
+        if (req.method === "DELETE" && listenerMatch[2]) {
+            const triggerType = decodeURIComponent(listenerMatch[2]);
+            const removed = await removeRunnerTriggerListener(runnerId, triggerType);
+            return Response.json({ ok: true, removed });
         }
 
         return undefined;

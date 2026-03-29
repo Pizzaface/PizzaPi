@@ -32,12 +32,13 @@ import {
     Server,
     Webhook,
 } from "lucide-react";
+import { RunnerTriggersPanel } from "@/components/RunnerTriggersPanel";
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
-export type RunnerTab = "sessions" | "skills" | "agents" | "plugins" | "sandbox" | "hooks" | "webhooks" | "usage";
+export type RunnerTab = "sessions" | "skills" | "agents" | "plugins" | "sandbox" | "hooks" | "webhooks" | "triggers" | "usage";
 
 interface RunnerHook {
     type: string;
@@ -262,6 +263,7 @@ const TABS: { key: RunnerTab; label: string; countKey?: "skills" | "agents" | "p
     { key: "plugins", label: "Plugins", countKey: "plugins" },
     { key: "hooks", label: "Hooks", countKey: "hooks" },
     { key: "webhooks", label: "Webhooks" },
+    { key: "triggers", label: "Triggers" },
     { key: "usage", label: "Usage" },
     { key: "sandbox", label: "Sandbox" },
 ];
@@ -415,6 +417,13 @@ export function RunnerDetailPanel({
             break;
         case "webhooks":
             tabContent = <WebhooksManager bare runnerId={runner.runnerId} />;
+            break;
+        case "triggers":
+            tabContent = (
+                <RunnerTriggersPanel
+                    runnerId={runner.runnerId}
+                />
+            );
             break;
         case "usage":
             tabContent = (
