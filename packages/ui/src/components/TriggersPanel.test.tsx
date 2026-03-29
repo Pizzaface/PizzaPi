@@ -257,7 +257,7 @@ describe("TriggersPanel — grouped layout", () => {
     expect(container.textContent).toContain("responded");
   });
 
-  test("shows external/API triggers under Other Events", async () => {
+  test("shows external/API triggers under Other Events grouped by source", async () => {
     const trigger = makeTrigger({
       triggerId: "t-ext",
       type: "webhook",
@@ -272,8 +272,16 @@ describe("TriggersPanel — grouped layout", () => {
     });
 
     expect(container.textContent).toContain("Other Events");
-    expect(container.textContent).toContain("webhook");
+    // Source group header shows source label
     expect(container.textContent).toContain("github");
+    expect(container.textContent).toContain("1 event");
+
+    // Expand the source group to see the trigger type
+    const buttons = Array.from(container.getElementsByTagName("button"));
+    const groupBtn = buttons.find((b) => b.textContent?.includes("github"));
+    expect(groupBtn).toBeDefined();
+    await act(async () => { fireEvent.click(groupBtn!); });
+    expect(container.textContent).toContain("webhook");
   });
 
   test("shows multiple events from same child in one group", async () => {
@@ -371,7 +379,7 @@ describe("TriggersPanel — Send Trigger dialog", () => {
     expect(document.body.textContent).not.toContain("Deliver As");
   });
 
-  test("dialog opens when Send Trigger button is clicked", async () => {
+  test("dialog opens when Send button is clicked", async () => {
     fetchState.response = { ok: true, body: { triggers: [] } };
 
     let container!: HTMLElement;
@@ -380,7 +388,7 @@ describe("TriggersPanel — Send Trigger dialog", () => {
     });
 
     const buttons = Array.from(container.getElementsByTagName("button"));
-    const sendBtn = buttons.find((b) => b.textContent?.includes("Send Trigger"));
+    const sendBtn = buttons.find((b) => b.textContent?.includes("Send"));
     expect(sendBtn).toBeDefined();
 
     await act(async () => {
@@ -400,7 +408,7 @@ describe("TriggersPanel — Send Trigger dialog", () => {
     });
 
     const buttons = Array.from(container.getElementsByTagName("button"));
-    const sendBtn = buttons.find((b) => b.textContent?.includes("Send Trigger"));
+    const sendBtn = buttons.find((b) => b.textContent?.includes("Send"));
 
     await act(async () => {
       fireEvent.click(sendBtn!);
@@ -422,7 +430,7 @@ describe("TriggersPanel — Send Trigger dialog", () => {
 });
 
 describe("TriggersPanel — trigger catalog", () => {
-  test("renders Available Triggers section when triggerDefs are provided", async () => {
+  test("renders Available Triggers section when triggerDefs are provided and Catalog tab clicked", async () => {
     fetchState.response = { ok: true, body: { triggers: [], subscriptions: [] } };
 
     const triggerDefs = [
@@ -435,7 +443,18 @@ describe("TriggersPanel — trigger catalog", () => {
       ({ container } = render(<TriggersPanel sessionId="sess-abc" triggerDefs={triggerDefs} />));
     });
 
+    // Click the Catalog tab
+    const buttons = Array.from(container.getElementsByTagName("button"));
+    const catalogTab = buttons.find((b) => b.textContent?.includes("Catalog"));
+    expect(catalogTab).toBeDefined();
+    await act(async () => { fireEvent.click(catalogTab!); });
+
     expect(container.textContent).toContain("Available Triggers");
+    // Catalog starts collapsed — click to expand
+    const expandBtn = Array.from(container.getElementsByTagName("button")).find((b) => b.textContent?.includes("Available Triggers"));
+    expect(expandBtn).toBeDefined();
+    await act(async () => { fireEvent.click(expandBtn!); });
+
     expect(container.textContent).toContain("godmother:idea_moved");
     expect(container.textContent).toContain("Idea Status Changed");
     expect(container.textContent).toContain("godmother:idea_created");
@@ -465,6 +484,13 @@ describe("TriggersPanel — trigger catalog", () => {
       ({ container } = render(<TriggersPanel sessionId="sess-abc" triggerDefs={triggerDefs} />));
     });
 
+    // Switch to Catalog tab
+    const catalogTab = Array.from(container.getElementsByTagName("button")).find((b) => b.textContent?.includes("Catalog"));
+    await act(async () => { fireEvent.click(catalogTab!); });
+    // Expand the catalog
+    const expandBtn = Array.from(container.getElementsByTagName("button")).find((b) => b.textContent?.includes("Available Triggers"));
+    await act(async () => { fireEvent.click(expandBtn!); });
+
     const buttons = Array.from(container.getElementsByTagName("button"));
     const subscribeBtn = buttons.find((b) => b.getAttribute("aria-label")?.startsWith("Subscribe to"));
     expect(subscribeBtn).toBeDefined();
@@ -481,6 +507,13 @@ describe("TriggersPanel — trigger catalog", () => {
     await act(async () => {
       ({ container } = render(<TriggersPanel sessionId="sess-abc" triggerDefs={triggerDefs} />));
     });
+
+    // Switch to Catalog tab
+    const catalogTab = Array.from(container.getElementsByTagName("button")).find((b) => b.textContent?.includes("Catalog"));
+    await act(async () => { fireEvent.click(catalogTab!); });
+    // Expand the catalog
+    const expandBtn = Array.from(container.getElementsByTagName("button")).find((b) => b.textContent?.includes("Available Triggers"));
+    await act(async () => { fireEvent.click(expandBtn!); });
 
     expect(container.textContent).toContain("subscribed");
     const buttons = Array.from(container.getElementsByTagName("button"));
@@ -535,7 +568,7 @@ describe("TriggersPanel — trigger catalog", () => {
     expect(fetchSpy).toHaveBeenCalled();
   });
 
-  test("catalog section can be collapsed", async () => {
+  test("catalog section can be expanded and collapsed", async () => {
     fetchState.response = { ok: true, body: { triggers: [] } };
 
     const triggerDefs = [{ type: "svc:event", label: "Service Event" }];
@@ -545,16 +578,22 @@ describe("TriggersPanel — trigger catalog", () => {
       ({ container } = render(<TriggersPanel sessionId="sess-abc" triggerDefs={triggerDefs} />));
     });
 
+    // Switch to Catalog tab
+    const catalogTab = Array.from(container.getElementsByTagName("button")).find((b) => b.textContent?.includes("Catalog"));
+    await act(async () => { fireEvent.click(catalogTab!); });
+
+    // Catalog starts collapsed — svc:event should not be visible
+    expect(container.textContent).not.toContain("svc:event");
+
+    // Expand
+    const expandBtn = Array.from(container.getElementsByTagName("button")).find((b) => b.textContent?.includes("Available Triggers"));
+    expect(expandBtn).toBeDefined();
+    await act(async () => { fireEvent.click(expandBtn!); });
     expect(container.textContent).toContain("svc:event");
 
-    const buttons = Array.from(container.getElementsByTagName("button"));
-    const collapseBtn = buttons.find((b) => b.textContent?.includes("Available Triggers"));
-    expect(collapseBtn).toBeDefined();
-
-    await act(async () => {
-      fireEvent.click(collapseBtn!);
-    });
-
+    // Collapse again
+    const collapseBtn = Array.from(container.getElementsByTagName("button")).find((b) => b.textContent?.includes("Available Triggers"));
+    await act(async () => { fireEvent.click(collapseBtn!); });
     expect(container.textContent).not.toContain("svc:event");
   });
 });

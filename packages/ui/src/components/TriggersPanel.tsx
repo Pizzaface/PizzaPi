@@ -749,7 +749,7 @@ interface TriggerCatalogSectionProps {
 }
 
 function TriggerCatalogSection({ sessionId, triggerDefs, subscriptions, onSubscriptionsChange }: TriggerCatalogSectionProps) {
-  const [collapsed, setCollapsed] = React.useState(false);
+  const [collapsed, setCollapsed] = React.useState(true);
   const [pending, setPending] = React.useState<Set<string>>(new Set());
   // Track which trigger type has its param form open
   const [paramFormOpen, setParamFormOpen] = React.useState<string | null>(null);
@@ -1123,7 +1123,7 @@ function ActiveSubscriptionsSection({ subscriptions }: { subscriptions: TriggerS
   if (subscriptions.length === 0) return null;
 
   return (
-    <div className="border-b border-border">
+    <div>
       <div className="px-3 py-2 flex items-center gap-1.5">
         <BellRing className="size-3 text-emerald-400" />
         <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
@@ -1384,130 +1384,200 @@ export function TriggersPanel({ sessionId, triggerDefs = [], viewerSocket }: Tri
     void fetchTriggers(true);
   }, [fetchTriggers]);
 
+  // Tab state: "history" or "catalog"
+  const hasCatalog = triggerDefs.length > 0 || subscriptions.length > 0;
+  const [activeTab, setActiveTab] = React.useState<"history" | "catalog">("history");
+
+  // Count for badges
+  const pendingCount = pendingGroups.length;
+
   return (
     <div className="flex flex-col h-full">
-      {/* Toolbar */}
-      <div className="flex items-center gap-1.5 px-3 py-1.5 border-b border-border bg-muted/20 shrink-0">
-        <span className="text-xs font-medium text-muted-foreground flex-1">Triggers</span>
+      {/* Toolbar with tabs */}
+      <div className="flex items-center border-b border-border bg-muted/20 shrink-0">
+        {/* Tab buttons */}
+        <div className="flex items-center flex-1 min-w-0 gap-0">
+          <button
+            type="button"
+            onClick={() => setActiveTab("history")}
+            className={cn(
+              "flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium transition-colors border-b-2",
+              activeTab === "history"
+                ? "text-foreground border-primary"
+                : "text-muted-foreground hover:text-foreground border-transparent",
+            )}
+          >
+            <Clock className="size-3" />
+            History
+            {pendingCount > 0 && (
+              <span className="inline-flex items-center justify-center size-4 rounded-full bg-amber-500/20 text-amber-400 text-[9px] font-bold">
+                {pendingCount}
+              </span>
+            )}
+          </button>
 
-        <button
-          type="button"
-          onClick={handleRefresh}
-          disabled={refreshing}
-          className="p-1 rounded text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
-          title="Refresh"
-          aria-label="Refresh trigger history"
-        >
-          <RefreshCw className={cn("size-3.5", refreshing && "animate-spin")} />
-        </button>
+          {hasCatalog && (
+            <button
+              type="button"
+              onClick={() => setActiveTab("catalog")}
+              className={cn(
+                "flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium transition-colors border-b-2",
+                activeTab === "catalog"
+                  ? "text-foreground border-primary"
+                  : "text-muted-foreground hover:text-foreground border-transparent",
+              )}
+            >
+              <BookOpen className="size-3" />
+              Catalog
+              {subscriptions.length > 0 && (
+                <span className="inline-flex items-center justify-center size-4 rounded-full bg-emerald-500/20 text-emerald-400 text-[9px] font-bold">
+                  {subscriptions.length}
+                </span>
+              )}
+            </button>
+          )}
+        </div>
 
-        <Button
-          size="sm"
-          variant="outline"
-          className="h-6 text-[11px] px-2 gap-1"
-          onClick={() => setSendOpen(true)}
-        >
-          <Send className="size-3" />
-          Send Trigger
-        </Button>
+        {/* Actions */}
+        <div className="flex items-center gap-1 px-2 shrink-0">
+          <button
+            type="button"
+            onClick={handleRefresh}
+            disabled={refreshing}
+            className="p-1 rounded text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+            title="Refresh"
+            aria-label="Refresh trigger history"
+          >
+            <RefreshCw className={cn("size-3.5", refreshing && "animate-spin")} />
+          </button>
+
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-6 text-[11px] px-2 gap-1"
+            onClick={() => setSendOpen(true)}
+          >
+            <Send className="size-3" />
+            Send
+          </Button>
+        </div>
       </div>
 
-      {/* Content */}
+      {/* Tab content */}
       <div className="flex-1 overflow-y-auto min-h-0">
-        {/* Trigger catalog */}
-        {triggerDefs.length > 0 && (
-          <TriggerCatalogSection
-            sessionId={sessionId}
-            triggerDefs={triggerDefs}
-            subscriptions={subscriptions}
-            onSubscriptionsChange={fetchSubscriptions}
-          />
+        {/* ─── History tab ─── */}
+        {activeTab === "history" && (
+          <>
+            {loading ? (
+              <div className="flex items-center justify-center h-32 gap-2 text-muted-foreground">
+                <Loader2 className="size-4 animate-spin" />
+                <span className="text-xs">Loading triggers…</span>
+              </div>
+            ) : error ? (
+              <div className="flex items-center justify-center p-4">
+                <p className="text-xs text-destructive text-center">{error}</p>
+              </div>
+            ) : triggers.length === 0 ? (
+              <div className="flex flex-col items-center justify-center gap-2 p-6 text-center">
+                <Zap className="size-8 text-muted-foreground/30" />
+                <p className="text-xs text-muted-foreground">
+                  No triggers yet. External systems can send triggers via the API.
+                </p>
+              </div>
+            ) : (
+              <div className="flex flex-col gap-2 p-2">
+                {/* Awaiting Response section */}
+                {pendingGroups.length > 0 && (
+                  <div>
+                    <div className="px-1 pb-1.5 flex items-center gap-1.5">
+                      <Clock className="size-3 text-amber-400 animate-pulse" />
+                      <span className="text-[10px] font-semibold uppercase tracking-wider text-amber-400/80">
+                        Awaiting Response ({pendingGroups.length})
+                      </span>
+                    </div>
+                    <div className="flex flex-col gap-1.5">
+                      {pendingGroups.map((group) => (
+                        <LinkedSessionCard
+                          key={group.source}
+                          group={group}
+                          statusUpdates={statusUpdates}
+                          tick={tick}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Other linked sessions */}
+                {otherGroups.length > 0 && (
+                  <div>
+                    <div className="px-1 pb-1.5 flex items-center gap-1.5">
+                      <Link className="size-3 text-muted-foreground" />
+                      <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                        Linked Sessions ({otherGroups.length})
+                      </span>
+                    </div>
+                    <div className="flex flex-col gap-1.5">
+                      {otherGroups.map((group) => (
+                        <LinkedSessionCard
+                          key={group.source}
+                          group={group}
+                          statusUpdates={statusUpdates}
+                          tick={tick}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Other events (external/API triggers), grouped by source */}
+                {otherEvents.length > 0 && (
+                  <div>
+                    <div className="px-1 pb-1.5 flex items-center gap-1.5">
+                      <Globe className="size-3 text-muted-foreground" />
+                      <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                        Other Events ({otherEvents.length})
+                      </span>
+                    </div>
+                    <div className="flex flex-col gap-1.5">
+                      {groupOtherEventsBySource(otherEvents).map((sourceGroup) => (
+                        <OtherSourceGroup key={sourceGroup.source} group={sourceGroup} />
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </>
         )}
 
-        {/* Active subscriptions (only when no catalog) */}
-        {triggerDefs.length === 0 && subscriptions.length > 0 && (
-          <ActiveSubscriptionsSection subscriptions={subscriptions} />
-        )}
-
-        {loading ? (
-          <div className="flex items-center justify-center h-32 gap-2 text-muted-foreground">
-            <Loader2 className="size-4 animate-spin" />
-            <span className="text-xs">Loading triggers…</span>
-          </div>
-        ) : error ? (
-          <div className="flex items-center justify-center p-4">
-            <p className="text-xs text-destructive text-center">{error}</p>
-          </div>
-        ) : triggers.length === 0 ? (
-          <div className="flex flex-col items-center justify-center gap-2 p-6 text-center">
-            <Zap className="size-8 text-muted-foreground/30" />
-            <p className="text-xs text-muted-foreground">
-              No triggers yet. External systems can send triggers via the API.
-            </p>
-          </div>
-        ) : (
-          <div className="flex flex-col gap-2 p-2">
-            {/* Awaiting Response section */}
-            {pendingGroups.length > 0 && (
-              <div>
-                <div className="px-1 pb-1.5 flex items-center gap-1.5">
-                  <Clock className="size-3 text-amber-400 animate-pulse" />
-                  <span className="text-[10px] font-semibold uppercase tracking-wider text-amber-400/80">
-                    Awaiting Response ({pendingGroups.length})
-                  </span>
-                </div>
-                <div className="flex flex-col gap-1.5">
-                  {pendingGroups.map((group) => (
-                    <LinkedSessionCard
-                      key={group.source}
-                      group={group}
-                      statusUpdates={statusUpdates}
-                      tick={tick}
-                    />
-                  ))}
-                </div>
-              </div>
+        {/* ─── Catalog tab ─── */}
+        {activeTab === "catalog" && (
+          <>
+            {/* Trigger catalog */}
+            {triggerDefs.length > 0 && (
+              <TriggerCatalogSection
+                sessionId={sessionId}
+                triggerDefs={triggerDefs}
+                subscriptions={subscriptions}
+                onSubscriptionsChange={fetchSubscriptions}
+              />
             )}
 
-            {/* Other linked sessions */}
-            {otherGroups.length > 0 && (
-              <div>
-                <div className="px-1 pb-1.5 flex items-center gap-1.5">
-                  <Link className="size-3 text-muted-foreground" />
-                  <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-                    Linked Sessions ({otherGroups.length})
-                  </span>
-                </div>
-                <div className="flex flex-col gap-1.5">
-                  {otherGroups.map((group) => (
-                    <LinkedSessionCard
-                      key={group.source}
-                      group={group}
-                      statusUpdates={statusUpdates}
-                      tick={tick}
-                    />
-                  ))}
-                </div>
-              </div>
+            {/* Active subscriptions */}
+            {subscriptions.length > 0 && (
+              <ActiveSubscriptionsSection subscriptions={subscriptions} />
             )}
 
-            {/* Other events (external/API triggers), grouped by source */}
-            {otherEvents.length > 0 && (
-              <div>
-                <div className="px-1 pb-1.5 flex items-center gap-1.5">
-                  <Globe className="size-3 text-muted-foreground" />
-                  <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-                    Other Events ({otherEvents.length})
-                  </span>
-                </div>
-                <div className="flex flex-col gap-1.5">
-                  {groupOtherEventsBySource(otherEvents).map((sourceGroup) => (
-                    <OtherSourceGroup key={sourceGroup.source} group={sourceGroup} />
-                  ))}
-                </div>
+            {triggerDefs.length === 0 && subscriptions.length === 0 && (
+              <div className="flex flex-col items-center justify-center gap-2 p-6 text-center">
+                <BookOpen className="size-8 text-muted-foreground/30" />
+                <p className="text-xs text-muted-foreground">
+                  No trigger types available. Runner services can declare triggers for agents to subscribe to.
+                </p>
               </div>
             )}
-          </div>
+          </>
         )}
       </div>
 
