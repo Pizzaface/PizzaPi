@@ -8,7 +8,7 @@ import { spawn } from "node:child_process";
 import { buildSessionContext, SessionManager, type ExtensionContext, type SessionInfo } from "@mariozechner/pi-coding-agent";
 import { getMcpBridge } from "./mcp-bridge.js";
 import { toggleMcpServer, saveGlobalConfig, loadConfig, loadGlobalConfig, resolveSandboxConfig, type SandboxConfig } from "../config.js";
-import { isPlanModeEnabled, togglePlanModeFromRemote, setPlanModeFromRemote } from "./plan-mode-toggle.js";
+import { isPlanModeEnabled, togglePlanModeFromRemote, setPlanModeFromRemote } from "./plan-mode/index.js";
 import { isSandboxActive, getSandboxMode, getViolations, getResolvedConfig } from "@pizzapi/tools";
 import { refreshAllUsage, buildProviderUsage } from "./remote-provider-usage.js";
 import type { RemoteExecRequest, RemoteExecResponse } from "./remote-commands.js";

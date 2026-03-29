@@ -36,7 +36,7 @@ import { createLogger } from "@pizzapi/tools";
 import { loadConfig } from "../../config.js";
 import { setTodoUpdateCallback, setTodoMetaEmitter, type TodoItem } from "../update-todo.js";
 import { getCurrentTodoList } from "../update-todo.js";
-import { setPlanModeChangeCallback, setPlanModeMetaEmitter } from "../plan-mode-toggle.js";
+import { setPlanModeChangeCallback, setPlanModeMetaEmitter } from "../plan-mode/index.js";
 import type { RemoteExecResponse } from "../remote-commands.js";
 import { clearAndCancelPendingTriggers } from "../triggers/extension.js";
 import { listTriggerSubscriptions, unsubscribeTrigger } from "../trigger-client.js";

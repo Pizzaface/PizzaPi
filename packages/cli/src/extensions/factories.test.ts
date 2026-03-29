@@ -15,7 +15,7 @@ import { spawnSessionExtension } from "./spawn-session.js";
 import { updateTodoExtension } from "./update-todo.js";
 import { subagentExtension } from "./subagent.js";
 import { tunnelToolsExtension } from "./tunnel-tools.js";
-import { planModeToggleExtension } from "./plan-mode-toggle.js";
+import { planModeToggleExtension } from "./plan-mode/index.js";
 import { triggersExtension } from "./triggers/extension.js";
 import { sandboxEventsExtension } from "./sandbox-events.js";
 import { pizzapiTitleExtension } from "./pizzapi-title.js";
