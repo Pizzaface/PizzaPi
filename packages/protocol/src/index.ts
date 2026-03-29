@@ -19,6 +19,7 @@ export type {
   ServicePanelInfo,
   ServiceTriggerDef,
   ServiceTriggerParamDef,
+  ServiceSigilDef,
   TriggerFilter,
   TriggerFilterMode,
   ServiceAnnounceData,

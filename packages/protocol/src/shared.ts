@@ -67,6 +67,8 @@ export interface RunnerInfo {
   panels?: ServicePanelInfo[];
   /** Trigger types declared by services on this runner (from service_announce). */
   triggerDefs?: ServiceTriggerDef[];
+  /** Sigil types declared by services on this runner (from service_announce). */
+  sigilDefs?: ServiceSigilDef[];
   /** Active warnings from the runner daemon (e.g. tunnel connection failures). */
   warnings?: string[];
 }
@@ -213,6 +215,38 @@ export interface TriggerFilter {
 /** How multiple filters combine: "and" = all must match, "or" = any must match. */
 export type TriggerFilterMode = "and" | "or";
 
+// ── Service sigil types ───────────────────────────────────────────────────
+
+/**
+ * A sigil type that a service can define.
+ * Declared in a service's sigils.json (or manifest.json) and forwarded via
+ * service_announce so the UI knows how to render [[type:id]] tokens.
+ */
+export interface ServiceSigilDef {
+  /** Sigil type name, e.g. "pr", "commit", "cost" */
+  type: string;
+  /** Human-readable label, e.g. "Pull Request" */
+  label: string;
+  /** Optional description of what this sigil represents */
+  description?: string;
+  /**
+   * Optional resolve endpoint path (relative to service panel).
+   * The UI can call this to enrich display data for a sigil ID.
+   * e.g. "/api/resolve/pr/{id}" → resolves PR number to title/status
+   */
+  resolve?: string;
+  /**
+   * JSON Schema for the sigil's params (key-value pairs in [[type:id key=val]]).
+   * Defines what params are valid for this sigil type.
+   */
+  schema?: Record<string, unknown>;
+  /**
+   * Type aliases — alternative type names that resolve to this sigil.
+   * e.g. ["pull-request", "mr"] for a "pr" sigil type.
+   */
+  aliases?: string[];
+}
+
 /** Payload for the service_announce event. */
 export interface ServiceAnnounceData {
   serviceIds: string[];
@@ -220,6 +254,8 @@ export interface ServiceAnnounceData {
   panels?: ServicePanelInfo[];
   /** Trigger types declared by services on this runner. */
   triggerDefs?: ServiceTriggerDef[];
+  /** Sigil types declared by services on this runner. */
+  sigilDefs?: ServiceSigilDef[];
 }
 
 // ── Tunnel service types ──────────────────────────────────────────────────────
