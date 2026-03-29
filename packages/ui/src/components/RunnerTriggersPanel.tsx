@@ -789,7 +789,7 @@ export function RunnerTriggersPanel({ runnerId, triggerDefs: propDefs }: RunnerT
     );
   }
 
-  if (triggerDefs.length === 0) {
+  if (triggerDefs.length === 0 && listeners.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center gap-3 p-8 text-center">
         <BookOpen className="size-10 text-muted-foreground/30" />

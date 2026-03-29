@@ -668,10 +668,15 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
             if (!targetSession || targetSession.userId !== identity.userId) continue;
 
             // Filter by subscription filters (based on output schema fields).
-            // New subscriptions use explicit filters; legacy ones fall back to params.
+            // New subscriptions always have a filterData result (even with filters=[]).
+            // Legacy subscriptions return undefined and fall back to param matching.
             const filterData = await getSubscriptionFilters(targetSessionId, body.type);
-            if (filterData?.filters && filterData.filters.length > 0) {
-                if (!payloadMatchesFilters(body.payload, filterData.filters, filterData.filterMode)) continue;
+            if (filterData) {
+                // New-format subscription — use filters (empty filters = deliver all)
+                if (filterData.filters && filterData.filters.length > 0) {
+                    if (!payloadMatchesFilters(body.payload, filterData.filters, filterData.filterMode)) continue;
+                }
+                // else: new subscription with no filters — deliver everything
             } else {
                 // Legacy compat: old subscriptions stored params as filters
                 const subParams = await getSubscriptionParams(targetSessionId, body.type);

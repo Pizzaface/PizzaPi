@@ -109,13 +109,19 @@ function parseSubValue(raw: string): SubscriptionValue {
 /** Serialize a subscription value for Redis storage. */
 function serializeSubValue(value: SubscriptionValue): string {
     // Always serialize the full value — filters/filterMode must be preserved
-    // even when params is empty.
+    // even when params is empty. Always include the `filters` key (even as [])
+    // so the delivery path can distinguish new-format subscriptions from legacy
+    // ones (which never had a `filters` key).
     const hasParams = value.params && Object.keys(value.params).length > 0;
     const hasFilters = value.filters && value.filters.length > 0;
     if (!hasParams && !hasFilters && !value.filterMode) {
         return JSON.stringify({ runnerId: value.runnerId });
     }
-    return JSON.stringify(value);
+    // Always include filters key so new subscriptions are identifiable
+    return JSON.stringify({
+        ...value,
+        filters: value.filters ?? [],
+    });
 }
 
 /**
@@ -282,7 +288,7 @@ export async function getSubscriptionParams(
 export async function getSubscriptionFilters(
     sessionId: string,
     triggerType: string,
-): Promise<{ filters?: SubscriptionFilter[]; filterMode?: SubscriptionFilterMode } | undefined> {
+): Promise<{ filters?: SubscriptionFilter[]; filterMode?: SubscriptionFilterMode; isNewFormat?: boolean } | undefined> {
     const redis = await getClient();
     if (!redis) return undefined;
 
@@ -290,9 +296,16 @@ export async function getSubscriptionFilters(
     try {
         const raw = await redis.hGet(sessionKey, triggerType);
         if (!raw) return undefined;
-        const { filters, filterMode } = parseSubValue(raw);
-        if (!filters || filters.length === 0) return undefined;
-        return { filters, filterMode };
+        const parsed = parseSubValue(raw);
+        // Detect new-format subscriptions: they always have a `filters` key (even if []).
+        // Legacy subscriptions never had a `filters` key in their JSON.
+        const rawParsed = raw.startsWith("{") ? JSON.parse(raw) : null;
+        const isNewFormat = rawParsed && "filters" in rawParsed;
+        if (isNewFormat) {
+            return { filters: parsed.filters ?? [], filterMode: parsed.filterMode, isNewFormat: true };
+        }
+        // Legacy subscription — no filters key present
+        return undefined;
     } catch (err) {
         log.warn("Failed to get subscription filters:", err);
         return undefined;
