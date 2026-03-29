@@ -341,6 +341,60 @@ function readServiceDeclarations(pluginDir: string, pluginName: string): Service
 
 // ── Service manifest parsing ──────────────────────────────────────────────────
 
+/**
+ * Parse a raw triggers array (from manifest.json or triggers.json).
+ * Invalid entries are skipped defensively.
+ */
+function parseTriggers(raw: unknown): ServiceTriggerDef[] {
+    if (!Array.isArray(raw)) return [];
+    const triggers: ServiceTriggerDef[] = [];
+    for (const t of raw) {
+        if (!t || typeof t !== "object") continue;
+        if (typeof t.type !== "string" || !t.type) continue;
+        if (typeof t.label !== "string" || !t.label) continue;
+        const params: ServiceTriggerParamDef[] = [];
+        if (Array.isArray(t.params)) {
+            for (const p of t.params) {
+                if (!p || typeof p !== "object") continue;
+                if (typeof p.name !== "string" || !p.name) continue;
+                if (typeof p.label !== "string" || !p.label) continue;
+                const pType = typeof p.type === "string" && ["string", "number", "boolean"].includes(p.type)
+                    ? p.type as "string" | "number" | "boolean"
+                    : "string";
+                let enumVals: Array<string | number | boolean> | undefined;
+                if (Array.isArray(p.enum) && p.enum.length > 0) {
+                    const valid = p.enum.filter(
+                        (v: unknown) => typeof v === "string" || typeof v === "number" || typeof v === "boolean",
+                    ) as Array<string | number | boolean>;
+                    if (valid.length > 0) enumVals = valid;
+                }
+                params.push({
+                    name: p.name,
+                    label: p.label,
+                    type: pType,
+                    description: typeof p.description === "string" ? p.description : undefined,
+                    required: typeof p.required === "boolean" ? p.required : undefined,
+                    default: (typeof p.default === "string" || typeof p.default === "number" || typeof p.default === "boolean")
+                        ? p.default
+                        : undefined,
+                    ...(enumVals ? { enum: enumVals } : {}),
+                    ...(enumVals && p.multiselect === true ? { multiselect: true } : {}),
+                });
+            }
+        }
+        triggers.push({
+            type: t.type,
+            label: t.label,
+            description: typeof t.description === "string" ? t.description : undefined,
+            schema: t.schema && typeof t.schema === "object" && !Array.isArray(t.schema)
+                ? t.schema as Record<string, unknown>
+                : undefined,
+            ...(params.length > 0 ? { params } : {}),
+        });
+    }
+    return triggers;
+}
+
 function parseServiceManifest(manifestPath: string): ServiceManifest {
     const raw = JSON.parse(readFileSync(manifestPath, "utf-8"));
     if (!raw || typeof raw !== "object") {
@@ -353,60 +407,7 @@ function parseServiceManifest(manifestPath: string): ServiceManifest {
         throw new Error('manifest.json missing required "label" field');
     }
 
-    // Parse triggers[] — each entry must have a string `type` and `label`.
-    // Invalid entries are skipped (defensive; bad manifests shouldn't crash the daemon).
-    const triggers: ServiceTriggerDef[] = [];
-    if (Array.isArray(raw.triggers)) {
-        for (const t of raw.triggers) {
-            if (!t || typeof t !== "object") continue;
-            if (typeof t.type !== "string" || !t.type) continue;
-            if (typeof t.label !== "string" || !t.label) continue;
-            // Parse params[] — configurable parameters subscribers provide.
-            const params: ServiceTriggerParamDef[] = [];
-            if (Array.isArray(t.params)) {
-                for (const p of t.params) {
-                    if (!p || typeof p !== "object") continue;
-                    if (typeof p.name !== "string" || !p.name) continue;
-                    if (typeof p.label !== "string" || !p.label) continue;
-                    const pType = typeof p.type === "string" && ["string", "number", "boolean"].includes(p.type)
-                        ? p.type as "string" | "number" | "boolean"
-                        : "string";
-                    // Parse enum — must be an array of primitives matching the param type.
-                    let enumVals: Array<string | number | boolean> | undefined;
-                    if (Array.isArray(p.enum) && p.enum.length > 0) {
-                        const valid = p.enum.filter(
-                            (v: unknown) => typeof v === "string" || typeof v === "number" || typeof v === "boolean",
-                        ) as Array<string | number | boolean>;
-                        if (valid.length > 0) enumVals = valid;
-                    }
-
-                    params.push({
-                        name: p.name,
-                        label: p.label,
-                        type: pType,
-                        description: typeof p.description === "string" ? p.description : undefined,
-                        required: typeof p.required === "boolean" ? p.required : undefined,
-                        default: (typeof p.default === "string" || typeof p.default === "number" || typeof p.default === "boolean")
-                            ? p.default
-                            : undefined,
-                        ...(enumVals ? { enum: enumVals } : {}),
-                        // multiselect only makes sense with enum
-                        ...(enumVals && p.multiselect === true ? { multiselect: true } : {}),
-                    });
-                }
-            }
-
-            triggers.push({
-                type: t.type,
-                label: t.label,
-                description: typeof t.description === "string" ? t.description : undefined,
-                schema: t.schema && typeof t.schema === "object" && !Array.isArray(t.schema)
-                    ? t.schema as Record<string, unknown>
-                    : undefined,
-                ...(params.length > 0 ? { params } : {}),
-            });
-        }
-    }
+    const triggers = parseTriggers(raw.triggers);
 
     return {
         id: raw.id,
