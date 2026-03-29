@@ -15,6 +15,9 @@ import { AgentsManager, type AgentInfo } from "@/components/AgentsManager";
 import { PluginsManager, type PluginInfo } from "@/components/PluginsManager";
 import { SandboxManager } from "@/components/SandboxManager";
 import { WebhooksManager } from "@/components/WebhooksManager";
+import { HooksManager } from "@/components/HooksManager";
+import { AgentRulesEditor } from "@/components/AgentRulesEditor";
+import { TrustedPluginsEditor } from "@/components/TrustedPluginsEditor";
 const UsageDashboard = React.lazy(() =>
     import("@/components/usage-dashboard/UsageDashboard").then((m) => ({
         default: m.UsageDashboard,
@@ -30,16 +33,17 @@ import {
     Terminal,
     ChevronRight,
     Server,
-    Webhook,
 } from "lucide-react";
 import { RunnerTriggersPanel } from "@/components/RunnerTriggersPanel";
 import { RunnerServicesPanel } from "@/components/RunnerServicesPanel";
+import { RunnerSettingsPanel } from "@/components/runner-settings/RunnerSettingsPanel";
+import { McpServersManager } from "@/components/McpServersManager";
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
-export type RunnerTab = "sessions" | "skills" | "agents" | "plugins" | "sandbox" | "hooks" | "webhooks" | "services" | "triggers" | "usage";
+export type RunnerTab = "sessions" | "skills" | "agents" | "plugins" | "sandbox" | "hooks" | "mcp" | "webhooks" | "services" | "triggers" | "usage" | "settings";
 
 interface RunnerHook {
     type: string;
@@ -193,62 +197,41 @@ function SessionsList({
     );
 }
 
+
+
 // ---------------------------------------------------------------------------
-// HooksList
+// SubTabPanel — reusable sub-nav within a top-level tab
 // ---------------------------------------------------------------------------
 
-function HooksList({ hooks }: { hooks?: RunnerHook[] }) {
-    if (!hooks || hooks.length === 0) {
-        return (
-            <div className="flex flex-col items-center justify-center py-10 gap-3 text-center">
-                <div className="rounded-full bg-muted p-3">
-                    <Webhook className="h-5 w-5 text-muted-foreground" />
-                </div>
-                <div className="space-y-1">
-                    <p className="text-sm font-medium text-muted-foreground">No active hooks</p>
-                    <p className="text-xs text-muted-foreground/60 max-w-xs">
-                        Configure hooks in{" "}
-                        <code className="font-mono bg-muted px-1 py-0.5 rounded text-[11px]">
-                            ~/.pizzapi/config.json
-                        </code>{" "}
-                        under the <code className="font-mono bg-muted px-1 py-0.5 rounded text-[11px]">hooks</code> key.
-                    </p>
-                </div>
-            </div>
-        );
-    }
+interface SubTab {
+    key: string;
+    label: string;
+    content: React.ReactNode;
+}
 
+function SubTabPanel({ tabs }: { tabs: SubTab[] }) {
+    const [active, setActive] = React.useState(tabs[0]?.key ?? "");
+    const current = tabs.find((t) => t.key === active) ?? tabs[0];
     return (
-        <div className="flex flex-col gap-2">
-            <p className="text-[11px] text-muted-foreground/50 px-1">
-                Global hooks only — project-local hooks vary per session working directory.
-            </p>
-            {hooks.map((hook) => (
-                <div
-                    key={hook.type}
-                    className="flex flex-col gap-1.5 rounded-lg border border-border/40 bg-muted/20 px-3 py-2.5"
-                >
-                    {/* Hook type badge */}
-                    <div className="flex items-center gap-2">
-                        <span className="inline-flex items-center gap-1 text-[10px] font-mono font-semibold px-1.5 py-0.5 rounded bg-blue-500/10 border border-blue-500/20 text-blue-300">
-                            <Webhook className="h-2.5 w-2.5" />
-                            {hook.type}
-                        </span>
-                    </div>
-
-                    {/* Script names */}
-                    <div className="flex flex-wrap gap-1.5 pl-0.5">
-                        {hook.scripts.map((script, i) => (
-                            <span
-                                key={i}
-                                className="text-[11px] font-mono bg-muted/60 px-2 py-0.5 rounded border border-border/30 text-muted-foreground"
-                            >
-                                {script}
-                            </span>
-                        ))}
-                    </div>
-                </div>
-            ))}
+        <div className="flex flex-col gap-3">
+            <div className="flex gap-1.5 border-b border-border pb-2">
+                {tabs.map((tab) => (
+                    <button
+                        key={tab.key}
+                        type="button"
+                        onClick={() => setActive(tab.key)}
+                        className={cn(
+                            "px-2.5 py-1 text-[11px] font-medium rounded-md transition-all whitespace-nowrap",
+                            active === tab.key
+                                ? "bg-blue-500/15 text-blue-300 border border-blue-500/30"
+                                : "text-muted-foreground hover:text-foreground hover:bg-muted/40 border border-transparent",
+                        )}
+                    >
+                        {tab.label}
+                    </button>
+                ))}
+            </div>
+            {current?.content}
         </div>
     );
 }
@@ -263,11 +246,13 @@ const TABS: { key: RunnerTab; label: string; countKey?: "skills" | "agents" | "p
     { key: "agents", label: "Agents", countKey: "agents" },
     { key: "plugins", label: "Plugins", countKey: "plugins" },
     { key: "hooks", label: "Hooks", countKey: "hooks" },
+    { key: "mcp", label: "MCP Servers" },
     { key: "webhooks", label: "Webhooks" },
     { key: "services", label: "Services" },
     { key: "triggers", label: "Triggers" },
     { key: "usage", label: "Usage" },
     { key: "sandbox", label: "Sandbox" },
+    { key: "settings", label: "Settings" },
 ];
 
 function TabBar({
@@ -396,26 +381,59 @@ export function RunnerDetailPanel({
             break;
         case "agents":
             tabContent = (
-                <AgentsManager
-                    runnerId={runner.runnerId}
-                    agents={runner.agents}
-                    onAgentsChange={(a) => onAgentsChange?.(runner.runnerId, a)}
-                    bare
+                <SubTabPanel
+                    tabs={[
+                        {
+                            key: "definitions",
+                            label: "Definitions",
+                            content: (
+                                <AgentsManager
+                                    runnerId={runner.runnerId}
+                                    agents={runner.agents}
+                                    onAgentsChange={(a) => onAgentsChange?.(runner.runnerId, a)}
+                                    bare
+                                />
+                            ),
+                        },
+                        {
+                            key: "rules",
+                            label: "Rules (AGENTS.md)",
+                            content: <AgentRulesEditor runnerId={runner.runnerId} />,
+                        },
+                    ]}
                 />
             );
             break;
         case "plugins":
             tabContent = (
-                <PluginsManager
-                    runnerId={runner.runnerId}
-                    plugins={runner.plugins}
-                    onPluginsChange={(p) => onPluginsChange?.(runner.runnerId, p)}
-                    bare
+                <SubTabPanel
+                    tabs={[
+                        {
+                            key: "installed",
+                            label: "Installed",
+                            content: (
+                                <PluginsManager
+                                    runnerId={runner.runnerId}
+                                    plugins={runner.plugins}
+                                    onPluginsChange={(p) => onPluginsChange?.(runner.runnerId, p)}
+                                    bare
+                                />
+                            ),
+                        },
+                        {
+                            key: "trusted",
+                            label: "Trusted Paths",
+                            content: <TrustedPluginsEditor runnerId={runner.runnerId} />,
+                        },
+                    ]}
                 />
             );
             break;
         case "hooks":
-            tabContent = <HooksList hooks={runner.hooks} />;
+            tabContent = <HooksManager runnerId={runner.runnerId} bare />;
+            break;
+        case "mcp":
+            tabContent = <McpServersManager runnerId={runner.runnerId} bare />;
             break;
         case "webhooks":
             tabContent = <WebhooksManager bare runnerId={runner.runnerId} />;
@@ -446,6 +464,9 @@ export function RunnerDetailPanel({
             break;
         case "sandbox":
             tabContent = <SandboxManager runnerId={runner.runnerId} bare />;
+            break;
+        case "settings":
+            tabContent = <RunnerSettingsPanel runnerId={runner.runnerId} />;
             break;
     }
 
