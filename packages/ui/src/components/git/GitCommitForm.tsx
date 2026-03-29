@@ -59,7 +59,9 @@ export function GitCommitForm({ hasStagedChanges, onCommit, isCommitting }: GitC
             />
             <div className="flex items-center justify-between">
                 <span className="text-[0.6rem] text-muted-foreground">
-                    {hasStagedChanges ? "⌘↵ to commit" : ""}
+                    {hasStagedChanges
+                        ? `${typeof navigator !== "undefined" && /Mac|iPod|iPhone|iPad/.test(navigator.platform) ? "⌘" : "Ctrl+"}↵ to commit`
+                        : ""}
                 </span>
                 <button
                     type="button"

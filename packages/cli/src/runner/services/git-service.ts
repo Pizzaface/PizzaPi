@@ -79,6 +79,9 @@ export class GitService implements ServiceHandler {
                 case "git_push":
                     void this.handlePush(payload, requestId, sessionId);
                     break;
+                case "git_pull":
+                    void this.handlePull(payload, requestId, sessionId);
+                    break;
             }
         };
 
@@ -496,6 +499,29 @@ export class GitService implements ServiceHandler {
             }, requestId, sessionId);
         } catch (err) {
             this.emitError("git_commit_result", err instanceof Error ? err.message : String(err), requestId, sessionId);
+        }
+    }
+
+    // ── git pull ────────────────────────────────────────────────────────
+
+    private async handlePull(
+        payload: Record<string, unknown>,
+        requestId?: string,
+        sessionId?: string,
+    ): Promise<void> {
+        const cwd = this.validateCwd(payload.cwd, "git_pull_result", requestId, sessionId);
+        if (!cwd) return;
+
+        try {
+            const result = await execFileAsync("git", ["pull"], { cwd, timeout: 60000 });
+            const output = (result.stdout + "\n" + result.stderr).trim();
+
+            this.emit("git_pull_result", {
+                ok: true,
+                output,
+            }, requestId, sessionId);
+        } catch (err) {
+            this.emitError("git_pull_result", err instanceof Error ? err.message : String(err), requestId, sessionId);
         }
     }
 

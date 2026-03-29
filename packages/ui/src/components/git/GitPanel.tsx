@@ -9,6 +9,7 @@ import { cn } from "@/lib/utils";
 import {
     ArrowUp,
     ArrowDown,
+    Download,
     RefreshCw,
     GitCommit,
     Upload,
@@ -168,8 +169,10 @@ export function GitPanel({ cwd, className }: GitPanelProps) {
     const { staged } = partitionChanges(git.status.changes);
     const hasChanges = git.status.changes.length > 0;
     const isPushing = git.operationInProgress === "push";
+    const isPulling = git.operationInProgress === "pull";
     // Show push when ahead of remote OR on a branch with no upstream yet
     const showPush = git.status.ahead > 0 || !git.status.hasUpstream;
+    const showPull = git.status.behind > 0 && git.status.hasUpstream;
 
     return (
         <div className={cn("flex flex-col h-full", className)}>
@@ -201,6 +204,24 @@ export function GitPanel({ cwd, className }: GitPanelProps) {
                     >
                         <ArrowDown className="size-3" /> {git.status.behind}
                     </span>
+                )}
+
+                {/* Pull button */}
+                {showPull && (
+                    <button
+                        type="button"
+                        onClick={() => git.pull()}
+                        disabled={isPulling}
+                        className={cn(
+                            "inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium transition-colors",
+                            "bg-amber-500/20 text-amber-600 dark:text-amber-400 hover:bg-amber-500/30",
+                            "disabled:opacity-50",
+                        )}
+                        title="Pull from remote"
+                    >
+                        {isPulling ? <Loader2 className="size-3 animate-spin" /> : <Download className="size-3" />}
+                        Pull
+                    </button>
                 )}
 
                 {/* Push button */}

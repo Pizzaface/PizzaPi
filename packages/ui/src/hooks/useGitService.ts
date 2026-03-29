@@ -67,6 +67,7 @@ export interface UseGitServiceReturn {
     unstageAll: () => void;
     commit: (message: string) => void;
     push: (setUpstream?: boolean) => void;
+    pull: () => void;
     clearOperationResult: () => void;
 }
 
@@ -147,7 +148,8 @@ export function useGitService(cwd: string): UseGitServiceReturn {
                 case "git_stage_result":
                 case "git_unstage_result":
                 case "git_commit_result":
-                case "git_push_result": {
+                case "git_push_result":
+                case "git_pull_result": {
                     setOperationInProgress(null);
                     setLastOperationResult(payload as GitOperationResult);
                     // Auto-refresh status after mutating operations
@@ -256,6 +258,13 @@ export function useGitService(cwd: string): UseGitServiceReturn {
         send("git_push", { cwd, setUpstream }, makeRequestId());
     }, [available, send, cwd, makeRequestId]);
 
+    const pull = useCallback(() => {
+        if (!available) return;
+        setOperationInProgress("pull");
+        setLastOperationResult(null);
+        send("git_pull", { cwd }, makeRequestId());
+    }, [available, send, cwd, makeRequestId]);
+
     const clearOperationResult = useCallback(() => {
         setLastOperationResult(null);
     }, []);
@@ -299,6 +308,7 @@ export function useGitService(cwd: string): UseGitServiceReturn {
         unstageAll,
         commit,
         push,
+        pull,
         clearOperationResult,
     };
 }
