@@ -1148,7 +1148,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                 }
 
                 // Sections that go into settings.json (TUI preferences)
-                const tuiSections = new Set(["tuiPreferences"]);
+                const tuiSections = new Set(["tuiPreferences", "models"]);
 
                 if (tuiSections.has(section)) {
                     // Read/merge/write settings.json
@@ -1180,7 +1180,6 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
 
                     // Map section names to config.json keys
                     const sectionToConfigKey: Record<string, string> = {
-                        models: "_models",            // virtual — handled specially below
                         mcpServers: "mcpServers",
                         hooks: "hooks",
                         sandbox: "sandbox",
@@ -1193,15 +1192,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                     const configKey = sectionToConfigKey[section] ?? section;
                     const existing = loadGlobal();
 
-                    if (section === "models") {
-                        // Models section updates multiple top-level keys
-                        const v = value as any;
-                        const updates: Record<string, any> = {};
-                        if (v?.defaultProvider !== undefined) updates.defaultProvider = v.defaultProvider;
-                        if (v?.defaultModel !== undefined) updates.defaultModel = v.defaultModel;
-                        if (v?.defaultThinkingLevel !== undefined) updates.defaultThinkingLevel = v.defaultThinkingLevel;
-                        saveGlobal(updates);
-                    } else if (section === "security") {
+                    if (section === "security") {
                         const v = value as any;
                         const updates: Record<string, any> = {};
                         if (v?.allowProjectHooks !== undefined) updates.allowProjectHooks = v.allowProjectHooks;
