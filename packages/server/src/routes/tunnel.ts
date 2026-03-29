@@ -13,7 +13,7 @@
 import type { TunnelRelay } from "@pizzapi/tunnel";
 import { requireSession } from "../middleware.js";
 import { getTunnelRelay } from "../tunnel-relay.js";
-import { getSession } from "../ws/sio-state.js";
+import { getSession } from "../ws/sio-state/index.js";
 import { getRunnerData } from "../ws/sio-registry.js";
 import type { RouteHandler } from "./types.js";
 

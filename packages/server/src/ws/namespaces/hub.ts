@@ -19,7 +19,7 @@ import {
     removeHubClient,
     getSessions,
 } from "../sio-registry.js";
-import { getSession } from "../sio-state.js";
+import { getSession } from "../sio-state/index.js";
 import { getSessionMetaState, sessionMetaRoom } from "../sio-registry/meta.js";
 import { createLogger } from "@pizzapi/tools";
 

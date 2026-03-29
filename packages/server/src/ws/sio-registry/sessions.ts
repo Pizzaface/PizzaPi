@@ -36,7 +36,7 @@ import {
     refreshChildSessionsTTL,
     removePendingParentDelinkChild,
     getRunner as getRunnerState,
-} from "../sio-state.js";
+} from "../sio-state/index.js";
 import {
     getPersistedRelaySessionRunner,
     recordRelaySessionStart,

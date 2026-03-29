@@ -78,7 +78,7 @@ import { createAdapter } from "@socket.io/redis-adapter";
 import { createClient } from "redis";
 import { registerNamespaces } from "./ws/namespaces/index.js";
 import { initSioRegistry } from "./ws/sio-registry.js";
-import { initStateRedis } from "./ws/sio-state.js";
+import { initStateRedis } from "./ws/sio-state/index.js";
 
 const PORT = parseInt(process.env.PORT ?? "7492");
 

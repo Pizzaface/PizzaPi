@@ -65,7 +65,7 @@ afterAll(() => {
     mock.restore();
 });
 
-const { initStateRedis, setSession, getSessionSummary } = await import("./sio-state.js");
+const { initStateRedis, setSession, getSessionSummary } = await import("./sio-state/index.js");
 
 describe("getSessionSummary", () => {
     beforeEach(async () => {

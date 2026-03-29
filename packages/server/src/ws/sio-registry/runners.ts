@@ -24,7 +24,7 @@ import {
     setPendingRunnerLink,
     setRunnerAssociation,
     deleteRunnerAssociation,
-} from "../sio-state.js";
+} from "../sio-state/index.js";
 import { updateRelaySessionRunner } from "../../sessions/store.js";
 import type { RunnerInfo, RunnerSkill, RunnerAgent, RunnerHook, ServiceTriggerDef } from "@pizzapi/protocol";
 import {

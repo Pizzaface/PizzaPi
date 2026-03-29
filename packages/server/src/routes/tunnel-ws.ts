@@ -3,7 +3,7 @@ import type { Duplex } from "node:stream";
 import { WebSocketServer, WebSocket as NodeWebSocket } from "ws";
 import { getAuth } from "../auth.js";
 import { getTunnelRelay } from "../tunnel-relay.js";
-import { getSession } from "../ws/sio-state.js";
+import { getSession } from "../ws/sio-state/index.js";
 import { getRunnerData } from "../ws/sio-registry.js";
 import { createLogger } from "@pizzapi/tools";
 

@@ -11,7 +11,7 @@ import {
     isChildOfParent,
     isPendingParentDelinkChild,
     refreshChildSessionsTTL,
-} from "../../sio-state.js";
+} from "../../sio-state/index.js";
 import { pushTriggerHistory, recordTriggerResponse } from "../../../sessions/trigger-store.js";
 import type { RelaySocket } from "./types.js";
 

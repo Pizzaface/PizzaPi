@@ -16,7 +16,7 @@ import {
     updateTerminalFields,
     deleteTerminal as deleteTerminalState,
     getTerminalsForRunner as getTerminalsForRunnerState,
-} from "../sio-state.js";
+} from "../sio-state/index.js";
 import {
     localTerminalViewerSockets,
     localTerminalBuffers,
