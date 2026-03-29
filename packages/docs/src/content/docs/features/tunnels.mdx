@@ -1,0 +1,212 @@
+---
+title: Tunnel Tools
+description: Expose local ports through the PizzaPi relay for remote access to dev servers and services.
+---
+
+import { Aside, Steps } from "@astrojs/starlight/components";
+
+Tunnels let the agent **expose a local port on the runner machine** through the PizzaPi relay server, making it accessible as a public URL in the web UI. This is useful when the agent starts a dev server, build preview, or any local service and you want to interact with it from your browser — even if the runner is on a different machine or behind NAT.
+
+---
+
+## How It Works
+
+When the agent creates a tunnel, the following happens:
+
+<Steps>
+1. The agent calls `create_tunnel` with a local port number.
+2. A `service_message` is sent over the relay's Socket.IO connection to the runner daemon's **TunnelService**.
+3. The daemon registers the port and confirms the tunnel.
+4. The relay server begins proxying HTTP requests (and WebSocket upgrades) from the public URL to `127.0.0.1:<port>` on the runner.
+</Steps>
+
+All traffic flows through the relay server — the runner's local port is never directly exposed to the internet. The relay handles:
+
+- **HTTP proxying** — `GET`, `POST`, `PUT`, `DELETE`, `PATCH`, `HEAD`, and `OPTIONS` requests are forwarded to the local service and streamed back.
+- **WebSocket proxying** — upgrade requests are tunneled through a second WebSocket channel, enabling live-reload, HMR, and real-time protocols.
+- **HTML/JS/CSS rewriting** — the proxy rewrites absolute paths in HTML responses, ES module imports, and CSS `url()` references so they route through the tunnel prefix. An injected interceptor script patches `fetch`, `XMLHttpRequest`, `EventSource`, `WebSocket`, `history.pushState`, and dynamic resource loading at runtime.
+
+### URL Schemes
+
+Tunnels support two URL schemes:
+
+| Scheme | URL pattern | Stability |
+|--------|------------|-----------|
+| **Runner-based** (preferred) | `/api/tunnel/runner/<runnerId>/<port>/` | Stable across session switches |
+| **Session-based** (legacy) | `/api/tunnel/<sessionId>/<port>/` | Breaks when session changes |
+
+The agent automatically prefers runner-based URLs when a runner ID is available, falling back to session-based URLs otherwise.
+
+---
+
+## Tools
+
+### `create_tunnel`
+
+Expose a local port through the relay and get a public URL.
+
+**Parameters:**
+
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| `port` | `number` | Yes | Local port to expose (1–65535) |
+| `name` | `string` | No | Human-readable label (e.g. `"dev-server"`, `"storybook"`) |
+
+**Returns:** A text result containing the port, optional name, and the public URL. The structured `details` object includes:
+
+```json
+{
+  "port": 3000,
+  "name": "dev-server",
+  "url": "http://127.0.0.1:3000",
+  "publicUrl": "https://your-relay.example.com/api/tunnel/runner/abc123/3000/"
+}
+```
+
+**Example agent output:**
+
+```
+Tunnel created successfully.
+  Port: 3000
+  Name: dev-server
+  Public URL: https://your-relay.example.com/api/tunnel/runner/abc123/3000/
+```
+
+---
+
+### `list_tunnels`
+
+List all currently active tunnels for this runner.
+
+**Parameters:** None.
+
+**Returns:** A text summary of active tunnels with their ports, names, pinned status, and public URLs. The structured `details` object includes:
+
+```json
+{
+  "tunnels": [
+    {
+      "port": 3000,
+      "name": "dev-server",
+      "url": "http://127.0.0.1:3000",
+      "publicUrl": "https://your-relay.example.com/api/tunnel/runner/abc123/3000/",
+      "pinned": false
+    }
+  ]
+}
+```
+
+**Example agent output:**
+
+```
+1 active tunnel(s):
+  :3000 (dev-server) → https://your-relay.example.com/api/tunnel/runner/abc123/3000/
+```
+
+---
+
+### `close_tunnel`
+
+Close an active tunnel and stop proxying traffic to the local port.
+
+**Parameters:**
+
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| `port` | `number` | Yes | Port of the tunnel to close (1–65535) |
+
+**Returns:** Confirmation that the tunnel was closed.
+
+```json
+{
+  "closed": true,
+  "port": 3000
+}
+```
+
+---
+
+## Authentication & Security
+
+<Aside type="caution" title="Tunnels expose localhost">
+  Tunnel URLs expose the runner's `127.0.0.1:<port>` to authenticated users. Only the **session owner** (or runner owner for runner-based URLs) can access a tunnel — other authenticated users receive a `403 Forbidden` response.
+</Aside>
+
+The relay enforces several security measures:
+
+- **Auth-only access** — every tunnel request requires a valid session cookie or API key.
+- **Owner verification** — the caller's user ID must match the session/runner owner.
+- **Header stripping** — `Cookie`, `Authorization`, and `X-API-Key` headers are never forwarded to the local service, preventing auth-leakage to tunneled apps.
+- **Query param sanitization** — `apiKey` query parameters are stripped before forwarding.
+- **Hop-by-hop header removal** — standard proxy headers (`Connection`, `Transfer-Encoding`, etc.) and `Accept-Encoding` are stripped so responses arrive uncompressed for rewriting.
+
+---
+
+## Use Cases
+
+### Dev Server Preview
+
+The most common use case — an agent starts a development server and creates a tunnel so you can preview it in your browser:
+
+```
+Agent: I'll start the Vite dev server and create a tunnel so you can preview it.
+
+> bun run dev
+  → Local: http://localhost:5173/
+
+> create_tunnel(port: 5173, name: "vite-dev")
+  → Public URL: https://relay.example.com/api/tunnel/runner/abc123/5173/
+```
+
+The tunnel's runtime interceptor ensures Vite's HMR WebSocket connection, dynamic chunk loading, and SPA router navigation all work through the tunnel.
+
+### Sharing a Local Service
+
+When the agent sets up a local API server, database UI, or documentation preview, tunnels let you interact with it without SSH or port forwarding:
+
+```
+> create_tunnel(port: 8080, name: "api-server")
+> create_tunnel(port: 6006, name: "storybook")
+```
+
+Use `list_tunnels` to see all active tunnels at a glance.
+
+### SSE and Streaming Endpoints
+
+Tunnels support Server-Sent Events (SSE) and chunked streaming responses. Non-HTML content types are streamed directly without buffering, so real-time data flows through with minimal latency.
+
+---
+
+## Example Workflow
+
+A typical agent interaction using tunnels:
+
+```
+User: Set up the Next.js project and let me preview it.
+
+Agent:
+  1. npm install
+  2. npm run dev          → starts on port 3000
+  3. create_tunnel(3000, "next-dev")
+     → https://relay.example.com/api/tunnel/runner/r1/3000/
+  4. "Here's your preview URL: [link]. The dev server is running
+      with hot reload — changes will appear automatically."
+
+  ... later ...
+
+  5. close_tunnel(3000)   → tunnel closed after work is done
+```
+
+---
+
+## Limitations
+
+<Aside type="note">
+  Tunnels require an active relay connection. They do not work in offline or local-only mode.
+</Aside>
+
+- **Relay required** — the runner must be connected to the relay server. If the relay connection drops, tunnel URLs return `503 Runner not available`.
+- **No offline support** — tunnels are inherently a network feature. Without a relay, use direct `localhost` access on the runner machine.
+- **Request timeout** — service message round-trips time out after **10 seconds**. If the runner daemon is unresponsive, tunnel creation fails with a timeout error.
+- **Single-user access** — only the session/runner owner can access tunnel URLs. There is no sharing with other authenticated users.
+- **Content rewriting limits** — while the proxy rewrites HTML, JS modules, and CSS, some edge cases (e.g. paths constructed entirely at runtime from string concatenation, binary protocol WebSockets) may not be intercepted. Most modern frameworks (Vite, Next.js, webpack) work out of the box.

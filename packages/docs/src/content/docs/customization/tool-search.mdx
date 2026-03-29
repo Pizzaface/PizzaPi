@@ -1,0 +1,170 @@
+---
+title: Tool Search
+description: Defer MCP tool loading to reduce context window usage and let agents discover tools on demand.
+---
+
+import { Aside, Steps } from "@astrojs/starlight/components";
+
+When you connect many MCP servers, the agent's context window fills up with tool definitions — names, descriptions, and parameter schemas for every registered tool. With 100+ tools this can consume thousands of tokens before the agent even starts working, leaving less room for conversation history, file contents, and reasoning.
+
+**Tool Search** solves this by *deferring* MCP tools and giving the agent a single `search_tools` tool it can call to discover and load tools on demand.
+
+## How it works
+
+<Steps>
+
+1. **On session start**, PizzaPi measures the total character count of all MCP tool definitions (name + description + JSON schema).
+
+2. **If the total exceeds `tokenThreshold`**, all MCP tools are removed from the agent's active tool set. Built-in tools (`read`, `bash`, `edit`, `write`, etc.) are never deferred.
+
+3. **The agent receives `search_tools`** — a lightweight tool that stays in context. When the agent needs a capability it doesn't have, it calls `search_tools("create github issue")` with a descriptive keyword query.
+
+4. **Matching tools are activated** and become available for the agent to call immediately. By default, they stay loaded for the rest of the session.
+
+</Steps>
+
+<Aside type="tip">
+  Tool Search is provider-agnostic — it works with any model, not just Anthropic.
+</Aside>
+
+## Configuration
+
+Enable Tool Search in `~/.pizzapi/config.json`:
+
+```json title="~/.pizzapi/config.json"
+{
+  "toolSearch": {
+    "enabled": true,
+    "tokenThreshold": 10000,
+    "maxResults": 5,
+    "keepLoadedTools": true
+  }
+}
+```
+
+### Options
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | `boolean` | `false` | Enable tool search and deferred loading. |
+| `tokenThreshold` | `number` | `10000` | Character threshold for MCP tool definitions. If total chars exceed this, tools are deferred. Roughly 4 characters ≈ 1 token, so 10,000 chars ≈ 2,500 tokens. |
+| `maxResults` | `number` | `5` | Maximum number of tools returned per `search_tools` call. |
+| `keepLoadedTools` | `boolean` | `true` | When `true`, discovered tools stay active for the rest of the session. When `false`, tools are deactivated after each agent turn — useful for very large tool sets where you want minimal context at all times. |
+
+## Per-server `deferLoading` override
+
+You can force individual MCP servers to always defer (or never defer) their tools, regardless of whether the global threshold is exceeded:
+
+```json title="~/.pizzapi/config.json"
+{
+  "toolSearch": {
+    "enabled": true,
+    "tokenThreshold": 10000
+  },
+  "mcpServers": {
+    "github": {
+      "command": "gh-mcp-server",
+      "deferLoading": true
+    },
+    "essential-db": {
+      "command": "db-tools-server",
+      "deferLoading": false
+    }
+  }
+}
+```
+
+The decision logic for each tool:
+
+1. **`deferLoading: true`** on the server → tool is always deferred.
+2. **`deferLoading: false`** on the server → tool is never deferred, even if threshold is exceeded.
+3. **No `deferLoading` set** → tool is deferred only if the global threshold is exceeded.
+
+<Aside>
+  `deferLoading` is supported in both the `mcpServers` format and the `mcp.servers[]` array format.
+</Aside>
+
+## The `search_tools` tool
+
+When Tool Search is active, agents see a single `search_tools` tool with this interface:
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `query` | `string` | Yes | Keywords describing the tool you need (e.g., `"send slack message"`, `"create jira ticket"`). |
+
+### What it returns
+
+- **Matches found**: a list of matching tool names, descriptions, and parameter names. Matched tools are immediately loaded into the active tool set.
+- **No matches**: a fallback list of all deferred tools so the agent can refine its search.
+- **Not active**: if all tools are already loaded, it reports that tool search is inactive.
+
+### How scoring works
+
+Tools are matched against the query using keyword scoring:
+
+- **Exact name match**: highest score
+- **Name contains keyword**: high score
+- **Description contains keyword**: moderate score
+- **Parameter names contain keyword**: low score
+- **Full query as substring** in name or description: bonus points
+
+The top results (up to `maxResults`) are returned and activated.
+
+## Slash command: `/tool-search`
+
+You can check Tool Search status interactively:
+
+- **`/tool-search status`** — shows how many tools are deferred, which are loaded on-demand, and which servers they belong to.
+- **`/tool-search reset`** — re-evaluates all tools against the threshold and resets the deferred/loaded state.
+
+## Difference from `--no-mcp`
+
+| | Tool Search | `--no-mcp` / `PIZZAPI_NO_MCP=1` |
+|---|---|---|
+| MCP servers connect | ✅ Yes | ❌ No |
+| Tools available | On demand via `search_tools` | Not available at all |
+| Use case | Reduce token usage while keeping tools accessible | Skip MCP entirely for fast startup or debugging |
+
+Tool Search keeps MCP servers connected and tools ready — they're just hidden from the context window until needed. `--no-mcp` skips MCP server connections entirely.
+
+## Full example
+
+A configuration with many MCP servers where only the essentials stay loaded:
+
+```json title="~/.pizzapi/config.json"
+{
+  "toolSearch": {
+    "enabled": true,
+    "tokenThreshold": 8000,
+    "maxResults": 8,
+    "keepLoadedTools": true
+  },
+  "mcpServers": {
+    "filesystem": {
+      "command": "mcp-fs-server",
+      "deferLoading": false
+    },
+    "github": {
+      "command": "gh-mcp-server"
+    },
+    "jira": {
+      "command": "jira-mcp-server",
+      "deferLoading": true
+    },
+    "slack": {
+      "command": "slack-mcp-server",
+      "deferLoading": true
+    },
+    "linear": {
+      "command": "linear-mcp-server"
+    }
+  }
+}
+```
+
+In this setup:
+
+- **filesystem** tools are always in context (`deferLoading: false`).
+- **jira** and **slack** tools are always deferred (`deferLoading: true`), even if the threshold isn't hit.
+- **github** and **linear** tools are deferred only if the combined tool definitions exceed 8,000 characters.
+- The agent calls `search_tools("create issue")` and gets matching tools from github, jira, or linear loaded automatically.

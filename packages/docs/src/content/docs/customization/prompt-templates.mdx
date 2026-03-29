@@ -1,0 +1,254 @@
+---
+title: Prompt Templates
+description: Create reusable prompt templates that appear as slash commands in the web UI.
+---
+
+import { Aside, FileTree, Steps } from "@astrojs/starlight/components";
+
+**Prompt templates** are Markdown files that expand into full prompts when invoked as `/` commands. Instead of retyping the same complex instruction every time, save it as a template and trigger it with a short slash command like `/review` or `/component`.
+
+---
+
+## How It Works
+
+Each `.md` file you place in a recognized directory becomes a slash command. The filename (minus the `.md` extension) is the command name:
+
+- `review.md` → `/review`
+- `refactor.md` → `/refactor`
+- `create-component.md` → `/create-component`
+
+When you type `/` in the web UI input, prompt templates appear in a dedicated **Prompt Templates** group in the slash command picker alongside built-in commands, skills, and extension commands.
+
+---
+
+## Directory Locations
+
+PizzaPi discovers prompt templates from several directories. **All** matching templates are merged — if the same name exists in multiple locations, the first match wins (top of this list = highest precedence):
+
+| Path | Scope |
+|------|-------|
+| `~/.pizzapi/prompts/` | Global — available in all projects |
+| `~/.pizzapi/commands/` | Global — Claude Code naming convention |
+| `<cwd>/.pizzapi/prompts/` | Project-local — scoped to this repo |
+| `<cwd>/.pizzapi/commands/` | Project-local — Claude Code naming convention |
+| `<cwd>/.agents/commands/` | Project-local — Claude Code / agents compatibility |
+
+<Aside type="note">
+  The `~/.pizzapi/prompts/` directory is discovered automatically as part of the PizzaPi agent directory. The other paths (`commands/`, `.agents/commands/`) are added for compatibility with Claude Code conventions.
+</Aside>
+
+<FileTree>
+- ~/.pizzapi/
+  - prompts/
+    - review.md
+    - explain.md
+  - commands/
+    - deploy-checklist.md
+- my-project/
+  - .pizzapi/
+    - prompts/
+      - component.md
+    - commands/
+      - test-plan.md
+  - .agents/
+    - commands/
+      - fix.md
+</FileTree>
+
+---
+
+## File Format
+
+A prompt template is a Markdown file with optional YAML frontmatter:
+
+```markdown
+---
+description: Review staged git changes for bugs and security issues
+---
+Review the staged changes (`git diff --cached`). Focus on:
+
+- Bugs and logic errors
+- Security issues
+- Error handling gaps
+- Performance concerns
+```
+
+### Frontmatter Fields
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `description` | No | Short description shown in the slash command picker. If omitted, the first non-empty line of the body is used. |
+
+The body of the file is the prompt text that gets expanded when the command is invoked.
+
+---
+
+## Arguments
+
+Templates support positional arguments and argument slicing. When a user types `/component Button "click handler"`, the arguments are substituted into the template body:
+
+| Placeholder | Expands to |
+|-------------|------------|
+| `$1`, `$2`, ... | Individual positional arguments |
+| `$@` or `$ARGUMENTS` | All arguments joined together |
+| `${@:N}` | All arguments from the Nth position onward (1-indexed) |
+| `${@:N:L}` | `L` arguments starting at position N |
+
+### Example Template with Arguments
+
+```markdown
+---
+description: Create a React component
+---
+Create a React component named $1 with the following features: ${@:2}
+
+Requirements:
+- TypeScript with proper prop types
+- Include unit tests
+- Export as named export
+```
+
+**Usage:**
+
+```
+/component Button "onClick handler" "disabled state" "loading spinner"
+```
+
+This expands `$1` to `Button` and `${@:2}` to `"onClick handler" "disabled state" "loading spinner"`.
+
+---
+
+## Creating Your First Template
+
+<Steps>
+
+1. **Create the prompts directory:**
+
+   ```bash
+   mkdir -p ~/.pizzapi/commands
+   ```
+
+2. **Write a template file:**
+
+   ```bash
+   cat > ~/.pizzapi/commands/review.md << 'EOF'
+   ---
+   description: Review staged changes for bugs and security issues
+   ---
+   Review the staged changes (`git diff --cached`). Focus on:
+
+   - Bugs and logic errors
+   - Security issues
+   - Error handling gaps
+
+   Provide specific line references and suggested fixes.
+   EOF
+   ```
+
+3. **Use it in the web UI:**
+
+   Type `/review` in the input field. The command appears in the **Prompt Templates** group of the slash command picker. Select it to expand the template into your prompt.
+
+</Steps>
+
+---
+
+## Web UI Integration
+
+When you type `/` in the session input, the slash command picker groups available commands into sections:
+
+- **Built-in commands** — `/new`, `/resume`, `/compact`, etc.
+- **Extension commands** — commands from plugins and extensions
+- **Prompt Templates** — your custom prompt templates
+- **Skills** — skill invocations like `/skill:name`
+
+Prompt templates show the command name (e.g., `/review`) and the description from frontmatter. You can filter by typing part of the name or description.
+
+<Aside type="tip">
+  When you select a prompt template from the picker, the input field is pre-filled with `/<command-name> ` (with a trailing space) so you can immediately type any arguments the template expects.
+</Aside>
+
+---
+
+## Claude Code Compatibility
+
+PizzaPi supports the Claude Code `commands/` directory convention alongside its own `prompts/` directories. This means:
+
+- Templates in `~/.claude/commands/` work if you symlink or copy them to `~/.pizzapi/commands/`
+- The `.agents/commands/` directory in your project root is discovered automatically
+- The file format (Markdown with optional frontmatter and `$ARGUMENTS` substitution) is the same
+
+If you're migrating from Claude Code, you can symlink your existing commands directory:
+
+```bash
+ln -s ~/.claude/commands ~/.pizzapi/commands
+```
+
+<Aside type="caution">
+  Discovery within prompt template directories is **non-recursive** — only `.md` files directly inside the directory are loaded. Subdirectories are not scanned.
+</Aside>
+
+---
+
+## Examples
+
+### Code Review Template
+
+`~/.pizzapi/commands/review.md`:
+
+```markdown
+---
+description: Thorough code review of staged changes
+---
+Review the staged changes (`git diff --cached`).
+
+Check for:
+1. Logic errors and edge cases
+2. Security vulnerabilities
+3. Error handling completeness
+4. Performance issues
+5. Type safety
+
+For each issue found, provide:
+- The file and line number
+- What's wrong
+- A suggested fix
+```
+
+### Component Generator
+
+`.pizzapi/commands/component.md` (project-local):
+
+```markdown
+---
+description: Generate a React component with tests
+---
+Create a React component named `$1` in the components directory.
+
+Requirements:
+- TypeScript with explicit prop interface
+- Unit tests in a co-located `.test.tsx` file
+- Storybook story if `stories/` directory exists
+- Follow existing component patterns in this project
+
+Additional requirements: ${@:2}
+```
+
+**Usage:** `/component SearchBar "with debounced input" "accessible with ARIA labels"`
+
+### Commit Message Helper
+
+`~/.pizzapi/commands/commit.md`:
+
+```markdown
+---
+description: Generate a conventional commit message
+---
+Look at the staged changes (`git diff --cached`) and generate a commit message following
+the Conventional Commits specification.
+
+Format: `type(scope): description`
+
+Types: feat, fix, docs, style, refactor, perf, test, chore
+Keep the first line under 72 characters. Add a body if the change is complex.
+```

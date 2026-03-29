@@ -1,0 +1,143 @@
+---
+title: Slash Commands
+description: Complete reference for all / commands available in the PizzaPi web UI chat input.
+---
+
+import { Aside } from "@astrojs/starlight/components";
+
+Slash commands let you control your PizzaPi session directly from the chat input. Type `/` to open the command picker, then select or type a command.
+
+## Using the command picker
+
+### Opening the picker
+
+Type `/` at the beginning of the chat input. A popover appears listing all available commands, grouped into sections:
+
+- **Commands** — built-in session and UI commands
+- **Extensions** — commands registered by Claude Code plugins
+- **Prompts** — prompt template shortcuts
+- **Skills** — skill-based commands from your configuration
+
+The list filters as you type. For example, typing `/mo` narrows the list to `/model`.
+
+### Keyboard navigation
+
+| Key | Action |
+|-----|--------|
+| <kbd>↑</kbd> / <kbd>↓</kbd> | Move highlight through the list |
+| <kbd>Enter</kbd> | Select the highlighted command |
+| <kbd>Escape</kbd> | Close the picker |
+
+On touch devices, tap a command to select it.
+
+### Sub-command mode
+
+Some commands (like `/mcp`) have sub-commands. When you select one of these, the picker stays open and shows the available sub-options. For example, selecting `/mcp` then shows `status`, `reload`, `disable`, and `enable`.
+
+If a sub-command requires an argument (like `/mcp disable`), selecting it fills the input with the command prefix and positions your cursor to type the argument.
+
+---
+
+## Built-in commands
+
+### Session management
+
+| Command | Description |
+|---------|-------------|
+| `/new` | Start a new conversation. If linked child sessions are still active, a confirmation dialog appears first. |
+| `/resume [query]` | Resume a previous session. Opens a session picker showing recent sessions with name, date, and path. Type to fuzzy-search by session name, ID, path, or first message. |
+| `/stop` | Abort the current generation. |
+| `/restart` | Restart the underlying CLI process. |
+
+<Aside type="tip">
+  `/resume` keeps the picker open so you can browse and filter sessions interactively. Select a session with <kbd>Enter</kbd> or click/tap it.
+</Aside>
+
+### Model and reasoning
+
+| Command | Description |
+|---------|-------------|
+| `/model` | Open the model selector dialog. |
+| `/cycle_model` | Same as `/model` — opens the model selector. |
+| `/effort` | Cycle through reasoning effort levels (low → medium → high). |
+| `/cycle_effort` | Same as `/effort`. |
+
+### Context and planning
+
+| Command | Description |
+|---------|-------------|
+| `/compact [instructions]` | Compact the conversation context. Optionally pass custom instructions to guide summarization, e.g. `/compact focus on the auth module`. |
+| `/plan` | Toggle plan mode. In plan mode, the agent explores and plans without making changes (read-only). |
+
+### Session display
+
+| Command | Description |
+|---------|-------------|
+| `/name <name>` | Set a display name for the current session, e.g. `/name auth-refactor`. |
+| `/copy` | Copy the last assistant message to your clipboard. |
+
+### Introspection
+
+| Command | Description |
+|---------|-------------|
+| `/plugins` | List all loaded Claude Code plugins, including their commands, hooks, skills, agents, and MCP servers. |
+| `/skills` | List all available skills from your configuration and plugins. |
+| `/sandbox` | Show the current sandbox status — mode (none/basic/full), platform, and recent violations. |
+
+### MCP server management
+
+The `/mcp` command manages Model Context Protocol servers. Type `/mcp ` (with a space) to see sub-commands:
+
+| Sub-command | Description |
+|-------------|-------------|
+| `/mcp status` | Show the status of all configured MCP servers. |
+| `/mcp reload` | Reload MCP server configurations. |
+| `/mcp disable <name>` | Disable a specific MCP server by name. |
+| `/mcp enable <name>` | Re-enable a previously disabled MCP server. |
+
+<Aside>
+  `/mcp disable` and `/mcp enable` require a server name argument. The picker fills in the command prefix — just type the server name and press <kbd>Enter</kbd>.
+</Aside>
+
+### Agent sessions
+
+| Command | Description |
+|---------|-------------|
+| `/agents [name]` | Start a new session as a named agent. Without an argument, opens a picker showing all available agent definitions. With a name, spawns directly, e.g. `/agents reviewer`. |
+
+The agent picker shows each agent's name and description. Select one to start a new session with that agent's system prompt.
+
+---
+
+## Dynamic commands
+
+In addition to the built-in commands above, three types of commands appear dynamically based on your configuration:
+
+### Skill commands
+
+Skills defined in your `~/.pizzapi/skills/` directory (or registered by plugins) appear in the **Skills** group. They are prefixed with `skill:` internally but shown by their short name in the picker. Running a skill command sends its content to the agent.
+
+### Extension (plugin) commands
+
+Claude Code plugins can register custom commands. These appear in the **Extensions** group. Each shows the command name and description provided by the plugin.
+
+### Prompt template commands
+
+Prompt templates from your configuration appear in the **Prompts** group. Selecting one inserts the template content into the conversation.
+
+---
+
+## Examples
+
+```
+/new                          # Start a fresh session
+/resume auth                  # Find and resume a session matching "auth"
+/compact focus on API routes  # Compact context with custom instructions
+/name deploy-fix              # Name the current session
+/mcp status                   # Check MCP server health
+/mcp disable filesystem       # Disable the "filesystem" MCP server
+/agents reviewer              # Start a session as the "reviewer" agent
+/effort                       # Cycle to the next reasoning effort level
+/plan                         # Toggle read-only plan mode
+/copy                         # Copy last response to clipboard
+```

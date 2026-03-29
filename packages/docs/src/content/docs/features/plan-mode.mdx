@@ -1,0 +1,223 @@
+---
+title: Plan Mode
+description: Read-only exploration and structured plan review for careful, step-by-step agent workflows.
+---
+
+import { Aside, Steps } from "@astrojs/starlight/components";
+
+Plan mode puts the agent into a **read-only exploration state** where file writes and destructive commands are blocked at the tool level (and at the OS level when [sandbox](/security/sandbox/) is active). The agent can freely read code, search, and analyze — but cannot modify anything until a plan is reviewed and approved.
+
+This is useful when you want the agent to **think before it acts**: explore a complex codebase, identify the right files, and present a structured plan for your approval before any changes are made.
+
+---
+
+## Activating Plan Mode
+
+There are three ways to enter plan mode:
+
+| Method | Who uses it | How |
+|--------|-------------|-----|
+| `/plan` slash command | You (human) | Type `/plan` in the input bar — toggles plan mode on/off |
+| `toggle_plan_mode` tool | The agent | Agent calls `toggle_plan_mode` with `enabled: true` to enter or `enabled: false` to exit |
+| Web UI remote command | You (human) | Send `/plan` from the PizzaPi web interface |
+
+When plan mode activates, you'll see a notification:
+
+> ⏸ Plan mode ON — read-only exploration. Write/edit tools blocked.
+
+When it deactivates:
+
+> ▶ Plan mode OFF — full tool access restored.
+
+---
+
+## What's Blocked in Plan Mode
+
+Plan mode enforces read-only access through two layers:
+
+### Tool-level blocking
+
+The following tools are **completely blocked** while plan mode is active:
+
+- `edit` — file editing
+- `write` — file creation/overwrite
+- `write_file` — custom write tool
+
+The agent can still use `read`, `bash` (with restrictions), `grep`, `find`, `ls`, and any MCP read tools.
+
+### Bash command restrictions
+
+Bash commands go through a destructive-command detector that blocks:
+
+- **File-mutating commands**: `rm`, `mv`, `cp`, `mkdir`, `touch`, `chmod`, `ln`, `tee`, `truncate`, `dd`, `sed -i`, etc.
+- **Process/system control**: `sudo`, `kill`, `pkill`, `reboot`, `systemctl start/stop`, etc.
+- **Package managers**: `npm install`, `bun add`, `pip install`, `brew install`, etc.
+- **Output redirection**: `>` and `>>` (except `2>/dev/null`)
+- **Script interpreters**: `python`, `ruby`, `node` (running scripts, not `--version`/`--help`)
+- **Git mutations**: only read-only git subcommands are allowed (`status`, `log`, `diff`, `show`, `blame`, `grep`, `branch` (listing), `ls-files`, etc.). Mutating operations like `git commit`, `git push`, `git checkout`, `git stash push` are blocked.
+
+<Aside type="tip" title="Sandbox enforcement">
+  When the [sandbox](/security/sandbox/) is active, plan mode activates an **OS-level read-only overlay** via `setReadOnlyOverlay()`. This means the filesystem itself is write-protected — even if a command somehow bypasses the regex checks, the OS blocks the write. Without sandbox, the regex-based command detection is the only line of defense.
+</Aside>
+
+### What the agent _can_ do
+
+- Read any file (`read` tool)
+- Run read-only bash commands (`ls`, `find`, `grep`, `rg`, `cat`, `head`, `wc`, `git log`, `git diff`, etc.)
+- Use MCP tools that only read data
+- Call `toggle_plan_mode` to exit plan mode
+- Call `plan_mode` to submit a structured plan for review
+
+---
+
+## The Plan Review Flow
+
+The core workflow in plan mode follows this pattern:
+
+<Steps>
+1. **You activate plan mode** — via `/plan` or the agent enters it with `toggle_plan_mode`.
+
+2. **The agent explores** — reads files, searches code, runs read-only commands to understand the problem.
+
+3. **The agent submits a plan** — calls the `plan_mode` tool with a title, optional description, and a list of steps.
+
+4. **You review the plan** — a plan review card appears with the plan details and action buttons.
+
+5. **You respond** — approve, suggest edits, or cancel.
+
+6. **The agent executes** — if approved, plan mode exits automatically and the agent proceeds with full tool access.
+</Steps>
+
+### The `plan_mode` tool
+
+The agent submits a plan by calling `plan_mode` with these parameters:
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `title` | `string` | ✅ | Short title summarizing the plan |
+| `description` | `string` | No | Detailed description in markdown |
+| `steps` | `array` | No | Ordered list of steps, each with a `title` (required) and optional `description` |
+
+The tool **blocks** until the user responds — the agent cannot continue until you act.
+
+### Your response options
+
+When a plan is submitted, you see four actions:
+
+| Action | What it does |
+|--------|-------------|
+| **Clear Context & Begin** | Clears the conversation history and starts fresh execution of the plan. The agent gets a clean context with only the approved plan. |
+| **Begin** | Approves the plan and proceeds with the current conversation context intact. |
+| **Suggest Edit** | Opens a text input where you describe changes. The agent receives your feedback and should resubmit an updated plan. |
+| **Cancel** | Rejects the plan entirely. The agent is told not to proceed. |
+
+<Aside type="note">
+  **Clear Context & Begin** is useful for long exploration sessions where the context window has filled up with read-only analysis. It gives the agent a fresh start focused purely on execution.
+</Aside>
+
+---
+
+## Plan Mode in the Web UI
+
+In the PizzaPi web UI, the plan review appears as an interactive **Plan Review panel** that replaces the text input area:
+
+- A blue-accented card shows the plan **title**, **description**, and **numbered steps**
+- Steps auto-collapse when there are more than 5 (click to expand)
+- Four action buttons are displayed in a responsive grid (2×2 on mobile, inline row on desktop)
+- The **Suggest Edit** button reveals an inline text input — type your feedback and press Enter or click Send
+- The panel is capped at 50% viewport height (60% on desktop) and scrolls internally so it never blocks the full screen
+
+In the terminal TUI, the plan renders as an ANSI-styled box with numbered options (1–4). Type a number to choose, or type free text to submit it as an edit suggestion.
+
+---
+
+## Execution Tracking
+
+After a plan is approved, the agent enters **execution mode**. If the plan had steps, PizzaPi tracks progress:
+
+- The agent marks steps complete by including `[DONE:n]` tags in its responses (e.g., `[DONE:1]`)
+- A checklist of plan steps is displayed, updating as steps are completed
+- When all steps are marked done, a **Plan Complete! ✓** message appears with all steps struck through
+
+In the TUI, after the agent finishes exploring (if it hasn't used the `plan_mode` tool), a menu appears:
+- **Execute the plan (track progress)** — exits plan mode and starts execution with step tracking
+- **Stay in plan mode** — keep exploring
+- **Refine the plan** — opens an editor to provide feedback
+
+---
+
+## Multi-Agent Plan Review
+
+In multi-agent setups where a parent agent spawns child sessions, plan review integrates with the [trigger system](/customization/subagents/).
+
+When a **child session** calls `plan_mode`, it fires a `plan_review` trigger to the parent session instead of waiting for a human response. The parent sees:
+
+```
+🔗 Child "my-child" submitted a plan for review:
+## Refactor Authentication Module
+
+1. Extract token validation into shared utility
+2. Update all route handlers to use new utility
+3. Add unit tests for edge cases
+
+Respond with `respond_to_trigger` using trigger ID `abc-123`.
+Use respond_to_trigger with action: "approve" to accept, "cancel" to reject, or "edit" with feedback.
+```
+
+The parent agent can respond with:
+
+- `respond_to_trigger(triggerId, "approve", { action: "approve" })` — child proceeds with execution
+- `respond_to_trigger(triggerId, "cancel", { action: "cancel" })` — child stops
+- `respond_to_trigger(triggerId, "Your step 2 should also handle middleware", { action: "edit" })` — child revises the plan
+- `escalate_trigger(triggerId)` — passes the decision to the human viewer
+
+<Aside type="caution">
+  Plan review triggers have a **5-minute timeout** (`300,000ms`). If the parent doesn't respond in time, the child treats it as a cancellation.
+</Aside>
+
+---
+
+## The `toggle_plan_mode` Tool
+
+Separate from `plan_mode` (which submits a plan for review), the `toggle_plan_mode` tool lets the agent **enter or exit** read-only exploration mode programmatically.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `enabled` | `boolean` | ✅ | `true` to enter plan mode (read-only), `false` to exit (full access) |
+
+**Response examples:**
+
+- `"Plan mode is now ON (read-only)."` — when entering
+- `"Plan mode is now OFF (full access)."` — when exiting
+- `"Plan mode was already ON (read-only). No change."` — if already in the requested state
+
+If the agent exits plan mode without ever submitting a plan via `plan_mode`, it receives a soft nudge:
+
+> Note: you exited plan mode without submitting a plan for user review. Next time, use the plan_mode tool to present your plan before exiting.
+
+---
+
+## Session Behavior
+
+- **State persists across resumes** — if you resume a session that was in plan mode, plan mode is restored along with any in-progress execution steps and the sandbox overlay.
+- **State resets on session switch** — switching to a different session clears plan mode so the new session starts with full access. The sandbox overlay is also cleared.
+- **Context filtering** — when plan mode is off, the `[PLAN MODE ACTIVE]` context messages are automatically stripped from the conversation to keep the context window clean.
+
+---
+
+## Best Practices
+
+**Use plan mode when:**
+- The task is complex and touches many files — you want to verify the approach before changes begin
+- You're working with an unfamiliar codebase and want the agent to explore first
+- The change is risky or hard to reverse (database migrations, config changes, refactors)
+- You're using a multi-agent setup and want parent approval before child agents make changes
+
+**Skip plan mode when:**
+- The task is simple and well-defined (fix a typo, add a log line)
+- You've already described the exact changes you want
+- Speed matters more than review — you can always undo with git
+
+<Aside type="tip">
+  Plan mode works especially well with the **Clear Context & Begin** action. Let the agent spend its context window on thorough analysis, then start execution with a clean slate focused on the approved plan.
+</Aside>
