@@ -1,9 +1,2 @@
 [test]
 preload = ["./packages/server/tests/harness/preload.ts"]
-
-# Harness integration tests (mock-runner, builders, integration, mock-viewer)
-# require a real Redis + HTTP server and break when run in the same Bun worker
-# as unit tests that call mock.module("redis", …). Run them in isolation:
-#   bun test packages/server/tests/harness/
-# Tracking: Godmother idea "harness Redis mock.module contamination"
-exclude = ["packages/server/tests/harness/mock-runner.test.ts", "packages/server/tests/harness/builders.test.ts", "packages/server/tests/harness/integration.test.ts", "packages/server/tests/harness/mock-viewer.test.ts"]

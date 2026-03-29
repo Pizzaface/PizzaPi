@@ -1,12 +1,9 @@
 // ============================================================================
-// sio-state/index.ts — Barrel re-exports of all public APIs
+// sio-state/index.ts — Re-export from the consolidated sio-state module
+//
+// All state logic now lives in ../sio-state.ts with dependency injection.
+// This barrel exists so that existing imports from "./sio-state/index.js"
+// continue to resolve correctly.
 // ============================================================================
 
-export * from "./types.js";
-export * from "./client.js";
-export * from "./sessions.js";
-export * from "./runners.js";
-export * from "./terminals.js";
-export * from "./child-sessions.js";
-export * from "./push.js";
-export * from "./cleanup.js";
+export * from "../sio-state.js";

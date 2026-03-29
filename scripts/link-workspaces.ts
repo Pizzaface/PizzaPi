@@ -8,7 +8,7 @@ import { join, resolve } from "path";
 
 const root = resolve(import.meta.dirname, "..");
 const scope = join(root, "node_modules", "@pizzapi");
-const packages = ["cli", "docs", "protocol", "server", "tools", "ui"];
+const packages = ["cli", "docs", "protocol", "server", "tools", "tunnel", "ui"];
 
 mkdirSync(scope, { recursive: true });
 

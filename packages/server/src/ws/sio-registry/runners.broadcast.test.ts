@@ -84,7 +84,7 @@ const mockRedis = {
     }),
 };
 
-mock.module("redis", () => ({ createClient: () => mockRedis }));
+// No mock.module for redis — mock client is injected directly via initStateRedis().
 mock.module("./hub.js", () => ({ broadcastToHub: mock(async () => {}) }));
 mock.module("../../sessions/store.js", () => ({
     getEphemeralTtlMs: () => 60_000,
@@ -150,7 +150,7 @@ describe("runners broadcast", () => {
         setStore.clear();
         emitCalls.length = 0;
         initSioRegistry(createFakeIo() as any);
-        await initStateRedis();
+        await initStateRedis(mockRedis as never);
     });
 
     it("broadcasts runner_added when registerRunner succeeds", async () => {
