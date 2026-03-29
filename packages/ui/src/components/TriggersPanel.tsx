@@ -240,6 +240,32 @@ export function groupByLinkedSession(triggers: TriggerHistoryEntry[]): {
   return { sessionGroups, otherEvents };
 }
 
+/** Group "other" (non-session) trigger events by their source field. */
+export function groupOtherEventsBySource(events: TriggerHistoryEntry[]): {
+  source: string;
+  label: string;
+  events: TriggerHistoryEntry[];
+}[] {
+  const map = new Map<string, TriggerHistoryEntry[]>();
+  for (const e of events) {
+    const key = e.source || "unknown";
+    const existing = map.get(key);
+    if (existing) {
+      existing.push(e);
+    } else {
+      map.set(key, [e]);
+    }
+  }
+  const groups = Array.from(map.entries()).map(([source, evts]) => ({
+    source,
+    label: sourceLabel(source),
+    events: evts,
+  }));
+  // Sort by most recent event first
+  groups.sort((a, b) => new Date(b.events[0].ts).getTime() - new Date(a.events[0].ts).getTime());
+  return groups;
+}
+
 // ── Incomplete trigger detection (used by /new warning) ────────────────────
 
 export interface IncompleteTriggerItem {
@@ -1201,6 +1227,45 @@ function OtherTriggerRow({ entry }: { entry: TriggerHistoryEntry }) {
   );
 }
 
+// ── Other Source Group (collapsible group of events from the same source) ──
+
+interface OtherSourceGroupProps {
+  group: { source: string; label: string; events: TriggerHistoryEntry[] };
+}
+
+function OtherSourceGroup({ group }: OtherSourceGroupProps) {
+  const [expanded, setExpanded] = React.useState(false);
+
+  return (
+    <div className="rounded-lg border border-border/50 bg-muted/10 overflow-hidden">
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        className="w-full flex items-center gap-2 px-3 py-2 hover:bg-muted/30 transition-colors"
+      >
+        <SourceIcon source={group.source} className="text-muted-foreground" />
+        <span className="text-[11px] font-medium text-foreground/90 flex-1 text-left truncate">
+          {group.label}
+        </span>
+        <span className="text-[10px] text-muted-foreground/50 shrink-0">
+          {group.events.length} event{group.events.length !== 1 ? "s" : ""}
+        </span>
+        <div className="shrink-0 text-muted-foreground/40">
+          {expanded ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />}
+        </div>
+      </button>
+
+      {expanded && (
+        <div className="border-t border-border/30">
+          {group.events.map((entry) => (
+            <OtherTriggerRow key={entry.triggerId} entry={entry} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Main Panel ─────────────────────────────────────────────────────────────
 
 export interface TriggersPanelProps {
@@ -1426,7 +1491,7 @@ export function TriggersPanel({ sessionId, triggerDefs = [], viewerSocket }: Tri
               </div>
             )}
 
-            {/* Other events (external/API triggers) */}
+            {/* Other events (external/API triggers), grouped by source */}
             {otherEvents.length > 0 && (
               <div>
                 <div className="px-1 pb-1.5 flex items-center gap-1.5">
@@ -1435,9 +1500,9 @@ export function TriggersPanel({ sessionId, triggerDefs = [], viewerSocket }: Tri
                     Other Events ({otherEvents.length})
                   </span>
                 </div>
-                <div className="rounded-lg border border-border/50 bg-muted/10 overflow-hidden">
-                  {otherEvents.map((entry) => (
-                    <OtherTriggerRow key={entry.triggerId} entry={entry} />
+                <div className="flex flex-col gap-1.5">
+                  {groupOtherEventsBySource(otherEvents).map((sourceGroup) => (
+                    <OtherSourceGroup key={sourceGroup.source} group={sourceGroup} />
                   ))}
                 </div>
               </div>
