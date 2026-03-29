@@ -4045,9 +4045,6 @@ export function App() {
       >
         Skip to content
       </a>
-      <DegradedBanner relayStatus={relayStatus} />
-      <RunnerWarningBanner runners={feedRunners} />
-      <VersionBanner message={versionBanner.message} protocolCompatible={versionBanner.protocolCompatible} />
       {/* ── Desktop header (memoized — skips re-render on same-runner session switch) ── */}
       <DesktopHeader
         relayStatus={relayStatus}
@@ -4098,6 +4095,13 @@ export function App() {
       />
       {/* Spacer that reserves the exact height of the fixed mobile header */}
       <div className="md:hidden flex-shrink-0" style={{ height: "calc(3.25rem + env(safe-area-inset-top))" }} aria-hidden="true" />
+
+      {/* Banners render after the mobile header spacer so they're visible below
+          the fixed mobile header. On desktop (where there is no spacer) they
+          appear directly below the DesktopHeader. */}
+      <DegradedBanner relayStatus={relayStatus} />
+      <RunnerWarningBanner runners={feedRunners} />
+      <VersionBanner message={versionBanner.message} protocolCompatible={versionBanner.protocolCompatible} />
 
       {/* Mobile model selector (shared with desktop) */}
       <ModelSelector open={modelSelectorOpen} onOpenChange={setModelSelectorOpen}>
