@@ -12,6 +12,7 @@ import {
     parseManifest,
     parsePlugin,
     discoverClaudeInstalledPlugins,
+    readEnabledPlugins,
     pluginSearchDirs,
     globalPluginDirs,
     projectPluginDirs,
@@ -324,6 +325,45 @@ describe("discoverClaudeInstalledPlugins smoke test", () => {
         expect(result[0].name).toBe("plugin-a");
         expect(result[0].commands).toHaveLength(1);
     });
+
+    test("prefers most recently updated installation (newest-install-wins)", () => {
+        const home = join(tmpDir, "prefer-newest");
+        mkdirSync(join(home, ".claude", "plugins"), { recursive: true });
+        process.env.HOME = home;
+
+        // Create two versions of the same plugin
+        for (const version of ["1.0.0", "2.0.0"]) {
+            const dir = join(home, ".claude", "plugins", "cache", "mkt", "evolving", version);
+            mkdirSync(join(dir, ".claude-plugin"), { recursive: true });
+            writeFileSync(
+                join(dir, ".claude-plugin", "plugin.json"),
+                JSON.stringify({ name: "evolving", description: `v${version}`, version }),
+            );
+            mkdirSync(join(dir, "commands"), { recursive: true });
+            writeFileSync(join(dir, "commands", "hello.md"), `---\ndescription: hello\n---\n# Hello`);
+        }
+
+        const oldPath = join(home, ".claude", "plugins", "cache", "mkt", "evolving", "1.0.0");
+        const newPath = join(home, ".claude", "plugins", "cache", "mkt", "evolving", "2.0.0");
+
+        writeFileSync(
+            join(home, ".claude", "plugins", "installed_plugins.json"),
+            JSON.stringify({
+                version: 2,
+                plugins: {
+                    "evolving@mkt": [
+                        { scope: "user", installPath: oldPath, version: "1.0.0", lastUpdated: "2026-01-01T00:00:00Z" },
+                        { scope: "user", installPath: newPath, version: "2.0.0", lastUpdated: "2026-06-01T00:00:00Z" },
+                    ],
+                },
+            }),
+        );
+
+        const result = discoverClaudeInstalledPlugins("/tmp");
+        expect(result).toHaveLength(1);
+        // Newest by lastUpdated wins — description is "v2.0.0"
+        expect(result[0].description).toBe("v2.0.0");
+    });
 });
 
 // ── pluginSearchDirs security (pure path logic) ───────────────────────────────
@@ -347,5 +387,67 @@ describe("pluginSearchDirs", () => {
     test("extraDirs are included", () => {
         const dirs = pluginSearchDirs("/some/project", { extraDirs: ["/custom/path"] });
         expect(dirs).toContain("/custom/path");
+    });
+});
+
+// ── readEnabledPlugins merge hierarchy ────────────────────────────────────────
+
+describe("readEnabledPlugins merge hierarchy", () => {
+    let tmpDir: string;
+    let realHome: string;
+
+    beforeAll(() => {
+        tmpDir = mkdtempSync(join(tmpdir(), "read-enabled-plugins-"));
+        realHome = process.env.HOME!;
+    });
+
+    afterAll(() => {
+        process.env.HOME = realHome;
+        try { rmSync(tmpDir, { recursive: true, force: true }); } catch {}
+    });
+
+    test("merges user and project settings with project winning on conflict", () => {
+        const home = join(tmpDir, "merge-test");
+        mkdirSync(join(home, ".claude"), { recursive: true });
+        writeFileSync(
+            join(home, ".claude", "settings.json"),
+            JSON.stringify({ enabledPlugins: { "a@mkt": true, "b@mkt": false } }),
+        );
+        process.env.HOME = home;
+
+        const projectDir = join(tmpDir, "merge-project");
+        mkdirSync(join(projectDir, ".claude"), { recursive: true });
+        writeFileSync(
+            join(projectDir, ".claude", "settings.json"),
+            // project overrides b@mkt to true, and adds c@mkt
+            JSON.stringify({ enabledPlugins: { "b@mkt": true, "c@mkt": false } }),
+        );
+
+        const result = readEnabledPlugins(projectDir);
+        // User sets a=true, b=false. Project overrides b=true, adds c=false.
+        expect(result).toEqual({ "a@mkt": true, "b@mkt": true, "c@mkt": false });
+    });
+
+    test("returns user-only settings when no project settings exist", () => {
+        const home = join(tmpDir, "user-only");
+        mkdirSync(join(home, ".claude"), { recursive: true });
+        writeFileSync(
+            join(home, ".claude", "settings.json"),
+            JSON.stringify({ enabledPlugins: { "a@mkt": true, "b@mkt": false } }),
+        );
+        process.env.HOME = home;
+
+        const result = readEnabledPlugins("/nonexistent/project");
+        expect(result).toEqual({ "a@mkt": true, "b@mkt": false });
+    });
+
+    test("returns null when no settings files have enabledPlugins", () => {
+        const home = join(tmpDir, "no-enabled");
+        mkdirSync(join(home, ".claude"), { recursive: true });
+        writeFileSync(join(home, ".claude", "settings.json"), JSON.stringify({ hooks: {} }));
+        process.env.HOME = home;
+
+        const result = readEnabledPlugins("/tmp");
+        expect(result).toBeNull();
     });
 });

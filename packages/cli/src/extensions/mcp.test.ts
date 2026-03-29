@@ -172,6 +172,44 @@ describe("MCP HTTP smoke test", () => {
         }
     });
 
+    test("HTTP client rejects unsupported protocol versions", async () => {
+        const server = Bun.serve({
+            port: 0,
+            async fetch(req) {
+                const body = await req.json() as any;
+                if (!("id" in body)) return new Response(null, { status: 202 });
+
+                if (body.method === "initialize") {
+                    return Response.json({
+                        jsonrpc: "2.0",
+                        id: body.id,
+                        result: {
+                            protocolVersion: "1999-01-01", // unsupported
+                            capabilities: {},
+                            serverInfo: { name: "old", version: "0.1" },
+                        },
+                    });
+                }
+
+                return Response.json({ jsonrpc: "2.0", id: body.id, result: {} });
+            },
+        });
+
+        try {
+            const clients = await createMcpClientsFromConfig({
+                mcpServers: {
+                    "old-server": { url: `http://localhost:${server.port}` },
+                },
+            } as any);
+
+            await expect(clients[0].listTools()).rejects.toThrow("unsupported protocol version");
+
+            clients[0].close();
+        } finally {
+            server.stop(true);
+        }
+    });
+
     test("registerMcpTools reports timeout for hung server", async () => {
         const server = Bun.serve({
             port: 0,
@@ -210,6 +248,160 @@ describe("MCP HTTP smoke test", () => {
             expect(result.errors[0].error).toContain("Timed out");
             expect(result.clients).toHaveLength(0);
             expect(result.toolCount).toBe(0);
+        } finally {
+            server.stop(true);
+        }
+    });
+});
+
+describe("MCP config compatibility", () => {
+    test("type: 'http' in mcpServers uses streamable transport", async () => {
+        // When type: "http" is used (Claude Code / VS Code format), it should
+        // create a streamable client, not a plain HTTP client. We verify this by
+        // checking that it sends the Accept header that includes text/event-stream.
+        let receivedAcceptHeader = "";
+
+        const server = Bun.serve({
+            port: 0,
+            async fetch(req) {
+                receivedAcceptHeader = req.headers.get("accept") ?? "";
+
+                const body = await req.json() as any;
+                if (!("id" in body)) return new Response(null, { status: 202 });
+
+                if (body.method === "initialize") {
+                    return Response.json({
+                        jsonrpc: "2.0",
+                        id: body.id,
+                        result: {
+                            protocolVersion: MCP_PROTOCOL_VERSION,
+                            capabilities: {},
+                            serverInfo: { name: "test", version: "1.0" },
+                        },
+                    });
+                }
+
+                if (body.method === "tools/list") {
+                    return Response.json({
+                        jsonrpc: "2.0",
+                        id: body.id,
+                        result: { tools: [] },
+                    });
+                }
+
+                return Response.json({ jsonrpc: "2.0", id: body.id, result: {} });
+            },
+        });
+
+        try {
+            const clients = await createMcpClientsFromConfig({
+                mcpServers: {
+                    "github-style": {
+                        type: "http",
+                        url: `http://localhost:${server.port}`,
+                    },
+                },
+            } as any);
+
+            expect(clients).toHaveLength(1);
+            await clients[0].listTools();
+
+            // Streamable client sends Accept: application/json, text/event-stream
+            // Plain HTTP client only sends Content-Type: application/json
+            expect(receivedAcceptHeader).toContain("text/event-stream");
+
+            clients[0].close();
+        } finally {
+            server.stop(true);
+        }
+    });
+});
+
+describe("MCP streamable HTTP smoke test", () => {
+    test("streamable client sends initialize and captures mcp-session-id", async () => {
+        const receivedRequests: Array<{ method: string; hasId: boolean }> = [];
+        const SESSION_ID = "test-session-abc123";
+
+        const server = Bun.serve({
+            port: 0,
+            async fetch(req) {
+                const body = await req.json() as any;
+                const hasId = "id" in body;
+                receivedRequests.push({ method: body.method, hasId });
+
+                if (!hasId) {
+                    return new Response(null, { status: 202 });
+                }
+
+                if (body.method === "initialize") {
+                    return Response.json(
+                        {
+                            jsonrpc: "2.0",
+                            id: body.id,
+                            result: {
+                                protocolVersion: MCP_PROTOCOL_VERSION,
+                                capabilities: { tools: {} },
+                                serverInfo: { name: "streamable-test", version: "1.0" },
+                            },
+                        },
+                        {
+                            headers: {
+                                "Content-Type": "application/json",
+                                "mcp-session-id": SESSION_ID,
+                            },
+                        },
+                    );
+                }
+
+                if (body.method === "tools/list") {
+                    // Verify session ID is forwarded back by the client
+                    const sentSessionId = req.headers.get("mcp-session-id");
+                    if (sentSessionId !== SESSION_ID) {
+                        return Response.json(
+                            { jsonrpc: "2.0", id: body.id, error: { code: -32600, message: "Missing session ID" } },
+                            { status: 400 },
+                        );
+                    }
+                    return Response.json({
+                        jsonrpc: "2.0",
+                        id: body.id,
+                        result: { tools: [{ name: "stream_tool", description: "Streams data" }] },
+                    });
+                }
+
+                return Response.json({ jsonrpc: "2.0", id: body.id, result: {} });
+            },
+        });
+
+        try {
+            const clients = await createMcpClientsFromConfig({
+                mcp: {
+                    servers: [
+                        {
+                            name: "stream-test",
+                            transport: "streamable" as const,
+                            url: `http://localhost:${server.port}`,
+                        },
+                    ],
+                },
+            } as any);
+
+            expect(clients).toHaveLength(1);
+
+            const tools = await clients[0].listTools();
+
+            // Verify handshake order: initialize → notifications/initialized → tools/list
+            expect(receivedRequests[0].method).toBe("initialize");
+            expect(receivedRequests[0].hasId).toBe(true);
+            expect(receivedRequests[1].method).toBe("notifications/initialized");
+            expect(receivedRequests[1].hasId).toBe(false);
+            expect(receivedRequests[2].method).toBe("tools/list");
+
+            // Verify tools came back (proves session ID was forwarded)
+            expect(tools).toHaveLength(1);
+            expect(tools[0].name).toBe("stream_tool");
+
+            clients[0].close();
         } finally {
             server.stop(true);
         }
