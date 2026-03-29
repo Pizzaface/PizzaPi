@@ -1864,7 +1864,7 @@ export function TriggersPanel({ sessionId, triggerDefs = [], viewerSocket }: Tri
         <div className="flex items-center flex-1 min-w-0 gap-0">
           <button
             type="button"
-            onClick={() => setActiveTab("history")}
+            onClick={() => { catalogSeenRef.current = true; setActiveTab("history"); }}
             className={cn(
               "flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium transition-colors border-b-2",
               activeTab === "history"
@@ -1884,7 +1884,7 @@ export function TriggersPanel({ sessionId, triggerDefs = [], viewerSocket }: Tri
           {hasCatalog && (
             <button
               type="button"
-              onClick={() => setActiveTab("catalog")}
+              onClick={() => { catalogSeenRef.current = true; setActiveTab("catalog"); }}
               className={cn(
                 "flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium transition-colors border-b-2",
                 activeTab === "catalog"
