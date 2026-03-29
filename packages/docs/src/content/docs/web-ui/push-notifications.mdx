@@ -1,0 +1,157 @@
+---
+title: Push Notifications
+description: Set up browser push notifications to stay informed about session events.
+---
+
+import { Aside, Steps } from "@astrojs/starlight/components";
+
+PizzaPi can send browser push notifications when your agent finishes a task, hits an error, or needs your input — even if you've closed the tab. Notifications are fully opt-in and work on any device with a modern browser.
+
+---
+
+## What Gets Notified
+
+Push notifications fire for three event types:
+
+| Event | Trigger | Notification |
+|---|---|---|
+| **Agent finished** (`agent_finished`) | Agent reaches the end of its task (`agent_end`) | _"Your agent in \{session\} has finished its task."_ |
+| **Input needed** (`agent_needs_input`) | Agent calls `AskUserQuestion` | _"Agent in \{session\} asks: \{question\}"_ |
+| **Agent error** (`agent_error`) | A `cli_error` event is emitted | _"Error in \{session\}: \{message\}"_ |
+
+<Aside type="tip">
+  Notifications are **only sent when no one is watching.** If at least one viewer has the session open in the web UI, push notifications are suppressed — you're already there.
+</Aside>
+
+### Quick Reply from Notifications
+
+When the agent asks a single question with multiple-choice options, the push notification includes **action buttons** so you can reply directly — no need to open the browser. Up to two option buttons plus an inline text reply are shown. Quick reply requires [collab mode](/PizzaPi/web-ui/terminal/) to be enabled on the session.
+
+---
+
+## Enabling Notifications
+
+<Steps>
+1. **Click the bell icon** in the top bar of the web UI. On mobile, open the menu and tap **Enable notifications**.
+
+2. **Grant browser permission** when prompted. If you've previously blocked notifications for the site, you'll need to reset the permission in your browser settings.
+
+3. That's it — you're subscribed. The bell icon changes from muted to active.
+</Steps>
+
+To **disable** notifications, click the active bell icon and select **Disable notifications** from the dropdown.
+
+---
+
+## Notification Preferences
+
+### Per-Event Filtering
+
+Each push subscription stores which event types it receives. By default all events (`*`) are enabled. You can update the enabled set per-device by calling the API directly:
+
+```bash
+# Enable only "agent_finished" and "agent_needs_input" for this subscription
+curl -X PUT https://your-server/api/push/events \
+  -H "Content-Type: application/json" \
+  -H "Cookie: <session-cookie>" \
+  -d '{
+    "endpoint": "<your-push-endpoint>",
+    "enabledEvents": "agent_finished,agent_needs_input"
+  }'
+```
+
+Set `enabledEvents` to `"*"` to re-enable all events.
+
+### Suppressing Child Session Notifications
+
+When an agent spawns sub-agents, each child session can generate its own notifications — potentially creating a storm of alerts. To prevent this, toggle **Suppress child session notifications** in the bell dropdown menu.
+
+When enabled, notifications from linked child sessions are silently skipped. The parent session's notifications still come through normally. This setting is per-subscription (per-device), so you can suppress on your phone but keep them on desktop.
+
+Under the hood this calls `PUT /api/push/child-notifications` with `{ "endpoint": "...", "suppress": true }`.
+
+<Aside>
+  Child suppression uses the session's linked parent relationship. If a child session is explicitly delinked from its parent, it's no longer considered a child for suppression purposes and notifications resume.
+</Aside>
+
+---
+
+## Self-Hosted Setup
+
+Push notifications require **VAPID keys** and **HTTPS**. Both are necessary for the Web Push protocol to work.
+
+### Generate VAPID Keys
+
+```bash
+bunx web-push generate-vapid-keys
+```
+
+This outputs a public/private key pair. Add them to your server environment.
+
+### Required Environment Variables
+
+| Variable | Description |
+|---|---|
+| `VAPID_PUBLIC_KEY` | The public key from the generated pair. |
+| `VAPID_PRIVATE_KEY` | The private key from the generated pair. Must decode to exactly 32 bytes (256-bit EC key). |
+| `VAPID_SUBJECT` | A `mailto:` URI identifying the server operator (e.g. `mailto:you@example.com`). Defaults to `mailto:admin@pizzapi.local`. |
+
+Add these to your Docker Compose environment, `.env` file, or however you configure the server:
+
+```yaml
+# docker-compose.yml (excerpt)
+services:
+  server:
+    environment:
+      VAPID_PUBLIC_KEY: "BEl62i..."
+      VAPID_PRIVATE_KEY: "UGhla..."
+      VAPID_SUBJECT: "mailto:you@example.com"
+```
+
+<Aside type="caution">
+  If VAPID keys are missing or invalid, the server falls back to **ephemeral keys** that are regenerated on every restart. This means all existing push subscriptions break after a server restart — fine for development, but not for production.
+</Aside>
+
+### HTTPS Requirement
+
+Service workers — which power push notifications — require a [secure context](https://developer.mozilla.org/en-US/docs/Web/Security/Secure_Contexts). In practice this means:
+
+- **`localhost`** works without HTTPS (browsers treat it as secure).
+- **Any other hostname** requires HTTPS. Use a reverse proxy with TLS termination (e.g. Caddy, nginx) or [Tailscale HTTPS](/PizzaPi/deployment/tailscale/).
+
+If you access PizzaPi over plain HTTP on a non-localhost hostname, the notification toggle won't appear — the browser doesn't expose the Push API in insecure contexts.
+
+---
+
+## Troubleshooting
+
+### Notifications stopped working after server restart
+
+If you didn't set persistent VAPID keys, the server generated ephemeral ones that changed on restart. All existing subscriptions are now invalid.
+
+**Fix:** Generate permanent keys with `bunx web-push generate-vapid-keys`, set them as environment variables, and have users re-subscribe (click the bell icon off and on).
+
+### "Notifications blocked by browser"
+
+The user denied the notification permission prompt. PizzaPi can't override this.
+
+**Fix:** Reset the notification permission in browser settings for your PizzaPi URL, then click the bell icon again.
+
+### Bell icon doesn't appear
+
+The `NotificationToggle` component checks for browser support (`serviceWorker`, `PushManager`, and `Notification` APIs). If any are missing, the toggle is hidden.
+
+Common causes:
+- Accessing over plain HTTP on a non-localhost host (no secure context).
+- Using a browser that doesn't support Web Push (e.g. some in-app browsers).
+- Service worker failed to register — check the browser console for errors.
+
+### VAPID key mismatch after rotation
+
+If you change VAPID keys, all existing subscriptions become invalid. The server automatically cleans up stale subscriptions (410 Gone responses from push services), but users need to re-subscribe.
+
+**Fix:** After rotating keys, notify users to toggle notifications off and back on.
+
+### Push notifications fire for every sub-agent
+
+Toggle **Suppress child session notifications** in the bell dropdown. See [Suppressing Child Session Notifications](#suppressing-child-session-notifications) above.

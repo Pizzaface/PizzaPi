@@ -1,0 +1,80 @@
+---
+title: Web Terminal
+description: Access a full terminal on the runner machine directly from the PizzaPi web interface.
+---
+
+import { Aside } from "@astrojs/starlight/components";
+
+The **Web Terminal** is a full terminal emulator embedded in the PizzaPi browser UI. It gives you shell access on the runner machine — no SSH client or separate terminal app required. You can run commands, inspect files, manage processes, and do anything you'd normally do in a local terminal, all from your phone or any browser.
+
+## Opening the terminal
+
+Toggle the terminal panel with the keyboard shortcut:
+
+- **<kbd>Ctrl</kbd> + <kbd>`</kbd>** (backtick) — works on both macOS and Linux. PizzaPi intentionally uses Ctrl (not Cmd) on macOS to avoid conflicting with the system's <kbd>Cmd</kbd> + <kbd>`</kbd> window-switching shortcut.
+
+You can also open it from the panel toggle controls in the session view. Once open, the terminal panel can be docked to the **bottom**, **left**, or **right** of the session view using the position picker in the panel toolbar, or dragged into position with the grip handle.
+
+## Tabs and sessions
+
+The terminal panel supports **multiple tabs**. Click the **+** button to open a new terminal. Each tab is an independent shell session.
+
+When you're viewing an agent session, new terminals automatically open on that session's runner and default to the session's working directory. If no session is active, a dialog lets you choose which runner to connect to and optionally set a working directory. Recent working directories are remembered per-runner for quick access.
+
+Terminal tabs are **scoped to the active session** — switching sessions in the sidebar shows only the terminals that belong to that session. Tabs from other sessions stay connected in the background so you don't lose your shell state.
+
+## How it works
+
+The Web Terminal connects a browser-side [xterm.js](https://xtermjs.org/) terminal emulator to a real PTY (pseudo-terminal) process running on the runner machine. The data path looks like this:
+
+```
+Browser (xterm.js) ↔ WebSocket ↔ PizzaPi relay server ↔ WebSocket ↔ Runner daemon ↔ PTY subprocess
+```
+
+1. When you open a terminal, the UI sends a `POST /api/runners/terminal` request to the relay server, which registers the terminal and forwards a `new_terminal` command to the runner.
+2. The runner daemon spawns an **isolated worker process** that owns the PTY. Each terminal gets its own worker — if a PTY crashes, it only affects that one terminal, not the daemon or any agent sessions.
+3. Terminal I/O (keystrokes and output) is base64-encoded and relayed over Socket.IO between the browser and the runner. Resize events are forwarded so the remote shell always knows the correct terminal dimensions.
+4. The runner auto-detects your default shell (`$SHELL`, or falls back to `/bin/zsh` on macOS, `/bin/bash` on Linux).
+
+<Aside type="tip">
+The terminal supports 10,000 lines of scrollback, clickable URLs, and both dark and light themes that follow your PizzaPi theme setting automatically.
+</Aside>
+
+## Mobile support
+
+On mobile devices, a **shortcut bar** appears below the terminal with buttons for keys that are hard to type on a virtual keyboard:
+
+**Tab**, **Esc**, **Ctrl+C**, **Ctrl+D**, **Ctrl+L**, **Ctrl+A**, **Ctrl+E**, arrow keys, **PgUp/PgDn**, and **Home/End**.
+
+The shortcut bar scrolls horizontally if it overflows. The virtual keyboard is not triggered when the terminal first connects — tap the terminal area to bring it up when you're ready to type.
+
+## Relationship to agent sessions
+
+The Web Terminal runs as a **completely separate process** from any agent session. It does not share a shell with the agent, does not appear in the agent's conversation, and does not consume agent tool calls. Think of it as an independent SSH session to the same machine.
+
+This means you can:
+
+- Inspect or modify files while the agent is working
+- Run build commands or tests in parallel with an agent session
+- Debug issues the agent is stuck on
+- Use the terminal even when no agent session is active
+
+## Security considerations
+
+<Aside type="caution">
+The Web Terminal provides **full shell access** with the same permissions as the runner daemon process. Anyone who can log into your PizzaPi instance and reach a runner can execute arbitrary commands on that machine.
+</Aside>
+
+Keep these points in mind:
+
+- **Authentication is required.** Terminal creation goes through the same session auth as the rest of the PizzaPi API — you must be logged in.
+- **Same permissions as the runner.** The shell runs as the same OS user that started the runner daemon. It can read, write, and execute anything that user can.
+- **Traffic is relayed.** All terminal I/O passes through the PizzaPi relay server. If your relay is exposed to the internet, use HTTPS (e.g., via [Tailscale](/deployment/tailscale/)) to encrypt the connection.
+- **No additional sandboxing.** Unlike agent sessions, which can run in a sandbox, the Web Terminal has no restrictions beyond OS-level user permissions.
+
+## Limitations
+
+- **Requires a running runner daemon.** The terminal needs a connected runner to spawn the PTY process. If no runners are online, you can't open a terminal.
+- **Latency depends on the relay.** Every keystroke round-trips through the relay server. On a local network this is imperceptible; over the internet you may notice slight input lag.
+- **One PTY per tab.** Each tab is a single shell. When the shell exits (e.g., you type `exit`), the tab shows a "Process exited" message and disconnects. Open a new tab to get a fresh shell.
+- **No persistent sessions.** Terminal state is not saved across page reloads or runner restarts. If you refresh the browser, running terminals are lost. For long-running processes, use `tmux` or `screen` inside the Web Terminal.
