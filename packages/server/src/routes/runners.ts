@@ -409,6 +409,18 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
                 && typeof (body.model as Record<string, unknown>).id === "string"
                 ? body.model as { provider: string; id: string }
                 : undefined;
+            // Validate model against hidden-models list (same check as /api/runners/spawn)
+            if (model) {
+                try {
+                    const hiddenModels = await getHiddenModels(identity.userId);
+                    if (isHiddenModel(hiddenModels, model)) {
+                        return Response.json({ error: "Model is hidden and cannot be used" }, { status: 403 });
+                    }
+                } catch {
+                    // If hidden-models check fails, allow — same fallback as spawn route
+                }
+            }
+
             await addRunnerTriggerListener(runnerId, triggerType, {
                 prompt: typeof body?.prompt === "string" ? body.prompt : undefined,
                 cwd: typeof body?.cwd === "string" ? body.cwd : undefined,
