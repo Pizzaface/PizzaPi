@@ -123,7 +123,8 @@ async function loadServicesFromDir(
 
             try {
                 const manifest = parseServiceManifest(manifestPath);
-                const moduleEntry = manifest.entry ?? findDefaultEntry(entryPath);
+                const mergedManifest = loadSplitConfigs(entryPath, manifest);
+                const moduleEntry = mergedManifest.entry ?? findDefaultEntry(entryPath);
                 if (!moduleEntry) {
                     errors.push({
                         path: entryPath,
@@ -145,7 +146,7 @@ async function loadServicesFromDir(
                     services.push({
                         handler,
                         source: { origin, path: entryPath },
-                        manifest,
+                        manifest: mergedManifest,
                     });
                 } else {
                     errors.push({
@@ -438,6 +439,7 @@ function parseServiceManifest(manifestPath: string): ServiceManifest {
     }
 
     const triggers = parseTriggers(raw.triggers);
+    const sigils = parseSigils(raw.sigils);
 
     return {
         id: raw.id,
@@ -448,7 +450,45 @@ function parseServiceManifest(manifestPath: string): ServiceManifest {
             ? { dir: typeof raw.panel.dir === "string" ? raw.panel.dir : undefined }
             : undefined,
         triggers: triggers.length > 0 ? triggers : undefined,
+        sigils: sigils.length > 0 ? sigils : undefined,
     };
+}
+
+/**
+ * Load optional split config files for a folder-based service.
+ * Split files (triggers.json, sigils.json) take precedence over inline
+ * arrays in manifest.json when present.
+ */
+function loadSplitConfigs(serviceDir: string, manifest: ServiceManifest): ServiceManifest {
+    // triggers.json overrides manifest.triggers
+    const triggersPath = join(serviceDir, "triggers.json");
+    if (existsSync(triggersPath)) {
+        try {
+            const raw = JSON.parse(readFileSync(triggersPath, "utf-8"));
+            // triggers.json can be a bare array or { triggers: [...] }
+            const arr = Array.isArray(raw) ? raw : (raw?.triggers ?? raw);
+            const parsed = parseTriggers(arr);
+            manifest = { ...manifest, triggers: parsed.length > 0 ? parsed : undefined };
+        } catch {
+            // Invalid JSON — fall through to manifest.triggers (if any)
+        }
+    }
+
+    // sigils.json overrides manifest.sigils
+    const sigilsPath = join(serviceDir, "sigils.json");
+    if (existsSync(sigilsPath)) {
+        try {
+            const raw = JSON.parse(readFileSync(sigilsPath, "utf-8"));
+            // sigils.json can be a bare array or { sigils: [...] }
+            const arr = Array.isArray(raw) ? raw : (raw?.sigils ?? raw);
+            const parsed = parseSigils(arr);
+            manifest = { ...manifest, sigils: parsed.length > 0 ? parsed : undefined };
+        } catch {
+            // Invalid JSON — fall through to manifest.sigils (if any)
+        }
+    }
+
+    return manifest;
 }
 
 const DEFAULT_ENTRIES = ["index.ts", "index.js", "index.mts", "index.mjs"];
