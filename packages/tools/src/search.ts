@@ -34,7 +34,7 @@ const MAX_STDERR_CHARS = 512;
  */
 const MAX_PARTIAL_CHARS = 256 * 1024; // 256 KB
 
-interface SpawnResult {
+export interface SpawnResult {
     lines: string[];
     exitCode: number | null;
     signal: string | null;
@@ -154,8 +154,10 @@ function spawnHeadLines(
  * - `rg` exit 1 = no matches (normal), exit 2+ = error.
  * - `find` exit 0 = success (possibly no matches), exit 1+ = error.
  * - exitCode null with no truncation = timeout or command not found.
+ *
+ * Exported for unit testing.
  */
-function isFailure(result: SpawnResult, type: string): boolean {
+export function isFailure(result: SpawnResult, type: string): boolean {
     // Truncated kill is intentional, not a failure
     if (result.truncated) return false;
     // exitCode null means process didn't exit normally (timeout, ENOENT, etc.)

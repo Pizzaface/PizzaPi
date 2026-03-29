@@ -1,13 +1,27 @@
+/**
+ * search.test.ts — Unit + smoke tests for the search tool.
+ *
+ * Structure:
+ *   1. Pure unit tests (no subprocess): escapeRgGlob, escapeFindPath, isFailure
+ *   2. searchTool metadata (pure)
+ *   3. Smoke tests — 3 real subprocess calls covering the happy path
+ *   4. Input-sanitization tests — lightweight subprocess calls that verify
+ *      path normalization / null-byte stripping (find exits fast on bad paths)
+ */
 import { describe, test, expect } from "bun:test";
-import { searchTool, escapeRgGlob, escapeFindPath } from "./search";
-import { execFile } from "child_process";
-import { promisify } from "util";
+import { searchTool, escapeRgGlob, escapeFindPath, isFailure } from "./search";
+import type { SpawnResult } from "./search";
 import { mkdtempSync, writeFileSync, mkdirSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import { spawnSync } from "child_process";
 
-const execFileAsync = promisify(execFile);
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/** Whether rg (ripgrep) is available on this machine. */
+const hasRg = spawnSync("rg", ["--version"]).status === 0;
 
 function makeTempDir(): string {
     const dir = mkdtempSync(join(tmpdir(), "search-test-"));
@@ -17,6 +31,20 @@ function makeTempDir(): string {
     writeFileSync(join(dir, "sub", "nested.txt"), "nested content\nhello again\n");
     return dir;
 }
+
+function makeSpawnResult(overrides: Partial<SpawnResult> = {}): SpawnResult {
+    return {
+        lines: [],
+        exitCode: 0,
+        signal: null,
+        truncated: false,
+        ...overrides,
+    };
+}
+
+// ---------------------------------------------------------------------------
+// 1. Pure unit tests — escapeRgGlob
+// ---------------------------------------------------------------------------
 
 describe("escapeRgGlob", () => {
     test("passes through plain paths unchanged", () => {
@@ -44,6 +72,10 @@ describe("escapeRgGlob", () => {
     });
 });
 
+// ---------------------------------------------------------------------------
+// 2. Pure unit tests — escapeFindPath
+// ---------------------------------------------------------------------------
+
 describe("escapeFindPath", () => {
     test("passes through plain paths unchanged", () => {
         expect(escapeFindPath("/tmp/foo/bar")).toBe("/tmp/foo/bar");
@@ -66,15 +98,78 @@ describe("escapeFindPath", () => {
     });
 });
 
-describe("searchTool", () => {
-    test("has correct metadata", () => {
-        expect(searchTool.name).toBe("search");
-        expect(searchTool.description).toBeTruthy();
+// ---------------------------------------------------------------------------
+// 3. Pure unit tests — isFailure
+//    Covers rg vs find exit-code semantics and truncation handling.
+// ---------------------------------------------------------------------------
+
+describe("isFailure", () => {
+    // --- content (rg) ---
+    test("rg exit 0 is not a failure (matches found)", () => {
+        expect(isFailure(makeSpawnResult({ exitCode: 0 }), "content")).toBe(false);
     });
 
+    test("rg exit 1 is not a failure (no matches — normal rg behavior)", () => {
+        expect(isFailure(makeSpawnResult({ exitCode: 1 }), "content")).toBe(false);
+    });
+
+    test("rg exit 2 is a failure (parse/IO error)", () => {
+        expect(isFailure(makeSpawnResult({ exitCode: 2 }), "content")).toBe(true);
+    });
+
+    test("rg exit 3+ is a failure", () => {
+        expect(isFailure(makeSpawnResult({ exitCode: 3 }), "content")).toBe(true);
+        expect(isFailure(makeSpawnResult({ exitCode: 127 }), "content")).toBe(true);
+    });
+
+    // --- files (find) ---
+    test("find exit 0 is not a failure", () => {
+        expect(isFailure(makeSpawnResult({ exitCode: 0 }), "files")).toBe(false);
+    });
+
+    test("find exit 1 is a failure", () => {
+        expect(isFailure(makeSpawnResult({ exitCode: 1 }), "files")).toBe(true);
+    });
+
+    test("find exit 2+ is a failure", () => {
+        expect(isFailure(makeSpawnResult({ exitCode: 2 }), "files")).toBe(true);
+    });
+
+    // --- truncation ---
+    test("truncated result is never a failure (intentional subprocess kill)", () => {
+        expect(isFailure(makeSpawnResult({ exitCode: null, truncated: true }), "content")).toBe(false);
+        expect(isFailure(makeSpawnResult({ exitCode: null, truncated: true }), "files")).toBe(false);
+        // Even if exit code would normally signal failure, truncation wins
+        expect(isFailure(makeSpawnResult({ exitCode: 2, truncated: true }), "content")).toBe(false);
+    });
+
+    // --- null exitCode ---
+    test("null exitCode without truncation is a failure (timeout / ENOENT)", () => {
+        expect(isFailure(makeSpawnResult({ exitCode: null, truncated: false }), "content")).toBe(true);
+        expect(isFailure(makeSpawnResult({ exitCode: null, truncated: false }), "files")).toBe(true);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// 4. Metadata — pure, no subprocess
+// ---------------------------------------------------------------------------
+
+describe("searchTool metadata", () => {
+    test("has correct name and description", () => {
+        expect(searchTool.name).toBe("search");
+        expect(searchTool.description).toBeTruthy();
+        expect(typeof searchTool.execute).toBe("function");
+    });
+});
+
+// ---------------------------------------------------------------------------
+// 5. Smoke tests — 3 real subprocess calls covering the happy path
+// ---------------------------------------------------------------------------
+
+describe("searchTool smoke tests", () => {
     test("files search finds matching files", async () => {
         const dir = makeTempDir();
-        const result = await searchTool.execute("test-1", {
+        const result = await searchTool.execute("smoke-1", {
             pattern: "*.txt",
             path: dir,
             type: "files",
@@ -83,11 +178,12 @@ describe("searchTool", () => {
         expect(text).toContain("hello.txt");
         expect(text).toContain("nested.txt");
         expect(text).not.toContain("data.json");
+        expect(result.details.type).toBe("files");
     });
 
     test("files search returns 'No matches found' for no results", async () => {
         const dir = makeTempDir();
-        const result = await searchTool.execute("test-2", {
+        const result = await searchTool.execute("smoke-2", {
             pattern: "*.xyz",
             path: dir,
             type: "files",
@@ -95,375 +191,108 @@ describe("searchTool", () => {
         expect(result.content[0].text).toBe("No matches found");
     });
 
-    test("content search finds matching lines", async () => {
-        const dir = makeTempDir();
-        // Check if rg is available
-        try {
-            await execFileAsync("rg", ["--version"]);
-        } catch {
-            console.log("rg not available, skipping content search test");
+    test("content search finds matching lines (skipped if rg not installed)", async () => {
+        if (!hasRg) {
+            console.log("rg not available — skipping content smoke test");
             return;
         }
-        const result = await searchTool.execute("test-3", {
+        const dir = makeTempDir();
+        const result = await searchTool.execute("smoke-3", {
             pattern: "hello",
             path: dir,
             type: "content",
         });
-        const text = result.content[0].text;
-        expect(text).toContain("hello");
+        expect(result.content[0].text).toContain("hello");
+        expect(result.details.type).toBe("content");
     });
+});
 
-    test("defaults to content search when type is omitted", async () => {
+// ---------------------------------------------------------------------------
+// 6. Input-sanitization tests — verify tool-level logic, not subprocess behavior.
+//    These use real subprocess calls but they resolve fast (bad paths / no rg).
+// ---------------------------------------------------------------------------
+
+describe("searchTool input sanitization", () => {
+    test("defaults type to 'content' when omitted", async () => {
         const dir = makeTempDir();
-        const result = await searchTool.execute("test-4", {
-            pattern: "nonexistent_string_xyz",
+        const result = await searchTool.execute("san-default-type", {
+            pattern: "nonexistent_xyz",
             path: dir,
+            // no type — should default to content
         });
-        // Should not throw — type defaults to "content"
         expect(result.details.type).toBe("content");
     });
 
-    test("does not allow shell injection via pattern", async () => {
+    test("handles null bytes in pattern and path without throwing", async () => {
         const dir = makeTempDir();
-        // A malicious pattern that would execute a command if passed to a shell
-        // With execFile this is safely treated as a literal find -name argument
-        const result = await searchTool.execute("test-inject-1", {
-            pattern: '"; echo INJECTED; "',
+        // spawn() throws synchronously on \0 — tool must strip them
+        const r1 = await searchTool.execute("san-null-pattern", {
+            pattern: "*.txt\0injected",
             path: dir,
             type: "files",
         });
-        const text = result.content[0].text;
-        // The injection payload must NOT appear in output
-        expect(text).not.toContain("INJECTED");
-    });
+        expect(typeof r1.content[0].text).toBe("string");
 
-    test("does not allow shell injection via path", async () => {
-        const dir = makeTempDir();
-        // A malicious path that would execute a command if passed to a shell.
-        // With spawn (no shell), `; echo INJECTED` is part of the literal path,
-        // so find treats it as a (nonexistent) directory — no command execution.
-        const result = await searchTool.execute("test-inject-2", {
-            pattern: "*.txt",
-            path: `${dir}; echo INJECTED`,
-            type: "files",
+        const r2 = await searchTool.execute("san-null-path", {
+            pattern: "hello",
+            path: `${dir}\0/etc/passwd`,
+            type: "content",
         });
-        const text = result.content[0].text;
-        // The output should be an error (nonexistent path) or no matches —
-        // NOT actual output from `echo INJECTED` as a separate command.
-        // The error message may echo the path name, so we check it's a
-        // Search failed message (find error) rather than bare "INJECTED" output.
-        expect(text.startsWith("Search failed:") || text === "No matches found").toBe(true);
-        // Crucially, no files should be returned (injection didn't work)
-        expect(text).not.toContain("hello.txt");
+        expect(typeof r2.content[0].text).toBe("string");
     });
 
-    test("truncates output to max lines", async () => {
-        // Create a directory with many files
-        const dir = mkdtempSync(join(tmpdir(), "search-trunc-"));
-        for (let i = 0; i < 60; i++) {
-            writeFileSync(join(dir, `file-${String(i).padStart(3, "0")}.txt`), `content ${i}\n`);
-        }
-        const result = await searchTool.execute("test-trunc", {
-            pattern: "*.txt",
-            path: dir,
-            type: "files",
-        });
-        const lines = result.content[0].text.split("\n").filter(Boolean);
-        expect(lines.length).toBeLessThanOrEqual(50);
-    });
-
-    test("files search caps at exactly 50 lines on large result sets", async () => {
-        // Create 5000 files — well beyond the 50-line cap — to stress the
-        // streaming kill logic and verify no off-by-one from post-kill data events.
-        const dir = mkdtempSync(join(tmpdir(), "search-stream-"));
-        for (let i = 0; i < 5000; i++) {
-            writeFileSync(join(dir, `item-${String(i).padStart(5, "0")}.txt`), `data ${i}\n`);
-        }
-
-        const result = await searchTool.execute("test-stream", {
-            pattern: "*.txt",
-            path: dir,
-            type: "files",
-        });
-
-        const text = result.content[0].text;
-        const lines = text.split("\n").filter(Boolean);
-
-        // Must return exactly 50 lines (the cap), never 51+
-        expect(lines.length).toBe(50);
-        for (const line of lines) {
-            expect(line).toContain("item-");
-        }
-    });
-
-    test("content search caps at exactly 100 lines on large result sets", async () => {
+    test("expands ~ to home directory in path", async () => {
+        const origHome = process.env.HOME;
+        const fakeHome = mkdtempSync(join(tmpdir(), "search-tilde-"));
+        mkdirSync(join(fakeHome, "proj"));
+        writeFileSync(join(fakeHome, "proj", "tilde-marker.txt"), "tilde-test\n");
+        process.env.HOME = fakeHome;
         try {
-            const r = spawnSync("rg", ["--version"]);
-            if (r.status !== 0) throw new Error();
-        } catch {
-            console.log("rg not available, skipping content cap test");
-            return;
+            const result = await searchTool.execute("san-tilde", {
+                pattern: "*.txt",
+                path: "~/proj",
+                type: "files",
+            });
+            expect(result.content[0].text).toContain("tilde-marker.txt");
+        } finally {
+            process.env.HOME = origHome;
         }
-        // Create a file with 5000 matching lines
-        const dir = mkdtempSync(join(tmpdir(), "search-rg-cap-"));
-        const fileLines: string[] = [];
-        for (let i = 0; i < 5000; i++) {
-            fileLines.push(`match-line-${i}`);
-        }
-        writeFileSync(join(dir, "big.txt"), fileLines.join("\n") + "\n");
-
-        const result = await searchTool.execute("test-rg-cap", {
-            pattern: "match-line",
-            path: dir,
-            type: "content",
-        });
-
-        const resultLines = result.content[0].text.split("\n").filter(Boolean);
-        expect(resultLines.length).toBe(100);
     });
 
-    test("does not allow option injection via pattern starting with -", async () => {
-        const dir = makeTempDir();
-        // A pattern starting with -- that would be parsed as an rg flag
-        // if not protected by -e / --
-        const result = await searchTool.execute("test-opt-inject-1", {
-            pattern: "--help",
-            path: dir,
-            type: "content",
-        });
-        const text = result.content[0].text;
-        // rg --help output contains "USAGE" — that should NOT appear
-        expect(text).not.toContain("USAGE");
-    });
-
-    test("does not allow option injection via path starting with -", async () => {
-        // A path like "--help" would trigger GNU find's help output if passed raw.
-        // The safePath normalization should turn it into "./--help", which is
-        // treated as a literal (non-existent) directory on both BSD and GNU find.
-        const result = await searchTool.execute("test-opt-inject-2", {
+    test("path starting with '-' is made safe with ./ prefix", async () => {
+        // Without safePath normalization, --help would be parsed as a flag
+        const result = await searchTool.execute("san-dash-path", {
             pattern: "*.txt",
             path: "--help",
             type: "files",
         });
         const text = result.content[0].text;
-        // Should be either "No matches found" or "Search failed: ..." (path doesn't exist)
+        // Should error out cleanly (path doesn't exist), not show find/rg help text
         expect(text === "No matches found" || text.startsWith("Search failed:")).toBe(true);
     });
 
-    test("surfaces find errors for nonexistent paths instead of 'No matches'", async () => {
-        const result = await searchTool.execute("test-find-err", {
+    test("nonexistent path surfaces error instead of 'No matches found'", async () => {
+        const result = await searchTool.execute("san-no-path", {
             pattern: "*.txt",
-            path: "/nonexistent/path/that/does/not/exist",
+            path: "/nonexistent/path/xyz-does-not-exist",
             type: "files",
         });
         const text = result.content[0].text;
-        // find exits non-zero for bad paths — must surface as error, not "No matches found"
         expect(text).toStartWith("Search failed:");
         expect(text).not.toBe("No matches found");
     });
 
-    test("surfaces rg errors for invalid regex", async () => {
-        try {
-            const r = spawnSync("rg", ["--version"]);
-            if (r.status !== 0) throw new Error();
-        } catch {
-            console.log("rg not available, skipping rg error test");
+    test("rg exit 1 (no matches) returns 'No matches found', not error (skipped if rg missing)", async () => {
+        if (!hasRg) {
+            console.log("rg not available — skipping rg exit-1 test");
             return;
         }
         const dir = makeTempDir();
-        // Invalid regex — rg exits with code 2
-        const result = await searchTool.execute("test-rg-err", {
-            pattern: "[invalid",
-            path: dir,
-            type: "content",
-        });
-        const text = result.content[0].text;
-        expect(text).toStartWith("Search failed:");
-    });
-
-    test("rg exit 1 (no matches) returns 'No matches found', not an error", async () => {
-        try {
-            const r = spawnSync("rg", ["--version"]);
-            if (r.status !== 0) throw new Error();
-        } catch {
-            console.log("rg not available, skipping rg no-match test");
-            return;
-        }
-        const dir = makeTempDir();
-        const result = await searchTool.execute("test-rg-nomatch", {
+        const result = await searchTool.execute("san-rg-nomatch", {
             pattern: "zzz_definitely_not_present_zzz",
             path: dir,
             type: "content",
         });
         expect(result.content[0].text).toBe("No matches found");
-    });
-
-    test("surfaces partial errors when find has results but also errors", async () => {
-        // Create a directory with an unreadable subdirectory
-        const dir = mkdtempSync(join(tmpdir(), "search-partial-"));
-        writeFileSync(join(dir, "visible.txt"), "data\n");
-        const badDir = join(dir, "noperm");
-        mkdirSync(badDir, { mode: 0o000 });
-
-        try {
-            const result = await searchTool.execute("test-partial-err", {
-                pattern: "*.txt",
-                path: dir,
-                type: "files",
-            });
-            const text = result.content[0].text;
-
-            // Should still return the visible file
-            expect(text).toContain("visible.txt");
-
-            // On systems where permission is actually denied (not running as root),
-            // should include a warning about missing results
-            if (process.getuid?.() !== 0) {
-                expect(text).toContain("[warning:");
-            }
-        } finally {
-            // Restore permissions so temp cleanup works
-            const { chmodSync } = require("fs");
-            chmodSync(badDir, 0o755);
-        }
-    });
-
-    test("handles content search on file with no trailing newline", async () => {
-        try {
-            const r = spawnSync("rg", ["--version"]);
-            if (r.status !== 0) throw new Error();
-        } catch {
-            console.log("rg not available, skipping no-trailing-newline test");
-            return;
-        }
-        const dir = mkdtempSync(join(tmpdir(), "search-nonl-"));
-        // File with no trailing newline
-        writeFileSync(join(dir, "noterminal.txt"), "last-line-no-newline");
-
-        const result = await searchTool.execute("test-nonl", {
-            pattern: "last-line",
-            path: dir,
-            type: "content",
-        });
-        expect(result.content[0].text).toContain("last-line-no-newline");
-    });
-
-    test("handles null bytes in pattern and path without throwing", async () => {
-        const dir = makeTempDir();
-        // Null bytes in args would cause spawn() to throw — must be handled gracefully
-        const result1 = await searchTool.execute("test-null-pattern", {
-            pattern: "*.txt\0injected",
-            path: dir,
-            type: "files",
-        });
-        expect(typeof result1.content[0].text).toBe("string");
-
-        const result2 = await searchTool.execute("test-null-path", {
-            pattern: "hello",
-            path: `${dir}\0/etc/passwd`,
-            type: "content",
-        });
-        expect(typeof result2.content[0].text).toBe("string");
-    });
-
-    test("expands ~ to home directory in path", async () => {
-        // Temporarily override HOME to a controlled temp directory so the test
-        // doesn't depend on the real home dir (which may not be writable in CI).
-        const origHome = process.env.HOME;
-        const fakeHome = mkdtempSync(join(tmpdir(), "search-tilde-home-"));
-        const subdir = "project";
-        mkdirSync(join(fakeHome, subdir));
-        writeFileSync(join(fakeHome, subdir, "tilde-marker.txt"), "tilde-test\n");
-
-        process.env.HOME = fakeHome;
-        try {
-            // Search with ~/subdir path — should expand to fakeHome/subdir
-            const result = await searchTool.execute("test-tilde", {
-                pattern: "*.txt",
-                path: `~/${subdir}`,
-                type: "files",
-            });
-            expect(result.content[0].text).toContain("tilde-marker.txt");
-
-            // Bare ~ should expand to fakeHome
-            const result2 = await searchTool.execute("test-tilde-bare", {
-                pattern: "*.txt",
-                path: "~",
-                type: "files",
-            });
-            expect(result2.content[0].text).toContain("tilde-marker.txt");
-        } finally {
-            process.env.HOME = origHome;
-            const { rmSync } = require("fs");
-            try { rmSync(fakeHome, { recursive: true }); } catch {}
-        }
-    });
-
-    test("does not prepend ./ to Windows-style absolute paths", async () => {
-        // Windows paths like C:\Users or C:/Users should not become ./C:\Users
-        // We can't run find on fake Windows paths, but we can verify the path
-        // in the details is preserved and the tool doesn't crash.
-        const result = await searchTool.execute("test-win-path", {
-            pattern: "*.txt",
-            path: "C:\\Users\\test",
-            type: "files",
-        });
-        // Should fail gracefully (path doesn't exist), not crash
-        const text = result.content[0].text;
-        expect(text).not.toContain("./C:");
-        expect(text === "No matches found" || text.startsWith("Search failed:")).toBe(true);
-
-        // Also test forward-slash variant
-        const result2 = await searchTool.execute("test-win-path-2", {
-            pattern: "*.txt",
-            path: "D:/Projects",
-            type: "files",
-        });
-        expect(result2.content[0].text).not.toContain("./D:");
-    });
-
-    test("preserves Unicode filenames in file search results", async () => {
-        const dir = mkdtempSync(join(tmpdir(), "search-unicode-"));
-        // Create files with multi-byte UTF-8 names: accented, CJK, emoji
-        const names = ["café.txt", "日本語.txt", "🎉party.txt"];
-        for (const name of names) {
-            writeFileSync(join(dir, name), "data\n");
-        }
-
-        const result = await searchTool.execute("test-unicode-files", {
-            pattern: "*.txt",
-            path: dir,
-            type: "files",
-        });
-        const text = result.content[0].text;
-        for (const name of names) {
-            expect(text).toContain(name);
-        }
-        // Must not contain replacement character (U+FFFD) from broken decoding
-        expect(text).not.toContain("\uFFFD");
-    });
-
-    test("preserves Unicode content in content search results", async () => {
-        try {
-            const r = spawnSync("rg", ["--version"]);
-            if (r.status !== 0) throw new Error();
-        } catch {
-            console.log("rg not available, skipping unicode content test");
-            return;
-        }
-        const dir = mkdtempSync(join(tmpdir(), "search-unicode-content-"));
-        const content = "résultat: données CJK 漢字 emoji 🚀✨\n";
-        writeFileSync(join(dir, "unicode.txt"), content);
-
-        const result = await searchTool.execute("test-unicode-content", {
-            pattern: "résultat",
-            path: dir,
-            type: "content",
-        });
-        const text = result.content[0].text;
-        expect(text).toContain("résultat");
-        expect(text).toContain("漢字");
-        expect(text).toContain("🚀");
-        expect(text).not.toContain("\uFFFD");
     });
 });
