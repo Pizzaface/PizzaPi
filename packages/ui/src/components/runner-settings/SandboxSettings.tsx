@@ -1,9 +1,14 @@
+import { SandboxManager } from "@/components/SandboxManager";
 import type { SectionProps } from "./RunnerSettingsPanel";
 
-export default function SandboxSettings({ config, tuiSettings, onSave, saving }: SectionProps) {
+export default function SandboxSettings({ runnerId }: SectionProps) {
     return (
-        <div className="flex flex-col items-center justify-center py-10 gap-3 text-center">
-            <p className="text-sm text-muted-foreground">Sandbox settings — coming soon</p>
+        <div className="flex flex-col gap-3">
+            <p className="text-xs text-muted-foreground">
+                Sandbox controls filesystem, network, and socket access restrictions for agent sessions.
+                Changes apply on next session start.
+            </p>
+            <SandboxManager runnerId={runnerId} bare />
         </div>
     );
 }
