@@ -657,11 +657,13 @@ export function RunnerTriggersPanel({ runnerId, triggerDefs: propDefs }: RunnerT
       setPendingTypes((prev) => new Set([...prev, def.type]));
       void (async () => {
         try {
-          await fetch(
+          const res = await fetch(
             `/api/runners/${encodeURIComponent(runnerId)}/trigger-listeners/${encodeURIComponent(def.type)}`,
             { method: "DELETE", credentials: "include" },
           );
-          setListeners((prev) => prev.filter((l) => l.triggerType !== def.type));
+          if (res.ok) {
+            setListeners((prev) => prev.filter((l) => l.triggerType !== def.type));
+          }
         } catch { /* best-effort */ } finally {
           setPendingTypes((prev) => { const n = new Set(prev); n.delete(def.type); return n; });
         }

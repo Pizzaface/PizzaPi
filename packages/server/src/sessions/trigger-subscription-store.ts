@@ -108,8 +108,11 @@ function parseSubValue(raw: string): SubscriptionValue {
 
 /** Serialize a subscription value for Redis storage. */
 function serializeSubValue(value: SubscriptionValue): string {
-    if (!value.params || Object.keys(value.params).length === 0) {
-        // Store as JSON consistently so parseSubValue always gets the right type
+    // Always serialize the full value — filters/filterMode must be preserved
+    // even when params is empty.
+    const hasParams = value.params && Object.keys(value.params).length > 0;
+    const hasFilters = value.filters && value.filters.length > 0;
+    if (!hasParams && !hasFilters && !value.filterMode) {
         return JSON.stringify({ runnerId: value.runnerId });
     }
     return JSON.stringify(value);

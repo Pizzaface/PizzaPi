@@ -942,15 +942,23 @@ function TriggerCatalogSection({ sessionId, triggerDefs, subscriptions, onSubscr
         params[p.name] = str;
       }
     }
-    // Build filters from filterValues
+    // Build filters from filterValues, coercing to the schema's declared type
     const schemaProps = (def.schema as any)?.properties ?? {};
     const filterableFields = Object.keys(schemaProps);
-    const filters: Array<{ field: string; value: string; op?: string }> = [];
+    const filters: Array<{ field: string; value: string | number | boolean; op?: string }> = [];
     const fVals = filterValues[def.type] ?? {};
     for (const field of filterableFields) {
       const val = (fVals[field] ?? "").trim();
       if (!val) continue;
-      filters.push({ field, value: val });
+      const propDef = schemaProps[field];
+      if (propDef?.type === "boolean") {
+        filters.push({ field, value: val === "true" });
+      } else if (propDef?.type === "number" || propDef?.type === "integer") {
+        const num = Number(val);
+        if (!isNaN(num)) filters.push({ field, value: num });
+      } else {
+        filters.push({ field, value: val });
+      }
     }
     const fMode = filterMode[def.type] ?? "and";
 
@@ -1333,6 +1341,19 @@ function ServiceCatalogAccordion({
                                       {enumVals.map((v) => (
                                         <option key={String(v)} value={String(v)}>{String(v)}</option>
                                       ))}
+                                    </select>
+                                  ) : propDef?.type === "boolean" ? (
+                                    <select
+                                      value={currentVal}
+                                      onChange={(e) => onFilterValuesChange((prev) => ({
+                                        ...prev,
+                                        [def.type]: { ...prev[def.type], [field]: e.target.value },
+                                      }))}
+                                      className="flex-1 rounded border border-border bg-background px-1.5 py-0.5 text-[10px] focus:outline-none focus:ring-1 focus:ring-ring"
+                                    >
+                                      <option value="">— any —</option>
+                                      <option value="true">true</option>
+                                      <option value="false">false</option>
                                     </select>
                                   ) : (
                                     <input
