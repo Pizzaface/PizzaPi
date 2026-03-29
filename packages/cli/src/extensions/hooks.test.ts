@@ -1,4 +1,5 @@
 import { describe, test, expect } from "bun:test";
+import type { SpawnLike } from "./hooks.js";
 import { matchesTool, runHook, parseHookOutput, normalizeToolInput, runEventHooks, runFireAndForgetHooks, resolveShell, _resetShellCache } from "./hooks.js";
 import { mergeHooks, isProjectHooksTrusted } from "../config.js";
 import type { HooksConfig, HookEntry } from "../config.js";
@@ -201,11 +202,188 @@ describe("parseHookOutput", () => {
 });
 
 // ---------------------------------------------------------------------------
-// runHook
+// runHook — mock spawn helpers
 // ---------------------------------------------------------------------------
 
-describe("runHook", () => {
-    test("runs a simple echo hook and captures stdout", async () => {
+/** Create a web-standard ReadableStream from a string for use in mock spawn. */
+function makeReadableStream(text: string): ReadableStream<Uint8Array> {
+    return new ReadableStream({
+        start(controller) {
+            controller.enqueue(new TextEncoder().encode(text));
+            controller.close();
+        },
+    });
+}
+
+interface MockSpawnOpts {
+    /** Exit code the process returns. Default: 0. */
+    exitCode?: number;
+    /** Text written to stdout. Default: "". */
+    stdout?: string;
+    /** Text written to stderr. Default: "". */
+    stderr?: string;
+    /**
+     * If true, proc.exited never resolves until kill() is called.
+     * Use this to simulate a hung process so the timeout fires.
+     */
+    hang?: boolean;
+    /**
+     * Non-null value simulates a process killed by a signal
+     * (e.g. "SIGTERM") even if it exits with code 0.
+     */
+    signalCode?: string | null;
+}
+
+interface MockSpawnTracker {
+    /** All bytes written to proc.stdin, concatenated. */
+    stdinData: string;
+    /** True if kill() was called on the mock process. */
+    killed: boolean;
+    /** The signal argument passed to kill(), if any. */
+    killSignal: number | undefined;
+    /** The env object passed to spawnFn. */
+    env: Record<string, string | undefined>;
+    /** The argv array passed to spawnFn. */
+    args: string[];
+}
+
+/**
+ * Build a mock SpawnLike for unit-testing runHook without spawning real processes.
+ *
+ * @param opts   Process behaviour to simulate.
+ * @param tracker  Optional object that collects stdin/kill/env/args for assertions.
+ */
+function createMockSpawn(opts: MockSpawnOpts = {}, tracker?: MockSpawnTracker): SpawnLike {
+    const {
+        exitCode = 0,
+        stdout = "",
+        stderr = "",
+        hang = false,
+        signalCode = null,
+    } = opts;
+
+    return (args: string[], options: unknown) => {
+        if (tracker) {
+            tracker.args = args as string[];
+            tracker.env = (options as { env?: Record<string, string | undefined> }).env ?? {};
+        }
+
+        let resolveExit!: (code: number) => void;
+        const exited = new Promise<number>((resolve) => {
+            resolveExit = resolve;
+            if (!hang) {
+                // Resolve on the next microtask so Promise.race() is set up first.
+                Promise.resolve().then(() => resolve(exitCode));
+            }
+        });
+
+        return {
+            stdin: {
+                write: (data: string) => {
+                    if (tracker) tracker.stdinData += data;
+                },
+                end: () => {},
+            },
+            exited,
+            kill: (signal?: number) => {
+                if (tracker) {
+                    tracker.killed = true;
+                    tracker.killSignal = typeof signal === "number" ? signal : undefined;
+                }
+                // When `hang` is true, DON'T resolve exited — the timeout rejection in
+                // runHook fires first and the catch block returns exitCode=124.
+                // Resolving here would race with the reject and produce exitCode=1 instead.
+                // In real Bun.spawn, proc.kill() sends a signal but exited resolves only
+                // after the OS actually terminates the process (after the Promise.race settles).
+                if (!hang) {
+                    resolveExit(exitCode || 1);
+                }
+            },
+            // Use getters so each access returns a fresh stream (Response consumes the body).
+            get stdout() { return makeReadableStream(stdout); },
+            get stderr() { return makeReadableStream(stderr); },
+            signalCode,
+        };
+    };
+}
+
+// ---------------------------------------------------------------------------
+// runHook — unit tests (mock spawn, no real shell required)
+// ---------------------------------------------------------------------------
+
+describe("runHook (unit — mock spawn)", () => {
+    test("captures stdout from a successful hook", async () => {
+        const spawn = createMockSpawn({ exitCode: 0, stdout: '{"additionalContext":"hello"}' });
+        const result = await runHook({ command: "hook.sh" }, "{}", "/cwd", spawn);
+        expect(result.exitCode).toBe(0);
+        expect(result.stdout).toContain("additionalContext");
+        expect(result.killed).toBe(false);
+    });
+
+    test("captures exit code 2 and stderr for blocking hooks", async () => {
+        const spawn = createMockSpawn({ exitCode: 2, stderr: "BLOCKED: test reason" });
+        const result = await runHook({ command: "hook.sh" }, "{}", "/cwd", spawn);
+        expect(result.exitCode).toBe(2);
+        expect(result.stderr).toContain("BLOCKED: test reason");
+        expect(result.killed).toBe(false);
+    });
+
+    test("pipes stdin payload to the hook", async () => {
+        const tracker: MockSpawnTracker = { stdinData: "", killed: false, killSignal: undefined, env: {}, args: [] };
+        const spawn = createMockSpawn({ exitCode: 0 }, tracker);
+        const payload = JSON.stringify({ tool_input: { command: "npm install" } });
+        await runHook({ command: "hook.sh" }, payload, "/cwd", spawn);
+        const parsed = JSON.parse(tracker.stdinData);
+        expect(parsed.tool_input.command).toBe("npm install");
+    });
+
+    test("sets PIZZAPI_PROJECT_DIR in the hook environment", async () => {
+        const tracker: MockSpawnTracker = { stdinData: "", killed: false, killSignal: undefined, env: {}, args: [] };
+        const spawn = createMockSpawn({ exitCode: 0 }, tracker);
+        await runHook({ command: "hook.sh" }, "{}", "/my/project", spawn);
+        expect(tracker.env.PIZZAPI_PROJECT_DIR).toBe("/my/project");
+    });
+
+    test("marks killed=true and exitCode=124 when timeout fires", async () => {
+        const spawn = createMockSpawn({ hang: true });
+        const start = Date.now();
+        const result = await runHook({ command: "hook.sh", timeout: 100 }, "{}", "/cwd", spawn);
+        const elapsed = Date.now() - start;
+        expect(result.killed).toBe(true);
+        expect(result.exitCode).toBe(124);
+        expect(elapsed).toBeLessThan(2000);
+    });
+
+    test("sends SIGKILL (9) to the hung process when timeout fires", async () => {
+        const tracker: MockSpawnTracker = { stdinData: "", killed: false, killSignal: undefined, env: {}, args: [] };
+        const spawn = createMockSpawn({ hang: true }, tracker);
+        await runHook({ command: "hook.sh", timeout: 100 }, "{}", "/cwd", spawn);
+        expect(tracker.killed).toBe(true);
+        expect(tracker.killSignal).toBe(9);
+    });
+
+    test("marks killed=true when proc.signalCode is non-null (e.g. SIGTERM trap exits 0)", async () => {
+        // Simulates a process that traps SIGTERM and exits 0 — signalCode catches it.
+        const spawn = createMockSpawn({ exitCode: 0, signalCode: "SIGTERM" });
+        const result = await runHook({ command: "hook.sh" }, "{}", "/cwd", spawn);
+        expect(result.killed).toBe(true);
+    });
+
+    test("handles spawn errors gracefully (non-zero exit, killed=false)", async () => {
+        const errSpawn: SpawnLike = () => { throw new Error("spawn failed: no such file"); };
+        const result = await runHook({ command: "hook.sh" }, "{}", "/cwd", errSpawn);
+        expect(result.exitCode).not.toBe(0);
+        expect(result.killed).toBe(false);
+        expect(result.stderr).toContain("spawn failed");
+    });
+});
+
+// ---------------------------------------------------------------------------
+// runHook — integration smoke test (exercises real Bun.spawn path)
+// ---------------------------------------------------------------------------
+
+describe("runHook (integration smoke)", () => {
+    test("runs a real shell command and captures stdout", async () => {
         const result = await runHook(
             { command: 'echo \'{"additionalContext":"hello"}\'' },
             "{}",
@@ -216,68 +394,10 @@ describe("runHook", () => {
         expect(result.killed).toBe(false);
     });
 
-    test("captures exit code 2 for blocking hooks", async () => {
-        const result = await runHook(
-            { command: 'echo "BLOCKED: test" >&2; exit 2' },
-            "{}",
-            process.cwd(),
-        );
+    test("captures non-zero exit code from a failing real command", async () => {
+        const result = await runHook({ command: "exit 2" }, "{}", process.cwd());
         expect(result.exitCode).toBe(2);
-        expect(result.stderr).toContain("BLOCKED: test");
         expect(result.killed).toBe(false);
-    });
-
-    test("passes stdin payload to the hook", async () => {
-        const result = await runHook(
-            { command: "cat | jq -r '.tool_input.command'" },
-            JSON.stringify({ tool_input: { command: "npm install" } }),
-            process.cwd(),
-        );
-        expect(result.exitCode).toBe(0);
-        expect(result.stdout).toBe("npm install");
-    });
-
-    test("sets PIZZAPI_PROJECT_DIR environment variable", async () => {
-        const result = await runHook(
-            { command: "echo $PIZZAPI_PROJECT_DIR" },
-            "{}",
-            "/tmp",
-        );
-        expect(result.exitCode).toBe(0);
-        expect(result.stdout).toBe("/tmp");
-    });
-
-    test("marks killed processes with killed=true and non-zero exit", async () => {
-        const start = Date.now();
-        const result = await runHook(
-            { command: "sleep 10", timeout: 500 },
-            "{}",
-            process.cwd(),
-        );
-        const elapsed = Date.now() - start;
-        // Should finish well before 10s — timeout killed the process
-        expect(elapsed).toBeLessThan(5000);
-        expect(result.killed).toBe(true);
-        expect(result.exitCode).not.toBe(0);
-    });
-
-    test("detects kill even when child traps SIGTERM and exits 0", async () => {
-        // Child traps SIGTERM and exits 0 — proc.killed should still catch it
-        const result = await runHook(
-            { command: 'trap "exit 0" TERM; sleep 10', timeout: 500 },
-            "{}",
-            process.cwd(),
-        );
-        expect(result.killed).toBe(true);
-    });
-
-    test("handles missing command gracefully", async () => {
-        const result = await runHook(
-            { command: "nonexistent_command_12345" },
-            "{}",
-            process.cwd(),
-        );
-        expect(result.exitCode).not.toBe(0);
     });
 });
 
@@ -1167,15 +1287,14 @@ describe("runEventHooks", () => {
         expect(result.outputs[0].additionalContext).toBe("before block");
     });
 
-    test("passes payload to hooks on stdin", async () => {
+    test("hook that emits non-JSON stdout produces no outputs (stdin still piped)", async () => {
+        // echo emits a plain string — not valid JSON — so outputs should be empty.
+        // stdin piping is covered by the mock-spawn unit tests above.
         const hooks: HookEntry[] = [
-            { command: "cat | jq -r '.event'" },
+            { command: 'echo "not-json"' },
         ];
-        const payload = JSON.stringify({ event: "Test", data: "hello" });
-        const result = await runEventHooks(hooks, payload, process.cwd(), "Test");
+        const result = await runEventHooks(hooks, "{}", process.cwd(), "Test");
         expect(result.blocked).toBe(false);
-        // The hook ran jq on the input and printed "Test" to stdout
-        // which is not valid JSON, so outputs will be empty
         expect(result.outputs).toHaveLength(0);
     });
 
@@ -1215,15 +1334,15 @@ describe("runFireAndForgetHooks", () => {
         await runFireAndForgetHooks(hooks, "{}", process.cwd(), "Test");
     });
 
-    test("runs hooks without blocking on timeouts", async () => {
+    test("runs hooks without blocking on errors or timeouts", async () => {
+        // Timeout behavior is covered at the runHook unit level with mock spawn.
+        // Here we verify that runFireAndForgetHooks itself does not throw on failure.
         const hooks: HookEntry[] = [
-            { command: "sleep 10", timeout: 200 },
+            { command: "exit 1" },
+            { command: "true" },
         ];
-        const start = Date.now();
+        // Should not throw
         await runFireAndForgetHooks(hooks, "{}", process.cwd(), "Test");
-        const elapsed = Date.now() - start;
-        // Should finish relatively quickly (timeout + some overhead)
-        expect(elapsed).toBeLessThan(2000);
     });
 
     test("runs all hooks even if some fail", async () => {
@@ -1349,13 +1468,13 @@ describe("mergeHooks — event hooks", () => {
 // ---------------------------------------------------------------------------
 
 describe("event hook integration — Input", () => {
-    test("Input hook can rewrite text", async () => {
+    test("Input hook text transform output is collected", async () => {
+        // Verify runEventHooks collects text/action fields from hook stdout.
+        // (stdin piping is covered by mock-spawn unit tests.)
         const hooks: HookEntry[] = [
-            // Read the input text and rewrite npm → bun
-            { command: `bash -c 'INPUT=$(cat | jq -r ".text"); echo "{\\\"text\\\": \\\"$(echo $INPUT | sed s/npm/bun/g)\\\"}"'` },
+            { command: `echo '{"text":"bun install express"}'` },
         ];
-        const payload = JSON.stringify({ event: "Input", text: "npm install express", source: "interactive" });
-        const result = await runEventHooks(hooks, payload, process.cwd(), "Input");
+        const result = await runEventHooks(hooks, "{}", process.cwd(), "Input");
         expect(result.blocked).toBe(false);
         expect(result.outputs).toHaveLength(1);
         expect(result.outputs[0].text).toBe("bun install express");
@@ -1386,16 +1505,15 @@ describe("event hook integration — Input", () => {
 // ---------------------------------------------------------------------------
 
 describe("event hook integration — UserBash", () => {
-    test("UserBash hook can read command from payload", async () => {
+    test("UserBash hook can block a command", async () => {
+        // Orchestration logic: exit 2 → blocked=true with stderr as reason.
+        // (Payload parsing via jq is not required; that's real-script territory.)
         const hooks: HookEntry[] = [
-            // Check if command contains "rm -rf" and block
-            { command: `bash -c 'CMD=$(cat | jq -r ".command"); if echo "$CMD" | grep -q "rm -rf"; then echo "Dangerous!" >&2; exit 2; fi'` },
+            { command: 'echo "Dangerous command blocked" >&2; exit 2' },
         ];
         const payload = JSON.stringify({
             event: "UserBash",
             command: "rm -rf /",
-            exclude_from_context: false,
-            cwd: "/tmp",
             tool_input: { command: "rm -rf /" },
         });
         const result = await runEventHooks(hooks, payload, process.cwd(), "UserBash");
@@ -1403,32 +1521,24 @@ describe("event hook integration — UserBash", () => {
         expect(result.reason).toContain("Dangerous");
     });
 
-    test("UserBash hook allows safe commands", async () => {
-        const hooks: HookEntry[] = [
-            { command: `bash -c 'CMD=$(cat | jq -r ".command"); if echo "$CMD" | grep -q "rm -rf"; then echo "Dangerous!" >&2; exit 2; fi'` },
-        ];
+    test("UserBash hook allows commands when it exits 0", async () => {
+        const hooks: HookEntry[] = [{ command: "true" }];
         const payload = JSON.stringify({
             event: "UserBash",
             command: "ls -la",
-            exclude_from_context: false,
-            cwd: "/tmp",
+            tool_input: { command: "ls -la" },
         });
         const result = await runEventHooks(hooks, payload, process.cwd(), "UserBash");
         expect(result.blocked).toBe(false);
     });
 
-    test("UserBash hook receives tool_input for PreToolUse script compat", async () => {
+    test("UserBash hook can emit additionalContext on stdout", async () => {
         const hooks: HookEntry[] = [
-            // Use tool_input.command (same key as PreToolUse:Bash hooks)
-            { command: `bash -c 'cat | jq -r ".tool_input.command"'` },
+            { command: `echo '{"additionalContext":"Note: tool_input.command is available"}'` },
         ];
-        const payload = JSON.stringify({
-            event: "UserBash",
-            command: "echo hello",
-            tool_input: { command: "echo hello" },
-        });
-        const result = await runEventHooks(hooks, payload, process.cwd(), "UserBash");
+        const result = await runEventHooks(hooks, "{}", process.cwd(), "UserBash");
         expect(result.blocked).toBe(false);
+        expect(result.outputs[0].additionalContext).toContain("tool_input.command");
     });
 });
 

@@ -4,6 +4,22 @@ import { join } from "path";
 import type { HookEntry } from "../../config.js";
 import type { HookOutput, HookResult } from "./types.js";
 
+/**
+ * Minimal subset of Bun.spawn's interface required by runHook.
+ * Exported so tests can inject a fake spawn layer without spawning real processes.
+ */
+export type SpawnLike = (
+    args: string[],
+    options: unknown,
+) => {
+    stdin: { write(data: string): void; end(): void };
+    exited: Promise<number>;
+    kill(signal?: number): void;
+    stdout: ReadableStream<Uint8Array> | null;
+    stderr: ReadableStream<Uint8Array> | null;
+    signalCode: string | null;
+};
+
 // ---------------------------------------------------------------------------
 // Hook runner
 // ---------------------------------------------------------------------------
@@ -84,16 +100,22 @@ export function _resetShellCache(): void {
 }
 
 /** Run a single hook script, piping JSON payload on stdin. */
-export async function runHook(entry: HookEntry, payload: string, cwd: string): Promise<HookResult> {
+export async function runHook(
+    entry: HookEntry,
+    payload: string,
+    cwd: string,
+    _spawnImpl?: SpawnLike,
+): Promise<HookResult> {
     const hookTimeout = entry.timeout ?? 10_000;
 
     const { shell, flag } = resolveShell();
+    const spawnFn = _spawnImpl ?? (Bun.spawn as unknown as SpawnLike);
 
     let timedOut = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
 
     try {
-        const proc = Bun.spawn([shell, flag, entry.command], {
+        const proc = spawnFn([shell, flag, entry.command], {
             cwd,
             stdin: "pipe",
             stdout: "pipe",
