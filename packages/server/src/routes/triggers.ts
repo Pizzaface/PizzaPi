@@ -63,12 +63,28 @@ import { waitForSpawnAck } from "../ws/runner-control.js";
 
 const log = createLogger("triggers-api");
 
+/**
+ * Resolve the payload key for a subscription param.
+ *
+ * Params whose name ends with "Contains" (e.g. "bodyContains") are
+ * substring-match filters — the actual payload key is the prefix
+ * (e.g. "body"). All other params map directly to the payload key.
+ */
+function resolvePayloadKey(paramKey: string): string {
+    const lower = paramKey.toLowerCase();
+    if (lower.endsWith("contains") && paramKey.length > "contains".length) {
+        // Strip "Contains" suffix → "bodyContains" → "body"
+        return paramKey.slice(0, -"Contains".length);
+    }
+    return paramKey;
+}
+
 function matchesSubscriptionParam(expected: unknown, actual: unknown, key: string): boolean {
     if (key.toLowerCase().endsWith("contains")) {
         if (typeof expected !== "string") return false;
-        if (typeof actual === "string") return actual.includes(expected);
+        if (typeof actual === "string") return actual.toLowerCase().includes(expected.toLowerCase());
         if (Array.isArray(actual)) {
-            return actual.some((item) => typeof item === "string" && item.includes(expected));
+            return actual.some((item) => typeof item === "string" && item.toLowerCase().includes(expected.toLowerCase()));
         }
         return false;
     }
@@ -86,6 +102,24 @@ function matchesSubscriptionParam(expected: unknown, actual: unknown, key: strin
 
     // eslint-disable-next-line eqeqeq
     return actual == expected;
+}
+
+/**
+ * Check whether a trigger payload matches ALL subscription params (AND logic).
+ * Returns true if every param the subscriber specified matches the payload.
+ */
+function payloadMatchesParams(
+    payload: Record<string, unknown>,
+    params: Record<string, unknown>,
+): boolean {
+    for (const [key, expected] of Object.entries(params)) {
+        const payloadKey = resolvePayloadKey(key);
+        const actual = payload[payloadKey];
+        if (!matchesSubscriptionParam(expected, actual, key)) {
+            return false;
+        }
+    }
+    return true;
 }
 
 /** Poll for a session socket to appear after spawn (same pattern as webhooks). */
@@ -545,22 +579,11 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
             // and sessions that are actually connected.
             if (!targetSession || targetSession.userId !== identity.userId) continue;
 
-            // Filter by subscription params: each param the subscriber specified
-            // must match the corresponding field in the trigger payload.
-            // Strings ending in "Contains" do substring matching, arrays match
-            // if they overlap, and scalars use loose equality.
+            // Filter by subscription params (AND — every param must match).
+            // Params ending in "Contains" do substring matching against the
+            // base key (e.g. "bodyContains" checks payload["body"]).
             const subParams = await getSubscriptionParams(targetSessionId, body.type);
-            if (subParams) {
-                let matches = true;
-                for (const [key, expected] of Object.entries(subParams)) {
-                    const actual = body.payload[key];
-                    if (!matchesSubscriptionParam(expected, actual, key)) {
-                        matches = false;
-                        break;
-                    }
-                }
-                if (!matches) continue;
-            }
+            if (subParams && !payloadMatchesParams(body.payload, subParams)) continue;
 
             const historyEntry = {
                 triggerId: `${triggerId}_${targetSessionId.slice(0, 8)}`,
@@ -605,6 +628,15 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
         if (listenerTypes.includes(body.type)) {
             const listener = await getRunnerTriggerListener(runnerId, body.type);
             if (listener) {
+                // Filter by listener params before spawning (AND — every param must match).
+                if (listener.params && Object.keys(listener.params).length > 0) {
+                    if (!payloadMatchesParams(body.payload, listener.params)) {
+                        log.info(`Auto-spawn listener for ${body.type} skipped — params did not match payload`);
+                        // Fall through to return (don't spawn)
+                        log.info(`Broadcast trigger ${triggerId} (type=${body.type}) to ${delivered}/${subscriberIds.length} subscribers + 0 spawned on runner ${runnerId}`);
+                        return Response.json({ ok: true, delivered, spawned: 0, triggerId });
+                    }
+                }
                 const runnerSocket = getLocalRunnerSocket(runnerId);
                 if (runnerSocket) {
                     const spawnedSessionId = randomUUID();

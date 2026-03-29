@@ -18,7 +18,10 @@ import {
   BookOpen,
   BellRing,
   BellOff,
+  FolderOpen,
 } from "lucide-react";
+import { useRunnerModels, type RunnerModel } from "@/hooks/useRunnerModels";
+import { formatPathTail } from "@/lib/path";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
@@ -66,11 +69,13 @@ interface ParamFormProps {
   onSubmit: () => void;
   onCancel: () => void;
   isPending: boolean;
+  models: RunnerModel[];
+  recentFolders: string[];
 }
 
 function ParamForm({
   params, values, onChange, sessionConfig, onSessionConfigChange,
-  error, onSubmit, onCancel, isPending,
+  error, onSubmit, onCancel, isPending, models, recentFolders,
 }: ParamFormProps) {
   const updateValue = (name: string, value: string | string[]) => {
     onChange({ ...values, [name]: value });
@@ -89,13 +94,40 @@ function ParamForm({
           <label className="text-[11px] text-muted-foreground/70 w-24 shrink-0 pt-0.5">
             Working Dir
           </label>
-          <input
-            type="text"
-            placeholder="/path/to/project"
-            value={sessionConfig.cwd}
-            onChange={(e) => updateConfig("cwd", e.target.value)}
-            className="flex-1 rounded border border-border bg-background px-2 py-1 text-[11px] font-mono focus:outline-none focus:ring-1 focus:ring-ring"
-          />
+          <div className="flex-1 space-y-1">
+            <input
+              type="text"
+              placeholder="/path/to/project"
+              value={sessionConfig.cwd}
+              onChange={(e) => updateConfig("cwd", e.target.value)}
+              className="w-full rounded border border-border bg-background px-2 py-1 text-[11px] font-mono focus:outline-none focus:ring-1 focus:ring-ring"
+            />
+            {recentFolders.length > 0 && (
+              <div className="flex flex-wrap gap-1">
+                {recentFolders.slice(0, 6).map((folder) => {
+                  const tail = formatPathTail(folder, 1);
+                  const isSelected = sessionConfig.cwd === folder;
+                  return (
+                    <button
+                      key={folder}
+                      type="button"
+                      title={folder}
+                      onClick={() => updateConfig("cwd", folder)}
+                      className={cn(
+                        "inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-mono border transition-colors",
+                        isSelected
+                          ? "border-primary/40 bg-primary/10 text-primary"
+                          : "border-border/50 bg-muted/30 text-muted-foreground hover:bg-muted/60",
+                      )}
+                    >
+                      <FolderOpen className="size-2.5 shrink-0" />
+                      {tail}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
         </div>
         <div className="flex items-start gap-2">
           <label className="text-[11px] text-muted-foreground/70 w-24 shrink-0 pt-0.5">
@@ -113,22 +145,51 @@ function ParamForm({
           <label className="text-[11px] text-muted-foreground/70 w-24 shrink-0 pt-0.5">
             Model
           </label>
-          <div className="flex-1 grid grid-cols-2 gap-1.5">
-            <input
-              type="text"
-              placeholder="provider"
-              value={sessionConfig.modelProvider}
-              onChange={(e) => updateConfig("modelProvider", e.target.value)}
-              className="rounded border border-border bg-background px-2 py-1 text-[11px] font-mono focus:outline-none focus:ring-1 focus:ring-ring"
-            />
-            <input
-              type="text"
-              placeholder="model-id"
-              value={sessionConfig.modelId}
-              onChange={(e) => updateConfig("modelId", e.target.value)}
-              className="rounded border border-border bg-background px-2 py-1 text-[11px] font-mono focus:outline-none focus:ring-1 focus:ring-ring"
-            />
-          </div>
+          {models.length > 0 ? (
+            <select
+              value={sessionConfig.modelProvider && sessionConfig.modelId
+                ? `${sessionConfig.modelProvider}/${sessionConfig.modelId}`
+                : ""}
+              onChange={(e) => {
+                const val = e.target.value;
+                if (!val) {
+                  onSessionConfigChange({ ...sessionConfig, modelProvider: "", modelId: "" });
+                } else {
+                  const sep = val.indexOf("/");
+                  onSessionConfigChange({
+                    ...sessionConfig,
+                    modelProvider: val.slice(0, sep),
+                    modelId: val.slice(sep + 1),
+                  });
+                }
+              }}
+              className="flex-1 rounded border border-border bg-background px-2 py-1 text-[11px] font-mono focus:outline-none focus:ring-1 focus:ring-ring"
+            >
+              <option value="">Runner default</option>
+              {models.map((m) => (
+                <option key={`${m.provider}/${m.id}`} value={`${m.provider}/${m.id}`}>
+                  {m.name ?? m.id} ({m.provider})
+                </option>
+              ))}
+            </select>
+          ) : (
+            <div className="flex-1 grid grid-cols-2 gap-1.5">
+              <input
+                type="text"
+                placeholder="provider"
+                value={sessionConfig.modelProvider}
+                onChange={(e) => updateConfig("modelProvider", e.target.value)}
+                className="rounded border border-border bg-background px-2 py-1 text-[11px] font-mono focus:outline-none focus:ring-1 focus:ring-ring"
+              />
+              <input
+                type="text"
+                placeholder="model-id"
+                value={sessionConfig.modelId}
+                onChange={(e) => updateConfig("modelId", e.target.value)}
+                className="rounded border border-border bg-background px-2 py-1 text-[11px] font-mono focus:outline-none focus:ring-1 focus:ring-ring"
+              />
+            </div>
+          )}
         </div>
       </div>
 
@@ -230,6 +291,43 @@ function ParamForm({
   );
 }
 
+// ── Collapsible Param Definitions ──────────────────────────────────────────
+
+function CollapsibleParams({ params }: { params: ServiceTriggerParamDef[] }) {
+  const [expanded, setExpanded] = React.useState(false);
+
+  return (
+    <div className="mt-1.5">
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        className="flex items-center gap-1 text-[10px] text-muted-foreground/60 hover:text-muted-foreground/80 transition-colors"
+      >
+        {expanded ? <ChevronDown className="size-2.5" /> : <ChevronRight className="size-2.5" />}
+        <span>{params.length} param{params.length !== 1 ? "s" : ""}</span>
+      </button>
+      {expanded && (
+        <div className="mt-1 space-y-0.5 pl-3.5">
+          {params.map((p) => (
+            <div key={p.name} className="text-[10px] text-muted-foreground/60">
+              <span className="font-mono text-foreground/70">{p.name}</span>
+              <span className="text-muted-foreground/40">: {p.type}</span>
+              {p.required && <span className="text-amber-400/60 ml-1">required</span>}
+              {p.multiselect && <span className="text-violet-400/60 ml-1">multiselect</span>}
+              {p.enum && (
+                <span className="text-muted-foreground/40 ml-1">
+                  {"{" + p.enum.map(String).join(", ") + "}"}
+                </span>
+              )}
+              {p.description && <span className="ml-1">— {p.description}</span>}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Trigger Item ───────────────────────────────────────────────────────────
 
 interface TriggerItemProps {
@@ -246,12 +344,15 @@ interface TriggerItemProps {
   onSessionConfigChange: (config: SessionConfig) => void;
   onParamSubmit: (def: ServiceTriggerDef) => void;
   onParamCancel: () => void;
+  models: RunnerModel[];
+  recentFolders: string[];
 }
 
 function TriggerItem({
   def, isListening, isPending, listener,
   paramFormOpen, paramValues, paramError, sessionConfig,
   onToggle, onParamValuesChange, onSessionConfigChange, onParamSubmit, onParamCancel,
+  models, recentFolders,
 }: TriggerItemProps) {
   const hasParams = def.params && def.params.length > 0;
 
@@ -312,24 +413,9 @@ function TriggerItem({
             </div>
           )}
 
-          {/* Param definitions (when not subscribed and form not open) */}
+          {/* Collapsible param definitions (when not subscribed and form not open) */}
           {hasParams && !isListening && !paramFormOpen && (
-            <div className="mt-1.5 space-y-0.5">
-              {def.params!.map((p) => (
-                <div key={p.name} className="text-[10px] text-muted-foreground/60">
-                  <span className="font-mono text-foreground/70">{p.name}</span>
-                  <span className="text-muted-foreground/40">: {p.type}</span>
-                  {p.required && <span className="text-amber-400/60 ml-1">required</span>}
-                  {p.multiselect && <span className="text-violet-400/60 ml-1">multiselect</span>}
-                  {p.enum && (
-                    <span className="text-muted-foreground/40 ml-1">
-                      {"{" + p.enum.map(String).join(", ") + "}"}
-                    </span>
-                  )}
-                  {p.description && <span className="ml-1">— {p.description}</span>}
-                </div>
-              ))}
-            </div>
+            <CollapsibleParams params={def.params!} />
           )}
         </div>
 
@@ -370,6 +456,8 @@ function TriggerItem({
           onSubmit={() => onParamSubmit(def)}
           onCancel={onParamCancel}
           isPending={isPending}
+          models={models}
+          recentFolders={recentFolders}
         />
       )}
     </div>
@@ -392,12 +480,15 @@ interface ServiceAccordionProps {
   onSessionConfigChange: (triggerType: string, config: SessionConfig) => void;
   onParamSubmit: (def: ServiceTriggerDef) => void;
   onParamCancel: () => void;
+  models: RunnerModel[];
+  recentFolders: string[];
 }
 
 function ServiceAccordion({
   group, listenedTypes, listenerMap, pendingTypes,
   paramFormOpen, paramValues, paramError, sessionConfigs,
   onToggle, onParamValuesChange, onSessionConfigChange, onParamSubmit, onParamCancel,
+  models, recentFolders,
 }: ServiceAccordionProps) {
   const [expanded, setExpanded] = React.useState(false);
   const listenedCount = group.defs.filter((d) => listenedTypes.has(d.type)).length;
@@ -447,6 +538,8 @@ function ServiceAccordion({
               onSessionConfigChange={(config) => onSessionConfigChange(def.type, config)}
               onParamSubmit={onParamSubmit}
               onParamCancel={onParamCancel}
+              models={models}
+              recentFolders={recentFolders}
             />
           ))}
         </div>
@@ -490,6 +583,21 @@ export function RunnerTriggersPanel({ runnerId, triggerDefs: propDefs }: RunnerT
   const [paramValues, setParamValues] = React.useState<Record<string, Record<string, string | string[]>>>({});
   const [paramError, setParamError] = React.useState<string | null>(null);
   const [sessionConfigs, setSessionConfigs] = React.useState<Record<string, SessionConfig>>({});
+
+  // Runner-level data: models + recent folders
+  const { models } = useRunnerModels(runnerId);
+  const [recentFolders, setRecentFolders] = React.useState<string[]>([]);
+  React.useEffect(() => {
+    if (!runnerId) return;
+    let cancelled = false;
+    fetch(`/api/runners/${encodeURIComponent(runnerId)}/recent-folders`, {
+      credentials: "include",
+    })
+      .then((res) => { if (!res.ok) throw new Error(); return res.json(); })
+      .then((body: any) => { if (!cancelled) setRecentFolders(Array.isArray(body?.folders) ? body.folders : []); })
+      .catch(() => { /* silent */ });
+    return () => { cancelled = true; };
+  }, [runnerId]);
 
   const fetchData = React.useCallback(async () => {
     setLoading(true);
@@ -711,6 +819,8 @@ export function RunnerTriggersPanel({ runnerId, triggerDefs: propDefs }: RunnerT
           onSessionConfigChange={(type, config) => setSessionConfigs((prev) => ({ ...prev, [type]: config }))}
           onParamSubmit={handleParamSubmit}
           onParamCancel={() => { setParamFormOpen(null); setParamError(null); }}
+          models={models}
+          recentFolders={recentFolders}
         />
       ))}
     </div>

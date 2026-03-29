@@ -505,6 +505,20 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
             }
         });
 
+        // ── models_list — runner responds with available models ─────────────
+        socket.on("models_list", (data) => {
+            const requestId = data.requestId;
+            if (requestId) {
+                const pending = pendingRunnerCommands.get(requestId);
+                if (pending) {
+                    clearTimeout(pending.timer);
+                    pendingRunnerCommands.delete(requestId);
+                    const { requestId: _rid, ...rest } = data;
+                    pending.resolve(rest);
+                }
+            }
+        });
+
         // ── runner_session_event — forward agent events to viewers ───────────
         socket.on("runner_session_event", async (data) => {
             await publishSessionEvent(data.sessionId, data.event);

@@ -74,6 +74,19 @@ export interface RunnerClientToServerEvents {
     [key: string]: unknown;
   }) => void;
 
+  /** Runner responds with available models */
+  models_list: (data: {
+    requestId?: string;
+    models: Array<{
+      provider: string;
+      id: string;
+      name?: string;
+      reasoning?: boolean;
+      contextWindow?: number;
+    }>;
+    error?: string;
+  }) => void;
+
   /** Runner responds with usage dashboard data */
   usage_data: (data: {
     requestId?: string;
@@ -346,6 +359,11 @@ export interface RunnerServerToClientEvents {
   sandbox_update_config: (data: {
     requestId?: string;
     config: Record<string, unknown>;
+  }) => void;
+
+  /** Requests available models from the runner */
+  list_models: (data: {
+    requestId?: string;
   }) => void;
 
   /** Requests usage dashboard data from the runner */

@@ -309,6 +309,36 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
         return undefined;
     }
 
+    // ── Available models ───────────────────────────────────────────
+    const modelsMatch = url.pathname.match(/^\/api\/runners\/([^/]+)\/models$/);
+    if (modelsMatch && req.method === "GET") {
+        const identity = await requireSession(req);
+        if (identity instanceof Response) return identity;
+
+        const runnerId = decodeURIComponent(modelsMatch[1]);
+        const runner = await getRunnerData(runnerId);
+        if (!runner) return Response.json({ error: "Runner not found" }, { status: 404 });
+        if (runner.userId !== identity.userId) return Response.json({ error: "Forbidden" }, { status: 403 });
+
+        try {
+            const result = await sendRunnerCommand(runnerId, { type: "list_models" }) as any;
+            const models = Array.isArray(result?.models) ? result.models : [];
+            // Filter out hidden models
+            let hiddenModels: string[];
+            try {
+                hiddenModels = await getHiddenModels(identity.userId);
+            } catch {
+                hiddenModels = [];
+            }
+            const visible = models.filter((m: any) =>
+                !hiddenModels.includes(`${m.provider}/${m.id}`)
+            );
+            return Response.json({ models: visible });
+        } catch {
+            return Response.json({ models: [] });
+        }
+    }
+
     // ── Runner services ─────────────────────────────────────────────
     const servicesMatch = url.pathname.match(/^\/api\/runners\/([^/]+)\/services$/);
     if (servicesMatch && req.method === "GET") {

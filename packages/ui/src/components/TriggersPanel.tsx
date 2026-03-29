@@ -991,6 +991,43 @@ interface ServiceCatalogAccordionProps {
   onParamValuesChange: React.Dispatch<React.SetStateAction<Record<string, Record<string, string | string[]>>>>;
 }
 
+// ── Collapsible Param Definitions ──────────────────────────────────────────
+
+function CollapsibleParamDefs({ params }: { params: ServiceTriggerParamDef[] }) {
+  const [expanded, setExpanded] = React.useState(false);
+
+  return (
+    <div className="mt-1">
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        className="flex items-center gap-1 text-[9px] text-muted-foreground/50 hover:text-muted-foreground/70 transition-colors"
+      >
+        {expanded ? <ChevronDown className="size-2.5" /> : <ChevronRight className="size-2.5" />}
+        <span>{params.length} param{params.length !== 1 ? "s" : ""}</span>
+      </button>
+      {expanded && (
+        <div className="mt-0.5 space-y-0.5 pl-3.5">
+          {params.map((p) => (
+            <div key={p.name} className="text-[9px] text-muted-foreground/50">
+              <span className="font-mono">{p.name}</span>
+              <span className="text-muted-foreground/30">: {p.type}</span>
+              {p.required && <span className="text-amber-400/50 ml-1">required</span>}
+              {p.multiselect && <span className="text-violet-400/50 ml-1">multiselect</span>}
+              {p.enum && (
+                <span className="text-muted-foreground/30 ml-1">
+                  {"{" + p.enum.map(String).join(", ") + "}"}
+                </span>
+              )}
+              {p.description && <span className="ml-1">— {p.description}</span>}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ServiceCatalogAccordion({
   service, defs, subscribedCount, subscribedTypes, subscriptionMap,
   pending, paramFormOpen, paramValues, paramError,
@@ -1069,24 +1106,9 @@ function ServiceCatalogAccordion({
                         ))}
                       </div>
                     )}
-                    {/* Show param definitions when not subscribed */}
+                    {/* Collapsible param definitions when not subscribed */}
                     {hasParams && !isSubscribed && !isParamFormVisible && (
-                      <div className="mt-1 space-y-0.5">
-                        {def.params!.map((p) => (
-                          <div key={p.name} className="text-[9px] text-muted-foreground/50">
-                            <span className="font-mono">{p.name}</span>
-                            <span className="text-muted-foreground/30">: {p.type}</span>
-                            {p.required && <span className="text-amber-400/50 ml-1">required</span>}
-                            {p.multiselect && <span className="text-violet-400/50 ml-1">multiselect</span>}
-                            {p.enum && (
-                              <span className="text-muted-foreground/30 ml-1">
-                                {"{" + p.enum.map(String).join(", ") + "}"}
-                              </span>
-                            )}
-                            {p.description && <span className="ml-1">— {p.description}</span>}
-                          </div>
-                        ))}
-                      </div>
+                      <CollapsibleParamDefs params={def.params!} />
                     )}
                   </div>
 

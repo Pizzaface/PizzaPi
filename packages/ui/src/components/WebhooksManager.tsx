@@ -30,6 +30,7 @@ import {
     Loader2,
     Cpu,
 } from "lucide-react";
+import { useRunnerModels } from "@/hooks/useRunnerModels";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -448,6 +449,9 @@ function CreateWebhookForm({
     const [creating, setCreating] = useState(false);
     const [error, setError] = useState<string | null>(null);
 
+    // ── Available models ────────────────────────────────────────────────
+    const { models: availableModels } = useRunnerModels(runnerId, open);
+
     // ── Recent folders ──────────────────────────────────────────────────
     const [recentFolders, setRecentFolders] = useState<string[]>([]);
     const [recentFoldersLoading, setRecentFoldersLoading] = useState(false);
@@ -691,20 +695,49 @@ function CreateWebhookForm({
                     Model{" "}
                     <span className="font-normal normal-case">(optional — uses runner default if empty)</span>
                 </label>
-                <div className="grid grid-cols-2 gap-2">
-                    <Input
-                        value={modelProvider}
-                        onChange={(e) => setModelProvider(e.target.value)}
-                        placeholder="e.g. anthropic"
-                        className="h-8 text-xs font-mono"
-                    />
-                    <Input
-                        value={modelId}
-                        onChange={(e) => setModelId(e.target.value)}
-                        placeholder="e.g. claude-sonnet-4-20250514"
-                        className="h-8 text-xs font-mono"
-                    />
-                </div>
+                {availableModels.length > 0 ? (
+                    <select
+                        value={modelProvider && modelId ? `${modelProvider}/${modelId}` : ""}
+                        onChange={(e) => {
+                            const val = e.target.value;
+                            if (!val) {
+                                setModelProvider("");
+                                setModelId("");
+                            } else {
+                                const sep = val.indexOf("/");
+                                setModelProvider(val.slice(0, sep));
+                                setModelId(val.slice(sep + 1));
+                            }
+                        }}
+                        className={cn(
+                            "w-full h-8 rounded-md border bg-transparent px-2 text-xs font-mono shadow-xs transition-[color,box-shadow] outline-none",
+                            "dark:bg-input/30 border-input",
+                            "focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]",
+                        )}
+                    >
+                        <option value="">Runner default</option>
+                        {availableModels.map((m) => (
+                            <option key={`${m.provider}/${m.id}`} value={`${m.provider}/${m.id}`}>
+                                {m.name ?? m.id} ({m.provider})
+                            </option>
+                        ))}
+                    </select>
+                ) : (
+                    <div className="grid grid-cols-2 gap-2">
+                        <Input
+                            value={modelProvider}
+                            onChange={(e) => setModelProvider(e.target.value)}
+                            placeholder="e.g. anthropic"
+                            className="h-8 text-xs font-mono"
+                        />
+                        <Input
+                            value={modelId}
+                            onChange={(e) => setModelId(e.target.value)}
+                            placeholder="e.g. claude-sonnet-4-20250514"
+                            className="h-8 text-xs font-mono"
+                        />
+                    </div>
+                )}
             </div>
 
             {/* Event filter */}
