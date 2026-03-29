@@ -406,4 +406,81 @@ describe("MCP streamable HTTP smoke test", () => {
             server.stop(true);
         }
     });
+
+    test("streamable client parses SSE-formatted text/event-stream response", async () => {
+        // This test exercises the SSE parsing path in transport-http.ts:
+        // When the server responds with Content-Type: text/event-stream, the
+        // client must read the body as an SSE stream and extract the JSON-RPC
+        // response from data: lines — not try to parse the whole body as JSON.
+
+        const server = Bun.serve({
+            port: 0,
+            async fetch(req) {
+                const body = await req.json() as any;
+                if (!("id" in body)) return new Response(null, { status: 202 });
+
+                if (body.method === "initialize") {
+                    return Response.json({
+                        jsonrpc: "2.0",
+                        id: body.id,
+                        result: {
+                            protocolVersion: MCP_PROTOCOL_VERSION,
+                            capabilities: { tools: {} },
+                            serverInfo: { name: "sse-test", version: "1.0" },
+                        },
+                    });
+                }
+
+                if (body.method === "tools/list") {
+                    // Respond as an SSE stream instead of plain JSON
+                    const responsePayload = JSON.stringify({
+                        jsonrpc: "2.0",
+                        id: body.id,
+                        result: {
+                            tools: [{ name: "sse_tool", description: "Returned via SSE" }],
+                        },
+                    });
+                    const sseBody = `data: ${responsePayload}\n\n`;
+                    return new Response(sseBody, {
+                        status: 200,
+                        headers: {
+                            "Content-Type": "text/event-stream",
+                            "Cache-Control": "no-cache",
+                        },
+                    });
+                }
+
+                return Response.json({ jsonrpc: "2.0", id: body.id, result: {} });
+            },
+        });
+
+        try {
+            const clients = await createMcpClientsFromConfig({
+                mcp: {
+                    servers: [
+                        {
+                            name: "sse-test",
+                            transport: "streamable" as const,
+                            url: `http://localhost:${server.port}`,
+                        },
+                    ],
+                },
+            } as any);
+
+            expect(clients).toHaveLength(1);
+
+            // listTools() triggers a tools/list request; the server responds
+            // with text/event-stream. The SSE parser must correctly decode
+            // the `data:` line and return the tool list.
+            const tools = await clients[0].listTools();
+
+            expect(tools).toHaveLength(1);
+            expect(tools[0].name).toBe("sse_tool");
+            expect(tools[0].description).toBe("Returned via SSE");
+
+            clients[0].close();
+        } finally {
+            server.stop(true);
+        }
+    });
 });

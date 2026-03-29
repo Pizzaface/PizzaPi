@@ -364,6 +364,51 @@ describe("discoverClaudeInstalledPlugins smoke test", () => {
         // Newest by lastUpdated wins — description is "v2.0.0"
         expect(result[0].description).toBe("v2.0.0");
     });
+
+    test("falls back to older installation when newest is not a valid plugin dir", () => {
+        // discoverClaudeInstalledPlugins tries installs sorted by lastUpdated (newest first).
+        // If the newest dir exists but isPluginDir() returns false (no commands/, hooks/,
+        // rules/, skills/, agents/, or plugin.json), it should continue to the next
+        // install rather than giving up.
+        const home = join(tmpDir, "fallback-invalid");
+        mkdirSync(join(home, ".claude", "plugins"), { recursive: true });
+        process.env.HOME = home;
+
+        // v1.0.0 — valid plugin dir
+        const oldPath = join(home, ".claude", "plugins", "cache", "mkt", "flaky", "1.0.0");
+        mkdirSync(join(oldPath, ".claude-plugin"), { recursive: true });
+        writeFileSync(
+            join(oldPath, ".claude-plugin", "plugin.json"),
+            JSON.stringify({ name: "flaky", description: "Stable v1", version: "1.0.0" }),
+        );
+        mkdirSync(join(oldPath, "commands"), { recursive: true });
+        writeFileSync(join(oldPath, "commands", "run.md"), `---\ndescription: run\n---\n# Run`);
+
+        // v2.0.0 — dir exists but contains no plugin structure (just a README)
+        const newPath = join(home, ".claude", "plugins", "cache", "mkt", "flaky", "2.0.0");
+        mkdirSync(newPath, { recursive: true });
+        writeFileSync(join(newPath, "README.md"), "This directory is not a plugin");
+
+        writeFileSync(
+            join(home, ".claude", "plugins", "installed_plugins.json"),
+            JSON.stringify({
+                version: 2,
+                plugins: {
+                    "flaky@mkt": [
+                        // newest is listed first (will be tried first after sort by lastUpdated)
+                        { scope: "user", installPath: newPath, version: "2.0.0", lastUpdated: "2026-06-01T00:00:00Z" },
+                        { scope: "user", installPath: oldPath, version: "1.0.0", lastUpdated: "2026-01-01T00:00:00Z" },
+                    ],
+                },
+            }),
+        );
+
+        const result = discoverClaudeInstalledPlugins("/tmp");
+        // Newest (v2.0.0) is invalid — must fall back to v1.0.0
+        expect(result).toHaveLength(1);
+        expect(result[0].name).toBe("flaky");
+        expect(result[0].description).toBe("Stable v1");
+    });
 });
 
 // ── pluginSearchDirs security (pure path logic) ───────────────────────────────
@@ -449,5 +494,35 @@ describe("readEnabledPlugins merge hierarchy", () => {
 
         const result = readEnabledPlugins("/tmp");
         expect(result).toBeNull();
+    });
+
+    test("settings.local.json takes precedence over settings.json for same keys", () => {
+        // readEnabledPlugins reads files in order: user settings.json,
+        // project settings.json, then project settings.local.json.
+        // Later files override earlier ones — so local wins over project.
+        const home = join(tmpDir, "local-wins");
+        mkdirSync(join(home, ".claude"), { recursive: true });
+        writeFileSync(
+            join(home, ".claude", "settings.json"),
+            JSON.stringify({ enabledPlugins: { "a@mkt": true } }),
+        );
+        process.env.HOME = home;
+
+        const projectDir = join(tmpDir, "local-wins-project");
+        mkdirSync(join(projectDir, ".claude"), { recursive: true });
+        // project settings.json enables "b@mkt"
+        writeFileSync(
+            join(projectDir, ".claude", "settings.json"),
+            JSON.stringify({ enabledPlugins: { "b@mkt": true } }),
+        );
+        // settings.local.json disables "b@mkt" — this must win
+        writeFileSync(
+            join(projectDir, ".claude", "settings.local.json"),
+            JSON.stringify({ enabledPlugins: { "b@mkt": false } }),
+        );
+
+        const result = readEnabledPlugins(projectDir);
+        // User: a=true. Project: b=true. Local: b=false (overrides project).
+        expect(result).toEqual({ "a@mkt": true, "b@mkt": false });
     });
 });
