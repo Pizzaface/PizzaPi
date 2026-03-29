@@ -111,6 +111,34 @@ export async function listRunnerTriggerListeners(
     return listeners;
 }
 
+/** Update an existing listener's config. Returns false if the listener doesn't exist. */
+export async function updateRunnerTriggerListener(
+    runnerId: string,
+    triggerType: string,
+    updates: { prompt?: string; cwd?: string; model?: { provider: string; id: string }; params?: Record<string, unknown> },
+): Promise<boolean> {
+    const redis = await getClient();
+    if (!redis) return false;
+    const existing = await redis.hGet(LISTENERS_KEY(runnerId), triggerType);
+    if (!existing) return false;
+    let current: RunnerTriggerListener;
+    try {
+        current = JSON.parse(existing) as RunnerTriggerListener;
+    } catch {
+        return false;
+    }
+    const updated: RunnerTriggerListener = {
+        ...current,
+        ...(updates.prompt !== undefined ? { prompt: updates.prompt } : {}),
+        ...(updates.cwd !== undefined ? { cwd: updates.cwd } : {}),
+        ...(updates.model !== undefined ? { model: updates.model } : {}),
+        ...(updates.params !== undefined ? { params: updates.params as RunnerTriggerListener["params"] } : {}),
+    };
+    await redis.hSet(LISTENERS_KEY(runnerId), triggerType, JSON.stringify(updated));
+    log.info(`Updated runner trigger listener: ${runnerId} → ${triggerType}`);
+    return true;
+}
+
 /** Get a specific listener for a runner + trigger type. */
 export async function getRunnerTriggerListener(
     runnerId: string,

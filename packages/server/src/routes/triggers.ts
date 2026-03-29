@@ -18,6 +18,10 @@
  *   Subscribe this session to a trigger type: { triggerType: string }.
  *   Validates that the trigger type is available on the session's runner.
  *
+ * PUT /api/sessions/:id/trigger-subscriptions/:triggerType
+ *   Update params/filters on an existing subscription. Notifies the runner
+ *   service so it can react to param changes.
+ *
  * DELETE /api/sessions/:id/trigger-subscriptions/:triggerType
  *   Unsubscribe this session from a trigger type.
  *
@@ -54,6 +58,7 @@ import {
     getSubscribersForTrigger,
     getSubscriptionParams,
     getSubscriptionFilters,
+    updateSessionSubscription,
     type SubscriptionParams,
     type SubscriptionFilter,
     type SubscriptionFilterMode,
@@ -61,6 +66,7 @@ import {
 import {
     getRunnerListenerTypes,
     getRunnerTriggerListener,
+    updateRunnerTriggerListener,
 } from "../sessions/runner-trigger-listener-store.js";
 import { waitForSpawnAck } from "../ws/runner-control.js";
 
@@ -582,6 +588,22 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
         if (subFilters) logParts.push(`filters=${JSON.stringify(subFilters)} mode=${subFilterMode ?? "and"}`);
         log.info(`Session ${sessionId} subscribed to trigger type '${triggerType}' on runner ${session.runnerId}${logParts.length > 0 ? ` with ${logParts.join(", ")}` : ""}`);
         broadcastToSessionViewers(sessionId, "trigger_subscriptions_changed", { triggerType, action: "subscribe" });
+
+        // Notify the runner service about the new subscription params
+        if (subParams && session.runnerId) {
+            const runnerSocket = getLocalRunnerSocket(session.runnerId);
+            if (runnerSocket) {
+                runnerSocket.emit("subscription_params_changed" as any, {
+                    sessionId,
+                    triggerType,
+                    params: subParams,
+                    filters: subFilters ?? [],
+                    filterMode: subFilterMode ?? "and",
+                    action: "subscribe",
+                });
+            }
+        }
+
         return Response.json({
             ok: true,
             triggerType,
@@ -610,6 +632,165 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
         log.info(`Session ${sessionId} unsubscribed from trigger type '${triggerType}'`);
         broadcastToSessionViewers(sessionId, "trigger_subscriptions_changed", { triggerType, action: "unsubscribe" });
         return Response.json({ ok: true, triggerType });
+    }
+
+    // ── PUT /api/sessions/:id/trigger-subscriptions/:triggerType ──────
+    // Update params/filters on an existing subscription without removing it.
+    // Notifies the runner service so it can react to param changes.
+    if (subsDeleteMatch && req.method === "PUT") {
+        const identity = await authenticate(req);
+        if (identity instanceof Response) return identity;
+
+        const sessionId = decodeURIComponent(subsDeleteMatch[1]);
+        const triggerType = decodeURIComponent(subsDeleteMatch[2]);
+
+        const session = await getSharedSession(sessionId);
+        if (!session || session.userId !== identity.userId) {
+            return Response.json({ error: "Session not found" }, { status: 404 });
+        }
+
+        let body: { params?: Record<string, unknown>; filters?: unknown[]; filterMode?: string };
+        try {
+            body = await req.json() as { params?: Record<string, unknown>; filters?: unknown[]; filterMode?: string };
+        } catch {
+            return Response.json({ error: "Invalid JSON body" }, { status: 400 });
+        }
+
+        // Validate params against the runner's trigger def (if available)
+        let subParams: SubscriptionParams | undefined;
+        if (session.runnerId) {
+            const services = await getRunnerServices(session.runnerId);
+            const triggerDef = services?.triggerDefs?.find((d) => d.type === triggerType);
+
+            if (body.params && typeof body.params === "object" && !Array.isArray(body.params)) {
+                const paramDefs = triggerDef?.params ?? [];
+                const validated: SubscriptionParams = {};
+                const errors: string[] = [];
+
+                for (const def of paramDefs) {
+                    const raw = body.params[def.name];
+                    if (raw === undefined || raw === null) {
+                        if (def.required) errors.push(`Missing required param '${def.name}'`);
+                        continue;
+                    }
+                    if (def.multiselect && def.enum) {
+                        const arr = Array.isArray(raw) ? raw : [raw];
+                        const coerced: Array<string | number | boolean> = [];
+                        for (const item of arr) {
+                            if (def.type === "number") { const num = Number(item); if (!isNaN(num)) coerced.push(num); }
+                            else if (def.type === "boolean") { if (item === true || item === "true") coerced.push(true); else if (item === false || item === "false") coerced.push(false); }
+                            else { coerced.push(String(item)); }
+                        }
+                        // eslint-disable-next-line eqeqeq
+                        const invalid = coerced.filter(v => !def.enum!.some(e => e == v));
+                        if (invalid.length > 0) errors.push(`Param '${def.name}' contains invalid values: ${invalid.join(", ")}`);
+                        else if (coerced.length > 0) validated[def.name] = coerced;
+                        else if (def.required) errors.push(`Param '${def.name}' requires at least one valid value`);
+                        continue;
+                    }
+                    if (def.type === "number") {
+                        const num = Number(raw);
+                        // eslint-disable-next-line eqeqeq
+                        if (isNaN(num)) errors.push(`Param '${def.name}' must be a number`);
+                        // eslint-disable-next-line eqeqeq
+                        else if (def.enum && !def.enum.some(e => e == num)) errors.push(`Param '${def.name}' must be one of: ${def.enum.join(", ")}`);
+                        else validated[def.name] = num;
+                    } else if (def.type === "boolean") {
+                        if (raw === true || raw === "true") validated[def.name] = true;
+                        else if (raw === false || raw === "false") validated[def.name] = false;
+                        else errors.push(`Param '${def.name}' must be a boolean`);
+                    } else {
+                        const val = String(raw);
+                        // eslint-disable-next-line eqeqeq
+                        if (def.enum && !def.enum.some(e => e == val)) errors.push(`Param '${def.name}' must be one of: ${def.enum.join(", ")}`);
+                        else validated[def.name] = val;
+                    }
+                }
+                // Accept extra params not in the def
+                for (const [key, val] of Object.entries(body.params)) {
+                    if (key in validated || paramDefs.some(d => d.name === key)) continue;
+                    if (val === undefined || val === null) continue;
+                    if (typeof val === "string" || typeof val === "number" || typeof val === "boolean") validated[key] = val;
+                    else if (Array.isArray(val)) {
+                        const primitives = val.filter((v: unknown): v is string | number | boolean => typeof v === "string" || typeof v === "number" || typeof v === "boolean");
+                        if (primitives.length > 0) validated[key] = primitives;
+                    }
+                }
+                if (errors.length > 0) return Response.json({ error: errors.join("; ") }, { status: 400 });
+                if (Object.keys(validated).length > 0) subParams = validated;
+            }
+        }
+
+        // Validate filters
+        let subFilters: SubscriptionFilter[] | undefined;
+        let subFilterMode: SubscriptionFilterMode | undefined;
+        if (Array.isArray(body.filters) && body.filters.length > 0) {
+            const services = session.runnerId ? await getRunnerServices(session.runnerId) : null;
+            const triggerDef = services?.triggerDefs?.find((d) => d.type === triggerType);
+            const schemaProps = (triggerDef?.schema as any)?.properties ?? {};
+            const validatedFilters: SubscriptionFilter[] = [];
+            const filterErrors: string[] = [];
+            for (const raw of body.filters) {
+                if (!raw || typeof raw !== "object" || Array.isArray(raw)) { filterErrors.push("Each filter must be an object"); continue; }
+                const f = raw as Record<string, unknown>;
+                if (typeof f.field !== "string" || !f.field) { filterErrors.push("Filter missing 'field'"); continue; }
+                if (f.value === undefined || f.value === null) { filterErrors.push(`Filter on '${f.field}' missing 'value'`); continue; }
+                if (triggerDef?.schema && Object.keys(schemaProps).length > 0 && !(f.field in schemaProps)) {
+                    filterErrors.push(`Filter field '${f.field}' is not in the trigger's output schema`);
+                    continue;
+                }
+                const op = f.op === "contains" ? "contains" as const : "eq" as const;
+                let value: string | number | boolean | Array<string | number | boolean>;
+                if (Array.isArray(f.value)) {
+                    value = f.value.filter((v: unknown): v is string | number | boolean => typeof v === "string" || typeof v === "number" || typeof v === "boolean");
+                } else if (typeof f.value === "string" || typeof f.value === "number" || typeof f.value === "boolean") {
+                    value = f.value;
+                } else { value = String(f.value); }
+                validatedFilters.push({ field: f.field, value, op });
+            }
+            if (filterErrors.length > 0) return Response.json({ error: filterErrors.join("; ") }, { status: 400 });
+            if (validatedFilters.length > 0) subFilters = validatedFilters;
+        }
+        if (body.filterMode === "or" || body.filterMode === "and") subFilterMode = body.filterMode;
+
+        const result = await updateSessionSubscription(sessionId, triggerType, {
+            params: subParams,
+            filters: subFilters,
+            filterMode: subFilterMode,
+        });
+
+        if (!result.updated) {
+            return Response.json({ error: `Session is not subscribed to '${triggerType}'` }, { status: 404 });
+        }
+
+        const logParts: string[] = [];
+        if (subParams) logParts.push(`params=${JSON.stringify(subParams)}`);
+        if (subFilters) logParts.push(`filters=${JSON.stringify(subFilters)} mode=${subFilterMode ?? "and"}`);
+        log.info(`Session ${sessionId} updated subscription for '${triggerType}'${logParts.length > 0 ? ` with ${logParts.join(", ")}` : ""}`);
+        broadcastToSessionViewers(sessionId, "trigger_subscriptions_changed", { triggerType, action: "update" });
+
+        // Notify the runner service about param changes so it can react
+        if (session.runnerId) {
+            const runnerSocket = getLocalRunnerSocket(session.runnerId);
+            if (runnerSocket) {
+                runnerSocket.emit("subscription_params_changed" as any, {
+                    sessionId,
+                    triggerType,
+                    params: subParams ?? {},
+                    filters: subFilters ?? [],
+                    filterMode: subFilterMode ?? "and",
+                });
+            }
+        }
+
+        return Response.json({
+            ok: true,
+            triggerType,
+            runnerId: result.runnerId,
+            ...(subParams ? { params: subParams } : {}),
+            ...(subFilters ? { filters: subFilters } : {}),
+            ...(subFilterMode ? { filterMode: subFilterMode } : {}),
+        });
     }
 
     // ── POST /api/runners/:runnerId/trigger-broadcast ─────────────────
