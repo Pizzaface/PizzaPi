@@ -57,6 +57,12 @@ export function isSameServiceAnnounce(
         if (leftSchema !== rightSchema) {
             return false;
         }
+        // Compare params so changes to configurable parameters are detected.
+        const leftParams = left.params !== undefined ? JSON.stringify(left.params) : undefined;
+        const rightParams = right.params !== undefined ? JSON.stringify(right.params) : undefined;
+        if (leftParams !== rightParams) {
+            return false;
+        }
     }
 
     return true;
