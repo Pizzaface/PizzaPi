@@ -144,10 +144,11 @@ function legacyParamsToFilters(params: Record<string, unknown>): SubscriptionFil
 async function waitForSessionSocket(sessionId: string, timeoutMs: number): Promise<boolean> {
     const start = Date.now();
     while (Date.now() - start < timeoutMs) {
+        // Only consider the session ready when its TUI socket is actually connected.
+        // The Redis session record (getSharedSession) is created before the socket
+        // connects, so checking it would cause premature return and dropped triggers.
         const local = getLocalTuiSocket(sessionId);
         if (local?.connected) return true;
-        const shared = await getSharedSession(sessionId);
-        if (shared) return true;
         await new Promise((r) => setTimeout(r, 200));
     }
     return false;
@@ -434,7 +435,9 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
                             const num = Number(item);
                             if (!isNaN(num)) coerced.push(num);
                         } else if (def.type === "boolean") {
-                            coerced.push(item === true || item === "true");
+                            if (item === true || item === "true") coerced.push(true);
+                            else if (item === false || item === "false") coerced.push(false);
+                            // else: skip invalid boolean values (filtered out by enum validation below)
                         } else {
                             coerced.push(String(item));
                         }
@@ -465,8 +468,13 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
                         }
                     }
                 } else if (def.type === "boolean") {
-                    const val = raw === true || raw === "true";
-                    validated[def.name] = val;
+                    if (raw === true || raw === "true") {
+                        validated[def.name] = true;
+                    } else if (raw === false || raw === "false") {
+                        validated[def.name] = false;
+                    } else {
+                        errors.push(`Param '${def.name}' must be a boolean (true/false)`);
+                    }
                 } else {
                     const val = String(raw);
                     // eslint-disable-next-line eqeqeq
