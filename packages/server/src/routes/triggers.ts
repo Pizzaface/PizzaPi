@@ -63,6 +63,31 @@ import { waitForSpawnAck } from "../ws/runner-control.js";
 
 const log = createLogger("triggers-api");
 
+function matchesSubscriptionParam(expected: unknown, actual: unknown, key: string): boolean {
+    if (key.toLowerCase().endsWith("contains")) {
+        if (typeof expected !== "string") return false;
+        if (typeof actual === "string") return actual.includes(expected);
+        if (Array.isArray(actual)) {
+            return actual.some((item) => typeof item === "string" && item.includes(expected));
+        }
+        return false;
+    }
+
+    if (Array.isArray(actual)) {
+        if (Array.isArray(expected)) {
+            return expected.some((expectedItem) => actual.some((actualItem) => actualItem == expectedItem));
+        }
+        return actual.some((actualItem) => actualItem == expected);
+    }
+
+    if (Array.isArray(expected)) {
+        return expected.some((expectedItem) => expectedItem == actual);
+    }
+
+    // eslint-disable-next-line eqeqeq
+    return actual == expected;
+}
+
 /** Poll for a session socket to appear after spawn (same pattern as webhooks). */
 async function waitForSessionSocket(sessionId: string, timeoutMs: number): Promise<boolean> {
     const start = Date.now();
@@ -522,26 +547,16 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
 
             // Filter by subscription params: each param the subscriber specified
             // must match the corresponding field in the trigger payload.
-            // Subscribers with no params receive all triggers (no filtering).
+            // Strings ending in "Contains" do substring matching, arrays match
+            // if they overlap, and scalars use loose equality.
             const subParams = await getSubscriptionParams(targetSessionId, body.type);
             if (subParams) {
                 let matches = true;
                 for (const [key, expected] of Object.entries(subParams)) {
                     const actual = body.payload[key];
-                    if (Array.isArray(expected)) {
-                        // Multiselect: payload value must be in the subscriber's selected set.
-                        // eslint-disable-next-line eqeqeq
-                        if (!expected.some(e => e == actual)) {
-                            matches = false;
-                            break;
-                        }
-                    } else {
-                        // Scalar: loose equality (handles "42" == 42).
-                        // eslint-disable-next-line eqeqeq
-                        if (actual != expected) {
-                            matches = false;
-                            break;
-                        }
+                    if (!matchesSubscriptionParam(expected, actual, key)) {
+                        matches = false;
+                        break;
                     }
                 }
                 if (!matches) continue;
@@ -599,6 +614,7 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
                             sessionId: spawnedSessionId,
                             ...(listener.cwd ? { cwd: listener.cwd } : {}),
                             ...(listener.prompt ? { prompt: listener.prompt } : {}),
+                            ...(listener.model ? { model: listener.model } : {}),
                         });
                         const ack = await ackPromise;
                         if (ack.ok !== false) {

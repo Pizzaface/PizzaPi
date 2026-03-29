@@ -60,20 +60,84 @@ interface ParamFormProps {
   params: ServiceTriggerParamDef[];
   values: Record<string, string | string[]>;
   onChange: (values: Record<string, string | string[]>) => void;
+  sessionConfig: SessionConfig;
+  onSessionConfigChange: (config: SessionConfig) => void;
   error: string | null;
   onSubmit: () => void;
   onCancel: () => void;
   isPending: boolean;
 }
 
-function ParamForm({ params, values, onChange, error, onSubmit, onCancel, isPending }: ParamFormProps) {
+function ParamForm({
+  params, values, onChange, sessionConfig, onSessionConfigChange,
+  error, onSubmit, onCancel, isPending,
+}: ParamFormProps) {
   const updateValue = (name: string, value: string | string[]) => {
     onChange({ ...values, [name]: value });
   };
+  const updateConfig = (field: keyof SessionConfig, value: string) => {
+    onSessionConfigChange({ ...sessionConfig, [field]: value });
+  };
 
   return (
-    <div className="mt-2 rounded border border-violet-500/20 bg-violet-950/10 p-2.5 space-y-2">
-      <div className="text-[11px] font-medium text-violet-300/80">Configure listener params</div>
+    <div className="mt-2 rounded border border-violet-500/20 bg-violet-950/10 p-2.5 space-y-2.5">
+      <div className="text-[11px] font-medium text-violet-300/80">Configure auto-spawn listener</div>
+
+      {/* Session config: cwd, prompt, model */}
+      <div className="space-y-2 pb-2 border-b border-violet-500/10">
+        <div className="flex items-start gap-2">
+          <label className="text-[11px] text-muted-foreground/70 w-24 shrink-0 pt-0.5">
+            Working Dir
+          </label>
+          <input
+            type="text"
+            placeholder="/path/to/project"
+            value={sessionConfig.cwd}
+            onChange={(e) => updateConfig("cwd", e.target.value)}
+            className="flex-1 rounded border border-border bg-background px-2 py-1 text-[11px] font-mono focus:outline-none focus:ring-1 focus:ring-ring"
+          />
+        </div>
+        <div className="flex items-start gap-2">
+          <label className="text-[11px] text-muted-foreground/70 w-24 shrink-0 pt-0.5">
+            Prompt
+          </label>
+          <textarea
+            rows={2}
+            placeholder="Instructions for the spawned session"
+            value={sessionConfig.prompt}
+            onChange={(e) => updateConfig("prompt", e.target.value)}
+            className="flex-1 rounded border border-border bg-background px-2 py-1 text-[11px] focus:outline-none focus:ring-1 focus:ring-ring resize-y"
+          />
+        </div>
+        <div className="flex items-start gap-2">
+          <label className="text-[11px] text-muted-foreground/70 w-24 shrink-0 pt-0.5">
+            Model
+          </label>
+          <div className="flex-1 grid grid-cols-2 gap-1.5">
+            <input
+              type="text"
+              placeholder="provider"
+              value={sessionConfig.modelProvider}
+              onChange={(e) => updateConfig("modelProvider", e.target.value)}
+              className="rounded border border-border bg-background px-2 py-1 text-[11px] font-mono focus:outline-none focus:ring-1 focus:ring-ring"
+            />
+            <input
+              type="text"
+              placeholder="model-id"
+              value={sessionConfig.modelId}
+              onChange={(e) => updateConfig("modelId", e.target.value)}
+              className="rounded border border-border bg-background px-2 py-1 text-[11px] font-mono focus:outline-none focus:ring-1 focus:ring-ring"
+            />
+          </div>
+        </div>
+      </div>
+
+      {/* Trigger params */}
+      {params.length > 0 && (
+        <div className="text-[10px] font-medium text-muted-foreground/60 uppercase tracking-wide">
+          Filter params
+        </div>
+      )}
       {params.map((p) => {
         const currentVal = values[p.name];
         const selectedArr = Array.isArray(currentVal) ? currentVal : [];
@@ -172,20 +236,22 @@ interface TriggerItemProps {
   def: ServiceTriggerDef;
   isListening: boolean;
   isPending: boolean;
-  listenerParams?: Record<string, unknown>;
+  listener?: ListenerInfo;
   paramFormOpen: boolean;
   paramValues: Record<string, string | string[]>;
   paramError: string | null;
+  sessionConfig: SessionConfig;
   onToggle: (def: ServiceTriggerDef, isListening: boolean) => void;
   onParamValuesChange: (values: Record<string, string | string[]>) => void;
+  onSessionConfigChange: (config: SessionConfig) => void;
   onParamSubmit: (def: ServiceTriggerDef) => void;
   onParamCancel: () => void;
 }
 
 function TriggerItem({
-  def, isListening, isPending, listenerParams,
-  paramFormOpen, paramValues, paramError,
-  onToggle, onParamValuesChange, onParamSubmit, onParamCancel,
+  def, isListening, isPending, listener,
+  paramFormOpen, paramValues, paramError, sessionConfig,
+  onToggle, onParamValuesChange, onSessionConfigChange, onParamSubmit, onParamCancel,
 }: TriggerItemProps) {
   const hasParams = def.params && def.params.length > 0;
 
@@ -220,10 +286,25 @@ function TriggerItem({
             </p>
           )}
 
-          {/* Current listener params (when subscribed) */}
-          {isListening && listenerParams && Object.keys(listenerParams).length > 0 && (
+          {/* Current listener config (when subscribed) */}
+          {isListening && listener && (
             <div className="mt-1 flex items-center gap-1 flex-wrap">
-              {Object.entries(listenerParams).map(([k, v]) => (
+              {listener.cwd && (
+                <Badge variant="outline" className="px-1 py-0 text-[9px] h-3.5 border-blue-500/20 text-blue-400/60">
+                  cwd={listener.cwd}
+                </Badge>
+              )}
+              {listener.model && (
+                <Badge variant="outline" className="px-1 py-0 text-[9px] h-3.5 border-blue-500/20 text-blue-400/60">
+                  model={listener.model.provider}/{listener.model.id}
+                </Badge>
+              )}
+              {listener.prompt && (
+                <Badge variant="outline" className="px-1 py-0 text-[9px] h-3.5 border-blue-500/20 text-blue-400/60">
+                  prompt={listener.prompt.length > 30 ? listener.prompt.slice(0, 30) + "\u2026" : listener.prompt}
+                </Badge>
+              )}
+              {listener.params && Object.entries(listener.params).map(([k, v]) => (
                 <Badge key={k} variant="outline" className="px-1 py-0 text-[9px] h-3.5 border-emerald-500/20 text-emerald-400/60">
                   {k}={Array.isArray(v) ? v.map(String).join(", ") : String(v)}
                 </Badge>
@@ -277,12 +358,14 @@ function TriggerItem({
         </button>
       </div>
 
-      {/* Inline param form */}
-      {paramFormOpen && hasParams && (
+      {/* Inline config form */}
+      {paramFormOpen && (
         <ParamForm
-          params={def.params!}
+          params={def.params ?? []}
           values={paramValues}
           onChange={onParamValuesChange}
+          sessionConfig={sessionConfig}
+          onSessionConfigChange={onSessionConfigChange}
           error={paramError}
           onSubmit={() => onParamSubmit(def)}
           onCancel={onParamCancel}
@@ -298,21 +381,23 @@ function TriggerItem({
 interface ServiceAccordionProps {
   group: ServiceGroup;
   listenedTypes: Set<string>;
-  listenerParamsMap: Map<string, Record<string, unknown>>;
+  listenerMap: Map<string, ListenerInfo>;
   pendingTypes: Set<string>;
   paramFormOpen: string | null;
   paramValues: Record<string, Record<string, string | string[]>>;
   paramError: string | null;
+  sessionConfigs: Record<string, SessionConfig>;
   onToggle: (def: ServiceTriggerDef, isListening: boolean) => void;
   onParamValuesChange: (triggerType: string, values: Record<string, string | string[]>) => void;
+  onSessionConfigChange: (triggerType: string, config: SessionConfig) => void;
   onParamSubmit: (def: ServiceTriggerDef) => void;
   onParamCancel: () => void;
 }
 
 function ServiceAccordion({
-  group, listenedTypes, listenerParamsMap, pendingTypes,
-  paramFormOpen, paramValues, paramError,
-  onToggle, onParamValuesChange, onParamSubmit, onParamCancel,
+  group, listenedTypes, listenerMap, pendingTypes,
+  paramFormOpen, paramValues, paramError, sessionConfigs,
+  onToggle, onParamValuesChange, onSessionConfigChange, onParamSubmit, onParamCancel,
 }: ServiceAccordionProps) {
   const [expanded, setExpanded] = React.useState(false);
   const listenedCount = group.defs.filter((d) => listenedTypes.has(d.type)).length;
@@ -352,12 +437,14 @@ function ServiceAccordion({
               def={def}
               isListening={listenedTypes.has(def.type)}
               isPending={pendingTypes.has(def.type)}
-              listenerParams={listenerParamsMap.get(def.type)}
+              listener={listenerMap.get(def.type)}
               paramFormOpen={paramFormOpen === def.type}
               paramValues={paramValues[def.type] ?? {}}
               paramError={paramFormOpen === def.type ? paramError : null}
+              sessionConfig={sessionConfigs[def.type] ?? { cwd: "", prompt: "", modelProvider: "", modelId: "" }}
               onToggle={onToggle}
               onParamValuesChange={(vals) => onParamValuesChange(def.type, vals)}
+              onSessionConfigChange={(config) => onSessionConfigChange(def.type, config)}
               onParamSubmit={onParamSubmit}
               onParamCancel={onParamCancel}
             />
@@ -379,8 +466,16 @@ interface ListenerInfo {
   triggerType: string;
   prompt?: string;
   cwd?: string;
+  model?: { provider: string; id: string };
   params?: Record<string, unknown>;
   createdAt: string;
+}
+
+interface SessionConfig {
+  cwd: string;
+  prompt: string;
+  modelProvider: string;
+  modelId: string;
 }
 
 export function RunnerTriggersPanel({ runnerId, triggerDefs: propDefs }: RunnerTriggersPanelProps) {
@@ -394,6 +489,7 @@ export function RunnerTriggersPanel({ runnerId, triggerDefs: propDefs }: RunnerT
   const [paramFormOpen, setParamFormOpen] = React.useState<string | null>(null);
   const [paramValues, setParamValues] = React.useState<Record<string, Record<string, string | string[]>>>({});
   const [paramError, setParamError] = React.useState<string | null>(null);
+  const [sessionConfigs, setSessionConfigs] = React.useState<Record<string, SessionConfig>>({});
 
   const fetchData = React.useCallback(async () => {
     setLoading(true);
@@ -434,13 +530,9 @@ export function RunnerTriggersPanel({ runnerId, triggerDefs: propDefs }: RunnerT
   const triggerDefs = (propDefs && propDefs.length > 0) ? propDefs : fetchedDefs;
   const serviceGroups = React.useMemo(() => groupByService(triggerDefs), [triggerDefs]);
   const listenedTypes = React.useMemo(() => new Set(listeners.map((l) => l.triggerType)), [listeners]);
-  const listenerParamsMap = React.useMemo(() => {
-    const map = new Map<string, Record<string, unknown>>();
-    for (const l of listeners) {
-      if (l.params && Object.keys(l.params).length > 0) {
-        map.set(l.triggerType, l.params);
-      }
-    }
+  const listenerMap = React.useMemo(() => {
+    const map = new Map<string, ListenerInfo>();
+    for (const l of listeners) map.set(l.triggerType, l);
     return map;
   }, [listeners]);
 
@@ -466,36 +558,22 @@ export function RunnerTriggersPanel({ runnerId, triggerDefs: propDefs }: RunnerT
           setPendingTypes((prev) => { const n = new Set(prev); n.delete(def.type); return n; });
         }
       })();
-    } else if (def.params && def.params.length > 0) {
-      // Open param form
+    } else {
+      // Always open the config form so user can set cwd/prompt/model
       setParamFormOpen(def.type);
       setParamError(null);
-      // Pre-fill defaults
       const defaults: Record<string, string | string[]> = {};
-      for (const p of def.params) {
-        if (p.multiselect) defaults[p.name] = [];
-        else if (p.default !== undefined) defaults[p.name] = String(p.default);
+      if (def.params) {
+        for (const p of def.params) {
+          if (p.multiselect) defaults[p.name] = [];
+          else if (p.default !== undefined) defaults[p.name] = String(p.default);
+        }
       }
       setParamValues((prev) => ({ ...prev, [def.type]: { ...defaults, ...prev[def.type] } }));
-    } else {
-      // No params — subscribe directly
-      setPendingTypes((prev) => new Set([...prev, def.type]));
-      void (async () => {
-        try {
-          await fetch(
-            `/api/runners/${encodeURIComponent(runnerId)}/trigger-listeners`,
-            {
-              method: "POST",
-              credentials: "include",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ triggerType: def.type }),
-            },
-          );
-          setListeners((prev) => [...prev, { triggerType: def.type, createdAt: new Date().toISOString() }]);
-        } catch { /* best-effort */ } finally {
-          setPendingTypes((prev) => { const n = new Set(prev); n.delete(def.type); return n; });
-        }
-      })();
+      setSessionConfigs((prev) => ({
+        ...prev,
+        [def.type]: prev[def.type] ?? { cwd: "", prompt: "", modelProvider: "", modelId: "" },
+      }));
     }
   }, [runnerId]);
 
@@ -537,6 +615,13 @@ export function RunnerTriggersPanel({ runnerId, triggerDefs: propDefs }: RunnerT
       }
     }
 
+    const sc = sessionConfigs[def.type] ?? { cwd: "", prompt: "", modelProvider: "", modelId: "" };
+    const cwd = sc.cwd.trim() || undefined;
+    const prompt = sc.prompt.trim() || undefined;
+    const model = sc.modelProvider.trim() && sc.modelId.trim()
+      ? { provider: sc.modelProvider.trim(), id: sc.modelId.trim() }
+      : undefined;
+
     setPendingTypes((prev) => new Set([...prev, def.type]));
     setParamError(null);
     void (async () => {
@@ -550,6 +635,9 @@ export function RunnerTriggersPanel({ runnerId, triggerDefs: propDefs }: RunnerT
             body: JSON.stringify({
               triggerType: def.type,
               ...(Object.keys(params).length > 0 ? { params } : {}),
+              ...(cwd ? { cwd } : {}),
+              ...(prompt ? { prompt } : {}),
+              ...(model ? { model } : {}),
             }),
           },
         );
@@ -561,13 +649,18 @@ export function RunnerTriggersPanel({ runnerId, triggerDefs: propDefs }: RunnerT
         setParamFormOpen(null);
         setListeners((prev) => [
           ...prev.filter(l => l.triggerType !== def.type),
-          { triggerType: def.type, params: Object.keys(params).length > 0 ? params : undefined, createdAt: new Date().toISOString() },
+          {
+            triggerType: def.type,
+            params: Object.keys(params).length > 0 ? params : undefined,
+            cwd, prompt, model,
+            createdAt: new Date().toISOString(),
+          },
         ]);
       } catch { /* best-effort */ } finally {
         setPendingTypes((prev) => { const n = new Set(prev); n.delete(def.type); return n; });
       }
     })();
-  }, [runnerId, paramValues]);
+  }, [runnerId, paramValues, sessionConfigs]);
 
   if (loading) {
     return (
@@ -607,13 +700,15 @@ export function RunnerTriggersPanel({ runnerId, triggerDefs: propDefs }: RunnerT
           key={group.service}
           group={group}
           listenedTypes={listenedTypes}
-          listenerParamsMap={listenerParamsMap}
+          listenerMap={listenerMap}
           pendingTypes={pendingTypes}
           paramFormOpen={paramFormOpen}
           paramValues={paramValues}
           paramError={paramError}
+          sessionConfigs={sessionConfigs}
           onToggle={handleToggle}
           onParamValuesChange={(type, vals) => setParamValues((prev) => ({ ...prev, [type]: vals }))}
+          onSessionConfigChange={(type, config) => setSessionConfigs((prev) => ({ ...prev, [type]: config }))}
           onParamSubmit={handleParamSubmit}
           onParamCancel={() => { setParamFormOpen(null); setParamError(null); }}
         />

@@ -779,6 +779,40 @@ describe("POST /api/runners/:runnerId/trigger-broadcast", () => {
         expect(body.delivered).toBe(2);
         expect(emitMock).toHaveBeenCalledTimes(2);
     });
+
+    test("array payloads match scalar subscription filters and bodyContains performs substring matching", async () => {
+        mockGetSubscribersForTrigger.mockReturnValue(
+            Promise.resolve(["sess-label", "sess-body", "sess-miss"]),
+        );
+        mockGetSharedSession.mockImplementation((id: string) =>
+            Promise.resolve({ userId: "user-1", sessionId: id } as any),
+        );
+        mockGetSubscriptionParams.mockImplementation((sid: string, _type: string) => {
+            if (sid === "sess-label") return Promise.resolve({ labels: "bug" });
+            if (sid === "sess-body") return Promise.resolve({ bodyContains: "urgent fix" });
+            if (sid === "sess-miss") return Promise.resolve({ labels: "docs", bodyContains: "not here" });
+            return Promise.resolve(undefined);
+        });
+        const emitMock = mock(() => {});
+        mockGetLocalTuiSocket.mockReturnValue({ connected: true, emit: emitMock });
+
+        const [req, url] = makeReq(
+            "POST", "/api/runners/runner-A/trigger-broadcast",
+            {
+                type: "github:pr_comment",
+                payload: {
+                    labels: ["bug", "needs-review"],
+                    body: "This is an urgent fix for the failing test",
+                },
+                source: "github",
+            },
+            { "x-api-key": "test-key" },
+        );
+        const res = await handleTriggersRoute(req, url);
+        const body = await res!.json();
+        expect(body.delivered).toBe(2);
+        expect(emitMock).toHaveBeenCalledTimes(2);
+    });
 });
 
 describe("non-matching routes", () => {

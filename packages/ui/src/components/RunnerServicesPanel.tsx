@@ -1,13 +1,18 @@
 /**
  * RunnerServicesPanel — runner-level services overview.
  *
- * Shows runner services as square cards with their icon and label.
+ * Shows user-installed runner services as square cards with their icon and label.
+ * Hides built-in system services (terminal, file-explorer, git, tunnel).
+ * Clicking a card opens the service panel in a new browser tab via the runner tunnel.
  * Fetches from GET /api/runners/:id/services.
  */
 import * as React from "react";
-import { Loader2, Server } from "lucide-react";
+import { Loader2, Server, ExternalLink } from "lucide-react";
 import { DynamicLucideIcon } from "@/components/service-panels/lucide-icon";
 import { cn } from "@/lib/utils";
+
+/** Built-in system service IDs — hidden from the user-facing panel. */
+const BUILTIN_SERVICE_IDS = new Set(["terminal", "file-explorer", "git", "tunnel"]);
 
 interface ServicePanel {
   serviceId: string;
@@ -63,49 +68,70 @@ export function RunnerServicesPanel({ runnerId }: RunnerServicesPanelProps) {
     );
   }
 
-  if (serviceIds.length === 0) {
+  // Filter out built-in system services
+  const userServiceIds = serviceIds.filter((id) => !BUILTIN_SERVICE_IDS.has(id));
+
+  if (userServiceIds.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center gap-3 p-8 text-center">
         <Server className="size-10 text-muted-foreground/30" />
         <div>
-          <p className="text-sm text-muted-foreground">No services running</p>
+          <p className="text-sm text-muted-foreground">No services installed</p>
           <p className="text-xs text-muted-foreground/60 mt-1">
-            Runner services provide panels, triggers, and background functionality.
+            Drop service plugins into ~/.pizzapi/services/ to add them.
           </p>
         </div>
       </div>
     );
   }
 
-  // Services with panels get rich cards; services without panels get plain cards
   const panelMap = new Map(panels.map((p) => [p.serviceId, p]));
-  const allServices = serviceIds.map((id) => ({
+  const userServices = userServiceIds.map((id) => ({
     id,
     panel: panelMap.get(id) ?? null,
   }));
 
+  const handleOpen = (panel: ServicePanel) => {
+    const url = `/api/tunnel/runner/${encodeURIComponent(runnerId)}/${panel.port}/`;
+    window.open(url, "_blank", "noopener,noreferrer");
+  };
+
   return (
     <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
-      {allServices.map(({ id, panel }) => (
-        <div
-          key={id}
-          className={cn(
-            "flex flex-col items-center justify-center gap-2 p-4 rounded-lg border",
-            "bg-muted/10 border-border/50 hover:bg-muted/20 transition-colors",
-          )}
-        >
-          <div className="flex items-center justify-center size-10 rounded-lg bg-muted/30 border border-border/30">
-            {panel ? (
-              <DynamicLucideIcon name={panel.icon} className="size-5 text-foreground/70" />
-            ) : (
-              <Server className="size-5 text-muted-foreground/50" />
+      {userServices.map(({ id, panel }) => {
+        const hasPanel = panel !== null;
+        return (
+          <button
+            key={id}
+            type="button"
+            onClick={hasPanel ? () => handleOpen(panel) : undefined}
+            disabled={!hasPanel}
+            className={cn(
+              "flex flex-col items-center justify-center gap-2 p-4 rounded-lg border relative group",
+              hasPanel
+                ? "bg-muted/10 border-border/50 hover:bg-muted/30 hover:border-border cursor-pointer transition-colors"
+                : "bg-muted/5 border-border/30 cursor-default opacity-70",
             )}
-          </div>
-          <span className="text-xs font-medium text-foreground/80 text-center truncate w-full">
-            {panel?.label ?? id}
-          </span>
-        </div>
-      ))}
+          >
+            {hasPanel && (
+              <ExternalLink className="absolute top-2 right-2 size-3 text-muted-foreground/0 group-hover:text-muted-foreground/50 transition-colors" />
+            )}
+            <div className={cn(
+              "flex items-center justify-center size-10 rounded-lg border",
+              hasPanel ? "bg-muted/30 border-border/30" : "bg-muted/10 border-border/20",
+            )}>
+              {panel ? (
+                <DynamicLucideIcon name={panel.icon} className="size-5 text-foreground/70" />
+              ) : (
+                <Server className="size-5 text-muted-foreground/40" />
+              )}
+            </div>
+            <span className="text-xs font-medium text-foreground/80 text-center truncate w-full">
+              {panel?.label ?? id}
+            </span>
+          </button>
+        );
+      })}
     </div>
   );
 }

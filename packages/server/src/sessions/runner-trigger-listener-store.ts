@@ -49,6 +49,8 @@ export interface RunnerTriggerListener {
     prompt?: string;
     /** Optional working directory for the spawned session. */
     cwd?: string;
+    /** Optional model override for the spawned session. */
+    model?: { provider: string; id: string };
     /** Subscription params — filter which events trigger a spawn. */
     params?: Record<string, string | number | boolean | Array<string | number | boolean>>;
     /** When this listener was created. */
@@ -61,7 +63,7 @@ export interface RunnerTriggerListener {
 export async function addRunnerTriggerListener(
     runnerId: string,
     triggerType: string,
-    opts?: { prompt?: string; cwd?: string; params?: Record<string, unknown> },
+    opts?: { prompt?: string; cwd?: string; model?: { provider: string; id: string }; params?: Record<string, unknown> },
 ): Promise<void> {
     const redis = await getClient();
     if (!redis) return;
@@ -69,6 +71,7 @@ export async function addRunnerTriggerListener(
         triggerType,
         prompt: opts?.prompt,
         cwd: opts?.cwd,
+        model: opts?.model,
         params: opts?.params as RunnerTriggerListener["params"],
         createdAt: new Date().toISOString(),
     };
