@@ -240,29 +240,66 @@ export function groupByLinkedSession(triggers: TriggerHistoryEntry[]): {
   return { sessionGroups, otherEvents };
 }
 
-/** Group "other" (non-session) trigger events by their source field. */
-export function groupOtherEventsBySource(events: TriggerHistoryEntry[]): {
+/**
+ * Unified source grouping — groups ALL triggers by source, regardless of
+ * direction or whether they're from child sessions, services, or external.
+ * Each source gets one accordion. Pending sources float to the top.
+ */
+export interface SourceGroup {
+  /** Raw source value */
   source: string;
+  /** Human-readable label */
   label: string;
+  /** All trigger events from this source, most recent first */
   events: TriggerHistoryEntry[];
-}[] {
+  /** The most recent pending trigger (no response), if any */
+  pendingTrigger: TriggerHistoryEntry | null;
+  /** Whether this source looks like a linked child session (vs service/external) */
+  isLinkedSession: boolean;
+  /** Most recent trigger timestamp */
+  lastTs: string;
+  /** Summary from the most recent trigger */
+  lastSummary?: string;
+}
+
+export function groupTriggersBySource(triggers: TriggerHistoryEntry[]): SourceGroup[] {
   const map = new Map<string, TriggerHistoryEntry[]>();
-  for (const e of events) {
-    const key = e.source || "unknown";
+
+  for (const t of triggers) {
+    const key = t.source || "unknown";
     const existing = map.get(key);
     if (existing) {
-      existing.push(e);
+      existing.push(t);
     } else {
-      map.set(key, [e]);
+      map.set(key, [t]);
     }
   }
-  const groups = Array.from(map.entries()).map(([source, evts]) => ({
-    source,
-    label: sourceLabel(source),
-    events: evts,
-  }));
-  // Sort by most recent event first
-  groups.sort((a, b) => new Date(b.events[0].ts).getTime() - new Date(a.events[0].ts).getTime());
+
+  const groups: SourceGroup[] = [];
+  for (const [source, events] of map) {
+    const pendingTrigger = events.find(isPendingTrigger) ?? null;
+    // A source looks like a linked session if it has inbound triggers and isn't "api" or "external:*"
+    const isLinkedSession = events.some(
+      (e) => e.direction === "inbound" && source !== "api" && !source.startsWith("external:"),
+    );
+    groups.push({
+      source,
+      label: sourceLabel(source),
+      events,
+      pendingTrigger,
+      isLinkedSession,
+      lastTs: events[0].ts,
+      lastSummary: events[0].summary,
+    });
+  }
+
+  // Sort: pending first, then by most recent event
+  groups.sort((a, b) => {
+    if (a.pendingTrigger && !b.pendingTrigger) return -1;
+    if (!a.pendingTrigger && b.pendingTrigger) return 1;
+    return new Date(b.lastTs).getTime() - new Date(a.lastTs).getTime();
+  });
+
   return groups;
 }
 
@@ -1266,6 +1303,147 @@ function OtherSourceGroup({ group }: OtherSourceGroupProps) {
   );
 }
 
+// ── Source Accordion (unified accordion for any source) ────────────────────
+
+interface SourceAccordionProps {
+  group: SourceGroup;
+  statusUpdates: Map<string, TriggerStatusUpdate>;
+  tick: number;
+}
+
+function SourceAccordion({ group, statusUpdates, tick: _tick }: SourceAccordionProps) {
+  const [expanded, setExpanded] = React.useState(false);
+  const isPending = !!group.pendingTrigger;
+
+  // Derive status for linked sessions
+  const status = group.isLinkedSession
+    ? deriveSessionStatus({
+        source: group.source,
+        events: group.events,
+        pendingTrigger: group.pendingTrigger,
+        lastType: group.events[0]?.type ?? "",
+        lastTs: group.lastTs,
+        lastSummary: group.lastSummary,
+      })
+    : null;
+
+  // Find the most recent status update for any trigger in this group
+  const latestStatusUpdate = React.useMemo(() => {
+    let latest: TriggerStatusUpdate | null = null;
+    for (const event of group.events) {
+      const update = statusUpdates.get(event.triggerId);
+      if (update && (!latest || new Date(update.ts) > new Date(latest.ts))) {
+        latest = update;
+      }
+    }
+    return latest;
+  }, [group.events, statusUpdates]);
+
+  const colorMap = {
+    amber: { border: "border-amber-500/30", bg: "bg-amber-950/20", badge: "border-amber-500/40 text-amber-400", icon: "text-amber-400", pulse: true },
+    blue: { border: "border-blue-500/30", bg: "bg-blue-950/20", badge: "border-blue-500/40 text-blue-400", icon: "text-blue-400", pulse: true },
+    red: { border: "border-red-500/30", bg: "bg-red-950/20", badge: "border-red-500/40 text-red-400", icon: "text-red-400", pulse: true },
+    emerald: { border: "border-emerald-500/20", bg: "bg-emerald-950/10", badge: "border-emerald-500/40 text-emerald-400", icon: "text-emerald-400", pulse: false },
+    zinc: { border: "border-border/50", bg: "bg-muted/10", badge: "border-border text-muted-foreground", icon: "text-muted-foreground", pulse: false },
+  };
+
+  const colors = status ? colorMap[status.color] : { border: "border-border/50", bg: "bg-muted/10", badge: "border-border text-muted-foreground", icon: "text-muted-foreground", pulse: false };
+
+  return (
+    <div className={cn("rounded-lg border overflow-hidden", colors.border, colors.bg)}>
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        className="w-full flex items-start gap-2.5 px-3 py-2.5 text-left transition-colors hover:bg-white/[0.02]"
+      >
+        {/* Icon */}
+        <div className={cn("mt-0.5 shrink-0", colors.icon, colors.pulse && "animate-pulse")}>
+          {status ? status.icon : <SourceIcon source={group.source} />}
+        </div>
+
+        {/* Content */}
+        <div className="flex-1 min-w-0">
+          {/* Name + status badge */}
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <span className="text-xs font-mono text-foreground/90 truncate">
+              {group.lastSummary || group.label || truncateId(group.source)}
+            </span>
+            {status && (
+              <Badge variant="outline" className={cn("px-1.5 py-0 text-[10px] h-4 shrink-0", colors.badge)}>
+                {status.label}
+              </Badge>
+            )}
+          </div>
+
+          {/* Pending trigger detail */}
+          {isPending && group.isLinkedSession && (
+            <div className="mt-1">
+              <span className={cn("text-[11px] font-medium", status ? `text-${status.color}-300` : "text-amber-300")}>
+                {group.pendingTrigger!.type === "ask_user_question" && "Waiting for your answer"}
+                {group.pendingTrigger!.type === "plan_review" && "Waiting for plan approval"}
+                {group.pendingTrigger!.type === "session_complete" && "Session finished — needs acknowledgement"}
+                {group.pendingTrigger!.type === "escalate" && "Escalated — needs human attention"}
+                {!["ask_user_question", "plan_review", "session_complete", "escalate"].includes(group.pendingTrigger!.type) && `Awaiting response to ${group.pendingTrigger!.type}`}
+              </span>
+              <span className="text-[10px] text-muted-foreground/60 ml-2">
+                {formatRelativeTime(group.pendingTrigger!.ts)}
+              </span>
+            </div>
+          )}
+
+          {/* Streaming status update */}
+          {latestStatusUpdate && (
+            <div className="mt-1 flex items-center gap-1.5">
+              <Loader2 className="size-2.5 animate-spin text-muted-foreground/60 shrink-0" />
+              <span className="text-[10px] text-muted-foreground/80 italic truncate">
+                {latestStatusUpdate.statusText}
+              </span>
+            </div>
+          )}
+
+          {/* Last event + time */}
+          {!isPending && !latestStatusUpdate && (
+            <div className="flex items-center gap-2 mt-0.5">
+              <span className="text-[10px] text-muted-foreground/60">
+                Last: <span className="text-muted-foreground/80">{group.events[0]?.type}</span>
+              </span>
+              <span className="text-[10px] text-muted-foreground/40">
+                {formatRelativeTime(group.lastTs)}
+              </span>
+            </div>
+          )}
+
+          {/* Event count + source ID hint */}
+          <div className="flex items-center gap-2 mt-0.5">
+            <span className="text-[10px] text-muted-foreground/40">
+              {group.events.length} event{group.events.length !== 1 ? "s" : ""}
+            </span>
+            {group.lastSummary && group.isLinkedSession && (
+              <span className="text-[10px] font-mono text-muted-foreground/30 truncate">
+                {truncateId(group.source)}
+              </span>
+            )}
+          </div>
+        </div>
+
+        {/* Expand chevron */}
+        <div className="mt-0.5 shrink-0 text-muted-foreground/40">
+          {expanded ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
+        </div>
+      </button>
+
+      {/* Expanded event history */}
+      {expanded && (
+        <div className={cn("border-t", colors.border)}>
+          {group.events.map((event) => (
+            <EventRow key={event.triggerId} entry={event} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Main Panel ─────────────────────────────────────────────────────────────
 
 export interface TriggersPanelProps {
@@ -1371,14 +1549,18 @@ export function TriggersPanel({ sessionId, triggerDefs = [], viewerSocket }: Tri
     return () => { viewerSocket.off("trigger_status_update", handler); };
   }, [viewerSocket]);
 
-  // Derive grouped layout
-  const { sessionGroups, otherEvents } = React.useMemo(
-    () => groupByLinkedSession(triggers),
+  // Derive grouped layout — all triggers grouped by source
+  const sourceGroups = React.useMemo(
+    () => groupTriggersBySource(triggers),
     [triggers],
   );
 
+  // Legacy grouping still needed for getIncompleteTriggers and pending count
+  const { sessionGroups } = React.useMemo(
+    () => groupByLinkedSession(triggers),
+    [triggers],
+  );
   const pendingGroups = sessionGroups.filter((g) => g.pendingTrigger);
-  const otherGroups = sessionGroups.filter((g) => !g.pendingTrigger);
 
   const handleRefresh = React.useCallback(() => {
     void fetchTriggers(true);
@@ -1486,25 +1668,13 @@ export function TriggersPanel({ sessionId, triggerDefs = [], viewerSocket }: Tri
               </div>
             ) : (
               <div className="flex flex-col gap-1.5 p-2">
-                {/* All sources as accordions — pending first, then sessions, then other */}
-                {pendingGroups.map((group) => (
-                  <LinkedSessionCard
+                {sourceGroups.map((group) => (
+                  <SourceAccordion
                     key={group.source}
                     group={group}
                     statusUpdates={statusUpdates}
                     tick={tick}
                   />
-                ))}
-                {otherGroups.map((group) => (
-                  <LinkedSessionCard
-                    key={group.source}
-                    group={group}
-                    statusUpdates={statusUpdates}
-                    tick={tick}
-                  />
-                ))}
-                {groupOtherEventsBySource(otherEvents).map((sourceGroup) => (
-                  <OtherSourceGroup key={sourceGroup.source} group={sourceGroup} />
                 ))}
               </div>
             )}
