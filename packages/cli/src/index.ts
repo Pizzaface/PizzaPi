@@ -544,7 +544,7 @@ async function main() {
         ...(config.systemPrompt !== undefined && {
             systemPromptOverride: () => config.systemPrompt,
         }),
-        appendSystemPrompt: [buildSystemPrompt(), config.appendSystemPrompt].filter(Boolean).join("\n\n"),
+        appendSystemPrompt: [buildSystemPrompt({ cwd }), config.appendSystemPrompt].filter(Boolean).join("\n\n"),
         ...(agentFiles.length > 0 && {
             agentsFilesOverride: (base) => ({
                 agentsFiles: [...base.agentsFiles, ...agentFiles],

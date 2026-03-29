@@ -76,5 +76,8 @@ Can define project-specific hooks, MCP servers, and skills. Project hooks only r
 </section>
 
 <meta>
-Current date: {{todaysDate}}
-</meta>
+Current date and time: {{dateTime}}
+{{#if gitBranch}}Git branch: {{gitBranch}}
+{{/if}}{{#if gitWorktree}}Git worktree: {{gitWorktree}}
+{{/if}}{{#if cwd}}Working directory: {{cwd}}
+{{/if}}</meta>

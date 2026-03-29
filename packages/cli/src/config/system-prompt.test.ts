@@ -8,16 +8,42 @@ describe("buildSystemPrompt", () => {
         expect(result.length).toBeGreaterThan(0);
     });
 
-    test("interpolates todaysDate into the output", () => {
-        const result = buildSystemPrompt({ todaysDate: "January 1, 2030" });
-        expect(result).toContain("January 1, 2030");
+    test("interpolates dateTime into the output", () => {
+        const result = buildSystemPrompt({ dateTime: "January 1, 2030, 12:00 PM" });
+        expect(result).toContain("January 1, 2030, 12:00 PM");
     });
 
-    test("uses current date when todaysDate is not provided", () => {
+    test("uses current date/time when dateTime is not provided", () => {
         const result = buildSystemPrompt();
-        const now = new Date();
-        const year = now.getFullYear().toString();
+        const year = new Date().getFullYear().toString();
         expect(result).toContain(year);
+    });
+
+    test("includes gitBranch when provided", () => {
+        const result = buildSystemPrompt({ dateTime: "test", gitBranch: "feat/my-feature" });
+        expect(result).toContain("Git branch: feat/my-feature");
+    });
+
+    test("includes gitWorktree when provided", () => {
+        const result = buildSystemPrompt({ dateTime: "test", gitWorktree: "/path/to/worktree" });
+        expect(result).toContain("Git worktree: /path/to/worktree");
+    });
+
+    test("includes cwd when provided", () => {
+        const result = buildSystemPrompt({ dateTime: "test", cwd: "/Users/dev/project" });
+        expect(result).toContain("Working directory: /Users/dev/project");
+    });
+
+    test("omits gitBranch line when not provided or unavailable", () => {
+        const result = buildSystemPrompt({ dateTime: "test" });
+        // Should not have "Git branch:" with empty value
+        expect(result).not.toContain("Git branch: \n");
+    });
+
+    test("auto-detects git branch from current repo", () => {
+        // We're in a git repo, so branch should be detected
+        const result = buildSystemPrompt();
+        expect(result).toContain("Git branch:");
     });
 
     test("contains all major sections as pseudo-XML", () => {
@@ -65,7 +91,6 @@ describe("buildSystemPrompt", () => {
 
     test("ask-user-question partial is inlined (not a separate invocation)", () => {
         const result = buildSystemPrompt();
-        // Should contain the partial content, not a {{> partial}} reference
         expect(result).toContain("AskUserQuestion");
         expect(result).not.toContain("{{>");
     });
@@ -78,8 +103,6 @@ describe("BUILTIN_SYSTEM_PROMPT (compat export)", () => {
     });
 
     test("matches buildSystemPrompt() output structure", () => {
-        // The compat export evaluates once at import time, so it should
-        // contain the same sections as a fresh call
         expect(BUILTIN_SYSTEM_PROMPT).toContain('section name="spawning-sessions"');
         expect(BUILTIN_SYSTEM_PROMPT).toContain('section name="sandbox"');
     });

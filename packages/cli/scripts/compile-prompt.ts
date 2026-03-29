@@ -63,8 +63,14 @@ const spec = Handlebars.template(${precompiledSpec});
 
 /** Context variables available in the system prompt template. */
 export interface SystemPromptContext {
-    /** Current date string, e.g. "March 29, 2026" */
-    todaysDate: string;
+    /** Current date and time, e.g. "March 29, 2026, 3:45 PM" */
+    dateTime: string;
+    /** Current git branch name, e.g. "feat/my-feature" */
+    gitBranch?: string;
+    /** Git worktree root path (if running inside a worktree) */
+    gitWorktree?: string;
+    /** Current working directory */
+    cwd?: string;
 }
 
 /**
