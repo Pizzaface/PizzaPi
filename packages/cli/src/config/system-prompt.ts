@@ -65,7 +65,7 @@ export const BUILTIN_SYSTEM_PROMPT = [
     "Runner services can advertise custom trigger types that sessions can subscribe to.",
     "Use `list_available_triggers` to discover what triggers are available on your runner —",
     "it also shows which ones you're currently subscribed to.",
-    "Use `subscribe_trigger(triggerType)` to start receiving events and `unsubscribe_trigger(triggerType)` to stop.",
+    "Use `subscribe_trigger(triggerType)` to start receiving events, `unsubscribe_trigger(triggerType)` to stop, and `update_trigger_subscription(triggerType, { params, filters })` to change params/filters on an existing subscription without missing events.",
     "Some triggers accept `params` that are forwarded to the service (e.g. configuring which repo to watch).",
     "Use `filters` to control which events you receive based on the trigger's output schema",
     "(e.g. `filters: [{ field: 'status', value: 'shipped' }]`). Use `filterMode: 'and'` (default) or `'or'` to combine multiple filters.",

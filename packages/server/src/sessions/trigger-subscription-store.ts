@@ -313,6 +313,52 @@ export async function getSubscriptionFilters(
 }
 
 /**
+ * Update subscription params/filters for an existing subscription.
+ * Returns false if the session is not subscribed to the given trigger type.
+ * This preserves the runnerId and only updates params, filters, and filterMode.
+ */
+export async function updateSessionSubscription(
+    sessionId: string,
+    triggerType: string,
+    updates: {
+        params?: SubscriptionParams;
+        filters?: SubscriptionFilter[];
+        filterMode?: SubscriptionFilterMode;
+    },
+    ttlSeconds = DEFAULT_TTL_SECONDS,
+): Promise<{ updated: boolean; runnerId?: string }> {
+    const redis = await getClient();
+    if (!redis) return { updated: false };
+
+    const sessionKey = SESSION_SUBS_KEY(sessionId);
+
+    try {
+        const prevRaw = await redis.hGet(sessionKey, triggerType);
+        if (!prevRaw) return { updated: false };
+
+        const prev = parseSubValue(prevRaw);
+        const value = serializeSubValue({
+            runnerId: prev.runnerId,
+            params: updates.params,
+            ...(updates.filters && updates.filters.length > 0 ? { filters: updates.filters } : {}),
+            ...(updates.filterMode && updates.filterMode !== "and" ? { filterMode: updates.filterMode } : {}),
+        });
+
+        const indexKey = RUNNER_TYPE_INDEX_KEY(prev.runnerId, triggerType);
+        const pipeline = redis.multi();
+        pipeline.hSet(sessionKey, triggerType, value);
+        pipeline.expire(sessionKey, ttlSeconds);
+        pipeline.expire(indexKey, ttlSeconds);
+        await pipeline.exec();
+
+        return { updated: true, runnerId: prev.runnerId };
+    } catch (err) {
+        log.warn("Failed to update session subscription:", err);
+        return { updated: false };
+    }
+}
+
+/**
  * Remove all subscriptions for a session (e.g. on session end).
  * Cleans up session hash and all reverse index entries.
  *

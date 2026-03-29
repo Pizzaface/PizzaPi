@@ -17,6 +17,7 @@ import {
     subscribeTrigger,
     listTriggerSubscriptions,
     unsubscribeTrigger,
+    updateTriggerSubscription,
 } from "../trigger-client.js";
 
 function shortId(id: string, len = 8): string {
@@ -742,6 +743,151 @@ export const triggersExtension: ExtensionFactory = (pi) => {
                 return new Text(theme.fg("error", "✗ ") + theme.fg("muted", preview(text, 60)), 0, 0);
             }
             return new Text(theme.fg("success", "✓ ") + theme.fg("dim", "unsubscribed"), 0, 0);
+        },
+    });
+
+    // ── update_trigger_subscription ───────────────────────────────────────
+    pi.registerTool({
+        name: "update_trigger_subscription",
+        label: "Update Trigger Subscription",
+        description:
+            "Update the params or filters on an existing trigger subscription without " +
+            "unsubscribing. The runner service is notified of the change so it can react " +
+            "(e.g. switch which repo it watches). Use this instead of unsubscribe+resubscribe " +
+            "to avoid missing events during the gap.",
+        parameters: {
+            type: "object",
+            properties: {
+                triggerType: {
+                    type: "string",
+                    description: "Trigger type to update, e.g. 'godmother:idea_moved'",
+                },
+                sessionId: {
+                    type: "string",
+                    description: "Session ID to update. Defaults to the current session if omitted.",
+                },
+                params: {
+                    type: "object",
+                    description: "Updated subscription params. Replaces existing params entirely.",
+                },
+                filters: {
+                    type: "array",
+                    description: "Updated delivery filters. Replaces existing filters entirely.",
+                    items: {
+                        type: "object",
+                        properties: {
+                            field: { type: "string", description: "Payload field name to filter on" },
+                            value: { description: "Expected value or array of values" },
+                            op: { type: "string", enum: ["eq", "contains"], description: "Match operator" },
+                        },
+                        required: ["field", "value"],
+                    },
+                },
+                filterMode: {
+                    type: "string",
+                    enum: ["and", "or"],
+                    description: "How multiple filters combine.",
+                },
+            },
+            required: ["triggerType"],
+        } as any,
+        async execute(_toolCallId, rawParams) {
+            const params = rawParams as {
+                triggerType: string;
+                sessionId?: string;
+                params?: Record<string, unknown>;
+                filters?: Array<{ field: string; value: unknown; op?: string }>;
+                filterMode?: string;
+            };
+            const targetId = params.sessionId ?? getOwnSessionId() ?? "";
+            if (!targetId) {
+                return { content: [{ type: "text" as const, text: "Error: Could not determine session ID." }], details: null as any };
+            }
+
+            // Coerce param values to primitives
+            let subParams: Record<string, string | number | boolean | Array<string | number | boolean>> | undefined;
+            if (params.params && typeof params.params === "object") {
+                subParams = {};
+                for (const [k, v] of Object.entries(params.params)) {
+                    if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") {
+                        subParams[k] = v;
+                    } else if (Array.isArray(v)) {
+                        const primitives = v.filter(
+                            (item): item is string | number | boolean =>
+                                typeof item === "string" || typeof item === "number" || typeof item === "boolean",
+                        );
+                        if (primitives.length > 0) subParams[k] = primitives;
+                    } else if (v !== undefined && v !== null) {
+                        subParams[k] = String(v);
+                    }
+                }
+                if (Object.keys(subParams).length === 0) subParams = undefined;
+            }
+
+            // Coerce filter values
+            let subFilters: Array<{ field: string; value: string | number | boolean | Array<string | number | boolean>; op?: "eq" | "contains" }> | undefined;
+            if (Array.isArray(params.filters) && params.filters.length > 0) {
+                subFilters = [];
+                for (const f of params.filters) {
+                    if (!f.field || f.value === undefined || f.value === null) continue;
+                    let value: string | number | boolean | Array<string | number | boolean>;
+                    if (Array.isArray(f.value)) {
+                        value = f.value.filter(
+                            (v): v is string | number | boolean =>
+                                typeof v === "string" || typeof v === "number" || typeof v === "boolean",
+                        );
+                    } else if (typeof f.value === "string" || typeof f.value === "number" || typeof f.value === "boolean") {
+                        value = f.value;
+                    } else {
+                        value = String(f.value);
+                    }
+                    const op = f.op === "contains" ? "contains" as const : "eq" as const;
+                    subFilters.push({ field: f.field, value, op });
+                }
+                if (subFilters.length === 0) subFilters = undefined;
+            }
+
+            const subFilterMode = params.filterMode === "or" ? "or" as const : params.filterMode === "and" ? "and" as const : undefined;
+
+            const result = await updateTriggerSubscription(targetId, params.triggerType, {
+                params: subParams,
+                filters: subFilters,
+                filterMode: subFilterMode,
+            });
+
+            if (result.ok) {
+                const parts: string[] = [];
+                if (subParams) parts.push(`params: ${JSON.stringify(subParams)}`);
+                if (subFilters) parts.push(`filters: ${JSON.stringify(subFilters)} (${subFilterMode ?? "and"})`);
+                const suffix = parts.length > 0 ? ` with ${parts.join(", ")}` : "";
+                return {
+                    content: [{ type: "text" as const, text: `Updated subscription for '${result.triggerType}' on runner ${result.runnerId}${suffix}` }],
+                    details: null as any,
+                };
+            }
+            return {
+                content: [{ type: "text" as const, text: `Error updating subscription for '${params.triggerType}': ${result.error}` }],
+                details: null as any,
+            };
+        },
+        renderCall: (args: any, theme: any) => {
+            const type = preview(args.triggerType ?? "?", 30);
+            const sid = args.sessionId ? shortId(args.sessionId, 8) : "self";
+            return new Text(
+                theme.fg("warning", "⟳") + " " +
+                theme.fg("muted", "update ") +
+                theme.fg("dim", sid) +
+                theme.fg("muted", " → ") +
+                theme.fg("dim", type),
+                0, 0,
+            );
+        },
+        renderResult: (result: any, _opts: any, theme: any) => {
+            const text: string = result?.content?.[0]?.text ?? "";
+            if (text.startsWith("Error")) {
+                return new Text(theme.fg("error", "✗ ") + theme.fg("muted", preview(text, 60)), 0, 0);
+            }
+            return new Text(theme.fg("success", "✓ ") + theme.fg("dim", "subscription updated"), 0, 0);
         },
     });
 };

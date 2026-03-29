@@ -232,6 +232,31 @@ interface LastEmittedMessageState {
 }
 let lastEmittedMessageState: LastEmittedMessageState | null = null;
 
+function getLiveModel(rctx: RelayContext, fallback: unknown) {
+    const liveModel = rctx.latestCtx?.model;
+    if (liveModel && typeof liveModel.provider === "string" && typeof liveModel.id === "string") {
+        return {
+            provider: liveModel.provider,
+            id: liveModel.id,
+            name: liveModel.name,
+            reasoning: liveModel.reasoning,
+            contextWindow: liveModel.contextWindow,
+        };
+    }
+
+    const transcriptModel = fallback && typeof fallback === "object"
+        ? fallback as Record<string, unknown>
+        : null;
+    if (!transcriptModel || typeof transcriptModel.provider !== "string" || typeof transcriptModel.id !== "string") {
+        return null;
+    }
+
+    return {
+        ...transcriptModel,
+        contextWindow: rctx.latestCtx?.model?.contextWindow,
+    };
+}
+
 /**
  * Record the current message state as "last emitted" after a full session_active.
  * Exported for unit testing.
@@ -270,14 +295,13 @@ export function emitSessionActive(rctx: RelayContext): void {
         rctx.latestCtx.sessionManager.getLeafId(),
     );
 
-    // buildSessionContext returns { provider, modelId } without contextWindow.
-    // Enrich with contextWindow from the live model so the UI donut keeps working.
-    const enrichedModel = model
-        ? { ...model, contextWindow: rctx.latestCtx.model?.contextWindow }
-        : model;
-
+    // Prefer the live model from latestCtx over the transcript-derived model.
+    // Trigger/webhook-spawned sessions can select a model before any messages
+    // exist, and buildSessionContext() may still reflect the runner default or
+    // no model at all. Using the live model keeps session_active aligned with
+    // heartbeat/model_changed metadata instead of oscillating back to default.
     const metadata = {
-        model: enrichedModel,
+        model: getLiveModel(rctx, model),
         thinkingLevel: rctx.getCurrentThinkingLevel(),
         sessionName: rctx.getCurrentSessionName(),
         cwd: rctx.latestCtx.cwd,
@@ -349,16 +373,10 @@ export function emitSessionMetadataUpdate(rctx: RelayContext): void {
     // session_metadata_update events, and omitting it saves bytes on every
     // heartbeat tick.
 
-    // buildSessionContext returns { provider, modelId } without contextWindow.
-    // Enrich with contextWindow from the live model so the UI donut keeps working.
-    const enrichedModel = model
-        ? { ...model, contextWindow: rctx.latestCtx.model?.contextWindow }
-        : model;
-
     rctx.forwardEvent({
         type: "session_metadata_update",
         metadata: {
-            model: enrichedModel,
+            model: getLiveModel(rctx, model),
             thinkingLevel: rctx.getCurrentThinkingLevel(),
             sessionName: rctx.getCurrentSessionName(),
             availableModels: rctx.getConfiguredModels(),

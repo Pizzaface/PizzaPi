@@ -390,6 +390,48 @@ export async function subscribeTrigger(
 }
 
 /**
+ * Update params/filters on an existing trigger subscription.
+ */
+export async function updateTriggerSubscription(
+    sessionId: string,
+    triggerType: string,
+    updates: {
+        params?: Record<string, string | number | boolean | Array<string | number | boolean>>;
+        filters?: Array<{ field: string; value: string | number | boolean | Array<string | number | boolean>; op?: "eq" | "contains" }>;
+        filterMode?: "and" | "or";
+    },
+    deps: Partial<TriggerClientDeps> = {},
+): Promise<SubscriptionResult> {
+    const d: TriggerClientDeps = { ...defaultDeps, ...deps };
+    const baseUrl = d.getRelayHttpBaseUrl();
+    const apiKey = d.getApiKey();
+
+    if (!baseUrl || !apiKey) {
+        return { ok: false, error: "No relay URL or API key configured" };
+    }
+
+    try {
+        const url = `${baseUrl}/api/sessions/${encodeURIComponent(sessionId)}/trigger-subscriptions/${encodeURIComponent(triggerType)}`;
+        const response = await d.fetch(url, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json", "x-api-key": apiKey },
+            body: JSON.stringify({
+                ...(updates.params && Object.keys(updates.params).length > 0 ? { params: updates.params } : {}),
+                ...(updates.filters && updates.filters.length > 0 ? { filters: updates.filters } : {}),
+                ...(updates.filterMode ? { filterMode: updates.filterMode } : {}),
+            }),
+        });
+        const data = await response.json() as { ok?: boolean; triggerType?: string; runnerId?: string; error?: string };
+        if (response.ok && data.ok) {
+            return { ok: true, triggerType: data.triggerType, runnerId: data.runnerId };
+        }
+        return { ok: false, error: data.error ?? `HTTP ${response.status}` };
+    } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+}
+
+/**
  * List active trigger subscriptions for a session.
  */
 export async function listTriggerSubscriptions(

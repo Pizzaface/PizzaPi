@@ -32,6 +32,7 @@ import {
   AlertCircle,
   HelpCircle,
   XCircle,
+  Pencil,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -792,6 +793,8 @@ function TriggerCatalogSection({ sessionId, triggerDefs, subscriptions, onSubscr
   const [pending, setPending] = React.useState<Set<string>>(new Set());
   // Track which trigger type has its param/filter form open
   const [paramFormOpen, setParamFormOpen] = React.useState<string | null>(null);
+  // Track whether the open form is for editing (PUT) vs subscribing (POST)
+  const [editMode, setEditMode] = React.useState(false);
   // Track param form values keyed by trigger type (string for scalar, string[] for multiselect)
   const [paramValues, setParamValues] = React.useState<Record<string, Record<string, string | string[]>>>({});
   const [paramError, setParamError] = React.useState<string | null>(null);
@@ -868,6 +871,85 @@ function TriggerCatalogSection({ sessionId, triggerDefs, subscriptions, onSubscr
       });
     }
   }, [sessionId, onSubscriptionsChange]);
+
+  const handleUpdate = React.useCallback(async (
+    triggerType: string,
+    params?: Record<string, unknown>,
+    filters?: Array<{ field: string; value: unknown; op?: string }>,
+    filterModeVal?: string,
+  ) => {
+    setPending((prev) => new Set([...prev, triggerType]));
+    setParamError(null);
+    try {
+      const res = await fetch(
+        `/api/sessions/${encodeURIComponent(sessionId)}/trigger-subscriptions/${encodeURIComponent(triggerType)}`,
+        {
+          method: "PUT",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            ...(params ? { params } : {}),
+            ...(filters && filters.length > 0 ? { filters } : {}),
+            ...(filterModeVal ? { filterMode: filterModeVal } : {}),
+          }),
+        },
+      );
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({})) as { error?: string };
+        setParamError(data.error ?? `HTTP ${res.status}`);
+        return;
+      }
+      setParamFormOpen(null);
+      setEditMode(false);
+      onSubscriptionsChange();
+    } catch {
+      // ignore
+    } finally {
+      setPending((prev) => {
+        const next = new Set(prev);
+        next.delete(triggerType);
+        return next;
+      });
+    }
+  }, [sessionId, onSubscriptionsChange]);
+
+  /** Open the param/filter form pre-populated with the current subscription values. */
+  const handleEdit = React.useCallback((def: ServiceTriggerDef) => {
+    const sub = subscriptionMap.get(def.type);
+    setParamFormOpen(def.type);
+    setEditMode(true);
+    setParamError(null);
+
+    // Pre-populate param values from current subscription
+    const vals: Record<string, string | string[]> = {};
+    if (sub?.params) {
+      for (const [k, v] of Object.entries(sub.params)) {
+        if (Array.isArray(v)) vals[k] = v.map(String);
+        else vals[k] = String(v);
+      }
+    }
+    if (def.params) {
+      for (const p of def.params) {
+        if (vals[p.name] !== undefined) continue;
+        if (p.multiselect) vals[p.name] = [];
+        else if (p.default !== undefined) vals[p.name] = String(p.default);
+      }
+    }
+    setParamValues((prev) => ({ ...prev, [def.type]: vals }));
+
+    // Pre-populate filter values
+    const fVals: Record<string, string> = {};
+    if (sub?.filters) {
+      for (const f of sub.filters) {
+        fVals[f.field] = Array.isArray(f.value) ? f.value.map(String).join(", ") : String(f.value);
+      }
+    }
+    setFilterValues((prev) => ({ ...prev, [def.type]: fVals }));
+
+    if (sub?.filterMode) {
+      setFilterMode((prev) => ({ ...prev, [def.type]: sub.filterMode! }));
+    }
+  }, [subscriptionMap]);
 
   const handleToggle = React.useCallback((def: ServiceTriggerDef, isSubscribed: boolean) => {
     const hasParams = def.params && def.params.length > 0;
@@ -966,13 +1048,14 @@ function TriggerCatalogSection({ sessionId, triggerDefs, subscriptions, onSubscr
     }
     const fMode = filterMode[def.type] ?? "and";
 
-    handleSubscribe(
+    const submitFn = editMode ? handleUpdate : handleSubscribe;
+    submitFn(
       def.type,
       Object.keys(params).length > 0 ? params : undefined,
       filters.length > 0 ? filters : undefined,
       filters.length > 1 ? fMode : undefined,
     );
-  }, [paramValues, filterValues, filterMode, handleSubscribe]);
+  }, [paramValues, filterValues, filterMode, handleSubscribe, handleUpdate, editMode]);
 
   // Group trigger defs by service prefix (part before ':')
   const serviceGroups = React.useMemo(() => {
@@ -1008,14 +1091,16 @@ function TriggerCatalogSection({ sessionId, triggerDefs, subscriptions, onSubscr
           subscriptionMap={subscriptionMap}
           pending={pending}
           paramFormOpen={paramFormOpen}
+          editMode={editMode}
           paramValues={paramValues}
           paramError={paramError}
           filterValues={filterValues}
           filterModeValues={filterMode}
           onToggle={handleToggle}
+          onEdit={handleEdit}
           onParamSubmit={handleParamSubmit}
           onParamFormOpen={setParamFormOpen}
-          onParamFormClose={() => { setParamFormOpen(null); setParamError(null); }}
+          onParamFormClose={() => { setParamFormOpen(null); setEditMode(false); setParamError(null); }}
           onParamValuesChange={setParamValues}
           onFilterValuesChange={setFilterValues}
           onFilterModeChange={setFilterMode}
@@ -1035,11 +1120,13 @@ interface ServiceCatalogAccordionProps {
   subscriptionMap: Map<string, TriggerSubscription>;
   pending: Set<string>;
   paramFormOpen: string | null;
+  editMode: boolean;
   paramValues: Record<string, Record<string, string | string[]>>;
   paramError: string | null;
   filterValues: Record<string, Record<string, string>>;
   filterModeValues: Record<string, "and" | "or">;
   onToggle: (def: ServiceTriggerDef, isSubscribed: boolean) => void;
+  onEdit: (def: ServiceTriggerDef) => void;
   onParamSubmit: (def: ServiceTriggerDef) => void;
   onParamFormOpen: (type: string) => void;
   onParamFormClose: () => void;
@@ -1087,9 +1174,9 @@ function CollapsibleParamDefs({ params }: { params: ServiceTriggerParamDef[] }) 
 
 function ServiceCatalogAccordion({
   service, defs, subscribedCount, subscribedTypes, subscriptionMap,
-  pending, paramFormOpen, paramValues, paramError,
+  pending, paramFormOpen, editMode, paramValues, paramError,
   filterValues, filterModeValues,
-  onToggle, onParamSubmit, onParamFormOpen, onParamFormClose, onParamValuesChange,
+  onToggle, onEdit, onParamSubmit, onParamFormOpen, onParamFormClose, onParamValuesChange,
   onFilterValuesChange, onFilterModeChange,
 }: ServiceCatalogAccordionProps) {
   const [expanded, setExpanded] = React.useState(false);
@@ -1171,28 +1258,46 @@ function ServiceCatalogAccordion({
                     )}
                   </div>
 
-                  <button
-                    type="button"
-                    onClick={() => onToggle(def, isSubscribed)}
-                    disabled={isPendingToggle}
-                    className={cn(
-                      "shrink-0 p-1 rounded transition-colors",
-                      isSubscribed
-                        ? "text-emerald-400 hover:text-red-400 hover:bg-red-500/10"
-                        : "text-muted-foreground/50 hover:text-emerald-400 hover:bg-emerald-500/10",
-                      isPendingToggle && "opacity-50 cursor-not-allowed",
+                  <div className="flex items-center gap-0.5 shrink-0">
+                    {/* Edit button — only when subscribed and has configurable params/filters */}
+                    {isSubscribed && (hasParams || Object.keys((def.schema as any)?.properties ?? {}).length > 0) && (
+                      <button
+                        type="button"
+                        onClick={() => onEdit(def)}
+                        disabled={isPendingToggle}
+                        className={cn(
+                          "p-1 rounded transition-colors text-muted-foreground/50 hover:text-blue-400 hover:bg-blue-500/10",
+                          isPendingToggle && "opacity-50 cursor-not-allowed",
+                        )}
+                        title="Edit subscription params"
+                        aria-label={`Edit subscription for ${def.type}`}
+                      >
+                        <Pencil className="size-3.5" />
+                      </button>
                     )}
-                    title={isSubscribed ? "Unsubscribe" : "Subscribe"}
-                    aria-label={isSubscribed ? `Unsubscribe from ${def.type}` : `Subscribe to ${def.type}`}
-                  >
-                    {isPendingToggle ? (
-                      <Loader2 className="size-3.5 animate-spin" />
-                    ) : isSubscribed ? (
-                      <BellOff className="size-3.5" />
-                    ) : (
-                      <BellRing className="size-3.5" />
-                    )}
-                  </button>
+                    <button
+                      type="button"
+                      onClick={() => onToggle(def, isSubscribed)}
+                      disabled={isPendingToggle}
+                      className={cn(
+                        "p-1 rounded transition-colors",
+                        isSubscribed
+                          ? "text-emerald-400 hover:text-red-400 hover:bg-red-500/10"
+                          : "text-muted-foreground/50 hover:text-emerald-400 hover:bg-emerald-500/10",
+                        isPendingToggle && "opacity-50 cursor-not-allowed",
+                      )}
+                      title={isSubscribed ? "Unsubscribe" : "Subscribe"}
+                      aria-label={isSubscribed ? `Unsubscribe from ${def.type}` : `Subscribe to ${def.type}`}
+                    >
+                      {isPendingToggle ? (
+                        <Loader2 className="size-3.5 animate-spin" />
+                      ) : isSubscribed ? (
+                        <BellOff className="size-3.5" />
+                      ) : (
+                        <BellRing className="size-3.5" />
+                      )}
+                    </button>
+                  </div>
                 </div>
 
                 {/* Inline param form */}
@@ -1397,7 +1502,7 @@ function ServiceCatalogAccordion({
                         onClick={() => onParamSubmit(def)}
                       >
                         {isPendingToggle ? <Loader2 className="size-2.5 animate-spin mr-1" /> : null}
-                        Subscribe
+                        {editMode ? "Update" : "Subscribe"}
                       </Button>
                     </div>
                   </div>

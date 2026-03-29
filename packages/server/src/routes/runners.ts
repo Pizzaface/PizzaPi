@@ -19,6 +19,7 @@ import {
     addRunnerTriggerListener,
     removeRunnerTriggerListener,
     listRunnerTriggerListeners,
+    updateRunnerTriggerListener,
 } from "../sessions/runner-trigger-listener-store.js";
 import { getSession } from "../ws/sio-state/index.js";
 import { sendSkillCommand, sendAgentCommand, sendRunnerCommand } from "../ws/namespaces/runner.js";
@@ -427,6 +428,55 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
                 model,
                 params,
             });
+            return Response.json({ ok: true });
+        }
+
+        // PUT /api/runners/:id/trigger-listeners/:type — update
+        if (req.method === "PUT" && listenerMatch[2]) {
+            const triggerType = decodeURIComponent(listenerMatch[2]);
+            const body = await req.json().catch(() => null) as Record<string, unknown> | null;
+            if (!body) return Response.json({ error: "Invalid JSON body" }, { status: 400 });
+
+            const params = body.params && typeof body.params === "object" && !Array.isArray(body.params)
+                ? body.params as Record<string, unknown>
+                : undefined;
+            const model = body.model && typeof body.model === "object" && !Array.isArray(body.model)
+                && typeof (body.model as Record<string, unknown>).provider === "string"
+                && typeof (body.model as Record<string, unknown>).id === "string"
+                ? body.model as { provider: string; id: string }
+                : undefined;
+            if (model) {
+                try {
+                    const hiddenModels = await getHiddenModels(identity.userId);
+                    if (isHiddenModel(hiddenModels, model)) {
+                        return Response.json({ error: "Model is hidden and cannot be used" }, { status: 403 });
+                    }
+                } catch { /* allow if check fails */ }
+            }
+
+            const updated = await updateRunnerTriggerListener(runnerId, triggerType, {
+                prompt: typeof body.prompt === "string" ? body.prompt : undefined,
+                cwd: typeof body.cwd === "string" ? body.cwd : undefined,
+                model,
+                params,
+            });
+
+            if (!updated) {
+                return Response.json({ error: `No listener for trigger type '${triggerType}'` }, { status: 404 });
+            }
+
+            // Notify the runner service about the listener config change
+            const runnerSocket = getLocalRunnerSocket(runnerId);
+            if (runnerSocket) {
+                runnerSocket.emit("listener_config_changed" as any, {
+                    triggerType,
+                    params: params ?? {},
+                    prompt: typeof body.prompt === "string" ? body.prompt : undefined,
+                    cwd: typeof body.cwd === "string" ? body.cwd : undefined,
+                    model,
+                });
+            }
+
             return Response.json({ ok: true });
         }
 
