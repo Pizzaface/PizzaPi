@@ -11,6 +11,7 @@ import {
     messagesChangedSinceLastEmit,
     recordEmittedMessageState,
     emitSessionMetadataUpdate,
+    emitSessionActive,
 } from "./chunked-delivery.js";
 import type { RelayContext } from "../remote-types.js";
 
@@ -22,6 +23,13 @@ function makeContext(opts: {
     messages?: unknown[];
     sessionName?: string | null;
     thinkingLevel?: string | null;
+    currentModel?: {
+        provider: string;
+        id: string;
+        name?: string;
+        reasoning?: boolean;
+        contextWindow?: number;
+    } | null;
 } = {}): RelayContext & { emitted: unknown[] } {
     const leafId = opts.leafId ?? "leaf-1";
     const messages = opts.messages ?? [];
@@ -45,6 +53,7 @@ function makeContext(opts: {
         latestCtx: {
             cwd: "/tmp",
             sessionManager,
+            model: opts.currentModel ?? null,
         } as any,
 
         // Flags
@@ -242,6 +251,12 @@ describe("emitSessionMetadataUpdate", () => {
             leafId: "leaf-fields",
             sessionName: "My Session",
             thinkingLevel: "medium",
+            currentModel: {
+                provider: "anthropic",
+                id: "claude-sonnet-4-5",
+                name: "Claude Sonnet 4.5",
+                contextWindow: 200000,
+            },
         });
         recordEmittedMessageState(ctx, []);
 
@@ -249,13 +264,43 @@ describe("emitSessionMetadataUpdate", () => {
 
         const evt = ctx.emitted[0] as any;
         expect(evt.type).toBe("session_metadata_update");
-        // All expected fields are present (values depend on mocks)
+        expect(evt.metadata.model).toEqual({
+            provider: "anthropic",
+            id: "claude-sonnet-4-5",
+            name: "Claude Sonnet 4.5",
+            reasoning: undefined,
+            contextWindow: 200000,
+        });
         const keys = Object.keys(evt.metadata);
         expect(keys).toContain("model");
         expect(keys).toContain("sessionName");
         expect(keys).toContain("thinkingLevel");
         expect(keys).toContain("todoList");
         expect(keys).toContain("availableModels");
+    });
+
+    test("session_active prefers the live current model over transcript-derived state", () => {
+        const ctx = makeContext({
+            leafId: "leaf-live-model",
+            currentModel: {
+                provider: "google",
+                id: "gemini-2.5-pro",
+                name: "Gemini 2.5 Pro",
+                contextWindow: 1000000,
+            },
+        });
+
+        emitSessionActive(ctx);
+
+        const evt = ctx.emitted[0] as any;
+        expect(evt.type).toBe("session_active");
+        expect(evt.state.model).toEqual({
+            provider: "google",
+            id: "gemini-2.5-pro",
+            name: "Gemini 2.5 Pro",
+            reasoning: undefined,
+            contextWindow: 1000000,
+        });
     });
 
     test("emits nothing when latestCtx is null", () => {

@@ -16,19 +16,26 @@ const mockGetLocalTuiSocket = mock((_id: string) => null as any);
 const mockEmitToRelaySessionVerified = mock((_id: string, _event: string, _data: any) => Promise.resolve(false));
 const mockBroadcastToSessionViewers = mock((_sid: string, _event: string, _data: any) => {});
 
+const mockRecordRunnerSession = mock((_runnerId: string, _sessionId: string) => Promise.resolve());
+const mockGetLocalRunnerSocket = mock((_runnerId: string) => null as any);
+const mockLinkSessionToRunner = mock((_runnerId: string, _sessionId: string) => Promise.resolve());
+
 mock.module("../ws/sio-registry.js", () => ({
     getSharedSession: mockGetSharedSession,
     getLocalTuiSocket: mockGetLocalTuiSocket,
     emitToRelaySessionVerified: mockEmitToRelaySessionVerified,
     broadcastToSessionViewers: mockBroadcastToSessionViewers,
-    recordRunnerSession: mock(() => Promise.resolve()),
-    getLocalRunnerSocket: mock(() => null),
-    linkSessionToRunner: mock(() => Promise.resolve()),
+    recordRunnerSession: mockRecordRunnerSession,
+    getLocalRunnerSocket: mockGetLocalRunnerSocket,
+    linkSessionToRunner: mockLinkSessionToRunner,
 }));
 
+const mockGetRunnerListenerTypes = mock((_runnerId: string) => Promise.resolve([] as string[]));
+const mockGetRunnerTriggerListener = mock((_runnerId: string, _triggerType: string) => Promise.resolve(null as any));
+
 mock.module("../sessions/runner-trigger-listener-store.js", () => ({
-    getRunnerListenerTypes: mock(() => Promise.resolve([])),
-    getRunnerTriggerListener: mock(() => Promise.resolve(null)),
+    getRunnerListenerTypes: mockGetRunnerListenerTypes,
+    getRunnerTriggerListener: mockGetRunnerTriggerListener,
     updateRunnerTriggerListener: mock(() => Promise.resolve(false)),
 }));
 
@@ -1123,6 +1130,65 @@ describe("PUT /api/sessions/:id/trigger-subscriptions/:triggerType", () => {
         expect(mockBroadcastToSessionViewers).toHaveBeenCalledWith(
             "session-1", "trigger_subscriptions_changed", { triggerType: "svc:event", action: "update" },
         );
+    });
+});
+
+describe("POST /api/runners/:runnerId/trigger-broadcast — auto-spawn listeners", () => {
+    beforeEach(() => {
+        mockGetSharedSession.mockReset();
+        mockGetLocalTuiSocket.mockReset();
+        mockEmitToRelaySessionVerified.mockReset();
+        mockBroadcastToSessionViewers.mockReset();
+        mockGetSubscribersForTrigger.mockReset();
+        mockGetSubscribersForTrigger.mockReturnValue(Promise.resolve([]));
+        mockGetSubscriptionParams.mockReset();
+        mockGetSubscriptionParams.mockReturnValue(Promise.resolve(undefined));
+        mockGetSubscriptionFilters.mockReset();
+        mockGetSubscriptionFilters.mockReturnValue(Promise.resolve(undefined));
+        mockGetRunnerListenerTypes.mockReset();
+        mockGetRunnerTriggerListener.mockReset();
+        mockGetLocalRunnerSocket.mockReset();
+        mockRecordRunnerSession.mockReset();
+        mockRecordRunnerSession.mockReturnValue(Promise.resolve());
+        mockLinkSessionToRunner.mockReset();
+        mockLinkSessionToRunner.mockReturnValue(Promise.resolve());
+        mockPushTriggerHistory.mockReset();
+        mockPushTriggerHistory.mockReturnValue(Promise.resolve());
+    });
+
+    test("prepends the listener prompt into the spawned trigger payload", async () => {
+        const runnerEmitMock = mock(() => {});
+        const sessionEmitMock = mock(() => {});
+
+        mockGetRunnerListenerTypes.mockReturnValue(Promise.resolve(["svc:event"]));
+        mockGetRunnerTriggerListener.mockReturnValue(Promise.resolve({
+            triggerType: "svc:event",
+            prompt: "Focus on the failing tests first.",
+            createdAt: "2026-03-29T00:00:00.000Z",
+        } as any));
+        mockGetLocalRunnerSocket.mockReturnValue({ connected: true, emit: runnerEmitMock } as any);
+        mockGetLocalTuiSocket.mockReturnValue({ connected: true, emit: sessionEmitMock } as any);
+        mockGetSharedSession.mockReturnValue(Promise.resolve({ userId: "user-1", sessionId: "sess-1" } as any));
+
+        const [req, url] = makeReq(
+            "POST", "/api/runners/runner-A/trigger-broadcast",
+            { type: "svc:event", payload: { message: "hello" }, source: "svc" },
+            { "x-api-key": "test-key" },
+        );
+        const res = await handleTriggersRoute(req, url);
+        expect(res?.status).toBe(200);
+
+        expect(runnerEmitMock).toHaveBeenCalledWith("new_session", expect.objectContaining({
+            prompt: "Focus on the failing tests first.",
+        }));
+        expect(sessionEmitMock).toHaveBeenCalledWith("session_trigger", expect.objectContaining({
+            trigger: expect.objectContaining({
+                payload: expect.objectContaining({
+                    message: "hello",
+                    prompt: "Focus on the failing tests first.",
+                }),
+            }),
+        }));
     });
 });
 

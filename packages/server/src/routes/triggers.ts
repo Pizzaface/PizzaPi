@@ -952,8 +952,20 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
                                 log.warn(`Auto-spawn listener: session ${spawnedSessionId} socket never appeared`);
                             }
 
+                            const listenerPrompt = typeof listener.prompt === "string" && listener.prompt.trim()
+                                ? listener.prompt.trim()
+                                : undefined;
+                            const spawnPayload = listenerPrompt
+                                ? {
+                                    ...body.payload,
+                                    prompt: typeof body.payload.prompt === "string" && body.payload.prompt.trim()
+                                        ? `${listenerPrompt}\n\n${body.payload.prompt.trim()}`
+                                        : listenerPrompt,
+                                }
+                                : body.payload;
                             const spawnTrigger = {
                                 ...trigger,
+                                payload: spawnPayload,
                                 targetSessionId: spawnedSessionId,
                             };
                             const spawnHistory = {
@@ -961,7 +973,7 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
                                 type: body.type,
                                 source: `external:${body.source ?? "service"}`,
                                 summary: body.summary,
-                                payload: body.payload,
+                                payload: spawnPayload,
                                 deliverAs,
                                 ts,
                                 direction: "inbound" as const,
