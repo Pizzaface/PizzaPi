@@ -1,9 +1,10 @@
 /**
- * RunnerTriggersPanel — runner-level trigger catalog.
+ * RunnerTriggersPanel — runner-level trigger catalog with auto-spawn listeners.
  *
  * Shows available trigger types from runner services grouped by service
- * prefix as collapsible accordions. Purely informational — shows what
- * trigger types are available on this runner for sessions to subscribe to.
+ * prefix as collapsible accordions. Each trigger type has a subscribe toggle
+ * that creates an auto-spawn listener — when that trigger fires, the server
+ * spawns a new session and delivers the trigger into it.
  */
 import * as React from "react";
 import {
@@ -15,19 +16,18 @@ import {
   BellRing,
   BellOff,
 } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import type { ServiceTriggerDef } from "@pizzapi/protocol";
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
-/** Extract the service prefix from a namespaced trigger type (e.g. "godmother" from "godmother:idea_moved"). */
 function servicePrefix(type: string): string {
   const idx = type.indexOf(":");
   return idx > 0 ? type.slice(0, idx) : type;
 }
 
-/** Extract the event name after the colon (e.g. "idea_moved" from "godmother:idea_moved"). */
 function eventName(type: string): string {
   const idx = type.indexOf(":");
   return idx > 0 ? type.slice(idx + 1) : type;
@@ -45,13 +45,102 @@ function groupByService(defs: ServiceTriggerDef[]): ServiceGroup[] {
   for (const def of defs) {
     const svc = servicePrefix(def.type);
     const existing = map.get(svc);
-    if (existing) {
-      existing.push(def);
-    } else {
-      map.set(svc, [def]);
-    }
+    if (existing) existing.push(def);
+    else map.set(svc, [def]);
   }
   return Array.from(map.entries()).map(([service, d]) => ({ service, defs: d }));
+}
+
+// ── Trigger Item ───────────────────────────────────────────────────────────
+
+interface TriggerItemProps {
+  def: ServiceTriggerDef;
+  isListening: boolean;
+  isPending: boolean;
+  onToggle: (triggerType: string, isListening: boolean) => void;
+}
+
+function TriggerItem({ def, isListening, isPending, onToggle }: TriggerItemProps) {
+  const hasParams = def.params && def.params.length > 0;
+
+  return (
+    <div className="px-3 py-2.5">
+      <div className="flex items-start gap-2">
+        <div className="flex-1 min-w-0">
+          {/* Type + label + badges */}
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <span className="text-xs font-mono text-foreground">
+              {eventName(def.type)}
+            </span>
+            <Badge variant="outline" className="px-1.5 py-0 text-[10px] h-4 shrink-0">
+              {def.label}
+            </Badge>
+            {isListening && (
+              <Badge variant="outline" className="px-1.5 py-0 text-[10px] h-4 border-emerald-500/40 text-emerald-400 shrink-0">
+                auto-spawn
+              </Badge>
+            )}
+            {hasParams && !isListening && (
+              <Badge variant="outline" className="px-1.5 py-0 text-[10px] h-4 border-violet-500/30 text-violet-400/70 shrink-0">
+                configurable
+              </Badge>
+            )}
+          </div>
+
+          {/* Description */}
+          {def.description && (
+            <p className="text-[11px] text-muted-foreground/70 mt-0.5 leading-snug">
+              {def.description}
+            </p>
+          )}
+
+          {/* Params listing */}
+          {hasParams && (
+            <div className="mt-1.5 space-y-0.5">
+              {def.params!.map((p) => (
+                <div key={p.name} className="text-[10px] text-muted-foreground/60">
+                  <span className="font-mono text-foreground/70">{p.name}</span>
+                  <span className="text-muted-foreground/40">: {p.type}</span>
+                  {p.required && <span className="text-amber-400/60 ml-1">required</span>}
+                  {p.multiselect && <span className="text-violet-400/60 ml-1">multiselect</span>}
+                  {p.enum && (
+                    <span className="text-muted-foreground/40 ml-1">
+                      {"{" + p.enum.map(String).join(", ") + "}"}
+                    </span>
+                  )}
+                  {p.description && <span className="ml-1">— {p.description}</span>}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Toggle button */}
+        <button
+          type="button"
+          onClick={() => onToggle(def.type, isListening)}
+          disabled={isPending}
+          className={cn(
+            "shrink-0 p-1.5 rounded transition-colors",
+            isListening
+              ? "text-emerald-400 hover:text-red-400 hover:bg-red-500/10"
+              : "text-muted-foreground/50 hover:text-emerald-400 hover:bg-emerald-500/10",
+            isPending && "opacity-50 cursor-not-allowed",
+          )}
+          title={isListening ? "Remove auto-spawn listener" : "Add auto-spawn listener — spawns a new session when this trigger fires"}
+          aria-label={isListening ? `Remove listener for ${def.type}` : `Add listener for ${def.type}`}
+        >
+          {isPending ? (
+            <Loader2 className="size-4 animate-spin" />
+          ) : isListening ? (
+            <BellOff className="size-4" />
+          ) : (
+            <BellRing className="size-4" />
+          )}
+        </button>
+      </div>
+    </div>
+  );
 }
 
 // ── Service Accordion ──────────────────────────────────────────────────────
@@ -96,69 +185,15 @@ function ServiceAccordion({ group, listenedTypes, pendingTypes, onToggleListener
 
       {expanded && (
         <div className="border-t border-border/30 divide-y divide-border/30">
-          {group.defs.map((def) => {
-            const isListening = listenedTypes.has(def.type);
-            const isPending = pendingTypes.has(def.type);
-            return (
-              <div key={def.type} className="px-3 py-2.5 flex items-start gap-2">
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-1.5 flex-wrap">
-                    <span className="text-xs font-mono text-foreground">
-                      {eventName(def.type)}
-                    </span>
-                    <Badge variant="outline" className="px-1.5 py-0 text-[10px] h-4 shrink-0">
-                      {def.label}
-                    </Badge>
-                    {isListening && (
-                      <Badge variant="outline" className="px-1.5 py-0 text-[10px] h-4 border-emerald-500/40 text-emerald-400 shrink-0">
-                        auto-spawn
-                      </Badge>
-                    )}
-                  </div>
-                  {def.description && (
-                    <p className="text-[11px] text-muted-foreground/70 mt-0.5 leading-snug">
-                      {def.description}
-                    </p>
-                  )}
-                  {def.params && def.params.length > 0 && (
-                    <div className="mt-1 space-y-0.5">
-                      {def.params.map((p) => (
-                        <div key={p.name} className="text-[10px] text-muted-foreground/50">
-                          <span className="font-mono">{p.name}</span>
-                          <span className="text-muted-foreground/30">: {p.type}</span>
-                          {p.required && <span className="text-amber-400/50 ml-1">required</span>}
-                          {p.description && <span className="ml-1">— {p.description}</span>}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-
-                <button
-                  type="button"
-                  onClick={() => onToggleListener(def.type, isListening)}
-                  disabled={isPending}
-                  className={cn(
-                    "shrink-0 p-1.5 rounded transition-colors",
-                    isListening
-                      ? "text-emerald-400 hover:text-red-400 hover:bg-red-500/10"
-                      : "text-muted-foreground/50 hover:text-emerald-400 hover:bg-emerald-500/10",
-                    isPending && "opacity-50 cursor-not-allowed",
-                  )}
-                  title={isListening ? "Remove auto-spawn listener" : "Add auto-spawn listener — spawns a new session when this trigger fires"}
-                  aria-label={isListening ? `Remove listener for ${def.type}` : `Add listener for ${def.type}`}
-                >
-                  {isPending ? (
-                    <Loader2 className="size-4 animate-spin" />
-                  ) : isListening ? (
-                    <BellOff className="size-4" />
-                  ) : (
-                    <BellRing className="size-4" />
-                  )}
-                </button>
-              </div>
-            );
-          })}
+          {group.defs.map((def) => (
+            <TriggerItem
+              key={def.type}
+              def={def}
+              isListening={listenedTypes.has(def.type)}
+              isPending={pendingTypes.has(def.type)}
+              onToggle={onToggleListener}
+            />
+          ))}
         </div>
       )}
     </div>
@@ -169,7 +204,6 @@ function ServiceAccordion({ group, listenedTypes, pendingTypes, onToggleListener
 
 export interface RunnerTriggersPanelProps {
   runnerId: string;
-  /** Optional pre-loaded trigger defs (skips fetch if provided and non-empty). */
   triggerDefs?: ServiceTriggerDef[];
 }
 
@@ -207,7 +241,6 @@ export function RunnerTriggersPanel({ runnerId, triggerDefs: propDefs }: RunnerT
 
   React.useEffect(() => {
     if (propDefs && propDefs.length > 0) {
-      // Still fetch listeners even if defs are provided
       void (async () => {
         try {
           const res = await fetch(`/api/runners/${encodeURIComponent(runnerId)}/trigger-listeners`, {
