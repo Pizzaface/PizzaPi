@@ -24,6 +24,7 @@ const VALID_SECTIONS = new Set([
     "envVars",
     "systemPrompt",
     "tuiPreferences",
+    "agentsMd",
 ]);
 
 export const handleRunnerSettingsRoute: RouteHandler = async (req, url) => {

@@ -14,6 +14,7 @@ const WebSearchSettings = React.lazy(() => import("./WebSearchSettings"));
 const SecuritySettings = React.lazy(() => import("./SecuritySettings"));
 const EnvVarsSettings = React.lazy(() => import("./EnvVarsSettings"));
 const SystemPromptSettings = React.lazy(() => import("./SystemPromptSettings"));
+const AgentRulesSettings = React.lazy(() => import("./AgentRulesSettings"));
 const TuiPrefsSettings = React.lazy(() => import("./TuiPrefsSettings"));
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -27,6 +28,7 @@ export type SettingsSection =
     | "security"
     | "envVars"
     | "systemPrompt"
+    | "agentsMd"
     | "tuiPreferences";
 
 export interface RunnerSettingsPanelProps {
@@ -57,6 +59,7 @@ const SETTINGS_TABS: { key: SettingsSection; label: string }[] = [
     { key: "security", label: "Security" },
     { key: "envVars", label: "Env Vars" },
     { key: "systemPrompt", label: "System Prompt" },
+    { key: "agentsMd", label: "Agent Rules" },
     { key: "tuiPreferences", label: "TUI Prefs" },
 ];
 
@@ -80,7 +83,12 @@ export function RunnerSettingsPanel({ runnerId }: RunnerSettingsPanelProps) {
                 throw new Error(body.error ?? `HTTP ${res.status}`);
             }
             const result = await res.json();
-            setData({ config: result.config ?? {}, tuiSettings: result.tuiSettings ?? {} });
+            // Stash agentsMd in config as __agentsMd so section components can access it
+            const config = result.config ?? {};
+            if (result.agentsMd !== undefined) {
+                config.__agentsMd = result.agentsMd;
+            }
+            setData({ config, tuiSettings: result.tuiSettings ?? {} });
         } catch (err) {
             setError(err instanceof Error ? err.message : String(err));
         } finally {
@@ -178,6 +186,9 @@ export function RunnerSettingsPanel({ runnerId }: RunnerSettingsPanelProps) {
             break;
         case "systemPrompt":
             content = <SystemPromptSettings {...sectionProps} />;
+            break;
+        case "agentsMd":
+            content = <AgentRulesSettings {...sectionProps} />;
             break;
         case "tuiPreferences":
             content = <TuiPrefsSettings {...sectionProps} />;

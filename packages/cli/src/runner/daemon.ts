@@ -1091,11 +1091,24 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                     // settings.json may not exist yet
                 }
 
+                // Also read ~/.pizzapi/AGENTS.md
+                const agentsMdPath = join(homedir(), ".pizzapi", "AGENTS.md");
+                let agentsMd = "";
+                try {
+                    const { readFileSync, existsSync } = await import("fs");
+                    if (existsSync(agentsMdPath)) {
+                        agentsMd = readFileSync(agentsMdPath, "utf-8");
+                    }
+                } catch {
+                    // AGENTS.md may not exist yet
+                }
+
                 socket.emit("file_result", {
                     requestId,
                     ok: true,
                     config: globalConfig,
                     tuiSettings,
+                    agentsMd,
                 });
             } catch (err) {
                 socket.emit("file_result", {
@@ -1114,6 +1127,23 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             try {
                 if (!section || typeof section !== "string") {
                     socket.emit("file_result", { requestId, ok: false, message: "Missing section name" });
+                    return;
+                }
+
+                // Handle AGENTS.md separately — it's a standalone file, not JSON config
+                if (section === "agentsMd") {
+                    const agentsMdPath = join(homedir(), ".pizzapi", "AGENTS.md");
+                    const { writeFileSync, mkdirSync, existsSync } = await import("fs");
+                    const dir = join(homedir(), ".pizzapi");
+                    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+                    const content = typeof value === "string" ? value : "";
+                    writeFileSync(agentsMdPath, content, "utf-8");
+                    socket.emit("file_result", {
+                        requestId,
+                        ok: true,
+                        saved: true,
+                        message: "AGENTS.md saved. Changes apply on next session start.",
+                    });
                     return;
                 }
 
