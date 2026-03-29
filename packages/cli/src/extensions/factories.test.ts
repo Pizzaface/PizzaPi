@@ -21,12 +21,14 @@ import { sandboxEventsExtension } from "./sandbox-events.js";
 import { pizzapiTitleExtension } from "./pizzapi-title.js";
 import { initialPromptExtension } from "./initial-prompt.js";
 import { pizzapiHeaderExtension } from "./pizzapi-header.js";
+import { toolSearchExtension } from "./tool-search.js";
 
 const CORE_EXTENSIONS: ExtensionFactory[] = [
     triggersExtension,  // Must be before remoteExtension (shutdown ordering)
     remoteExtension,
     tunnelToolsExtension,
     mcpExtension,
+    toolSearchExtension,  // Must be after MCP to see registered MCP tools
     restartExtension,
     setSessionNameExtension,
     updateTodoExtension,

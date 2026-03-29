@@ -28,9 +28,9 @@ export type McpConfig = {
   // Preferred format
   mcp?: {
     servers?: Array<
-      | { name: string; transport: "stdio"; command: string; args?: string[]; env?: Record<string, string>; cwd?: string }
-      | { name: string; transport: "http"; url: string; headers?: Record<string, string>; oauthClientName?: string }
-      | { name: string; transport: "streamable"; url: string; headers?: Record<string, string>; oauthClientName?: string }
+      | { name: string; transport: "stdio"; command: string; args?: string[]; env?: Record<string, string>; cwd?: string; deferLoading?: boolean }
+      | { name: string; transport: "http"; url: string; headers?: Record<string, string>; oauthClientName?: string; deferLoading?: boolean }
+      | { name: string; transport: "streamable"; url: string; headers?: Record<string, string>; oauthClientName?: string; deferLoading?: boolean }
     >;
   };
 
@@ -50,8 +50,8 @@ export type McpConfig = {
   // Note: in the standard MCP ecosystem, type "http" means Streamable HTTP.
   mcpServers?: Record<
     string,
-    | { command: string; args?: string[]; env?: Record<string, string>; cwd?: string }
-    | { url: string; transport?: "http" | "streamable"; type?: "http" | "sse"; headers?: Record<string, string>; oauthClientName?: string }
+    | { command: string; args?: string[]; env?: Record<string, string>; cwd?: string; deferLoading?: boolean }
+    | { url: string; transport?: "http" | "streamable"; type?: "http" | "sse"; headers?: Record<string, string>; oauthClientName?: string; deferLoading?: boolean }
   >;
 };
 
@@ -558,6 +558,14 @@ export async function registerMcpTools(
               },
             });
           }
+
+          // Notify extensions that the registry snapshot changed so they can
+          // resync against late or background MCP completion.
+          pi.events?.emit?.("mcp:registry_updated", {
+            server: client.name,
+            toolCount: serverToolList.length,
+            totalToolCount: toolCount,
+          });
         }
 
         return { name: client.name, tools, durationMs, timedOut };

@@ -18,6 +18,7 @@ import { triggersExtension } from "./triggers/extension.js";
 import { sandboxEventsExtension } from "./sandbox-events.js";
 import { pizzapiTitleExtension } from "./pizzapi-title.js";
 import { pizzapiHeaderExtension } from "./pizzapi-header.js";
+import { toolSearchExtension } from "./tool-search.js";
 
 export interface BuildExtensionFactoriesOptions {
     cwd: string;
@@ -56,6 +57,8 @@ export function buildPizzaPiExtensionFactories(options: BuildExtensionFactoriesO
 
     if (!options.skipMcp) {
         factories.push(named(mcpExtension, "mcp"));
+        // Tool search must come after MCP so it can see registered MCP tools
+        factories.push(named(toolSearchExtension, "tool-search"));
     }
 
     factories.push(
