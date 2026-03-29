@@ -10,7 +10,7 @@
  *    Bun.spawnSync to verify actual shell execution works end-to-end.
  */
 
-import { describe, test, expect } from "bun:test";
+import { describe, test, expect, beforeEach } from "bun:test";
 import { promisify } from "util";
 import { createBashTool, bashTool } from "./bash.js";
 
@@ -127,6 +127,10 @@ async function execBash(command: string, timeout?: number) {
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 describe("bashTool", () => {
+    // Reset all mock state before each test so stale state from a mid-test
+    // throw can't bleed into subsequent tests.
+    beforeEach(() => resetMockState());
+
     // ── Integration smoke test ─────────────────────────────────────────────
 
     describe("integration smoke test", () => {
