@@ -15,6 +15,7 @@ import {
   PromptInputFooter,
   PromptInputTextarea,
   PromptInputTools,
+  type PromptInputMessage,
 } from "@/components/ai-elements/prompt-input";
 import { Button } from "@/components/ui/button";
 import {
@@ -376,7 +377,7 @@ export function SessionViewer({
 
   // ── handleSubmit ──────────────────────────────────────────────────────────
   const handleSubmit = React.useCallback(
-    (message: { text: string; files: File[] }) => {
+    (message: PromptInputMessage) => {
       if (isCompacting) return;
       const text = message.text.trim();
       const hasAttachments = Array.isArray(message.files) && message.files.length > 0;

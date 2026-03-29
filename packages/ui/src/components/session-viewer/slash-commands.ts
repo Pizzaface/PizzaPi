@@ -1,6 +1,7 @@
 import * as React from "react";
 import type { CmdEntry } from "./viewer-types";
 import type { CommandResultData } from "./rendering";
+import type { SandboxViolationEntry } from "./cards/CommandResultCard";
 import type { ResumeSessionOption } from "@/lib/types";
 import type { PromptInputMessage } from "@/components/ai-elements/prompt-input";
 import {
@@ -500,11 +501,11 @@ export function useSlashCommands(
             };
             onAppendSystemMessage?.({
               kind: "sandbox" as const,
-              mode: raw.mode ?? "none",
+              mode: (raw.mode ?? "none") as "none" | "full" | "basic",
               active: raw.active ?? false,
               platform: raw.platform ?? "unknown",
               violations: raw.violations ?? 0,
-              recentViolations: Array.isArray(raw.recentViolations) ? raw.recentViolations : [],
+              recentViolations: (Array.isArray(raw.recentViolations) ? raw.recentViolations : []) as SandboxViolationEntry[],
             });
           })
           .catch((err: Error) => {
