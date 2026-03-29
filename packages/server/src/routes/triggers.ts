@@ -499,9 +499,6 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
 
         // Look up all sessions subscribed to this runner+type
         const subscriberIds = await getSubscribersForTrigger(runnerId, body.type);
-        if (subscriberIds.length === 0) {
-            return Response.json({ ok: true, delivered: 0, triggerId: null });
-        }
 
         const triggerId = `ext_${randomUUID().replace(/-/g, "").slice(0, 16)}`;
         const ts = new Date().toISOString();
