@@ -33,6 +33,8 @@
  */
 
 import type { ExtensionFactory } from "@mariozechner/pi-coding-agent";
+import type { Socket } from "socket.io-client";
+import type { RelayClientToServerEvents, RelayServerToClientEvents } from "@pizzapi/protocol";
 import type { RelayContext } from "../remote-types.js";
 import { createTriggerWaitManager } from "../trigger-wait-manager.js";
 import { waitForRelayRegistrationGated } from "./registration-gate.js";
@@ -61,7 +63,7 @@ export function forwardCliError(message: string, source?: string): void {
 
 /** Get the active relay socket and token, or null if not connected/registered. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function getRelaySocket(): { socket: any; token: string } | null {
+export function getRelaySocket(): { socket: Socket<RelayServerToClientEvents, RelayClientToServerEvents>; token: string } | null {
     return _ctx?.sioSocket?.connected && _ctx.relay
         ? { socket: _ctx.sioSocket, token: _ctx.relay.token }
         : null;
