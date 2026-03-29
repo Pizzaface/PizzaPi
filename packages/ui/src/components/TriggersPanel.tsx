@@ -1839,6 +1839,13 @@ export function TriggersPanel({ sessionId, triggerDefs = [], viewerSocket }: Tri
   const hasCatalog = triggerDefs.length > 0 || subscriptions.length > 0;
   const [activeTab, setActiveTab] = React.useState<"history" | "catalog">(hasCatalog ? "catalog" : "history");
 
+  // Switch to catalog when data arrives asynchronously
+  React.useEffect(() => {
+    if (hasCatalog) {
+      setActiveTab((prev) => prev === "history" ? "catalog" : prev);
+    }
+  }, [hasCatalog]);
+
   // Count for badges
   const pendingCount = pendingGroups.length;
 

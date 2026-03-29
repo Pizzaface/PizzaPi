@@ -32,23 +32,28 @@ export function RunnerServicesPanel({ runnerId }: RunnerServicesPanelProps) {
   const [error, setError] = React.useState<string | null>(null);
 
   React.useEffect(() => {
+    let cancelled = false;
     setLoading(true);
     void (async () => {
       try {
         const res = await fetch(`/api/runners/${encodeURIComponent(runnerId)}/services`, {
           credentials: "include",
         });
+        if (cancelled) return;
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json() as { serviceIds?: string[]; panels?: ServicePanel[] };
+        if (cancelled) return;
         setServiceIds(data.serviceIds ?? []);
         setPanels(data.panels ?? []);
         setError(null);
       } catch (err) {
+        if (cancelled) return;
         setError(err instanceof Error ? err.message : "Failed to load services");
       } finally {
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       }
     })();
+    return () => { cancelled = true; };
   }, [runnerId]);
 
   if (loading) {
