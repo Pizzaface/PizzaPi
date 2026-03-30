@@ -62,6 +62,12 @@ export function ChangePasswordDialog({ open, onOpenChange }: ChangePasswordDialo
         setLoading(true);
 
         try {
+            // TODO(UX): revokeOtherSessions: true silently signs out every
+            // other active session (other browsers, mobile devices, etc.)
+            // immediately after the password change succeeds.  Consider
+            // adding a visible warning in the dialog (e.g. "Note: all other
+            // logged-in devices will be signed out") or an opt-in checkbox
+            // so users aren't surprised by unexpected sign-outs elsewhere.
             const { error: apiError } = await authClient.changePassword({
                 currentPassword,
                 newPassword,

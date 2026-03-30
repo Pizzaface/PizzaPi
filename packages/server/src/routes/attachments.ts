@@ -142,7 +142,13 @@ export const handleAttachmentsRoute: RouteHandler = async (req, url) => {
             return Response.json({ error: "Missing attachment ID" }, { status: 400 });
         }
 
-        const providedApiKey = req.headers.get("x-api-key") ?? undefined;
+        // Support both header-based and query-parameter API key auth for
+        // backward compatibility.  Clients that embed the key in the URL
+        // (e.g. direct download links, documented ?apiKey= pattern) must
+        // continue to work alongside the preferred x-api-key header form.
+        const headerApiKey = req.headers.get("x-api-key") || undefined;
+        const queryApiKey = url.searchParams.get("apiKey") || undefined;
+        const providedApiKey = headerApiKey ?? queryApiKey;
         const identity = providedApiKey
             ? await validateApiKey(req, providedApiKey)
             : await requireSession(req);

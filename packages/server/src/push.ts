@@ -96,9 +96,9 @@ const PRIVATE_IP_PATTERNS = [
     /^172\.(1[6-9]|2\d|3[01])\./, // 172.16.0.0/12
     /^192\.168\./,               // 192.168.0.0/16
     /^169\.254\./,               // 169.254.0.0/16 link-local
-    /^::1$/,                     // IPv6 loopback
-    /^fc[0-9a-f]{2}:/i,          // IPv6 ULA fc00::/7
-    /^fe[89ab][0-9a-f]:/i,       // IPv6 link-local fe80::/10
+    /^\[::1\]$/,                 // IPv6 loopback — URL API returns "[::1]" with brackets
+    /^\[fc[0-9a-f]{2}:/i,        // IPv6 ULA fc00::/7 — URL API wraps IPv6 in "[...]"
+    /^\[fe[89ab][0-9a-f]:/i,     // IPv6 link-local fe80::/10
     /^0\./,                      // 0.0.0.0/8
 ];
 
@@ -109,7 +109,12 @@ const PRIVATE_IP_PATTERNS = [
  *   1. Must be a valid URL.
  *   2. Must use the `https:` scheme.
  *   3. Hostname must not be a loopback, link-local, or RFC1918 address.
- *   4. Hostname must match a known push service domain or subdomain thereof.
+ *
+ * Note: KNOWN_PUSH_SERVICE_HOSTS is retained as documentation of the major
+ * browser push services, but is NOT used as a hard allowlist gate. Enforcing
+ * an allowlist would break enterprise proxies and custom push providers that
+ * use HTTPS on public addresses — those used to work and should continue to
+ * work. The primary SSRF defence is the private-IP block above.
  *
  * Returns true if the endpoint is safe; false otherwise.
  */
@@ -126,17 +131,13 @@ export function isValidPushEndpoint(endpoint: string): boolean {
 
     const host = parsed.hostname.toLowerCase();
 
-    // Reject private/loopback addresses
+    // Reject private/loopback addresses (SSRF protection).
     for (const pattern of PRIVATE_IP_PATTERNS) {
         if (pattern.test(host)) return false;
     }
 
-    // Must be a known push service domain (or a subdomain of one).
-    const isKnown = [...KNOWN_PUSH_SERVICE_HOSTS].some(
-        (known) => host === known || host.endsWith(`.${known}`),
-    );
-
-    return isKnown;
+    // Any HTTPS endpoint on a non-private host is accepted.
+    return true;
 }
 
 // ── DB table ─────────────────────────────────────────────────────────────────
