@@ -3,7 +3,6 @@ import { readFileSync } from "node:fs";
 import ts from "typescript";
 
 const CALLBACK_NAMES = [
-  "handleToggleDark",
   "handleShowApiKeys",
   "handleShowRunners",
   "handleShowShortcuts",
