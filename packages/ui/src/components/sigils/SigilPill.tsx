@@ -19,6 +19,7 @@ import { useSigilRegistry, useSigilResolve, useSigilTriggerResolve, useSigilGene
 import { SigilIcon } from "./SigilIcon";
 import { ExternalLinkIcon, CheckIcon, CopyIcon } from "lucide-react";
 import { ActionSigil } from "./ActionSigil";
+import { TimeSigilPill } from "./TimeSigilPill";
 import { usePizzaPiNav, isPizzaPiUrl } from "./PizzaPiNavContext";
 
 // ── SigilInline (Streamdown bridge) ──────────────────────────────────────────
@@ -47,6 +48,12 @@ export function SigilInline(props: Record<string, unknown>) {
 
   if (type === "action") {
     return <ActionSigil variant={id} params={params} raw={raw} />;
+  }
+
+  // Adaptive time sigils get their own live-ticking component
+  const TIME_SIGIL_TYPES = new Set(["time", "countdown", "timestamp", "when", "at", "timer"]);
+  if (TIME_SIGIL_TYPES.has(type)) {
+    return <TimeSigilPill type={type} id={id} params={params} raw={raw} />;
   }
 
   return <SigilPill type={type} id={id} params={params} raw={raw} />;
