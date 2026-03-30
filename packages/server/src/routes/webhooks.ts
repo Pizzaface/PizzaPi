@@ -500,8 +500,15 @@ export const handleWebhooksRoute: RouteHandler = async (req, url) => {
             }
 
             const nowMs = Date.now();
-            if (Math.abs(nowMs - timestampMs) > WEBHOOK_REPLAY_WINDOW_MS) {
-                return Response.json({ error: "Webhook timestamp is too old or too far in the future" }, { status: 401 });
+            if (timestampMs > nowMs) {
+                // Reject future timestamps entirely. Accepting them would allow a nonce replay
+                // attack: a nonce stored with creation time T0 is pruned at T0+WINDOW, but a
+                // future timestamp T0+WINDOW is still valid until T0+2*WINDOW — leaving a gap
+                // where the same request can be replayed after the nonce expires.
+                return Response.json({ error: "Webhook timestamp is in the future" }, { status: 401 });
+            }
+            if (nowMs - timestampMs > WEBHOOK_REPLAY_WINDOW_MS) {
+                return Response.json({ error: "Webhook timestamp is too old" }, { status: 401 });
             }
 
             const nonce = nonceHeader!.trim();

@@ -657,6 +657,41 @@ describe("POST /api/webhooks/:id/fire — HMAC validation", () => {
         expect(body.error).toContain("too old");
     });
 
+    test("returns 401 when timestamp is in the future", async () => {
+        mockGetWebhook.mockReturnValue(Promise.resolve(ACTIVE_WEBHOOK));
+        // A future timestamp (even within the old abs-skew window) must be rejected.
+        // Previously, accepting future timestamps allowed a nonce replay attack:
+        //   1. Send at T0 with timestamp=T0+4min — nonce stored at T0
+        //   2. Nonce pruned at T0+5min (stored_time + window)
+        //   3. Timestamp still valid until T0+9min → replay succeeds after prune
+        const futureTs = new Date(Date.now() + 4 * 60 * 1000).toISOString();
+        const [req, url] = makeFireReq(
+            "/api/webhooks/wh-1/fire",
+            { event: "test" },
+            ACTIVE_WEBHOOK.secret,
+            { "x-webhook-timestamp": futureTs, "x-webhook-nonce": "nonce-future-replay" },
+        );
+        const res = await handleWebhooksRoute(req, url);
+        expect(res?.status).toBe(401);
+        const body = await res!.json();
+        expect(body.error).toContain("future");
+    });
+
+    test("returns 401 for any future timestamp (1 ms ahead)", async () => {
+        mockGetWebhook.mockReturnValue(Promise.resolve(ACTIVE_WEBHOOK));
+        const justFuture = new Date(Date.now() + 1).toISOString();
+        const [req, url] = makeFireReq(
+            "/api/webhooks/wh-1/fire",
+            { event: "test" },
+            ACTIVE_WEBHOOK.secret,
+            { "x-webhook-timestamp": justFuture, "x-webhook-nonce": "nonce-just-future" },
+        );
+        const res = await handleWebhooksRoute(req, url);
+        expect(res?.status).toBe(401);
+        const body = await res!.json();
+        expect(body.error).toContain("future");
+    });
+
     test("returns 401 when signature is invalid", async () => {
         mockGetWebhook.mockReturnValue(Promise.resolve(ACTIVE_WEBHOOK));
         const [req, url] = makeReq(
