@@ -9,17 +9,13 @@
  * - Status-aware coloring
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
-import {
-  HoverCard,
-  HoverCardContent,
-  HoverCardTrigger,
-} from "@/components/ui/hover-card";
 import { cn } from "@/lib/utils";
 import { useSigilRegistry, useSigilResolve, useSigilTriggerResolve, useSigilGeneration } from "./SigilContext";
 import { SigilIcon } from "./SigilIcon";
 import { ExternalLinkIcon, CheckIcon, CopyIcon } from "lucide-react";
 import { ActionSigil } from "./ActionSigil";
 import { TimeSigilPill } from "./TimeSigilPill";
+import { SigilHoverCard } from "./SigilHoverCard";
 import { usePizzaPiNav, isPizzaPiUrl } from "./PizzaPiNavContext";
 
 // ── SigilInline (Streamdown bridge) ──────────────────────────────────────────
@@ -157,85 +153,78 @@ export function SigilPill({ type, id, params, raw }: SigilPillProps) {
   if (!hasPreview) return pill;
 
   return (
-    <HoverCard openDelay={400} closeDelay={100}>
-      <HoverCardTrigger asChild>{pill}</HoverCardTrigger>
-      <HoverCardContent
-        side="top"
-        align="center"
-        className="w-auto min-w-[180px] max-w-[280px] p-3"
-      >
-        <div className="flex flex-col gap-1.5">
-          {/* Header: icon + type label */}
-          <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-            <SigilIcon name={config.icon ?? "hash"} className="size-3.5 opacity-60" />
-            <span className="font-medium">{typeLabel}</span>
-          </div>
-
-          {/* Title / ID */}
-          {id && (
-            <div className="text-sm font-semibold text-foreground leading-snug">
-              {resolved.data?.title && resolved.data.title !== id ? (
-                <>
-                  <span>{String(resolved.data.title)}</span>
-                  <span className="ml-1.5 text-xs font-normal text-muted-foreground">
-                    #{id}
-                  </span>
-                </>
-              ) : (
-                <span className="font-mono">{id}</span>
-              )}
-            </div>
-          )}
-
-          {/* Description */}
-          {description && (
-            <p className="text-xs text-muted-foreground leading-relaxed line-clamp-2">
-              {description}
-            </p>
-          )}
-
-          {/* Meta row: author + status */}
-          {(author || statusParam) && (
-            <div className="flex items-center gap-2 pt-0.5">
-              {author && (
-                <span className="text-[11px] text-muted-foreground">
-                  by <span className="font-medium text-foreground">{author}</span>
-                </span>
-              )}
-              {statusParam && (
-                <span className={cn(
-                  "inline-flex items-center rounded-full px-1.5 py-px",
-                  "text-[10px] font-bold uppercase tracking-wider",
-                  "ring-1 ring-inset",
-                  getStatusColor(statusParam) ?? "bg-muted text-muted-foreground ring-border",
-                )}>
-                  {statusParam}
-                </span>
-              )}
-            </div>
-          )}
-
-          {/* Link hint */}
-          {href && !isPizzaPi && (
-            <div className="flex items-center gap-1 pt-0.5 text-[10px] text-muted-foreground/60">
-              <ExternalLinkIcon className="size-2.5" />
-              <span className="truncate">{prettifyUrl(href)}</span>
-            </div>
-          )}
-          {href && isPizzaPi && (
-            <div className="flex items-center gap-1 pt-0.5 text-[10px] text-muted-foreground/60">
-              <span className="truncate">Opens in app</span>
-            </div>
-          )}
-
-          {/* Raw sigil syntax */}
-          <div className="flex items-center gap-1 pt-0.5 text-[10px] text-muted-foreground/50">
-            <code className="truncate font-mono">{raw}</code>
-            <CopyButton text={raw} />
-          </div>
+    <SigilHoverCard pill={pill}>
+      <div className="flex flex-col gap-1.5">
+        {/* Header: icon + type label */}
+        <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+          <SigilIcon name={config.icon ?? "hash"} className="size-3.5 opacity-60" />
+          <span className="font-medium">{typeLabel}</span>
         </div>
-      </HoverCardContent>
-    </HoverCard>
+
+        {/* Title / ID */}
+        {id && (
+          <div className="text-sm font-semibold text-foreground leading-snug">
+            {resolved.data?.title && resolved.data.title !== id ? (
+              <>
+                <span>{String(resolved.data.title)}</span>
+                <span className="ml-1.5 text-xs font-normal text-muted-foreground">
+                  #{id}
+                </span>
+              </>
+            ) : (
+              <span className="font-mono">{id}</span>
+            )}
+          </div>
+        )}
+
+        {/* Description */}
+        {description && (
+          <p className="text-xs text-muted-foreground leading-relaxed line-clamp-2">
+            {description}
+          </p>
+        )}
+
+        {/* Meta row: author + status */}
+        {(author || statusParam) && (
+          <div className="flex items-center gap-2 pt-0.5">
+            {author && (
+              <span className="text-[11px] text-muted-foreground">
+                by <span className="font-medium text-foreground">{author}</span>
+              </span>
+            )}
+            {statusParam && (
+              <span className={cn(
+                "inline-flex items-center rounded-full px-1.5 py-px",
+                "text-[10px] font-bold uppercase tracking-wider",
+                "ring-1 ring-inset",
+                getStatusColor(statusParam) ?? "bg-muted text-muted-foreground ring-border",
+              )}>
+                {statusParam}
+              </span>
+            )}
+          </div>
+        )}
+
+        {/* Link hint */}
+        {href && !isPizzaPi && (
+          <div className="flex items-center gap-1 pt-0.5 text-[10px] text-muted-foreground/60">
+            <ExternalLinkIcon className="size-2.5" />
+            <span className="truncate">{prettifyUrl(href)}</span>
+          </div>
+        )}
+        {href && isPizzaPi && (
+          <div className="flex items-center gap-1 pt-0.5 text-[10px] text-muted-foreground/60">
+            <span className="truncate">Opens in app</span>
+          </div>
+        )}
+
+        {/* Raw sigil syntax */}
+        <div className="flex items-center gap-1 pt-0.5 text-[10px] text-muted-foreground/50">
+          <code className="truncate font-mono">{raw}</code>
+          <CopyButton text={raw} />
+        </div>
+      </div>
+    </SigilHoverCard>
   );
 }
 

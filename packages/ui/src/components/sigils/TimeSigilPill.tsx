@@ -10,14 +10,10 @@
  * Both auto-clean their intervals on unmount.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  HoverCard,
-  HoverCardContent,
-  HoverCardTrigger,
-} from "@/components/ui/hover-card";
 import { cn } from "@/lib/utils";
 import { useSigilRegistry, useSigilResolve, useSigilTriggerResolve, useSigilGeneration } from "./SigilContext";
 import { SigilIcon } from "./SigilIcon";
+import { SigilHoverCard } from "./SigilHoverCard";
 import { CheckIcon, CopyIcon } from "lucide-react";
 
 // ── Time formatting (client-side, no server round-trip needed after first resolve) ──
@@ -176,13 +172,7 @@ export function TimeSigilPill({ type, id, params, raw }: TimeSigilPillProps) {
   // ── HoverCard ────────────────────────────────────────────────────────
 
   return (
-    <HoverCard openDelay={400} closeDelay={100}>
-      <HoverCardTrigger asChild>{pill}</HoverCardTrigger>
-      <HoverCardContent
-        side="top"
-        align="center"
-        className="w-auto min-w-[180px] max-w-[280px] p-3"
-      >
+    <SigilHoverCard pill={pill}>
         <div className="flex flex-col gap-1.5">
           {/* Header */}
           <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
@@ -224,8 +214,7 @@ export function TimeSigilPill({ type, id, params, raw }: TimeSigilPillProps) {
             <CopyButton text={raw} />
           </div>
         </div>
-      </HoverCardContent>
-    </HoverCard>
+    </SigilHoverCard>
   );
 }
 
