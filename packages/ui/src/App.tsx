@@ -4004,14 +4004,12 @@ export function App() {
   const handleShowApiKeys = React.useCallback(() => { setShowApiKeys(true); setShowRunners(false); }, []);
   const handleShowRunners = React.useCallback(() => { setShowRunners(true); setShowApiKeys(false); activeSessionRef.current = null; setActiveSessionId(null); }, []);
   const handleShowShortcuts = React.useCallback(() => setShowShortcutsHelp(true), []);
-  const handleShowHiddenModels = React.useCallback(() => setHiddenModelsOpen(true), []);
   const handleChangePassword = React.useCallback(() => setChangePasswordOpen(true), []);
   const handleToggleSidebar = React.useCallback(() => setSidebarOpen((prev) => !prev), []);
   // Mobile-specific variants that also close the sidebar
   const handleMobileShowPreferences = React.useCallback(() => { setShowPreferences(true); setSidebarOpen(false); }, []);
   const handleMobileShowApiKeys = React.useCallback(() => { setShowApiKeys(true); setShowRunners(false); setSidebarOpen(false); }, []);
   const handleMobileShowRunners = React.useCallback(() => { setShowRunners(true); setShowApiKeys(false); activeSessionRef.current = null; setActiveSessionId(null); setSidebarOpen(false); }, []);
-  const handleMobileShowHiddenModels = React.useCallback(() => { setHiddenModelsOpen(true); setSidebarOpen(false); }, []);
   const handleMobileChangePassword = React.useCallback(() => { setChangePasswordOpen(true); setSidebarOpen(false); }, []);
   const handleSessionSwitcherOpenChange = React.useCallback((open: boolean) => setSessionSwitcherOpen(open), []);
 
@@ -4094,7 +4092,6 @@ export function App() {
         onShowApiKeys={handleShowApiKeys}
         onShowRunners={handleShowRunners}
         onShowShortcuts={handleShowShortcuts}
-        onShowHiddenModels={handleShowHiddenModels}
         onChangePassword={handleChangePassword}
         onRefreshUsage={refreshUsage}
       />
@@ -4119,7 +4116,6 @@ export function App() {
         onShowPreferences={handleMobileShowPreferences}
         onShowApiKeys={handleMobileShowApiKeys}
         onShowRunners={handleMobileShowRunners}
-        onShowHiddenModels={handleMobileShowHiddenModels}
         onChangePassword={handleMobileChangePassword}
         onRefreshUsage={refreshUsage}
         onOpenSession={handleOpenSession}
@@ -4646,7 +4642,11 @@ export function App() {
         />
 
         {showPreferences && (
-          <UserPreferencesPanel onClose={() => setShowPreferences(false)} />
+          <UserPreferencesPanel
+            onClose={() => setShowPreferences(false)}
+            onShowHiddenModels={() => setHiddenModelsOpen(true)}
+            hiddenModelCount={availableModels.filter(m => hiddenModels.has(modelKey(m.provider, m.id))).length}
+          />
         )}
 
         {showApiKeys && (

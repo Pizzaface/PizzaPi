@@ -11,8 +11,8 @@ import * as React from "react";
 import { PizzaLogo } from "@/components/PizzaLogo";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { UsageIndicator, type ProviderUsageMap } from "@/components/UsageIndicator";
-import { NotificationToggle, MobileNotificationMenuItem } from "@/components/NotificationToggle";
-import { HapticsToggle, MobileHapticsMenuItem } from "@/components/HapticsToggle";
+import { NotificationToggle } from "@/components/NotificationToggle";
+import { HapticsToggle } from "@/components/HapticsToggle";
 import { Button } from "@/components/ui/button";
 import { TooltipProvider, Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 import { Separator } from "@/components/ui/separator";
@@ -28,7 +28,7 @@ import type { DotState, HubSession } from "@/components/SessionSidebar";
 import type { ConfiguredModelInfo } from "@/lib/types";
 import {
   Sun, Moon, Monitor, LogOut, KeyRound, User, ChevronsUpDown, PanelLeftOpen, HardDrive,
-  Keyboard, EyeOff, Lock, Check, Plus, Settings,
+  Keyboard, Lock, Check, Plus, Settings,
 } from "lucide-react";
 import { signOut } from "@/lib/auth-client";
 import { useTheme, type ThemeMode } from "@/components/ThemeProvider";
@@ -109,7 +109,6 @@ export interface DesktopHeaderProps {
   onShowApiKeys: () => void;
   onShowRunners: () => void;
   onShowShortcuts: () => void;
-  onShowHiddenModels: () => void;
   onChangePassword: () => void;
   onRefreshUsage: () => boolean | void;
 }
@@ -127,7 +126,6 @@ export const DesktopHeader = React.memo(function DesktopHeader({
   onShowApiKeys,
   onShowRunners,
   onShowShortcuts,
-  onShowHiddenModels,
   onChangePassword,
   onRefreshUsage,
 }: DesktopHeaderProps) {
@@ -221,10 +219,6 @@ export const DesktopHeader = React.memo(function DesktopHeader({
               <HardDrive className="h-4 w-4" />
               Runners
             </DropdownMenuItem>
-            <DropdownMenuItem onSelect={onShowHiddenModels}>
-              <EyeOff className="h-4 w-4" />
-              Model visibility
-            </DropdownMenuItem>
             <DropdownMenuItem onSelect={onChangePassword}>
               <Lock className="h-4 w-4" />
               Change password
@@ -262,7 +256,6 @@ export interface MobileHeaderProps {
   onShowPreferences: () => void;
   onShowApiKeys: () => void;
   onShowRunners: () => void;
-  onShowHiddenModels: () => void;
   onChangePassword: () => void;
   onRefreshUsage: () => boolean | void;
   onOpenSession: (id: string) => void;
@@ -289,7 +282,6 @@ export const MobileHeader = React.memo(function MobileHeader({
   onShowPreferences,
   onShowApiKeys,
   onShowRunners,
-  onShowHiddenModels,
   onChangePassword,
   onRefreshUsage,
   onOpenSession,
@@ -445,8 +437,6 @@ export const MobileHeader = React.memo(function MobileHeader({
             )}
             <DropdownMenuSeparator />
             <ThemeMenuItems />
-            <MobileNotificationMenuItem />
-            <MobileHapticsMenuItem />
             <DropdownMenuItem onSelect={onShowPreferences}>
               <Settings className="h-4 w-4" />
               Preferences
@@ -458,10 +448,6 @@ export const MobileHeader = React.memo(function MobileHeader({
             <DropdownMenuItem onSelect={onShowRunners}>
               <HardDrive className="h-4 w-4" />
               Runners
-            </DropdownMenuItem>
-            <DropdownMenuItem onSelect={onShowHiddenModels}>
-              <EyeOff className="h-4 w-4" />
-              Model visibility
             </DropdownMenuItem>
             <DropdownMenuItem onSelect={onChangePassword}>
               <Lock className="h-4 w-4" />

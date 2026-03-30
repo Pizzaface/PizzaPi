@@ -29,7 +29,7 @@ import { createLogger } from "@pizzapi/tools";
 
 const log = createLogger("push");
 
-function usePushState() {
+export function usePushState() {
     const [subscribed, setSubscribed] = React.useState(false);
     const [loading, setLoading] = React.useState(true);
     const [supported, setSupported] = React.useState(false);

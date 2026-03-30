@@ -21,7 +21,7 @@ Once installed, PizzaPi opens in its own window without browser chrome. The app 
 
 On devices that support the [Vibration API](https://developer.mozilla.org/en-US/docs/Web/API/Vibration_API) (primarily Android), PizzaPi can provide haptic feedback as agent text streams in. The vibration pulse scales with the length of each text chunk — short tokens get a light tap, longer chunks get a bigger buzz.
 
-Toggle haptics with the vibration icon button in the toolbar, or from the mobile dropdown menu. A quick test buzz fires when you enable it. The preference is saved in `localStorage` and persists across sessions.
+Toggle haptics from **Preferences → Notifications**, or with the vibration icon button in the toolbar. A quick test buzz fires when you enable it. The preference is saved in `localStorage` and persists across sessions.
 
 <Aside type="note">
 iOS Safari ignores `navigator.vibrate()` silently, so the haptics toggle won't appear on iPhones or iPads.
