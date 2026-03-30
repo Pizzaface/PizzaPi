@@ -369,6 +369,14 @@ export function registerMessagingHandlers(socket: RelaySocket): void {
             return; // silently drop — not critical
         }
 
+        // Security: also verify sender is a child of the target (parent) session.
+        // Prevents a session from spoofing trigger progress updates into a parent
+        // it isn't actually linked to (same guard used by session_trigger handlers).
+        const senderIsChild = await isChildOfParent(targetSessionId, sessionId);
+        if (!senderIsChild) {
+            return; // silently drop — sender is not a child of the target
+        }
+
         // Broadcast to viewers of the target (parent) session
         broadcastToSessionViewers(targetSessionId, "trigger_status_update", {
             triggerId,
