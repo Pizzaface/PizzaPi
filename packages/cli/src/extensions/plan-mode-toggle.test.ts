@@ -862,6 +862,118 @@ describe("isDestructiveCommand", () => {
         expect(isDestructiveCommand("cat file.txt 2>/dev/null")).toBe(false);
         expect(isDestructiveCommand("grep pattern src/ 2>/dev/null")).toBe(false);
     });
+
+    // ── Wrapper shell bypass prevention (Fix 1) ──────────────────────────
+
+    test("flags shell wrappers with -c flag (bash/sh/dash/etc.)", () => {
+        expect(isDestructiveCommand("bash -c 'rm -rf /'")).toBe(true);
+        expect(isDestructiveCommand("sh -c 'evil'")).toBe(true);
+        expect(isDestructiveCommand("dash -c 'evil'")).toBe(true);
+        expect(isDestructiveCommand("zsh -c 'evil'")).toBe(true);
+        // Bundled flags: -xc is still -c
+        expect(isDestructiveCommand("bash -xc 'evil'")).toBe(true);
+        // Flags before -c
+        expect(isDestructiveCommand("bash --norc -c 'evil'")).toBe(true);
+    });
+
+    test("allows shell invocations without -c (no arbitrary code injection)", () => {
+        // --version and --help are always safe
+        expect(isDestructiveCommand("bash --version")).toBe(false);
+        expect(isDestructiveCommand("sh --help")).toBe(false);
+    });
+
+    test("flags path-prefixed shells with -c flag", () => {
+        expect(isDestructiveCommand("/bin/bash -c 'evil'")).toBe(true);
+        expect(isDestructiveCommand("/usr/bin/sh -c 'evil'")).toBe(true);
+        expect(isDestructiveCommand("/usr/local/bin/bash -c 'rm -rf /'")).toBe(true);
+    });
+
+    test("flags perl -e / -E (inline Perl code execution)", () => {
+        expect(isDestructiveCommand("perl -e 'unlink \"file.txt\"'")).toBe(true);
+        expect(isDestructiveCommand("perl -E 'say \"hello\"'")).toBe(true);
+        // Bundled with other flags
+        expect(isDestructiveCommand("perl -we 'unlink \"f\"'")).toBe(true);
+        // Path-prefixed
+        expect(isDestructiveCommand("/usr/bin/perl -e 'unlink \"f\"'")).toBe(true);
+    });
+
+    test("allows perl without -e/-E (safe invocations)", () => {
+        expect(isDestructiveCommand("perl --version")).toBe(false);
+        expect(isDestructiveCommand("perl --help")).toBe(false);
+        // Note: perl script.pl is caught by general script execution (DESTRUCTIVE_FLAG_PATTERNS covers this via no-sandbox path)
+    });
+
+    test("flags env used as a command launcher", () => {
+        // env COMMAND
+        expect(isDestructiveCommand("env rm file.txt")).toBe(true);
+        // env VAR=val COMMAND
+        expect(isDestructiveCommand("env FOO=bar rm file.txt")).toBe(true);
+        expect(isDestructiveCommand("env FOO=bar BAZ=qux rm file.txt")).toBe(true);
+        // env wrapping a shell wrapper
+        expect(isDestructiveCommand("env bash -c 'evil'")).toBe(true);
+        expect(isDestructiveCommand("env FOO=bar bash -c 'evil'")).toBe(true);
+        // env -i (clear environment) then a command
+        expect(isDestructiveCommand("env -i rm file.txt")).toBe(true);
+        expect(isDestructiveCommand("env -i FOO=bar bash -c 'evil'")).toBe(true);
+    });
+
+    test("allows bare env (no command, just prints environment)", () => {
+        expect(isDestructiveCommand("env")).toBe(false);
+        // env with only VAR=val assignments (no trailing command)
+        expect(isDestructiveCommand("env FOO=bar")).toBe(false);
+        expect(isDestructiveCommand("env FOO=bar BAZ=qux")).toBe(false);
+    });
+
+    test("flags shell wrappers in chained commands", () => {
+        expect(isDestructiveCommand("ls && bash -c 'evil'")).toBe(true);
+        expect(isDestructiveCommand("cat file.txt | sh -c 'evil'")).toBe(true);
+        expect(isDestructiveCommand("echo hello; env rm foo")).toBe(true);
+    });
+
+    // ── HTTP mutation command bypass prevention (Fix 3) ──────────────────
+
+    test("flags curl with HTTP mutation verbs (-X POST/PUT/DELETE/PATCH)", () => {
+        expect(isDestructiveCommand("curl -X POST https://api.example.com")).toBe(true);
+        expect(isDestructiveCommand("curl -X PUT https://api.example.com/resource")).toBe(true);
+        expect(isDestructiveCommand("curl -X DELETE https://api.example.com/resource/1")).toBe(true);
+        expect(isDestructiveCommand("curl -X PATCH https://api.example.com/resource")).toBe(true);
+        // --request is the long form of -X
+        expect(isDestructiveCommand("curl --request POST https://api.example.com")).toBe(true);
+        expect(isDestructiveCommand("curl --request=DELETE https://api.example.com/resource")).toBe(true);
+        // Combined with other safe flags
+        expect(isDestructiveCommand("curl -sL -X POST https://api.example.com")).toBe(true);
+    });
+
+    test("allows curl with safe HTTP verbs", () => {
+        // GET (default, no -X needed)
+        expect(isDestructiveCommand("curl https://api.example.com")).toBe(false);
+        expect(isDestructiveCommand("curl -sL https://api.example.com")).toBe(false);
+        // Explicit GET is safe
+        expect(isDestructiveCommand("curl -X GET https://api.example.com")).toBe(false);
+        expect(isDestructiveCommand("curl --request GET https://api.example.com")).toBe(false);
+    });
+
+    test("flags curl with data/body flags (-d, --data, --data-raw, --data-binary, --data-urlencode, --json)", () => {
+        expect(isDestructiveCommand("curl -d 'key=value' https://api.example.com")).toBe(true);
+        expect(isDestructiveCommand("curl --data 'key=value' https://api.example.com")).toBe(true);
+        expect(isDestructiveCommand("curl --data-raw 'raw data' https://api.example.com")).toBe(true);
+        expect(isDestructiveCommand("curl --data-binary @file.bin https://api.example.com")).toBe(true);
+        expect(isDestructiveCommand("curl --data-urlencode 'name=value' https://api.example.com")).toBe(true);
+        expect(isDestructiveCommand("curl --json '{\"key\":\"val\"}' https://api.example.com")).toBe(true);
+        // -d attached to value (no space)
+        expect(isDestructiveCommand("curl -d'{\"k\":\"v\"}' https://api.example.com")).toBe(true);
+    });
+
+    test("flags wget with --post-data and --post-file", () => {
+        expect(isDestructiveCommand("wget --post-data='key=value' https://api.example.com")).toBe(true);
+        expect(isDestructiveCommand("wget --post-data 'key=value' https://api.example.com")).toBe(true);
+        expect(isDestructiveCommand("wget --post-file=payload.bin https://api.example.com")).toBe(true);
+    });
+
+    test("allows wget without POST flags (read-only download check)", () => {
+        // Note: wget -O writes to a file and is already blocked separately
+        expect(isDestructiveCommand("wget -q https://example.com")).toBe(false);
+    });
 });
 
 // ── isDestructiveCommand with sandboxActive=true ─────────────────────────────
@@ -985,6 +1097,27 @@ describe("isDestructiveCommand (sandboxActive=true)", () => {
         expect(isDestructiveCommand("gh issue list", true)).toBe(false);
         expect(isDestructiveCommand("gh pr view 123", true)).toBe(false);
         expect(isDestructiveCommand("gh api /repos", true)).toBe(false);
+    });
+
+    test("blocks curl HTTP mutations when sandbox active (network side-effect, Fix 3)", () => {
+        expect(isDestructiveCommand("curl -X POST https://api.example.com", true)).toBe(true);
+        expect(isDestructiveCommand("curl -X PUT https://api.example.com/r", true)).toBe(true);
+        expect(isDestructiveCommand("curl -X DELETE https://api.example.com/r/1", true)).toBe(true);
+        expect(isDestructiveCommand("curl --request POST https://api.example.com", true)).toBe(true);
+        expect(isDestructiveCommand("curl -d 'key=val' https://api.example.com", true)).toBe(true);
+        expect(isDestructiveCommand("curl --data '{}' https://api.example.com", true)).toBe(true);
+        expect(isDestructiveCommand("curl --json '{}' https://api.example.com", true)).toBe(true);
+    });
+
+    test("blocks wget POST when sandbox active (network side-effect, Fix 3)", () => {
+        expect(isDestructiveCommand("wget --post-data='key=val' https://api.example.com", true)).toBe(true);
+        expect(isDestructiveCommand("wget --post-file=data.bin https://api.example.com", true)).toBe(true);
+    });
+
+    test("allows curl GET when sandbox active", () => {
+        expect(isDestructiveCommand("curl https://api.example.com", true)).toBe(false);
+        expect(isDestructiveCommand("curl -X GET https://api.example.com", true)).toBe(false);
+        expect(isDestructiveCommand("curl -sL https://api.example.com", true)).toBe(false);
     });
 
     test("allows editors when sandbox active (OS blocks writes)", () => {

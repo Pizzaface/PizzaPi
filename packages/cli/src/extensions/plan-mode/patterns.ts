@@ -27,6 +27,12 @@ export const DESTRUCTIVE_CMD_PATTERNS = [
     /^\s*mkfifo\b/i,    // creates named pipes (filesystem objects)
     /^\s*mknod\b/i,     // creates device/special files
     // Note: `patch` is handled separately so `patch --dry-run` / `--check` stay allowed.
+    // Shell builtins that execute dynamic/opaque code — cannot be statically analysed.
+    // Block ALL eval/source/. unconditionally; even `eval echo hello` is disallowed
+    // because we cannot guarantee the string is safe at static-analysis time.
+    /^\s*eval\b/i,
+    /^\s*source\b/i,
+    /^\s*\.\s+/,   // dot-source builtin: ". ./script.sh", ". config"
 ];
 
 /**
@@ -101,12 +107,21 @@ export const SANDBOX_ONLY_CMD_PATTERNS = [
     /^\s*reboot\b/i, /^\s*shutdown\b/i,
     /^\s*systemctl\s+(start|stop|restart|enable|disable)/i,
     /^\s*service\s+\S+\s+(start|stop|restart)/i,
+    // Shell builtins that execute dynamic/opaque code — block in sandbox too
+    // (sandbox only protects the filesystem, not arbitrary code evaluation).
+    /^\s*eval\b/i,
+    /^\s*source\b/i,
+    /^\s*\.\s+/,   // dot-source builtin
     // Remote / network side effects — sandbox only protects local filesystem
     // (Git commands are handled separately via the GIT_SAFE_SUBCOMMANDS allowlist)
     /^\s*npm\s+publish\b/i,
     /^\s*npx\b/i,
     /^\s*docker\s+push\b/i,
     /^\s*gh\s+(issue|pr|release)\s+(create|edit|close|merge|delete|comment)\b/i,
+    // HTTP write verbs — sandbox protects local filesystem but NOT the network.
+    // These send mutations to remote servers regardless of sandbox state.
+    /^\s*curl\b.*\s(?:-X\s*(?:POST|PUT|DELETE|PATCH)\b|--request(?:=|\s+)(?:POST|PUT|DELETE|PATCH)\b|-d\b|--data(?:\s|=|-\w)|--json\b)/i,
+    /^\s*wget\b.*\s--post-(?:data|file)(?:\s|=|\b)/i,
 ];
 
 /**
@@ -123,13 +138,41 @@ export const DESTRUCTIVE_FLAG_PATTERNS = [
     // In-place editing via sed/perl -i
     /\bsed\b.*\s-i\b/i, /\bsed\b.*\s-i\S/i,
     /\bperl\b.*\s-i\b/i, /\bperl\b.*\s-i\S/i,
-    // Interpreters executing scripts (not just --version/--help)
+    // perl -e / -E: inline code execution (e.g. `perl -e 'unlink "f"'`)
+    /^\s*perl\b.*\s-[a-zA-Z]*[eE](?:\s|$)/i,
+    // Interpreters executing scripts (not just --version/--help).
+    // These also cover -c (python -c) and -e (ruby -e / node -e) inline execution.
     /^\s*python[23]?\s+(?!--(version|help)\b)\S/i,
     /^\s*ruby\s+(?!--(version|help)\b)\S/i,
     /^\s*node\s+(?!--(version|help)\b)\S/i,
     // Build tools (not --dry-run / --just-print / -n)
     /^\s*make\b(?!.*(\s-n\b|\s--dry-run\b|\s--just-print\b))/i,
+    // HTTP write verbs via curl (network side-effects, not covered by filesystem sandbox).
+    // Blocks -X POST/PUT/DELETE/PATCH, --request, -d/--data* (POST body), --json.
+    /\bcurl\b.*\s(?:-X\s*(?:POST|PUT|DELETE|PATCH)\b|--request(?:=|\s+)(?:POST|PUT|DELETE|PATCH)\b|-d\b|--data(?:\s|=|-\w)|--json\b)/i,
+    // HTTP write verbs via wget
+    /\bwget\b.*\s--post-(?:data|file)(?:\s|=|\b)/i,
 ];
+
+/**
+ * Commands that simply pass through to their arguments as a new process.
+ * e.g. `time git push` executes `git push`; `timeout 5 git push` executes `git push`.
+ * These are NOT shell interpreters — they have no -c flag — but they must be
+ * unwrapped so the inner command can be analysed for destructiveness.
+ */
+export const PASSTHROUGH_WRAPPERS = new Set([
+    "time", "nohup", "timeout", "nice", "stdbuf",
+    "ionice", "chrt", "taskset", "setsid", "chronic",
+]);
+
+/**
+ * Shell names that support the -c flag to execute arbitrary code strings.
+ * Blocked in no-sandbox mode via isWrapperShellCommand() in safe-command.ts when
+ * invoked with -c. env is handled separately (it wraps any command, not just -c).
+ */
+export const WRAPPER_SHELLS = new Set([
+    "bash", "sh", "dash", "zsh", "ksh", "csh", "tcsh", "fish",
+]);
 
 /**
  * In no-sandbox mode we block output redirection by default because it can
@@ -141,5 +184,7 @@ export const OUTPUT_REDIRECTION_PATTERN = /(^|[^<])(\d*)>(?!>)(?:\s*([^\s;|&]+))
 
 // ── Write-blocked tool names ─────────────────────────────────────────────────
 // These tools are blocked when plan mode is active.
-// Includes both core pi tools ("edit", "write") and PizzaPi custom tools ("write_file").
-export const WRITE_BLOCKED_TOOL_NAMES = new Set(["edit", "write", "write_file"]);
+// Includes both core pi tools ("edit", "write"), PizzaPi custom tools ("write_file"),
+// and tools that spawn child sessions with full write access ("subagent", "spawn_session"),
+// which would otherwise bypass plan mode restrictions entirely.
+export const WRITE_BLOCKED_TOOL_NAMES = new Set(["edit", "write", "write_file", "subagent", "spawn_session"]);
