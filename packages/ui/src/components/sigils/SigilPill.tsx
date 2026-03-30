@@ -15,7 +15,7 @@ import {
   HoverCardTrigger,
 } from "@/components/ui/hover-card";
 import { cn } from "@/lib/utils";
-import { useSigilRegistry, useSigilResolve, useSigilTriggerResolve } from "./SigilContext";
+import { useSigilRegistry, useSigilResolve, useSigilTriggerResolve, useSigilGeneration } from "./SigilContext";
 import { SigilIcon } from "./SigilIcon";
 import { ExternalLinkIcon, CheckIcon, CopyIcon } from "lucide-react";
 
@@ -54,12 +54,16 @@ export function SigilPill({ type, id, params, raw }: SigilPillProps) {
   const canonicalType = registry.resolveType(type);
   const typeLabel = params.label ?? registry.getLabel(type);
 
-  // Resolve enrichment data
+  // Resolve enrichment data.
+  // `generation` changes on server restart/reconnect (cache invalidation),
+  // ensuring the effect re-fires even when type/id/params haven't changed.
   const triggerResolve = useSigilTriggerResolve();
+  const generation = useSigilGeneration();
   const resolved = useSigilResolve(canonicalType, id);
   useEffect(() => {
     if (id) triggerResolve(canonicalType, id, params);
-  }, [canonicalType, id, triggerResolve, params]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canonicalType, id, triggerResolve, params, generation]);
 
   const displayText = resolved.data?.title ?? params.label ?? (id || canonicalType);
   const statusParam = resolved.data?.status ?? params.status ?? params.conclusion;

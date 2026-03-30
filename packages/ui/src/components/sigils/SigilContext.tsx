@@ -32,14 +32,23 @@ interface SigilResolveState {
 
 interface SigilContextValue {
   registry: SigilRegistry;
+  /** Read current resolve state for a sigil. */
   resolve: (type: string, id: string) => SigilResolveState;
+  /** Kick off a resolve fetch (no-op if already cached). */
   triggerResolve: (type: string, id: string, params?: Record<string, string>) => void;
+  /**
+   * Monotonically increasing counter that bumps whenever infrastructure
+   * changes (server restart, reconnect) or resolve data arrives.
+   * Pills include this in useEffect deps to re-trigger resolve after cache invalidation.
+   */
+  generation: number;
 }
 
 const SigilCtx = createContext<SigilContextValue>({
   registry: createRegistry(),
   resolve: () => ({ loading: false }),
   triggerResolve: () => {},
+  generation: 0,
 });
 
 export function useSigilRegistry(): SigilRegistry {
@@ -53,6 +62,10 @@ export function useSigilResolve(type: string, id: string) {
 
 export function useSigilTriggerResolve() {
   return useContext(SigilCtx).triggerResolve;
+}
+
+export function useSigilGeneration() {
+  return useContext(SigilCtx).generation;
 }
 
 // ── Provider ─────────────────────────────────────────────────────────────────
@@ -71,18 +84,9 @@ interface SigilProviderProps {
 export function SigilProvider({ sigilDefs, panels, runnerId, children }: SigilProviderProps) {
   const registry = useMemo(() => createRegistry(sigilDefs), [sigilDefs]);
 
-  // Resolve cache: keyed by "type:id". Lives in a ref for instant reads.
-  // A version counter in state triggers re-renders when data arrives.
+  // Resolve cache: keyed by "gen:type:id". Lives in a ref for instant reads.
   const cacheRef = useRef(new Map<string, SigilResolveState>());
-  const [version, setVersion] = useState(0);
-  const bump = useCallback(() => setVersion((v) => v + 1), []);
-
-  // Clear cache when infrastructure changes (server restart, reconnect)
-  // so stale entries don't block re-fetching with new panel ports.
-  useEffect(() => {
-    cacheRef.current.clear();
-    bump();
-  }, [panels, runnerId, sigilDefs, bump]);
+  const [generation, setGeneration] = useState(0);
 
   // Build panel port lookup: serviceId → port
   const panelPortMap = useMemo(() => {
@@ -90,6 +94,20 @@ export function SigilProvider({ sigilDefs, panels, runnerId, children }: SigilPr
     for (const p of panels) map.set(p.serviceId, p.port);
     return map;
   }, [panels]);
+
+  // Bump generation and clear cache when infrastructure changes.
+  // This invalidates all cached entries and causes pills to re-trigger
+  // resolve via the generation dep in their useEffect.
+  const prevInfraRef = useRef({ panels, runnerId, sigilDefs });
+  useEffect(() => {
+    const prev = prevInfraRef.current;
+    // Skip the initial mount — only invalidate on actual changes
+    if (prev.panels !== panels || prev.runnerId !== runnerId || prev.sigilDefs !== sigilDefs) {
+      cacheRef.current.clear();
+      setGeneration((g) => g + 1);
+    }
+    prevInfraRef.current = { panels, runnerId, sigilDefs };
+  }, [panels, runnerId, sigilDefs]);
 
   const resolve = useCallback(
     (type: string, id: string): SigilResolveState => {
@@ -118,35 +136,33 @@ export function SigilProvider({ sigilDefs, panels, runnerId, children }: SigilPr
       const resolvePath = def.resolve.replace("{id}", encodeURIComponent(id));
       const qs = params && Object.keys(params).length > 0
         ? "?" + new URLSearchParams(
-            Object.entries(params).filter(([k]) => !['label', 'link', 'href'].includes(k))
+            Object.entries(params).filter(([k]) => !["label", "link", "href"].includes(k)),
           ).toString()
         : "";
       const url = `/api/tunnel/runner/${encodeURIComponent(runnerId)}/${port}${resolvePath}${qs}`;
 
       // Mark as loading
       cache.set(key, { loading: true });
-      bump();
+      setGeneration((g) => g + 1);
 
       fetch(url)
         .then(async (res) => {
           if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
           const data = (await res.json()) as SigilResolveData;
           cache.set(key, { data, loading: false });
-          bump();
+          setGeneration((g) => g + 1);
         })
         .catch((err) => {
           cache.set(key, { loading: false, error: String(err) });
-          bump();
+          setGeneration((g) => g + 1);
         });
     },
-    [registry, panelPortMap, runnerId, bump],
+    [registry, panelPortMap, runnerId],
   );
 
-  // Include version so consumers re-render when resolve data arrives
   const contextValue = useMemo<SigilContextValue>(
-    () => ({ registry, resolve, triggerResolve }),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [registry, resolve, triggerResolve, version],
+    () => ({ registry, resolve, triggerResolve, generation }),
+    [registry, resolve, triggerResolve, generation],
   );
 
   return <SigilCtx.Provider value={contextValue}>{children}</SigilCtx.Provider>;
