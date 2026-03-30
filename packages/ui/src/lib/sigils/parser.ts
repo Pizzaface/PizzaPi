@@ -9,7 +9,7 @@ import type { SigilMatch } from "./types";
  *
  * Does NOT handle nested brackets — [[foo:[[bar]]]] is invalid.
  */
-const SIGIL_RE = /\[\[([a-zA-Z][\w-]*):([^\s\]\[]*)((?:\s+[a-zA-Z][\w-]*=(?:"[^"]*"|[^\s\]]+))*)\s*\]\]/g;
+const SIGIL_RE = /\[\[([a-zA-Z][\w-]*):([^\s\]\[]*)((?:\s+[a-zA-Z][\w-]*=(?:"[^"]*"|[^\s\]"]+))*)\s*\]\]/g;
 
 /**
  * Regex to match individual key=value or key="quoted value" params.
