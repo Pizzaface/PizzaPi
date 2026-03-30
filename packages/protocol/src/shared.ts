@@ -247,6 +247,15 @@ export interface ServiceSigilDef {
    */
   resolve?: string;
   /**
+   * HTTP port of the resolve server for this sigil type.
+   * Populated by the daemon when the service announces a port via
+   * announceSigilServer rather than announcePanel (i.e. it runs an HTTP
+   * server for resolve calls but does not have a UI panel).
+   * The UI uses this to route resolve requests without needing the service
+   * to appear in the panels array.
+   */
+  resolvePort?: number;
+  /**
    * JSON Schema for the sigil's params (key-value pairs in [[type:id key=val]]).
    * Defines what params are valid for this sigil type.
    */

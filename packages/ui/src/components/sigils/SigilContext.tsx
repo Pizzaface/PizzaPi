@@ -137,7 +137,10 @@ export function SigilProvider({ sigilDefs, panels, runnerId, children }: SigilPr
       const def = registry.getServiceDef(canonical);
       if (!def?.resolve || !def.serviceId || !runnerId) return;
 
-      const port = panelPortMap.get(def.serviceId);
+      // Prefer the panel port (services with a UI panel), then fall back to
+      // resolvePort (panel-less services like the built-in time service that
+      // only run an HTTP server for sigil resolution).
+      const port = panelPortMap.get(def.serviceId) ?? def.resolvePort;
       if (!port) return;
 
       // Build the resolve URL through the tunnel proxy, forwarding params as query string

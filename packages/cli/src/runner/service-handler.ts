@@ -26,6 +26,13 @@ export interface ServiceInitOptions {
     isShuttingDown: () => boolean;
     /** Call to announce a panel HTTP server port. Only provided to services with a panel manifest. */
     announcePanel?: (port: number) => void;
+    /**
+     * Call to announce an HTTP server that handles sigil resolve calls but has no UI panel.
+     * The port is registered with the tunnel proxy for routing and stamped onto the service's
+     * sigil definitions so the UI can reach it — but the service does NOT appear in the
+     * panels list and is not shown in the services grid.
+     */
+    announceSigilServer?: (port: number) => void;
 }
 
 /**
