@@ -527,11 +527,14 @@ export const handleWebhooksRoute: RouteHandler = async (req, url) => {
             if (!Number.isFinite(timestampMs)) {
                 return Response.json({ error: "Invalid X-Webhook-Timestamp header" }, { status: 401 });
             }
-            if (Math.abs(nowMs - timestampMs) > WEBHOOK_REPLAY_WINDOW_MS) {
-                return Response.json(
-                    { error: "Webhook timestamp is too old or too far in the future" },
-                    { status: 401 },
-                );
+            // Reject future timestamps entirely — accepting them creates a nonce
+            // replay window: nonce pruned at T0+WINDOW but future timestamp still
+            // valid until T0+2*WINDOW.
+            if (timestampMs > nowMs) {
+                return Response.json({ error: "Webhook timestamp is in the future" }, { status: 401 });
+            }
+            if (nowMs - timestampMs > WEBHOOK_REPLAY_WINDOW_MS) {
+                return Response.json({ error: "Webhook timestamp is too old" }, { status: 401 });
             }
 
             const nonce = nonceHeader!.trim();
