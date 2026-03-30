@@ -20,6 +20,19 @@ import {
 } from "@/components/ui/tool-card";
 import { TriggerCard } from "./TriggerCard";
 
+/**
+ * Allowlist URL schemes for inter-agent card links.
+ * Blocks javascript:, data:, vbscript:, and other dangerous schemes.
+ */
+function isSafeUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    return ["http:", "https:"].includes(parsed.protocol);
+  } catch {
+    return false;
+  }
+}
+
 export function truncateSessionId(id: string): string {
   return id.length > 12 ? `${id.slice(0, 8)}…` : id;
 }
@@ -162,7 +175,7 @@ export function SpawnSessionCard({
       </div>
 
       {/* Link to session */}
-      {parsed.shareUrl && (
+      {parsed.shareUrl && isSafeUrl(parsed.shareUrl) && (
         <div className="border-t border-zinc-800/60 px-4 py-2">
           <a
             href={parsed.shareUrl}

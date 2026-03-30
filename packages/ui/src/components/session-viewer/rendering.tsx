@@ -292,7 +292,12 @@ export function renderContent(
             const mime = typeof b.mimeType === "string" ? b.mimeType : typeof source.mediaType === "string" ? source.mediaType : "image/png";
             const url = typeof source.url === "string" ? source.url : null;
 
-            if (data) {
+            // Only allow safe raster image MIME types — block SVG (XSS via inline script)
+            // and any other non-image type.
+            const SAFE_IMAGE_MIMES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp", "image/avif"]);
+            const isSafeMime = SAFE_IMAGE_MIMES.has(mime.toLowerCase());
+
+            if (data && isSafeMime) {
               return (
                 <img
                   key={i}
@@ -305,16 +310,35 @@ export function renderContent(
 
             // Extracted images: base64 data was replaced with an attachment URL
             // by the server to reduce payload size. Load via URL instead.
+            // Allow http/https absolute URLs and relative paths (e.g. /api/attachments/...).
+            // Block javascript:, data: (non-image), and other dangerous schemes.
             if (url) {
-              return (
-                <img
-                  key={i}
-                  src={url}
-                  alt="Message attachment"
-                  className="max-h-80 max-w-full rounded border border-border"
-                  loading="lazy"
-                />
-              );
+              let isSafeUrl = false;
+              if (url.startsWith("/") && !url.startsWith("//")) {
+                // Relative path — safe internal reference (e.g. /api/attachments/...).
+                // Exclude protocol-relative URLs (//host/path) — they start with "/" but
+                // the browser resolves them as external absolute URLs and must go through
+                // the URL validation path below.
+                isSafeUrl = true;
+              } else {
+                try {
+                  const parsed = new URL(url);
+                  isSafeUrl = parsed.protocol === "http:" || parsed.protocol === "https:";
+                } catch {
+                  isSafeUrl = false;
+                }
+              }
+              if (isSafeUrl) {
+                return (
+                  <img
+                    key={i}
+                    src={url}
+                    alt="Message attachment"
+                    className="max-h-80 max-w-full rounded border border-border"
+                    loading="lazy"
+                  />
+                );
+              }
             }
           }
 

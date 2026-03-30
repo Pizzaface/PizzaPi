@@ -77,7 +77,8 @@ export function SigilPill({ type, id, params, raw }: SigilPillProps) {
   const displayText = resolved.data?.title ?? params.label ?? (id || canonicalType);
   const statusParam = resolved.data?.status ?? params.status ?? params.conclusion;
   const statusColor = statusParam ? getStatusColor(statusParam) : undefined;
-  const href = params.link ?? params.href ?? (resolved.data?.url ? String(resolved.data.url) : undefined);
+  const rawHref = params.link ?? params.href ?? (resolved.data?.url ? String(resolved.data.url) : undefined);
+  const href = rawHref && isSafeUrl(rawHref) ? rawHref : undefined;
   const author = resolved.data?.author ? String(resolved.data.author) : undefined;
   const description = resolved.data?.description
     ? String(resolved.data.description)
@@ -251,6 +252,19 @@ export function SigilPill({ type, id, params, raw }: SigilPillProps) {
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
+
+/**
+ * Allowlist URL schemes for sigil links.
+ * Blocks javascript:, data:, vbscript:, and any other potentially dangerous scheme.
+ */
+function isSafeUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    return ["http:", "https:", "pizzapi:"].includes(parsed.protocol);
+  } catch {
+    return false;
+  }
+}
 
 function getStatusColor(status: string): string | undefined {
   switch (status) {

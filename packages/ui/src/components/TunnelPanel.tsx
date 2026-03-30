@@ -185,6 +185,12 @@ export function TunnelPanel({ sessionId, runnerId }: TunnelPanelProps) {
                                 <Loader2 className="size-5 animate-spin text-muted-foreground" />
                             </div>
                         )}
+                        {/*
+                          * allow-same-origin is required for storage/cookie-dependent dashboards
+                          * (e.g. service panels that read localStorage). The tunnel URL is served
+                          * from our own origin so same-origin grants no extra cross-origin privilege
+                          * beyond what a plain fetch would already allow. See also PR #415.
+                          */}
                         <iframe
                             key={iframeKey}
                             ref={iframeRef}
