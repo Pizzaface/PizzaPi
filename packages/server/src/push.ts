@@ -100,6 +100,7 @@ const PRIVATE_IP_PATTERNS = [
     /^\[f[cd][0-9a-f]{2}:/i,      // IPv6 ULA fc00::/7 (fc** and fd**) — URL API wraps IPv6 in "[...]"
     /^\[fe[89ab][0-9a-f]:/i,     // IPv6 link-local fe80::/10
     /^0\./,                      // 0.0.0.0/8
+    /^\[::\]$/,                  // IPv6 all-interfaces bind address (:: / ::/128)
 ];
 
 /**
@@ -130,6 +131,26 @@ export function isValidPushEndpoint(endpoint: string): boolean {
     if (parsed.protocol !== "https:") return false;
 
     const host = parsed.hostname.toLowerCase();
+
+    // Reject localhost / .localhost hostnames (hostname-based loopback).
+    // The IP-based patterns below do not catch the plain string "localhost".
+    if (host === "localhost" || host.endsWith(".localhost")) return false;
+
+    // Reject IPv4-mapped IPv6 addresses (::ffff:x.x.x.x).
+    // Bun's URL API normalizes the dotted-decimal form to hex pairs before we
+    // ever see it:  [::ffff:127.0.0.1] → [::ffff:7f00:1]
+    // We match the two 16-bit hex groups, convert them back to dotted-decimal
+    // IPv4, then check against the same private-range patterns.
+    const ipv4MappedMatch = host.match(/^\[::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})\]$/);
+    if (ipv4MappedMatch) {
+        const high = parseInt(ipv4MappedMatch[1], 16);
+        const low = parseInt(ipv4MappedMatch[2], 16);
+        const innerIpv4 = `${(high >> 8) & 0xff}.${high & 0xff}.${(low >> 8) & 0xff}.${low & 0xff}`;
+        for (const pattern of PRIVATE_IP_PATTERNS) {
+            if (pattern.test(innerIpv4)) return false;
+        }
+        // Inner IPv4 is public — fall through to the normal allow path.
+    }
 
     // Reject private/loopback addresses (SSRF protection).
     for (const pattern of PRIVATE_IP_PATTERNS) {

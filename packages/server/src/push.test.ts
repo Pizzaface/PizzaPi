@@ -249,4 +249,50 @@ describe("isValidPushEndpoint", () => {
         expect(isValidPushEndpoint("")).toBe(false);
         expect(isValidPushEndpoint("://missing-scheme")).toBe(false);
     });
+
+    // ── localhost hostname (Round 3 regression) ───────────────────────────
+
+    it("rejects 'localhost' hostname (case-insensitive)", () => {
+        expect(isValidPushEndpoint("https://localhost/push")).toBe(false);
+        expect(isValidPushEndpoint("https://LOCALHOST/push")).toBe(false);
+        expect(isValidPushEndpoint("https://Localhost/push")).toBe(false);
+    });
+
+    it("rejects .localhost subdomains", () => {
+        expect(isValidPushEndpoint("https://foo.localhost/push")).toBe(false);
+        expect(isValidPushEndpoint("https://my.service.localhost/push")).toBe(false);
+    });
+
+    it("accepts hostnames that contain 'localhost' as a non-.localhost substring", () => {
+        // "notlocalhost.example.com" is not equal to "localhost" and does not
+        // end with ".localhost", so it should be accepted.
+        expect(isValidPushEndpoint("https://notlocalhost.example.com/push")).toBe(true);
+    });
+
+    // ── IPv4-mapped IPv6 (Round 3 regression) ────────────────────────────
+
+    it("rejects IPv4-mapped IPv6 loopback (::ffff:127.x.x.x)", () => {
+        expect(isValidPushEndpoint("https://[::ffff:127.0.0.1]/push")).toBe(false);
+        expect(isValidPushEndpoint("https://[::ffff:127.1.2.3]/push")).toBe(false);
+    });
+
+    it("rejects IPv4-mapped IPv6 for RFC1918 private ranges", () => {
+        expect(isValidPushEndpoint("https://[::ffff:192.168.1.1]/push")).toBe(false);
+        expect(isValidPushEndpoint("https://[::ffff:10.0.0.1]/push")).toBe(false);
+        expect(isValidPushEndpoint("https://[::ffff:172.16.0.1]/push")).toBe(false);
+    });
+
+    it("accepts IPv4-mapped IPv6 for public IPs (no over-blocking)", () => {
+        expect(isValidPushEndpoint("https://[::ffff:8.8.8.8]/push")).toBe(true);
+    });
+
+    // ── All-interfaces bind addresses ────────────────────────────────────
+
+    it("rejects IPv6 all-interfaces bind address ([::])", () => {
+        expect(isValidPushEndpoint("https://[::]/push")).toBe(false);
+    });
+
+    it("rejects 0.0.0.0 (IPv4 all-interfaces bind address)", () => {
+        expect(isValidPushEndpoint("https://0.0.0.0/push")).toBe(false);
+    });
 });
