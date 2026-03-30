@@ -544,13 +544,17 @@ export const handleWebhooksRoute: RouteHandler = async (req, url) => {
                 return Response.json({ error: "Invalid signature" }, { status: 401 });
             }
 
-            // Replay check — nonce is only consumed after successful delivery (below).
-            // This allows legitimate retries if delivery fails transiently (502/503/504).
+            // Replay check — eagerly consume the nonce BEFORE any async work to close
+            // the concurrent-request race window (two same-nonce requests arriving in
+            // parallel both pass has() before either sets the nonce).
+            // Transient failures (502/503/504) below roll the nonce back so retries work.
+            // Permanent failures and success keep it consumed.
             pruneConsumedWebhookNonces(nowMs);
             nonceKey = `${webhookId}:${nonce}`;
             if (consumedWebhookNonces.has(nonceKey)) {
                 return Response.json({ error: "Webhook nonce has already been used" }, { status: 409 });
             }
+            consumedWebhookNonces.set(nonceKey, nowMs);
         } else {
             // Legacy mode: HMAC of raw body only — no replay protection.
             const expected = computeHmac(webhook.secret, rawBodyText);
@@ -594,7 +598,13 @@ export const handleWebhooksRoute: RouteHandler = async (req, url) => {
             webhook.prompt,
             webhook.model,
         );
-        if (spawnResult instanceof Response) return spawnResult;
+        if (spawnResult instanceof Response) {
+            // Roll back nonce for transient spawn failures (502/503) so the caller can retry.
+            if (useEnhanced && nonceKey && (spawnResult.status === 502 || spawnResult.status === 503)) {
+                consumedWebhookNonces.delete(nonceKey);
+            }
+            return spawnResult;
+        }
 
         const { sessionId } = spawnResult;
         log.info(`Webhook ${webhookId} spawned session ${sessionId}`);
@@ -603,6 +613,10 @@ export const handleWebhooksRoute: RouteHandler = async (req, url) => {
         const connected = await waitForSessionSocket(sessionId);
         if (!connected) {
             log.warn(`Webhook ${webhookId}: session ${sessionId} spawned but never connected`);
+            // 504 is transient — roll back nonce so the caller can retry.
+            if (useEnhanced && nonceKey) {
+                consumedWebhookNonces.delete(nonceKey);
+            }
             return Response.json(
                 { error: "Session was spawned but did not connect in time" },
                 { status: 504 },
@@ -619,11 +633,14 @@ export const handleWebhooksRoute: RouteHandler = async (req, url) => {
             webhook.prompt,
         );
 
-        // Consume the nonce only after a successful delivery.
-        // If delivery fails transiently (502/503/504), the caller can retry
-        // with the same nonce within the replay window.
-        if (useEnhanced && nonceKey && fireResponse.status >= 200 && fireResponse.status < 300) {
-            consumedWebhookNonces.set(nonceKey, nowMs);
+        // Roll back nonce for transient delivery failures (502/503/504) so retries work.
+        // For permanent failures (4xx other than transient) and success, nonce stays consumed.
+        if (
+            useEnhanced &&
+            nonceKey &&
+            (fireResponse.status === 502 || fireResponse.status === 503 || fireResponse.status === 504)
+        ) {
+            consumedWebhookNonces.delete(nonceKey);
         }
 
         return fireResponse;

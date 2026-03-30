@@ -930,6 +930,43 @@ describe("POST /api/webhooks/:id/fire — nonce consumed only on success", () =>
         // Session should not have been triggered again
         expect(sessionEmitMock).toHaveBeenCalledTimes(1);
     });
+
+    test("concurrent same-nonce requests — second gets 409", async () => {
+        // Tests the optimistic-consume fix: the nonce is set BEFORE any async work,
+        // so two requests with the same nonce running concurrently can't both win.
+        mockGetWebhook.mockReturnValue(Promise.resolve(ACTIVE_WEBHOOK));
+        const { sessionEmitMock } = setupSpawnAndDeliverMocks();
+
+        const timestamp = new Date().toISOString();
+        const nonce = `nonce-concurrent-${Date.now()}`;
+        const body = { event: "deploy" };
+
+        const [req1, url1] = makeFireReq(
+            "/api/webhooks/wh-1/fire",
+            body,
+            ACTIVE_WEBHOOK.secret,
+            { "x-webhook-timestamp": timestamp, "x-webhook-nonce": nonce },
+        );
+        const [req2, url2] = makeFireReq(
+            "/api/webhooks/wh-1/fire",
+            body,
+            ACTIVE_WEBHOOK.secret,
+            { "x-webhook-timestamp": timestamp, "x-webhook-nonce": nonce },
+        );
+
+        // Fire both concurrently. Because the nonce is consumed eagerly (before the
+        // first await), the second request will see the occupied nonce and return 409
+        // even though both started before either received a response.
+        const [res1, res2] = await Promise.all([
+            handleWebhooksRoute(req1, url1),
+            handleWebhooksRoute(req2, url2),
+        ]);
+
+        const statuses = [res1?.status, res2?.status].sort((a, b) => (a ?? 0) - (b ?? 0));
+        expect(statuses).toEqual([200, 409]);
+        // Only one delivery must have fired
+        expect(sessionEmitMock).toHaveBeenCalledTimes(1);
+    });
 });
 
 describe("POST /api/webhooks/:id/fire — event filtering", () => {
