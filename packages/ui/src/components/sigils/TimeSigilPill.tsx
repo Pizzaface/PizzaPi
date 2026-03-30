@@ -148,7 +148,7 @@ export function TimeSigilPill({ type, id, params, raw }: TimeSigilPillProps) {
 
   // Color class — countdowns shift to green when done
   const pillColorClass = isDone
-    ? "bg-green-500/15 text-green-700 dark:text-green-400 ring-green-500/25"
+    ? "bg-green-500/20 text-green-800 dark:text-green-300 ring-green-500/35"
     : config.colorClass;
 
   // Format the description in the user's local timezone instead of raw UTC ISO strings.
@@ -223,8 +223,8 @@ export function TimeSigilPill({ type, id, params, raw }: TimeSigilPillProps) {
                 "text-[10px] font-bold uppercase tracking-wider",
                 "ring-1 ring-inset",
                 isDone
-                  ? "bg-green-500/15 text-green-700 dark:text-green-400 ring-green-500/25"
-                  : "bg-rose-500/15 text-rose-700 dark:text-rose-400 ring-rose-500/25",
+                  ? "bg-green-500/20 text-green-800 dark:text-green-300 ring-green-500/35"
+                  : "bg-rose-500/20 text-rose-800 dark:text-rose-300 ring-rose-500/35",
               )}>
                 {isDone ? "complete" : "counting"}
               </span>
