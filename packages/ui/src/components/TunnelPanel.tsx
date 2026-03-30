@@ -191,6 +191,7 @@ export function TunnelPanel({ sessionId, runnerId }: TunnelPanelProps) {
                             src={tunnelUrl(previewPort)}
                             className="w-full h-full border-0"
                             title={`Tunnel preview — port ${previewPort}`}
+                            // SECURITY: allow-same-origin is needed because tunnel content is same-origin. TODO: serve tunnel content from a separate origin to enable full sandbox isolation.
                             sandbox="allow-scripts allow-forms allow-same-origin allow-popups"
                             onLoad={() => setIframeLoading(false)}
                             onLoadStart={() => setIframeLoading(true)}
