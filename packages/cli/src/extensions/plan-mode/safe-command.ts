@@ -77,6 +77,57 @@ function extractWrapperInnerCommand(segment: string): string | null {
     // Strip any leading path component so /usr/bin/bash, /bin/sh, etc. are handled
     const first = words[0].toLowerCase().replace(/^.*[\/\\]/, "");
 
+    // ── Bare inline environment-variable assignments (VAR=val ... CMD args) ──────
+    // e.g. `HOME=/tmp rm -rf /` — treat exactly like `env HOME=/tmp rm -rf /`.
+    // This pattern appears in inner commands extracted from `bash -c '...'` strings
+    // and would otherwise bypass destructive-command detection because the first
+    // token starts with an identifier, not a recognised command name.
+    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(words[0])) {
+        let i = 0;
+        while (i < words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[i])) i++;
+        if (i >= words.length) return null; // only assignments, no actual command
+        const off = findWordStartOffset(segment, i);
+        return off >= 0 ? segment.slice(off) : "";
+    }
+
+    // ── Pass-through shell builtins ───────────────────────────────────────────
+    // `command CMD`, `builtin CMD`, and `exec CMD` all ultimately invoke CMD;
+    // strip the prefix and check the actual command for destructiveness.
+
+    if (first === "command") {
+        let i = 1;
+        // `command -v CMD` / `command -V CMD` are lookup-only — not execution.
+        if (i < words.length && (words[i] === "-v" || words[i] === "-V")) return null;
+        // Skip other option flags (-p, etc.) up to an optional `--` terminator.
+        while (i < words.length && words[i] !== "--" && words[i].startsWith("-")) i++;
+        if (i < words.length && words[i] === "--") i++;
+        if (i >= words.length) return null;
+        const off = findWordStartOffset(segment, i);
+        return off >= 0 ? segment.slice(off) : "";
+    }
+
+    if (first === "builtin") {
+        // `builtin CMD args` — bypasses shell functions but still runs CMD.
+        if (words.length < 2) return null;
+        const off = findWordStartOffset(segment, 1);
+        return off >= 0 ? segment.slice(off) : "";
+    }
+
+    if (first === "exec") {
+        // `exec CMD` replaces the current process with CMD.
+        // Recognised flags: -a name (argv[0]), -c (clean env), -l (login).
+        let i = 1;
+        while (i < words.length) {
+            if (words[i] === "--") { i++; break; }
+            if (words[i] === "-a" && i + 1 < words.length) { i += 2; continue; }
+            if (words[i].startsWith("-")) { i++; continue; }
+            break;
+        }
+        if (i >= words.length) return null;
+        const off = findWordStartOffset(segment, i);
+        return off >= 0 ? segment.slice(off) : "";
+    }
+
     // env as a command launcher: env [opts] [VAR=val...] COMMAND [args...]
     if (first === "env") {
         let i = 1; // skip "env"
@@ -168,20 +219,56 @@ function extractWrapperInnerCommand(segment: string): string | null {
 
     // Shell wrappers with -c flag (executes the next argument as shell code)
     if (WRAPPER_SHELLS.has(first)) {
-        // --version / --help are safe queries; not a code-execution wrapper
-        if (words.some((w) => w === "--version" || w === "--help")) return null;
-
+        // Locate the -c flag first so we know whether inline code execution is happening.
+        let cFlagIdx = -1;
         for (let i = 1; i < words.length; i++) {
-            if (hasShortFlag(words[i], "c")) {
-                // The command string is the next positional argument after -c.
-                // If there is none (bare `bash -c`) return "" to block conservatively.
-                return i + 1 < words.length ? words[i + 1] : "";
-            }
+            if (hasShortFlag(words[i], "c")) { cFlagIdx = i; break; }
+        }
+
+        // --help / --version short-circuit ONLY when there is no -c flag.
+        // `bash -c 'rm -rf /' --help` still has a -c; its inner command must be
+        // inspected — the trailing --help does NOT make it safe.
+        if (cFlagIdx === -1 && words.some((w) => w === "--version" || w === "--help")) return null;
+
+        if (cFlagIdx >= 0) {
+            // The command string is the next positional argument after -c.
+            // If there is none (bare `bash -c`) return "" to block conservatively.
+            return cFlagIdx + 1 < words.length ? words[cFlagIdx + 1] : "";
         }
         return null; // no -c flag → not executing arbitrary code inline
     }
 
     return null;
+}
+
+/**
+ * Returns true when `segment` is a wrapper-shell invocation that executes a
+ * file (e.g. `bash script.sh`, `sh ./run.sh`) rather than using `-c` or
+ * `--help` / `--version`.
+ *
+ * In no-sandbox mode we cannot inspect the file's contents, so any such
+ * invocation is treated as potentially destructive.  In sandbox mode the
+ * filesystem overlay provides protection, so this check is skipped.
+ *
+ * @internal Exported for testing only.
+ */
+export function isWrapperShellFileExecution(segment: string): boolean {
+    const words = splitShellWords(segment);
+    if (words.length < 2) return false;
+    const first = words[0].toLowerCase().replace(/^.*[\/\\]/, "");
+    if (!WRAPPER_SHELLS.has(first)) return false;
+
+    // If -c is present, extractWrapperInnerCommand handles it — not our concern.
+    for (let i = 1; i < words.length; i++) {
+        if (hasShortFlag(words[i], "c")) return false;
+    }
+
+    // --help / --version with no -c — safe informational queries.
+    if (words.slice(1).some((w) => w === "--help" || w === "--version")) return false;
+
+    // Any non-flag positional argument is treated as a filename to execute.
+    const positionalArgs = words.slice(1).filter((w) => !w.startsWith("-"));
+    return positionalArgs.length > 0;
 }
 
 /**
@@ -285,6 +372,13 @@ export function isDestructiveCommand(command: string, sandboxActive = false): bo
             if (innerCmd === "" || isDestructiveCommand(innerCmd, false)) return true;
             continue; // inner command is safe; skip remaining pattern checks
         }
+
+        // P1-3: `bash script.sh` / `sh run.sh` (no -c flag) executes an
+        // arbitrary file whose contents cannot be inspected at static-analysis
+        // time.  In no-sandbox mode treat this as destructive.  In sandbox mode
+        // the filesystem overlay limits the damage, so we allow it (the check
+        // is only reached on the no-sandbox code path).
+        if (isWrapperShellFileExecution(trimmed)) return true;
 
         const isCmdDestructive = DESTRUCTIVE_CMD_PATTERNS.some((p) => p.test(trimmed));
         const hasUnsafeRedirection = hasUnsafeOutputRedirection(trimmed);

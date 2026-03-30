@@ -148,7 +148,11 @@ export function hasUnsafeOutputRedirection(segment: string): boolean {
     // Strip single-quoted segments before checking — content inside single
     // quotes is literal and cannot contain actual shell redirections.
     // e.g. `printf '>'` is NOT a redirection; `bash -c 'git status' > out` IS.
-    const stripped = segment.replace(/'[^']*'/g, "''");
+    let stripped = segment.replace(/'[^']*'/g, "''");
+    // Strip double-quoted segments too — `>` inside double quotes is not a
+    // shell redirection operator (e.g. `printf ">"` is safe).
+    // Use escape-aware regex so `"he said \"hello\""` is handled correctly.
+    stripped = stripped.replace(/"(?:[^"\\]|\\.)*"/g, '""');
 
     const matches = stripped.matchAll(OUTPUT_REDIRECTION_PATTERN);
     for (const match of matches) {

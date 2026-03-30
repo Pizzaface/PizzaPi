@@ -70,8 +70,13 @@ describe("bash/sh -c wrapper — no-sandbox", () => {
         expect(noSandbox("sh -c 'sudo rm -rf /etc'")).toBe(true);
     });
 
-    test("bash without -c → allowed (no inline code execution)", () => {
-        expect(noSandbox("bash script.sh")).toBe(false);
+    // P1-3: bash <file> must be blocked in no-sandbox — we can't inspect the script.
+    test("bash script.sh → blocked in no-sandbox (cannot inspect file)", () => {
+        expect(noSandbox("bash script.sh")).toBe(true);
+    });
+
+    test("bash script.sh → allowed in sandbox (filesystem overlay protects)", () => {
+        expect(withSandbox("bash script.sh")).toBe(false);
     });
 
     test("bash --version → allowed", () => {
