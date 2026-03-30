@@ -19,6 +19,8 @@ import { cjk } from "@streamdown/cjk";
 import { code } from "@streamdown/code";
 import { math } from "@streamdown/math";
 import { mermaid } from "@streamdown/mermaid";
+import { rehypeSigils } from "@/lib/sigils/rehype-sigils";
+import { SigilInline } from "@/components/sigils/SigilPill";
 import { ChevronLeftIcon, ChevronRightIcon } from "lucide-react";
 import {
   createContext,
@@ -324,6 +326,18 @@ export type MessageResponseProps = ComponentProps<typeof Streamdown>;
 
 const streamdownPlugins = { cjk, code, math, mermaid };
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const sigilRehypePlugins = [[rehypeSigils]] as any;
+const sigilAllowedTags = {
+  sigil: [
+    "data-sigil-type",
+    "data-sigil-id",
+    "data-sigil-params",
+    "data-sigil-raw",
+  ],
+};
+const sigilComponents = { sigil: SigilInline };
+
 export const MessageResponse = memo(
   ({ className, ...props }: MessageResponseProps) => (
     <Streamdown
@@ -332,6 +346,9 @@ export const MessageResponse = memo(
         className
       )}
       plugins={streamdownPlugins}
+      rehypePlugins={sigilRehypePlugins}
+      allowedTags={sigilAllowedTags}
+      components={sigilComponents}
       {...props}
     />
   ),

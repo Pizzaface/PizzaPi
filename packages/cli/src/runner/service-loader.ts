@@ -416,6 +416,7 @@ function parseSigils(raw: unknown): ServiceSigilDef[] {
             type: s.type,
             label: s.label,
             description: typeof s.description === "string" ? s.description : undefined,
+            icon: typeof s.icon === "string" ? s.icon : undefined,
             resolve: typeof s.resolve === "string" ? s.resolve : undefined,
             schema: s.schema && typeof s.schema === "object" && !Array.isArray(s.schema)
                 ? s.schema as Record<string, unknown>

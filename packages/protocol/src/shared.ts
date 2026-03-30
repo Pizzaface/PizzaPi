@@ -230,6 +230,11 @@ export interface ServiceSigilDef {
   /** Optional description of what this sigil represents */
   description?: string;
   /**
+   * Lucide icon name for rendering, e.g. "git-pull-request", "git-branch".
+   * See https://lucide.dev/icons for the full list.
+   */
+  icon?: string;
+  /**
    * Optional resolve endpoint path (relative to service panel).
    * The UI can call this to enrich display data for a sigil ID.
    * e.g. "/api/resolve/pr/{id}" → resolves PR number to title/status
