@@ -25,6 +25,7 @@ import { AuthStorage, ModelRegistry } from "@mariozechner/pi-coding-agent";
 import type { ServiceTriggerDef, ServiceSigilDef } from "@pizzapi/protocol";
 import { setLogComponent, logInfo, logWarn, logError } from "./logger.js";
 import { extractHookSummary } from "./hook-summary.js";
+import { sanitizeConfigForUI, restoreMaskedServerEntry, MASK_SENTINEL } from "./daemon-config-sanitize.js";
 import { defaultStatePath, acquireStateAndIdentity, releaseStateLock } from "./runner-state.js";
 import { startUsageRefreshLoop, stopUsageRefreshLoop } from "./runner-usage-cache.js";
 import { getWorkspaceRoots, isCwdAllowed } from "./workspace.js";
@@ -1135,65 +1136,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
 
         // ── Settings ───────────────────────────────────────────────────────
 
-        /**
-         * Mask sensitive fields in a PizzaPi config object before sending to the UI.
-         * Removes apiKey/relayUrl and replaces sensitive env/header values with "***".
-         * Must be kept in sync with the sentinel-restore logic in settings_update_section.
-         */
-        function sanitizeConfigForUI(config: Record<string, unknown>): Record<string, unknown> {
-            const sanitized: any = { ...config };
-            delete sanitized.apiKey;
-            delete sanitized.relayUrl;
-
-            // Regex for sensitive key/header names — covers common secret patterns plus
-            // HTTP auth headers (Authorization, Cookie) and common PAT/Bearer naming.
-            const SENSITIVE_NAME_RE = /key|token|secret|password|credential|authorization|cookie|pat|bearer/i;
-
-            // Strip sensitive env values from MCP server definitions
-            if (sanitized.mcpServers && typeof sanitized.mcpServers === "object") {
-                const sanitizedMcp: Record<string, unknown> = {};
-                for (const [name, server] of Object.entries(sanitized.mcpServers as Record<string, unknown>)) {
-                    if (server && typeof server === "object") {
-                        let sanitizedServer: Record<string, unknown> = { ...(server as Record<string, unknown>) };
-
-                        if ("env" in sanitizedServer && sanitizedServer.env && typeof sanitizedServer.env === "object") {
-                            const rawEnv = sanitizedServer.env as Record<string, string>;
-                            const maskedEnv: Record<string, string> = {};
-                            for (const [k, v] of Object.entries(rawEnv)) {
-                                maskedEnv[k] = SENSITIVE_NAME_RE.test(k) ? "***" : v;
-                            }
-                            sanitizedServer = { ...sanitizedServer, env: maskedEnv };
-                        }
-
-                        if ("headers" in sanitizedServer && sanitizedServer.headers && typeof sanitizedServer.headers === "object") {
-                            const rawHeaders = sanitizedServer.headers as Record<string, string>;
-                            const maskedHeaders: Record<string, string> = {};
-                            for (const [k, v] of Object.entries(rawHeaders)) {
-                                maskedHeaders[k] = SENSITIVE_NAME_RE.test(k) ? "***" : v;
-                            }
-                            sanitizedServer = { ...sanitizedServer, headers: maskedHeaders };
-                        }
-
-                        sanitizedMcp[name] = sanitizedServer;
-                    } else {
-                        sanitizedMcp[name] = server;
-                    }
-                }
-                sanitized.mcpServers = sanitizedMcp;
-            }
-
-            // Mask sensitive envOverrides values
-            if (sanitized.envOverrides && typeof sanitized.envOverrides === "object") {
-                const rawOverrides = sanitized.envOverrides as Record<string, string>;
-                const maskedOverrides: Record<string, string> = {};
-                for (const [k, v] of Object.entries(rawOverrides)) {
-                    maskedOverrides[k] = SENSITIVE_NAME_RE.test(k) ? "***" : v;
-                }
-                sanitized.envOverrides = maskedOverrides;
-            }
-
-            return sanitized;
-        }
+        // sanitizeConfigForUI is imported from ./daemon-config-sanitize.js
 
         socket.on("settings_get_config", async (data: any) => {
             if (isShuttingDown) return;
@@ -1385,14 +1328,11 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                         }
 
                         // The settings API masks sensitive env var and header values (e.g. tokens/keys)
-                        // with "***" before sending them to the UI so they aren't exposed in
-                        // transit.  When the UI sends the config back on save, those masked
-                        // values must NOT be written to disk -- that would overwrite the real
-                        // secrets with the placeholder string.
-                        //
-                        // Strategy: for every env/header entry whose value is exactly "***", check
-                        // whether the on-disk config already has a real value for that key and
-                        // keep the original instead.
+                        // with MASK_SENTINEL ("***") before sending them to the UI so they aren't
+                        // exposed in transit.  When the UI sends the config back on save, those
+                        // masked values must NOT be written to disk — restoreMaskedServerEntry()
+                        // substitutes the original on-disk secret for each key still carrying the
+                        // sentinel.
                         //
                         // TODO(P2): Rename edge case -- if an MCP server is renamed in the UI
                         // before saving, the masked "***" values can't be matched to the old
@@ -1401,57 +1341,55 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                         // notice as obviously broken credentials.  A full fix requires tracking
                         // server identity across renames (e.g. a stable ID field or a diff
                         // protocol).  For now the failure is visible and recoverable by the user.
-                        const MASK_SENTINEL = "***";
                         const existingMcpServers = ((existing as any).mcpServers ?? {}) as Record<string, any>;
                         const mergedServers: Record<string, any> = {};
                         for (const [name, entry] of Object.entries(servers)) {
-                            const existingServer = existingMcpServers[name];
-
                             if (entry && typeof entry === "object") {
-                                let mergedEntry: Record<string, any> = { ...entry };
-
-                                // Restore any env var that still carries the mask sentinel
-                                if (
-                                    "env" in mergedEntry &&
-                                    mergedEntry.env &&
-                                    typeof mergedEntry.env === "object" &&
-                                    existingServer?.env &&
-                                    typeof existingServer.env === "object"
-                                ) {
-                                    const incomingEnv = mergedEntry.env as Record<string, string>;
-                                    const restoredEnv: Record<string, string> = { ...incomingEnv };
-                                    for (const [k, v] of Object.entries(incomingEnv)) {
-                                        if (v === MASK_SENTINEL && typeof existingServer.env[k] === "string") {
-                                            restoredEnv[k] = existingServer.env[k] as string;
-                                        }
-                                    }
-                                    mergedEntry = { ...mergedEntry, env: restoredEnv };
-                                }
-
-                                // Restore any header that still carries the mask sentinel
-                                if (
-                                    "headers" in mergedEntry &&
-                                    mergedEntry.headers &&
-                                    typeof mergedEntry.headers === "object" &&
-                                    existingServer?.headers &&
-                                    typeof existingServer.headers === "object"
-                                ) {
-                                    const incomingHeaders = mergedEntry.headers as Record<string, string>;
-                                    const restoredHeaders: Record<string, string> = { ...incomingHeaders };
-                                    for (const [k, v] of Object.entries(incomingHeaders)) {
-                                        if (v === MASK_SENTINEL && typeof existingServer.headers[k] === "string") {
-                                            restoredHeaders[k] = existingServer.headers[k] as string;
-                                        }
-                                    }
-                                    mergedEntry = { ...mergedEntry, headers: restoredHeaders };
-                                }
-
-                                mergedServers[name] = mergedEntry;
+                                mergedServers[name] = restoreMaskedServerEntry(
+                                    entry as Record<string, unknown>,
+                                    existingMcpServers[name],
+                                );
                             } else {
                                 mergedServers[name] = entry;
                             }
                         }
                         saveGlobal({ mcpServers: mergedServers } as any);
+                    } else if (section === "mcp") {
+                        // mcp.servers[] (preferred array format) — restore masked sentinel values
+                        // before writing to disk.  We look up each server by its `name` field in
+                        // the on-disk array so we can restore the original secret.
+                        //
+                        // TODO(P2): Same rename edge case as mcpServers — if a server's name is
+                        // changed in the UI the lookup by name will find nothing and the sentinel
+                        // will be written as-is.  Visible and recoverable by the user.
+                        const incomingMcp = (value ?? {}) as { servers?: any[] };
+                        const existingMcp = ((existing as any).mcp ?? {}) as { servers?: any[] };
+
+                        // Build name → entry map for O(1) lookup against the on-disk array.
+                        const existingByName = new Map<string, Record<string, unknown>>();
+                        if (Array.isArray(existingMcp.servers)) {
+                            for (const s of existingMcp.servers) {
+                                if (s && typeof s === "object" && typeof (s as any).name === "string") {
+                                    existingByName.set((s as any).name as string, s as Record<string, unknown>);
+                                }
+                            }
+                        }
+
+                        const mergedMcpServers: any[] = Array.isArray(incomingMcp.servers)
+                            ? incomingMcp.servers.map((entry: any) => {
+                                  if (!entry || typeof entry !== "object") return entry;
+                                  const existingEntry =
+                                      typeof entry.name === "string"
+                                          ? existingByName.get(entry.name)
+                                          : undefined;
+                                  return restoreMaskedServerEntry(
+                                      entry as Record<string, unknown>,
+                                      existingEntry,
+                                  );
+                              })
+                            : [];
+
+                        saveGlobal({ mcp: { ...incomingMcp, servers: mergedMcpServers } } as any);
                     } else {
                         // Direct key mapping
                         saveGlobal({ [configKey]: value } as any);
@@ -1459,7 +1397,8 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
 
                     // Reload and return the updated config — mask secrets before sending to browser
                     const updatedConfig = sanitizeConfigForUI(loadGlobal() as Record<string, unknown>);
-                    const reloadHint = section === "mcpServers"
+                    const isMcpSection = section === "mcpServers" || section === "mcp";
+                    const reloadHint = isMcpSection
                         ? "MCP server config saved. Active sessions can run /mcp reload to pick up changes."
                         : "Settings saved. Changes apply on next session start.";
                     socket.emit("file_result", {
@@ -1468,7 +1407,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                         saved: true,
                         config: updatedConfig,
                         message: reloadHint,
-                        reloadHint: section === "mcpServers",
+                        reloadHint: isMcpSection,
                     });
                 }
             } catch (err) {
