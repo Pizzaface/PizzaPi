@@ -276,7 +276,7 @@ export async function updateRunnerServices(
     serviceIds: string[],
     panels?: Array<{ serviceId: string; port: number; label: string; icon: string }>,
     triggerDefs?: Array<{ type: string; label: string; description?: string; schema?: Record<string, unknown> }>,
-    sigilDefs?: Array<{ type: string; label: string; description?: string; resolve?: string; schema?: Record<string, unknown>; aliases?: string[] }>,
+    sigilDefs?: Array<{ type: string; label: string; description?: string; icon?: string; serviceId?: string; resolve?: string; schema?: Record<string, unknown>; aliases?: string[] }>,
 ): Promise<void> {
     const fields: Record<string, string> = {
         serviceIds: JSON.stringify(serviceIds),

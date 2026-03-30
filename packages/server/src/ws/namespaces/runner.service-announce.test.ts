@@ -151,4 +151,52 @@ describe("isSameServiceAnnounce", () => {
 
         expect(isSameServiceAnnounce(left, right)).toBe(false);
     });
+
+    // ── sigilDefs comparison ─────────────────────────────────────────────
+
+    test("returns true when sigilDefs are identical", () => {
+        const base = {
+            serviceIds: ["github"],
+            sigilDefs: [
+                { type: "pr", label: "PR", icon: "git-pull-request", serviceId: "github", resolve: "/api/resolve/pr/{id}" },
+            ],
+        };
+        expect(isSameServiceAnnounce(base, { ...base })).toBe(true);
+    });
+
+    test("returns false when sigilDef type differs", () => {
+        const left = { serviceIds: ["github"], sigilDefs: [{ type: "pr", label: "PR" }] };
+        const right = { serviceIds: ["github"], sigilDefs: [{ type: "issue", label: "PR" }] };
+        expect(isSameServiceAnnounce(left, right)).toBe(false);
+    });
+
+    test("returns false when sigilDef count differs", () => {
+        const left = { serviceIds: ["github"], sigilDefs: [{ type: "pr", label: "PR" }] };
+        const right = { serviceIds: ["github"], sigilDefs: [] };
+        expect(isSameServiceAnnounce(left, right)).toBe(false);
+    });
+
+    test("returns false when sigilDef serviceId differs", () => {
+        const left = { serviceIds: ["github"], sigilDefs: [{ type: "pr", label: "PR", serviceId: "github" }] };
+        const right = { serviceIds: ["github"], sigilDefs: [{ type: "pr", label: "PR", serviceId: "gitlab" }] };
+        expect(isSameServiceAnnounce(left, right)).toBe(false);
+    });
+
+    test("returns false when sigilDef icon differs", () => {
+        const left = { serviceIds: ["github"], sigilDefs: [{ type: "pr", label: "PR", icon: "git-pull-request" }] };
+        const right = { serviceIds: ["github"], sigilDefs: [{ type: "pr", label: "PR", icon: "circle-dot" }] };
+        expect(isSameServiceAnnounce(left, right)).toBe(false);
+    });
+
+    test("returns false when sigilDef resolve differs", () => {
+        const left = { serviceIds: ["github"], sigilDefs: [{ type: "pr", label: "PR", resolve: "/api/v1" }] };
+        const right = { serviceIds: ["github"], sigilDefs: [{ type: "pr", label: "PR", resolve: "/api/v2" }] };
+        expect(isSameServiceAnnounce(left, right)).toBe(false);
+    });
+
+    test("treats absent sigilDefs as empty array", () => {
+        const left = { serviceIds: ["github"] };
+        const right = { serviceIds: ["github"], sigilDefs: [] };
+        expect(isSameServiceAnnounce(left, right)).toBe(true);
+    });
 });

@@ -65,5 +65,30 @@ export function isSameServiceAnnounce(
         }
     }
 
+    // Compare sigil defs
+    const aSigils = a.sigilDefs ?? [];
+    const bSigils = b.sigilDefs ?? [];
+    if (aSigils.length !== bSigils.length) return false;
+    for (let i = 0; i < aSigils.length; i++) {
+        const left = aSigils[i];
+        const right = bSigils[i];
+        if (
+            left.type !== right.type ||
+            left.label !== right.label ||
+            left.description !== right.description ||
+            left.icon !== right.icon ||
+            left.serviceId !== right.serviceId ||
+            left.resolve !== right.resolve
+        ) {
+            return false;
+        }
+        const leftAliases = left.aliases !== undefined ? JSON.stringify(left.aliases) : undefined;
+        const rightAliases = right.aliases !== undefined ? JSON.stringify(right.aliases) : undefined;
+        if (leftAliases !== rightAliases) return false;
+        const leftSchema = left.schema !== undefined ? JSON.stringify(left.schema) : undefined;
+        const rightSchema = right.schema !== undefined ? JSON.stringify(right.schema) : undefined;
+        if (leftSchema !== rightSchema) return false;
+    }
+
     return true;
 }
