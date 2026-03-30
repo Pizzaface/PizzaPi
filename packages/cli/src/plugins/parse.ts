@@ -324,6 +324,14 @@ export function parsePluginSkills(pluginDir: string): PluginSkillRef[] {
 
         const skillMdPath = join(entryPath, "SKILL.md");
         if (existsSync(skillMdPath)) {
+            // Also verify SKILL.md itself is not a symlink — a symlinked SKILL.md
+            // could point to arbitrary files outside the plugin root.
+            try {
+                const skillMdStat = lstatSync(skillMdPath);
+                if (skillMdStat.isSymbolicLink()) continue;
+            } catch {
+                continue;
+            }
             skills.push({
                 name: entry,
                 dirPath: entryPath,

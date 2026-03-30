@@ -65,7 +65,7 @@ export function ChangePasswordDialog({ open, onOpenChange }: ChangePasswordDialo
             const { error: apiError } = await authClient.changePassword({
                 currentPassword,
                 newPassword,
-                revokeOtherSessions: false,
+                revokeOtherSessions: true,
             });
 
             if (apiError) {
@@ -156,6 +156,10 @@ export function ChangePasswordDialog({ open, onOpenChange }: ChangePasswordDialo
 
                             {error && <p className="text-sm text-destructive">{error}</p>}
                         </div>
+
+                        <p className="text-xs text-muted-foreground mt-2">
+                            This will sign out all your other devices and sessions.
+                        </p>
 
                         <DialogFooter className="mt-4">
                             <Button

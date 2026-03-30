@@ -46,7 +46,7 @@ if (!areVapidKeysValid(vapidPublicKey, vapidPrivateKey)) {
     log.warn("   Push subscriptions will break on every server restart.");
     log.warn("   To fix, add these to your environment:");
     log.warn(`   VAPID_PUBLIC_KEY=${vapidPublicKey}`);
-    log.warn(`   VAPID_PRIVATE_KEY=${vapidPrivateKey}`);
+    log.warn(`   VAPID_PRIVATE_KEY=<generated — check server env or regenerate with web-push generate-vapid-keys>`);
     log.warn(`   VAPID_SUBJECT=mailto:your@email.com`);
 }
 
@@ -56,6 +56,109 @@ webpush.setVapidDetails(vapidSubject, vapidPublicKey, vapidPrivateKey);
 
 export function getVapidPublicKey(): string {
     return vapidPublicKey;
+}
+
+// ── Push endpoint validation ─────────────────────────────────────────────────
+
+/**
+ * Known push service hostnames.
+ * This list covers the major browser push services. It is not exhaustive —
+ * enterprise / custom push proxies will fail validation and should add their
+ * domains here. The primary goal is to block SSRF-style attacks where an
+ * attacker registers a subscription pointing to an internal service.
+ */
+const KNOWN_PUSH_SERVICE_HOSTS = new Set([
+    // Google / Chrome
+    "fcm.googleapis.com",
+    "updates.push.services.mozilla.com",
+    // Mozilla / Firefox
+    "push.services.mozilla.com",
+    "updates.push.services.mozilla.com",
+    // Apple / Safari
+    "api.push.apple.com",
+    "web.push.apple.com",
+    // Microsoft Edge
+    "wns2.notify.windows.com",
+    "wns.notify.windows.com",
+    // Samsung Internet
+    "fcm.googleapis.com", // Samsung uses FCM
+    // Opera (also FCM-based)
+    // Brave (Chromium, also FCM-based)
+]);
+
+/**
+ * RFC1918 / loopback / link-local IPv4 ranges that push endpoints must not target.
+ * Checked against the raw hostname to block SSRF attacks.
+ */
+const PRIVATE_IP_PATTERNS = [
+    /^127\./,                    // 127.0.0.0/8 loopback
+    /^10\./,                     // 10.0.0.0/8
+    /^172\.(1[6-9]|2\d|3[01])\./, // 172.16.0.0/12
+    /^192\.168\./,               // 192.168.0.0/16
+    /^169\.254\./,               // 169.254.0.0/16 link-local
+    /^\[::1\]$/,                 // IPv6 loopback — URL API returns "[::1]" with brackets
+    /^\[f[cd][0-9a-f]{2}:/i,      // IPv6 ULA fc00::/7 (fc** and fd**) — URL API wraps IPv6 in "[...]"
+    /^\[fe[89ab][0-9a-f]:/i,     // IPv6 link-local fe80::/10
+    /^0\./,                      // 0.0.0.0/8
+    /^\[::\]$/,                  // IPv6 all-interfaces bind address (:: / ::/128)
+];
+
+/**
+ * Validate that a push subscription endpoint is safe to use.
+ *
+ * Requirements:
+ *   1. Must be a valid URL.
+ *   2. Must use the `https:` scheme.
+ *   3. Hostname must not be a loopback, link-local, or RFC1918 address.
+ *
+ * Note: KNOWN_PUSH_SERVICE_HOSTS is retained as documentation of the major
+ * browser push services, but is NOT used as a hard allowlist gate. Enforcing
+ * an allowlist would break enterprise proxies and custom push providers that
+ * use HTTPS on public addresses — those used to work and should continue to
+ * work. The primary SSRF defence is the private-IP block above.
+ *
+ * Returns true if the endpoint is safe; false otherwise.
+ */
+export function isValidPushEndpoint(endpoint: string): boolean {
+    let parsed: URL;
+    try {
+        parsed = new URL(endpoint);
+    } catch {
+        return false;
+    }
+
+    // Must be HTTPS
+    if (parsed.protocol !== "https:") return false;
+
+    const host = parsed.hostname.toLowerCase();
+
+    // Reject localhost / .localhost hostnames (hostname-based loopback).
+    // The IP-based patterns below do not catch the plain string "localhost".
+    if (host === "localhost" || host.endsWith(".localhost")) return false;
+
+    // Reject IPv4-mapped IPv6 addresses (::ffff:x.x.x.x).
+    // Bun's URL API normalizes the dotted-decimal form to hex pairs before we
+    // ever see it:  [::ffff:127.0.0.1] → [::ffff:7f00:1]
+    // We match the two 16-bit hex groups, convert them back to dotted-decimal
+    // IPv4, then check against the same private-range patterns.
+    const ipv4MappedMatch = host.match(/^\[::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})\]$/);
+    if (ipv4MappedMatch) {
+        const high = parseInt(ipv4MappedMatch[1], 16);
+        const low = parseInt(ipv4MappedMatch[2], 16);
+        const innerIpv4 = `${(high >> 8) & 0xff}.${high & 0xff}.${(low >> 8) & 0xff}.${low & 0xff}`;
+        for (const pattern of PRIVATE_IP_PATTERNS) {
+            if (pattern.test(innerIpv4)) return false;
+        }
+        // Inner IPv4 is public — fall through to the normal allow path.
+    }
+
+    // Reject private/loopback addresses (SSRF protection).
+    for (const pattern of PRIVATE_IP_PATTERNS) {
+        if (pattern.test(host)) return false;
+    }
+
+    // Any HTTPS endpoint on a non-private host is accepted.
+    return true;
 }
 
 // ── DB table ─────────────────────────────────────────────────────────────────

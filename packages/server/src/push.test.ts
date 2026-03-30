@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, beforeEach, afterAll, afterEach } from "bun:test";
 import { getKysely, createTestDatabase, _setKyselyForTest } from "./auth.js";
-import { unsubscribePush, updateSuppressChildNotifications, getSubscriptionsForUser } from "./push.js";
+import { unsubscribePush, updateSuppressChildNotifications, getSubscriptionsForUser, isValidPushEndpoint } from "./push.js";
 import { mkdtempSync, rmSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
@@ -169,3 +169,130 @@ describe("updateSuppressChildNotifications", () => {
         const count = await updateSuppressChildNotifications("user-6b", "https://example.com/push/scn-6", true);
         expect(count).toBe(0);
     });
+
+// ── isValidPushEndpoint ───────────────────────────────────────────────────────
+
+describe("isValidPushEndpoint", () => {
+    // ── Valid cases ───────────────────────────────────────────────────────────
+
+    it("accepts HTTPS endpoints on known push service hosts", () => {
+        expect(isValidPushEndpoint("https://fcm.googleapis.com/fcm/send/abc123")).toBe(true);
+        expect(isValidPushEndpoint("https://updates.push.services.mozilla.com/push/v1/abc")).toBe(true);
+        expect(isValidPushEndpoint("https://api.push.apple.com/3/device/abc")).toBe(true);
+    });
+
+    it("accepts valid HTTPS endpoints outside the known-hosts list (e.g. enterprise/custom proxies)", () => {
+        // These are legitimate HTTPS push providers that are NOT in the baked-in
+        // allowlist. They must be accepted — blocking them is an over-aggressive
+        // compatibility break (regression fixed by this PR).
+        expect(isValidPushEndpoint("https://push.example.com/sub/abc123")).toBe(true);
+        expect(isValidPushEndpoint("https://mypush.internal.corp.example.com/sub/abc")).toBe(true);
+        expect(isValidPushEndpoint("https://custom-push-proxy.acme.org/push/v2/token")).toBe(true);
+    });
+
+    it("accepts HTTPS endpoints with ports", () => {
+        expect(isValidPushEndpoint("https://push.example.com:8443/sub/token")).toBe(true);
+    });
+
+    // ── Invalid cases — scheme ────────────────────────────────────────────────
+
+    it("rejects HTTP endpoints (not HTTPS)", () => {
+        expect(isValidPushEndpoint("http://fcm.googleapis.com/push/abc")).toBe(false);
+        expect(isValidPushEndpoint("http://push.example.com/sub/abc")).toBe(false);
+    });
+
+    it("rejects non-HTTP(S) schemes", () => {
+        expect(isValidPushEndpoint("ftp://push.example.com/sub/abc")).toBe(false);
+        expect(isValidPushEndpoint("ws://push.example.com/sub/abc")).toBe(false);
+    });
+
+    // ── Invalid cases — private / loopback IPs (SSRF protection) ────────────
+
+    it("rejects loopback IPv4 (127.x.x.x)", () => {
+        expect(isValidPushEndpoint("https://127.0.0.1/push")).toBe(false);
+        expect(isValidPushEndpoint("https://127.1.2.3/push")).toBe(false);
+    });
+
+    it("rejects RFC1918 private IPv4 ranges", () => {
+        expect(isValidPushEndpoint("https://10.0.0.1/push")).toBe(false);
+        expect(isValidPushEndpoint("https://192.168.1.100/push")).toBe(false);
+        expect(isValidPushEndpoint("https://172.16.0.1/push")).toBe(false);
+        expect(isValidPushEndpoint("https://172.31.255.255/push")).toBe(false);
+    });
+
+    it("rejects link-local IPv4 (169.254.x.x)", () => {
+        expect(isValidPushEndpoint("https://169.254.1.1/push")).toBe(false);
+    });
+
+    it("rejects IPv6 loopback (::1)", () => {
+        expect(isValidPushEndpoint("https://[::1]/push")).toBe(false);
+    });
+
+    it("rejects IPv6 ULA (fc00::/7) — fc** prefix", () => {
+        expect(isValidPushEndpoint("https://[fc00::1]/push")).toBe(false);
+        expect(isValidPushEndpoint("https://[fc12:3456::1]/push")).toBe(false);
+    });
+
+    it("rejects IPv6 ULA (fd00::/8) — fd** prefix", () => {
+        expect(isValidPushEndpoint("https://[fd00::1]/push")).toBe(false);
+        expect(isValidPushEndpoint("https://[fd12:3456::1]/push")).toBe(false);
+    });
+
+    it("rejects IPv6 link-local (fe80::/10)", () => {
+        expect(isValidPushEndpoint("https://[fe80::1]/push")).toBe(false);
+    });
+
+    // ── Invalid cases — malformed ────────────────────────────────────────────
+
+    it("rejects non-URL strings", () => {
+        expect(isValidPushEndpoint("not-a-url")).toBe(false);
+        expect(isValidPushEndpoint("")).toBe(false);
+        expect(isValidPushEndpoint("://missing-scheme")).toBe(false);
+    });
+
+    // ── localhost hostname (Round 3 regression) ───────────────────────────
+
+    it("rejects 'localhost' hostname (case-insensitive)", () => {
+        expect(isValidPushEndpoint("https://localhost/push")).toBe(false);
+        expect(isValidPushEndpoint("https://LOCALHOST/push")).toBe(false);
+        expect(isValidPushEndpoint("https://Localhost/push")).toBe(false);
+    });
+
+    it("rejects .localhost subdomains", () => {
+        expect(isValidPushEndpoint("https://foo.localhost/push")).toBe(false);
+        expect(isValidPushEndpoint("https://my.service.localhost/push")).toBe(false);
+    });
+
+    it("accepts hostnames that contain 'localhost' as a non-.localhost substring", () => {
+        // "notlocalhost.example.com" is not equal to "localhost" and does not
+        // end with ".localhost", so it should be accepted.
+        expect(isValidPushEndpoint("https://notlocalhost.example.com/push")).toBe(true);
+    });
+
+    // ── IPv4-mapped IPv6 (Round 3 regression) ────────────────────────────
+
+    it("rejects IPv4-mapped IPv6 loopback (::ffff:127.x.x.x)", () => {
+        expect(isValidPushEndpoint("https://[::ffff:127.0.0.1]/push")).toBe(false);
+        expect(isValidPushEndpoint("https://[::ffff:127.1.2.3]/push")).toBe(false);
+    });
+
+    it("rejects IPv4-mapped IPv6 for RFC1918 private ranges", () => {
+        expect(isValidPushEndpoint("https://[::ffff:192.168.1.1]/push")).toBe(false);
+        expect(isValidPushEndpoint("https://[::ffff:10.0.0.1]/push")).toBe(false);
+        expect(isValidPushEndpoint("https://[::ffff:172.16.0.1]/push")).toBe(false);
+    });
+
+    it("accepts IPv4-mapped IPv6 for public IPs (no over-blocking)", () => {
+        expect(isValidPushEndpoint("https://[::ffff:8.8.8.8]/push")).toBe(true);
+    });
+
+    // ── All-interfaces bind addresses ────────────────────────────────────
+
+    it("rejects IPv6 all-interfaces bind address ([::])", () => {
+        expect(isValidPushEndpoint("https://[::]/push")).toBe(false);
+    });
+
+    it("rejects 0.0.0.0 (IPv4 all-interfaces bind address)", () => {
+        expect(isValidPushEndpoint("https://0.0.0.0/push")).toBe(false);
+    });
+});

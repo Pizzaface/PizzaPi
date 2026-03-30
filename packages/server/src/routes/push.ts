@@ -10,6 +10,7 @@ import {
     getSubscriptionsForUser,
     updateEnabledEvents,
     updateSuppressChildNotifications,
+    isValidPushEndpoint,
 } from "../push.js";
 import { getSharedSession, getLocalTuiSocket } from "../ws/sio-registry.js";
 import { getPushPendingQuestion, consumePushPendingQuestionIfMatches } from "../ws/sio-state/index.js";
@@ -33,6 +34,13 @@ export const handlePushRoute: RouteHandler = async (req, url) => {
         if (!body.endpoint || !body.keys?.p256dh || !body.keys?.auth) {
             return Response.json(
                 { error: "Missing required fields: endpoint, keys.p256dh, keys.auth" },
+                { status: 400 },
+            );
+        }
+
+        if (!isValidPushEndpoint(body.endpoint)) {
+            return Response.json(
+                { error: "Invalid push endpoint: must be an https:// URL not targeting private/loopback addresses" },
                 { status: 400 },
             );
         }
