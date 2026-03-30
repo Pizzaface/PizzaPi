@@ -99,10 +99,23 @@ POST /api/webhooks/:id/fire
 
 ### Headers
 
+**Enhanced mode (recommended — includes replay protection):**
+
 | Header | Required | Description |
 |--------|----------|-------------|
 | `Content-Type` | Yes | Must be `application/json` |
-| `X-Webhook-Signature` | Yes | HMAC-SHA256 hex digest of the raw request body, using the webhook's secret as the key |
+| `X-Webhook-Signature` | Yes | HMAC-SHA256 hex digest of `${timestamp}.${nonce}.${rawBody}` |
+| `X-Webhook-Timestamp` | Yes | ISO 8601 / RFC 3339 timestamp (e.g. `2025-01-15T10:30:00Z`). Must be within ±5 minutes of server time. |
+| `X-Webhook-Nonce` | Yes | Unique string per delivery (e.g. random hex). Prevents replay within the 5-minute window. |
+
+**Legacy mode (backward compatible — no replay protection):**
+
+| Header | Required | Description |
+|--------|----------|-------------|
+| `Content-Type` | Yes | Must be `application/json` |
+| `X-Webhook-Signature` | Yes | HMAC-SHA256 hex digest of the **raw request body** only |
+
+Legacy mode is supported for callers that don't send `X-Webhook-Timestamp` or `X-Webhook-Nonce`. Enhanced mode is strongly recommended for new integrations.
 
 ### Request body
 
@@ -135,19 +148,24 @@ Any valid JSON object. If you're using event filters, include a `type` field:
 
 | Status | Meaning |
 |--------|---------|
-| `401` | Missing `X-Webhook-Signature` header, or signature doesn't match |
+| `401` | Missing/invalid signature headers, or signature doesn't match, or timestamp too old/future |
+| `409` | Nonce already used within the 5-minute replay window (enhanced mode only) |
 | `400` | Invalid JSON body |
 | `404` | Webhook not found or disabled |
 | `500` | Webhook has no runner assigned |
 | `502` | Runner rejected the spawn request or is unreachable |
-| `503` | Runner is not connected to the server |
+| `503` | Runner is offline or not connected to the server |
 | `504` | Session was spawned but didn't connect within the timeout (~15s) |
 
 ---
 
 ## Computing the HMAC signature
 
-The signature is an HMAC-SHA256 hex digest of the **raw request body** using the webhook secret as the key.
+PizzaPi supports two signing modes. **Enhanced mode** (recommended) adds a timestamp and nonce to the HMAC input, providing replay protection. **Legacy mode** signs the raw body only and is supported for backward compatibility with existing integrations.
+
+### Enhanced mode (recommended)
+
+The signature is an HMAC-SHA256 hex digest of `${timestamp}.${nonce}.${rawBody}`.
 
 <Tabs>
   <TabItem label="Bash (curl)">
@@ -156,31 +174,41 @@ The signature is an HMAC-SHA256 hex digest of the **raw request body** using the
     WEBHOOK_URL="https://pizza.example.com/api/webhooks/YOUR_WEBHOOK_ID/fire"
     SECRET="your-64-char-hex-secret"
     BODY='{"type":"deploy","repo":"myorg/myapp","status":"failure"}'
+    TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+    NONCE=$(openssl rand -hex 16)
 
-    # Compute HMAC-SHA256 signature
+    # Compute HMAC-SHA256 over timestamp.nonce.body
     # Works with both LibreSSL (macOS default) and OpenSSL 3.x
-    SIG=$(echo -n "$BODY" | openssl dgst -sha256 -hmac "$SECRET" | sed 's/^.*= //')
+    SIG=$(echo -n "$TIMESTAMP.$NONCE.$BODY" | openssl dgst -sha256 -hmac "$SECRET" | sed 's/^.*= //')
 
     # Fire the webhook
     curl -X POST "$WEBHOOK_URL" \
       -H "Content-Type: application/json" \
       -H "X-Webhook-Signature: $SIG" \
+      -H "X-Webhook-Timestamp: $TIMESTAMP" \
+      -H "X-Webhook-Nonce: $NONCE" \
       -d "$BODY"
     ```
   </TabItem>
   <TabItem label="Node.js">
     ```javascript
-    import { createHmac } from "crypto";
+    import { createHmac, randomBytes } from "crypto";
 
     const secret = "your-64-char-hex-secret";
     const body = JSON.stringify({ type: "deploy", repo: "myorg/myapp", status: "failure" });
-    const signature = createHmac("sha256", secret).update(body).digest("hex");
+    const timestamp = new Date().toISOString();
+    const nonce = randomBytes(16).toString("hex");
+    const signature = createHmac("sha256", secret)
+      .update(`${timestamp}.${nonce}.${body}`)
+      .digest("hex");
 
     const res = await fetch("https://pizza.example.com/api/webhooks/YOUR_WEBHOOK_ID/fire", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         "X-Webhook-Signature": signature,
+        "X-Webhook-Timestamp": timestamp,
+        "X-Webhook-Nonce": nonce,
       },
       body,
     });
@@ -189,17 +217,26 @@ The signature is an HMAC-SHA256 hex digest of the **raw request body** using the
   </TabItem>
   <TabItem label="Python">
     ```python
-    import hmac, hashlib, json, requests
+    import hmac, hashlib, json, secrets, requests
+    from datetime import datetime, timezone
 
-    secret = "your-64-char-hex-secret"
+    secret_key = "your-64-char-hex-secret"
     body = json.dumps({"type": "deploy", "repo": "myorg/myapp", "status": "failure"})
-    signature = hmac.new(secret.encode(), body.encode(), hashlib.sha256).hexdigest()
+    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    nonce = secrets.token_hex(16)
+    signature = hmac.new(
+        secret_key.encode(),
+        f"{timestamp}.{nonce}.{body}".encode(),
+        hashlib.sha256,
+    ).hexdigest()
 
     res = requests.post(
         "https://pizza.example.com/api/webhooks/YOUR_WEBHOOK_ID/fire",
         headers={
             "Content-Type": "application/json",
             "X-Webhook-Signature": signature,
+            "X-Webhook-Timestamp": timestamp,
+            "X-Webhook-Nonce": nonce,
         },
         data=body,
     )
@@ -208,8 +245,21 @@ The signature is an HMAC-SHA256 hex digest of the **raw request body** using the
   </TabItem>
 </Tabs>
 
+### Legacy mode (backward compatible)
+
+The signature is an HMAC-SHA256 hex digest of the **raw request body** only. No timestamp or nonce headers are sent. This mode has no replay protection but is still accepted for callers that pre-date the enhanced format.
+
+```bash
+SIG=$(echo -n "$BODY" | openssl dgst -sha256 -hmac "$SECRET" | sed 's/^.*= //')
+
+curl -X POST "$WEBHOOK_URL" \
+  -H "Content-Type: application/json" \
+  -H "X-Webhook-Signature: $SIG" \
+  -d "$BODY"
+```
+
 <Aside type="tip">
-  The signature is compared using **timing-safe comparison** on the server, which prevents timing attacks that could leak the secret.
+  The signature is compared using **timing-safe comparison** on the server, preventing timing attacks that could leak the secret.
 </Aside>
 
 ---
@@ -244,11 +294,15 @@ jobs:
             --arg run_url "${{ github.event.workflow_run.html_url }}" \
             '{type: $type, repo: $repo, branch: $branch, commit: $commit, run_url: $run_url}')
 
-          SIG=$(echo -n "$BODY" | openssl dgst -sha256 -hmac "$WEBHOOK_SECRET" | sed 's/^.*= //')
+          TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          NONCE=$(openssl rand -hex 16)
+          SIG=$(echo -n "$TIMESTAMP.$NONCE.$BODY" | openssl dgst -sha256 -hmac "$WEBHOOK_SECRET" | sed 's/^.*= //')
 
           curl -sf -X POST "$WEBHOOK_URL" \
             -H "Content-Type: application/json" \
             -H "X-Webhook-Signature: $SIG" \
+            -H "X-Webhook-Timestamp: $TIMESTAMP" \
+            -H "X-Webhook-Nonce: $NONCE" \
             -d "$BODY"
     ```
 
@@ -387,10 +441,12 @@ A webhook **must have a runner assigned** (`runnerId`) to fire successfully. If 
 
 | Symptom | Likely cause |
 |---------|-------------|
-| `401 Invalid signature` | Secret mismatch, or the body was modified between signing and sending (e.g., re-serialized by a proxy). Sign the **exact** bytes you send. |
-| `401 Missing X-Webhook-Signature` | The header name is case-insensitive but must be present. Check for typos. |
+| `401 Invalid signature` | Secret mismatch, or the body was modified between signing and sending (e.g., re-serialized by a proxy). Sign the **exact** bytes you send. In enhanced mode the signed string is `${timestamp}.${nonce}.${rawBody}`. |
+| `401 Missing X-Webhook-Timestamp` | Using enhanced mode but forgot the timestamp header. Either add it (recommended) or omit both `X-Webhook-Timestamp` and `X-Webhook-Nonce` entirely to use legacy mode. |
+| `401 Webhook timestamp is too old` | The timestamp in `X-Webhook-Timestamp` is more than 5 minutes from server time. Check system clock synchronization. |
+| `409 Webhook nonce has already been used` | A replay was detected — the same nonce was used for a successful delivery within the last 5 minutes. Generate a fresh nonce per request. |
 | `404 Webhook not found` | Webhook ID is wrong, webhook was deleted, or webhook is disabled. |
 | `500 Webhook has no runner assigned` | The webhook's `runnerId` is `null`. Update it via the API or recreate from the runner detail view. |
-| `503 Runner is not connected` | The assigned runner is offline. Start the runner daemon or check connectivity. |
+| `503 Runner is offline` | The assigned runner has disconnected. Start the runner daemon or check connectivity. |
 | `504 Session did not connect in time` | The session was spawned on the runner but didn't register with the server within ~15 seconds. Check runner logs for errors. |
 | Session spawns but agent does nothing | The webhook's **prompt** field is empty, so the agent has no instructions. Set a prompt that tells the agent what to do with the payload. |

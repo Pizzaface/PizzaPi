@@ -243,12 +243,16 @@ function WebhookRow({
     const curlSnippet = [
         `BODY='{"type":"example","data":{}}'`,
         `SECRET="${webhook.secret}"`,
+        `TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")`,
+        `NONCE=$(openssl rand -hex 16)`,
         `# Works with both LibreSSL (macOS default) and OpenSSL 3.x`,
-        `SIG=$(echo -n "$BODY" | openssl dgst -sha256 -hmac "$SECRET" | sed 's/^.*= //')`,
+        `SIG=$(echo -n "$TIMESTAMP.$NONCE.$BODY" | openssl dgst -sha256 -hmac "$SECRET" | sed 's/^.*= //')`,
         ``,
         `curl -X POST ${fireUrl} \\`,
         `  -H "Content-Type: application/json" \\`,
         `  -H "X-Webhook-Signature: $SIG" \\`,
+        `  -H "X-Webhook-Timestamp: $TIMESTAMP" \\`,
+        `  -H "X-Webhook-Nonce: $NONCE" \\`,
         `  -d "$BODY"`,
     ].join("\n");
 

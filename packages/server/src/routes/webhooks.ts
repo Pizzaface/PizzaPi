@@ -44,7 +44,6 @@ import {
     listWebhooksForUser,
     updateWebhook,
     deleteWebhook,
-    toPublicWebhook,
 } from "../webhooks/store.js";
 
 const log = createLogger("webhooks-api");
@@ -58,7 +57,14 @@ const SESSION_CONNECT_TIMEOUT_MS = 15_000;
 /** Maximum accepted age/skew for webhook timestamp headers (ms). */
 const WEBHOOK_REPLAY_WINDOW_MS = 5 * 60 * 1000;
 
-/** In-memory replay guard: (webhookId:nonce) -> first-seen timestamp. */
+/**
+ * In-memory replay guard: (webhookId:nonce) -> first-seen timestamp.
+ *
+ * TODO(multi-node): This store is process-local and invisible to other server
+ * nodes. In a multi-node deployment, replay attacks are possible if requests
+ * route to different nodes within the 5-minute replay window. Replace with a
+ * Redis-backed nonce store (SETNX + TTL) to prevent cross-node replay attacks.
+ */
 const consumedWebhookNonces = new Map<string, number>();
 
 function pruneConsumedWebhookNonces(nowMs: number): void {
@@ -105,9 +111,17 @@ async function spawnSessionForWebhook(
     model: { provider: string; id: string } | null,
 ): Promise<{ sessionId: string } | Response> {
     const runner = await getRunnerData(runnerId);
-    if (!runner || runner.userId !== webhookUserId) {
+    // Distinguish "runner offline/deleted" (503) from "runner owned by someone else" (403).
+    // Runner state is removed from Redis on disconnect, so !runner means temporarily offline.
+    if (!runner) {
         return Response.json(
-            { error: "Runner not found or not owned by webhook owner" },
+            { error: "Runner is offline or not available" },
+            { status: 503 },
+        );
+    }
+    if (runner.userId !== webhookUserId) {
+        return Response.json(
+            { error: "Runner is not owned by webhook owner" },
             { status: 403 },
         );
     }
@@ -338,7 +352,7 @@ export const handleWebhooksRoute: RouteHandler = async (req, url) => {
         if (identity instanceof Response) return identity;
 
         const webhooks = await listWebhooksForUser(identity.userId);
-        return Response.json({ webhooks: webhooks.map(toPublicWebhook) });
+        return Response.json({ webhooks });
     }
 
     // ── GET /api/webhooks/:id ──────────────────────────────────────────────
@@ -354,7 +368,7 @@ export const handleWebhooksRoute: RouteHandler = async (req, url) => {
             return Response.json({ error: "Webhook not found" }, { status: 404 });
         }
 
-        return Response.json({ webhook: toPublicWebhook(webhook) });
+        return Response.json({ webhook });
     }
 
     // ── PUT /api/webhooks/:id ──────────────────────────────────────────────
@@ -436,7 +450,7 @@ export const handleWebhooksRoute: RouteHandler = async (req, url) => {
             return Response.json({ error: "Webhook not found" }, { status: 404 });
         }
 
-        return Response.json({ webhook: toPublicWebhook(updated) });
+        return Response.json({ webhook: updated });
     }
 
     // ── DELETE /api/webhooks/:id ───────────────────────────────────────────
@@ -476,48 +490,75 @@ export const handleWebhooksRoute: RouteHandler = async (req, url) => {
         } catch {
             return Response.json({ error: "Failed to read request body" }, { status: 400 });
         }
+        const rawBodyText = new TextDecoder().decode(rawBody);
 
-        // Replay protection: require timestamp + nonce headers.
+        // ── Determine signing mode ────────────────────────────────────────────
+        // Enhanced mode (recommended): caller sends X-Webhook-Timestamp +
+        // X-Webhook-Nonce; HMAC covers `${timestamp}.${nonce}.${body}`.
+        // Legacy mode (backward compat): neither header present; HMAC covers
+        // raw body only — no replay protection.
+        // Partial headers (one but not both) → 401 to avoid silent misconfiguration.
         const timestampHeader = req.headers.get("x-webhook-timestamp");
-        if (!timestampHeader) {
-            return Response.json({ error: "Missing X-Webhook-Timestamp header" }, { status: 401 });
-        }
-
-        const timestampMs = Date.parse(timestampHeader);
-        if (!Number.isFinite(timestampMs)) {
-            return Response.json({ error: "Invalid X-Webhook-Timestamp header" }, { status: 401 });
-        }
-
-        const nowMs = Date.now();
-        if (Math.abs(nowMs - timestampMs) > WEBHOOK_REPLAY_WINDOW_MS) {
-            return Response.json({ error: "Webhook timestamp is too old or too far in the future" }, { status: 401 });
-        }
-
         const nonceHeader = req.headers.get("x-webhook-nonce");
-        const nonce = typeof nonceHeader === "string" ? nonceHeader.trim() : "";
-        if (!nonce) {
+        const hasTimestamp = timestampHeader !== null && timestampHeader.trim() !== "";
+        const hasNonce = nonceHeader !== null && nonceHeader.trim() !== "";
+        const useEnhanced = hasTimestamp && hasNonce;
+        const useLegacy = !hasTimestamp && !hasNonce;
+
+        if (!useEnhanced && !useLegacy) {
+            // Partial enhanced headers — likely a misconfiguration, reject clearly.
+            if (!hasTimestamp) {
+                return Response.json({ error: "Missing X-Webhook-Timestamp header" }, { status: 401 });
+            }
             return Response.json({ error: "Missing X-Webhook-Nonce header" }, { status: 401 });
         }
 
-        // Validate HMAC signature.
         const signature = req.headers.get("x-webhook-signature");
         if (!signature) {
             return Response.json({ error: "Missing X-Webhook-Signature header" }, { status: 401 });
         }
 
-        const rawBodyText = new TextDecoder().decode(rawBody);
-        const expected = computeHmac(webhook.secret, `${timestampHeader}.${nonce}.${rawBodyText}`);
-        if (!hmacEqual(signature, expected)) {
-            log.warn(`Invalid HMAC for webhook ${webhookId}`);
-            return Response.json({ error: "Invalid signature" }, { status: 401 });
-        }
+        // Enhanced-mode timestamp + nonce validation
+        let nonceKey = "";
+        let nowMs = 0;
+        if (useEnhanced) {
+            nowMs = Date.now();
+            const timestampMs = Date.parse(timestampHeader!);
+            if (!Number.isFinite(timestampMs)) {
+                return Response.json({ error: "Invalid X-Webhook-Timestamp header" }, { status: 401 });
+            }
+            if (Math.abs(nowMs - timestampMs) > WEBHOOK_REPLAY_WINDOW_MS) {
+                return Response.json(
+                    { error: "Webhook timestamp is too old or too far in the future" },
+                    { status: 401 },
+                );
+            }
 
-        pruneConsumedWebhookNonces(nowMs);
-        const nonceKey = `${webhookId}:${nonce}`;
-        if (consumedWebhookNonces.has(nonceKey)) {
-            return Response.json({ error: "Webhook nonce has already been used" }, { status: 409 });
+            const nonce = nonceHeader!.trim();
+            const expected = computeHmac(
+                webhook.secret,
+                `${timestampHeader!}.${nonce}.${rawBodyText}`,
+            );
+            if (!hmacEqual(signature, expected)) {
+                log.warn(`Invalid HMAC for webhook ${webhookId}`);
+                return Response.json({ error: "Invalid signature" }, { status: 401 });
+            }
+
+            // Replay check — nonce is only consumed after successful delivery (below).
+            // This allows legitimate retries if delivery fails transiently (502/503/504).
+            pruneConsumedWebhookNonces(nowMs);
+            nonceKey = `${webhookId}:${nonce}`;
+            if (consumedWebhookNonces.has(nonceKey)) {
+                return Response.json({ error: "Webhook nonce has already been used" }, { status: 409 });
+            }
+        } else {
+            // Legacy mode: HMAC of raw body only — no replay protection.
+            const expected = computeHmac(webhook.secret, rawBodyText);
+            if (!hmacEqual(signature, expected)) {
+                log.warn(`Invalid HMAC for webhook ${webhookId} (legacy mode)`);
+                return Response.json({ error: "Invalid signature" }, { status: 401 });
+            }
         }
-        consumedWebhookNonces.set(nonceKey, nowMs);
 
         // Parse body JSON
         let body: Record<string, unknown>;
@@ -568,7 +609,7 @@ export const handleWebhooksRoute: RouteHandler = async (req, url) => {
             );
         }
 
-        return fireWebhookTrigger(
+        const fireResponse = await fireWebhookTrigger(
             webhook.id,
             webhook.name,
             webhook.source,
@@ -577,6 +618,15 @@ export const handleWebhooksRoute: RouteHandler = async (req, url) => {
             body,
             webhook.prompt,
         );
+
+        // Consume the nonce only after a successful delivery.
+        // If delivery fails transiently (502/503/504), the caller can retry
+        // with the same nonce within the replay window.
+        if (useEnhanced && nonceKey && fireResponse.status >= 200 && fireResponse.status < 300) {
+            consumedWebhookNonces.set(nonceKey, nowMs);
+        }
+
+        return fireResponse;
     }
 
     return undefined;
