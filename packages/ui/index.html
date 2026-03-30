@@ -18,6 +18,14 @@
             if (hc === "true") document.documentElement.setAttribute("data-contrast", "high");
             var a = localStorage.getItem('theme-accent');
             if (a && a !== 'default') document.documentElement.setAttribute('data-accent', a);
+            var fs = localStorage.getItem('theme-font-size');
+            if (fs && fs !== 'default') document.documentElement.setAttribute('data-font-size', fs);
+            var den = localStorage.getItem('theme-density');
+            if (den && den !== 'default') document.documentElement.setAttribute('data-density', den);
+            var rad = localStorage.getItem('theme-radius');
+            if (rad) document.documentElement.style.setProperty('--radius', rad);
+            var cf = localStorage.getItem('theme-code-font');
+            if (cf) document.documentElement.style.setProperty('--code-font', cf);
           })();
         </script>
         <meta name="mobile-web-app-capable" content="yes" />

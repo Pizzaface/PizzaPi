@@ -364,6 +364,27 @@
     word-break: break-word;
   }
 
+  /* Font size preference */
+  [data-font-size="small"] .pp-message-content { font-size: 0.8125rem; line-height: 1.5; }
+  [data-font-size="large"] .pp-message-content { font-size: 1rem; line-height: 1.7; }
+
+  /* UI density */
+  /* UI density — scale padding, gaps, and margins */
+  :root { --density: 1; }
+  [data-density="compact"] { --density: 0.75; }
+  [data-density="comfortable"] { --density: 1.25; }
+
+  /* Apply density to message blocks */
+  [data-density="compact"] .pp-message-content { padding-top: 0.25rem; padding-bottom: 0.25rem; }
+  [data-density="compact"] header { padding-top: 0.25rem; padding-bottom: 0.25rem; }
+  [data-density="comfortable"] .pp-message-content { padding-top: 0.75rem; padding-bottom: 0.75rem; }
+  [data-density="comfortable"] header { padding-top: 0.75rem; padding-bottom: 0.75rem; }
+
+  /* Code font override */
+  code, pre, .font-mono, kbd {
+    font-family: var(--code-font, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace);
+  }
+
   .pp-message-content pre,
   .pp-message-content code {
     max-width: 100%;
