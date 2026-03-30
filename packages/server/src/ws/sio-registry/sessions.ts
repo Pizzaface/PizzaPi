@@ -39,6 +39,7 @@ import {
 } from "../sio-state/index.js";
 import {
     getPersistedRelaySessionRunner,
+    getRelaySessionUserId,
     recordRelaySessionStart,
     recordRelaySessionEnd,
     recordRelaySessionState,
@@ -106,9 +107,9 @@ export async function registerTuiSession(
     opts: RegisterTuiSessionOpts = {},
 ): Promise<{ sessionId: string; token: string; shareUrl: string; parentSessionId: string | null; wasDelinked: boolean }> {
     const requestedSessionId = typeof opts.sessionId === "string" ? opts.sessionId.trim() : "";
-    const sessionId = requestedSessionId.length > 0 ? requestedSessionId : randomUUID();
+    let sessionId = requestedSessionId.length > 0 ? requestedSessionId : randomUUID();
     const token = randomBytes(32).toString("hex");
-    const shareUrl = `${process.env.PIZZAPI_BASE_URL ?? "http://localhost:5173"}/session/${sessionId}`;
+    let shareUrl = `${process.env.PIZZAPI_BASE_URL ?? "http://localhost:5173"}/session/${sessionId}`;
     // startedAt is resolved after the existing-session check below so that
     // reconnects preserve the original value.  This is critical for the
     // epoch-based delink filter in delink_children.
@@ -126,14 +127,45 @@ export async function registerTuiSession(
     // reconnects create a kill loop: new socket registers → old socket's
     // deferred disconnect fires → endSharedSession kills the new session →
     // Socket.IO reconnects → repeat.
-    const existing = await getSession(sessionId);
+    let existing = await getSession(sessionId);
     const previousParentSessionId = existing?.parentSessionId ?? null;
     if (existing) {
-        const oldSocket = localTuiSockets.get(sessionId);
-        if (oldSocket && oldSocket !== socket) {
-            oldSocket.data.sessionId = undefined;
+        // Guard against cross-user session ID takeover: if the session is
+        // already owned by a different user, do not evict them — instead fall
+        // back to a fresh session ID so this registration gets its own slot.
+        if (existing.userId && existing.userId !== userId) {
+            log.warn(`registerTuiSession rejected: session ${sessionId} belongs to different user`);
+            sessionId = randomUUID();
+            // Treat as a brand-new session — recalculate shareUrl for the new ID
+            // and null out `existing` so downstream code never inherits the other
+            // owner's startedAt, parentSessionId, or any other metadata.
+            shareUrl = `${process.env.PIZZAPI_BASE_URL ?? "http://localhost:5173"}/session/${sessionId}`;
+            existing = null;
+        } else {
+            const oldSocket = localTuiSockets.get(sessionId);
+            if (oldSocket && oldSocket !== socket) {
+                oldSocket.data.sessionId = undefined;
+            }
+            await endSharedSession(sessionId, "Session reconnected");
         }
-        await endSharedSession(sessionId, "Session reconnected");
+    }
+
+    // Secondary guard: check SQLite for *ended* sessions that are no longer in
+    // Redis but whose persisted row belongs to a different user.  This covers
+    // the case where a session ended (Redis key deleted) and a different user
+    // subsequently requests the same session ID — the Redis guard above is
+    // bypassed because `existing` is null, but the persisted row still has the
+    // original owner.  Generate a fresh session ID so this user gets their own
+    // slot without touching the other owner's persisted data.
+    if (!existing && requestedSessionId.length > 0 && sessionId === requestedSessionId) {
+        const persistedUserId = await getRelaySessionUserId(sessionId);
+        if (persistedUserId !== null && persistedUserId !== userId) {
+            log.warn(
+                `registerTuiSession: ended session ${sessionId} is owned by a different user in SQLite — generating new session ID`,
+            );
+            sessionId = randomUUID();
+            shareUrl = `${process.env.PIZZAPI_BASE_URL ?? "http://localhost:5173"}/session/${sessionId}`;
+        }
     }
 
     // Preserve the original startedAt on reconnect so that epoch-based
@@ -473,7 +505,7 @@ export async function updateSessionState(sessionId: string, state: unknown): Pro
         );
     }
 
-    void recordRelaySessionState(sessionId, strippedState).catch((error) => {
+    void recordRelaySessionState(sessionId, session.userId ?? null, strippedState).catch((error) => {
         log.error("Failed to persist relay session state:", error);
     });
 }
@@ -773,6 +805,10 @@ export async function endSharedSession(sessionId: string, reason: string = "Sess
         void clearSessionSubscriptions(sessionId).catch((err) => {
             log.warn("Failed to clear trigger subscriptions for session", sessionId, ":", err);
         });
+        // NOTE: Do NOT delete the relay event cache here. The cache is
+        // needed for ended-session replay (viewers re-joining after agent_end).
+        // The cache already has a TTL set via pExpire on every append, so it
+        // will expire naturally without any explicit delete.
     }
 
     // Delete from Redis

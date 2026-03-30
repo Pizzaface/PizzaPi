@@ -157,11 +157,33 @@ export async function ensureRelaySessionTables(): Promise<void> {
 
 export async function recordRelaySessionStart(input: RelaySessionStartInput): Promise<void> {
     const now = input.startedAt;
+    const incomingUserId = input.userId ?? null;
+
+    // Defense-in-depth: if a persisted row already exists for this session ID
+    // and belongs to a *different* user, do not overwrite ownership — skip the
+    // upsert entirely so the existing owner's data is preserved.  The primary
+    // guard lives in registerTuiSession() (SQLite check before Redis write); this
+    // check catches any path that bypasses the caller-side guard.
+    if (incomingUserId !== null) {
+        const existingRow = await getKysely()
+            .selectFrom("relay_session")
+            .select("userId")
+            .where("id", "=", input.sessionId)
+            .executeTakeFirst();
+
+        if (existingRow && existingRow.userId !== null && existingRow.userId !== incomingUserId) {
+            log.warn(
+                `recordRelaySessionStart: session ${input.sessionId} belongs to a different user — skipping upsert to prevent ownership takeover`,
+            );
+            return;
+        }
+    }
+
     await getKysely()
         .insertInto("relay_session")
         .values({
             id: input.sessionId,
-            userId: input.userId ?? null,
+            userId: incomingUserId,
             userName: input.userName ?? null,
             cwd: input.cwd,
             shareUrl: input.shareUrl,
@@ -209,7 +231,36 @@ export async function touchRelaySession(sessionId: string): Promise<void> {
         .execute();
 }
 
-export async function recordRelaySessionState(sessionId: string, state: unknown): Promise<void> {
+/**
+ * Persist session state for `sessionId`.
+ *
+ * `userId` is required for ownership validation: if the persisted
+ * `relay_session` row belongs to a *different* user the write is skipped to
+ * prevent cross-user state corruption.  Pass `null` only for anonymous
+ * (unauthenticated) sessions where no user identity is available.
+ */
+export async function recordRelaySessionState(
+    sessionId: string,
+    userId: string | null,
+    state: unknown,
+): Promise<void> {
+    // Ownership guard: verify the session's persisted userId before writing.
+    // This prevents a user who re-registered an ended session ID (and was
+    // subsequently redirected to a fresh ID by the caller-side guard) from
+    // corrupting or reading the original owner's persisted state.
+    const ownerRow = await getKysely()
+        .selectFrom("relay_session")
+        .select("userId")
+        .where("id", "=", sessionId)
+        .executeTakeFirst();
+
+    if (ownerRow && ownerRow.userId !== null && ownerRow.userId !== userId) {
+        log.warn(
+            `recordRelaySessionState: userId mismatch for session ${sessionId} — skipping state write to prevent cross-user corruption`,
+        );
+        return;
+    }
+
     const nowIso = new Date().toISOString();
     const serialized = JSON.stringify(state ?? null);
 
