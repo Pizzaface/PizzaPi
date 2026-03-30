@@ -40,7 +40,7 @@ export const handlePushRoute: RouteHandler = async (req, url) => {
 
         if (!isValidPushEndpoint(body.endpoint)) {
             return Response.json(
-                { error: "Invalid push endpoint: must be an https:// URL pointing to a known push service" },
+                { error: "Invalid push endpoint: must be an https:// URL not targeting private/loopback addresses" },
                 { status: 400 },
             );
         }
