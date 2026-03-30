@@ -114,6 +114,7 @@ export function spawnSession(
         "PIZZAPI_RUNNER_TOKEN",
         "PIZZAPI_RUNNER_API_KEY",
         "NODE_OPTIONS",
+        "BUN_OPTIONS",           // Bun equivalent of NODE_OPTIONS — can inject code via --preload
         "LD_PRELOAD",
         "DYLD_INSERT_LIBRARIES",
         "DYLD_FORCE_FLAT_NAMESPACE",

@@ -1135,6 +1135,66 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
 
         // ── Settings ───────────────────────────────────────────────────────
 
+        /**
+         * Mask sensitive fields in a PizzaPi config object before sending to the UI.
+         * Removes apiKey/relayUrl and replaces sensitive env/header values with "***".
+         * Must be kept in sync with the sentinel-restore logic in settings_update_section.
+         */
+        function sanitizeConfigForUI(config: Record<string, unknown>): Record<string, unknown> {
+            const sanitized: any = { ...config };
+            delete sanitized.apiKey;
+            delete sanitized.relayUrl;
+
+            // Regex for sensitive key/header names — covers common secret patterns plus
+            // HTTP auth headers (Authorization, Cookie) and common PAT/Bearer naming.
+            const SENSITIVE_NAME_RE = /key|token|secret|password|credential|authorization|cookie|pat|bearer/i;
+
+            // Strip sensitive env values from MCP server definitions
+            if (sanitized.mcpServers && typeof sanitized.mcpServers === "object") {
+                const sanitizedMcp: Record<string, unknown> = {};
+                for (const [name, server] of Object.entries(sanitized.mcpServers as Record<string, unknown>)) {
+                    if (server && typeof server === "object") {
+                        let sanitizedServer: Record<string, unknown> = { ...(server as Record<string, unknown>) };
+
+                        if ("env" in sanitizedServer && sanitizedServer.env && typeof sanitizedServer.env === "object") {
+                            const rawEnv = sanitizedServer.env as Record<string, string>;
+                            const maskedEnv: Record<string, string> = {};
+                            for (const [k, v] of Object.entries(rawEnv)) {
+                                maskedEnv[k] = SENSITIVE_NAME_RE.test(k) ? "***" : v;
+                            }
+                            sanitizedServer = { ...sanitizedServer, env: maskedEnv };
+                        }
+
+                        if ("headers" in sanitizedServer && sanitizedServer.headers && typeof sanitizedServer.headers === "object") {
+                            const rawHeaders = sanitizedServer.headers as Record<string, string>;
+                            const maskedHeaders: Record<string, string> = {};
+                            for (const [k, v] of Object.entries(rawHeaders)) {
+                                maskedHeaders[k] = SENSITIVE_NAME_RE.test(k) ? "***" : v;
+                            }
+                            sanitizedServer = { ...sanitizedServer, headers: maskedHeaders };
+                        }
+
+                        sanitizedMcp[name] = sanitizedServer;
+                    } else {
+                        sanitizedMcp[name] = server;
+                    }
+                }
+                sanitized.mcpServers = sanitizedMcp;
+            }
+
+            // Mask sensitive envOverrides values
+            if (sanitized.envOverrides && typeof sanitized.envOverrides === "object") {
+                const rawOverrides = sanitized.envOverrides as Record<string, string>;
+                const maskedOverrides: Record<string, string> = {};
+                for (const [k, v] of Object.entries(rawOverrides)) {
+                    maskedOverrides[k] = SENSITIVE_NAME_RE.test(k) ? "***" : v;
+                }
+                sanitized.envOverrides = maskedOverrides;
+            }
+
+            return sanitized;
+        }
+
         socket.on("settings_get_config", async (data: any) => {
             if (isShuttingDown) return;
             const requestId = data?.requestId;
@@ -1167,59 +1227,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                 }
 
                 // Strip sensitive fields before sending to UI
-                const sanitizedConfig: any = { ...globalConfig };
-                delete sanitizedConfig.apiKey;
-                delete sanitizedConfig.relayUrl;
-
-                // Regex for sensitive key/header names -- covers common secret patterns plus
-                // HTTP auth headers (Authorization, Cookie) and common PAT/Bearer naming.
-                const SENSITIVE_NAME_RE = /key|token|secret|password|credential|authorization|cookie|pat|bearer/i;
-
-                // Strip sensitive env values from MCP server definitions
-                // (mcpServers is not in PizzaPiConfig type -- it flows through as untyped JSON)
-                if (sanitizedConfig.mcpServers && typeof sanitizedConfig.mcpServers === "object") {
-                    const sanitizedMcp: Record<string, unknown> = {};
-                    for (const [name, server] of Object.entries(sanitizedConfig.mcpServers as Record<string, unknown>)) {
-                        if (server && typeof server === "object") {
-                            let sanitizedServer: Record<string, unknown> = { ...(server as Record<string, unknown>) };
-
-                            // Mask sensitive env var values
-                            if ("env" in sanitizedServer && sanitizedServer.env && typeof sanitizedServer.env === "object") {
-                                const rawEnv = sanitizedServer.env as Record<string, string>;
-                                const maskedEnv: Record<string, string> = {};
-                                for (const [k, v] of Object.entries(rawEnv)) {
-                                    maskedEnv[k] = SENSITIVE_NAME_RE.test(k) ? "***" : v;
-                                }
-                                sanitizedServer = { ...sanitizedServer, env: maskedEnv };
-                            }
-
-                            // Mask sensitive HTTP header values (e.g. Authorization, Cookie, X-Api-Key)
-                            if ("headers" in sanitizedServer && sanitizedServer.headers && typeof sanitizedServer.headers === "object") {
-                                const rawHeaders = sanitizedServer.headers as Record<string, string>;
-                                const maskedHeaders: Record<string, string> = {};
-                                for (const [k, v] of Object.entries(rawHeaders)) {
-                                    maskedHeaders[k] = SENSITIVE_NAME_RE.test(k) ? "***" : v;
-                                }
-                                sanitizedServer = { ...sanitizedServer, headers: maskedHeaders };
-                            }
-
-                            sanitizedMcp[name] = sanitizedServer;
-                        } else {
-                            sanitizedMcp[name] = server;
-                        }
-                    }
-                    sanitizedConfig.mcpServers = sanitizedMcp;
-                }
-
-                // Mask sensitive envOverrides values (top-level env var section)
-                if (sanitizedConfig.envOverrides && typeof sanitizedConfig.envOverrides === "object") {
-                    const rawOverrides = sanitizedConfig.envOverrides as Record<string, string>;
-                    const maskedOverrides: Record<string, string> = {};
-                    for (const [k, v] of Object.entries(rawOverrides)) {
-                        maskedOverrides[k] = SENSITIVE_NAME_RE.test(k) ? "***" : v;
-                    }
-                    sanitizedConfig.envOverrides = maskedOverrides;
-                }
+                const sanitizedConfig = sanitizeConfigForUI(globalConfig as Record<string, unknown>);
                 socket.emit("file_result", {
                     requestId,
                     ok: true,
@@ -1449,8 +1457,8 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                         saveGlobal({ [configKey]: value } as any);
                     }
 
-                    // Reload and return the updated config
-                    const updatedConfig = loadGlobal();
+                    // Reload and return the updated config — mask secrets before sending to browser
+                    const updatedConfig = sanitizeConfigForUI(loadGlobal() as Record<string, unknown>);
                     const reloadHint = section === "mcpServers"
                         ? "MCP server config saved. Active sessions can run /mcp reload to pick up changes."
                         : "Settings saved. Changes apply on next session start.";
