@@ -284,6 +284,14 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
     // ownership was confirmed.  Resolved when ownership is verified; rejected
     // when ownership fails or the runner disconnects mid-check.
     const pendingTerminalChecks = new Map<string, { promise: Promise<void>; reject: () => void; runnerId: string }>();
+    // Maps sessionId → pending ownership check.  Set by session_ready BEFORE
+    // the async getSharedSession() call completes.  Consumers that check
+    // runnerSessionIds (runner_session_event, disconnect_session,
+    // service_message) await this promise before proceeding, closing the
+    // TOCTOU window where those handlers would trust a not-yet-verified
+    // session membership.  Resolved when user-ownership is confirmed;
+    // rejected when ownership fails or the runner disconnects mid-check.
+    const pendingSessionChecks = new Map<string, { promise: Promise<void>; reject: () => void; runnerId: string }>();
 
     runner.on("connection", (socket) => {
         log.info(`connected: ${socket.id}`);
@@ -556,6 +564,19 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
         socket.on("runner_session_event", async (data) => {
             const runnerId = socket.data.runnerId;
             if (!runnerId) return;
+            // If session_ready is still awaiting its ownership check, block here
+            // until it resolves (owned) or rejects (not owned / disconnected).
+            // This closes the TOCTOU window: no events are published before
+            // ownership is confirmed.
+            const pendingSession = pendingSessionChecks.get(data.sessionId);
+            if (pendingSession) {
+                try {
+                    await pendingSession.promise;
+                } catch {
+                    // Ownership check failed or runner disconnected — drop.
+                    return;
+                }
+            }
             // Security: verify the session belongs to this runner before publishing.
             // Prevents a compromised runner from injecting events into sessions it
             // doesn't own (same guard pattern used by service_message).
@@ -569,35 +590,62 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
         // ── session_ready — worker session connected ─────────────────────────
         socket.on("session_ready", async (data) => {
             const runnerId = socket.data.runnerId;
-            if (runnerId && data.sessionId) {
-                // Optimistically enroll the session in runnerSessionIds BEFORE the
-                // async work below.  This prevents a runner_session_event that
-                // arrives while the awaits are in flight from being rejected
-                // (race: session_ready triggers async work → runner_session_event
-                // races ahead → membership check fails → event dropped).  Sessions
-                // don't have the same TOCTOU security concern as terminals because
-                // the runner already owns the sessions it spawned; the only check
-                // here is user ownership, so an early enroll is safe.
-                if (!runnerSessionIds.has(runnerId)) {
-                    runnerSessionIds.set(runnerId, new Set());
-                }
-                runnerSessionIds.get(runnerId)!.add(data.sessionId);
-
-                // Security: verify the session belongs to this runner's user.
-                // Prevents a runner owned by user A from hijacking a session
-                // owned by user B by sending a spurious session_ready.
-                const runnerUserId = (socket.data as RunnerSocketData & { userId?: string }).userId;
-                const session = await getSharedSession(data.sessionId);
-                if (session?.userId && runnerUserId && session.userId !== runnerUserId) {
-                    log.warn(`session_ready rejected: session ${data.sessionId} belongs to user ${session.userId}, runner belongs to user ${runnerUserId}`);
-                    // Roll back the optimistic enrollment — session is not authorised.
-                    runnerSessionIds.get(runnerId)?.delete(data.sessionId);
-                    return;
-                }
-                await recordRunnerSession(runnerId, data.sessionId);
-                await linkSessionToRunner(runnerId, data.sessionId);
-                resolveSpawnReady(data.sessionId);
+            if (!runnerId || !data.sessionId) return;
+            // Guard against duplicate session_ready for the same session.
+            if (pendingSessionChecks.has(data.sessionId) || runnerSessionIds.get(runnerId)?.has(data.sessionId)) {
+                log.warn(`session_ready ignored: sessionId ${data.sessionId} already pending or verified for runner ${runnerId}`);
+                return;
             }
+            // Set up a pending-promise so runner_session_event / disconnect_session
+            // / service_message events that race with the async ownership check
+            // below will await this promise rather than being forwarded or dropped
+            // based on a not-yet-verified session membership.
+            // Nothing is written to runnerSessionIds yet — ownership is unconfirmed.
+            let resolveCheck!: () => void;
+            let rejectCheck!: () => void;
+            const checkPromise = new Promise<void>((resolve, reject) => {
+                resolveCheck = resolve;
+                rejectCheck = reject;
+            });
+            // Attach a no-op catch immediately so that if rejectCheck() is called
+            // before any handler is awaiting the promise (e.g. the runner disconnects
+            // while the Redis check is in flight), Bun does not treat it as an
+            // unhandled rejection and crash the process.
+            checkPromise.catch(() => {});
+            pendingSessionChecks.set(data.sessionId, { promise: checkPromise, reject: rejectCheck, runnerId });
+
+            // Security: verify the session belongs to this runner's user.
+            // Prevents a runner owned by user A from hijacking a session
+            // owned by user B by sending a spurious session_ready.
+            const runnerUserId = (socket.data as RunnerSocketData & { userId?: string }).userId;
+            const session = await getSharedSession(data.sessionId);
+            if (session?.userId && runnerUserId && session.userId !== runnerUserId) {
+                log.warn(`session_ready rejected: session ${data.sessionId} belongs to user ${session.userId}, runner belongs to user ${runnerUserId}`);
+                pendingSessionChecks.delete(data.sessionId);
+                rejectCheck();
+                return;
+            }
+            // Ownership confirmed.  If the runner disconnected while the check
+            // was in flight the disconnect handler already called rejectCheck()
+            // and deleted the pending entry — bail out to avoid creating a
+            // dangling runnerSessionIds entry for a gone runner.
+            if (!socket.connected) {
+                pendingSessionChecks.delete(data.sessionId);
+                // rejectCheck() may already have been called by disconnect handler;
+                // calling it again is safe (Promise settle is idempotent).
+                rejectCheck();
+                return;
+            }
+            pendingSessionChecks.delete(data.sessionId);
+            if (!runnerSessionIds.has(runnerId)) {
+                runnerSessionIds.set(runnerId, new Set());
+            }
+            runnerSessionIds.get(runnerId)!.add(data.sessionId);
+            resolveCheck();
+            log.info(`session_ready sessionId=${data.sessionId} runnerId=${runnerId}`);
+            await recordRunnerSession(runnerId, data.sessionId);
+            await linkSessionToRunner(runnerId, data.sessionId);
+            resolveSpawnReady(data.sessionId);
         });
 
         // ── session_error — worker session failed to spawn ───────────────────
@@ -619,9 +667,21 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
 
         // ── disconnect_session — runner asks relay to disconnect a worker ─────
         // Used to kill adopted sessions where the daemon has no child process handle.
-        socket.on("disconnect_session", (data) => {
+        socket.on("disconnect_session", async (data) => {
             const sessionId = data.sessionId;
             if (!sessionId) return;
+
+            // If session_ready is still awaiting its ownership check, block here
+            // until it resolves (owned) or rejects (not owned / disconnected).
+            const pendingSession = pendingSessionChecks.get(sessionId);
+            if (pendingSession) {
+                try {
+                    await pendingSession.promise;
+                } catch {
+                    // Ownership check failed or runner disconnected — drop.
+                    return;
+                }
+            }
 
             // Security: only allow disconnecting sessions owned by this runner.
             const runnerId = socket.data.runnerId;
@@ -807,13 +867,24 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
         // ── Generic service message relay: runner → viewers ──────────────────
         // Forward service envelopes verbatim to all viewers watching sessions
         // on this runner. The relay does not inspect serviceId — it just routes.
-        socket.on("service_message", (envelope: ServiceEnvelope) => {
+        socket.on("service_message", async (envelope: ServiceEnvelope) => {
             const runnerId = socket.data.runnerId;
             if (!runnerId) return;
             // If envelope carries a sessionId, route only to that session's viewers.
             // Otherwise broadcast to all sessions on this runner (e.g. push announcements).
             const targetSessionId = (envelope as ServiceEnvelope & { sessionId?: string }).sessionId;
             if (targetSessionId) {
+                // If session_ready is still awaiting its ownership check, block here
+                // until it resolves (owned) or rejects (not owned / disconnected).
+                const pendingSession = pendingSessionChecks.get(targetSessionId);
+                if (pendingSession) {
+                    try {
+                        await pendingSession.promise;
+                    } catch {
+                        // Ownership check failed or runner disconnected — drop.
+                        return;
+                    }
+                }
                 // Security: verify the target session belongs to this runner to prevent
                 // cross-session injection by a compromised or malicious runner.
                 if (!runnerSessionIds.get(runnerId)?.has(targetSessionId)) {
@@ -923,8 +994,18 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
 
                 // Clean up local session and terminal tracking
                 runnerSessionIds.delete(runnerId);
-                // Reject any pending ownership checks for this runner so that
-                // awaiting terminal_data/exit/error handlers unblock and drop
+                // Reject any pending session ownership checks for this runner so
+                // that awaiting runner_session_event / disconnect_session /
+                // service_message handlers unblock and drop their events
+                // immediately instead of waiting for getSharedSession() to return.
+                for (const [sessionId, entry] of pendingSessionChecks) {
+                    if (entry.runnerId === runnerId) {
+                        entry.reject();
+                        pendingSessionChecks.delete(sessionId);
+                    }
+                }
+                // Reject any pending terminal ownership checks for this runner so
+                // that awaiting terminal_data/exit/error handlers unblock and drop
                 // their events immediately instead of waiting for Redis.
                 for (const [terminalId, entry] of pendingTerminalChecks) {
                     if (entry.runnerId === runnerId) {
