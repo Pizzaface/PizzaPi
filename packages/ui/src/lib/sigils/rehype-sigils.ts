@@ -114,7 +114,7 @@ export function rehypeSigils() {
 
         nodes.push({
           type: "element",
-          tagName: "sigil",
+          tagName: "span",
           properties,
           children: [],
         } as HastElement);

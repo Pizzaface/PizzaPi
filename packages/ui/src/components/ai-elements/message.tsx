@@ -328,15 +328,16 @@ const streamdownPlugins = { cjk, code, math, mermaid };
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const sigilRehypePlugins = [[rehypeSigils]] as any;
-const sigilAllowedTags = {
-  sigil: [
-    "data-sigil-type",
-    "data-sigil-id",
-    "data-sigil-params",
-    "data-sigil-raw",
-  ],
-};
-const sigilComponents = { sigil: SigilInline };
+
+/** Span override that renders sigil pills when data-sigil-type is present. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function SpanOrSigil(props: any) {
+  if (props["data-sigil-type"]) return <SigilInline {...props} />;
+  const { node: _node, ...rest } = props;
+  return <span {...rest} />;
+}
+
+const sigilComponents = { span: SpanOrSigil };
 
 export const MessageResponse = memo(
   ({ className, ...props }: MessageResponseProps) => (
@@ -347,7 +348,6 @@ export const MessageResponse = memo(
       )}
       plugins={streamdownPlugins}
       rehypePlugins={sigilRehypePlugins}
-      allowedTags={sigilAllowedTags}
       components={sigilComponents}
       {...props}
     />
