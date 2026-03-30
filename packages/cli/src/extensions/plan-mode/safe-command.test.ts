@@ -215,6 +215,46 @@ describe("bash -c with curl inside — both paths", () => {
     });
 });
 
+// ── Round-2 P1: env option parsing (--,  -C/--chdir, -S/--split-string) ──────
+
+describe("env -- double-dash terminator", () => {
+    test("env -- rm -rf / → blocked", () => {
+        expect(noSandbox("env -- rm -rf /")).toBe(true);
+    });
+
+    test("env -- git status → allowed", () => {
+        expect(noSandbox("env -- git status")).toBe(false);
+    });
+});
+
+describe("env -C / --chdir flag", () => {
+    test("env -C /tmp git push → blocked", () => {
+        expect(noSandbox("env -C /tmp git push")).toBe(true);
+    });
+
+    test("env --chdir=/tmp kill 1 → blocked", () => {
+        expect(noSandbox("env --chdir=/tmp kill 1")).toBe(true);
+    });
+
+    test("env -C /tmp git status → allowed", () => {
+        expect(noSandbox("env -C /tmp git status")).toBe(false);
+    });
+});
+
+describe("env -S / --split-string flag", () => {
+    test('env -S "rm -rf /" → blocked', () => {
+        expect(noSandbox('env -S "rm -rf /"')).toBe(true);
+    });
+});
+
+// ── Round-2 P2: quoting preserved in inner command extraction ─────────────────
+
+describe("env quoting preservation", () => {
+    test("env FOO=bar printf '>' → allowed (metachar in single quotes)", () => {
+        expect(noSandbox("env FOO=bar printf '>'")).toBe(false);
+    });
+});
+
 // ── Regression: previously-working safe commands must still pass ──────────────
 
 describe("regression — safe commands still pass", () => {

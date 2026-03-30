@@ -5,6 +5,41 @@ import { isDestructiveGitCommand, isDestructiveTarCommand, isDestructiveGawkComm
 // ── Wrapper shell/interpreter detection ──────────────────────────────────────────────────
 
 /**
+ * Returns the byte offset in `str` where the word at `wordIndex` (0-based)
+ * begins, using the same whitespace/quote-based tokenization as
+ * `splitShellWords`.  Returns -1 when `wordIndex` is out of range.
+ *
+ * Preserving the original slice (rather than re-joining words) ensures that
+ * quoting is intact when the extracted substring is later evaluated for
+ * destructiveness — e.g. `printf '>'` must not be confused with an output
+ * redirection.
+ */
+function findWordStartOffset(str: string, wordIndex: number): number {
+    let pos = 0;
+    let count = 0;
+    while (pos < str.length) {
+        // Skip inter-word whitespace
+        while (pos < str.length && /\s/.test(str[pos])) pos++;
+        if (pos >= str.length) break;
+        // Found the start of a word — return if it is the target
+        if (count === wordIndex) return pos;
+        // Skip past this word, respecting single/double quotes
+        let inSingle = false;
+        let inDouble = false;
+        while (pos < str.length) {
+            const ch = str[pos];
+            if (ch === "\\" && !inSingle && pos + 1 < str.length) { pos += 2; continue; }
+            if (ch === "'" && !inDouble) { inSingle = !inSingle; pos++; continue; }
+            if (ch === '"' && !inSingle) { inDouble = !inDouble; pos++; continue; }
+            if (!inSingle && !inDouble && /\s/.test(ch)) break;
+            pos++;
+        }
+        count++;
+    }
+    return -1;
+}
+
+/**
  * Returns true if `word` is a short-flag bundle containing the letter `flag`.
  * Handles both standalone (-c) and bundled (-xc) short flags.
  * Returns false for long flags (--flag).
@@ -47,29 +82,84 @@ function extractWrapperInnerCommand(segment: string): string | null {
         let i = 1; // skip "env"
         while (i < words.length) {
             const w = words[i];
-            // Skip known env flags: -i/--ignore-environment, -0/--null, -v/--debug
-            if (w === "-i" || w === "--ignore-environment" || w === "-0" || w === "--null" ||
-                w === "-v" || w === "--debug" || w === "-") {
+
+            // `--` terminates option parsing; everything after is the command.
+            if (w === "--") {
+                if (i + 1 >= words.length) return null; // `env --` with no command
+                const off = findWordStartOffset(segment, i + 1);
+                return off >= 0 ? segment.slice(off) : "";
+            }
+
+            // -S / --split-string: the argument IS the inner command string.
+            // GNU env splits the string into tokens and runs it as a command;
+            // we return the string directly so it can be evaluated.
+            if (w === "-S" || w === "--split-string") {
+                return i + 1 < words.length ? words[i + 1] : "";
+            }
+            if (/^--split-string=/.test(w)) {
+                return w.slice("--split-string=".length);
+            }
+
+            // Known no-arg flags
+            if (w === "-i" || w === "--ignore-environment" ||
+                w === "-0" || w === "--null" ||
+                w === "-v" || w === "--debug" ||
+                w === "-") {
                 i++;
                 continue;
             }
-            // Skip -u VAR / --unset VAR (separate argument forms)
+
+            // -u VAR / --unset VAR (takes one argument)
             if ((w === "-u" || w === "--unset") && i + 1 < words.length) {
                 i += 2;
                 continue;
             }
-            // Skip -u=VAR / --unset=VAR inline forms
+            // -u=VAR / --unset=VAR inline forms
             if (/^(?:-u|--unset)=/.test(w)) {
                 i++;
                 continue;
             }
-            // Skip VAR=val environment variable assignments
+
+            // -C DIR / --chdir DIR (takes one argument)
+            if ((w === "-C" || w === "--chdir") && i + 1 < words.length) {
+                i += 2;
+                continue;
+            }
+            // --chdir=DIR inline form
+            if (/^--chdir=/.test(w)) {
+                i++;
+                continue;
+            }
+
+            // Short flag bundles (e.g. -iv, -iC /tmp, -iS 'cmd').
+            // Only applies to bundles of length > 2 (e.g. "-iC", not "-C").
+            if (w.startsWith("-") && !w.startsWith("--") && w.length > 2) {
+                const flags = w.slice(1);
+                if (flags.includes("S")) {
+                    // -…S… in bundle: next word is the inner command string
+                    return i + 1 < words.length ? words[i + 1] : "";
+                }
+                if (flags.includes("C") || flags.includes("u")) {
+                    // Arg-taking flag in bundle — consume bundle + next word
+                    i += 2;
+                    continue;
+                }
+                // No-arg bundle (e.g. -iv, -i0)
+                i++;
+                continue;
+            }
+
+            // VAR=val environment variable assignments
             if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(w)) {
                 i++;
                 continue;
             }
-            // Remaining tokens form the inner command + arguments
-            return words.slice(i).join(" ");
+
+            // First non-flag, non-assignment word is the inner command.
+            // Slice the ORIGINAL segment string (not words.slice(i).join(" "))
+            // so that quoting is preserved for downstream checks.
+            const off = findWordStartOffset(segment, i);
+            return off >= 0 ? segment.slice(off) : "";
         }
         // Only env options / variable assignments — env by itself prints the
         // environment and is harmless.  Return null so normal checks run.

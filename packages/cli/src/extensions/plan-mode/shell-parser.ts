@@ -145,7 +145,12 @@ export function containsShellExpansion(token: string): boolean {
  * suppressing stderr.
  */
 export function hasUnsafeOutputRedirection(segment: string): boolean {
-    const matches = segment.matchAll(OUTPUT_REDIRECTION_PATTERN);
+    // Strip single-quoted segments before checking — content inside single
+    // quotes is literal and cannot contain actual shell redirections.
+    // e.g. `printf '>'` is NOT a redirection; `bash -c 'git status' > out` IS.
+    const stripped = segment.replace(/'[^']*'/g, "''");
+
+    const matches = stripped.matchAll(OUTPUT_REDIRECTION_PATTERN);
     for (const match of matches) {
         const fd = match[2] ?? "";
         const target = (match[3] ?? "").replace(/^['"]|['"]$/g, "");
