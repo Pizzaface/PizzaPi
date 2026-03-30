@@ -19,6 +19,7 @@ import { useSigilRegistry, useSigilResolve, useSigilTriggerResolve, useSigilGene
 import { SigilIcon } from "./SigilIcon";
 import { ExternalLinkIcon, CheckIcon, CopyIcon } from "lucide-react";
 import { ActionSigil } from "./ActionSigil";
+import { usePizzaPiNav, isPizzaPiUrl } from "./PizzaPiNavContext";
 
 // ── SigilInline (Streamdown bridge) ──────────────────────────────────────────
 
@@ -79,6 +80,8 @@ export function SigilPill({ type, id, params, raw }: SigilPillProps) {
     ? String(resolved.data.description)
     : registry.getDescription(type);
   const isLoading = resolved.loading;
+  const isPizzaPi = isPizzaPiUrl(href);
+  const navigatePizzaPi = usePizzaPiNav();
 
   // ── Pill element ───────────────────────────────────────────────────────
 
@@ -113,18 +116,25 @@ export function SigilPill({ type, id, params, raw }: SigilPillProps) {
           {statusParam}
         </span>
       )}
-      {href && <ExternalLinkIcon className="size-2.5 shrink-0 opacity-50" />}
+      {href && !isPizzaPi && <ExternalLinkIcon className="size-2.5 shrink-0 opacity-50" />}
     </>
   );
 
   const pill = href ? (
     <a
-      href={href}
-      target="_blank"
-      rel="noopener noreferrer"
+      href={isPizzaPi ? undefined : href}
+      target={isPizzaPi ? undefined : "_blank"}
+      rel={isPizzaPi ? undefined : "noopener noreferrer"}
+      role="link"
       className={pillClasses}
       data-sigil={raw}
-      onClick={(e) => e.stopPropagation()}
+      onClick={(e) => {
+        e.stopPropagation();
+        if (isPizzaPi) {
+          e.preventDefault();
+          navigatePizzaPi(href!);
+        }
+      }}
     >
       {pillInner}
     </a>
@@ -199,10 +209,15 @@ export function SigilPill({ type, id, params, raw }: SigilPillProps) {
           )}
 
           {/* Link hint */}
-          {href && (
+          {href && !isPizzaPi && (
             <div className="flex items-center gap-1 pt-0.5 text-[10px] text-muted-foreground/60">
               <ExternalLinkIcon className="size-2.5" />
               <span className="truncate">{prettifyUrl(href)}</span>
+            </div>
+          )}
+          {href && isPizzaPi && (
+            <div className="flex items-center gap-1 pt-0.5 text-[10px] text-muted-foreground/60">
+              <span className="truncate">Opens in app</span>
             </div>
           )}
 

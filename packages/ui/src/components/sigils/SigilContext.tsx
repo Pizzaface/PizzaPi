@@ -88,6 +88,13 @@ export function SigilProvider({ sigilDefs, panels, runnerId, children }: SigilPr
   const cacheRef = useRef(new Map<string, SigilResolveState>());
   const [generation, setGeneration] = useState(0);
 
+  // Clear cache when infrastructure changes (server restart, reconnect)
+  // so stale entries don't block re-fetching with new panel ports.
+  useEffect(() => {
+    cacheRef.current.clear();
+    bump();
+  }, [panels, runnerId, sigilDefs, bump]);
+
   // Build panel port lookup: serviceId → port
   const panelPortMap = useMemo(() => {
     const map = new Map<string, number>();

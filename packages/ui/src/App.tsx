@@ -71,6 +71,7 @@ import { getConfirmedMetaSubscriptionTargets } from "@/lib/meta-subscriptions";
 import { evaluateVersionNegotiation } from "@/lib/version-negotiation";
 import { useRunnerServices, attachServiceAnnounceListener, seedServiceCache, setViewerSwitchGeneration } from "@/hooks/useRunnerServices";
 import { SigilProvider } from "@/components/sigils/SigilContext";
+import { PizzaPiNavProvider, type PizzaPiNavActions } from "@/components/sigils/PizzaPiNavContext";
 import { ServicePanelButtons, useServicePanelState } from "@/components/service-panels/ServicePanels";
 import { SERVICE_PANELS } from "@/components/service-panels/registry";
 import { DynamicLucideIcon } from "@/components/service-panels/lucide-icon";
@@ -3767,6 +3768,11 @@ export function App() {
     }
   }, [activeServicePanels, closeServicePanelById, toggleServicePanel, handleCombinedTabChange, combinedActiveTab, setEphemeralServicePanelPosition, getServicePanelPosition]);
 
+  const pizzaPiNavActions = React.useMemo<PizzaPiNavActions>(() => ({
+    toggleServicePanel: handleToggleServicePanel,
+    setActiveSessionId,
+  }), [handleToggleServicePanel, setActiveSessionId]);
+
   const terminalPanelTab = React.useMemo<CombinedPanelTab | null>(() => showTerminal ? {
     id: "terminal",
     label: "Terminal",
@@ -4340,6 +4346,7 @@ export function App() {
                   ) : (
                     <ErrorBoundary level="section" resetKeys={[activeSessionId]}>
                       <SigilProvider sigilDefs={runnerSigilDefs} panels={dynamicPanels} runnerId={activeSessionInfo?.runnerId ?? undefined}>
+                      <PizzaPiNavProvider actions={pizzaPiNavActions}>
                       <SessionViewer
                         sessionId={activeSessionId}
                         sessionName={sessionName}
@@ -4447,6 +4454,7 @@ export function App() {
                           }
                         }}
                       />
+                      </PizzaPiNavProvider>
                       </SigilProvider>
                     </ErrorBoundary>
                   )}
