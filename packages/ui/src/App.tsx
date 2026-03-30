@@ -6,6 +6,7 @@ import { SessionViewer, type RelayMessage } from "@/components/SessionViewer";
 import type { CommandResultData } from "@/components/session-viewer/rendering";
 import { detectInFlightTools } from "@/components/session-viewer/utils";
 import { DesktopHeader, MobileHeader } from "@/components/AppHeaders";
+import { UserPreferencesPanel } from "@/components/UserPreferencesPanel";
 import { AuthPage } from "@/components/AuthPage";
 import { ApiKeyManager } from "@/components/ApiKeyManager";
 import { RunnerTokenManager } from "@/components/RunnerTokenManager";
@@ -376,6 +377,7 @@ export function App() {
     message: null,
     protocolCompatible: true,
   });
+  const [showPreferences, setShowPreferences] = React.useState(false);
   const [showApiKeys, setShowApiKeys] = React.useState(false);
   const [apiKeyVersion, setApiKeyVersion] = React.useState(0);
   const [showRunners, setShowRunners] = React.useState(false);
@@ -3998,6 +4000,7 @@ export function App() {
   // Keeping them here also preserves referential stability so React.memo can
   // skip re-rendering when only session-scoped state changes.
 
+  const handleShowPreferences = React.useCallback(() => setShowPreferences(true), []);
   const handleShowApiKeys = React.useCallback(() => { setShowApiKeys(true); setShowRunners(false); }, []);
   const handleShowRunners = React.useCallback(() => { setShowRunners(true); setShowApiKeys(false); activeSessionRef.current = null; setActiveSessionId(null); }, []);
   const handleShowShortcuts = React.useCallback(() => setShowShortcutsHelp(true), []);
@@ -4005,6 +4008,7 @@ export function App() {
   const handleChangePassword = React.useCallback(() => setChangePasswordOpen(true), []);
   const handleToggleSidebar = React.useCallback(() => setSidebarOpen((prev) => !prev), []);
   // Mobile-specific variants that also close the sidebar
+  const handleMobileShowPreferences = React.useCallback(() => { setShowPreferences(true); setSidebarOpen(false); }, []);
   const handleMobileShowApiKeys = React.useCallback(() => { setShowApiKeys(true); setShowRunners(false); setSidebarOpen(false); }, []);
   const handleMobileShowRunners = React.useCallback(() => { setShowRunners(true); setShowApiKeys(false); activeSessionRef.current = null; setActiveSessionId(null); setSidebarOpen(false); }, []);
   const handleMobileShowHiddenModels = React.useCallback(() => { setHiddenModelsOpen(true); setSidebarOpen(false); }, []);
@@ -4086,6 +4090,7 @@ export function App() {
         userName={userName}
         userEmail={userEmail}
         userLabel={userLabel}
+        onShowPreferences={handleShowPreferences}
         onShowApiKeys={handleShowApiKeys}
         onShowRunners={handleShowRunners}
         onShowShortcuts={handleShowShortcuts}
@@ -4111,6 +4116,7 @@ export function App() {
         userEmail={userEmail}
         userLabel={userLabel}
         onToggleSidebar={handleToggleSidebar}
+        onShowPreferences={handleMobileShowPreferences}
         onShowApiKeys={handleMobileShowApiKeys}
         onShowRunners={handleMobileShowRunners}
         onShowHiddenModels={handleMobileShowHiddenModels}
@@ -4638,6 +4644,10 @@ export function App() {
           initialCwd={spawnCwd}
           onSpawn={handleWizardSpawn}
         />
+
+        {showPreferences && (
+          <UserPreferencesPanel onClose={() => setShowPreferences(false)} />
+        )}
 
         {showApiKeys && (
           <div className="absolute inset-y-0 right-0 z-40 flex w-full max-w-md flex-col shadow-xl border-l bg-background">

@@ -12,10 +12,7 @@ const ACCENT_OPTIONS = [
 export type AccentColor = (typeof ACCENT_OPTIONS)[number]["value"];
 
 export function AppearanceSettings() {
-  const { mode, setMode, highContrast, setHighContrast } = useTheme() as ReturnType<typeof useTheme> & {
-    highContrast: boolean;
-    setHighContrast: (v: boolean) => void;
-  };
+  const { mode, setMode, highContrast, setHighContrast } = useTheme();
   const [accent, setAccentState] = React.useState<AccentColor>(() => {
     return (localStorage.getItem("theme-accent") as AccentColor) || "default";
   });

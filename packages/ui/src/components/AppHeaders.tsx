@@ -28,7 +28,7 @@ import type { DotState, HubSession } from "@/components/SessionSidebar";
 import type { ConfiguredModelInfo } from "@/lib/types";
 import {
   Sun, Moon, Monitor, LogOut, KeyRound, User, ChevronsUpDown, PanelLeftOpen, HardDrive,
-  Keyboard, EyeOff, Lock, Check, Plus,
+  Keyboard, EyeOff, Lock, Check, Plus, Settings,
 } from "lucide-react";
 import { signOut } from "@/lib/auth-client";
 import { useTheme, type ThemeMode } from "@/components/ThemeProvider";
@@ -105,6 +105,7 @@ export interface DesktopHeaderProps {
   userName: string;
   userEmail: string;
   userLabel: string;
+  onShowPreferences: () => void;
   onShowApiKeys: () => void;
   onShowRunners: () => void;
   onShowShortcuts: () => void;
@@ -122,6 +123,7 @@ export const DesktopHeader = React.memo(function DesktopHeader({
   userName,
   userEmail,
   userLabel,
+  onShowPreferences,
   onShowApiKeys,
   onShowRunners,
   onShowShortcuts,
@@ -207,6 +209,10 @@ export const DesktopHeader = React.memo(function DesktopHeader({
               <div className="px-2 pb-1 text-xs text-muted-foreground truncate">{userEmail}</div>
             )}
             <DropdownMenuSeparator />
+            <DropdownMenuItem onSelect={onShowPreferences}>
+              <Settings className="h-4 w-4" />
+              Preferences
+            </DropdownMenuItem>
             <DropdownMenuItem onSelect={onShowApiKeys}>
               <KeyRound className="h-4 w-4" />
               API keys
@@ -253,6 +259,7 @@ export interface MobileHeaderProps {
   userEmail: string;
   userLabel: string;
   onToggleSidebar: () => void;
+  onShowPreferences: () => void;
   onShowApiKeys: () => void;
   onShowRunners: () => void;
   onShowHiddenModels: () => void;
@@ -279,6 +286,7 @@ export const MobileHeader = React.memo(function MobileHeader({
   userEmail,
   userLabel,
   onToggleSidebar,
+  onShowPreferences,
   onShowApiKeys,
   onShowRunners,
   onShowHiddenModels,
@@ -439,6 +447,10 @@ export const MobileHeader = React.memo(function MobileHeader({
             <ThemeMenuItems />
             <MobileNotificationMenuItem />
             <MobileHapticsMenuItem />
+            <DropdownMenuItem onSelect={onShowPreferences}>
+              <Settings className="h-4 w-4" />
+              Preferences
+            </DropdownMenuItem>
             <DropdownMenuItem onSelect={onShowApiKeys}>
               <KeyRound className="h-4 w-4" />
               API keys
