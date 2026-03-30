@@ -1,4 +1,5 @@
 import * as React from "react";
+import { useTheme } from "@/components/ThemeProvider";
 import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
@@ -57,22 +58,6 @@ const LIGHT_THEME = {
   brightWhite: "#ffffff",
 } as const;
 
-/** Returns true when the app is in dark mode (.dark on <html>). */
-function useIsDark(): boolean {
-  const [isDark, setIsDark] = React.useState(() =>
-    document.documentElement.classList.contains("dark"),
-  );
-
-  React.useEffect(() => {
-    const observer = new MutationObserver(() => {
-      setIsDark(document.documentElement.classList.contains("dark"));
-    });
-    observer.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
-    return () => observer.disconnect();
-  }, []);
-
-  return isDark;
-}
 
 const MOBILE_SHORTCUTS: { label: string; data: string }[] = [
   { label: "Tab", data: "\t" },
@@ -120,7 +105,8 @@ export function WebTerminal({ terminalId, onClose, className }: WebTerminalProps
   const wsRef = React.useRef<Socket<TerminalServerToClientEvents, TerminalClientToServerEvents> | null>(null);
   const [status, setStatus] = React.useState<"connecting" | "connected" | "disconnected" | "error">("connecting");
   const [isMaximized, setIsMaximized] = React.useState(false);
-  const isDark = useIsDark();
+  const { resolvedTheme } = useTheme();
+  const isDark = resolvedTheme === "dark";
 
   // Update xterm theme when dark/light mode changes
   React.useEffect(() => {

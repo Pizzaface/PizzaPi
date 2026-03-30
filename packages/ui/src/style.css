@@ -203,6 +203,7 @@
 }
 
 :root {
+  transition: background-color 200ms ease, color 200ms ease;
   --radius: 0.625rem;
   --checker-dark: #e4e4e7;
   --checker-light: #f4f4f5;
@@ -293,6 +294,7 @@
 
   body {
     font-family: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+    transition: background-color 200ms ease, color 200ms ease;
     @apply bg-background text-foreground;
   }
 

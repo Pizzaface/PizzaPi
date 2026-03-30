@@ -27,10 +27,51 @@ import {
 import type { DotState, HubSession } from "@/components/SessionSidebar";
 import type { ConfiguredModelInfo } from "@/lib/types";
 import {
-  Sun, Moon, LogOut, KeyRound, User, ChevronsUpDown, PanelLeftOpen, HardDrive,
+  Sun, Moon, Monitor, LogOut, KeyRound, User, ChevronsUpDown, PanelLeftOpen, HardDrive,
   Keyboard, EyeOff, Lock, Check, Plus,
 } from "lucide-react";
 import { signOut } from "@/lib/auth-client";
+import { useTheme, type ThemeMode } from "@/components/ThemeProvider";
+
+const THEME_CYCLE: ThemeMode[] = ["auto", "light", "dark"];
+const THEME_ICON: Record<ThemeMode, React.ReactNode> = {
+  auto: <Monitor className="h-4 w-4" />,
+  light: <Sun className="h-4 w-4" />,
+  dark: <Moon className="h-4 w-4" />,
+};
+const THEME_LABEL: Record<ThemeMode, string> = { auto: "Auto", light: "Light", dark: "Dark" };
+
+function ThemeToggleButton() {
+  const { mode, setMode } = useTheme();
+  const next = THEME_CYCLE[(THEME_CYCLE.indexOf(mode) + 1) % THEME_CYCLE.length];
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-9 w-9"
+          onClick={() => setMode(next)}
+          aria-label={`Theme: ${THEME_LABEL[mode]}`}
+        >
+          {THEME_ICON[mode]}
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent>Theme: {THEME_LABEL[mode]}</TooltipContent>
+    </Tooltip>
+  );
+}
+
+function ThemeMenuItems() {
+  const { mode, setMode } = useTheme();
+  const next = THEME_CYCLE[(THEME_CYCLE.indexOf(mode) + 1) % THEME_CYCLE.length];
+  return (
+    <DropdownMenuItem onSelect={() => setMode(next)}>
+      {THEME_ICON[mode]}
+      Theme: {THEME_LABEL[mode]}
+    </DropdownMenuItem>
+  );
+}
 
 // ── Shared helpers ──────────────────────────────────────────────────────────
 
@@ -57,7 +98,6 @@ export function initials(value: string) {
 
 export interface DesktopHeaderProps {
   relayStatus: DotState;
-  isDark: boolean;
   providerUsage: ProviderUsageMap | null;
   authSource: string | null;
   activeProvider: string | undefined;
@@ -65,7 +105,6 @@ export interface DesktopHeaderProps {
   userName: string;
   userEmail: string;
   userLabel: string;
-  onToggleDark: () => void;
   onShowApiKeys: () => void;
   onShowRunners: () => void;
   onShowShortcuts: () => void;
@@ -76,7 +115,6 @@ export interface DesktopHeaderProps {
 
 export const DesktopHeader = React.memo(function DesktopHeader({
   relayStatus,
-  isDark,
   providerUsage,
   authSource,
   activeProvider,
@@ -84,7 +122,6 @@ export const DesktopHeader = React.memo(function DesktopHeader({
   userName,
   userEmail,
   userLabel,
-  onToggleDark,
   onShowApiKeys,
   onShowRunners,
   onShowShortcuts,
@@ -117,20 +154,7 @@ export const DesktopHeader = React.memo(function DesktopHeader({
       </div>
 
       <div className="flex items-center gap-2">
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-9 w-9"
-              onClick={onToggleDark}
-              aria-label="Toggle dark mode"
-            >
-              {isDark ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent>Toggle dark mode</TooltipContent>
-        </Tooltip>
+        <ThemeToggleButton />
 
         <NotificationToggle />
         <HapticsToggle />
@@ -215,7 +239,6 @@ export const DesktopHeader = React.memo(function DesktopHeader({
 
 export interface MobileHeaderProps {
   relayStatus: DotState;
-  isDark: boolean;
   sidebarOpen: boolean;
   providerUsage: ProviderUsageMap | null;
   authSource: string | null;
@@ -230,7 +253,6 @@ export interface MobileHeaderProps {
   userEmail: string;
   userLabel: string;
   onToggleSidebar: () => void;
-  onToggleDark: () => void;
   onShowApiKeys: () => void;
   onShowRunners: () => void;
   onShowHiddenModels: () => void;
@@ -243,7 +265,6 @@ export interface MobileHeaderProps {
 
 export const MobileHeader = React.memo(function MobileHeader({
   relayStatus,
-  isDark,
   sidebarOpen,
   providerUsage,
   authSource,
@@ -258,7 +279,6 @@ export const MobileHeader = React.memo(function MobileHeader({
   userEmail,
   userLabel,
   onToggleSidebar,
-  onToggleDark,
   onShowApiKeys,
   onShowRunners,
   onShowHiddenModels,
@@ -416,10 +436,7 @@ export const MobileHeader = React.memo(function MobileHeader({
               </div>
             )}
             <DropdownMenuSeparator />
-            <DropdownMenuItem onSelect={onToggleDark}>
-              {isDark ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
-              {isDark ? "Light mode" : "Dark mode"}
-            </DropdownMenuItem>
+            <ThemeMenuItems />
             <MobileNotificationMenuItem />
             <MobileHapticsMenuItem />
             <DropdownMenuItem onSelect={onShowApiKeys}>

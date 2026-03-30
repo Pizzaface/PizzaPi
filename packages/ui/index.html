@@ -6,6 +6,16 @@
         <title>PizzaPi</title>
         <meta name="theme-color" content="#1c1917" />
         <meta name="description" content="PizzaPi — AI coding agent interface" />
+        <script>
+          (function(){
+            var old = localStorage.getItem("theme");
+            if (old === "dark" || old === "light") { localStorage.setItem("theme-mode", old); localStorage.removeItem("theme"); }
+            var m = localStorage.getItem("theme-mode") || "auto";
+            var isDark = m === "dark" || (m === "auto" && window.matchMedia("(prefers-color-scheme: dark)").matches);
+            if (isDark) document.documentElement.classList.add("dark");
+            document.querySelector('meta[name="theme-color"]').setAttribute("content", isDark ? "#1c1917" : "#ffffff");
+          })();
+        </script>
         <meta name="mobile-web-app-capable" content="yes" />
         <meta name="apple-mobile-web-app-capable" content="yes" />
         <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />

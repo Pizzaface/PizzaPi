@@ -1,4 +1,5 @@
 import * as React from "react";
+import { ThemeProvider } from "@/components/ThemeProvider";
 import { initAnimationSync } from "@/lib/synced-animation";
 import { SessionSidebar, type DotState, type HubSession } from "@/components/SessionSidebar";
 import { SessionViewer, type RelayMessage } from "@/components/SessionViewer";
@@ -217,10 +218,7 @@ export function App() {
     enabled: !isPending && !!session?.user?.id,
     userId: session?.user?.id ?? undefined,
   });
-  const [isDark, setIsDark] = React.useState(() => {
-    const saved = localStorage.getItem("theme");
-    return saved === "dark" || (!saved && window.matchMedia("(prefers-color-scheme: dark)").matches);
-  });
+
   // ─── Consolidated session state ─────────────────────────────────────────────
   // clearSelection() resets this entire object in a single atomic call.
   const [sessionState, setSessionState] = React.useState<SessionState>(createInitialSessionState);
@@ -727,11 +725,6 @@ export function App() {
   const thinkingStartTimesRef = React.useRef<Map<number, number>>(new Map());
   // contentIndex → elapsed seconds at thinking_end
   const thinkingDurationsRef = React.useRef<Map<number, number>>(new Map());
-
-  React.useEffect(() => {
-    document.documentElement.classList.toggle("dark", isDark);
-    localStorage.setItem("theme", isDark ? "dark" : "light");
-  }, [isDark]);
 
   // Fetch hidden models from server once authenticated — server is the
   // source of truth; localStorage is the fast-load cache.
@@ -4004,7 +3997,7 @@ export function App() {
   //
   // Keeping them here also preserves referential stability so React.memo can
   // skip re-rendering when only session-scoped state changes.
-  const handleToggleDark = React.useCallback(() => setIsDark((d) => !d), []);
+
   const handleShowApiKeys = React.useCallback(() => { setShowApiKeys(true); setShowRunners(false); }, []);
   const handleShowRunners = React.useCallback(() => { setShowRunners(true); setShowApiKeys(false); activeSessionRef.current = null; setActiveSessionId(null); }, []);
   const handleShowShortcuts = React.useCallback(() => setShowShortcutsHelp(true), []);
@@ -4072,6 +4065,7 @@ export function App() {
   }
 
   return (
+    <ThemeProvider>
     <HubSocketContext.Provider value={hubSocket}>
     <ViewerSocketContext.Provider value={viewerSocket}>
     <TooltipProvider delayDuration={0}>
@@ -4085,7 +4079,6 @@ export function App() {
       {/* ── Desktop header (memoized — skips re-render on same-runner session switch) ── */}
       <DesktopHeader
         relayStatus={relayStatus}
-        isDark={isDark}
         providerUsage={providerUsage}
         authSource={authSource}
         activeProvider={activeModel?.provider}
@@ -4093,7 +4086,6 @@ export function App() {
         userName={userName}
         userEmail={userEmail}
         userLabel={userLabel}
-        onToggleDark={handleToggleDark}
         onShowApiKeys={handleShowApiKeys}
         onShowRunners={handleShowRunners}
         onShowShortcuts={handleShowShortcuts}
@@ -4105,7 +4097,6 @@ export function App() {
       {/* ── Mobile header (memoized — skips re-render on same-runner session switch) ── */}
       <MobileHeader
         relayStatus={relayStatus}
-        isDark={isDark}
         sidebarOpen={sidebarOpen}
         providerUsage={providerUsage}
         authSource={authSource}
@@ -4120,7 +4111,6 @@ export function App() {
         userEmail={userEmail}
         userLabel={userLabel}
         onToggleSidebar={handleToggleSidebar}
-        onToggleDark={handleToggleDark}
         onShowApiKeys={handleMobileShowApiKeys}
         onShowRunners={handleMobileShowRunners}
         onShowHiddenModels={handleMobileShowHiddenModels}
@@ -4683,5 +4673,6 @@ export function App() {
     </TooltipProvider>
     </ViewerSocketContext.Provider>
     </HubSocketContext.Provider>
+    </ThemeProvider>
   );
 }
