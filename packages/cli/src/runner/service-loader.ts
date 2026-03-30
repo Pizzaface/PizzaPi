@@ -17,7 +17,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, extname, join, resolve } from "node:path";
 import type { ServiceHandler } from "./service-handler.js";
-import type { ServiceTriggerDef, ServiceTriggerParamDef } from "@pizzapi/protocol";
+import type { ServiceTriggerDef, ServiceTriggerParamDef, ServiceSigilDef } from "@pizzapi/protocol";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -30,8 +30,10 @@ export interface ServiceManifest {
     panel?: {
         dir?: string;
     };
-    /** Trigger types this service can emit. Declared statically in manifest.json. */
+    /** Trigger types this service can emit. Declared in triggers.json or manifest.json. */
     triggers?: ServiceTriggerDef[];
+    /** Sigil types this service defines. Declared in sigils.json or manifest.json. */
+    sigils?: ServiceSigilDef[];
 }
 
 export interface ServicePluginResult {
@@ -121,7 +123,8 @@ async function loadServicesFromDir(
 
             try {
                 const manifest = parseServiceManifest(manifestPath);
-                const moduleEntry = manifest.entry ?? findDefaultEntry(entryPath);
+                const mergedManifest = loadSplitConfigs(entryPath, manifest);
+                const moduleEntry = mergedManifest.entry ?? findDefaultEntry(entryPath);
                 if (!moduleEntry) {
                     errors.push({
                         path: entryPath,
@@ -143,7 +146,7 @@ async function loadServicesFromDir(
                     services.push({
                         handler,
                         source: { origin, path: entryPath },
-                        manifest,
+                        manifest: mergedManifest,
                     });
                 } else {
                     errors.push({
@@ -339,6 +342,91 @@ function readServiceDeclarations(pluginDir: string, pluginName: string): Service
 
 // ── Service manifest parsing ──────────────────────────────────────────────────
 
+/**
+ * Parse a raw triggers array (from manifest.json or triggers.json).
+ * Invalid entries are skipped defensively.
+ */
+function parseTriggers(raw: unknown): ServiceTriggerDef[] {
+    if (!Array.isArray(raw)) return [];
+    const triggers: ServiceTriggerDef[] = [];
+    for (const t of raw) {
+        if (!t || typeof t !== "object") continue;
+        if (typeof t.type !== "string" || !t.type) continue;
+        if (typeof t.label !== "string" || !t.label) continue;
+        const params: ServiceTriggerParamDef[] = [];
+        if (Array.isArray(t.params)) {
+            for (const p of t.params) {
+                if (!p || typeof p !== "object") continue;
+                if (typeof p.name !== "string" || !p.name) continue;
+                if (typeof p.label !== "string" || !p.label) continue;
+                const pType = typeof p.type === "string" && ["string", "number", "boolean"].includes(p.type)
+                    ? p.type as "string" | "number" | "boolean"
+                    : "string";
+                let enumVals: Array<string | number | boolean> | undefined;
+                if (Array.isArray(p.enum) && p.enum.length > 0) {
+                    const valid = p.enum.filter(
+                        (v: unknown) => typeof v === "string" || typeof v === "number" || typeof v === "boolean",
+                    ) as Array<string | number | boolean>;
+                    if (valid.length > 0) enumVals = valid;
+                }
+                params.push({
+                    name: p.name,
+                    label: p.label,
+                    type: pType,
+                    description: typeof p.description === "string" ? p.description : undefined,
+                    required: typeof p.required === "boolean" ? p.required : undefined,
+                    default: (typeof p.default === "string" || typeof p.default === "number" || typeof p.default === "boolean")
+                        ? p.default
+                        : undefined,
+                    ...(enumVals ? { enum: enumVals } : {}),
+                    ...(enumVals && p.multiselect === true ? { multiselect: true } : {}),
+                });
+            }
+        }
+        triggers.push({
+            type: t.type,
+            label: t.label,
+            description: typeof t.description === "string" ? t.description : undefined,
+            schema: t.schema && typeof t.schema === "object" && !Array.isArray(t.schema)
+                ? t.schema as Record<string, unknown>
+                : undefined,
+            ...(params.length > 0 ? { params } : {}),
+        });
+    }
+    return triggers;
+}
+
+/**
+ * Parse a raw sigils array (from manifest.json or sigils.json).
+ * Invalid entries are skipped defensively.
+ */
+function parseSigils(raw: unknown): ServiceSigilDef[] {
+    if (!Array.isArray(raw)) return [];
+    const sigils: ServiceSigilDef[] = [];
+    for (const s of raw) {
+        if (!s || typeof s !== "object") continue;
+        if (typeof s.type !== "string" || !s.type) continue;
+        if (typeof s.label !== "string" || !s.label) continue;
+        let aliases: string[] | undefined;
+        if (Array.isArray(s.aliases)) {
+            const valid = s.aliases.filter((a: unknown) => typeof a === "string" && a.length > 0) as string[];
+            if (valid.length > 0) aliases = valid;
+        }
+        sigils.push({
+            type: s.type,
+            label: s.label,
+            description: typeof s.description === "string" ? s.description : undefined,
+            icon: typeof s.icon === "string" ? s.icon : undefined,
+            resolve: typeof s.resolve === "string" ? s.resolve : undefined,
+            schema: s.schema && typeof s.schema === "object" && !Array.isArray(s.schema)
+                ? s.schema as Record<string, unknown>
+                : undefined,
+            ...(aliases ? { aliases } : {}),
+        });
+    }
+    return sigils;
+}
+
 function parseServiceManifest(manifestPath: string): ServiceManifest {
     const raw = JSON.parse(readFileSync(manifestPath, "utf-8"));
     if (!raw || typeof raw !== "object") {
@@ -351,60 +439,8 @@ function parseServiceManifest(manifestPath: string): ServiceManifest {
         throw new Error('manifest.json missing required "label" field');
     }
 
-    // Parse triggers[] — each entry must have a string `type` and `label`.
-    // Invalid entries are skipped (defensive; bad manifests shouldn't crash the daemon).
-    const triggers: ServiceTriggerDef[] = [];
-    if (Array.isArray(raw.triggers)) {
-        for (const t of raw.triggers) {
-            if (!t || typeof t !== "object") continue;
-            if (typeof t.type !== "string" || !t.type) continue;
-            if (typeof t.label !== "string" || !t.label) continue;
-            // Parse params[] — configurable parameters subscribers provide.
-            const params: ServiceTriggerParamDef[] = [];
-            if (Array.isArray(t.params)) {
-                for (const p of t.params) {
-                    if (!p || typeof p !== "object") continue;
-                    if (typeof p.name !== "string" || !p.name) continue;
-                    if (typeof p.label !== "string" || !p.label) continue;
-                    const pType = typeof p.type === "string" && ["string", "number", "boolean"].includes(p.type)
-                        ? p.type as "string" | "number" | "boolean"
-                        : "string";
-                    // Parse enum — must be an array of primitives matching the param type.
-                    let enumVals: Array<string | number | boolean> | undefined;
-                    if (Array.isArray(p.enum) && p.enum.length > 0) {
-                        const valid = p.enum.filter(
-                            (v: unknown) => typeof v === "string" || typeof v === "number" || typeof v === "boolean",
-                        ) as Array<string | number | boolean>;
-                        if (valid.length > 0) enumVals = valid;
-                    }
-
-                    params.push({
-                        name: p.name,
-                        label: p.label,
-                        type: pType,
-                        description: typeof p.description === "string" ? p.description : undefined,
-                        required: typeof p.required === "boolean" ? p.required : undefined,
-                        default: (typeof p.default === "string" || typeof p.default === "number" || typeof p.default === "boolean")
-                            ? p.default
-                            : undefined,
-                        ...(enumVals ? { enum: enumVals } : {}),
-                        // multiselect only makes sense with enum
-                        ...(enumVals && p.multiselect === true ? { multiselect: true } : {}),
-                    });
-                }
-            }
-
-            triggers.push({
-                type: t.type,
-                label: t.label,
-                description: typeof t.description === "string" ? t.description : undefined,
-                schema: t.schema && typeof t.schema === "object" && !Array.isArray(t.schema)
-                    ? t.schema as Record<string, unknown>
-                    : undefined,
-                ...(params.length > 0 ? { params } : {}),
-            });
-        }
-    }
+    const triggers = parseTriggers(raw.triggers);
+    const sigils = parseSigils(raw.sigils);
 
     return {
         id: raw.id,
@@ -415,7 +451,45 @@ function parseServiceManifest(manifestPath: string): ServiceManifest {
             ? { dir: typeof raw.panel.dir === "string" ? raw.panel.dir : undefined }
             : undefined,
         triggers: triggers.length > 0 ? triggers : undefined,
+        sigils: sigils.length > 0 ? sigils : undefined,
     };
+}
+
+/**
+ * Load optional split config files for a folder-based service.
+ * Split files (triggers.json, sigils.json) take precedence over inline
+ * arrays in manifest.json when present.
+ */
+function loadSplitConfigs(serviceDir: string, manifest: ServiceManifest): ServiceManifest {
+    // triggers.json overrides manifest.triggers
+    const triggersPath = join(serviceDir, "triggers.json");
+    if (existsSync(triggersPath)) {
+        try {
+            const raw = JSON.parse(readFileSync(triggersPath, "utf-8"));
+            // triggers.json can be a bare array or { triggers: [...] }
+            const arr = Array.isArray(raw) ? raw : (raw?.triggers ?? raw);
+            const parsed = parseTriggers(arr);
+            manifest = { ...manifest, triggers: parsed.length > 0 ? parsed : undefined };
+        } catch {
+            // Invalid JSON — fall through to manifest.triggers (if any)
+        }
+    }
+
+    // sigils.json overrides manifest.sigils
+    const sigilsPath = join(serviceDir, "sigils.json");
+    if (existsSync(sigilsPath)) {
+        try {
+            const raw = JSON.parse(readFileSync(sigilsPath, "utf-8"));
+            // sigils.json can be a bare array or { sigils: [...] }
+            const arr = Array.isArray(raw) ? raw : (raw?.sigils ?? raw);
+            const parsed = parseSigils(arr);
+            manifest = { ...manifest, sigils: parsed.length > 0 ? parsed : undefined };
+        } catch {
+            // Invalid JSON — fall through to manifest.sigils (if any)
+        }
+    }
+
+    return manifest;
 }
 
 const DEFAULT_ENTRIES = ["index.ts", "index.js", "index.mts", "index.mjs"];

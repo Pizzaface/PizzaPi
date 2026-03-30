@@ -46,8 +46,8 @@ describe("buildSystemPrompt", () => {
         expect(result).toContain("Git branch:");
     });
 
-    test("contains all major sections as pseudo-XML", () => {
-        const result = buildSystemPrompt();
+    test("contains all major sections as pseudo-XML when isRunner is true", () => {
+        const result = buildSystemPrompt({ isRunner: true });
         const sections = [
             'section name="spawning-sessions"',
             'section name="subagent-tool"',
@@ -56,12 +56,30 @@ describe("buildSystemPrompt", () => {
             'section name="asking-questions"',
             'section name="tunnels"',
             'section name="service-triggers"',
+            'section name="sigil-discovery"',
             'section name="sandbox"',
             'section name="pizzapi-configuration"',
         ];
         for (const section of sections) {
             expect(result).toContain(section);
         }
+    });
+
+    test("omits runner-only sections when isRunner is false/omitted", () => {
+        const result = buildSystemPrompt();
+        const runnerOnlySections = [
+            'section name="spawning-sessions"',
+            'section name="tunnels"',
+            'section name="service-triggers"',
+            'section name="sigil-discovery"',
+        ];
+        for (const section of runnerOnlySections) {
+            expect(result).not.toContain(section);
+        }
+        // Non-runner sections should still be present
+        expect(result).toContain('section name="subagent-tool"');
+        expect(result).toContain('section name="plan-mode"');
+        expect(result).toContain('section name="sandbox"');
     });
 
     test("contains AskUserQuestion type descriptions", () => {
@@ -71,8 +89,8 @@ describe("buildSystemPrompt", () => {
         expect(result).toContain('"ranked"');
     });
 
-    test("contains key tool names", () => {
-        const result = buildSystemPrompt();
+    test("contains key tool names when isRunner is true", () => {
+        const result = buildSystemPrompt({ isRunner: true });
         expect(result).toContain("spawn_session");
         expect(result).toContain("subagent");
         expect(result).toContain("plan_mode");
@@ -80,6 +98,14 @@ describe("buildSystemPrompt", () => {
         expect(result).toContain("AskUserQuestion");
         expect(result).toContain("create_tunnel");
         expect(result).toContain("subscribe_trigger");
+        expect(result).toContain("list_available_sigils");
+    });
+
+    test("contains sigil-discovery instruction to call after set_session_name", () => {
+        const result = buildSystemPrompt({ isRunner: true });
+        expect(result).toContain("set_session_name");
+        expect(result).toContain("list_available_sigils");
+        expect(result).toContain('section name="sigil-discovery"');
     });
 
     test("contains PizzaPi config paths", () => {
@@ -102,8 +128,9 @@ describe("BUILTIN_SYSTEM_PROMPT (compat export)", () => {
         expect(BUILTIN_SYSTEM_PROMPT.length).toBeGreaterThan(0);
     });
 
-    test("matches buildSystemPrompt() output structure", () => {
-        expect(BUILTIN_SYSTEM_PROMPT).toContain('section name="spawning-sessions"');
+    test("matches buildSystemPrompt() output structure (non-runner default)", () => {
+        // Default export is non-runner, so runner-only sections are absent
+        expect(BUILTIN_SYSTEM_PROMPT).not.toContain('section name="spawning-sessions"');
         expect(BUILTIN_SYSTEM_PROMPT).toContain('section name="sandbox"');
     });
 });

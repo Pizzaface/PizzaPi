@@ -26,7 +26,7 @@ import {
     deleteRunnerAssociation,
 } from "../sio-state/index.js";
 import { updateRelaySessionRunner } from "../../sessions/store.js";
-import type { RunnerInfo, RunnerSkill, RunnerAgent, RunnerHook, ServiceTriggerDef } from "@pizzapi/protocol";
+import type { RunnerInfo, RunnerSkill, RunnerAgent, RunnerHook, ServiceTriggerDef, ServiceSigilDef } from "@pizzapi/protocol";
 import {
     localTuiSockets,
     localRunnerSockets,
@@ -276,6 +276,7 @@ export async function updateRunnerServices(
     serviceIds: string[],
     panels?: Array<{ serviceId: string; port: number; label: string; icon: string }>,
     triggerDefs?: Array<{ type: string; label: string; description?: string; schema?: Record<string, unknown> }>,
+    sigilDefs?: Array<{ type: string; label: string; description?: string; icon?: string; serviceId?: string; resolve?: string; schema?: Record<string, unknown>; aliases?: string[] }>,
 ): Promise<void> {
     const fields: Record<string, string> = {
         serviceIds: JSON.stringify(serviceIds),
@@ -289,6 +290,11 @@ export async function updateRunnerServices(
         fields.triggerDefs = JSON.stringify(triggerDefs);
     } else {
         fields.triggerDefs = "[]";
+    }
+    if (sigilDefs && sigilDefs.length > 0) {
+        fields.sigilDefs = JSON.stringify(sigilDefs);
+    } else {
+        fields.sigilDefs = "[]";
     }
     await updateRunnerFields(runnerId, fields);
     // No broadcast here — service_announce is already forwarded to viewers
@@ -305,6 +311,7 @@ export async function getRunnerServices(
     serviceIds: string[];
     panels?: Array<{ serviceId: string; port: number; label: string; icon: string }>;
     triggerDefs?: ServiceTriggerDef[];
+    sigilDefs?: ServiceSigilDef[];
 } | null> {
     const runner = await getRunnerState(runnerId);
     if (!runner?.serviceIds) return null;
@@ -312,10 +319,12 @@ export async function getRunnerServices(
     if (serviceIds.length === 0) return null;
     const panels = runner.panels ? safeJsonParse(runner.panels) ?? undefined : undefined;
     const triggerDefs = runner.triggerDefs ? safeJsonParse(runner.triggerDefs) ?? undefined : undefined;
+    const sigilDefs = runner.sigilDefs ? safeJsonParse(runner.sigilDefs) ?? undefined : undefined;
     return {
         serviceIds,
         ...(panels && panels.length > 0 ? { panels } : {}),
         ...(triggerDefs && triggerDefs.length > 0 ? { triggerDefs } : {}),
+        ...(sigilDefs && sigilDefs.length > 0 ? { sigilDefs } : {}),
     };
 }
 
@@ -410,6 +419,7 @@ function runnerDataToInfo(r: RedisRunnerData): RunnerInfo {
     const serviceIds: string[] | undefined = r.serviceIds ? safeJsonParse(r.serviceIds) ?? undefined : undefined;
     const panels = r.panels ? safeJsonParse(r.panels) ?? undefined : undefined;
     const triggerDefs = r.triggerDefs ? safeJsonParse(r.triggerDefs) ?? undefined : undefined;
+    const sigilDefs = r.sigilDefs ? safeJsonParse(r.sigilDefs) ?? undefined : undefined;
     const warnings: string[] | undefined = r.warnings ? safeJsonParse(r.warnings) ?? undefined : undefined;
     return {
         runnerId: r.runnerId,
@@ -425,6 +435,7 @@ function runnerDataToInfo(r: RedisRunnerData): RunnerInfo {
         ...(serviceIds ? { serviceIds } : {}),
         ...(panels ? { panels } : {}),
         ...(triggerDefs && triggerDefs.length > 0 ? { triggerDefs } : {}),
+        ...(sigilDefs && sigilDefs.length > 0 ? { sigilDefs } : {}),
         ...(warnings && warnings.length > 0 ? { warnings } : {}),
     };
 }

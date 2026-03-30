@@ -786,4 +786,231 @@ describe("discoverServices — folder-based services", () => {
         const trigger = result.services[0].manifest!.triggers![0];
         expect(trigger.params![0].enum).toEqual(["valid", "also-valid"]);
     });
+
+    // ── Split-file loading tests ──────────────────────────────────────────
+
+    test("triggers.json overrides inline triggers in manifest", async () => {
+        const dir = join(servicesDir, "split-triggers");
+        mkdirSync(dir, { recursive: true });
+        // manifest has inline triggers
+        writeFileSync(join(dir, "manifest.json"), JSON.stringify({
+            id: "split-triggers",
+            label: "Split Triggers",
+            triggers: [
+                { type: "inline:event", label: "Inline Event" },
+            ],
+        }));
+        // triggers.json overrides
+        writeFileSync(join(dir, "triggers.json"), JSON.stringify([
+            { type: "file:event_a", label: "File Event A" },
+            { type: "file:event_b", label: "File Event B" },
+        ]));
+        writeFileSync(join(dir, "index.ts"),
+            `export default { id: "split-triggers", init() {}, dispose() {} };`);
+
+        const result = await discoverServices();
+        expect(result.errors).toHaveLength(0);
+        expect(result.services).toHaveLength(1);
+        const triggers = result.services[0].manifest!.triggers!;
+        expect(triggers).toHaveLength(2);
+        expect(triggers[0].type).toBe("file:event_a");
+        expect(triggers[1].type).toBe("file:event_b");
+    });
+
+    test("sigils.json loads sigil definitions", async () => {
+        const dir = join(servicesDir, "with-sigils");
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(join(dir, "manifest.json"), JSON.stringify({
+            id: "with-sigils",
+            label: "With Sigils",
+        }));
+        writeFileSync(join(dir, "sigils.json"), JSON.stringify([
+            {
+                type: "pr",
+                label: "Pull Request",
+                description: "A GitHub pull request",
+                resolve: "/api/resolve/pr/{id}",
+                aliases: ["pull-request", "mr"],
+            },
+            {
+                type: "commit",
+                label: "Commit",
+                resolve: "/api/resolve/commit/{id}",
+            },
+        ]));
+        writeFileSync(join(dir, "index.ts"),
+            `export default { id: "with-sigils", init() {}, dispose() {} };`);
+
+        const result = await discoverServices();
+        expect(result.errors).toHaveLength(0);
+        expect(result.services).toHaveLength(1);
+        const sigils = result.services[0].manifest!.sigils!;
+        expect(sigils).toHaveLength(2);
+        expect(sigils[0].type).toBe("pr");
+        expect(sigils[0].label).toBe("Pull Request");
+        expect(sigils[0].resolve).toBe("/api/resolve/pr/{id}");
+        expect(sigils[0].aliases).toEqual(["pull-request", "mr"]);
+        expect(sigils[1].type).toBe("commit");
+        expect(sigils[1].aliases).toBeUndefined();
+    });
+
+    test("inline sigils in manifest.json work when no sigils.json exists", async () => {
+        const dir = join(servicesDir, "inline-sigils");
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(join(dir, "manifest.json"), JSON.stringify({
+            id: "inline-sigils",
+            label: "Inline Sigils",
+            sigils: [
+                { type: "cost", label: "Cost" },
+            ],
+        }));
+        writeFileSync(join(dir, "index.ts"),
+            `export default { id: "inline-sigils", init() {}, dispose() {} };`);
+
+        const result = await discoverServices();
+        expect(result.services).toHaveLength(1);
+        expect(result.services[0].manifest!.sigils).toHaveLength(1);
+        expect(result.services[0].manifest!.sigils![0].type).toBe("cost");
+    });
+
+    test("sigils.json overrides inline sigils in manifest", async () => {
+        const dir = join(servicesDir, "sigil-override");
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(join(dir, "manifest.json"), JSON.stringify({
+            id: "sigil-override",
+            label: "Sigil Override",
+            sigils: [{ type: "inline", label: "Inline Sigil" }],
+        }));
+        writeFileSync(join(dir, "sigils.json"), JSON.stringify([
+            { type: "file-sigil", label: "File Sigil" },
+        ]));
+        writeFileSync(join(dir, "index.ts"),
+            `export default { id: "sigil-override", init() {}, dispose() {} };`);
+
+        const result = await discoverServices();
+        expect(result.services).toHaveLength(1);
+        const sigils = result.services[0].manifest!.sigils!;
+        expect(sigils).toHaveLength(1);
+        expect(sigils[0].type).toBe("file-sigil");
+    });
+
+    test("triggers.json supports { triggers: [...] } object format", async () => {
+        const dir = join(servicesDir, "triggers-obj");
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(join(dir, "manifest.json"), JSON.stringify({
+            id: "triggers-obj",
+            label: "Triggers Object",
+        }));
+        writeFileSync(join(dir, "triggers.json"), JSON.stringify({
+            triggers: [
+                { type: "obj:event", label: "Object Event" },
+            ],
+        }));
+        writeFileSync(join(dir, "index.ts"),
+            `export default { id: "triggers-obj", init() {}, dispose() {} };`);
+
+        const result = await discoverServices();
+        expect(result.services).toHaveLength(1);
+        expect(result.services[0].manifest!.triggers).toHaveLength(1);
+        expect(result.services[0].manifest!.triggers![0].type).toBe("obj:event");
+    });
+
+    test("sigils.json supports { sigils: [...] } object format", async () => {
+        const dir = join(servicesDir, "sigils-obj");
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(join(dir, "manifest.json"), JSON.stringify({
+            id: "sigils-obj",
+            label: "Sigils Object",
+        }));
+        writeFileSync(join(dir, "sigils.json"), JSON.stringify({
+            sigils: [
+                { type: "cost", label: "Cost" },
+            ],
+        }));
+        writeFileSync(join(dir, "index.ts"),
+            `export default { id: "sigils-obj", init() {}, dispose() {} };`);
+
+        const result = await discoverServices();
+        expect(result.services).toHaveLength(1);
+        expect(result.services[0].manifest!.sigils).toHaveLength(1);
+        expect(result.services[0].manifest!.sigils![0].type).toBe("cost");
+    });
+
+    test("skips invalid sigil entries (missing type or label)", async () => {
+        const dir = join(servicesDir, "bad-sigils");
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(join(dir, "manifest.json"), JSON.stringify({
+            id: "bad-sigils",
+            label: "Bad Sigils",
+        }));
+        writeFileSync(join(dir, "sigils.json"), JSON.stringify([
+            { type: "valid", label: "Valid Sigil" },
+            { type: "no-label" },
+            { label: "No Type" },
+            null,
+            { type: 42, label: "Bad Type Field" },
+            { type: "also-valid", label: "Also Valid", description: 99 },
+        ]));
+        writeFileSync(join(dir, "index.ts"),
+            `export default { id: "bad-sigils", init() {}, dispose() {} };`);
+
+        const result = await discoverServices();
+        expect(result.services).toHaveLength(1);
+        const sigils = result.services[0].manifest!.sigils!;
+        expect(sigils).toHaveLength(2);
+        expect(sigils[0].type).toBe("valid");
+        expect(sigils[1].type).toBe("also-valid");
+        expect(sigils[1].description).toBeUndefined();
+    });
+
+    test("malformed triggers.json falls through to inline manifest triggers", async () => {
+        const dir = join(servicesDir, "bad-json");
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(join(dir, "manifest.json"), JSON.stringify({
+            id: "bad-json",
+            label: "Bad JSON",
+            triggers: [{ type: "fallback:event", label: "Fallback" }],
+        }));
+        writeFileSync(join(dir, "triggers.json"), "this is not json {{{");
+        writeFileSync(join(dir, "index.ts"),
+            `export default { id: "bad-json", init() {}, dispose() {} };`);
+
+        const result = await discoverServices();
+        expect(result.services).toHaveLength(1);
+        // Falls back to inline triggers
+        expect(result.services[0].manifest!.triggers).toHaveLength(1);
+        expect(result.services[0].manifest!.triggers![0].type).toBe("fallback:event");
+    });
+
+    test("triggers.json and sigils.json both load alongside manifest", async () => {
+        const dir = join(servicesDir, "full-split");
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(join(dir, "manifest.json"), JSON.stringify({
+            id: "full-split",
+            label: "Full Split",
+            icon: "github",
+            panel: { dir: "./panel" },
+        }));
+        writeFileSync(join(dir, "triggers.json"), JSON.stringify([
+            { type: "full:trigger_a", label: "Trigger A" },
+        ]));
+        writeFileSync(join(dir, "sigils.json"), JSON.stringify([
+            { type: "pr", label: "Pull Request", resolve: "/api/resolve/pr/{id}" },
+        ]));
+        writeFileSync(join(dir, "index.ts"),
+            `export default { id: "full-split", init() {}, dispose() {} };`);
+
+        const result = await discoverServices();
+        expect(result.errors).toHaveLength(0);
+        expect(result.services).toHaveLength(1);
+        const m = result.services[0].manifest!;
+        expect(m.id).toBe("full-split");
+        expect(m.icon).toBe("github");
+        expect(m.panel).toEqual({ dir: "./panel" });
+        expect(m.triggers).toHaveLength(1);
+        expect(m.triggers![0].type).toBe("full:trigger_a");
+        expect(m.sigils).toHaveLength(1);
+        expect(m.sigils![0].type).toBe("pr");
+        expect(m.sigils![0].resolve).toBe("/api/resolve/pr/{id}");
+    });
 });

@@ -57,6 +57,7 @@ export function buildSystemPrompt(ctx?: Partial<SystemPromptContext>): string {
         gitBranch: ctx?.gitBranch ?? gitCtx.gitBranch,
         gitWorktree: ctx?.gitWorktree ?? gitCtx.gitWorktree,
         cwd: ctx?.cwd,
+        isRunner: ctx?.isRunner,
     });
 }
 

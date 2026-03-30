@@ -70,6 +70,7 @@ import { mapUserError } from "@/lib/user-error-message";
 import { getConfirmedMetaSubscriptionTargets } from "@/lib/meta-subscriptions";
 import { evaluateVersionNegotiation } from "@/lib/version-negotiation";
 import { useRunnerServices, attachServiceAnnounceListener, seedServiceCache, setViewerSwitchGeneration } from "@/hooks/useRunnerServices";
+import { SigilProvider } from "@/components/sigils/SigilContext";
 import { ServicePanelButtons, useServicePanelState } from "@/components/service-panels/ServicePanels";
 import { SERVICE_PANELS } from "@/components/service-panels/registry";
 import { DynamicLucideIcon } from "@/components/service-panels/lucide-icon";
@@ -3717,7 +3718,7 @@ export function App() {
   }, [activeSessionId, activeSessionInfo?.runnerId, liveSessions]);
 
   // Runner service panels — dynamically discovered
-  const { services: availableServices, panels: dynamicPanels, triggerDefs: runnerTriggerDefs } = useRunnerServices(viewerSocket);
+  const { services: availableServices, panels: dynamicPanels, triggerDefs: runnerTriggerDefs, sigilDefs: runnerSigilDefs } = useRunnerServices(viewerSocket);
   const triggerCounts = useTriggerCount(activeSessionId, viewerSocket);
   const { activePanelIds: activeServicePanels, togglePanel: toggleServicePanel, closePanelById: closeServicePanelById, closeAllPanels: closeAllServicePanels, getPanelPosition: getServicePanelPosition, setPanelPosition: setServicePanelPosition, setEphemeralPanelPosition: setEphemeralServicePanelPosition } = useServicePanelState();
 
@@ -4338,6 +4339,7 @@ export function App() {
                     />
                   ) : (
                     <ErrorBoundary level="section" resetKeys={[activeSessionId]}>
+                      <SigilProvider sigilDefs={runnerSigilDefs} panels={dynamicPanels} runnerId={activeSessionInfo?.runnerId ?? undefined}>
                       <SessionViewer
                         sessionId={activeSessionId}
                         sessionName={sessionName}
@@ -4445,6 +4447,7 @@ export function App() {
                           }
                         }}
                       />
+                      </SigilProvider>
                     </ErrorBoundary>
                   )}
                 </div>

@@ -71,6 +71,8 @@ export interface SystemPromptContext {
     gitWorktree?: string;
     /** Current working directory */
     cwd?: string;
+    /** Whether running inside a PizzaPi runner (enables runner-only sections) */
+    isRunner?: boolean;
 }
 
 /**

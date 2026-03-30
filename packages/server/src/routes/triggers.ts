@@ -350,6 +350,28 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
         return Response.json({ triggerDefs: services?.triggerDefs ?? [] });
     }
 
+    // ── GET /api/sessions/:id/available-sigils ──────────────────────
+    // Returns sigil defs from the session's runner.
+    const availableSigilsMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/available-sigils$/);
+    if (availableSigilsMatch && req.method === "GET") {
+        const identity = await authenticate(req);
+        if (identity instanceof Response) return identity;
+
+        const sessionId = decodeURIComponent(availableSigilsMatch[1]);
+
+        const session = await getSharedSession(sessionId);
+        if (!session || session.userId !== identity.userId) {
+            return Response.json({ error: "Session not found" }, { status: 404 });
+        }
+
+        if (!session.runnerId) {
+            return Response.json({ sigilDefs: [] });
+        }
+
+        const services = await getRunnerServices(session.runnerId);
+        return Response.json({ sigilDefs: services?.sigilDefs ?? [] });
+    }
+
     // ── GET /POST /api/sessions/:id/trigger-subscriptions ────────────
     const subsMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/trigger-subscriptions$/);
     if (subsMatch && req.method === "GET") {

@@ -244,6 +244,7 @@ export async function seedServiceAnnounceCache(runnerId: string): Promise<void> 
             serviceIds: persisted.serviceIds,
             panels: persisted.panels,
             triggerDefs: persisted.triggerDefs,
+            sigilDefs: persisted.sigilDefs,
         });
     }
 }
@@ -324,6 +325,7 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
             // Look up sessions still connected to the relay that belong to this runner.
             // This allows the daemon to re-adopt orphaned worker processes after a restart.
             const existingSessions = await getConnectedSessionsForRunner(result);
+            log.info(`[runner reconnect] runner=${result} existingSessions=${existingSessions.length}`);
 
             // Seed runnerSessionIds so that service_message / service_announce
             // forwarding works immediately for sessions that existed before this
@@ -336,6 +338,7 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
                 for (const sid of existingSessions) {
                     sessionSet.add(sid.sessionId);
                 }
+                log.info(`[runner reconnect] runner=${result} seeded runnerSessionIds=[${Array.from(sessionSet).join(",")}]`);
             }
 
             // Seed in-memory service announce cache from Redis.
@@ -685,24 +688,46 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
         // ── service_announce — runner announces available services ────────────
         // Forward to all viewers watching sessions on this runner so they know
         // which services are available.
-        socket.on("service_announce", (data: ServiceAnnounceData) => {
+        socket.on("service_announce", async (data: ServiceAnnounceData) => {
             const runnerId = socket.data.runnerId;
             if (!runnerId) return;
 
             const previous = runnerServiceAnnounce.get(runnerId);
             // Skip no-op announces to avoid redundant Redis writes and fan-out
             // to every viewer on this runner when nothing actually changed.
-            if (isSameServiceAnnounce(previous, data)) return;
+            if (isSameServiceAnnounce(previous, data)) {
+                log.info(`[service_announce] runner=${runnerId} skipped (no-op)`);
+                return;
+            }
 
             // Cache in memory for fast lookups
             runnerServiceAnnounce.set(runnerId, data);
             // Persist to Redis so the data survives server restarts
-            void updateRunnerServices(runnerId, data.serviceIds, data.panels, data.triggerDefs).catch((err) => {
+            void updateRunnerServices(runnerId, data.serviceIds, data.panels, data.triggerDefs, data.sigilDefs).catch((err) => {
                 log.error(`failed to persist service_announce to Redis for ${runnerId}:`, err);
             });
-            const sessionIds = runnerSessionIds.get(runnerId);
+
+            let sessionIds = runnerSessionIds.get(runnerId);
+            log.info(`[service_announce] runner=${runnerId} initial sessionIds=${sessionIds ? Array.from(sessionIds).join(",") : "<none>"}`);
+
+            // Fallback: after a server restart, the in-memory runnerSessionIds map
+            // can be empty even though relay sessions for this runner are still
+            // connected. Reseed from Redis instead of dropping the fresh announce.
+            if (!sessionIds || sessionIds.size === 0) {
+                const existingSessions = await getConnectedSessionsForRunner(runnerId);
+                if (existingSessions.length > 0) {
+                    const reseeded = new Set(existingSessions.map((s) => s.sessionId));
+                    runnerSessionIds.set(runnerId, reseeded);
+                    sessionIds = reseeded;
+                    log.info(`[service_announce] runner=${runnerId} reseeded sessionIds=${Array.from(reseeded).join(",")}`);
+                } else {
+                    log.info(`[service_announce] runner=${runnerId} no connected sessions after fallback reseed`);
+                }
+            }
+
             if (!sessionIds || sessionIds.size === 0) return;
             for (const sessionId of sessionIds) {
+                log.info(`[service_announce] runner=${runnerId} fanout -> session=${sessionId}`);
                 broadcastToSessionViewers(sessionId, "service_announce", data);
             }
         });

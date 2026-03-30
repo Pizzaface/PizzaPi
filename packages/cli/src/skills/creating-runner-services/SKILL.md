@@ -1,6 +1,6 @@
 ---
 name: creating-runner-services
-description: Use when building a new runner service — background processes with optional UI panels and custom triggers that agents can subscribe to
+description: Use when building a new runner service — background processes with optional UI panels, custom triggers agents can subscribe to, or sigils that render inline references in the UI
 ---
 
 # Creating Runner Services
@@ -9,13 +9,16 @@ Runner services are background processes on the runner daemon. They can:
 
 - **Expose a UI panel** — an iframe in the PizzaPi web interface (no React needed)
 - **Advertise custom triggers** — agents discover and subscribe to them at runtime
+- **Define sigils** — teach the UI how to render `[[type:id]]` inline references
 - **Fire triggers** — broadcast events to all subscribed agent sessions via the relay API
 
 ## Folder Structure
 
 ```
 ~/.pizzapi/services/<service-name>/
-  manifest.json       # Required — declares metadata, panel config, and triggers
+  manifest.json       # Required — core identity (id, label, icon, entry, panel)
+  triggers.json       # Optional — trigger definitions (overrides manifest.triggers)
+  sigils.json         # Optional — sigil type definitions (overrides manifest.sigils)
   index.ts            # ServiceHandler module (default export)
   panel/              # Optional — only needed if the service has a UI panel
     index.html        # Self-contained UI (HTML/CSS/JS)
@@ -55,6 +58,14 @@ Runner services are background processes on the runner daemon. They can:
         }
       ]
     }
+  ],
+  "sigils": [
+    {
+      "type": "item",
+      "label": "Item",
+      "description": "Reference an item from My Service",
+      "resolve": "/api/resolve/item/{id}"
+    }
   ]
 }
 ```
@@ -66,7 +77,8 @@ Runner services are background processes on the runner daemon. They can:
 | `icon` | No | `"square"` | [Lucide](https://lucide.dev/icons) icon name (kebab-case) |
 | `entry` | No | `./index.ts` | Service module path relative to folder |
 | `panel.dir` | No | `./panel` | Panel static files directory (omit if no panel) |
-| `triggers` | No | `[]` | Array of trigger type definitions (see below) |
+| `triggers` | No | `[]` | Array of trigger type definitions (see below). Can also live in `triggers.json`. |
+| `sigils` | No | `[]` | Array of sigil type definitions (see below). Can also live in `sigils.json`. |
 
 ### Trigger Definitions
 
@@ -135,6 +147,41 @@ Array-valued payload fields also work with scalar subscription params: if the pa
 For substring filtering, name the param with a `Contains` suffix. For example, a trigger with `bodyContains` will match when the payload's `body` field includes the subscriber's text.
 
 Trigger types are advertised to agents via `service_announce` so they can be discovered with `list_available_triggers()` and subscribed to with `subscribe_trigger()`.
+
+> **Split file note:** Triggers can live in a separate `triggers.json` file (bare array or `{ "triggers": [...] }` format). When `triggers.json` exists, it takes precedence over inline `triggers` in `manifest.json`.
+
+## sigils.json
+
+Define sigil types the service teaches the UI to render as `[[type:id]]` inline tokens.
+Can be a bare array or wrapped in `{ "sigils": [...] }`.
+
+```json
+[
+  {
+    "type": "pr",
+    "label": "Pull Request",
+    "description": "A GitHub pull request reference",
+    "resolve": "/api/resolve/pr/{id}",
+    "aliases": ["pull-request", "mr"]
+  },
+  {
+    "type": "commit",
+    "label": "Commit",
+    "resolve": "/api/resolve/commit/{id}"
+  }
+]
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `type` | Yes | Sigil type name used in `[[type:id]]` syntax |
+| `label` | Yes | Human-readable label for the UI |
+| `description` | No | What this sigil represents |
+| `resolve` | No | API path to resolve a sigil ID to display data (e.g. PR number → title) |
+| `schema` | No | JSON Schema for valid sigil params |
+| `aliases` | No | Alternative type names that resolve to this sigil |
+
+When `sigils.json` exists, it takes precedence over inline `sigils` in `manifest.json`.
 
 ## ServiceHandler Template
 
@@ -215,6 +262,17 @@ class MyService {
 
                 if (url.pathname.endsWith("/api/data")) {
                     return Response.json({ hello: "world" }, {
+                        headers: { "Access-Control-Allow-Origin": "*" },
+                    });
+                }
+
+                if (url.pathname.endsWith("/api/resolve/item/abc-123")) {
+                    return Response.json({
+                        id: "abc-123",
+                        title: "Example Item",
+                        href: "https://example.com/items/abc-123",
+                        subtitle: "Open in My Service",
+                    }, {
                         headers: { "Access-Control-Allow-Origin": "*" },
                     });
                 }
@@ -328,8 +386,8 @@ A service doesn't need a panel. Omit `panel` from manifest.json and skip the `an
 2. Reads manifest.json → extracts panel metadata + trigger definitions
 3. Loads service module → calls init(socket, { announcePanel })
 4. Service starts Bun.serve() on port 0 → calls announcePanel(port)
-5. Daemon aggregates all trigger defs from all services
-6. Daemon emits service_announce with panels[] + triggerDefs[]
+5. Daemon aggregates all trigger defs and sigil defs from all services
+6. Daemon emits service_announce with panels[] + triggerDefs[] + sigilDefs[]
 7. UI renders iframe; agents discover triggers via list_available_triggers()
 8. Service fires triggers via POST /api/runners/{runnerId}/trigger-broadcast
 9. Relay fans out to all subscribed sessions
@@ -339,7 +397,9 @@ A service doesn't need a panel. Omit `panel` from manifest.json and skip the `an
 
 | Task | How |
 |------|-----|
-| Declare triggers | Add `triggers[]` array to `manifest.json` |
+| Declare triggers | Add `triggers[]` to `manifest.json` or `triggers.json` |
+| Declare sigils | Add `sigils[]` to `manifest.json` or `sigils.json` |
+| Resolve sigils | Expose an API route matching each sigil's `resolve` template |
 | Fire a trigger | `POST /api/runners/{runnerId}/trigger-broadcast` with API key |
 | Serve static files | `Bun.serve()` with `readFileSync` for index.html |
 | Expose an API | Add route checks in the `fetch` handler |
@@ -353,6 +413,7 @@ A service doesn't need a panel. Omit `panel` from manifest.json and skip the `an
 | Mistake | Fix |
 |---------|-----|
 | Triggers declared but never fired | Use the relay broadcast API — `console.log` doesn't deliver triggers |
+| Sigils declared but not resolvable | Implement the `resolve` API route or omit `resolve` until you have one |
 | Missing runnerId or apiKey | Read from `~/.pizzapi/runner.json` and env vars at call time, not init time |
 | Forgetting `announcePanel()` | Panel won't appear in UI — always call it after server starts |
 | Using absolute API URLs | Tunnel proxy rewrites paths; use relative URLs (`./api/...`) |

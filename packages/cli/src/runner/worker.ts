@@ -284,7 +284,7 @@ async function main(): Promise<void> {
         ...(config.systemPrompt !== undefined && {
             systemPromptOverride: () => config.systemPrompt,
         }),
-        appendSystemPrompt: [buildSystemPrompt({ cwd }), config.appendSystemPrompt, agentSystemPrompt].filter(Boolean).join("\n\n"),
+        appendSystemPrompt: [buildSystemPrompt({ cwd, isRunner: true }), config.appendSystemPrompt, agentSystemPrompt].filter(Boolean).join("\n\n"),
         ...(agentFiles.length > 0 && {
             agentsFilesOverride: (base) => ({
                 agentsFiles: [...base.agentsFiles, ...agentFiles],

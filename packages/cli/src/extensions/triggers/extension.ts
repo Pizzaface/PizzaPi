@@ -14,6 +14,7 @@ import { getRelaySocket, getRelaySessionId } from "../remote.js";
 import {
     fireTrigger,
     getAvailableTriggers,
+    getAvailableSigils,
     subscribeTrigger,
     listTriggerSubscriptions,
     unsubscribeTrigger,
@@ -536,6 +537,68 @@ export const triggersExtension: ExtensionFactory = (pi) => {
             const subCount = (text.match(/✅/g) ?? []).length;
             const subLabel = subCount > 0 ? `, ${subCount} subscribed` : "";
             return new Text(theme.fg("success", "✓ ") + theme.fg("dim", `${count} trigger(s) available${subLabel}`), 0, 0);
+        },
+    });
+
+    // ── list_available_sigils ───────────────────────────────────────────
+    pi.registerTool({
+        name: "list_available_sigils",
+        label: "List Available Sigils",
+        description:
+            "List sigil types available on this session's runner. " +
+            "Shows all sigils declared by runner services that can be used in [[type:id]] references.",
+        parameters: {
+            type: "object",
+            properties: {
+                sessionId: {
+                    type: "string",
+                    description: "Session ID to query. Defaults to the current session if omitted.",
+                },
+            },
+            required: [],
+        } as any,
+        async execute(_toolCallId, rawParams) {
+            const params = rawParams as { sessionId?: string };
+            const targetId = params.sessionId ?? getOwnSessionId() ?? "";
+            if (!targetId) {
+                return { content: [{ type: "text" as const, text: "Error: Could not determine session ID." }], details: null as any };
+            }
+
+            const defs = await getAvailableSigils(targetId);
+            if (defs.length === 0) {
+                return {
+                    content: [{ type: "text" as const, text: "No sigil types available. The runner may not have any services with declared sigils." }],
+                    details: null as any,
+                };
+            }
+
+            const lines = defs.map((d) => {
+                const aliases = d.aliases && d.aliases.length > 0 ? `\n  Aliases: ${d.aliases.join(", ")}` : "";
+                const resolver = d.resolve ? `\n  Resolve: ${d.resolve}` : "";
+                const service = d.serviceId ? `\n  Service: ${d.serviceId}` : "";
+                return `• ${d.type} — ${d.label}${d.description ? `\n  ${d.description}` : ""}${aliases}${resolver}${service}`;
+            });
+            return {
+                content: [{ type: "text" as const, text: `Available sigils (${defs.length}):\n${lines.join("\n")}` }],
+                details: null as any,
+            };
+        },
+        renderCall: (args: any, theme: any) => {
+            const sid = args.sessionId ? shortId(args.sessionId, 8) : "self";
+            return new Text(
+                theme.fg("accent", "⌘") + " " +
+                theme.fg("muted", "list sigils for ") +
+                theme.fg("dim", sid),
+                0, 0,
+            );
+        },
+        renderResult: (result: any, _opts: any, theme: any) => {
+            const text: string = result?.content?.[0]?.text ?? "";
+            if (text.startsWith("Error") || text.startsWith("No sigil")) {
+                return new Text(theme.fg("muted", preview(text, 60)), 0, 0);
+            }
+            const count = text.match(/Available sigils \((\d+)\)/)?.[1] ?? "?";
+            return new Text(theme.fg("success", "✓ ") + theme.fg("dim", `${count} sigil(s) available`), 0, 0);
         },
     });
 
