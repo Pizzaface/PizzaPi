@@ -93,26 +93,35 @@ export function spawnSession(
 
     const workerArgs = resolveWorkerSpawnArgs();
 
-    // Build a safe base environment using an explicit allowlist instead of
-    // spreading the full process.env (which would leak arbitrary secrets such
-    // as SSH keys, AWS credentials, etc. that happen to be in the daemon env).
-    const SAFE_ENV_KEYS = [
-        // Standard POSIX / shell vars needed by most CLI tools
-        "PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE", "TERM", "USER", "LOGNAME",
-        "SHELL", "TMPDIR", "TEMP", "TMP", "XDG_RUNTIME_DIR",
-        // macOS Keychain / certificate store access
-        "SSL_CERT_FILE", "SSL_CERT_DIR",
-        // Git identity (needed for git operations inside sessions)
-        "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL",
-    ];
+    // Build the worker environment using a denylist approach: forward everything
+    // from the daemon's environment EXCEPT a small set of daemon-internal
+    // secrets and code-injection vectors that workers must never inherit.
+    //
+    // An allowlist was tried first but it proved too fragile — it silently
+    // dropped ANTHROPIC_API_KEY, OPENAI_API_KEY, GITHUB_TOKEN, MCP_TOKEN, and
+    // every other provider/MCP auth var that workers legitimately need.
+    //
+    // Daemon-internal vars that workers must NOT receive:
+    //   PIZZAPI_RUNNER_TOKEN     – relay auth token used only by the daemon
+    //   PIZZAPI_RUNNER_API_KEY   – daemon-level API key; each worker gets its own
+    //
+    // Code/library injection vectors that should never be inherited:
+    //   NODE_OPTIONS             – could inject arbitrary code via --require
+    //   LD_PRELOAD               – shared-library injection (Linux)
+    //   DYLD_INSERT_LIBRARIES    – shared-library injection (macOS)
+    //   DYLD_FORCE_FLAT_NAMESPACE
+    const WORKER_ENV_DENYLIST = new Set([
+        "PIZZAPI_RUNNER_TOKEN",
+        "PIZZAPI_RUNNER_API_KEY",
+        "NODE_OPTIONS",
+        "LD_PRELOAD",
+        "DYLD_INSERT_LIBRARIES",
+        "DYLD_FORCE_FLAT_NAMESPACE",
+    ]);
+
     const baseEnv: Record<string, string> = {};
-    for (const key of SAFE_ENV_KEYS) {
-        if (typeof process.env[key] === "string") baseEnv[key] = process.env[key]!;
-    }
-    // Forward all PIZZAPI_* vars set by the daemon (e.g. web-search flags
-    // applied by loadGlobalConfig) so workers inherit runtime config.
     for (const [key, val] of Object.entries(process.env)) {
-        if (key.startsWith("PIZZAPI_") && typeof val === "string") {
+        if (!WORKER_ENV_DENYLIST.has(key) && typeof val === "string") {
             baseEnv[key] = val;
         }
     }

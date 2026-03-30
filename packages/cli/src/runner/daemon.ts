@@ -1332,7 +1332,44 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                             });
                             return;
                         }
-                        saveGlobal({ mcpServers: servers } as any);
+
+                        // The settings API masks sensitive env var values (e.g. tokens/keys)
+                        // with "***" before sending them to the UI so they aren't exposed in
+                        // transit.  When the UI sends the config back on save, those masked
+                        // values must NOT be written to disk — that would overwrite the real
+                        // secrets with the placeholder string.
+                        //
+                        // Strategy: for every env entry whose value is exactly "***", check
+                        // whether the on-disk config already has a real value for that key and
+                        // keep the original instead.
+                        const MASK_SENTINEL = "***";
+                        const existingMcpServers = ((existing as any).mcpServers ?? {}) as Record<string, any>;
+                        const mergedServers: Record<string, any> = {};
+                        for (const [name, entry] of Object.entries(servers)) {
+                            const existingServer = existingMcpServers[name];
+                            if (
+                                entry &&
+                                typeof entry === "object" &&
+                                "env" in entry &&
+                                entry.env &&
+                                typeof entry.env === "object" &&
+                                existingServer?.env &&
+                                typeof existingServer.env === "object"
+                            ) {
+                                // Restore any env var that still carries the mask sentinel
+                                const incomingEnv = entry.env as Record<string, string>;
+                                const restoredEnv: Record<string, string> = { ...incomingEnv };
+                                for (const [k, v] of Object.entries(incomingEnv)) {
+                                    if (v === MASK_SENTINEL && typeof existingServer.env[k] === "string") {
+                                        restoredEnv[k] = existingServer.env[k] as string;
+                                    }
+                                }
+                                mergedServers[name] = { ...entry, env: restoredEnv };
+                            } else {
+                                mergedServers[name] = entry;
+                            }
+                        }
+                        saveGlobal({ mcpServers: mergedServers } as any);
                     } else {
                         // Direct key mapping
                         saveGlobal({ [configKey]: value } as any);
