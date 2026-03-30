@@ -33,7 +33,7 @@ interface SigilResolveState {
 interface SigilContextValue {
   registry: SigilRegistry;
   resolve: (type: string, id: string) => SigilResolveState;
-  triggerResolve: (type: string, id: string) => void;
+  triggerResolve: (type: string, id: string, params?: Record<string, string>) => void;
 }
 
 const SigilCtx = createContext<SigilContextValue>({
@@ -93,7 +93,7 @@ export function SigilProvider({ sigilDefs, panels, runnerId, children }: SigilPr
   );
 
   const triggerResolve = useCallback(
-    (type: string, id: string) => {
+    (type: string, id: string, params?: Record<string, string>) => {
       const key = `${type}:${id}`;
       const cache = cacheRef.current;
 
@@ -107,9 +107,14 @@ export function SigilProvider({ sigilDefs, panels, runnerId, children }: SigilPr
       const port = panelPortMap.get(def.serviceId);
       if (!port) return;
 
-      // Build the resolve URL through the tunnel proxy
+      // Build the resolve URL through the tunnel proxy, forwarding params as query string
       const resolvePath = def.resolve.replace("{id}", encodeURIComponent(id));
-      const url = `/api/tunnel/runner/${encodeURIComponent(runnerId)}/${port}${resolvePath}`;
+      const qs = params && Object.keys(params).length > 0
+        ? "?" + new URLSearchParams(
+            Object.entries(params).filter(([k]) => !['label', 'link', 'href'].includes(k))
+          ).toString()
+        : "";
+      const url = `/api/tunnel/runner/${encodeURIComponent(runnerId)}/${port}${resolvePath}${qs}`;
 
       // Mark as loading
       cache.set(key, { loading: true });

@@ -59,8 +59,8 @@ export function SigilPill({ type, id, params, raw }: SigilPillProps) {
   const triggerResolve = useSigilTriggerResolve();
   const resolved = useSigilResolve(canonicalType, id);
   useEffect(() => {
-    if (id) triggerResolve(canonicalType, id);
-  }, [canonicalType, id, triggerResolve]);
+    if (id) triggerResolve(canonicalType, id, params);
+  }, [canonicalType, id, triggerResolve, params]);
 
   // Build display text: prefer resolved title > label param > raw id
   const displayId = resolved.data?.title ?? params.label ?? (id || canonicalType);
