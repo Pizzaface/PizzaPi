@@ -27,6 +27,19 @@ function extractDomain(url: string): string {
   }
 }
 
+/**
+ * Allowlist URL schemes for web search result links.
+ * Blocks javascript:, data:, vbscript:, and other dangerous schemes.
+ */
+function isSafeUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    return ["http:", "https:"].includes(parsed.protocol);
+  } catch {
+    return false;
+  }
+}
+
 /** Google's public favicon service — returns a 16×16 icon for any domain. */
 function faviconUrl(url: string): string {
   const domain = extractDomain(url);
@@ -83,7 +96,7 @@ export function WebSearchResultsCard({
         {results.map((result, idx) => (
           <li key={`${result.url}-${idx}`}>
             <a
-              href={result.url}
+              href={isSafeUrl(result.url) ? result.url : undefined}
               target="_blank"
               rel="noopener noreferrer"
               className="flex items-center gap-3 px-4 py-2.5 hover:bg-zinc-900/60 transition-colors group"

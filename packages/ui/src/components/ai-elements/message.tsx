@@ -32,7 +32,7 @@ import {
   useMemo,
   useState,
 } from "react";
-import { Streamdown } from "streamdown";
+import { Streamdown, defaultRehypePlugins } from "streamdown";
 
 export type MessageProps = HTMLAttributes<HTMLDivElement> & {
   from: UIMessage["role"];
@@ -331,8 +331,11 @@ export type MessageResponseProps = ComponentProps<typeof Streamdown> & {
 
 const streamdownPlugins = { cjk, code, math, mermaid };
 
+// Merge rehypeSigils WITH Streamdown's built-in sanitize/harden rehype plugins
+// instead of replacing them. Spreading defaultRehypePlugins preserves XSS
+// protections (rehype-sanitize etc.) that Streamdown applies by default.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const sigilRehypePlugins = [[rehypeSigils]] as any;
+const sigilRehypePlugins = [...Object.values(defaultRehypePlugins), [rehypeSigils]] as any;
 
 /** Span override that renders sigil pills or sigil groups. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
