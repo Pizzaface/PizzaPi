@@ -40,6 +40,13 @@ describe("session-spawner child", () => {
         let allowCwd = true;
         const isCwdAllowed = mock((_cwd: string | undefined) => allowCwd);
 
+        process.env.ANTHROPIC_API_KEY = "keep-me";
+        process.env.PIZZAPI_RUNNER_TOKEN = "runner-secret";
+        process.env.PIZZAPI_RUNNER_API_KEY = "daemon-secret";
+        process.env.NODE_OPTIONS = "--require /tmp/pwned.js";
+        process.env.BUN_OPTIONS = "--preload /tmp/pwned.ts";
+        process.env.LD_PRELOAD = "/tmp/pwned.so";
+
         let latestChild: FakeChild | null = null;
         let lastSpawnCall:
             | { execPath: string; args: string[]; stdio: string[]; env: Record<string, string> }
@@ -113,6 +120,7 @@ describe("session-spawner child", () => {
             expect(lastSpawnCall?.args.length).toBeGreaterThan(0);
             expect(lastSpawnCall?.stdio).toEqual(["ignore", "inherit", "inherit", "ipc"]);
             expect(lastSpawnCall?.env).toMatchObject({
+                ANTHROPIC_API_KEY: "keep-me",
                 PIZZAPI_RELAY_URL: "https://relay.example",
                 PIZZAPI_API_KEY: "api-key",
                 PIZZAPI_SESSION_ID: "sess-main",
@@ -128,6 +136,11 @@ describe("session-spawner child", () => {
                 PIZZAPI_WORKER_AGENT_TOOLS: "read,bash",
                 PIZZAPI_WORKER_AGENT_DISALLOWED_TOOLS: "write",
             });
+            expect(lastSpawnCall?.env.PIZZAPI_RUNNER_TOKEN).toBeUndefined();
+            expect(lastSpawnCall?.env.PIZZAPI_RUNNER_API_KEY).toBeUndefined();
+            expect(lastSpawnCall?.env.NODE_OPTIONS).toBeUndefined();
+            expect(lastSpawnCall?.env.BUN_OPTIONS).toBeUndefined();
+            expect(lastSpawnCall?.env.LD_PRELOAD).toBeUndefined();
             expect(trackSessionCwd).toHaveBeenCalledWith("sess-main", tempCwd);
             expect(runningSessions.get("sess-main")).toMatchObject({
                 sessionId: "sess-main",

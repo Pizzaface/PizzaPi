@@ -81,3 +81,16 @@ export function resolveSpawnError(sessionId: string, message: string) {
 
     storeEarlySpawnAck(sessionId, { ok: false, message });
 }
+
+/** @internal Test-only helper to clear module-global coordination state. */
+export function _resetRunnerControlForTesting() {
+    for (const pending of pendingSpawns.values()) {
+        clearTimeout(pending.timer);
+    }
+    pendingSpawns.clear();
+
+    for (const early of earlySpawnAcks.values()) {
+        clearTimeout(early.timer);
+    }
+    earlySpawnAcks.clear();
+}

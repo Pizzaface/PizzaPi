@@ -107,10 +107,11 @@ const mockRedis = {
 const mockGetPersistedRelaySessionRunner = mock(
     async (_sessionId: string): Promise<{ runnerId: string | null; runnerName: string | null } | null> => null,
 );
+const mockGetRelaySessionUserId = mock(async (_sessionId: string): Promise<string | null> => null);
 mock.module("../../sessions/store.js", () => ({
     getEphemeralTtlMs: () => 60_000,
     getPersistedRelaySessionRunner: mockGetPersistedRelaySessionRunner,
-    getRelaySessionUserId: async (_sessionId: string) => null,
+    getRelaySessionUserId: mockGetRelaySessionUserId,
     recordRelaySessionStart: async () => {},
     recordRelaySessionEnd: async () => {},
     recordRelaySessionState: async () => {},
@@ -138,6 +139,8 @@ describe("registerTuiSession parent resolution", () => {
         ttlStore.clear();
         mockGetPersistedRelaySessionRunner.mockReset();
         mockGetPersistedRelaySessionRunner.mockImplementation(async () => null);
+        mockGetRelaySessionUserId.mockReset();
+        mockGetRelaySessionUserId.mockImplementation(async () => null);
         await initStateRedis(mockRedis as never);
     });
 
@@ -186,6 +189,73 @@ describe("registerTuiSession parent resolution", () => {
         // The delink marker means the parent ran /new — do not re-add the child
         // to the old parent's membership set even if the parent is currently offline.
         expect(setStore.has("pizzapi:sio:children:parent-old")).toBe(false);
+    });
+
+    it("generates a fresh session ID when a live session belongs to a different user", async () => {
+        const ownerSocket = {
+            join: async () => {},
+            data: {},
+        } as any;
+        const attackerSocket = {
+            join: async () => {},
+            data: {},
+        } as any;
+
+        const original = await registerTuiSession(ownerSocket, "/repo", {
+            sessionId: "shared-session",
+            userId: "owner",
+            userName: "Owner",
+            isEphemeral: false,
+        });
+
+        const takeoverAttempt = await registerTuiSession(attackerSocket, "/repo", {
+            sessionId: "shared-session",
+            userId: "attacker",
+            userName: "Attacker",
+            isEphemeral: false,
+        });
+
+        expect(takeoverAttempt.sessionId).not.toBe("shared-session");
+        expect(takeoverAttempt.shareUrl.endsWith(`/${takeoverAttempt.sessionId}`)).toBe(true);
+        expect(original.sessionId).toBe("shared-session");
+
+        const originalSessionHash = JSON.parse(
+            store.get("__hash__:pizzapi:sio:session:shared-session") ?? "{}",
+        ) as Record<string, string>;
+        const newSessionHash = JSON.parse(
+            store.get(`__hash__:pizzapi:sio:session:${takeoverAttempt.sessionId}`) ?? "{}",
+        ) as Record<string, string>;
+
+        expect(originalSessionHash.userId).toBe("owner");
+        expect(newSessionHash.userId).toBe("attacker");
+    });
+
+    it("generates a fresh session ID when SQLite ownership belongs to a different user", async () => {
+        const socket = {
+            join: async () => {},
+            data: {},
+        } as any;
+
+        mockGetRelaySessionUserId.mockImplementation(async (sessionId: string) => {
+            expect(sessionId).toBe("ended-session");
+            return "owner";
+        });
+
+        const result = await registerTuiSession(socket, "/repo", {
+            sessionId: "ended-session",
+            userId: "attacker",
+            userName: "Attacker",
+            isEphemeral: false,
+        });
+
+        expect(result.sessionId).not.toBe("ended-session");
+        expect(result.shareUrl.endsWith(`/${result.sessionId}`)).toBe(true);
+        expect(store.get("__hash__:pizzapi:sio:session:ended-session")).toBeUndefined();
+
+        const newSessionHash = JSON.parse(
+            store.get(`__hash__:pizzapi:sio:session:${result.sessionId}`) ?? "{}",
+        ) as Record<string, string>;
+        expect(newSessionHash.userId).toBe("attacker");
     });
 
     it("restores runner association from persisted session data when Redis association is missing", async () => {
