@@ -111,6 +111,24 @@ function generateSecret(): string {
     return randomBytes(32).toString("hex");
 }
 
+/**
+ * Mask a webhook secret for API responses after creation.
+ * Keeps short prefix/suffix for identification without leaking the full value.
+ */
+export function maskWebhookSecret(secret: string): string {
+    if (!secret) return "";
+    if (secret.length <= 8) return "*".repeat(secret.length);
+    return `${secret.slice(0, 4)}…${secret.slice(-4)}`;
+}
+
+/** Return a webhook object with its secret masked. */
+export function toPublicWebhook(webhook: Webhook): Webhook {
+    return {
+        ...webhook,
+        secret: maskWebhookSecret(webhook.secret),
+    };
+}
+
 function rowToWebhook(row: {
     id: string;
     userId: string;

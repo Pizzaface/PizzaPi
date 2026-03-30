@@ -11,8 +11,11 @@
  * Fire endpoint (no auth cookie — validated via HMAC):
  *   POST /api/webhooks/:id/fire     — spawn a new session + fire trigger
  *
- * HMAC validation: SHA-256 of raw request body using webhook.secret.
- * The caller must send the hex digest in X-Webhook-Signature header.
+ * HMAC validation: SHA-256 of `${timestamp}.${nonce}.${rawBody}` using webhook.secret.
+ * Caller must send:
+ *   - X-Webhook-Signature (hex digest)
+ *   - X-Webhook-Timestamp (ISO string or RFC3339 date)
+ *   - X-Webhook-Nonce (unique per delivery)
  *
  * Every fire spawns a fresh session on the user's connected runner,
  * then delivers the webhook payload as a trigger into that session.
@@ -27,6 +30,7 @@ import {
     getLocalRunnerSocket,
     recordRunnerSession,
     linkSessionToRunner,
+    getRunnerData,
 } from "../ws/sio-registry.js";
 import { waitForSpawnAck } from "../ws/runner-control.js";
 import type { RouteHandler } from "./types.js";
@@ -40,6 +44,7 @@ import {
     listWebhooksForUser,
     updateWebhook,
     deleteWebhook,
+    toPublicWebhook,
 } from "../webhooks/store.js";
 
 const log = createLogger("webhooks-api");
@@ -49,6 +54,19 @@ const SPAWN_ACK_TIMEOUT_MS = 10_000;
 
 /** How long to wait after spawn for the session socket to appear (ms). */
 const SESSION_CONNECT_TIMEOUT_MS = 15_000;
+
+/** Maximum accepted age/skew for webhook timestamp headers (ms). */
+const WEBHOOK_REPLAY_WINDOW_MS = 5 * 60 * 1000;
+
+/** In-memory replay guard: (webhookId:nonce) -> first-seen timestamp. */
+const consumedWebhookNonces = new Map<string, number>();
+
+function pruneConsumedWebhookNonces(nowMs: number): void {
+    const cutoff = nowMs - WEBHOOK_REPLAY_WINDOW_MS;
+    for (const [key, ts] of consumedWebhookNonces) {
+        if (ts < cutoff) consumedWebhookNonces.delete(key);
+    }
+}
 
 // ── HMAC helpers ─────────────────────────────────────────────────────────────
 
@@ -81,10 +99,19 @@ function hmacEqual(a: string, b: string): boolean {
  */
 async function spawnSessionForWebhook(
     runnerId: string,
+    webhookUserId: string,
     cwd: string | null,
     prompt: string | null,
     model: { provider: string; id: string } | null,
 ): Promise<{ sessionId: string } | Response> {
+    const runner = await getRunnerData(runnerId);
+    if (!runner || runner.userId !== webhookUserId) {
+        return Response.json(
+            { error: "Runner not found or not owned by webhook owner" },
+            { status: 403 },
+        );
+    }
+
     const runnerSocket = getLocalRunnerSocket(runnerId);
     if (!runnerSocket) {
         return Response.json(
@@ -271,6 +298,16 @@ export const handleWebhooksRoute: RouteHandler = async (req, url) => {
                 ? body.prompt.trim()
                 : null;
 
+        if (runnerId) {
+            const runner = await getRunnerData(runnerId);
+            if (!runner || runner.userId !== identity.userId) {
+                return Response.json(
+                    { error: "Runner not found or not owned by you" },
+                    { status: 403 },
+                );
+            }
+        }
+
         // Validate model if provided
         let model: { provider: string; id: string } | null = null;
         if (body.model && typeof body.model === "object") {
@@ -301,7 +338,7 @@ export const handleWebhooksRoute: RouteHandler = async (req, url) => {
         if (identity instanceof Response) return identity;
 
         const webhooks = await listWebhooksForUser(identity.userId);
-        return Response.json({ webhooks });
+        return Response.json({ webhooks: webhooks.map(toPublicWebhook) });
     }
 
     // ── GET /api/webhooks/:id ──────────────────────────────────────────────
@@ -317,7 +354,7 @@ export const handleWebhooksRoute: RouteHandler = async (req, url) => {
             return Response.json({ error: "Webhook not found" }, { status: 404 });
         }
 
-        return Response.json({ webhook });
+        return Response.json({ webhook: toPublicWebhook(webhook) });
     }
 
     // ── PUT /api/webhooks/:id ──────────────────────────────────────────────
@@ -366,6 +403,15 @@ export const handleWebhooksRoute: RouteHandler = async (req, url) => {
         if (typeof body.enabled === "boolean") updates.enabled = body.enabled;
         if ("runnerId" in body) {
             updates.runnerId = typeof body.runnerId === "string" && body.runnerId.trim() ? body.runnerId.trim() : null;
+            if (typeof updates.runnerId === "string") {
+                const runner = await getRunnerData(updates.runnerId);
+                if (!runner || runner.userId !== identity.userId) {
+                    return Response.json(
+                        { error: "Runner not found or not owned by you" },
+                        { status: 403 },
+                    );
+                }
+            }
         }
         if ("cwd" in body) {
             updates.cwd = typeof body.cwd === "string" && body.cwd.trim() ? body.cwd.trim() : null;
@@ -390,7 +436,7 @@ export const handleWebhooksRoute: RouteHandler = async (req, url) => {
             return Response.json({ error: "Webhook not found" }, { status: 404 });
         }
 
-        return Response.json({ webhook: updated });
+        return Response.json({ webhook: toPublicWebhook(updated) });
     }
 
     // ── DELETE /api/webhooks/:id ───────────────────────────────────────────
@@ -431,22 +477,52 @@ export const handleWebhooksRoute: RouteHandler = async (req, url) => {
             return Response.json({ error: "Failed to read request body" }, { status: 400 });
         }
 
+        // Replay protection: require timestamp + nonce headers.
+        const timestampHeader = req.headers.get("x-webhook-timestamp");
+        if (!timestampHeader) {
+            return Response.json({ error: "Missing X-Webhook-Timestamp header" }, { status: 401 });
+        }
+
+        const timestampMs = Date.parse(timestampHeader);
+        if (!Number.isFinite(timestampMs)) {
+            return Response.json({ error: "Invalid X-Webhook-Timestamp header" }, { status: 401 });
+        }
+
+        const nowMs = Date.now();
+        if (Math.abs(nowMs - timestampMs) > WEBHOOK_REPLAY_WINDOW_MS) {
+            return Response.json({ error: "Webhook timestamp is too old or too far in the future" }, { status: 401 });
+        }
+
+        const nonceHeader = req.headers.get("x-webhook-nonce");
+        const nonce = typeof nonceHeader === "string" ? nonceHeader.trim() : "";
+        if (!nonce) {
+            return Response.json({ error: "Missing X-Webhook-Nonce header" }, { status: 401 });
+        }
+
         // Validate HMAC signature.
         const signature = req.headers.get("x-webhook-signature");
         if (!signature) {
             return Response.json({ error: "Missing X-Webhook-Signature header" }, { status: 401 });
         }
 
-        const expected = computeHmac(webhook.secret, new Uint8Array(rawBody));
+        const rawBodyText = new TextDecoder().decode(rawBody);
+        const expected = computeHmac(webhook.secret, `${timestampHeader}.${nonce}.${rawBodyText}`);
         if (!hmacEqual(signature, expected)) {
             log.warn(`Invalid HMAC for webhook ${webhookId}`);
             return Response.json({ error: "Invalid signature" }, { status: 401 });
         }
 
+        pruneConsumedWebhookNonces(nowMs);
+        const nonceKey = `${webhookId}:${nonce}`;
+        if (consumedWebhookNonces.has(nonceKey)) {
+            return Response.json({ error: "Webhook nonce has already been used" }, { status: 409 });
+        }
+        consumedWebhookNonces.set(nonceKey, nowMs);
+
         // Parse body JSON
         let body: Record<string, unknown>;
         try {
-            body = JSON.parse(new TextDecoder().decode(rawBody)) as Record<string, unknown>;
+            body = JSON.parse(rawBodyText) as Record<string, unknown>;
         } catch {
             return Response.json({ error: "Invalid JSON body" }, { status: 400 });
         }
@@ -472,6 +548,7 @@ export const handleWebhooksRoute: RouteHandler = async (req, url) => {
         // Spawn a new session on the webhook's designated runner
         const spawnResult = await spawnSessionForWebhook(
             webhook.runnerId,
+            webhook.userId,
             webhook.cwd,
             webhook.prompt,
             webhook.model,

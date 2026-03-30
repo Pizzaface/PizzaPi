@@ -11,8 +11,10 @@ afterAll(() => mock.restore());
 import { createHmac } from "crypto";
 
 // ── Helper: compute HMAC-SHA256 ──────────────────────────────────────────────
-function signBody(secret: string, body: string): string {
-    return createHmac("sha256", secret).update(body).digest("hex");
+function signBody(secret: string, timestamp: string, nonce: string, body: string): string {
+    return createHmac("sha256", secret)
+        .update(`${timestamp}.${nonce}.${body}`)
+        .digest("hex");
 }
 
 // ── Mock webhook store ───────────────────────────────────────────────────────
@@ -44,6 +46,13 @@ mock.module("../webhooks/store.js", () => ({
     listWebhooksForUser: mockListWebhooksForUser,
     updateWebhook: mockUpdateWebhook,
     deleteWebhook: mockDeleteWebhook,
+    toPublicWebhook: (webhook: any) => ({
+        ...webhook,
+        secret:
+            typeof webhook?.secret === "string" && webhook.secret.length > 8
+                ? `${webhook.secret.slice(0, 4)}…${webhook.secret.slice(-4)}`
+                : "",
+    }),
 }));
 
 // ── Mock sio-registry ────────────────────────────────────────────────────────
@@ -56,6 +65,9 @@ const mockBroadcastToSessionViewers = mock((_sid: string, _event: string, _data:
 const mockGetLocalRunnerSocket = mock((_runnerId: string) => null as any);
 const mockRecordRunnerSession = mock((_runnerId: string, _sessionId: string) => Promise.resolve());
 const mockLinkSessionToRunner = mock((_runnerId: string, _sessionId: string) => Promise.resolve());
+const mockGetRunnerData = mock((_runnerId: string) =>
+    Promise.resolve({ runnerId: "runner-1", userId: "user-1" } as any),
+);
 
 mock.module("../ws/sio-registry.js", () => ({
     getSharedSession: mockGetSharedSession,
@@ -65,6 +77,7 @@ mock.module("../ws/sio-registry.js", () => ({
     getLocalRunnerSocket: mockGetLocalRunnerSocket,
     recordRunnerSession: mockRecordRunnerSession,
     linkSessionToRunner: mockLinkSessionToRunner,
+    getRunnerData: mockGetRunnerData,
 }));
 
 // ── Mock runner-control ──────────────────────────────────────────────────────
@@ -121,9 +134,14 @@ function makeFireReq(
     extraHeaders?: Record<string, string>,
 ): [Request, URL] {
     const rawBody = JSON.stringify(body);
-    const sig = signBody(secret, rawBody);
+    const timestamp = extraHeaders?.["x-webhook-timestamp"] ?? new Date().toISOString();
+    const nonce =
+        extraHeaders?.["x-webhook-nonce"] ?? `nonce-${Math.random().toString(36).slice(2)}`;
+    const sig = signBody(secret, timestamp, nonce, rawBody);
     return makeReq("POST", path, rawBody, {
         "x-webhook-signature": sig,
+        "x-webhook-timestamp": timestamp,
+        "x-webhook-nonce": nonce,
         ...extraHeaders,
     });
 }
@@ -134,6 +152,10 @@ describe("POST /api/webhooks — create webhook", () => {
     beforeEach(() => {
         mockRequireSession.mockReset();
         mockCreateWebhook.mockReset();
+        mockGetRunnerData.mockReset();
+        mockGetRunnerData.mockReturnValue(
+            Promise.resolve({ runnerId: "runner-1", userId: "user-1" }),
+        );
         mockRequireSession.mockReturnValue(
             Promise.resolve({ userId: "user-1", userName: "TestUser" }),
         );
@@ -172,6 +194,19 @@ describe("POST /api/webhooks — create webhook", () => {
         });
         const res = await handleWebhooksRoute(req, url);
         expect(res?.status).toBe(400);
+    });
+
+    test("returns 403 when runnerId does not belong to authenticated user", async () => {
+        mockGetRunnerData.mockReturnValue(Promise.resolve({ runnerId: "runner-x", userId: "user-2" }));
+
+        const [req, url] = makeReq("POST", "/api/webhooks", {
+            name: "Hook",
+            source: "custom",
+            runnerId: "runner-x",
+        });
+        const res = await handleWebhooksRoute(req, url);
+        expect(res?.status).toBe(403);
+        expect(mockCreateWebhook).not.toHaveBeenCalled();
     });
 
     test("creates webhook and returns 201", async () => {
@@ -292,6 +327,7 @@ describe("GET /api/webhooks — list webhooks", () => {
                     id: "wh-1",
                     userId: "user-1",
                     name: "Hook 1",
+                    secret: "0123456789abcdef",
                     source: "custom",
                     enabled: true,
                 },
@@ -303,6 +339,7 @@ describe("GET /api/webhooks — list webhooks", () => {
         const body = await res!.json();
         expect(body.webhooks).toHaveLength(1);
         expect(body.webhooks[0].id).toBe("wh-1");
+        expect(body.webhooks[0].secret).toBe("0123…cdef");
     });
 });
 
@@ -332,13 +369,21 @@ describe("GET /api/webhooks/:id — get webhook", () => {
     });
 
     test("returns webhook details", async () => {
-        const hook = { id: "wh-1", userId: "user-1", name: "Hook 1", source: "custom", enabled: true };
+        const hook = {
+            id: "wh-1",
+            userId: "user-1",
+            name: "Hook 1",
+            secret: "fedcba9876543210",
+            source: "custom",
+            enabled: true,
+        };
         mockGetWebhook.mockReturnValue(Promise.resolve(hook));
         const [req, url] = makeReq("GET", "/api/webhooks/wh-1");
         const res = await handleWebhooksRoute(req, url);
         expect(res?.status).toBe(200);
         const body = await res!.json();
         expect(body.webhook.id).toBe("wh-1");
+        expect(body.webhook.secret).toBe("fedc…3210");
     });
 });
 
@@ -347,6 +392,10 @@ describe("PUT /api/webhooks/:id — update webhook", () => {
         mockRequireSession.mockReset();
         mockGetWebhook.mockReset();
         mockUpdateWebhook.mockReset();
+        mockGetRunnerData.mockReset();
+        mockGetRunnerData.mockReturnValue(
+            Promise.resolve({ runnerId: "runner-1", userId: "user-1" }),
+        );
         mockRequireSession.mockReturnValue(
             Promise.resolve({ userId: "user-1", userName: "TestUser" }),
         );
@@ -368,11 +417,30 @@ describe("PUT /api/webhooks/:id — update webhook", () => {
         expect(res?.status).toBe(400);
     });
 
+    test("returns 403 when updating to a runner not owned by authenticated user", async () => {
+        mockGetWebhook.mockReturnValue(
+            Promise.resolve({ id: "wh-1", userId: "user-1", name: "Hook" }),
+        );
+        mockGetRunnerData.mockReturnValue(Promise.resolve({ runnerId: "runner-x", userId: "user-2" }));
+
+        const [req, url] = makeReq("PUT", "/api/webhooks/wh-1", { runnerId: "runner-x" });
+        const res = await handleWebhooksRoute(req, url);
+        expect(res?.status).toBe(403);
+        expect(mockUpdateWebhook).not.toHaveBeenCalled();
+    });
+
     test("updates webhook", async () => {
         mockGetWebhook.mockReturnValue(
             Promise.resolve({ id: "wh-1", userId: "user-1", name: "Hook" }),
         );
-        const updated = { id: "wh-1", userId: "user-1", name: "Updated", source: "custom", enabled: true };
+        const updated = {
+            id: "wh-1",
+            userId: "user-1",
+            name: "Updated",
+            secret: "abcd1234efgh5678",
+            source: "custom",
+            enabled: true,
+        };
         mockUpdateWebhook.mockReturnValue(Promise.resolve(updated));
 
         const [req, url] = makeReq("PUT", "/api/webhooks/wh-1", { name: "Updated", enabled: false });
@@ -380,6 +448,7 @@ describe("PUT /api/webhooks/:id — update webhook", () => {
         expect(res?.status).toBe(200);
         const body = await res!.json();
         expect(body.webhook.id).toBe("wh-1");
+        expect(body.webhook.secret).toBe("abcd…5678");
     });
 
     test("updates cwd and prompt", async () => {
@@ -488,6 +557,10 @@ describe("POST /api/webhooks/:id/fire — HMAC validation", () => {
         mockWaitForSpawnAck.mockReset();
         mockRecordRunnerSession.mockReset();
         mockLinkSessionToRunner.mockReset();
+        mockGetRunnerData.mockReset();
+        mockGetRunnerData.mockReturnValue(
+            Promise.resolve({ runnerId: "runner-1", userId: "user-1" }),
+        );
     });
 
     test("returns 404 for unknown webhook", async () => {
@@ -506,13 +579,67 @@ describe("POST /api/webhooks/:id/fire — HMAC validation", () => {
         expect(res?.status).toBe(404);
     });
 
+    test("returns 401 when X-Webhook-Timestamp is missing", async () => {
+        mockGetWebhook.mockReturnValue(Promise.resolve(ACTIVE_WEBHOOK));
+        const [req, url] = makeReq(
+            "POST",
+            "/api/webhooks/wh-1/fire",
+            { event: "test" },
+            { "x-webhook-signature": "anything", "x-webhook-nonce": "nonce-a" },
+        );
+        const res = await handleWebhooksRoute(req, url);
+        expect(res?.status).toBe(401);
+        const body = await res!.json();
+        expect(body.error).toContain("X-Webhook-Timestamp");
+    });
+
+    test("returns 401 when X-Webhook-Nonce is missing", async () => {
+        mockGetWebhook.mockReturnValue(Promise.resolve(ACTIVE_WEBHOOK));
+        const [req, url] = makeReq(
+            "POST",
+            "/api/webhooks/wh-1/fire",
+            { event: "test" },
+            {
+                "x-webhook-signature": "anything",
+                "x-webhook-timestamp": new Date().toISOString(),
+            },
+        );
+        const res = await handleWebhooksRoute(req, url);
+        expect(res?.status).toBe(401);
+        const body = await res!.json();
+        expect(body.error).toContain("X-Webhook-Nonce");
+    });
+
     test("returns 401 when X-Webhook-Signature is missing", async () => {
         mockGetWebhook.mockReturnValue(Promise.resolve(ACTIVE_WEBHOOK));
-        const [req, url] = makeReq("POST", "/api/webhooks/wh-1/fire", { event: "test" });
+        const [req, url] = makeReq(
+            "POST",
+            "/api/webhooks/wh-1/fire",
+            { event: "test" },
+            {
+                "x-webhook-timestamp": new Date().toISOString(),
+                "x-webhook-nonce": "nonce-sig-missing",
+            },
+        );
         const res = await handleWebhooksRoute(req, url);
         expect(res?.status).toBe(401);
         const body = await res!.json();
         expect(body.error).toContain("X-Webhook-Signature");
+    });
+
+    test("returns 401 when timestamp is stale", async () => {
+        mockGetWebhook.mockReturnValue(Promise.resolve(ACTIVE_WEBHOOK));
+        const stale = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+        const [req, url] = makeFireReq(
+            "/api/webhooks/wh-1/fire",
+            { event: "test" },
+            ACTIVE_WEBHOOK.secret,
+            { "x-webhook-timestamp": stale, "x-webhook-nonce": "nonce-stale" },
+        );
+        const res = await handleWebhooksRoute(req, url);
+        expect(res?.status).toBe(401);
+        const body = await res!.json();
+        expect(body.error).toContain("too old");
     });
 
     test("returns 401 when signature is invalid", async () => {
@@ -521,7 +648,11 @@ describe("POST /api/webhooks/:id/fire — HMAC validation", () => {
             "POST",
             "/api/webhooks/wh-1/fire",
             JSON.stringify({ event: "test" }),
-            { "x-webhook-signature": "bad-signature" },
+            {
+                "x-webhook-signature": "bad-signature",
+                "x-webhook-timestamp": new Date().toISOString(),
+                "x-webhook-nonce": "nonce-bad-sig",
+            },
         );
         const res = await handleWebhooksRoute(req, url);
         expect(res?.status).toBe(401);
@@ -548,6 +679,44 @@ describe("POST /api/webhooks/:id/fire — HMAC validation", () => {
         // Runner spawn should have been called
         expect(mockRecordRunnerSession).toHaveBeenCalledTimes(1);
         expect(mockLinkSessionToRunner).toHaveBeenCalledTimes(1);
+    });
+
+    test("returns 409 when nonce is reused", async () => {
+        mockGetWebhook.mockReturnValue(Promise.resolve(ACTIVE_WEBHOOK));
+        const { sessionEmitMock } = setupSpawnAndDeliverMocks();
+
+        const timestamp = new Date().toISOString();
+        const nonce = "nonce-reused";
+        const body = { event: "deploy" };
+
+        const [req1, url1] = makeFireReq(
+            "/api/webhooks/wh-1/fire",
+            body,
+            ACTIVE_WEBHOOK.secret,
+            { "x-webhook-timestamp": timestamp, "x-webhook-nonce": nonce },
+        );
+        const res1 = await handleWebhooksRoute(req1, url1);
+        expect(res1?.status).toBe(200);
+
+        const [req2, url2] = makeFireReq(
+            "/api/webhooks/wh-1/fire",
+            body,
+            ACTIVE_WEBHOOK.secret,
+            { "x-webhook-timestamp": timestamp, "x-webhook-nonce": nonce },
+        );
+        const res2 = await handleWebhooksRoute(req2, url2);
+        expect(res2?.status).toBe(409);
+        expect(sessionEmitMock).toHaveBeenCalledTimes(1);
+    });
+
+    test("returns 403 when runner is not owned by webhook user", async () => {
+        mockGetWebhook.mockReturnValue(Promise.resolve(ACTIVE_WEBHOOK));
+        mockGetRunnerData.mockReturnValue(Promise.resolve({ runnerId: "runner-1", userId: "user-2" }));
+
+        const body = { event: "test" };
+        const [req, url] = makeFireReq("/api/webhooks/wh-1/fire", body, ACTIVE_WEBHOOK.secret);
+        const res = await handleWebhooksRoute(req, url);
+        expect(res?.status).toBe(403);
     });
 
     test("returns 503 when runner is not connected", async () => {
@@ -585,6 +754,10 @@ describe("POST /api/webhooks/:id/fire — event filtering", () => {
         mockWaitForSpawnAck.mockReset();
         mockRecordRunnerSession.mockReset();
         mockLinkSessionToRunner.mockReset();
+        mockGetRunnerData.mockReset();
+        mockGetRunnerData.mockReturnValue(
+            Promise.resolve({ runnerId: "runner-1", userId: "user-1" }),
+        );
     });
 
     const FILTERED_WEBHOOK = {
@@ -634,6 +807,10 @@ describe("POST /api/webhooks/:id/fire — spawn behavior", () => {
         mockWaitForSpawnAck.mockReset();
         mockRecordRunnerSession.mockReset();
         mockLinkSessionToRunner.mockReset();
+        mockGetRunnerData.mockReset();
+        mockGetRunnerData.mockReturnValue(
+            Promise.resolve({ runnerId: "runner-1", userId: "user-1" }),
+        );
     });
 
     test("passes cwd and prompt to runner spawn", async () => {
