@@ -570,6 +570,19 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
         socket.on("session_ready", async (data) => {
             const runnerId = socket.data.runnerId;
             if (runnerId && data.sessionId) {
+                // Optimistically enroll the session in runnerSessionIds BEFORE the
+                // async work below.  This prevents a runner_session_event that
+                // arrives while the awaits are in flight from being rejected
+                // (race: session_ready triggers async work → runner_session_event
+                // races ahead → membership check fails → event dropped).  Sessions
+                // don't have the same TOCTOU security concern as terminals because
+                // the runner already owns the sessions it spawned; the only check
+                // here is user ownership, so an early enroll is safe.
+                if (!runnerSessionIds.has(runnerId)) {
+                    runnerSessionIds.set(runnerId, new Set());
+                }
+                runnerSessionIds.get(runnerId)!.add(data.sessionId);
+
                 // Security: verify the session belongs to this runner's user.
                 // Prevents a runner owned by user A from hijacking a session
                 // owned by user B by sending a spurious session_ready.
@@ -577,16 +590,13 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
                 const session = await getSharedSession(data.sessionId);
                 if (session?.userId && runnerUserId && session.userId !== runnerUserId) {
                     log.warn(`session_ready rejected: session ${data.sessionId} belongs to user ${session.userId}, runner belongs to user ${runnerUserId}`);
+                    // Roll back the optimistic enrollment — session is not authorised.
+                    runnerSessionIds.get(runnerId)?.delete(data.sessionId);
                     return;
                 }
                 await recordRunnerSession(runnerId, data.sessionId);
                 await linkSessionToRunner(runnerId, data.sessionId);
                 resolveSpawnReady(data.sessionId);
-                // Track this session for service_message broadcasting
-                if (!runnerSessionIds.has(runnerId)) {
-                    runnerSessionIds.set(runnerId, new Set());
-                }
-                runnerSessionIds.get(runnerId)!.add(data.sessionId);
             }
         });
 
@@ -658,6 +668,12 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
                 resolveCheck = resolve;
                 rejectCheck = reject;
             });
+            // Attach a no-op catch immediately so that if rejectCheck() is called
+            // before any handler is awaiting the promise (e.g. the runner disconnects
+            // while the Redis check is in flight), Bun does not treat it as an
+            // unhandled rejection and crash the process.  Awaiting callers still
+            // receive the rejection through their own await.
+            checkPromise.catch(() => {});
             pendingTerminalChecks.set(terminalId, { promise: checkPromise, reject: rejectCheck, runnerId });
             // Async Redis ownership check.
             const entry = await getTerminalEntry(terminalId);
