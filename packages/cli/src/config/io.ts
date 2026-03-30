@@ -142,27 +142,50 @@ export function loadConfig(cwd: string = process.cwd()): PizzaPiConfig {
     if (hooks) config.hooks = hooks;
     else delete config.hooks;
 
-    // Block transport/auth fields from project config — these must only come
-    // from the global config (~/.pizzapi/config.json) or environment variables.
-    // A project config that sets apiKey or relayUrl could redirect agent traffic
-    // to an attacker-controlled relay or steal authentication credentials.
+    // Transport/auth fields: global config always wins over project when both are set.
+    // If only the project sets them, allow the value through but emit a warning —
+    // per-project relay configs are legitimate, but users should be aware.
     if ("apiKey" in project) {
-        log.warn(
-            "Project config .pizzapi/config.json contains 'apiKey' — this field is ignored. " +
-                "Set it in ~/.pizzapi/config.json only.",
-        );
+        if (global.apiKey !== undefined) {
+            log.warn(
+                "Project config .pizzapi/config.json contains 'apiKey' — " +
+                    "global config value will be used instead. " +
+                    "Set it in ~/.pizzapi/config.json only.",
+            );
+            config.apiKey = global.apiKey;
+        } else {
+            log.warn(
+                "Project config .pizzapi/config.json contains 'apiKey' — " +
+                    "consider moving this to ~/.pizzapi/config.json for better security.",
+            );
+            // project value flows through from the { ...global, ...project } spread
+        }
+    } else if (global.apiKey !== undefined) {
+        config.apiKey = global.apiKey;
+    } else {
+        delete config.apiKey;
     }
+
     if ("relayUrl" in project) {
-        log.warn(
-            "Project config .pizzapi/config.json contains 'relayUrl' — this field is ignored. " +
-                "Set it in ~/.pizzapi/config.json only.",
-        );
+        if (global.relayUrl !== undefined) {
+            log.warn(
+                "Project config .pizzapi/config.json contains 'relayUrl' — " +
+                    "global config value will be used instead. " +
+                    "Set it in ~/.pizzapi/config.json only.",
+            );
+            config.relayUrl = global.relayUrl;
+        } else {
+            log.warn(
+                "Project config .pizzapi/config.json contains 'relayUrl' — " +
+                    "consider moving this to ~/.pizzapi/config.json for better security.",
+            );
+            // project value flows through from the { ...global, ...project } spread
+        }
+    } else if (global.relayUrl !== undefined) {
+        config.relayUrl = global.relayUrl;
+    } else {
+        delete config.relayUrl;
     }
-    // Always restore transport fields from global (project values discarded above).
-    if (global.apiKey !== undefined) config.apiKey = global.apiKey;
-    else delete config.apiKey;
-    if (global.relayUrl !== undefined) config.relayUrl = global.relayUrl;
-    else delete config.relayUrl;
 
     // Merge sandbox config securely — project cannot weaken global sandbox.
     // mergeSandboxConfig ensures: deny lists union, allow lists intersect,
@@ -189,20 +212,24 @@ export function loadConfig(cwd: string = process.cwd()): PizzaPiConfig {
     const globalMcp = isPlainObject((global as any).mcp) ? (global as any).mcp : undefined;
     const rawProjectMcp = isPlainObject((project as any).mcp) ? (project as any).mcp : undefined;
 
-    // Warn once if any project MCP servers are present but not trusted.
+    // Warn once if any project MCP servers are present and the trust flag is not set.
+    // P2 fix: only warn when the mcpServers object is non-empty (skip empty placeholder objects).
     const hasProjectMcp =
-        rawProjectMcpServers !== undefined ||
+        (rawProjectMcpServers !== undefined && Object.keys(rawProjectMcpServers).length > 0) ||
         (Array.isArray(rawProjectMcp?.servers) && rawProjectMcp.servers.length > 0);
+    // P0 fix: warn-and-load by default. allowProjectMcp/PIZZAPI_ALLOW_PROJECT_MCP silences
+    // the warning rather than being required to enable loading.
     if (hasProjectMcp && !projectMcpTrusted) {
         log.warn(
-            "Project MCP servers found in .pizzapi/config.json but not trusted. " +
+            "Project MCP servers found in .pizzapi/config.json. " +
                 'Set "allowProjectMcp": true in ~/.pizzapi/config.json or ' +
-                "PIZZAPI_ALLOW_PROJECT_MCP=1 to enable.",
+                "PIZZAPI_ALLOW_PROJECT_MCP=1 to suppress this warning.",
         );
     }
 
-    const projectMcpServers = projectMcpTrusted ? rawProjectMcpServers : undefined;
-    const projectMcp = projectMcpTrusted ? rawProjectMcp : undefined;
+    // Always include project MCP servers (trust flag only silences the warning above).
+    const projectMcpServers = rawProjectMcpServers;
+    const projectMcp = rawProjectMcp;
 
     // Always overwrite or delete mcpServers — the initial { ...global, ...project } spread
     // may have placed project.mcpServers into config before the trust gate could block it.

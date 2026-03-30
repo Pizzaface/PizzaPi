@@ -450,7 +450,7 @@ describe("loadConfig mcpServers deep-merge", () => {
     expect(config.mcpServers.godmother.command).toBe("godmother");
   });
 
-  test("project-only mcpServers blocked without allowProjectMcp", () => {
+  test("project-only mcpServers loads with warning (warn-and-load default)", () => {
     writeFileSync(join(globalDir, "config.json"), JSON.stringify({}));
 
     const projectDir = join(tempDir, "project");
@@ -465,8 +465,9 @@ describe("loadConfig mcpServers deep-merge", () => {
     );
 
     const config = loadConfig(projectDir) as any;
-    // Without allowProjectMcp: true in global config, project MCP servers are blocked
-    expect(config.mcpServers).toBeUndefined();
+    // Project MCP servers load by default (warning is emitted but loading is not blocked)
+    expect(config.mcpServers).toBeDefined();
+    expect(config.mcpServers.playwright.command).toBe("npx");
   });
 
   test("project-only mcpServers passes through when allowProjectMcp: true", () => {
@@ -590,7 +591,7 @@ describe("loadConfig mcpServers deep-merge", () => {
     expect(config.mcp.servers[0].name).toBe("playwright");
   });
 
-  test("mcp.servers from project blocked without allowProjectMcp", () => {
+  test("mcp.servers from project loads with warning (warn-and-load default)", () => {
     writeFileSync(
       join(globalDir, "config.json"),
       JSON.stringify({
@@ -616,8 +617,10 @@ describe("loadConfig mcpServers deep-merge", () => {
     const config = loadConfig(projectDir) as any;
     // mcpServers from global still loads
     expect(config.mcpServers.godmother.command).toBe("godmother");
-    // mcp.servers from project is blocked
-    expect(config.mcp).toBeUndefined();
+    // mcp.servers from project also loads (warning is emitted but loading is not blocked)
+    expect(config.mcp).toBeDefined();
+    const names = config.mcp.servers.map((s: any) => s.name);
+    expect(names).toContain("playwright");
   });
 
   test("project mcpServers allowed via PIZZAPI_ALLOW_PROJECT_MCP env var", () => {
@@ -838,32 +841,34 @@ describe("loadConfig transport field blocking", () => {
     rmSync(tempDir, { recursive: true, force: true });
   });
 
-  test("project apiKey is stripped from merged config", () => {
+  test("project apiKey loads with warning when global does not set apiKey", () => {
     writeFileSync(join(globalDir, "config.json"), JSON.stringify({}));
 
     const projectDir = join(tempDir, "project");
     mkdirSync(join(projectDir, ".pizzapi"), { recursive: true });
     writeFileSync(
       join(projectDir, ".pizzapi", "config.json"),
-      JSON.stringify({ apiKey: "malicious-key" }),
+      JSON.stringify({ apiKey: "project-key" }),
     );
 
     const config = loadConfig(projectDir);
-    expect(config.apiKey).toBeUndefined();
+    // Project apiKey loads (warning is emitted) when global has no apiKey
+    expect(config.apiKey).toBe("project-key");
   });
 
-  test("project relayUrl is stripped from merged config", () => {
+  test("project relayUrl loads with warning when global does not set relayUrl", () => {
     writeFileSync(join(globalDir, "config.json"), JSON.stringify({}));
 
     const projectDir = join(tempDir, "project");
     mkdirSync(join(projectDir, ".pizzapi"), { recursive: true });
     writeFileSync(
       join(projectDir, ".pizzapi", "config.json"),
-      JSON.stringify({ relayUrl: "ws://attacker.example.com" }),
+      JSON.stringify({ relayUrl: "ws://project-relay.example.com" }),
     );
 
     const config = loadConfig(projectDir);
-    expect(config.relayUrl).toBeUndefined();
+    // Project relayUrl loads (warning is emitted) when global has no relayUrl
+    expect(config.relayUrl).toBe("ws://project-relay.example.com");
   });
 
   test("global apiKey is preserved when project also sets apiKey", () => {
@@ -914,18 +919,19 @@ describe("loadConfig transport field blocking", () => {
     expect(config.apiKey).toBe("global-key");
   });
 
-  test("non-transport project fields still apply", () => {
+  test("non-transport project fields apply, project apiKey loads with warning", () => {
     writeFileSync(join(globalDir, "config.json"), JSON.stringify({}));
 
     const projectDir = join(tempDir, "project");
     mkdirSync(join(projectDir, ".pizzapi"), { recursive: true });
     writeFileSync(
       join(projectDir, ".pizzapi", "config.json"),
-      JSON.stringify({ mcpTimeout: 9999, apiKey: "should-be-blocked" }),
+      JSON.stringify({ mcpTimeout: 9999, apiKey: "project-key" }),
     );
 
     const config = loadConfig(projectDir);
     expect(config.mcpTimeout).toBe(9999);
-    expect(config.apiKey).toBeUndefined();
+    // Project apiKey loads with a warning (not stripped) when global has no apiKey
+    expect(config.apiKey).toBe("project-key");
   });
 });
