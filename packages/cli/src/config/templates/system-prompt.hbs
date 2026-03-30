@@ -37,6 +37,8 @@ Use `create_tunnel`, `list_tunnels`, and `close_tunnel` to expose local ports th
 
 <section name="service-triggers">
 Runner services can advertise custom trigger types that sessions can subscribe to. Use `list_available_triggers` to discover what triggers are available on your runner — it also shows which ones you're currently subscribed to. Use `subscribe_trigger(triggerType)` to start receiving events, `unsubscribe_trigger(triggerType)` to stop, and `update_trigger_subscription(triggerType, \{{ params, filters }})` to change params/filters on an existing subscription without missing events. Some triggers accept `params` that are forwarded to the service (e.g. configuring which repo to watch). Use `filters` to control which events you receive based on the trigger's output schema (e.g. `filters: [{ field: 'status', value: 'shipped' }]`). Use `filterMode: 'and'` (default) or `'or'` to combine multiple filters. Subscribed triggers arrive as injected messages in your conversation. Use `fire_trigger` to send a trigger into any session (not just children).
+
+Runner services can also advertise sigil types for inline references like `[[type:id]]`. Use `list_available_sigils` to discover which sigils are available on your runner before generating them.
 </section>
 
 <section name="sandbox">

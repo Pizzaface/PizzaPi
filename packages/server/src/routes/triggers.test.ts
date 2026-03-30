@@ -468,6 +468,73 @@ describe("GET /api/sessions/:id/available-triggers", () => {
     });
 });
 
+describe("GET /api/sessions/:id/available-sigils", () => {
+    beforeEach(() => {
+        mockGetSharedSession.mockReset();
+        mockGetRunnerServices.mockReset();
+        mockRequireSession.mockReturnValue(
+            Promise.resolve({ userId: "user-1", userName: "TestUser" }),
+        );
+    });
+
+    test("returns sigilDefs from the session's runner", async () => {
+        mockGetSharedSession.mockReturnValue(
+            Promise.resolve({ userId: "user-1", sessionId: "sess-1", runnerId: "runner-A" } as any),
+        );
+        mockGetRunnerServices.mockReturnValue(Promise.resolve({
+            serviceIds: ["github"],
+            sigilDefs: [
+                { type: "pr", label: "Pull Request", aliases: ["mr"] },
+                { type: "commit", label: "Commit" },
+            ],
+        }));
+
+        const [req, url] = makeReq("GET", "/api/sessions/sess-1/available-sigils");
+        const res = await handleTriggersRoute(req, url);
+        expect(res).toBeDefined();
+        expect(res!.status).toBe(200);
+        const body = await res!.json();
+        expect(body.sigilDefs).toHaveLength(2);
+        expect(body.sigilDefs[0].type).toBe("pr");
+        expect(body.sigilDefs[0].aliases).toEqual(["mr"]);
+    });
+
+    test("returns empty array when session has no runner", async () => {
+        mockGetSharedSession.mockReturnValue(
+            Promise.resolve({ userId: "user-1", sessionId: "sess-1", runnerId: null } as any),
+        );
+
+        const [req, url] = makeReq("GET", "/api/sessions/sess-1/available-sigils");
+        const res = await handleTriggersRoute(req, url);
+        expect(res!.status).toBe(200);
+        const body = await res!.json();
+        expect(body.sigilDefs).toHaveLength(0);
+    });
+
+    test("returns 404 for wrong user", async () => {
+        mockGetSharedSession.mockReturnValue(
+            Promise.resolve({ userId: "user-2", sessionId: "sess-1" } as any),
+        );
+
+        const [req, url] = makeReq("GET", "/api/sessions/sess-1/available-sigils");
+        const res = await handleTriggersRoute(req, url);
+        expect(res!.status).toBe(404);
+    });
+
+    test("returns empty array when runner has no sigil defs", async () => {
+        mockGetSharedSession.mockReturnValue(
+            Promise.resolve({ userId: "user-1", sessionId: "sess-1", runnerId: "runner-A" } as any),
+        );
+        mockGetRunnerServices.mockReturnValue(Promise.resolve({ serviceIds: ["terminal"] }));
+
+        const [req, url] = makeReq("GET", "/api/sessions/sess-1/available-sigils");
+        const res = await handleTriggersRoute(req, url);
+        expect(res!.status).toBe(200);
+        const body = await res!.json();
+        expect(body.sigilDefs).toHaveLength(0);
+    });
+});
+
 describe("GET /api/sessions/:id/trigger-subscriptions", () => {
     beforeEach(() => {
         mockGetSharedSession.mockReset();

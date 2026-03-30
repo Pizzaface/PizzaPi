@@ -1,6 +1,6 @@
 ---
 name: creating-runner-services
-description: Use when building a new runner service — background processes with optional UI panels and custom triggers that agents can subscribe to
+description: Use when building a new runner service — background processes with optional UI panels, custom triggers agents can subscribe to, or sigils that render inline references in the UI
 ---
 
 # Creating Runner Services
@@ -9,6 +9,7 @@ Runner services are background processes on the runner daemon. They can:
 
 - **Expose a UI panel** — an iframe in the PizzaPi web interface (no React needed)
 - **Advertise custom triggers** — agents discover and subscribe to them at runtime
+- **Define sigils** — teach the UI how to render `[[type:id]]` inline references
 - **Fire triggers** — broadcast events to all subscribed agent sessions via the relay API
 
 ## Folder Structure
@@ -56,6 +57,14 @@ Runner services are background processes on the runner daemon. They can:
           "required": false
         }
       ]
+    }
+  ],
+  "sigils": [
+    {
+      "type": "item",
+      "label": "Item",
+      "description": "Reference an item from My Service",
+      "resolve": "/api/resolve/item/{id}"
     }
   ]
 }
@@ -257,6 +266,17 @@ class MyService {
                     });
                 }
 
+                if (url.pathname.endsWith("/api/resolve/item/abc-123")) {
+                    return Response.json({
+                        id: "abc-123",
+                        title: "Example Item",
+                        href: "https://example.com/items/abc-123",
+                        subtitle: "Open in My Service",
+                    }, {
+                        headers: { "Access-Control-Allow-Origin": "*" },
+                    });
+                }
+
                 if (url.pathname.endsWith("/api/do-thing") && req.method === "POST") {
                     // Fire a trigger when something happens
                     void broadcastTrigger("my-service:something_happened", {
@@ -379,6 +399,7 @@ A service doesn't need a panel. Omit `panel` from manifest.json and skip the `an
 |------|-----|
 | Declare triggers | Add `triggers[]` to `manifest.json` or `triggers.json` |
 | Declare sigils | Add `sigils[]` to `manifest.json` or `sigils.json` |
+| Resolve sigils | Expose an API route matching each sigil's `resolve` template |
 | Fire a trigger | `POST /api/runners/{runnerId}/trigger-broadcast` with API key |
 | Serve static files | `Bun.serve()` with `readFileSync` for index.html |
 | Expose an API | Add route checks in the `fetch` handler |
@@ -392,6 +413,7 @@ A service doesn't need a panel. Omit `panel` from manifest.json and skip the `an
 | Mistake | Fix |
 |---------|-----|
 | Triggers declared but never fired | Use the relay broadcast API — `console.log` doesn't deliver triggers |
+| Sigils declared but not resolvable | Implement the `resolve` API route or omit `resolve` until you have one |
 | Missing runnerId or apiKey | Read from `~/.pizzapi/runner.json` and env vars at call time, not init time |
 | Forgetting `announcePanel()` | Panel won't appear in UI — always call it after server starts |
 | Using absolute API URLs | Tunnel proxy rewrites paths; use relative URLs (`./api/...`) |

@@ -27,6 +27,7 @@
 
 import { randomUUID } from "node:crypto";
 import { createLogger } from "@pizzapi/tools";
+import type { ServiceSigilDef } from "@pizzapi/protocol";
 import { getRelaySocket as getRelaySocketDefault } from "./remote.js";
 import { loadConfig } from "../config.js";
 
@@ -306,6 +307,8 @@ export interface TriggerSubscription {
     runnerId: string;
 }
 
+export type SigilDef = ServiceSigilDef;
+
 export interface SubscriptionResult {
     ok: boolean;
     triggerType?: string;
@@ -339,6 +342,36 @@ export async function getAvailableTriggers(
         return data.triggerDefs ?? [];
     } catch (err) {
         log.info(`getAvailableTriggers failed: ${err instanceof Error ? err.message : String(err)}`);
+        return [];
+    }
+}
+
+/**
+ * Get available sigil types for a session (from its runner's service catalog).
+ */
+export async function getAvailableSigils(
+    sessionId: string,
+    deps: Partial<TriggerClientDeps> = {},
+): Promise<SigilDef[]> {
+    const d: TriggerClientDeps = { ...defaultDeps, ...deps };
+    const baseUrl = d.getRelayHttpBaseUrl();
+    const apiKey = d.getApiKey();
+
+    if (!baseUrl || !apiKey) {
+        log.info(`getAvailableSigils: no baseUrl/apiKey, returning empty`);
+        return [];
+    }
+
+    try {
+        const url = `${baseUrl}/api/sessions/${encodeURIComponent(sessionId)}/available-sigils`;
+        const response = await d.fetch(url, {
+            headers: { "x-api-key": apiKey },
+        });
+        if (!response.ok) return [];
+        const data = await response.json() as { sigilDefs?: SigilDef[] };
+        return data.sigilDefs ?? [];
+    } catch (err) {
+        log.info(`getAvailableSigils failed: ${err instanceof Error ? err.message : String(err)}`);
         return [];
     }
 }

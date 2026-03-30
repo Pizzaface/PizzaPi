@@ -14,6 +14,7 @@ import {
     fireTrigger,
     createTriggerClient,
     getAvailableTriggers,
+    getAvailableSigils,
     subscribeTrigger,
     listTriggerSubscriptions,
     unsubscribeTrigger,
@@ -592,6 +593,46 @@ describe("getAvailableTriggers", () => {
         await getAvailableTriggers("session-abc", deps);
         expect(captured).toHaveLength(1);
         expect(captured[0].url).toBe("http://localhost:7492/api/sessions/session-abc/available-triggers");
+        expect(captured[0].headers["x-api-key"]).toBe("test-api-key");
+    });
+});
+
+describe("getAvailableSigils", () => {
+    test("returns sigil defs from the runner", async () => {
+        const deps = subsDeps(async (_url, _init) => ({
+            ok: true,
+            status: 200,
+            json: async () => ({
+                sigilDefs: [
+                    { type: "pr", label: "Pull Request", aliases: ["mr"] },
+                    { type: "commit", label: "Commit" },
+                ],
+            }),
+        } as Response));
+
+        const defs = await getAvailableSigils("session-1", deps);
+        expect(defs).toHaveLength(2);
+        expect(defs[0].type).toBe("pr");
+        expect(defs[0].aliases).toEqual(["mr"]);
+        expect(defs[1].label).toBe("Commit");
+    });
+
+    test("returns empty array when response is not ok", async () => {
+        const deps = subsDeps(async () => ({ ok: false, status: 404, json: async () => ({}) } as Response));
+        const defs = await getAvailableSigils("session-1", deps);
+        expect(defs).toEqual([]);
+    });
+
+    test("sends request to correct endpoint with API key", async () => {
+        const captured: Array<{ url: string; headers: Record<string, string> }> = [];
+        const deps = subsDeps(async (url, init) => {
+            captured.push({ url, headers: (init?.headers ?? {}) as Record<string, string> });
+            return { ok: true, status: 200, json: async () => ({ sigilDefs: [] }) } as Response;
+        });
+
+        await getAvailableSigils("session-abc", deps);
+        expect(captured).toHaveLength(1);
+        expect(captured[0].url).toBe("http://localhost:7492/api/sessions/session-abc/available-sigils");
         expect(captured[0].headers["x-api-key"]).toBe("test-api-key");
     });
 });

@@ -80,6 +80,7 @@ describe("buildSystemPrompt", () => {
         expect(result).toContain("AskUserQuestion");
         expect(result).toContain("create_tunnel");
         expect(result).toContain("subscribe_trigger");
+        expect(result).toContain("list_available_sigils");
     });
 
     test("contains PizzaPi config paths", () => {
