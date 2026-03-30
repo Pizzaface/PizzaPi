@@ -99,14 +99,14 @@ POST /api/webhooks/:id/fire
 
 ### Headers
 
-**Enhanced mode (recommended — includes replay protection):**
+**Enhanced mode (recommended — includes per-process replay protection):**
 
 | Header | Required | Description |
 |--------|----------|-------------|
 | `Content-Type` | Yes | Must be `application/json` |
 | `X-Webhook-Signature` | Yes | HMAC-SHA256 hex digest of `${timestamp}.${nonce}.${rawBody}` |
 | `X-Webhook-Timestamp` | Yes | ISO 8601 / RFC 3339 timestamp (e.g. `2025-01-15T10:30:00Z`). Must be within ±5 minutes of server time. |
-| `X-Webhook-Nonce` | Yes | Unique string per delivery (e.g. random hex). Prevents replay within the 5-minute window. |
+| `X-Webhook-Nonce` | Yes | Unique string per delivery (e.g. random hex). Prevents replay within the 5-minute window (per server process; multi-node deployments need shared storage). |
 
 **Legacy mode (backward compatible — no replay protection):**
 
