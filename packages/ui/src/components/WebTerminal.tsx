@@ -123,7 +123,7 @@ export function WebTerminal({ terminalId, onClose, className }: WebTerminalProps
     const term = new XTerm({
       cursorBlink: true,
       fontSize: 14,
-      fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', Menlo, Monaco, 'Courier New', monospace",
+      fontFamily: getComputedStyle(document.documentElement).getPropertyValue("--code-font").trim() || "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace",
       theme: initialTheme,
       allowProposedApi: true,
       scrollback: 10000,

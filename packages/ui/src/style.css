@@ -4,6 +4,11 @@
 @import "./accent-colors.css";
 @import "./fonts.css";
 
+/* Override Tailwind's mono font stack with our user-selectable --code-font variable */
+@theme inline {
+  --font-mono: var(--code-font, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace);
+}
+
 @source "../node_modules/streamdown/dist/*.js";
 
 @custom-variant dark (&:is(.dark *));
@@ -382,9 +387,7 @@
   [data-density="comfortable"] header { padding-top: 0.75rem; padding-bottom: 0.75rem; }
 
   /* Code font override */
-  code, pre, .font-mono, kbd {
-    font-family: var(--code-font, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace);
-  }
+
 
   .pp-message-content pre,
   .pp-message-content code {
