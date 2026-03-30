@@ -1,0 +1,49 @@
+/* Accent color overrides — compose with light/dark via data-accent attribute */
+
+/* Green accent */
+[data-accent="green"] {
+  --primary: oklch(0.45 0.18 155);
+  --primary-foreground: oklch(0.985 0 0);
+  --sidebar-primary: oklch(0.45 0.18 155);
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --ring: oklch(0.45 0.18 155);
+}
+.dark[data-accent="green"] {
+  --primary: oklch(0.65 0.2 155);
+  --primary-foreground: oklch(0.1 0 0);
+  --sidebar-primary: oklch(0.65 0.2 155);
+  --sidebar-primary-foreground: oklch(0.1 0 0);
+  --ring: oklch(0.65 0.2 155);
+}
+
+/* Orange accent */
+[data-accent="orange"] {
+  --primary: oklch(0.55 0.2 50);
+  --primary-foreground: oklch(0.985 0 0);
+  --sidebar-primary: oklch(0.55 0.2 50);
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --ring: oklch(0.55 0.2 50);
+}
+.dark[data-accent="orange"] {
+  --primary: oklch(0.7 0.2 50);
+  --primary-foreground: oklch(0.1 0 0);
+  --sidebar-primary: oklch(0.7 0.2 50);
+  --sidebar-primary-foreground: oklch(0.1 0 0);
+  --ring: oklch(0.7 0.2 50);
+}
+
+/* Purple accent */
+[data-accent="purple"] {
+  --primary: oklch(0.45 0.25 300);
+  --primary-foreground: oklch(0.985 0 0);
+  --sidebar-primary: oklch(0.45 0.25 300);
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --ring: oklch(0.45 0.25 300);
+}
+.dark[data-accent="purple"] {
+  --primary: oklch(0.65 0.25 300);
+  --primary-foreground: oklch(0.1 0 0);
+  --sidebar-primary: oklch(0.65 0.25 300);
+  --sidebar-primary-foreground: oklch(0.1 0 0);
+  --ring: oklch(0.65 0.25 300);
+}

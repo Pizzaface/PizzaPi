@@ -14,6 +14,10 @@
             var isDark = m === "dark" || (m === "auto" && window.matchMedia("(prefers-color-scheme: dark)").matches);
             if (isDark) document.documentElement.classList.add("dark");
             document.querySelector('meta[name="theme-color"]').setAttribute("content", isDark ? "#1c1917" : "#ffffff");
+            var hc = localStorage.getItem("theme-high-contrast");
+            if (hc === "true") document.documentElement.setAttribute("data-contrast", "high");
+            var a = localStorage.getItem('theme-accent');
+            if (a && a !== 'default') document.documentElement.setAttribute('data-accent', a);
           })();
         </script>
         <meta name="mobile-web-app-capable" content="yes" />
