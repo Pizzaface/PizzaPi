@@ -9,6 +9,7 @@ import { TerminalService } from "./services/terminal-service.js";
 import { FileExplorerService } from "./services/file-explorer-service.js";
 import { GitService } from "./services/git-service.js";
 import { TunnelService } from "./services/tunnel-service.js";
+import { TimeService, TIME_TRIGGER_DEFS, TIME_SIGIL_DEFS } from "./services/time-service.js";
 import { discoverServices } from "./service-loader.js";
 import { globalPluginDirs } from "../plugins/discover.js";
 import { io, type Socket } from "socket.io-client";
@@ -204,6 +205,8 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
         registry.register(new GitService());
         const tunnelService = new TunnelService();
         registry.register(tunnelService);
+        const timeService = new TimeService();
+        registry.register(timeService);
 
         const formatTunnelLog = (...args: unknown[]) => args.map((arg) => {
             if (typeof arg === "string") return arg;
@@ -239,6 +242,17 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             sigils?: ServiceSigilDef[];
         };
         const panelEntries = new Map<string, PanelEntry>();
+
+        // Register built-in Time service trigger/sigil defs so they flow through service_announce.
+        // The Time service has no panel but needs a panelEntry so its sigil resolve port is tracked
+        // and its trigger/sigil definitions are announced to agents and the UI.
+        panelEntries.set("time", {
+            serviceId: "time",
+            label: "Time",
+            icon: "clock",
+            triggers: TIME_TRIGGER_DEFS,
+            sigils: TIME_SIGIL_DEFS,
+        });
 
         /** Emit service_announce with current service IDs, panel metadata, and trigger defs. */
         const emitServiceAnnounce = () => {
