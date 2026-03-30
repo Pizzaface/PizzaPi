@@ -14,8 +14,21 @@ import type {
 } from "./types.js";
 
 export interface TunnelRelayOptions {
-  /** Static API key list, or an async validator function. */
-  apiKeys: string[] | ((key: string) => Promise<boolean>);
+  /**
+   * Static API key list, or an async validator function.
+   *
+   * The function form must return `{ userId: string }` on success (the
+   * authenticated user who owns the API key) or `false` on failure.
+   * When using a static key array the userId is not bound, so runner
+   * ownership checks are skipped.
+   */
+  apiKeys: string[] | ((key: string) => Promise<{ userId: string } | false>);
+  /**
+   * Optional: called after API key validation to verify the runnerId
+   * is authorised for the authenticated userId.  Return `false` to reject.
+   * Skipped when apiKeys is a static array or when userId is empty.
+   */
+  verifyRunner?: (runnerId: string, userId: string) => Promise<boolean>;
   /** Optional logger (defaults to no-op). */
   log?: TunnelLogger;
 }
@@ -70,7 +83,8 @@ function parseMessageText(raw: string | Buffer | ArrayBuffer | ArrayBufferView):
 }
 
 export class TunnelRelay {
-  private validateApiKey: (key: string) => Promise<boolean>;
+  private validateApiKey: (key: string) => Promise<{ userId: string } | false>;
+  private verifyRunner?: (runnerId: string, userId: string) => Promise<boolean>;
   private log: TunnelLogger;
   private runners = new Map<string, RegisteredRunner>();
   private pendingRequests = new Map<string, PendingProxyRequest>();
@@ -84,11 +98,14 @@ export class TunnelRelay {
         throw new Error("TunnelRelay: at least one non-empty API key is required");
       }
       const keySet = new Set(keys);
-      this.validateApiKey = async (key: string) => keySet.has(key);
+      // Static array: no userId binding — ownership checks are skipped.
+      this.validateApiKey = async (key: string) =>
+        keySet.has(key) ? { userId: "" } : false;
     } else {
       this.validateApiKey = options.apiKeys;
     }
 
+    this.verifyRunner = options.verifyRunner;
     this.log = options.log ?? noopLog;
   }
 
@@ -327,12 +344,32 @@ export class TunnelRelay {
   }
 
   private async handleRegister(ws: WebSocket, msg: TunnelRegisterMessage): Promise<void> {
-    const valid = await this.validateApiKey(msg.apiKey);
-    if (!valid) {
+    const authResult = await this.validateApiKey(msg.apiKey);
+    if (!authResult) {
       this.log.error("[tunnel-relay] Invalid API key from runner", msg.runnerId);
       this.send(ws, { type: "error", message: "Invalid API key" });
       ws.close();
       return;
+    }
+
+    const { userId } = authResult;
+
+    // Verify the runner belongs to the authenticated user when possible.
+    // Skipped when userId is empty (static key array, no binding).
+    if (this.verifyRunner && userId) {
+      let allowed = false;
+      try {
+        allowed = await this.verifyRunner(msg.runnerId, userId);
+      } catch {
+        // treat callback errors as a rejection to avoid accidentally granting access
+        allowed = false;
+      }
+      if (!allowed) {
+        this.log.error("[tunnel-relay] Runner ownership verification failed:", msg.runnerId, "user:", userId);
+        this.send(ws, { type: "error", message: "Runner ownership verification failed" });
+        ws.close();
+        return;
+      }
     }
 
     const existing = this.runners.get(msg.runnerId);

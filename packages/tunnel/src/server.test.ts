@@ -59,7 +59,7 @@ describe("TunnelRelay", () => {
 
   test("accepts async API key validators", async () => {
     const relay = new TunnelRelay({
-      apiKeys: async (key) => key === "validated-key",
+      apiKeys: async (key) => (key === "validated-key" ? { userId: "user-1" } : false),
     });
     const mockWs = createMockWebSocket();
 

@@ -3,6 +3,7 @@ import type { Duplex } from "node:stream";
 import { TunnelRelay } from "@pizzapi/tunnel";
 import { WebSocketServer, type WebSocket as NodeWebSocket, type RawData } from "ws";
 import { getAuth } from "./auth.js";
+import { getRunnerData } from "./ws/sio-registry/runners.js";
 
 let relay: TunnelRelay | null = null;
 let wss: WebSocketServer | null = null;
@@ -70,12 +71,29 @@ export function initTunnelRelay(): TunnelRelay {
     if (relay && wss) return relay;
 
     relay = new TunnelRelay({
-        apiKeys: async (key: string): Promise<boolean> => {
+        apiKeys: async (key: string): Promise<{ userId: string } | false> => {
             try {
                 const result = await getAuth().api.verifyApiKey({ body: { key } });
-                return !!(result.valid && result.key?.userId);
+                if (!result.valid || !result.key?.userId) return false;
+                return { userId: result.key.userId };
             } catch {
                 return false;
+            }
+        },
+        verifyRunner: async (runnerId: string, userId: string): Promise<boolean> => {
+            try {
+                const runner = await getRunnerData(runnerId);
+                // If the runner isn't registered yet (Socket.IO hasn't fired yet),
+                // allow the tunnel connection — the ownership check will be enforced
+                // when the runner registers via Socket.IO.
+                // If the runner is registered, verify it belongs to this user.
+                if (runner && runner.userId && runner.userId !== userId) {
+                    return false;
+                }
+                return true;
+            } catch {
+                // On Redis errors, allow the connection rather than blocking legitimate runners.
+                return true;
             }
         },
         log: {

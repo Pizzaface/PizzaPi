@@ -91,13 +91,6 @@ export const localTerminalBuffers = new Map<string, unknown[]>();
 /** Terminal GC timers: terminalId → timer handle. */
 export const localTerminalGcTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
-/**
- * Runner credential store (in-memory, per-server).
- * Maps runnerId → runnerSecret for persistent runner identity validation.
- * Matches the behavior of the existing registry.ts.
- */
-export const runnerSecrets = new Map<string, string>();
-
 // ── Touch-throttle state ─────────────────────────────────────────────────────
 
 /** Throttle interval for touchSessionActivity to reduce DB writes. */

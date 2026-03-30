@@ -664,6 +664,9 @@ export async function deleteRunner(runnerId: string): Promise<void> {
 
     const multi = r.multi();
     multi.del(runnerKey(runnerId));
+    // Also remove the persisted secret hash so the runnerId can be freely
+    // re-registered once its owner removes and re-installs the daemon.
+    multi.del(runnerSecretKey(runnerId));
     multi.sRem(allRunnersKey(), runnerId);
 
     if (runner?.userId) {
@@ -1212,6 +1215,40 @@ export async function scanExpiredSessions(nowMs: number = Date.now()): Promise<s
     }
 
     return expired;
+}
+
+// ── Runner secret hashes ─────────────────────────────────────────────────────
+// Runner secrets are stored as SHA-256 hashes, not plaintext.
+// This key survives server restarts so that runners can re-authenticate
+// after a relay outage without being impersonated by a new connection.
+//
+//   Key: pizzapi:sio:runner-secret:{runnerId}
+//   Value: hex-encoded SHA-256 of the runner's secret
+//   TTL: 30 days (much longer than the runner data TTL of 2 hours)
+
+/** TTL for runner secret hash keys — 30 days. */
+const RUNNER_SECRET_TTL_SECONDS = 30 * 24 * 60 * 60;
+
+function runnerSecretKey(runnerId: string): string {
+    return `${KEY_PREFIX}:runner-secret:${runnerId}`;
+}
+
+/** Store the SHA-256 hash of a runner's secret. */
+export async function setRunnerSecretHash(runnerId: string, hash: string): Promise<void> {
+    const r = requireRedis();
+    await r.set(runnerSecretKey(runnerId), hash, { EX: RUNNER_SECRET_TTL_SECONDS });
+}
+
+/** Retrieve the stored SHA-256 hash for a runner's secret, or null if not set. */
+export async function getRunnerSecretHash(runnerId: string): Promise<string | null> {
+    const r = requireRedis();
+    return r.get(runnerSecretKey(runnerId));
+}
+
+/** Delete the stored secret hash for a runner (e.g. when the runner is fully removed). */
+export async function deleteRunnerSecretHash(runnerId: string): Promise<void> {
+    const r = requireRedis();
+    await r.del(runnerSecretKey(runnerId));
 }
 
 /**

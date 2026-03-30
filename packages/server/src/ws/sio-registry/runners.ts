@@ -9,7 +9,7 @@
 // ============================================================================
 
 import type { Socket } from "socket.io";
-import { randomUUID } from "crypto";
+import { randomUUID, createHash } from "crypto";
 import {
     type RedisRunnerData,
     setRunner,
@@ -24,18 +24,24 @@ import {
     setPendingRunnerLink,
     setRunnerAssociation,
     deleteRunnerAssociation,
+    setRunnerSecretHash,
+    getRunnerSecretHash,
 } from "../sio-state/index.js";
 import { updateRelaySessionRunner } from "../../sessions/store.js";
 import type { RunnerInfo, RunnerSkill, RunnerAgent, RunnerHook, ServiceTriggerDef, ServiceSigilDef } from "@pizzapi/protocol";
 import {
     localTuiSockets,
     localRunnerSockets,
-    runnerSecrets,
     runnerRoom,
     safeJsonParse,
     modelFromHeartbeat,
     getIo,
 } from "./context.js";
+
+/** SHA-256 hash of a runner secret for safe Redis storage. */
+function hashRunnerSecret(secret: string): string {
+    return createHash("sha256").update(secret).digest("hex");
+}
 import { broadcastToHub } from "./hub.js";
 import { broadcastToRunnersNs } from "./runners-broadcast.js";
 import { createLogger } from "@pizzapi/tools";
@@ -137,15 +143,23 @@ export async function registerRunner(
     let runnerId: string;
 
     if (requestedId && secret) {
-        const existingSecret = runnerSecrets.get(requestedId);
-        if (existingSecret !== undefined) {
-            if (existingSecret !== secret) {
+        // Check persisted secret hash in Redis (survives server restarts).
+        const existingHash = await getRunnerSecretHash(requestedId);
+        if (existingHash !== null) {
+            // Re-registration: verify secret hash matches what was originally stored.
+            if (hashRunnerSecret(secret) !== existingHash) {
                 return new Error(`Runner authentication failed: secret mismatch for runner ${requestedId}`);
             }
-            // Re-registration: clean up stale socket
+            // Also verify the registering user owns this runner.
+            const existingRunner = await getRunnerState(requestedId);
+            if (existingRunner?.userId && opts.userId && existingRunner.userId !== opts.userId) {
+                return new Error(`Runner authentication failed: user mismatch for runner ${requestedId}`);
+            }
+            // Re-registration: clean up stale socket.
             localRunnerSockets.delete(requestedId);
         } else {
-            runnerSecrets.set(requestedId, secret);
+            // First registration: persist hash so subsequent re-registrations are verified.
+            await setRunnerSecretHash(requestedId, hashRunnerSecret(secret));
         }
         runnerId = requestedId;
     } else {
