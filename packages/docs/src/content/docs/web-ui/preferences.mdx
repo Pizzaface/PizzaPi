@@ -73,9 +73,7 @@ Controls the roundness of UI elements (buttons, cards, inputs):
 
 Choose the monospace font used for code blocks, inline code, and the terminal. Options include **System** (your OS default monospace), **JetBrains Mono**, **Fira Code**, and **Source Code Pro**.
 
-<Aside type="note">
-Non-system fonts must be installed on your device to take effect. If a selected font isn't available, the browser falls back to the system monospace font.
-</Aside>
+All non-system fonts are bundled with PizzaPi (self-hosted woff2 files, ~500KB total) — no external requests to Google Fonts or CDNs. Fonts load on demand with `font-display: swap` so there's no layout shift.
 
 ## Notifications
 

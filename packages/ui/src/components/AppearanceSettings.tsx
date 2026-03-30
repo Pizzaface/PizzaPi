@@ -30,9 +30,9 @@ const RADIUS_OPTIONS = [
 
 const CODE_FONT_OPTIONS = [
   { value: "ui-monospace, monospace", label: "System" },
-  { value: "'JetBrains Mono', monospace", label: "JetBrains Mono (requires local install)" },
-  { value: "'Fira Code', monospace", label: "Fira Code (requires local install)" },
-  { value: "'Source Code Pro', monospace", label: "Source Code Pro (requires local install)" },
+  { value: "'JetBrains Mono', monospace", label: "JetBrains Mono" },
+  { value: "'Fira Code', monospace", label: "Fira Code" },
+  { value: "'Source Code Pro', monospace", label: "Source Code Pro" },
 ] as const;
 
 export type AccentColor = (typeof ACCENT_OPTIONS)[number]["value"];
