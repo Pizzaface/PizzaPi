@@ -1166,10 +1166,32 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                     // AGENTS.md may not exist yet
                 }
 
+                // Strip sensitive fields before sending to UI
+                const sanitizedConfig: any = { ...globalConfig };
+                delete sanitizedConfig.apiKey;
+                delete sanitizedConfig.relayUrl;
+                // Strip sensitive env values from MCP server definitions
+                // (mcpServers is not in PizzaPiConfig type — it flows through as untyped JSON)
+                if (sanitizedConfig.mcpServers && typeof sanitizedConfig.mcpServers === "object") {
+                    const sanitizedMcp: Record<string, unknown> = {};
+                    for (const [name, server] of Object.entries(sanitizedConfig.mcpServers as Record<string, unknown>)) {
+                        if (server && typeof server === "object" && "env" in server) {
+                            const rawEnv = (server as { env: Record<string, string> }).env;
+                            const maskedEnv: Record<string, string> = {};
+                            for (const [k, v] of Object.entries(rawEnv)) {
+                                maskedEnv[k] = /key|token|secret|password|credential/i.test(k) ? "***" : v;
+                            }
+                            sanitizedMcp[name] = { ...server, env: maskedEnv };
+                        } else {
+                            sanitizedMcp[name] = server;
+                        }
+                    }
+                    sanitizedConfig.mcpServers = sanitizedMcp;
+                }
                 socket.emit("file_result", {
                     requestId,
                     ok: true,
-                    config: globalConfig,
+                    config: sanitizedConfig,
                     tuiSettings,
                     agentsMd,
                 });

@@ -93,8 +93,32 @@ export function spawnSession(
 
     const workerArgs = resolveWorkerSpawnArgs();
 
+    // Build a safe base environment using an explicit allowlist instead of
+    // spreading the full process.env (which would leak arbitrary secrets such
+    // as SSH keys, AWS credentials, etc. that happen to be in the daemon env).
+    const SAFE_ENV_KEYS = [
+        // Standard POSIX / shell vars needed by most CLI tools
+        "PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE", "TERM", "USER", "LOGNAME",
+        "SHELL", "TMPDIR", "TEMP", "TMP", "XDG_RUNTIME_DIR",
+        // macOS Keychain / certificate store access
+        "SSL_CERT_FILE", "SSL_CERT_DIR",
+        // Git identity (needed for git operations inside sessions)
+        "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL",
+    ];
+    const baseEnv: Record<string, string> = {};
+    for (const key of SAFE_ENV_KEYS) {
+        if (typeof process.env[key] === "string") baseEnv[key] = process.env[key]!;
+    }
+    // Forward all PIZZAPI_* vars set by the daemon (e.g. web-search flags
+    // applied by loadGlobalConfig) so workers inherit runtime config.
+    for (const [key, val] of Object.entries(process.env)) {
+        if (key.startsWith("PIZZAPI_") && typeof val === "string") {
+            baseEnv[key] = val;
+        }
+    }
+
     const env: Record<string, string> = {
-        ...Object.fromEntries(Object.entries(process.env).filter(([, v]) => typeof v === "string")) as any,
+        ...baseEnv,
         // Use the daemon's resolved relay URL so workers always connect to the
         // same relay the daemon is using (not a potentially-changed config file).
         PIZZAPI_RELAY_URL: relayUrl,
