@@ -244,6 +244,7 @@ export async function seedServiceAnnounceCache(runnerId: string): Promise<void> 
             serviceIds: persisted.serviceIds,
             panels: persisted.panels,
             triggerDefs: persisted.triggerDefs,
+            sigilDefs: persisted.sigilDefs,
         });
     }
 }
@@ -697,7 +698,7 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
             // Cache in memory for fast lookups
             runnerServiceAnnounce.set(runnerId, data);
             // Persist to Redis so the data survives server restarts
-            void updateRunnerServices(runnerId, data.serviceIds, data.panels, data.triggerDefs).catch((err) => {
+            void updateRunnerServices(runnerId, data.serviceIds, data.panels, data.triggerDefs, data.sigilDefs).catch((err) => {
                 log.error(`failed to persist service_announce to Redis for ${runnerId}:`, err);
             });
             const sessionIds = runnerSessionIds.get(runnerId);

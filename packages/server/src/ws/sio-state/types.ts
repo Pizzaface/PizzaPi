@@ -116,6 +116,8 @@ export interface RedisRunnerData {
     panels?: string;
     /** JSON-stringified ServiceTriggerDef[] — trigger defs from last service_announce */
     triggerDefs?: string;
+    /** JSON-stringified ServiceSigilDef[] — sigil defs from last service_announce */
+    sigilDefs?: string;
     /** JSON-stringified string[] — active warnings from the runner daemon */
     warnings?: string;
 }
