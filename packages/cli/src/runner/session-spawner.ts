@@ -93,8 +93,42 @@ export function spawnSession(
 
     const workerArgs = resolveWorkerSpawnArgs();
 
+    // Build the worker environment using a denylist approach: forward everything
+    // from the daemon's environment EXCEPT a small set of daemon-internal
+    // secrets and code-injection vectors that workers must never inherit.
+    //
+    // An allowlist was tried first but it proved too fragile — it silently
+    // dropped ANTHROPIC_API_KEY, OPENAI_API_KEY, GITHUB_TOKEN, MCP_TOKEN, and
+    // every other provider/MCP auth var that workers legitimately need.
+    //
+    // Daemon-internal vars that workers must NOT receive:
+    //   PIZZAPI_RUNNER_TOKEN     – relay auth token used only by the daemon
+    //   PIZZAPI_RUNNER_API_KEY   – daemon-level API key; each worker gets its own
+    //
+    // Code/library injection vectors that should never be inherited:
+    //   NODE_OPTIONS             – could inject arbitrary code via --require
+    //   LD_PRELOAD               – shared-library injection (Linux)
+    //   DYLD_INSERT_LIBRARIES    – shared-library injection (macOS)
+    //   DYLD_FORCE_FLAT_NAMESPACE
+    const WORKER_ENV_DENYLIST = new Set([
+        "PIZZAPI_RUNNER_TOKEN",
+        "PIZZAPI_RUNNER_API_KEY",
+        "NODE_OPTIONS",
+        "BUN_OPTIONS",           // Bun equivalent of NODE_OPTIONS — can inject code via --preload
+        "LD_PRELOAD",
+        "DYLD_INSERT_LIBRARIES",
+        "DYLD_FORCE_FLAT_NAMESPACE",
+    ]);
+
+    const baseEnv: Record<string, string> = {};
+    for (const [key, val] of Object.entries(process.env)) {
+        if (!WORKER_ENV_DENYLIST.has(key) && typeof val === "string") {
+            baseEnv[key] = val;
+        }
+    }
+
     const env: Record<string, string> = {
-        ...Object.fromEntries(Object.entries(process.env).filter(([, v]) => typeof v === "string")) as any,
+        ...baseEnv,
         // Use the daemon's resolved relay URL so workers always connect to the
         // same relay the daemon is using (not a potentially-changed config file).
         PIZZAPI_RELAY_URL: relayUrl,
