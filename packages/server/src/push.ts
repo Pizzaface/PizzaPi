@@ -46,7 +46,7 @@ if (!areVapidKeysValid(vapidPublicKey, vapidPrivateKey)) {
     log.warn("   Push subscriptions will break on every server restart.");
     log.warn("   To fix, add these to your environment:");
     log.warn(`   VAPID_PUBLIC_KEY=${vapidPublicKey}`);
-    log.warn(`   VAPID_PRIVATE_KEY=${vapidPrivateKey}`);
+    log.warn(`   VAPID_PRIVATE_KEY=<generated — check server env or regenerate with web-push generate-vapid-keys>`);
     log.warn(`   VAPID_SUBJECT=mailto:your@email.com`);
 }
 
@@ -56,6 +56,87 @@ webpush.setVapidDetails(vapidSubject, vapidPublicKey, vapidPrivateKey);
 
 export function getVapidPublicKey(): string {
     return vapidPublicKey;
+}
+
+// ── Push endpoint validation ─────────────────────────────────────────────────
+
+/**
+ * Known push service hostnames.
+ * This list covers the major browser push services. It is not exhaustive —
+ * enterprise / custom push proxies will fail validation and should add their
+ * domains here. The primary goal is to block SSRF-style attacks where an
+ * attacker registers a subscription pointing to an internal service.
+ */
+const KNOWN_PUSH_SERVICE_HOSTS = new Set([
+    // Google / Chrome
+    "fcm.googleapis.com",
+    "updates.push.services.mozilla.com",
+    // Mozilla / Firefox
+    "push.services.mozilla.com",
+    "updates.push.services.mozilla.com",
+    // Apple / Safari
+    "api.push.apple.com",
+    "web.push.apple.com",
+    // Microsoft Edge
+    "wns2.notify.windows.com",
+    "wns.notify.windows.com",
+    // Samsung Internet
+    "fcm.googleapis.com", // Samsung uses FCM
+    // Opera (also FCM-based)
+    // Brave (Chromium, also FCM-based)
+]);
+
+/**
+ * RFC1918 / loopback / link-local IPv4 ranges that push endpoints must not target.
+ * Checked against the raw hostname to block SSRF attacks.
+ */
+const PRIVATE_IP_PATTERNS = [
+    /^127\./,                    // 127.0.0.0/8 loopback
+    /^10\./,                     // 10.0.0.0/8
+    /^172\.(1[6-9]|2\d|3[01])\./, // 172.16.0.0/12
+    /^192\.168\./,               // 192.168.0.0/16
+    /^169\.254\./,               // 169.254.0.0/16 link-local
+    /^::1$/,                     // IPv6 loopback
+    /^fc[0-9a-f]{2}:/i,          // IPv6 ULA fc00::/7
+    /^fe[89ab][0-9a-f]:/i,       // IPv6 link-local fe80::/10
+    /^0\./,                      // 0.0.0.0/8
+];
+
+/**
+ * Validate that a push subscription endpoint is safe to use.
+ *
+ * Requirements:
+ *   1. Must be a valid URL.
+ *   2. Must use the `https:` scheme.
+ *   3. Hostname must not be a loopback, link-local, or RFC1918 address.
+ *   4. Hostname must match a known push service domain or subdomain thereof.
+ *
+ * Returns true if the endpoint is safe; false otherwise.
+ */
+export function isValidPushEndpoint(endpoint: string): boolean {
+    let parsed: URL;
+    try {
+        parsed = new URL(endpoint);
+    } catch {
+        return false;
+    }
+
+    // Must be HTTPS
+    if (parsed.protocol !== "https:") return false;
+
+    const host = parsed.hostname.toLowerCase();
+
+    // Reject private/loopback addresses
+    for (const pattern of PRIVATE_IP_PATTERNS) {
+        if (pattern.test(host)) return false;
+    }
+
+    // Must be a known push service domain (or a subdomain of one).
+    const isKnown = [...KNOWN_PUSH_SERVICE_HOSTS].some(
+        (known) => host === known || host.endsWith(`.${known}`),
+    );
+
+    return isKnown;
 }
 
 // ── DB table ─────────────────────────────────────────────────────────────────

@@ -23,6 +23,9 @@ function isValidBranchName(name: string): boolean {
 /** Validate that file paths don't attempt path traversal. */
 function isValidPath(p: string): boolean {
     if (!p) return false;
+    // Reject Git pathspec magic prefixes (e.g. `:!`, `:/`, `:^`, `:(top)`)
+    // which can bypass path-containment checks and select unexpected files.
+    if (p.startsWith(":")) return false;
     const norm = normalize(p);
     // Reject absolute paths
     if (norm.startsWith("/") || norm.startsWith("\\")) return false;

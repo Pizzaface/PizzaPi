@@ -65,7 +65,7 @@ export function ChangePasswordDialog({ open, onOpenChange }: ChangePasswordDialo
             const { error: apiError } = await authClient.changePassword({
                 currentPassword,
                 newPassword,
-                revokeOtherSessions: false,
+                revokeOtherSessions: true,
             });
 
             if (apiError) {

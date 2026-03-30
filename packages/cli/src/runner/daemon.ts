@@ -1203,9 +1203,9 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                     const agentsMdPath = join(homedir(), ".pizzapi", "AGENTS.md");
                     const { writeFileSync, mkdirSync, existsSync } = await import("fs");
                     const dir = join(homedir(), ".pizzapi");
-                    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+                    if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
                     const content = typeof value === "string" ? value : "";
-                    writeFileSync(agentsMdPath, content, "utf-8");
+                    writeFileSync(agentsMdPath, content, { encoding: "utf-8", mode: 0o600 });
                     socket.emit("file_result", {
                         requestId,
                         ok: true,
@@ -1223,7 +1223,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                     const settingsPath = join(homedir(), ".pizzapi", "settings.json");
                     const { readFileSync, writeFileSync, existsSync, mkdirSync } = await import("fs");
                     const dir = join(homedir(), ".pizzapi");
-                    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+                    if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
                     let existing: Record<string, unknown> = {};
                     try {
                         if (existsSync(settingsPath)) {
@@ -1235,7 +1235,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                     if (value && typeof value === "object" && !Array.isArray(value)) {
                         Object.assign(existing, value);
                     }
-                    writeFileSync(settingsPath, JSON.stringify(existing, null, 2), "utf-8");
+                    writeFileSync(settingsPath, JSON.stringify(existing, null, 2), { encoding: "utf-8", mode: 0o600 });
                     socket.emit("file_result", {
                         requestId,
                         ok: true,

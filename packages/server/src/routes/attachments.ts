@@ -142,8 +142,7 @@ export const handleAttachmentsRoute: RouteHandler = async (req, url) => {
             return Response.json({ error: "Missing attachment ID" }, { status: 400 });
         }
 
-        const providedApiKey =
-            req.headers.get("x-api-key") ?? url.searchParams.get("apiKey") ?? undefined;
+        const providedApiKey = req.headers.get("x-api-key") ?? undefined;
         const identity = providedApiKey
             ? await validateApiKey(req, providedApiKey)
             : await requireSession(req);
