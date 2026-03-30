@@ -633,16 +633,21 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
             if (!terminalId) return;
             const runnerId = socket.data.runnerId;
             if (!runnerId) return;
-            // Security: verify terminal ownership via Redis before forwarding.
-            // Also registers this terminal in the in-memory set so subsequent
-            // terminal_data checks are O(1) without a Redis round-trip.
+            // Optimistically cache the terminal ID immediately so that
+            // terminal_data events that race with the async ownership check
+            // are not dropped (the runner can send terminal_data right after
+            // terminal_ready before we finish the Redis round-trip).
+            if (!runnerTerminalIds.has(runnerId)) runnerTerminalIds.set(runnerId, new Set());
+            runnerTerminalIds.get(runnerId)!.add(terminalId);
+            // Security: verify terminal ownership via Redis in the background.
+            // If ownership fails, evict from cache so subsequent events are
+            // rejected and the viewer does not receive forwarded output.
             const entry = await getTerminalEntry(terminalId);
             if (!entry || entry.runnerId !== runnerId) {
                 log.warn(`terminal_ready rejected: terminalId ${terminalId} not owned by runner ${runnerId}`);
+                runnerTerminalIds.get(runnerId)?.delete(terminalId);
                 return;
             }
-            if (!runnerTerminalIds.has(runnerId)) runnerTerminalIds.set(runnerId, new Set());
-            runnerTerminalIds.get(runnerId)!.add(terminalId);
             log.info(`terminal_ready terminalId=${terminalId} runnerId=${runnerId}`);
             sendToTerminalViewer(terminalId, {
                 type: "terminal_ready",
@@ -687,21 +692,29 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
             const terminalId = data.terminalId;
             if (!terminalId) return;
             const runnerId = socket.data.runnerId;
-            if (!runnerId || !runnerTerminalIds.get(runnerId)?.has(terminalId)) {
-                log.warn(`terminal_error rejected: terminalId ${terminalId} not owned by runner ${runnerId}`);
-                return;
+            if (!runnerId) return;
+            // terminal_error can arrive before terminal_ready when a PTY fails
+            // to spawn — in that case the terminal ID is not yet in the
+            // in-memory cache.  Fall back to a Redis ownership check so the
+            // only failure signal is not silently dropped.
+            const isInCache = runnerTerminalIds.get(runnerId)?.has(terminalId);
+            if (!isInCache) {
+                const entry = await getTerminalEntry(terminalId);
+                if (!entry || entry.runnerId !== runnerId) {
+                    log.warn(`terminal_error rejected: terminalId ${terminalId} not owned by runner ${runnerId}`);
+                    return;
+                }
             }
             log.warn(`terminal_error terminalId=${terminalId} message="${data.message}" runnerId=${runnerId}`);
-            const entry = await getTerminalEntry(terminalId);
             sendToTerminalViewer(terminalId, {
                 type: "terminal_error",
                 terminalId,
                 message: data.message,
             });
-            if (!entry) {
-                runnerTerminalIds.get(runnerId)?.delete(terminalId);
-                await removeTerminal(terminalId);
-            }
+            // Cleanup: remove terminal from cache and Redis regardless of
+            // whether it had a Redis entry — the terminal has failed.
+            runnerTerminalIds.get(runnerId)?.delete(terminalId);
+            await removeTerminal(terminalId);
         });
 
         // ── Generic service message relay: runner → viewers ──────────────────
