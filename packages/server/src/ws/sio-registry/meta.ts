@@ -6,7 +6,7 @@
 // ============================================================================
 
 import { defaultMetaState, type SessionMetaState, type MetaRelayEvent } from "@pizzapi/protocol";
-import { getSession, updateSessionFields } from "../sio-state/index.js";
+import { getSession, getSessionField, updateSessionFields } from "../sio-state/index.js";
 import { getIo } from "./context.js";
 import { createLogger } from "@pizzapi/tools";
 
@@ -38,10 +38,10 @@ export async function broadcastToSessionMeta(
 // ── Redis state ──────────────────────────────────────────────────────────────
 
 export async function getSessionMetaState(sessionId: string): Promise<SessionMetaState> {
-  const session = await getSession(sessionId);
-  if (!session?.metaState) return defaultMetaState();
+  const raw = await getSessionField(sessionId, "metaState");
+  if (!raw) return defaultMetaState();
   try {
-    return JSON.parse(session.metaState) as SessionMetaState;
+    return JSON.parse(raw) as SessionMetaState;
   } catch {
     return defaultMetaState();
   }
