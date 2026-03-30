@@ -863,17 +863,17 @@ describe("isDestructiveCommand", () => {
         expect(isDestructiveCommand("grep pattern src/ 2>/dev/null")).toBe(false);
     });
 
-    // ── Wrapper shell bypass prevention (Fix 1) ──────────────────────────
+    // ── Wrapper shell inner-command analysis (Fix 1) ─────────────────────
 
-    test("flags shell wrappers with -c flag (bash/sh/dash/etc.)", () => {
+    test("analyzes shell wrappers with -c flag by inspecting the inner command", () => {
         expect(isDestructiveCommand("bash -c 'rm -rf /'")).toBe(true);
-        expect(isDestructiveCommand("sh -c 'evil'")).toBe(true);
-        expect(isDestructiveCommand("dash -c 'evil'")).toBe(true);
-        expect(isDestructiveCommand("zsh -c 'evil'")).toBe(true);
+        expect(isDestructiveCommand("sh -c 'git status'")).toBe(false);
+        expect(isDestructiveCommand("dash -c 'kill 1'")).toBe(true);
+        expect(isDestructiveCommand("zsh -c 'git diff HEAD'")).toBe(false);
         // Bundled flags: -xc is still -c
-        expect(isDestructiveCommand("bash -xc 'evil'")).toBe(true);
+        expect(isDestructiveCommand("bash -xc 'git push'")).toBe(true);
         // Flags before -c
-        expect(isDestructiveCommand("bash --norc -c 'evil'")).toBe(true);
+        expect(isDestructiveCommand("bash --norc -c 'git log'")).toBe(false);
     });
 
     test("allows shell invocations without -c (no arbitrary code injection)", () => {
@@ -882,9 +882,9 @@ describe("isDestructiveCommand", () => {
         expect(isDestructiveCommand("sh --help")).toBe(false);
     });
 
-    test("flags path-prefixed shells with -c flag", () => {
-        expect(isDestructiveCommand("/bin/bash -c 'evil'")).toBe(true);
-        expect(isDestructiveCommand("/usr/bin/sh -c 'evil'")).toBe(true);
+    test("analyzes path-prefixed shells with -c flag the same way", () => {
+        expect(isDestructiveCommand("/bin/bash -c 'git status'")).toBe(false);
+        expect(isDestructiveCommand("/usr/bin/sh -c 'kill 1'")).toBe(true);
         expect(isDestructiveCommand("/usr/local/bin/bash -c 'rm -rf /'")).toBe(true);
     });
 
@@ -903,18 +903,18 @@ describe("isDestructiveCommand", () => {
         // Note: perl script.pl is caught by general script execution (DESTRUCTIVE_FLAG_PATTERNS covers this via no-sandbox path)
     });
 
-    test("flags env used as a command launcher", () => {
+    test("analyzes env used as a command launcher by inspecting the launched command", () => {
         // env COMMAND
         expect(isDestructiveCommand("env rm file.txt")).toBe(true);
         // env VAR=val COMMAND
-        expect(isDestructiveCommand("env FOO=bar rm file.txt")).toBe(true);
+        expect(isDestructiveCommand("env FOO=bar git status")).toBe(false);
         expect(isDestructiveCommand("env FOO=bar BAZ=qux rm file.txt")).toBe(true);
         // env wrapping a shell wrapper
-        expect(isDestructiveCommand("env bash -c 'evil'")).toBe(true);
-        expect(isDestructiveCommand("env FOO=bar bash -c 'evil'")).toBe(true);
+        expect(isDestructiveCommand("env bash -c 'git log'")).toBe(false);
+        expect(isDestructiveCommand("env FOO=bar bash -c 'kill 1'")).toBe(true);
         // env -i (clear environment) then a command
-        expect(isDestructiveCommand("env -i rm file.txt")).toBe(true);
-        expect(isDestructiveCommand("env -i FOO=bar bash -c 'evil'")).toBe(true);
+        expect(isDestructiveCommand("env -i git status")).toBe(false);
+        expect(isDestructiveCommand("env -i FOO=bar bash -c 'rm -rf /'")).toBe(true);
     });
 
     test("allows bare env (no command, just prints environment)", () => {
@@ -924,9 +924,9 @@ describe("isDestructiveCommand", () => {
         expect(isDestructiveCommand("env FOO=bar BAZ=qux")).toBe(false);
     });
 
-    test("flags shell wrappers in chained commands", () => {
-        expect(isDestructiveCommand("ls && bash -c 'evil'")).toBe(true);
-        expect(isDestructiveCommand("cat file.txt | sh -c 'evil'")).toBe(true);
+    test("analyzes shell wrappers inside chained commands by inspecting the inner command", () => {
+        expect(isDestructiveCommand("ls && bash -c 'git status'")).toBe(false);
+        expect(isDestructiveCommand("cat file.txt | sh -c 'kill 1'")).toBe(true);
         expect(isDestructiveCommand("echo hello; env rm foo")).toBe(true);
     });
 

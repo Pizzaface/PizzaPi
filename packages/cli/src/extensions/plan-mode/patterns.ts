@@ -138,13 +138,15 @@ export const DESTRUCTIVE_FLAG_PATTERNS = [
     // In-place editing via sed/perl -i
     /\bsed\b.*\s-i\b/i, /\bsed\b.*\s-i\S/i,
     /\bperl\b.*\s-i\b/i, /\bperl\b.*\s-i\S/i,
-    // perl -e / -E: inline code execution (e.g. `perl -e 'unlink "f"'`)
-    /^\s*perl\b.*\s-[a-zA-Z]*[eE](?:\s|$)/i,
+    // perl -e / -E: inline code execution (e.g. `perl -e 'unlink "f"'`).
+    // Allow an optional path prefix so `/usr/bin/perl -e ...` is blocked too.
+    /^\s*(?:\S+[\/\\])?perl\b.*\s-[a-zA-Z]*[eE](?:\s|$)/i,
     // Interpreters executing scripts (not just --version/--help).
     // These also cover -c (python -c) and -e (ruby -e / node -e) inline execution.
-    /^\s*python[23]?\s+(?!--(version|help)\b)\S/i,
-    /^\s*ruby\s+(?!--(version|help)\b)\S/i,
-    /^\s*node\s+(?!--(version|help)\b)\S/i,
+    // Allow an optional path prefix so `/usr/bin/python3 script.py` etc. are caught too.
+    /^\s*(?:\S+[\/\\])?python[23]?\s+(?!--(version|help)\b)\S/i,
+    /^\s*(?:\S+[\/\\])?ruby\s+(?!--(version|help)\b)\S/i,
+    /^\s*(?:\S+[\/\\])?node\s+(?!--(version|help)\b)\S/i,
     // Build tools (not --dry-run / --just-print / -n)
     /^\s*make\b(?!.*(\s-n\b|\s--dry-run\b|\s--just-print\b))/i,
     // HTTP write verbs via curl (network side-effects, not covered by filesystem sandbox).
