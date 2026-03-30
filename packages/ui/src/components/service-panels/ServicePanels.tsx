@@ -167,6 +167,12 @@ function savePanelPositions(positions: Map<string, PanelPosition>) {
     try { localStorage.setItem(SERVICE_PANEL_POSITIONS_KEY, JSON.stringify([...positions])); } catch { /* ignore */ }
 }
 
+/** Query + fragment forwarded from a `pizzapi://panel/...` deep link. */
+export interface PanelNavParams {
+    query?: string;
+    fragment?: string;
+}
+
 export function useServicePanelState() {
     const [activePanelIds, setActivePanelIds] = useState<Set<string>>(new Set());
     const [panelPositions, setPanelPositions] = useState<Map<string, PanelPosition>>(loadPanelPositions);
@@ -175,15 +181,36 @@ export function useServicePanelState() {
     // session is stored here rather than in panelPositions / localStorage.
     // The override is cleared when the panel is closed.
     const [ephemeralPositions, setEphemeralPositions] = useState<Map<string, PanelPosition>>(new Map());
+    // Per-panel navigation params from deep links (query string + hash fragment).
+    // Set when a panel is opened via a `pizzapi://panel/...` URL, consumed by
+    // IframeServicePanel to append to the iframe src.
+    const [panelNavParams, setPanelNavParams] = useState<Map<string, PanelNavParams>>(new Map());
 
-    const togglePanel = useCallback((serviceId: string) => {
+    const togglePanel = useCallback((serviceId: string, query?: string, fragment?: string) => {
         setActivePanelIds(prev => {
             const next = new Set(prev);
             if (next.has(serviceId)) {
-                next.delete(serviceId);
+                // When toggling OFF with no new nav params, just close.
+                // When toggling with new nav params, keep open and update params.
+                if (!query && !fragment) {
+                    next.delete(serviceId);
+                }
             } else {
                 next.add(serviceId);
             }
+            return next;
+        });
+        // Store nav params when opening (or updating) a panel.
+        // Clear them when closing (no query/fragment passed).
+        setPanelNavParams(prev => {
+            if (query || fragment) {
+                const next = new Map(prev);
+                next.set(serviceId, { query, fragment });
+                return next;
+            }
+            if (!prev.has(serviceId)) return prev;
+            const next = new Map(prev);
+            next.delete(serviceId);
             return next;
         });
         // Clear ephemeral override when closing so that the next open uses the
@@ -202,6 +229,13 @@ export function useServicePanelState() {
             next.delete(serviceId);
             return next;
         });
+        // Clear nav params on close.
+        setPanelNavParams(prev => {
+            if (!prev.has(serviceId)) return prev;
+            const next = new Map(prev);
+            next.delete(serviceId);
+            return next;
+        });
         // Clear ephemeral override on explicit close as well.
         setEphemeralPositions(prev => {
             if (!prev.has(serviceId)) return prev;
@@ -214,6 +248,7 @@ export function useServicePanelState() {
     const closeAllPanels = useCallback(() => {
         setActivePanelIds(new Set());
         setEphemeralPositions(new Map());
+        setPanelNavParams(new Map());
     }, []);
 
     const getPanelPosition = useCallback((serviceId: string): PanelPosition => {
@@ -255,5 +290,9 @@ export function useServicePanelState() {
         });
     }, []);
 
-    return { activePanelIds, togglePanel, closePanelById, closeAllPanels, getPanelPosition, setPanelPosition, setEphemeralPanelPosition };
+    const getNavParams = useCallback((serviceId: string): PanelNavParams | undefined => {
+        return panelNavParams.get(serviceId);
+    }, [panelNavParams]);
+
+    return { activePanelIds, togglePanel, closePanelById, closeAllPanels, getPanelPosition, setPanelPosition, setEphemeralPanelPosition, getNavParams };
 }

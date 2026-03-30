@@ -3721,7 +3721,7 @@ export function App() {
   // Runner service panels — dynamically discovered
   const { services: availableServices, panels: dynamicPanels, triggerDefs: runnerTriggerDefs, sigilDefs: runnerSigilDefs } = useRunnerServices(viewerSocket);
   const triggerCounts = useTriggerCount(activeSessionId, viewerSocket);
-  const { activePanelIds: activeServicePanels, togglePanel: toggleServicePanel, closePanelById: closeServicePanelById, closeAllPanels: closeAllServicePanels, getPanelPosition: getServicePanelPosition, setPanelPosition: setServicePanelPosition, setEphemeralPanelPosition: setEphemeralServicePanelPosition } = useServicePanelState();
+  const { activePanelIds: activeServicePanels, togglePanel: toggleServicePanel, closePanelById: closeServicePanelById, closeAllPanels: closeAllServicePanels, getPanelPosition: getServicePanelPosition, setPanelPosition: setServicePanelPosition, setEphemeralPanelPosition: setEphemeralServicePanelPosition, getNavParams: getServicePanelNavParams } = useServicePanelState();
 
   // Always-current ref so the runner-change effect below can read the active
   // panel set without listing it as a dependency (avoids a close→reopen loop).
@@ -3763,31 +3763,36 @@ export function App() {
     return () => { viewerSocket.off("service_message", handler); };
   }, [viewerSocket, activeServicePanels, toggleServicePanel]);
 
-  const handleToggleServicePanel = React.useCallback((serviceId: string) => {
-    if (activeServicePanels.has(serviceId)) {
+  const handleToggleServicePanel = React.useCallback((serviceId: string, query?: string, fragment?: string) => {
+    // When called with nav params on an already-open panel, update params
+    // and re-navigate rather than closing.
+    const hasNavParams = !!(query || fragment);
+    if (activeServicePanels.has(serviceId) && !hasNavParams) {
       closeServicePanelById(serviceId);
     } else {
-      // Resolve the correct position for the new panel using the shared pure
-      // helper (also tested in ServicePanels.test.ts).  When the currently-
-      // active tab is a service panel, the new panel inherits that panel's
-      // position so both appear together rather than in separate dock groups.
-      const newPosition = resolveNewPanelPosition(
-        serviceId,
-        combinedActiveTab,
-        activeServicePanels,
-        getServicePanelPosition,
-      );
-      if (activeServicePanels.has(combinedActiveTab)) {
-        // Auto-placement: the position was derived from another panel, not from
-        // this panel's own saved preference.  Store it as an ephemeral override
-        // so it is used for rendering this session but does NOT overwrite the
-        // panel's persisted dock preference in localStorage.
-        setEphemeralServicePanelPosition(serviceId, newPosition);
+      if (!activeServicePanels.has(serviceId)) {
+        // Resolve the correct position for the new panel using the shared pure
+        // helper (also tested in ServicePanels.test.ts).  When the currently-
+        // active tab is a service panel, the new panel inherits that panel's
+        // position so both appear together rather than in separate dock groups.
+        const newPosition = resolveNewPanelPosition(
+          serviceId,
+          combinedActiveTab,
+          activeServicePanels,
+          getServicePanelPosition,
+        );
+        if (activeServicePanels.has(combinedActiveTab)) {
+          // Auto-placement: the position was derived from another panel, not from
+          // this panel's own saved preference.  Store it as an ephemeral override
+          // so it is used for rendering this session but does NOT overwrite the
+          // panel's persisted dock preference in localStorage.
+          setEphemeralServicePanelPosition(serviceId, newPosition);
+        }
       }
       // When the active tab is NOT a service panel, newPosition equals the
       // panel's own stored/default preference — no action needed, getPanelPosition
       // will already return the correct value.
-      toggleServicePanel(serviceId);
+      toggleServicePanel(serviceId, query, fragment);
       handleCombinedTabChange(serviceId);
     }
   }, [activeServicePanels, closeServicePanelById, toggleServicePanel, handleCombinedTabChange, combinedActiveTab, setEphemeralServicePanelPosition, getServicePanelPosition]);
@@ -3882,9 +3887,10 @@ export function App() {
 
       const label = staticDef?.label ?? dynamicDef!.label;
       const icon = staticDef?.icon ?? <DynamicLucideIcon name={dynamicDef!.icon} />;
+      const navParams = getServicePanelNavParams(serviceId);
       const content = staticDef
         ? <staticDef.component sessionId={effectiveSessionId} runnerId={activeSessionInfo?.runnerId ?? undefined} />
-        : <IframeServicePanel sessionId={effectiveSessionId} port={dynamicDef!.port} />;
+        : <IframeServicePanel sessionId={effectiveSessionId} port={dynamicDef!.port} query={navParams?.query} fragment={navParams?.fragment} />;
 
       tabs.push({
         id: serviceId,
@@ -3901,7 +3907,7 @@ export function App() {
       });
     }
     return tabs;
-  }, [activeServicePanels, tunnelSessionId, activeSessionId, dynamicPanels, startPanelDragWith, setServicePanelPosition, closeServicePanelById, handleCombinedTabChange]);
+  }, [activeServicePanels, tunnelSessionId, activeSessionId, dynamicPanels, startPanelDragWith, setServicePanelPosition, closeServicePanelById, handleCombinedTabChange, getServicePanelNavParams]);
 
   const panelGroups = React.useMemo(() => {
     type PG = import("@/hooks/usePanelLayout").PanelPosition;
