@@ -27,6 +27,12 @@ export const DESTRUCTIVE_CMD_PATTERNS = [
     /^\s*mkfifo\b/i,    // creates named pipes (filesystem objects)
     /^\s*mknod\b/i,     // creates device/special files
     // Note: `patch` is handled separately so `patch --dry-run` / `--check` stay allowed.
+    // Shell builtins that execute dynamic/opaque code — cannot be statically analysed.
+    // Block ALL eval/source/. unconditionally; even `eval echo hello` is disallowed
+    // because we cannot guarantee the string is safe at static-analysis time.
+    /^\s*eval\b/i,
+    /^\s*source\b/i,
+    /^\s*\.\s+/,   // dot-source builtin: ". ./script.sh", ". config"
 ];
 
 /**
@@ -101,6 +107,11 @@ export const SANDBOX_ONLY_CMD_PATTERNS = [
     /^\s*reboot\b/i, /^\s*shutdown\b/i,
     /^\s*systemctl\s+(start|stop|restart|enable|disable)/i,
     /^\s*service\s+\S+\s+(start|stop|restart)/i,
+    // Shell builtins that execute dynamic/opaque code — block in sandbox too
+    // (sandbox only protects the filesystem, not arbitrary code evaluation).
+    /^\s*eval\b/i,
+    /^\s*source\b/i,
+    /^\s*\.\s+/,   // dot-source builtin
     // Remote / network side effects — sandbox only protects local filesystem
     // (Git commands are handled separately via the GIT_SAFE_SUBCOMMANDS allowlist)
     /^\s*npm\s+publish\b/i,
@@ -142,6 +153,17 @@ export const DESTRUCTIVE_FLAG_PATTERNS = [
     // HTTP write verbs via wget
     /\bwget\b.*\s--post-(?:data|file)(?:\s|=|\b)/i,
 ];
+
+/**
+ * Commands that simply pass through to their arguments as a new process.
+ * e.g. `time git push` executes `git push`; `timeout 5 git push` executes `git push`.
+ * These are NOT shell interpreters — they have no -c flag — but they must be
+ * unwrapped so the inner command can be analysed for destructiveness.
+ */
+export const PASSTHROUGH_WRAPPERS = new Set([
+    "time", "nohup", "timeout", "nice", "stdbuf",
+    "ionice", "chrt", "taskset", "setsid", "chronic",
+]);
 
 /**
  * Shell names that support the -c flag to execute arbitrary code strings.

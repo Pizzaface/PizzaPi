@@ -1,4 +1,4 @@
-import { DESTRUCTIVE_CMD_PATTERNS, DESTRUCTIVE_FLAG_PATTERNS, SANDBOX_ONLY_CMD_PATTERNS, WRAPPER_SHELLS } from "./patterns.js";
+import { DESTRUCTIVE_CMD_PATTERNS, DESTRUCTIVE_FLAG_PATTERNS, SANDBOX_ONLY_CMD_PATTERNS, WRAPPER_SHELLS, PASSTHROUGH_WRAPPERS } from "./patterns.js";
 import { splitShellSegments, splitShellWords, hasUnsafeOutputRedirection } from "./shell-parser.js";
 import { isDestructiveGitCommand, isDestructiveTarCommand, isDestructiveGawkCommand, isDestructivePatchCommand } from "./command-checks.js";
 
@@ -126,6 +126,32 @@ function extractWrapperInnerCommand(segment: string): string | null {
         if (i >= words.length) return null;
         const off = findWordStartOffset(segment, i);
         return off >= 0 ? segment.slice(off) : "";
+    }
+
+    // ── Passthrough wrappers (time, nohup, timeout, nice, stdbuf, etc.) ─────────────────
+    // These commands don't interpret code — they simply exec their argument list
+    // as-is (possibly after consuming some leading flags / a numeric argument).
+    // `time git push`, `nohup rm -rf /`, `timeout 5 git push`, etc. must all be
+    // unwrapped so the inner command can be checked for destructiveness.
+    if (PASSTHROUGH_WRAPPERS.has(first)) {
+        let i = 1;
+        // Skip flags and, when a flag takes a required numeric argument
+        // (e.g. `nice -n 5`, `timeout -k 5s`), skip that argument too.
+        while (i < words.length && words[i].startsWith("-")) {
+            i++;
+            // Numeric/duration value immediately following a flag — skip it.
+            if (i < words.length && /^\d+(\.\d+)?[smhd]?$/.test(words[i])) {
+                i++;
+            }
+        }
+        // `timeout DURATION COMMAND` — the first positional arg is always the
+        // duration (a plain number or number+suffix like "5s"), not a command.
+        if (first === "timeout" && i < words.length && /^\d+(\.\d+)?[smhd]?$/.test(words[i])) {
+            i++;
+        }
+        if (i >= words.length) return null; // wrapper only, no inner command
+        const paOff = findWordStartOffset(segment, i);
+        return paOff >= 0 ? segment.slice(paOff) : "";
     }
 
     // env as a command launcher: env [opts] [VAR=val...] COMMAND [args...]
