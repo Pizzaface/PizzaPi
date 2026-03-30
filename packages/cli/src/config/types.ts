@@ -317,6 +317,17 @@ export interface PizzaPiConfig {
     allowProjectHooks?: boolean;
 
     /**
+     * Trust gate: allow project-local MCP server definitions (.pizzapi/config.json) to be loaded.
+     * Must be set in the GLOBAL ~/.pizzapi/config.json (or via
+     * PIZZAPI_ALLOW_PROJECT_MCP=1 env var). Project configs cannot
+     * self-authorize.
+     *
+     * When false/unset, only MCP servers from ~/.pizzapi/config.json (global) are loaded.
+     * This prevents a malicious project from injecting arbitrary MCP servers.
+     */
+    allowProjectMcp?: boolean;
+
+    /**
      * Project-local Claude Code plugins that have been explicitly trusted.
      * Each entry is the absolute path to the plugin root directory.
      *

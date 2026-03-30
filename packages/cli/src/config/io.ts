@@ -89,6 +89,16 @@ export function isProjectHooksTrusted(globalConfig: Partial<PizzaPiConfig>): boo
     return globalConfig.allowProjectHooks === true;
 }
 
+/**
+ * Check whether project-local MCP server definitions are trusted.
+ * Trust must come from the global config or the environment — never from
+ * the project config itself (that would be a self-authorization bypass).
+ */
+export function isProjectMcpTrusted(globalConfig: Partial<PizzaPiConfig>): boolean {
+    if (process.env.PIZZAPI_ALLOW_PROJECT_MCP === "1") return true;
+    return globalConfig.allowProjectMcp === true;
+}
+
 // ── Config loading ────────────────────────────────────────────────────────────
 
 /**
@@ -132,6 +142,28 @@ export function loadConfig(cwd: string = process.cwd()): PizzaPiConfig {
     if (hooks) config.hooks = hooks;
     else delete config.hooks;
 
+    // Block transport/auth fields from project config — these must only come
+    // from the global config (~/.pizzapi/config.json) or environment variables.
+    // A project config that sets apiKey or relayUrl could redirect agent traffic
+    // to an attacker-controlled relay or steal authentication credentials.
+    if ("apiKey" in project) {
+        log.warn(
+            "Project config .pizzapi/config.json contains 'apiKey' — this field is ignored. " +
+                "Set it in ~/.pizzapi/config.json only.",
+        );
+    }
+    if ("relayUrl" in project) {
+        log.warn(
+            "Project config .pizzapi/config.json contains 'relayUrl' — this field is ignored. " +
+                "Set it in ~/.pizzapi/config.json only.",
+        );
+    }
+    // Always restore transport fields from global (project values discarded above).
+    if (global.apiKey !== undefined) config.apiKey = global.apiKey;
+    else delete config.apiKey;
+    if (global.relayUrl !== undefined) config.relayUrl = global.relayUrl;
+    else delete config.relayUrl;
+
     // Merge sandbox config securely — project cannot weaken global sandbox.
     // mergeSandboxConfig ensures: deny lists union, allow lists intersect,
     // mode/enabled cannot be relaxed by a project config.
@@ -142,19 +174,44 @@ export function loadConfig(cwd: string = process.cwd()): PizzaPiConfig {
         );
     }
 
+    // MCP server trust gate — project-local MCP servers require explicit authorization.
+    // Without it a malicious .pizzapi/config.json could inject arbitrary tool servers.
+    const projectMcpTrusted = isProjectMcpTrusted(global);
+
     // Deep-merge mcpServers (Claude Code compatibility format) from both scopes.
     // Project entries win on name conflicts, but global servers are preserved.
     // mcpServers is not in the PizzaPiConfig type — it flows through as untyped JSON.
     const globalMcpServers = isPlainObject((global as any).mcpServers) ? (global as any).mcpServers : undefined;
-    const projectMcpServers = isPlainObject((project as any).mcpServers) ? (project as any).mcpServers : undefined;
-    if (globalMcpServers || projectMcpServers) {
-        (config as any).mcpServers = { ...globalMcpServers, ...projectMcpServers };
-    }
+    const rawProjectMcpServers = isPlainObject((project as any).mcpServers) ? (project as any).mcpServers : undefined;
 
     // Deep-merge mcp.servers (preferred array format) from both scopes.
     // Project entries win on name conflicts (matched by server name).
     const globalMcp = isPlainObject((global as any).mcp) ? (global as any).mcp : undefined;
-    const projectMcp = isPlainObject((project as any).mcp) ? (project as any).mcp : undefined;
+    const rawProjectMcp = isPlainObject((project as any).mcp) ? (project as any).mcp : undefined;
+
+    // Warn once if any project MCP servers are present but not trusted.
+    const hasProjectMcp =
+        rawProjectMcpServers !== undefined ||
+        (Array.isArray(rawProjectMcp?.servers) && rawProjectMcp.servers.length > 0);
+    if (hasProjectMcp && !projectMcpTrusted) {
+        log.warn(
+            "Project MCP servers found in .pizzapi/config.json but not trusted. " +
+                'Set "allowProjectMcp": true in ~/.pizzapi/config.json or ' +
+                "PIZZAPI_ALLOW_PROJECT_MCP=1 to enable.",
+        );
+    }
+
+    const projectMcpServers = projectMcpTrusted ? rawProjectMcpServers : undefined;
+    const projectMcp = projectMcpTrusted ? rawProjectMcp : undefined;
+
+    // Always overwrite or delete mcpServers — the initial { ...global, ...project } spread
+    // may have placed project.mcpServers into config before the trust gate could block it.
+    if (globalMcpServers || projectMcpServers) {
+        (config as any).mcpServers = { ...globalMcpServers, ...projectMcpServers };
+    } else {
+        delete (config as any).mcpServers;
+    }
+
     if (globalMcp || projectMcp) {
         const globalServers: any[] = Array.isArray(globalMcp?.servers) ? globalMcp.servers : [];
         const projectServers: any[] = Array.isArray(projectMcp?.servers) ? projectMcp.servers : [];
@@ -171,6 +228,9 @@ export function loadConfig(cwd: string = process.cwd()): PizzaPiConfig {
             ...projectMcp,
             servers: [...serverMap.values()],
         };
+    } else {
+        // Delete in case the initial spread placed project.mcp into config.
+        delete (config as any).mcp;
     }
 
     // Merge disabledMcpServers from both scopes (union).
