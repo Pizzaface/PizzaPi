@@ -6,7 +6,7 @@
  * will automatically pick up type configs, service definitions, and
  * resolve enriched data from service endpoints.
  */
-import { createContext, useCallback, useContext, useMemo, useRef, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import type { ServiceSigilDef, ServicePanelInfo } from "@pizzapi/protocol";
 import { SigilRegistry, createRegistry } from "@/lib/sigils/registry";
 
@@ -76,6 +76,13 @@ export function SigilProvider({ sigilDefs, panels, runnerId, children }: SigilPr
   const cacheRef = useRef(new Map<string, SigilResolveState>());
   const [version, setVersion] = useState(0);
   const bump = useCallback(() => setVersion((v) => v + 1), []);
+
+  // Clear cache when infrastructure changes (server restart, reconnect)
+  // so stale entries don't block re-fetching with new panel ports.
+  useEffect(() => {
+    cacheRef.current.clear();
+    bump();
+  }, [panels, runnerId, sigilDefs, bump]);
 
   // Build panel port lookup: serviceId → port
   const panelPortMap = useMemo(() => {
