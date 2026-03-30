@@ -196,6 +196,11 @@ export function SigilPill({ type, id, params, raw }: SigilPillProps) {
               <span className="truncate">{prettifyUrl(href)}</span>
             </div>
           )}
+
+          {/* Raw sigil syntax */}
+          <code className="mt-0.5 block rounded bg-muted/60 px-1.5 py-0.5 text-[10px] font-mono text-muted-foreground/50 select-all">
+            {raw}
+          </code>
         </div>
       </HoverCardContent>
     </HoverCard>
