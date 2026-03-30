@@ -21,6 +21,7 @@ import { math } from "@streamdown/math";
 import { mermaid } from "@streamdown/mermaid";
 import { rehypeSigils } from "@/lib/sigils/rehype-sigils";
 import { SigilInline } from "@/components/sigils/SigilPill";
+import { ActionSigilProvider } from "@/components/sigils/ActionSigilContext";
 import { ChevronLeftIcon, ChevronRightIcon } from "lucide-react";
 import {
   createContext,
@@ -322,7 +323,11 @@ export const MessageBranchPage = ({
   );
 };
 
-export type MessageResponseProps = ComponentProps<typeof Streamdown>;
+export type MessageResponseProps = ComponentProps<typeof Streamdown> & {
+  sigilCanInteract?: boolean;
+  sigilMessageComplete?: boolean;
+  onActionSigilResponse?: (text: string) => Promise<boolean>;
+};
 
 const streamdownPlugins = { cjk, code, math, mermaid };
 
@@ -347,19 +352,31 @@ function SpanOrSigil(props: any) {
 const sigilComponents = { span: SpanOrSigil };
 
 export const MessageResponse = memo(
-  ({ className, ...props }: MessageResponseProps) => (
-    <Streamdown
-      className={cn(
-        "size-full break-words [&>*:first-child]:mt-0 [&>*:last-child]:mb-0",
-        className
-      )}
-      plugins={streamdownPlugins}
-      rehypePlugins={sigilRehypePlugins}
-      components={sigilComponents}
-      {...props}
-    />
+  ({ className, sigilCanInteract = false, sigilMessageComplete = true, onActionSigilResponse, ...props }: MessageResponseProps) => (
+    <ActionSigilProvider
+      value={{
+        canInteract: sigilCanInteract,
+        isMessageComplete: sigilMessageComplete,
+        sendResponse: onActionSigilResponse,
+      }}
+    >
+      <Streamdown
+        className={cn(
+          "size-full break-words [&>*:first-child]:mt-0 [&>*:last-child]:mb-0",
+          className
+        )}
+        plugins={streamdownPlugins}
+        rehypePlugins={sigilRehypePlugins}
+        components={sigilComponents}
+        {...props}
+      />
+    </ActionSigilProvider>
   ),
-  (prevProps, nextProps) => prevProps.children === nextProps.children
+  (prevProps, nextProps) =>
+    prevProps.children === nextProps.children &&
+    prevProps.sigilCanInteract === nextProps.sigilCanInteract &&
+    prevProps.sigilMessageComplete === nextProps.sigilMessageComplete &&
+    prevProps.onActionSigilResponse === nextProps.onActionSigilResponse
 );
 
 MessageResponse.displayName = "MessageResponse";

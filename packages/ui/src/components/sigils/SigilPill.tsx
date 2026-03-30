@@ -18,6 +18,7 @@ import { cn } from "@/lib/utils";
 import { useSigilRegistry, useSigilResolve, useSigilTriggerResolve, useSigilGeneration } from "./SigilContext";
 import { SigilIcon } from "./SigilIcon";
 import { ExternalLinkIcon, CheckIcon, CopyIcon } from "lucide-react";
+import { ActionSigil } from "./ActionSigil";
 
 // ── SigilInline (Streamdown bridge) ──────────────────────────────────────────
 
@@ -42,6 +43,10 @@ export function SigilInline(props: Record<string, unknown>) {
       return {};
     }
   }, [paramsJson]);
+
+  if (type === "action") {
+    return <ActionSigil variant={id} params={params} raw={raw} />;
+  }
 
   return <SigilPill type={type} id={id} params={params} raw={raw} />;
 }

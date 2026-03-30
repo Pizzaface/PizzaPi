@@ -158,6 +158,19 @@ export function SessionViewer({
 }: SessionViewerProps) {
   // ── Misc local state ──────────────────────────────────────────────────────
   const [composerError, setComposerError] = React.useState<string | null>(null);
+
+  const sendActionSigilResponse = React.useCallback(
+    async (text: string): Promise<boolean> => {
+      if (!onSendInput || !sessionId) return false;
+      try {
+        const result = await Promise.resolve(onSendInput(text));
+        return result !== false;
+      } catch {
+        return false;
+      }
+    },
+    [onSendInput, sessionId],
+  );
   const [showEndSessionDialog, setShowEndSessionDialog] = React.useState(false);
   const [incompleteTriggers, setIncompleteTriggers] = React.useState<IncompleteTriggerItem[]>([]);
   const [showIncompleteTriggerDialog, setShowIncompleteTriggerDialog] = React.useState(false);
@@ -678,6 +691,7 @@ export function SessionViewer({
                       agentActive={agentActive}
                       isLast={index === renderedMessages.length - 1}
                       onTriggerResponse={onTriggerResponse}
+                      onActionSigilResponse={sendActionSigilResponse}
                     />
                   ))}
                 </ConversationContent>

@@ -30,6 +30,7 @@ interface SessionMessageItemProps {
     action?: string,
     sourceSessionId?: string,
   ) => boolean | void | Promise<boolean>;
+  onActionSigilResponse?: (text: string) => Promise<boolean>;
 }
 
 /**
@@ -46,6 +47,7 @@ export const SessionMessageItem = React.memo(
     agentActive,
     isLast,
     onTriggerResponse,
+    onActionSigilResponse,
   }: SessionMessageItemProps) => {
     // System messages with structured command result data → standalone card
     if (message.role === "system" && isCommandResult(message.content)) {
@@ -88,6 +90,7 @@ export const SessionMessageItem = React.memo(
               undefined,
               message.details,
               onTriggerResponse,
+              onActionSigilResponse,
             )}
           </div>
         );
@@ -112,6 +115,7 @@ export const SessionMessageItem = React.memo(
             message.subAgentTurns,
             message.details,
             onTriggerResponse,
+            onActionSigilResponse,
           )}
         </div>
       );
@@ -169,6 +173,7 @@ export const SessionMessageItem = React.memo(
               undefined, // subAgentTurns
               message.details,
               onTriggerResponse,
+              onActionSigilResponse,
             )}
             {message.stopReason === "error" && message.errorMessage && (
               <div className="mt-2 flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
@@ -187,6 +192,7 @@ export const SessionMessageItem = React.memo(
     if ((prev.isLast || next.isLast) && prev.agentActive !== next.agentActive) return false;
     if (prev.activeToolCalls !== next.activeToolCalls) return false;
     if (prev.onTriggerResponse !== next.onTriggerResponse) return false;
+    if (prev.onActionSigilResponse !== next.onActionSigilResponse) return false;
     return true;
   },
 );

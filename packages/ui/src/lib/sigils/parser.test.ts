@@ -116,4 +116,12 @@ describe("parseSigils", () => {
     expect(matches[0].id).toBe("typecheck");
     expect(matches[0].params).toEqual({ conclusion: "success", repo: "Foo/Bar" });
   });
+
+  test("parses action sigils as type action with variant id", () => {
+    const matches = parseSigils('[[action:confirm question="Deploy?"]]');
+    expect(matches).toHaveLength(1);
+    expect(matches[0].type).toBe("action");
+    expect(matches[0].id).toBe("confirm");
+    expect(matches[0].params).toEqual({ question: "Deploy?" });
+  });
 });

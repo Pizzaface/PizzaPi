@@ -104,6 +104,7 @@ export function renderContent(
   subAgentTurns?: SubAgentTurn[],
   details?: unknown,
   onTriggerResponse?: (triggerId: string, response: string, action?: string, sourceSessionId?: string) => boolean | void | Promise<boolean>,
+  onActionSigilResponse?: (text: string) => Promise<boolean>,
 ) {
   // Structured command result cards (MCP, plugins, skills)
   if (role === "system" && isCommandResult(content)) {
@@ -160,7 +161,15 @@ export function renderContent(
         />
       );
     }
-    return <MessageResponse>{content}</MessageResponse>;
+    return (
+      <MessageResponse
+        sigilCanInteract={role === "assistant"}
+        sigilMessageComplete={!isThinkingActive}
+        onActionSigilResponse={onActionSigilResponse}
+      >
+        {content}
+      </MessageResponse>
+    );
   }
 
   if (Array.isArray(content)) {
@@ -186,7 +195,12 @@ export function renderContent(
             if (serverToolCard) return serverToolCard;
 
             return (
-              <MessageResponse key={i}>
+              <MessageResponse
+                key={i}
+                sigilCanInteract={role === "assistant"}
+                sigilMessageComplete={!isThinkingActive}
+                onActionSigilResponse={onActionSigilResponse}
+              >
                 {typeof b.text === "string" ? b.text : ""}
               </MessageResponse>
             );
