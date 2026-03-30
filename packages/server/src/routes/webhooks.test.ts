@@ -46,13 +46,7 @@ mock.module("../webhooks/store.js", () => ({
     listWebhooksForUser: mockListWebhooksForUser,
     updateWebhook: mockUpdateWebhook,
     deleteWebhook: mockDeleteWebhook,
-    toPublicWebhook: (webhook: any) => ({
-        ...webhook,
-        secret:
-            typeof webhook?.secret === "string" && webhook.secret.length > 8
-                ? `${webhook.secret.slice(0, 4)}…${webhook.secret.slice(-4)}`
-                : "",
-    }),
+    toPublicWebhook: (webhook: any) => ({ ...webhook }),
 }));
 
 // ── Mock sio-registry ────────────────────────────────────────────────────────
@@ -339,7 +333,7 @@ describe("GET /api/webhooks — list webhooks", () => {
         const body = await res!.json();
         expect(body.webhooks).toHaveLength(1);
         expect(body.webhooks[0].id).toBe("wh-1");
-        expect(body.webhooks[0].secret).toBe("0123…cdef");
+        expect(body.webhooks[0].secret).toBe("0123456789abcdef");  // full secret — not masked
     });
 });
 
@@ -383,7 +377,7 @@ describe("GET /api/webhooks/:id — get webhook", () => {
         expect(res?.status).toBe(200);
         const body = await res!.json();
         expect(body.webhook.id).toBe("wh-1");
-        expect(body.webhook.secret).toBe("fedc…3210");
+        expect(body.webhook.secret).toBe("fedcba9876543210");  // full secret — not masked
     });
 });
 
@@ -448,7 +442,7 @@ describe("PUT /api/webhooks/:id — update webhook", () => {
         expect(res?.status).toBe(200);
         const body = await res!.json();
         expect(body.webhook.id).toBe("wh-1");
-        expect(body.webhook.secret).toBe("abcd…5678");
+        expect(body.webhook.secret).toBe("abcd1234efgh5678");  // full secret — not masked
     });
 
     test("updates cwd and prompt", async () => {
@@ -579,35 +573,56 @@ describe("POST /api/webhooks/:id/fire — HMAC validation", () => {
         expect(res?.status).toBe(404);
     });
 
-    test("returns 401 when X-Webhook-Timestamp is missing", async () => {
+    test("falls back to legacy HMAC when X-Webhook-Timestamp is absent (nonce-only → no enhanced mode)", async () => {
+        // Only nonce provided, no timestamp → useEnhanced=false → legacy mode.
+        // Invalid legacy signature → 401 Invalid signature.
         mockGetWebhook.mockReturnValue(Promise.resolve(ACTIVE_WEBHOOK));
         const [req, url] = makeReq(
             "POST",
             "/api/webhooks/wh-1/fire",
             { event: "test" },
-            { "x-webhook-signature": "anything", "x-webhook-nonce": "nonce-a" },
+            { "x-webhook-signature": "badhash", "x-webhook-nonce": "nonce-a" },
         );
         const res = await handleWebhooksRoute(req, url);
         expect(res?.status).toBe(401);
         const body = await res!.json();
-        expect(body.error).toContain("X-Webhook-Timestamp");
+        expect(body.error).toContain("Invalid signature");
     });
 
-    test("returns 401 when X-Webhook-Nonce is missing", async () => {
+    test("falls back to legacy HMAC when X-Webhook-Nonce is absent (timestamp-only → no enhanced mode)", async () => {
+        // Only timestamp provided, no nonce → useEnhanced=false → legacy mode.
+        // Invalid legacy signature → 401 Invalid signature.
         mockGetWebhook.mockReturnValue(Promise.resolve(ACTIVE_WEBHOOK));
         const [req, url] = makeReq(
             "POST",
             "/api/webhooks/wh-1/fire",
             { event: "test" },
             {
-                "x-webhook-signature": "anything",
+                "x-webhook-signature": "badhash",
                 "x-webhook-timestamp": new Date().toISOString(),
             },
         );
         const res = await handleWebhooksRoute(req, url);
         expect(res?.status).toBe(401);
         const body = await res!.json();
-        expect(body.error).toContain("X-Webhook-Nonce");
+        expect(body.error).toContain("Invalid signature");
+    });
+
+    test("accepts valid legacy HMAC (raw body only) when enhanced headers are absent", async () => {
+        // Backward-compat: callers that only sign the raw body are still accepted.
+        mockGetWebhook.mockReturnValue(Promise.resolve(ACTIVE_WEBHOOK));
+        const payload = { type: "push", event: "test" };
+        const rawBody = JSON.stringify(payload);
+        const legacySig = createHmac("sha256", ACTIVE_WEBHOOK.secret).update(rawBody).digest("hex");
+        const [req, url] = makeReq(
+            "POST",
+            "/api/webhooks/wh-1/fire",
+            payload,
+            { "x-webhook-signature": legacySig },
+        );
+        const res = await handleWebhooksRoute(req, url);
+        // 200 or a runner-related 5xx — not a 401
+        expect(res?.status).not.toBe(401);
     });
 
     test("returns 401 when X-Webhook-Signature is missing", async () => {

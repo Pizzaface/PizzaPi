@@ -112,21 +112,13 @@ function generateSecret(): string {
 }
 
 /**
- * Mask a webhook secret for API responses after creation.
- * Keeps short prefix/suffix for identification without leaking the full value.
+ * Return a webhook object suitable for API responses.
+ * Secrets are NOT masked — all webhook endpoints require session-cookie auth,
+ * so the secret is only visible to the authenticated owner. Masking the secret
+ * broke the UI's "Copy secret" and curl-snippet flows after the first page load.
  */
-export function maskWebhookSecret(secret: string): string {
-    if (!secret) return "";
-    if (secret.length <= 8) return "*".repeat(secret.length);
-    return `${secret.slice(0, 4)}…${secret.slice(-4)}`;
-}
-
-/** Return a webhook object with its secret masked. */
 export function toPublicWebhook(webhook: Webhook): Webhook {
-    return {
-        ...webhook,
-        secret: maskWebhookSecret(webhook.secret),
-    };
+    return { ...webhook };
 }
 
 function rowToWebhook(row: {

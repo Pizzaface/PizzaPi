@@ -11,9 +11,13 @@
  * Fire endpoint (no auth cookie — validated via HMAC):
  *   POST /api/webhooks/:id/fire     — spawn a new session + fire trigger
  *
- * HMAC validation: SHA-256 of `${timestamp}.${nonce}.${rawBody}` using webhook.secret.
- * Caller must send:
+ * HMAC validation (two modes, auto-detected):
+ *   Enhanced: SHA-256 of `${timestamp}.${nonce}.${rawBody}` — requires X-Webhook-Timestamp
+ *             and X-Webhook-Nonce headers; includes replay protection.
+ *   Legacy:   SHA-256 of raw body only — used when the enhanced headers are absent.
+ * Caller must always send:
  *   - X-Webhook-Signature (hex digest)
+ * Optional for enhanced mode (enables replay protection):
  *   - X-Webhook-Timestamp (ISO string or RFC3339 date)
  *   - X-Webhook-Nonce (unique per delivery)
  *
@@ -477,28 +481,6 @@ export const handleWebhooksRoute: RouteHandler = async (req, url) => {
             return Response.json({ error: "Failed to read request body" }, { status: 400 });
         }
 
-        // Replay protection: require timestamp + nonce headers.
-        const timestampHeader = req.headers.get("x-webhook-timestamp");
-        if (!timestampHeader) {
-            return Response.json({ error: "Missing X-Webhook-Timestamp header" }, { status: 401 });
-        }
-
-        const timestampMs = Date.parse(timestampHeader);
-        if (!Number.isFinite(timestampMs)) {
-            return Response.json({ error: "Invalid X-Webhook-Timestamp header" }, { status: 401 });
-        }
-
-        const nowMs = Date.now();
-        if (Math.abs(nowMs - timestampMs) > WEBHOOK_REPLAY_WINDOW_MS) {
-            return Response.json({ error: "Webhook timestamp is too old or too far in the future" }, { status: 401 });
-        }
-
-        const nonceHeader = req.headers.get("x-webhook-nonce");
-        const nonce = typeof nonceHeader === "string" ? nonceHeader.trim() : "";
-        if (!nonce) {
-            return Response.json({ error: "Missing X-Webhook-Nonce header" }, { status: 401 });
-        }
-
         // Validate HMAC signature.
         const signature = req.headers.get("x-webhook-signature");
         if (!signature) {
@@ -506,18 +488,47 @@ export const handleWebhooksRoute: RouteHandler = async (req, url) => {
         }
 
         const rawBodyText = new TextDecoder().decode(rawBody);
-        const expected = computeHmac(webhook.secret, `${timestampHeader}.${nonce}.${rawBodyText}`);
-        if (!hmacEqual(signature, expected)) {
-            log.warn(`Invalid HMAC for webhook ${webhookId}`);
-            return Response.json({ error: "Invalid signature" }, { status: 401 });
-        }
+        const timestampHeader = req.headers.get("x-webhook-timestamp");
+        const nonceHeader = req.headers.get("x-webhook-nonce");
+        const useEnhanced = !!(timestampHeader && nonceHeader);
 
-        pruneConsumedWebhookNonces(nowMs);
-        const nonceKey = `${webhookId}:${nonce}`;
-        if (consumedWebhookNonces.has(nonceKey)) {
-            return Response.json({ error: "Webhook nonce has already been used" }, { status: 409 });
+        if (useEnhanced) {
+            // Enhanced verification: HMAC of `${timestamp}.${nonce}.${rawBody}` with replay protection.
+            const timestampMs = Date.parse(timestampHeader!);
+            if (!Number.isFinite(timestampMs)) {
+                return Response.json({ error: "Invalid X-Webhook-Timestamp header" }, { status: 401 });
+            }
+
+            const nowMs = Date.now();
+            if (Math.abs(nowMs - timestampMs) > WEBHOOK_REPLAY_WINDOW_MS) {
+                return Response.json({ error: "Webhook timestamp is too old or too far in the future" }, { status: 401 });
+            }
+
+            const nonce = nonceHeader!.trim();
+            if (!nonce) {
+                return Response.json({ error: "Missing X-Webhook-Nonce header" }, { status: 401 });
+            }
+
+            const expected = computeHmac(webhook.secret, `${timestampHeader}.${nonce}.${rawBodyText}`);
+            if (!hmacEqual(signature, expected)) {
+                log.warn(`Invalid HMAC (enhanced) for webhook ${webhookId}`);
+                return Response.json({ error: "Invalid signature" }, { status: 401 });
+            }
+
+            pruneConsumedWebhookNonces(nowMs);
+            const nonceKey = `${webhookId}:${nonce}`;
+            if (consumedWebhookNonces.has(nonceKey)) {
+                return Response.json({ error: "Webhook nonce has already been used" }, { status: 409 });
+            }
+            consumedWebhookNonces.set(nonceKey, nowMs);
+        } else {
+            // Legacy verification: HMAC of raw body only (no replay protection).
+            const expected = computeHmac(webhook.secret, rawBodyText);
+            if (!hmacEqual(signature, expected)) {
+                log.warn(`Invalid HMAC (legacy) for webhook ${webhookId}`);
+                return Response.json({ error: "Invalid signature" }, { status: 401 });
+            }
         }
-        consumedWebhookNonces.set(nonceKey, nowMs);
 
         // Parse body JSON
         let body: Record<string, unknown>;

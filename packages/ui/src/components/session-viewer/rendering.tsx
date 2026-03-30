@@ -310,14 +310,20 @@ export function renderContent(
 
             // Extracted images: base64 data was replaced with an attachment URL
             // by the server to reduce payload size. Load via URL instead.
-            // Only allow http/https scheme URLs — block data: and other schemes.
+            // Allow http/https absolute URLs and relative paths (e.g. /api/attachments/...).
+            // Block javascript:, data: (non-image), and other dangerous schemes.
             if (url) {
               let isSafeUrl = false;
-              try {
-                const parsed = new URL(url);
-                isSafeUrl = parsed.protocol === "http:" || parsed.protocol === "https:";
-              } catch {
-                isSafeUrl = false;
+              if (url.startsWith("/")) {
+                // Relative path — safe internal reference (e.g. /api/attachments/...)
+                isSafeUrl = true;
+              } else {
+                try {
+                  const parsed = new URL(url);
+                  isSafeUrl = parsed.protocol === "http:" || parsed.protocol === "https:";
+                } catch {
+                  isSafeUrl = false;
+                }
               }
               if (isSafeUrl) {
                 return (
