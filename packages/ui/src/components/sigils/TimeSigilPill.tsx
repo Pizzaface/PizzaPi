@@ -56,6 +56,23 @@ function formatCountdown(targetMs: number, nowMs: number): string {
   return `T-${minutes}:${pad(seconds)}`;
 }
 
+/**
+ * Format a timestamp as a human-friendly local date/time string.
+ * Uses the browser's timezone. Example: "Mar 30, 2026, 11:32 PM"
+ */
+function formatLocalDateTime(ms: number): string {
+  const date = new Date(ms);
+  // Intl.DateTimeFormat respects the user's browser locale and timezone
+  return date.toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    timeZoneName: "short",
+  });
+}
+
 // ── Component ────────────────────────────────────────────────────────────────
 
 export interface TimeSigilPillProps {
@@ -134,9 +151,15 @@ export function TimeSigilPill({ type, id, params, raw }: TimeSigilPillProps) {
     ? "bg-green-500/15 text-green-700 dark:text-green-400 ring-green-500/25"
     : config.colorClass;
 
-  const description = resolved.data?.description
-    ? String(resolved.data.description)
-    : registry.getDescription(type);
+  // Format the description in the user's local timezone instead of raw UTC ISO strings.
+  // The server returns ISO timestamps; we convert to a human-friendly local format.
+  const description = useMemo(() => {
+    if (targetTimestamp != null) {
+      return formatLocalDateTime(targetTimestamp);
+    }
+    const raw = resolved.data?.description;
+    return raw ? String(raw) : registry.getDescription(type);
+  }, [targetTimestamp, resolved.data?.description, registry, type]);
 
   // ── Pill element ─────────────────────────────────────────────────────
 
