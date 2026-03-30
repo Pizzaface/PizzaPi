@@ -8,7 +8,7 @@
  * - Loading shimmer during resolve
  * - Status-aware coloring
  */
-import { useEffect, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   HoverCard,
   HoverCardContent,
@@ -17,7 +17,7 @@ import {
 import { cn } from "@/lib/utils";
 import { useSigilRegistry, useSigilResolve, useSigilTriggerResolve } from "./SigilContext";
 import { SigilIcon } from "./SigilIcon";
-import { ExternalLinkIcon } from "lucide-react";
+import { ExternalLinkIcon, CheckIcon, CopyIcon } from "lucide-react";
 
 // ── SigilInline (Streamdown bridge) ──────────────────────────────────────────
 
@@ -198,9 +198,10 @@ export function SigilPill({ type, id, params, raw }: SigilPillProps) {
           )}
 
           {/* Raw sigil syntax */}
-          <code className="mt-0.5 block rounded bg-muted/60 px-1.5 py-0.5 text-[10px] font-mono text-muted-foreground/50 select-all">
-            {raw}
-          </code>
+          <div className="flex items-center gap-1 pt-0.5 text-[10px] text-muted-foreground/50">
+            <code className="truncate font-mono">{raw}</code>
+            <CopyButton text={raw} />
+          </div>
         </div>
       </HoverCardContent>
     </HoverCard>
@@ -241,4 +242,29 @@ function getStatusColor(status: string): string | undefined {
 /** Shorten a URL for display: strip protocol, trailing slash. */
 function prettifyUrl(url: string): string {
   return url.replace(/^https?:\/\//, "").replace(/\/$/, "");
+}
+
+/** Tiny copy-to-clipboard button with check feedback. */
+function CopyButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  const handleCopy = useCallback(() => {
+    navigator.clipboard.writeText(text).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    });
+  }, [text]);
+
+  return (
+    <button
+      type="button"
+      onClick={(e) => { e.stopPropagation(); handleCopy(); }}
+      className="shrink-0 rounded p-0.5 hover:bg-muted transition-colors"
+      aria-label="Copy sigil"
+    >
+      {copied
+        ? <CheckIcon className="size-2.5 text-green-500" />
+        : <CopyIcon className="size-2.5 opacity-60 hover:opacity-100" />
+      }
+    </button>
+  );
 }
