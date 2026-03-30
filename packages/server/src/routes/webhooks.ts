@@ -44,6 +44,7 @@ import {
     listWebhooksForUser,
     updateWebhook,
     deleteWebhook,
+    toPublicWebhook,
 } from "../webhooks/store.js";
 
 const log = createLogger("webhooks-api");
@@ -56,17 +57,8 @@ const SESSION_CONNECT_TIMEOUT_MS = 15_000;
 
 /** Maximum accepted age/skew for webhook timestamp headers (ms). */
 const WEBHOOK_REPLAY_WINDOW_MS = 5 * 60 * 1000;
-/** Allow up to 30s of clock skew (NTP drift) before rejecting as "future". */
-const WEBHOOK_CLOCK_SKEW_MS = 30 * 1000;
 
-/**
- * In-memory replay guard: (webhookId:nonce) -> first-seen timestamp.
- *
- * TODO(multi-node): This store is process-local and invisible to other server
- * nodes. In a multi-node deployment, replay attacks are possible if requests
- * route to different nodes within the 5-minute replay window. Replace with a
- * Redis-backed nonce store (SETNX + TTL) to prevent cross-node replay attacks.
- */
+/** In-memory replay guard: (webhookId:nonce) -> first-seen timestamp. */
 const consumedWebhookNonces = new Map<string, number>();
 
 function pruneConsumedWebhookNonces(nowMs: number): void {
@@ -113,17 +105,9 @@ async function spawnSessionForWebhook(
     model: { provider: string; id: string } | null,
 ): Promise<{ sessionId: string } | Response> {
     const runner = await getRunnerData(runnerId);
-    // Distinguish "runner offline/deleted" (503) from "runner owned by someone else" (403).
-    // Runner state is removed from Redis on disconnect, so !runner means temporarily offline.
-    if (!runner) {
+    if (!runner || runner.userId !== webhookUserId) {
         return Response.json(
-            { error: "Runner is offline or not available" },
-            { status: 503 },
-        );
-    }
-    if (runner.userId !== webhookUserId) {
-        return Response.json(
-            { error: "Runner is not owned by webhook owner" },
+            { error: "Runner not found or not owned by webhook owner" },
             { status: 403 },
         );
     }
@@ -354,7 +338,7 @@ export const handleWebhooksRoute: RouteHandler = async (req, url) => {
         if (identity instanceof Response) return identity;
 
         const webhooks = await listWebhooksForUser(identity.userId);
-        return Response.json({ webhooks });
+        return Response.json({ webhooks: webhooks.map(toPublicWebhook) });
     }
 
     // ── GET /api/webhooks/:id ──────────────────────────────────────────────
@@ -370,7 +354,7 @@ export const handleWebhooksRoute: RouteHandler = async (req, url) => {
             return Response.json({ error: "Webhook not found" }, { status: 404 });
         }
 
-        return Response.json({ webhook });
+        return Response.json({ webhook: toPublicWebhook(webhook) });
     }
 
     // ── PUT /api/webhooks/:id ──────────────────────────────────────────────
@@ -452,7 +436,7 @@ export const handleWebhooksRoute: RouteHandler = async (req, url) => {
             return Response.json({ error: "Webhook not found" }, { status: 404 });
         }
 
-        return Response.json({ webhook: updated });
+        return Response.json({ webhook: toPublicWebhook(updated) });
     }
 
     // ── DELETE /api/webhooks/:id ───────────────────────────────────────────
@@ -492,83 +476,48 @@ export const handleWebhooksRoute: RouteHandler = async (req, url) => {
         } catch {
             return Response.json({ error: "Failed to read request body" }, { status: 400 });
         }
-        const rawBodyText = new TextDecoder().decode(rawBody);
 
-        // ── Determine signing mode ────────────────────────────────────────────
-        // Enhanced mode (recommended): caller sends X-Webhook-Timestamp +
-        // X-Webhook-Nonce; HMAC covers `${timestamp}.${nonce}.${body}`.
-        // Legacy mode (backward compat): neither header present; HMAC covers
-        // raw body only — no replay protection.
-        // Partial headers (one but not both) → 401 to avoid silent misconfiguration.
+        // Replay protection: require timestamp + nonce headers.
         const timestampHeader = req.headers.get("x-webhook-timestamp");
-        const nonceHeader = req.headers.get("x-webhook-nonce");
-        const hasTimestamp = timestampHeader !== null && timestampHeader.trim() !== "";
-        const hasNonce = nonceHeader !== null && nonceHeader.trim() !== "";
-        const useEnhanced = hasTimestamp && hasNonce;
-        const useLegacy = !hasTimestamp && !hasNonce;
+        if (!timestampHeader) {
+            return Response.json({ error: "Missing X-Webhook-Timestamp header" }, { status: 401 });
+        }
 
-        if (!useEnhanced && !useLegacy) {
-            // Partial enhanced headers — likely a misconfiguration, reject clearly.
-            if (!hasTimestamp) {
-                return Response.json({ error: "Missing X-Webhook-Timestamp header" }, { status: 401 });
-            }
+        const timestampMs = Date.parse(timestampHeader);
+        if (!Number.isFinite(timestampMs)) {
+            return Response.json({ error: "Invalid X-Webhook-Timestamp header" }, { status: 401 });
+        }
+
+        const nowMs = Date.now();
+        if (Math.abs(nowMs - timestampMs) > WEBHOOK_REPLAY_WINDOW_MS) {
+            return Response.json({ error: "Webhook timestamp is too old or too far in the future" }, { status: 401 });
+        }
+
+        const nonceHeader = req.headers.get("x-webhook-nonce");
+        const nonce = typeof nonceHeader === "string" ? nonceHeader.trim() : "";
+        if (!nonce) {
             return Response.json({ error: "Missing X-Webhook-Nonce header" }, { status: 401 });
         }
 
+        // Validate HMAC signature.
         const signature = req.headers.get("x-webhook-signature");
         if (!signature) {
             return Response.json({ error: "Missing X-Webhook-Signature header" }, { status: 401 });
         }
 
-        // Enhanced-mode timestamp + nonce validation
-        let nonceKey = "";
-        let nowMs = 0;
-        if (useEnhanced) {
-            nowMs = Date.now();
-            const timestampMs = Date.parse(timestampHeader!);
-            if (!Number.isFinite(timestampMs)) {
-                return Response.json({ error: "Invalid X-Webhook-Timestamp header" }, { status: 401 });
-            }
-            // Reject timestamps too far in the future. A small tolerance (30s)
-            // accommodates NTP drift without reopening the replay window —
-            // nonces are retained for the full REPLAY_WINDOW after first seen,
-            // which far exceeds the skew allowance.
-            if (timestampMs > nowMs + WEBHOOK_CLOCK_SKEW_MS) {
-                return Response.json({ error: "Webhook timestamp is in the future" }, { status: 401 });
-            }
-            if (nowMs - timestampMs > WEBHOOK_REPLAY_WINDOW_MS) {
-                return Response.json({ error: "Webhook timestamp is too old" }, { status: 401 });
-            }
-
-            const nonce = nonceHeader!.trim();
-            const expected = computeHmac(
-                webhook.secret,
-                `${timestampHeader!}.${nonce}.${rawBodyText}`,
-            );
-            if (!hmacEqual(signature, expected)) {
-                log.warn(`Invalid HMAC for webhook ${webhookId}`);
-                return Response.json({ error: "Invalid signature" }, { status: 401 });
-            }
-
-            // Replay check — eagerly consume the nonce BEFORE any async work to close
-            // the concurrent-request race window (two same-nonce requests arriving in
-            // parallel both pass has() before either sets the nonce).
-            // Transient failures (502/503/504) below roll the nonce back so retries work.
-            // Permanent failures and success keep it consumed.
-            pruneConsumedWebhookNonces(nowMs);
-            nonceKey = `${webhookId}:${nonce}`;
-            if (consumedWebhookNonces.has(nonceKey)) {
-                return Response.json({ error: "Webhook nonce has already been used" }, { status: 409 });
-            }
-            consumedWebhookNonces.set(nonceKey, nowMs);
-        } else {
-            // Legacy mode: HMAC of raw body only — no replay protection.
-            const expected = computeHmac(webhook.secret, rawBodyText);
-            if (!hmacEqual(signature, expected)) {
-                log.warn(`Invalid HMAC for webhook ${webhookId} (legacy mode)`);
-                return Response.json({ error: "Invalid signature" }, { status: 401 });
-            }
+        const rawBodyText = new TextDecoder().decode(rawBody);
+        const expected = computeHmac(webhook.secret, `${timestampHeader}.${nonce}.${rawBodyText}`);
+        if (!hmacEqual(signature, expected)) {
+            log.warn(`Invalid HMAC for webhook ${webhookId}`);
+            return Response.json({ error: "Invalid signature" }, { status: 401 });
         }
+
+        pruneConsumedWebhookNonces(nowMs);
+        const nonceKey = `${webhookId}:${nonce}`;
+        if (consumedWebhookNonces.has(nonceKey)) {
+            return Response.json({ error: "Webhook nonce has already been used" }, { status: 409 });
+        }
+        consumedWebhookNonces.set(nonceKey, nowMs);
 
         // Parse body JSON
         let body: Record<string, unknown>;
@@ -604,13 +553,7 @@ export const handleWebhooksRoute: RouteHandler = async (req, url) => {
             webhook.prompt,
             webhook.model,
         );
-        if (spawnResult instanceof Response) {
-            // Roll back nonce for transient spawn failures (502/503) so the caller can retry.
-            if (useEnhanced && nonceKey && (spawnResult.status === 502 || spawnResult.status === 503)) {
-                consumedWebhookNonces.delete(nonceKey);
-            }
-            return spawnResult;
-        }
+        if (spawnResult instanceof Response) return spawnResult;
 
         const { sessionId } = spawnResult;
         log.info(`Webhook ${webhookId} spawned session ${sessionId}`);
@@ -619,17 +562,13 @@ export const handleWebhooksRoute: RouteHandler = async (req, url) => {
         const connected = await waitForSessionSocket(sessionId);
         if (!connected) {
             log.warn(`Webhook ${webhookId}: session ${sessionId} spawned but never connected`);
-            // 504 is transient — roll back nonce so the caller can retry.
-            if (useEnhanced && nonceKey) {
-                consumedWebhookNonces.delete(nonceKey);
-            }
             return Response.json(
                 { error: "Session was spawned but did not connect in time" },
                 { status: 504 },
             );
         }
 
-        const fireResponse = await fireWebhookTrigger(
+        return fireWebhookTrigger(
             webhook.id,
             webhook.name,
             webhook.source,
@@ -638,18 +577,6 @@ export const handleWebhooksRoute: RouteHandler = async (req, url) => {
             body,
             webhook.prompt,
         );
-
-        // Roll back nonce for transient delivery failures (502/503/504) so retries work.
-        // For permanent failures (4xx other than transient) and success, nonce stays consumed.
-        if (
-            useEnhanced &&
-            nonceKey &&
-            (fireResponse.status === 502 || fireResponse.status === 503 || fireResponse.status === 504)
-        ) {
-            consumedWebhookNonces.delete(nonceKey);
-        }
-
-        return fireResponse;
     }
 
     return undefined;

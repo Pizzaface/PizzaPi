@@ -320,7 +320,7 @@ describe("GET /api/webhooks — list webhooks", () => {
         expect(body.webhooks).toEqual([]);
     });
 
-    test("returns user's webhooks with real (unmasked) secrets", async () => {
+    test("returns user's webhooks", async () => {
         mockListWebhooksForUser.mockReturnValue(
             Promise.resolve([
                 {
@@ -339,8 +339,7 @@ describe("GET /api/webhooks — list webhooks", () => {
         const body = await res!.json();
         expect(body.webhooks).toHaveLength(1);
         expect(body.webhooks[0].id).toBe("wh-1");
-        // Secrets are returned in full on authenticated GET (behind auth cookie)
-        expect(body.webhooks[0].secret).toBe("0123456789abcdef");
+        expect(body.webhooks[0].secret).toBe("0123…cdef");
     });
 });
 
@@ -369,7 +368,7 @@ describe("GET /api/webhooks/:id — get webhook", () => {
         expect(res?.status).toBe(404);
     });
 
-    test("returns webhook details with real (unmasked) secret", async () => {
+    test("returns webhook details", async () => {
         const hook = {
             id: "wh-1",
             userId: "user-1",
@@ -384,8 +383,7 @@ describe("GET /api/webhooks/:id — get webhook", () => {
         expect(res?.status).toBe(200);
         const body = await res!.json();
         expect(body.webhook.id).toBe("wh-1");
-        // Secrets are returned in full on authenticated GET (behind auth cookie)
-        expect(body.webhook.secret).toBe("fedcba9876543210");
+        expect(body.webhook.secret).toBe("fedc…3210");
     });
 });
 
@@ -431,7 +429,7 @@ describe("PUT /api/webhooks/:id — update webhook", () => {
         expect(mockUpdateWebhook).not.toHaveBeenCalled();
     });
 
-    test("updates webhook with real (unmasked) secret in response", async () => {
+    test("updates webhook", async () => {
         mockGetWebhook.mockReturnValue(
             Promise.resolve({ id: "wh-1", userId: "user-1", name: "Hook" }),
         );
@@ -450,8 +448,7 @@ describe("PUT /api/webhooks/:id — update webhook", () => {
         expect(res?.status).toBe(200);
         const body = await res!.json();
         expect(body.webhook.id).toBe("wh-1");
-        // Secrets are returned in full on authenticated PUT (behind auth cookie)
-        expect(body.webhook.secret).toBe("abcd1234efgh5678");
+        expect(body.webhook.secret).toBe("abcd…5678");
     });
 
     test("updates cwd and prompt", async () => {
@@ -720,22 +717,6 @@ describe("POST /api/webhooks/:id/fire — HMAC validation", () => {
         const [req, url] = makeFireReq("/api/webhooks/wh-1/fire", body, ACTIVE_WEBHOOK.secret);
         const res = await handleWebhooksRoute(req, url);
         expect(res?.status).toBe(403);
-        const resBody = await res!.json();
-        expect(resBody.error).toContain("not owned");
-    });
-
-    test("returns 503 when runner data is absent (runner offline/disconnected)", async () => {
-        // When a runner disconnects its Redis state is deleted, so getRunnerData returns null.
-        // This should be a 503 (temporarily unavailable), not a 403 (unauthorized).
-        mockGetWebhook.mockReturnValue(Promise.resolve(ACTIVE_WEBHOOK));
-        mockGetRunnerData.mockReturnValue(Promise.resolve(null));
-
-        const body = { event: "test" };
-        const [req, url] = makeFireReq("/api/webhooks/wh-1/fire", body, ACTIVE_WEBHOOK.secret);
-        const res = await handleWebhooksRoute(req, url);
-        expect(res?.status).toBe(503);
-        const resBody = await res!.json();
-        expect(resBody.error).toMatch(/offline|not available/i);
     });
 
     test("returns 503 when runner is not connected", async () => {
@@ -759,213 +740,6 @@ describe("POST /api/webhooks/:id/fire — HMAC validation", () => {
         expect(res?.status).toBe(500);
         const resBody = await res!.json();
         expect(resBody.error).toContain("no runner");
-    });
-});
-
-describe("POST /api/webhooks/:id/fire — backward-compat legacy signing", () => {
-    beforeEach(() => {
-        mockGetWebhook.mockReset();
-        mockGetSharedSession.mockReset();
-        mockGetLocalTuiSocket.mockReset();
-        mockEmitToRelaySessionVerified.mockReset();
-        mockPushTriggerHistory.mockReset();
-        mockGetLocalRunnerSocket.mockReset();
-        mockWaitForSpawnAck.mockReset();
-        mockRecordRunnerSession.mockReset();
-        mockLinkSessionToRunner.mockReset();
-        mockGetRunnerData.mockReset();
-        mockGetRunnerData.mockReturnValue(
-            Promise.resolve({ runnerId: "runner-1", userId: "user-1" }),
-        );
-    });
-
-    /**
-     * Legacy callers send only X-Webhook-Signature with HMAC of raw body.
-     * The server must still accept these to avoid breaking existing integrations.
-     */
-    test("legacy: accepts HMAC of raw body when no timestamp/nonce headers", async () => {
-        mockGetWebhook.mockReturnValue(Promise.resolve(ACTIVE_WEBHOOK));
-        const { sessionEmitMock } = setupSpawnAndDeliverMocks();
-
-        const rawBody = JSON.stringify({ event: "deploy", repo: "myorg/app" });
-        const legacySig = createHmac("sha256", ACTIVE_WEBHOOK.secret).update(rawBody).digest("hex");
-
-        const [req, url] = makeReq("POST", "/api/webhooks/wh-1/fire", rawBody, {
-            "x-webhook-signature": legacySig,
-        });
-        const res = await handleWebhooksRoute(req, url);
-        expect(res?.status).toBe(200);
-        const resBody = await res!.json();
-        expect(resBody.ok).toBe(true);
-        expect(resBody.triggerId).toMatch(/^wh_/);
-        expect(sessionEmitMock).toHaveBeenCalledTimes(1);
-    });
-
-    test("legacy: returns 401 for invalid HMAC of raw body", async () => {
-        mockGetWebhook.mockReturnValue(Promise.resolve(ACTIVE_WEBHOOK));
-
-        const rawBody = JSON.stringify({ event: "deploy" });
-        const [req, url] = makeReq("POST", "/api/webhooks/wh-1/fire", rawBody, {
-            "x-webhook-signature": "deadbeef",
-        });
-        const res = await handleWebhooksRoute(req, url);
-        expect(res?.status).toBe(401);
-        const resBody = await res!.json();
-        expect(resBody.error).toContain("signature");
-    });
-
-    test("legacy: rejects partial headers (nonce present but no timestamp)", async () => {
-        mockGetWebhook.mockReturnValue(Promise.resolve(ACTIVE_WEBHOOK));
-
-        const rawBody = JSON.stringify({ event: "deploy" });
-        const [req, url] = makeReq("POST", "/api/webhooks/wh-1/fire", rawBody, {
-            "x-webhook-signature": "anything",
-            "x-webhook-nonce": "some-nonce",
-            // No x-webhook-timestamp
-        });
-        const res = await handleWebhooksRoute(req, url);
-        expect(res?.status).toBe(401);
-        const resBody = await res!.json();
-        expect(resBody.error).toContain("X-Webhook-Timestamp");
-    });
-
-    test("legacy: rejects partial headers (timestamp present but no nonce)", async () => {
-        mockGetWebhook.mockReturnValue(Promise.resolve(ACTIVE_WEBHOOK));
-
-        const rawBody = JSON.stringify({ event: "deploy" });
-        const [req, url] = makeReq("POST", "/api/webhooks/wh-1/fire", rawBody, {
-            "x-webhook-signature": "anything",
-            "x-webhook-timestamp": new Date().toISOString(),
-            // No x-webhook-nonce
-        });
-        const res = await handleWebhooksRoute(req, url);
-        expect(res?.status).toBe(401);
-        const resBody = await res!.json();
-        expect(resBody.error).toContain("X-Webhook-Nonce");
-    });
-});
-
-describe("POST /api/webhooks/:id/fire — nonce consumed only on success", () => {
-    beforeEach(() => {
-        mockGetWebhook.mockReset();
-        mockGetSharedSession.mockReset();
-        mockGetLocalTuiSocket.mockReset();
-        mockEmitToRelaySessionVerified.mockReset();
-        mockPushTriggerHistory.mockReset();
-        mockGetLocalRunnerSocket.mockReset();
-        mockWaitForSpawnAck.mockReset();
-        mockRecordRunnerSession.mockReset();
-        mockLinkSessionToRunner.mockReset();
-        mockGetRunnerData.mockReset();
-        mockGetRunnerData.mockReturnValue(
-            Promise.resolve({ runnerId: "runner-1", userId: "user-1" }),
-        );
-    });
-
-    test("nonce is NOT consumed when delivery fails (502), allowing retry", async () => {
-        mockGetWebhook.mockReturnValue(Promise.resolve(ACTIVE_WEBHOOK));
-
-        // Spawn succeeds but runner rejects the spawn request → 502
-        const runnerEmitMock = mock(() => {});
-        mockGetLocalRunnerSocket.mockReturnValue({ emit: runnerEmitMock });
-        mockWaitForSpawnAck.mockReturnValue(Promise.resolve({ ok: false, message: "busy" }));
-
-        const timestamp = new Date().toISOString();
-        const nonce = `nonce-retry-test-${Date.now()}`;
-        const body = { event: "deploy" };
-
-        const [req1, url1] = makeFireReq(
-            "/api/webhooks/wh-1/fire",
-            body,
-            ACTIVE_WEBHOOK.secret,
-            { "x-webhook-timestamp": timestamp, "x-webhook-nonce": nonce },
-        );
-        const res1 = await handleWebhooksRoute(req1, url1);
-        // 502 from runner rejection — nonce should NOT be consumed
-        expect(res1?.status).toBe(502);
-
-        // Retry with the same nonce — runner now accepts
-        mockWaitForSpawnAck.mockReturnValue(Promise.resolve({ ok: true }));
-        const sessionEmitMock = mock(() => {});
-        mockGetLocalTuiSocket.mockReturnValue({ connected: true, emit: sessionEmitMock });
-
-        const [req2, url2] = makeFireReq(
-            "/api/webhooks/wh-1/fire",
-            body,
-            ACTIVE_WEBHOOK.secret,
-            { "x-webhook-timestamp": timestamp, "x-webhook-nonce": nonce },
-        );
-        const res2 = await handleWebhooksRoute(req2, url2);
-        expect(res2?.status).toBe(200);
-        expect(sessionEmitMock).toHaveBeenCalledTimes(1);
-    });
-
-    test("nonce IS consumed after successful delivery, preventing replay", async () => {
-        mockGetWebhook.mockReturnValue(Promise.resolve(ACTIVE_WEBHOOK));
-        const { sessionEmitMock } = setupSpawnAndDeliverMocks();
-
-        const timestamp = new Date().toISOString();
-        const nonce = `nonce-consumed-test-${Date.now()}`;
-        const body = { event: "deploy" };
-
-        const [req1, url1] = makeFireReq(
-            "/api/webhooks/wh-1/fire",
-            body,
-            ACTIVE_WEBHOOK.secret,
-            { "x-webhook-timestamp": timestamp, "x-webhook-nonce": nonce },
-        );
-        const res1 = await handleWebhooksRoute(req1, url1);
-        expect(res1?.status).toBe(200);
-        expect(sessionEmitMock).toHaveBeenCalledTimes(1);
-
-        // Replay attempt with the same nonce must be rejected
-        const [req2, url2] = makeFireReq(
-            "/api/webhooks/wh-1/fire",
-            body,
-            ACTIVE_WEBHOOK.secret,
-            { "x-webhook-timestamp": timestamp, "x-webhook-nonce": nonce },
-        );
-        const res2 = await handleWebhooksRoute(req2, url2);
-        expect(res2?.status).toBe(409);
-        // Session should not have been triggered again
-        expect(sessionEmitMock).toHaveBeenCalledTimes(1);
-    });
-
-    test("concurrent same-nonce requests — second gets 409", async () => {
-        // Tests the optimistic-consume fix: the nonce is set BEFORE any async work,
-        // so two requests with the same nonce running concurrently can't both win.
-        mockGetWebhook.mockReturnValue(Promise.resolve(ACTIVE_WEBHOOK));
-        const { sessionEmitMock } = setupSpawnAndDeliverMocks();
-
-        const timestamp = new Date().toISOString();
-        const nonce = `nonce-concurrent-${Date.now()}`;
-        const body = { event: "deploy" };
-
-        const [req1, url1] = makeFireReq(
-            "/api/webhooks/wh-1/fire",
-            body,
-            ACTIVE_WEBHOOK.secret,
-            { "x-webhook-timestamp": timestamp, "x-webhook-nonce": nonce },
-        );
-        const [req2, url2] = makeFireReq(
-            "/api/webhooks/wh-1/fire",
-            body,
-            ACTIVE_WEBHOOK.secret,
-            { "x-webhook-timestamp": timestamp, "x-webhook-nonce": nonce },
-        );
-
-        // Fire both concurrently. Because the nonce is consumed eagerly (before the
-        // first await), the second request will see the occupied nonce and return 409
-        // even though both started before either received a response.
-        const [res1, res2] = await Promise.all([
-            handleWebhooksRoute(req1, url1),
-            handleWebhooksRoute(req2, url2),
-        ]);
-
-        const statuses = [res1?.status, res2?.status].sort((a, b) => (a ?? 0) - (b ?? 0));
-        expect(statuses).toEqual([200, 409]);
-        // Only one delivery must have fired
-        expect(sessionEmitMock).toHaveBeenCalledTimes(1);
     });
 });
 
