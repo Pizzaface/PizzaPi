@@ -47,6 +47,7 @@ import {
     touchRunner,
     broadcastToSessionViewers,
     emitToRelaySession,
+    getSharedSession,
 } from "../sio-registry.js";
 import { resolveSpawnReady, resolveSpawnError } from "../runner-control.js";
 import { createLogger } from "@pizzapi/tools";
@@ -269,6 +270,10 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
     // in Redis, but is kept in-memory here to avoid async Redis reads on every
     // service_message event (which may be high-frequency terminal output).
     const runnerSessionIds = new Map<string, Set<string>>();
+    // Maps runnerId → Set<terminalId>. Mirrors terminal ownership already in
+    // Redis but kept in-memory for fast O(1) checks on high-frequency
+    // terminal_data events without a Redis round-trip per packet.
+    const runnerTerminalIds = new Map<string, Set<string>>();
 
     runner.on("connection", (socket) => {
         log.info(`connected: ${socket.id}`);
@@ -339,6 +344,21 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
                     sessionSet.add(sid.sessionId);
                 }
                 log.info(`[runner reconnect] runner=${result} seeded runnerSessionIds=[${Array.from(sessionSet).join(",")}]`);
+            }
+
+            // Seed runnerTerminalIds from Redis for this runner on reconnect
+            // so terminal_data ownership checks work immediately for terminals
+            // that were active before the runner/server restarted.
+            const existingTerminalIds = await getTerminalIdsForRunner(result);
+            if (existingTerminalIds.length > 0) {
+                if (!runnerTerminalIds.has(result)) {
+                    runnerTerminalIds.set(result, new Set());
+                }
+                const terminalSet = runnerTerminalIds.get(result)!;
+                for (const tid of existingTerminalIds) {
+                    terminalSet.add(tid);
+                }
+                log.info(`[runner reconnect] runner=${result} seeded runnerTerminalIds=[${existingTerminalIds.join(",")}]`);
             }
 
             // Seed in-memory service announce cache from Redis.
@@ -524,6 +544,15 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
 
         // ── runner_session_event — forward agent events to viewers ───────────
         socket.on("runner_session_event", async (data) => {
+            const runnerId = socket.data.runnerId;
+            if (!runnerId) return;
+            // Security: verify the session belongs to this runner before publishing.
+            // Prevents a compromised runner from injecting events into sessions it
+            // doesn't own (same guard pattern used by service_message).
+            if (!runnerSessionIds.get(runnerId)?.has(data.sessionId)) {
+                log.warn(`runner_session_event rejected: session ${data.sessionId} not owned by runner ${runnerId}`);
+                return;
+            }
             await publishSessionEvent(data.sessionId, data.event);
         });
 
@@ -531,6 +560,15 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
         socket.on("session_ready", async (data) => {
             const runnerId = socket.data.runnerId;
             if (runnerId && data.sessionId) {
+                // Security: verify the session belongs to this runner's user.
+                // Prevents a runner owned by user A from hijacking a session
+                // owned by user B by sending a spurious session_ready.
+                const runnerUserId = (socket.data as RunnerSocketData & { userId?: string }).userId;
+                const session = await getSharedSession(data.sessionId);
+                if (session?.userId && runnerUserId && session.userId !== runnerUserId) {
+                    log.warn(`session_ready rejected: session ${data.sessionId} belongs to user ${session.userId}, runner belongs to user ${runnerUserId}`);
+                    return;
+                }
                 await recordRunnerSession(runnerId, data.sessionId);
                 await linkSessionToRunner(runnerId, data.sessionId);
                 resolveSpawnReady(data.sessionId);
@@ -565,6 +603,13 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
             const sessionId = data.sessionId;
             if (!sessionId) return;
 
+            // Security: only allow disconnecting sessions owned by this runner.
+            const runnerId = socket.data.runnerId;
+            if (!runnerId || !runnerSessionIds.get(runnerId)?.has(sessionId)) {
+                log.warn(`disconnect_session rejected: session ${sessionId} not owned by runner ${runnerId}`);
+                return;
+            }
+
             const tuiSocket = getLocalTuiSocket(sessionId);
             if (tuiSocket && tuiSocket.connected) {
                 // Send an end_session exec command so the worker shuts down cleanly
@@ -583,12 +628,22 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
 
         // ── Terminal PTY events from runner → browser viewer ─────────────────
 
-        socket.on("terminal_ready", (data) => {
+        socket.on("terminal_ready", async (data) => {
             const terminalId = data.terminalId;
             if (!terminalId) return;
-            log.info(
-                `terminal_ready terminalId=${terminalId} runnerId=${socket.data.runnerId}`,
-            );
+            const runnerId = socket.data.runnerId;
+            if (!runnerId) return;
+            // Security: verify terminal ownership via Redis before forwarding.
+            // Also registers this terminal in the in-memory set so subsequent
+            // terminal_data checks are O(1) without a Redis round-trip.
+            const entry = await getTerminalEntry(terminalId);
+            if (!entry || entry.runnerId !== runnerId) {
+                log.warn(`terminal_ready rejected: terminalId ${terminalId} not owned by runner ${runnerId}`);
+                return;
+            }
+            if (!runnerTerminalIds.has(runnerId)) runnerTerminalIds.set(runnerId, new Set());
+            runnerTerminalIds.get(runnerId)!.add(terminalId);
+            log.info(`terminal_ready terminalId=${terminalId} runnerId=${runnerId}`);
             sendToTerminalViewer(terminalId, {
                 type: "terminal_ready",
                 terminalId,
@@ -598,6 +653,11 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
         socket.on("terminal_data", (data) => {
             const terminalId = data.terminalId;
             if (!terminalId) return;
+            // Security: fast in-memory ownership check (no Redis round-trip).
+            // The set is populated by terminal_ready (verified against Redis)
+            // and seeded from Redis on runner reconnect.
+            const runnerId = socket.data.runnerId;
+            if (!runnerId || !runnerTerminalIds.get(runnerId)?.has(terminalId)) return;
             sendToTerminalViewer(terminalId, {
                 type: "terminal_data",
                 terminalId,
@@ -608,23 +668,30 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
         socket.on("terminal_exit", async (data) => {
             const terminalId = data.terminalId;
             if (!terminalId) return;
-            log.info(
-                `terminal_exit terminalId=${terminalId} exitCode=${data.exitCode} runnerId=${socket.data.runnerId}`,
-            );
+            const runnerId = socket.data.runnerId;
+            if (!runnerId || !runnerTerminalIds.get(runnerId)?.has(terminalId)) {
+                log.warn(`terminal_exit rejected: terminalId ${terminalId} not owned by runner ${runnerId}`);
+                return;
+            }
+            log.info(`terminal_exit terminalId=${terminalId} exitCode=${data.exitCode} runnerId=${runnerId}`);
             sendToTerminalViewer(terminalId, {
                 type: "terminal_exit",
                 terminalId,
                 exitCode: data.exitCode,
             });
+            runnerTerminalIds.get(runnerId)?.delete(terminalId);
             await removeTerminal(terminalId);
         });
 
         socket.on("terminal_error", async (data) => {
             const terminalId = data.terminalId;
             if (!terminalId) return;
-            log.warn(
-                `terminal_error terminalId=${terminalId} message="${data.message}" runnerId=${socket.data.runnerId}`,
-            );
+            const runnerId = socket.data.runnerId;
+            if (!runnerId || !runnerTerminalIds.get(runnerId)?.has(terminalId)) {
+                log.warn(`terminal_error rejected: terminalId ${terminalId} not owned by runner ${runnerId}`);
+                return;
+            }
+            log.warn(`terminal_error terminalId=${terminalId} message="${data.message}" runnerId=${runnerId}`);
             const entry = await getTerminalEntry(terminalId);
             sendToTerminalViewer(terminalId, {
                 type: "terminal_error",
@@ -632,6 +699,7 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
                 message: data.message,
             });
             if (!entry) {
+                runnerTerminalIds.get(runnerId)?.delete(terminalId);
                 await removeTerminal(terminalId);
             }
         });
@@ -753,8 +821,9 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
                     return;
                 }
 
-                // Clean up local session tracking
+                // Clean up local session and terminal tracking
                 runnerSessionIds.delete(runnerId);
+                runnerTerminalIds.delete(runnerId);
                 runnerServiceAnnounce.delete(runnerId);
                 // Clean up any terminals owned by this runner
                 const terminalIds = await getTerminalIdsForRunner(runnerId);
