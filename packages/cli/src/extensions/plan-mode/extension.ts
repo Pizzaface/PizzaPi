@@ -217,11 +217,16 @@ export const planModeToggleExtension: ExtensionFactory = (pi) => {
         // Always allow the agent to toggle plan mode off
         if (event.toolName === TOGGLE_PLAN_MODE_TOOL) return;
 
-        // Block edit/write tools entirely
+        // Block write tools and session-spawning tools.
+        // subagent and spawn_session are blocked because they create child contexts
+        // with full write access, bypassing plan mode restrictions entirely.
         if (WRITE_BLOCKED_TOOL_NAMES.has(event.toolName)) {
+            const isSpawnTool = event.toolName === "subagent" || event.toolName === "spawn_session";
             return {
                 block: true,
-                reason: `Plan mode: "${event.toolName}" is blocked in read-only mode. Use toggle_plan_mode to exit plan mode first.`,
+                reason: isSpawnTool
+                    ? `Plan mode: "${event.toolName}" is blocked — spawning sessions creates child contexts with full write access, bypassing plan mode. Use toggle_plan_mode to exit plan mode first.`
+                    : `Plan mode: "${event.toolName}" is blocked in read-only mode. Use toggle_plan_mode to exit plan mode first.`,
             };
         }
 

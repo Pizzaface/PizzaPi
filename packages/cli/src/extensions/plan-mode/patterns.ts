@@ -107,6 +107,10 @@ export const SANDBOX_ONLY_CMD_PATTERNS = [
     /^\s*npx\b/i,
     /^\s*docker\s+push\b/i,
     /^\s*gh\s+(issue|pr|release)\s+(create|edit|close|merge|delete|comment)\b/i,
+    // HTTP write verbs — sandbox protects local filesystem but NOT the network.
+    // These send mutations to remote servers regardless of sandbox state.
+    /^\s*curl\b.*\s(?:-X\s+(?:POST|PUT|DELETE|PATCH)\b|--request(?:=|\s+)(?:POST|PUT|DELETE|PATCH)\b|-d\b|--data(?:\s|=|-\w)|--json\b)/i,
+    /^\s*wget\b.*\s--post-(?:data|file)(?:\s|=|\b)/i,
 ];
 
 /**
@@ -123,13 +127,30 @@ export const DESTRUCTIVE_FLAG_PATTERNS = [
     // In-place editing via sed/perl -i
     /\bsed\b.*\s-i\b/i, /\bsed\b.*\s-i\S/i,
     /\bperl\b.*\s-i\b/i, /\bperl\b.*\s-i\S/i,
-    // Interpreters executing scripts (not just --version/--help)
+    // perl -e / -E: inline code execution (e.g. `perl -e 'unlink "f"'`)
+    /^\s*perl\b.*\s-[a-zA-Z]*[eE](?:\s|$)/i,
+    // Interpreters executing scripts (not just --version/--help).
+    // These also cover -c (python -c) and -e (ruby -e / node -e) inline execution.
     /^\s*python[23]?\s+(?!--(version|help)\b)\S/i,
     /^\s*ruby\s+(?!--(version|help)\b)\S/i,
     /^\s*node\s+(?!--(version|help)\b)\S/i,
     // Build tools (not --dry-run / --just-print / -n)
     /^\s*make\b(?!.*(\s-n\b|\s--dry-run\b|\s--just-print\b))/i,
+    // HTTP write verbs via curl (network side-effects, not covered by filesystem sandbox).
+    // Blocks -X POST/PUT/DELETE/PATCH, --request, -d/--data* (POST body), --json.
+    /\bcurl\b.*\s(?:-X\s+(?:POST|PUT|DELETE|PATCH)\b|--request(?:=|\s+)(?:POST|PUT|DELETE|PATCH)\b|-d\b|--data(?:\s|=|-\w)|--json\b)/i,
+    // HTTP write verbs via wget
+    /\bwget\b.*\s--post-(?:data|file)(?:\s|=|\b)/i,
 ];
+
+/**
+ * Shell names that support the -c flag to execute arbitrary code strings.
+ * Blocked in no-sandbox mode via isWrapperShellCommand() in safe-command.ts when
+ * invoked with -c. env is handled separately (it wraps any command, not just -c).
+ */
+export const WRAPPER_SHELLS = new Set([
+    "bash", "sh", "dash", "zsh", "ksh", "csh", "tcsh", "fish",
+]);
 
 /**
  * In no-sandbox mode we block output redirection by default because it can
@@ -141,5 +162,7 @@ export const OUTPUT_REDIRECTION_PATTERN = /(^|[^<])(\d*)>(?!>)(?:\s*([^\s;|&]+))
 
 // ── Write-blocked tool names ─────────────────────────────────────────────────
 // These tools are blocked when plan mode is active.
-// Includes both core pi tools ("edit", "write") and PizzaPi custom tools ("write_file").
-export const WRITE_BLOCKED_TOOL_NAMES = new Set(["edit", "write", "write_file"]);
+// Includes both core pi tools ("edit", "write"), PizzaPi custom tools ("write_file"),
+// and tools that spawn child sessions with full write access ("subagent", "spawn_session"),
+// which would otherwise bypass plan mode restrictions entirely.
+export const WRITE_BLOCKED_TOOL_NAMES = new Set(["edit", "write", "write_file", "subagent", "spawn_session"]);
