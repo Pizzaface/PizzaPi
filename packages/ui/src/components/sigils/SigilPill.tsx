@@ -69,22 +69,42 @@ export function SigilPill({ type, id, params, raw }: SigilPillProps) {
   const statusParam = resolved.data?.status ?? params.status ?? params.conclusion;
   const statusColorClass = statusParam ? getStatusColor(statusParam) : undefined;
 
-  const pill = (
-    <span
-      className={cn(
-        "inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5",
-        "text-xs font-medium leading-none align-baseline",
-        "cursor-default select-none whitespace-nowrap",
-        "transition-colors hover:brightness-110",
-        statusColorClass ?? config.colorClass,
-      )}
-      data-sigil={raw}
-    >
+  // Link: explicit param > resolved url
+  const href = params.link ?? params.href ?? (resolved.data?.url ? String(resolved.data.url) : undefined);
+
+  const pillClasses = cn(
+    "inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5",
+    "text-xs font-medium leading-none align-baseline",
+    "select-none whitespace-nowrap",
+    "transition-colors hover:brightness-110",
+    href ? "cursor-pointer no-underline hover:brightness-125" : "cursor-default",
+    statusColorClass ?? config.colorClass,
+  );
+
+  const pillContent = (
+    <>
       <SigilIcon name={config.icon ?? "hash"} className="size-3 shrink-0" />
       <span className="truncate max-w-[20ch]">{displayId}</span>
       {statusParam && (
         <span className="opacity-70 text-[10px]">{statusParam}</span>
       )}
+    </>
+  );
+
+  const pill = href ? (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      className={pillClasses}
+      data-sigil={raw}
+      onClick={(e) => e.stopPropagation()}
+    >
+      {pillContent}
+    </a>
+  ) : (
+    <span className={pillClasses} data-sigil={raw}>
+      {pillContent}
     </span>
   );
 
@@ -172,7 +192,7 @@ function buildTooltipLines(
 
   // Non-label, non-status params as extra info
   const extraParams = Object.entries(params).filter(
-    ([k]) => k !== "label" && k !== "status" && k !== "conclusion",
+    ([k]) => !["label", "status", "conclusion", "link", "href"].includes(k),
   );
   for (const [key, val] of extraParams) {
     lines.push(`${key}: ${val}`);
