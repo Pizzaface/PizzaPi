@@ -1,6 +1,6 @@
 ---
 title: Runner Services
-description: Create custom runner services with UI panels and custom triggers that agents can discover and subscribe to.
+description: Create custom runner services with UI panels, custom triggers, and sigils that agents can discover and subscribe to.
 ---
 
 import { Aside, FileTree, Steps } from "@astrojs/starlight/components";
@@ -113,7 +113,145 @@ Services can also be bundled inside Claude Code plugins:
 | `icon` | No | `"square"` | [Lucide](https://lucide.dev/icons) icon name (kebab-case) |
 | `entry` | No | `"./index.ts"` | Service module path relative to the service folder |
 | `panel.dir` | No | `"./panel"` | Panel static files directory (omit if no panel) |
-| `triggers` | No | `[]` | Trigger type definitions (see below) |
+| `triggers` | No | `[]` | Trigger type definitions (see [Custom Triggers](#custom-triggers) below, or use `triggers.json`) |
+| `sigils` | No | `[]` | Sigil type definitions (see [Custom Sigils](#custom-sigils) below, or use `sigils.json`) |
+
+---
+
+## Split Configuration Files
+
+For services with many triggers or sigils, you can split configuration into separate files. Split files take precedence over inline arrays in `manifest.json`.
+
+<FileTree>
+- ~/.pizzapi/services/my-service/
+  - manifest.json — core identity (id, label, icon, entry, panel)
+  - triggers.json — trigger definitions (optional, overrides manifest triggers)
+  - sigils.json — sigil type definitions (optional, overrides manifest sigils)
+  - index.ts — ServiceHandler module
+  - panel/
+    - index.html — self-contained UI (HTML/CSS/JS)
+</FileTree>
+
+### triggers.json
+
+Can be a bare array or an object with a `triggers` key:
+
+```json
+[
+  {
+    "type": "my-service:event_happened",
+    "label": "Event Happened",
+    "description": "Fired when an event occurs",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "path": { "type": "string" }
+      }
+    }
+  }
+]
+```
+
+Or wrapped in an object:
+
+```json
+{
+  "triggers": [
+    {
+      "type": "my-service:event_happened",
+      "label": "Event Happened"
+    }
+  ]
+}
+```
+
+### sigils.json
+
+Defines sigil types this service teaches the UI to render. Can be a bare array or an object with a `sigils` key:
+
+```json
+[
+  {
+    "type": "pr",
+    "label": "Pull Request",
+    "description": "A GitHub pull request reference",
+    "resolve": "/api/resolve/pr/{id}",
+    "aliases": ["pull-request", "mr"]
+  },
+  {
+    "type": "commit",
+    "label": "Commit",
+    "resolve": "/api/resolve/commit/{id}"
+  }
+]
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `type` | Yes | Sigil type name (used in `[[type:id]]` syntax) |
+| `label` | Yes | Human-readable label |
+| `description` | No | What this sigil represents |
+| `resolve` | No | API endpoint path for resolving sigil IDs to display data |
+| `schema` | No | JSON Schema for sigil params |
+| `aliases` | No | Alternative type names that resolve to this sigil |
+
+<Aside type="tip">
+  Split files are optional — inline `triggers` and `sigils` arrays in `manifest.json` continue to work. Use split files when your trigger or sigil definitions are large enough to make `manifest.json` hard to read.
+</Aside>
+
+### Migrating to Split Files
+
+To split an existing `manifest.json`:
+
+<Steps>
+
+1. **Copy the `triggers` array** from `manifest.json` into a new `triggers.json` file (as a bare JSON array).
+
+2. **Remove the `triggers` key** from `manifest.json`.
+
+3. **(Optional)** Create `sigils.json` with any sigil definitions.
+
+4. **Restart the runner** — the daemon will load split files automatically.
+
+</Steps>
+
+**Before** — everything in one file:
+
+```json
+// manifest.json
+{
+  "id": "my-service",
+  "label": "My Service",
+  "icon": "activity",
+  "entry": "./index.ts",
+  "panel": { "dir": "./panel" },
+  "triggers": [
+    { "type": "my-service:event_a", "label": "Event A" },
+    { "type": "my-service:event_b", "label": "Event B" }
+  ]
+}
+```
+
+**After** — split into focused files:
+
+```json
+// manifest.json
+{
+  "id": "my-service",
+  "label": "My Service",
+  "icon": "activity",
+  "entry": "./index.ts",
+  "panel": { "dir": "./panel" }
+}
+```
+
+```json
+// triggers.json
+[
+  { "type": "my-service:event_a", "label": "Event A" },
+  { "type": "my-service:event_b", "label": "Event B" }
+]
+```
 
 ---
 
@@ -393,6 +531,65 @@ The **Triggers panel** in the session viewer shows the live trigger history for 
 
 ---
 
+---
+
+## Custom Sigils
+
+Sigils are `[[type:id]]` tokens in agent output that render as interactive UI elements — clickable chips, status badges, or rich previews. Services define sigil types so the UI knows how to recognise and render them.
+
+<Aside type="note">
+  The Sigils system was originally conceived by [Allen Anthes](https://github.com/AllenAnthes).
+</Aside>
+
+### Declaring Sigils
+
+Add a `sigils` array to `manifest.json`, or create a standalone `sigils.json` file (see [Split Configuration Files](#split-configuration-files)).
+
+Each entry describes a sigil type using the `ServiceSigilDef` schema:
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `type` | Yes | Sigil type name — the token in `[[type:id]]` syntax, e.g. `"pr"` |
+| `label` | Yes | Human-readable label shown in the UI, e.g. `"Pull Request"` |
+| `description` | No | What this sigil represents |
+| `resolve` | No | API endpoint path to resolve a sigil ID to display data (e.g. PR number → title/status) |
+| `schema` | No | JSON Schema for sigil params (`[[type:id key=val]]`) |
+| `aliases` | No | Alternative type names that resolve to this sigil (e.g. `["pull-request", "mr"]`) |
+
+### Example: GitHub Service Sigils
+
+A GitHub integration service might define `pr` and `commit` sigil types:
+
+```json
+{
+  "id": "github",
+  "label": "GitHub",
+  "icon": "github",
+  "entry": "./index.ts",
+  "sigils": [
+    {
+      "type": "pr",
+      "label": "Pull Request",
+      "description": "A GitHub pull request — renders as a clickable chip with status",
+      "resolve": "/api/resolve/pr/{id}",
+      "aliases": ["pull-request", "mr"]
+    },
+    {
+      "type": "commit",
+      "label": "Commit",
+      "description": "A Git commit hash — renders with short SHA and message",
+      "resolve": "/api/resolve/commit/{id}"
+    }
+  ]
+}
+```
+
+With these definitions registered, when an agent writes `[[pr:42]]` or `[[commit:abc1234]]` in its output, the UI renders them as interactive elements instead of plain text.
+
+Sigil types are advertised to all connected viewers via the `service_announce` event, the same way trigger definitions are.
+
+---
+
 ### Services Without Panels
 
 A service doesn't need a UI panel. Omit `panel` from the manifest and skip `announcePanel()`. The service still runs in the background and can fire triggers:
@@ -561,8 +758,8 @@ Panels render inside a **280px-tall iframe** in the PizzaPi web interface. Key c
 2. It reads `manifest.json` for panel metadata and trigger definitions
 3. It loads the service module and calls `init(socket, { announcePanel })`
 4. The service starts `Bun.serve()` on port 0 and calls `announcePanel(port)`
-5. The daemon aggregates all trigger defs from all loaded services
-6. The daemon emits a `service_announce` event with the panels and trigger defs
+5. The daemon aggregates all trigger defs and sigil defs from all loaded services
+6. The daemon emits a `service_announce` event with panels, trigger defs, and sigil defs
 7. The UI renders panel iframes; agents discover triggers via `list_available_triggers()`
 8. When a service fires a trigger via `POST /api/runners/{runnerId}/trigger-broadcast`, the relay fans it out to all subscribed sessions
 
@@ -572,7 +769,8 @@ Panels render inside a **280px-tall iframe** in the PizzaPi web interface. Key c
 
 | Task | How |
 |------|-----|
-| Declare triggers | Add `triggers[]` array to `manifest.json` |
+| Declare triggers | Add `triggers[]` to `manifest.json` or `triggers.json` |
+| Declare sigils | Add `sigils[]` to `manifest.json` or `sigils.json` |
 | Fire a trigger | `POST /api/runners/{runnerId}/trigger-broadcast` with API key |
 | Serve static files | `Bun.serve()` with `readFileSync` for `index.html` |
 | Expose an API | Add route checks in the `fetch` handler |
