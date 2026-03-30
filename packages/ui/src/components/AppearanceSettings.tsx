@@ -1,13 +1,85 @@
 import React from "react";
-import { Monitor, Sun, Moon, Check } from "lucide-react";
+import { Monitor, Sun, Moon, Check, RotateCcw } from "lucide-react";
 import { useTheme, type ThemeMode } from "./ThemeProvider";
 
-const ACCENT_OPTIONS = [
-  { value: "default", label: "Default", color: "oklch(0.488 0.243 264.376)" },
-  { value: "green", label: "Green", color: "oklch(0.55 0.2 155)" },
-  { value: "orange", label: "Orange", color: "oklch(0.6 0.2 50)" },
-  { value: "purple", label: "Purple", color: "oklch(0.55 0.25 300)" },
+// ── Accent color presets (hex) ───────────────────────────────────────────────
+
+const ACCENT_PRESETS = [
+  { label: "Blue",   hex: "#3b82f6" },
+  { label: "Green",  hex: "#22c55e" },
+  { label: "Orange", hex: "#f97316" },
+  { label: "Purple", hex: "#a855f7" },
+  { label: "Red",    hex: "#ef4444" },
+  { label: "Pink",   hex: "#ec4899" },
+  { label: "Teal",   hex: "#14b8a6" },
+  { label: "Yellow", hex: "#eab308" },
 ] as const;
+
+const DEFAULT_ACCENT = ""; // empty = no override, use theme default
+
+// ── Color conversion helpers ─────────────────────────────────────────────────
+
+/** Parse hex (#rrggbb) → [r, g, b] in 0–1 range */
+function hexToRgb(hex: string): [number, number, number] {
+  const h = hex.replace("#", "");
+  return [
+    parseInt(h.slice(0, 2), 16) / 255,
+    parseInt(h.slice(2, 4), 16) / 255,
+    parseInt(h.slice(4, 6), 16) / 255,
+  ];
+}
+
+/** sRGB → linear */
+function linearize(c: number): number {
+  return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+}
+
+/** Convert hex to approximate oklch string for CSS variables */
+function hexToOklch(hex: string, lightnessOverride?: number): string {
+  const [r, g, b] = hexToRgb(hex).map(linearize);
+  // sRGB linear → XYZ (D65)
+  const x = 0.4124 * r + 0.3576 * g + 0.1805 * b;
+  const y = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  const z = 0.0193 * r + 0.1192 * g + 0.9505 * b;
+  // XYZ → OKLab (approximate via LMS)
+  const l_ = Math.cbrt(0.8189 * x + 0.3619 * y - 0.1289 * z);
+  const m_ = Math.cbrt(0.0330 * x + 0.9293 * y + 0.0361 * z);
+  const s_ = Math.cbrt(0.0482 * x + 0.2641 * y + 0.6338 * z);
+  const L = 0.2105 * l_ + 0.7937 * m_ - 0.0041 * s_;
+  const a = 1.9780 * l_ - 2.4286 * m_ + 0.4506 * s_;
+  const bOk = 0.0259 * l_ + 0.7827 * m_ - 0.8087 * s_;
+  const C = Math.sqrt(a * a + bOk * bOk);
+  const H = ((Math.atan2(bOk, a) * 180) / Math.PI + 360) % 360;
+  const finalL = lightnessOverride ?? L;
+  return `oklch(${finalL.toFixed(3)} ${C.toFixed(3)} ${H.toFixed(1)})`;
+}
+
+/** Apply a hex accent color as CSS variables on the root element */
+function applyAccentColor(hex: string) {
+  const el = document.documentElement;
+  if (!hex) {
+    // Remove overrides — revert to theme defaults
+    el.style.removeProperty("--primary");
+    el.style.removeProperty("--primary-foreground");
+    el.style.removeProperty("--sidebar-primary");
+    el.style.removeProperty("--sidebar-primary-foreground");
+    el.style.removeProperty("--ring");
+    el.removeAttribute("data-accent");
+    return;
+  }
+  const isDark = el.classList.contains("dark");
+  // Light mode: darker accent for contrast on white bg. Dark mode: brighter.
+  const primary = hexToOklch(hex, isDark ? 0.65 : 0.45);
+  const fg = isDark ? "oklch(0.1 0 0)" : "oklch(0.985 0 0)";
+  el.style.setProperty("--primary", primary);
+  el.style.setProperty("--primary-foreground", fg);
+  el.style.setProperty("--sidebar-primary", primary);
+  el.style.setProperty("--sidebar-primary-foreground", fg);
+  el.style.setProperty("--ring", primary);
+  el.setAttribute("data-accent", "custom");
+}
+
+// ── Other option constants ───────────────────────────────────────────────────
 
 const FONT_SIZE_OPTIONS = [
   { value: "small", label: "Small" },
@@ -35,11 +107,12 @@ const CODE_FONT_OPTIONS = [
   { value: "'Source Code Pro', monospace", label: "Source Code Pro" },
 ] as const;
 
-export type AccentColor = (typeof ACCENT_OPTIONS)[number]["value"];
 type FontSize = (typeof FONT_SIZE_OPTIONS)[number]["value"];
 type Density = (typeof DENSITY_OPTIONS)[number]["value"];
 type Radius = (typeof RADIUS_OPTIONS)[number]["value"];
 type CodeFont = (typeof CODE_FONT_OPTIONS)[number]["value"];
+
+// ── Reusable segmented control ───────────────────────────────────────────────
 
 function OptionGroup<T extends string>({
   label,
@@ -77,10 +150,12 @@ function OptionGroup<T extends string>({
   );
 }
 
+// ── Main component ───────────────────────────────────────────────────────────
+
 export function AppearanceSettings() {
-  const { mode, setMode, highContrast, setHighContrast } = useTheme();
-  const [accent, setAccentState] = React.useState<AccentColor>(() => {
-    return (localStorage.getItem("theme-accent") as AccentColor) || "default";
+  const { mode, resolvedTheme, setMode, highContrast, setHighContrast } = useTheme();
+  const [accentHex, setAccentHexState] = React.useState<string>(() => {
+    return localStorage.getItem("theme-accent-hex") || DEFAULT_ACCENT;
   });
   const [fontSize, setFontSizeState] = React.useState<FontSize>(() => {
     return (localStorage.getItem("theme-font-size") as FontSize) || "default";
@@ -95,16 +170,22 @@ export function AppearanceSettings() {
     return (localStorage.getItem("theme-code-font") as CodeFont) || "ui-monospace, monospace";
   });
 
-  const setAccent = React.useCallback((a: AccentColor) => {
-    setAccentState(a);
-    if (a === "default") {
-      document.documentElement.removeAttribute("data-accent");
-      localStorage.removeItem("theme-accent");
+  const setAccentHex = React.useCallback((hex: string) => {
+    setAccentHexState(hex);
+    applyAccentColor(hex);
+    if (hex) {
+      localStorage.setItem("theme-accent-hex", hex);
     } else {
-      document.documentElement.setAttribute("data-accent", a);
-      localStorage.setItem("theme-accent", a);
+      localStorage.removeItem("theme-accent-hex");
     }
+    // Clean up old preset key if present
+    localStorage.removeItem("theme-accent");
   }, []);
+
+  // Re-apply accent when theme mode changes (light/dark affects lightness)
+  React.useEffect(() => {
+    if (accentHex) applyAccentColor(accentHex);
+  }, [resolvedTheme, accentHex]);
 
   const setFontSize = React.useCallback((next: FontSize) => {
     setFontSizeState(next);
@@ -148,10 +229,8 @@ export function AppearanceSettings() {
     }
   }, []);
 
+  // Apply non-accent settings on mount
   React.useEffect(() => {
-    if (accent !== "default") {
-      document.documentElement.setAttribute("data-accent", accent);
-    }
     if (fontSize !== "default") {
       document.documentElement.setAttribute("data-font-size", fontSize);
     }
@@ -160,7 +239,7 @@ export function AppearanceSettings() {
     }
     document.documentElement.style.setProperty("--radius", radius);
     document.documentElement.style.setProperty("--code-font", codeFont);
-  }, [accent, fontSize, density, radius, codeFont]);
+  }, [fontSize, density, radius, codeFont]);
 
   const modeOptions: { value: ThemeMode; icon: typeof Monitor; label: string }[] = [
     { value: "auto", icon: Monitor, label: "Auto" },
@@ -170,6 +249,7 @@ export function AppearanceSettings() {
 
   return (
     <div className="space-y-6">
+      {/* Theme Mode */}
       <div>
         <h3 className="text-sm font-medium mb-3">Theme Mode</h3>
         <div className="flex gap-1 p-1 bg-muted rounded-lg">
@@ -190,26 +270,65 @@ export function AppearanceSettings() {
         </div>
       </div>
 
+      {/* Accent Color — presets + color picker */}
       <div>
-        <h3 className="text-sm font-medium mb-3">Accent Color</h3>
-        <div className="flex gap-3">
-          {ACCENT_OPTIONS.map(({ value, label, color }) => (
+        <h3 className="text-sm font-medium mb-1">Accent Color</h3>
+        <p className="text-xs text-muted-foreground mb-3">Pick a preset or choose any color</p>
+        <div className="flex items-center gap-2 flex-wrap">
+          {ACCENT_PRESETS.map(({ label, hex }) => (
             <button
-              key={value}
-              onClick={() => setAccent(value)}
+              key={hex}
+              onClick={() => setAccentHex(hex)}
               title={label}
-              className="relative w-8 h-8 rounded-full border-2 transition-all flex items-center justify-center"
+              className="relative w-7 h-7 rounded-full border-2 transition-all flex items-center justify-center flex-shrink-0"
               style={{
-                backgroundColor: color,
-                borderColor: accent === value ? "var(--foreground)" : "transparent",
+                backgroundColor: hex,
+                borderColor: accentHex === hex ? "var(--foreground)" : "transparent",
               }}
             >
-              {accent === value && <Check className="h-4 w-4 text-white" />}
+              {accentHex === hex && <Check className="h-3 w-3 text-white drop-shadow-sm" />}
             </button>
           ))}
+
+          {/* Native color picker */}
+          <label
+            className="relative w-7 h-7 rounded-full border-2 border-dashed border-border cursor-pointer flex items-center justify-center flex-shrink-0 overflow-hidden hover:border-foreground transition-colors"
+            title="Custom color"
+          >
+            <input
+              type="color"
+              value={accentHex || "#3b82f6"}
+              onChange={(e) => setAccentHex(e.target.value)}
+              className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+            />
+            {/* Show the custom color if it's not a preset */}
+            {accentHex && !ACCENT_PRESETS.some(p => p.hex === accentHex) ? (
+              <span
+                className="w-full h-full rounded-full flex items-center justify-center"
+                style={{ backgroundColor: accentHex }}
+              >
+                <Check className="h-3 w-3 text-white drop-shadow-sm" />
+              </span>
+            ) : (
+              <span className="text-[10px] text-muted-foreground font-bold">+</span>
+            )}
+          </label>
+
+          {/* Reset button */}
+          {accentHex && (
+            <button
+              onClick={() => setAccentHex("")}
+              className="h-7 px-2 text-[10px] text-muted-foreground hover:text-foreground flex items-center gap-1 rounded border border-border hover:bg-muted transition-colors"
+              title="Reset to default"
+            >
+              <RotateCcw className="h-3 w-3" />
+              Reset
+            </button>
+          )}
         </div>
       </div>
 
+      {/* High Contrast */}
       <div>
         <label className="flex items-center gap-3 cursor-pointer">
           <input
