@@ -15,7 +15,9 @@ Runner services are background processes on the runner daemon. They can:
 
 ```
 ~/.pizzapi/services/<service-name>/
-  manifest.json       # Required — declares metadata, panel config, and triggers
+  manifest.json       # Required — core identity (id, label, icon, entry, panel)
+  triggers.json       # Optional — trigger definitions (overrides manifest.triggers)
+  sigils.json         # Optional — sigil type definitions (overrides manifest.sigils)
   index.ts            # ServiceHandler module (default export)
   panel/              # Optional — only needed if the service has a UI panel
     index.html        # Self-contained UI (HTML/CSS/JS)
@@ -66,7 +68,8 @@ Runner services are background processes on the runner daemon. They can:
 | `icon` | No | `"square"` | [Lucide](https://lucide.dev/icons) icon name (kebab-case) |
 | `entry` | No | `./index.ts` | Service module path relative to folder |
 | `panel.dir` | No | `./panel` | Panel static files directory (omit if no panel) |
-| `triggers` | No | `[]` | Array of trigger type definitions (see below) |
+| `triggers` | No | `[]` | Array of trigger type definitions (see below). Can also live in `triggers.json`. |
+| `sigils` | No | `[]` | Array of sigil type definitions (see below). Can also live in `sigils.json`. |
 
 ### Trigger Definitions
 
@@ -135,6 +138,41 @@ Array-valued payload fields also work with scalar subscription params: if the pa
 For substring filtering, name the param with a `Contains` suffix. For example, a trigger with `bodyContains` will match when the payload's `body` field includes the subscriber's text.
 
 Trigger types are advertised to agents via `service_announce` so they can be discovered with `list_available_triggers()` and subscribed to with `subscribe_trigger()`.
+
+> **Split file note:** Triggers can live in a separate `triggers.json` file (bare array or `{ "triggers": [...] }` format). When `triggers.json` exists, it takes precedence over inline `triggers` in `manifest.json`.
+
+## sigils.json
+
+Define sigil types the service teaches the UI to render as `[[type:id]]` inline tokens.
+Can be a bare array or wrapped in `{ "sigils": [...] }`.
+
+```json
+[
+  {
+    "type": "pr",
+    "label": "Pull Request",
+    "description": "A GitHub pull request reference",
+    "resolve": "/api/resolve/pr/{id}",
+    "aliases": ["pull-request", "mr"]
+  },
+  {
+    "type": "commit",
+    "label": "Commit",
+    "resolve": "/api/resolve/commit/{id}"
+  }
+]
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `type` | Yes | Sigil type name used in `[[type:id]]` syntax |
+| `label` | Yes | Human-readable label for the UI |
+| `description` | No | What this sigil represents |
+| `resolve` | No | API path to resolve a sigil ID to display data (e.g. PR number → title) |
+| `schema` | No | JSON Schema for valid sigil params |
+| `aliases` | No | Alternative type names that resolve to this sigil |
+
+When `sigils.json` exists, it takes precedence over inline `sigils` in `manifest.json`.
 
 ## ServiceHandler Template
 
@@ -328,8 +366,8 @@ A service doesn't need a panel. Omit `panel` from manifest.json and skip the `an
 2. Reads manifest.json → extracts panel metadata + trigger definitions
 3. Loads service module → calls init(socket, { announcePanel })
 4. Service starts Bun.serve() on port 0 → calls announcePanel(port)
-5. Daemon aggregates all trigger defs from all services
-6. Daemon emits service_announce with panels[] + triggerDefs[]
+5. Daemon aggregates all trigger defs and sigil defs from all services
+6. Daemon emits service_announce with panels[] + triggerDefs[] + sigilDefs[]
 7. UI renders iframe; agents discover triggers via list_available_triggers()
 8. Service fires triggers via POST /api/runners/{runnerId}/trigger-broadcast
 9. Relay fans out to all subscribed sessions
@@ -339,7 +377,8 @@ A service doesn't need a panel. Omit `panel` from manifest.json and skip the `an
 
 | Task | How |
 |------|-----|
-| Declare triggers | Add `triggers[]` array to `manifest.json` |
+| Declare triggers | Add `triggers[]` to `manifest.json` or `triggers.json` |
+| Declare sigils | Add `sigils[]` to `manifest.json` or `sigils.json` |
 | Fire a trigger | `POST /api/runners/{runnerId}/trigger-broadcast` with API key |
 | Serve static files | `Bun.serve()` with `readFileSync` for index.html |
 | Expose an API | Add route checks in the `fetch` handler |
