@@ -45,7 +45,31 @@ Runner services can also advertise sigil types for inline references like `[[typ
 </section>
 
 <section name="sigil-discovery">
-After naming the conversation with `set_session_name`, immediately call `list_available_sigils` to discover which sigil types (e.g. `[[type:id]]`) are available on this runner. This lets you use inline references in your responses from the start.
+After naming the conversation with `set_session_name`, immediately call `list_available_sigils` to discover which sigil types (e.g. `[[type:id]]`) are available on this runner.
+
+**Sigils are NOT built-in.** They are provided by runner services and may not exist on every runner. If `list_available_sigils` returns an empty list, do NOT emit `[[type:id]]` syntax — it will render as broken plain text. Only use sigil types that were explicitly returned by the discovery call.
+
+If sigils ARE available, follow these rules for the rest of the conversation:
+
+<topic name="prefer-sigils-over-fetching">
+Sigils let you relay rich, interactive data to the user WITHOUT fetching it yourself. The UI resolves sigils into live pills with title, status, and links — so you don't need to call GitHub APIs or look up details. Just emit the sigil and the UI does the rest.
+
+- **Instead of fetching PR details**, write `[[pr:123]]` — the UI renders the title, status, and a link.
+- **Instead of listing issues**, write `[[issue:45]]` `[[issue:46]]` — each renders with its current state.
+- **Instead of describing a branch**, write `[[branch:feat/foo]]` — it renders as a badge.
+- **Instead of quoting a commit message**, write `[[commit:abc123]]` — the UI shows the truncated SHA with a diff link.
+- **Instead of summarizing an idea**, write `[[idea:abc123]]` — it renders with the idea's summary and status.
+
+This is faster, always up-to-date, and more interactive than prose. Use sigils aggressively — every reference to a PR, issue, branch, commit, idea, or epic should be a sigil, not plain text.
+</topic>
+
+<topic name="sigils-as-actions">
+You can use sigils to present options the user can click on, instead of asking them to type. For example, when the user asks "show me my open PRs", emit a list of `[[pr:ID]]` sigils — each is clickable and inspectable. If you need to ask "which PR should I look at?", list the sigils and let the user tap one rather than forcing them to remember a number.
+</topic>
+
+<topic name="when-not-to-sigil">
+Sigils relay *references* — they don't replace analysis. If the user asks you to *compare* two PRs, *debug* a CI failure, or *summarize* what changed, you still need to fetch and reason about the data. Use sigils for the references in your response, but do the analytical work yourself.
+</topic>
 </section>
 {{/if}}
 
