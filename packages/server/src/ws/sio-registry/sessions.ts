@@ -44,7 +44,7 @@ import {
     recordRelaySessionState,
     touchRelaySession,
 } from "../../sessions/store.js";
-import { appendRelayEventToCache } from "../../sessions/redis.js";
+import { appendRelayEventToCache, deleteRelayEventCache } from "../../sessions/redis.js";
 import { storeAndReplaceImages, storeAndReplaceImagesInEvent } from "../strip-images.js";
 import { extractMetaFromHeartbeat } from "./meta.js";
 import { severStaleParentLink } from "../stale-parent-link.js";
@@ -106,7 +106,7 @@ export async function registerTuiSession(
     opts: RegisterTuiSessionOpts = {},
 ): Promise<{ sessionId: string; token: string; shareUrl: string; parentSessionId: string | null; wasDelinked: boolean }> {
     const requestedSessionId = typeof opts.sessionId === "string" ? opts.sessionId.trim() : "";
-    const sessionId = requestedSessionId.length > 0 ? requestedSessionId : randomUUID();
+    let sessionId = requestedSessionId.length > 0 ? requestedSessionId : randomUUID();
     const token = randomBytes(32).toString("hex");
     const shareUrl = `${process.env.PIZZAPI_BASE_URL ?? "http://localhost:5173"}/session/${sessionId}`;
     // startedAt is resolved after the existing-session check below so that
@@ -129,11 +129,19 @@ export async function registerTuiSession(
     const existing = await getSession(sessionId);
     const previousParentSessionId = existing?.parentSessionId ?? null;
     if (existing) {
-        const oldSocket = localTuiSockets.get(sessionId);
-        if (oldSocket && oldSocket !== socket) {
-            oldSocket.data.sessionId = undefined;
+        // Guard against cross-user session ID takeover: if the session is
+        // already owned by a different user, do not evict them — instead fall
+        // back to a fresh session ID so this registration gets its own slot.
+        if (existing.userId && existing.userId !== userId) {
+            log.warn(`registerTuiSession rejected: session ${sessionId} belongs to different user`);
+            sessionId = randomUUID();
+        } else {
+            const oldSocket = localTuiSockets.get(sessionId);
+            if (oldSocket && oldSocket !== socket) {
+                oldSocket.data.sessionId = undefined;
+            }
+            await endSharedSession(sessionId, "Session reconnected");
         }
-        await endSharedSession(sessionId, "Session reconnected");
     }
 
     // Preserve the original startedAt on reconnect so that epoch-based
@@ -772,6 +780,9 @@ export async function endSharedSession(sessionId: string, reason: string = "Sess
     if (reason !== "Session reconnected") {
         void clearSessionSubscriptions(sessionId).catch((err) => {
             log.warn("Failed to clear trigger subscriptions for session", sessionId, ":", err);
+        });
+        void deleteRelayEventCache(sessionId).catch((err) => {
+            log.warn("Failed to delete relay event cache:", sessionId, err);
         });
     }
 
