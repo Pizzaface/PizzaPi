@@ -461,6 +461,16 @@ export async function getSessionSummary(sessionId: string): Promise<RedisSession
     return parseSessionSummaryFromHash(hash);
 }
 
+/**
+ * Fetch a single field from a session hash without pulling the entire record.
+ * Returns null if the session or field doesn't exist.
+ */
+export async function getSessionField(sessionId: string, field: string): Promise<string | null> {
+    const r = requireRedis();
+    const value = await r.hGet(sessionKey(sessionId), field);
+    return value ?? null;
+}
+
 export async function updateSessionFields(
     sessionId: string,
     fields: Partial<RedisSessionData>,

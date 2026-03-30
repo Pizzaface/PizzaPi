@@ -1,29 +1,37 @@
-import { describe, expect, test } from "bun:test";
-import { resolveSpawnError, resolveSpawnReady, waitForSpawnAck } from "./runner-control";
+import { afterEach, describe, expect, mock, test } from "bun:test";
 
-const isCI = !!process.env.CI;
+async function loadRunnerControl() {
+    mock.restore();
+    const mod = await import(`./runner-control.ts?runner-control-test=${crypto.randomUUID()}`);
+    mod._resetRunnerControlForTesting();
+    return mod;
+}
+
+afterEach(() => {
+    mock.restore();
+});
 
 describe("runner spawn ack coordination", () => {
     test("resolves when ack arrives after waiter is registered", async () => {
-        const sessionId = `s-${crypto.randomUUID()}`;
-        const ackPromise = waitForSpawnAck(sessionId, 100);
-        resolveSpawnReady(sessionId);
+        const { waitForSpawnAck, resolveSpawnReady } = await loadRunnerControl();
+        const ackPromise = waitForSpawnAck("runner-control-after-wait", 100);
+        resolveSpawnReady("runner-control-after-wait");
 
         await expect(ackPromise).resolves.toEqual({ ok: true });
     });
 
     test("resolves even when ack arrives before waiter registration (race)", async () => {
-        const sessionId = `s-${crypto.randomUUID()}`;
-        resolveSpawnReady(sessionId);
+        const { waitForSpawnAck, resolveSpawnReady } = await loadRunnerControl();
+        resolveSpawnReady("runner-control-ready-early");
 
-        await expect(waitForSpawnAck(sessionId, 25)).resolves.toEqual({ ok: true });
+        await expect(waitForSpawnAck("runner-control-ready-early", 25)).resolves.toEqual({ ok: true });
     });
 
-    (isCI ? test.skip : test)("returns early error even when error arrives before waiter registration", async () => {
-        const sessionId = `s-${crypto.randomUUID()}`;
-        resolveSpawnError(sessionId, "Runner spawn failed");
+    test("returns early error even when error arrives before waiter registration", async () => {
+        const { waitForSpawnAck, resolveSpawnError } = await loadRunnerControl();
+        resolveSpawnError("runner-control-error-early", "Runner spawn failed");
 
-        await expect(waitForSpawnAck(sessionId, 25)).resolves.toEqual({
+        await expect(waitForSpawnAck("runner-control-error-early", 25)).resolves.toEqual({
             ok: false,
             message: "Runner spawn failed",
         });

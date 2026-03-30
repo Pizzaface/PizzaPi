@@ -19,7 +19,7 @@ import {
     removeHubClient,
     getSessions,
 } from "../sio-registry.js";
-import { getSession } from "../sio-state/index.js";
+import { getSessionSummary } from "../sio-state/index.js";
 import { getSessionMetaState, sessionMetaRoom } from "../sio-registry/meta.js";
 import { createLogger } from "@pizzapi/tools";
 
@@ -63,7 +63,7 @@ export function registerHubNamespace(io: SocketIOServer): void {
           // Distinguish "session is not live yet / no longer live" from an
           // actual cross-user subscription attempt so restart-time reconnect
           // races don't look like auth failures in the logs.
-          const session = await getSession(sessionId);
+          const session = await getSessionSummary(sessionId);
           if (!session) {
             log.info(`subscribe_session_meta: session missing userId=${userId} sessionId=${sessionId}`);
             return;
