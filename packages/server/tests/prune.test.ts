@@ -24,7 +24,7 @@ test("pruneExpiredRelaySessions removes expired sessions and returns their IDs",
     });
 
     // Create session state
-    await recordRelaySessionState(expiredSessionId, null, { foo: "bar" });
+    await recordRelaySessionState(expiredSessionId, "u1", { foo: "bar" });
 
     // Update expiry to be in the past
     await getKysely().updateTable("relay_session")
