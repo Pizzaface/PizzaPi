@@ -87,6 +87,7 @@ export function SigilProvider({ sigilDefs, panels, runnerId, children }: SigilPr
   // Resolve cache: keyed by "gen:type:id". Lives in a ref for instant reads.
   const cacheRef = useRef(new Map<string, SigilResolveState>());
   const [generation, setGeneration] = useState(0);
+  const bump = useCallback(() => setGeneration((g) => g + 1), []);
 
   // Clear cache when infrastructure changes (server restart, reconnect)
   // so stale entries don't block re-fetching with new panel ports.
