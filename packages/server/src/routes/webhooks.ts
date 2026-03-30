@@ -61,6 +61,8 @@ const SESSION_CONNECT_TIMEOUT_MS = 15_000;
 
 /** Maximum accepted age/skew for webhook timestamp headers (ms). */
 const WEBHOOK_REPLAY_WINDOW_MS = 5 * 60 * 1000;
+/** Allow up to 30s of clock skew (NTP drift) before rejecting as "future". */
+const WEBHOOK_CLOCK_SKEW_MS = 30 * 1000;
 
 /** In-memory replay guard: (webhookId:nonce) -> first-seen timestamp. */
 const consumedWebhookNonces = new Map<string, number>();
@@ -500,11 +502,11 @@ export const handleWebhooksRoute: RouteHandler = async (req, url) => {
             }
 
             const nowMs = Date.now();
-            if (timestampMs > nowMs) {
-                // Reject future timestamps entirely. Accepting them would allow a nonce replay
-                // attack: a nonce stored with creation time T0 is pruned at T0+WINDOW, but a
-                // future timestamp T0+WINDOW is still valid until T0+2*WINDOW — leaving a gap
-                // where the same request can be replayed after the nonce expires.
+            if (timestampMs > nowMs + WEBHOOK_CLOCK_SKEW_MS) {
+                // Reject timestamps too far in the future. A small tolerance (30s)
+                // accommodates NTP drift without reopening the replay window —
+                // nonces are retained for the full REPLAY_WINDOW after first seen,
+                // which far exceeds the skew allowance.
                 return Response.json({ error: "Webhook timestamp is in the future" }, { status: 401 });
             }
             if (nowMs - timestampMs > WEBHOOK_REPLAY_WINDOW_MS) {

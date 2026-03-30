@@ -677,14 +677,30 @@ describe("POST /api/webhooks/:id/fire — HMAC validation", () => {
         expect(body.error).toContain("future");
     });
 
-    test("returns 401 for any future timestamp (1 ms ahead)", async () => {
+    test("allows timestamps within 30s clock skew tolerance", async () => {
         mockGetWebhook.mockReturnValue(Promise.resolve(ACTIVE_WEBHOOK));
-        const justFuture = new Date(Date.now() + 1).toISOString();
+        setupSpawnAndDeliverMocks();
+        // 15s ahead — within the 30s tolerance
+        const slightFuture = new Date(Date.now() + 15_000).toISOString();
         const [req, url] = makeFireReq(
             "/api/webhooks/wh-1/fire",
             { event: "test" },
             ACTIVE_WEBHOOK.secret,
-            { "x-webhook-timestamp": justFuture, "x-webhook-nonce": "nonce-just-future" },
+            { "x-webhook-timestamp": slightFuture, "x-webhook-nonce": "nonce-skew-ok" },
+        );
+        const res = await handleWebhooksRoute(req, url);
+        expect(res?.status).toBe(200);
+    });
+
+    test("returns 401 for timestamps beyond 30s clock skew", async () => {
+        mockGetWebhook.mockReturnValue(Promise.resolve(ACTIVE_WEBHOOK));
+        // 60s ahead — beyond the 30s tolerance
+        const tooFarFuture = new Date(Date.now() + 60_000).toISOString();
+        const [req, url] = makeFireReq(
+            "/api/webhooks/wh-1/fire",
+            { event: "test" },
+            ACTIVE_WEBHOOK.secret,
+            { "x-webhook-timestamp": tooFarFuture, "x-webhook-nonce": "nonce-too-far" },
         );
         const res = await handleWebhooksRoute(req, url);
         expect(res?.status).toBe(401);
