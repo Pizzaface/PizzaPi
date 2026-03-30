@@ -109,7 +109,7 @@ export const SANDBOX_ONLY_CMD_PATTERNS = [
     /^\s*gh\s+(issue|pr|release)\s+(create|edit|close|merge|delete|comment)\b/i,
     // HTTP write verbs — sandbox protects local filesystem but NOT the network.
     // These send mutations to remote servers regardless of sandbox state.
-    /^\s*curl\b.*\s(?:-X\s+(?:POST|PUT|DELETE|PATCH)\b|--request(?:=|\s+)(?:POST|PUT|DELETE|PATCH)\b|-d\b|--data(?:\s|=|-\w)|--json\b)/i,
+    /^\s*curl\b.*\s(?:-X\s*(?:POST|PUT|DELETE|PATCH)\b|--request(?:=|\s+)(?:POST|PUT|DELETE|PATCH)\b|-d\b|--data(?:\s|=|-\w)|--json\b)/i,
     /^\s*wget\b.*\s--post-(?:data|file)(?:\s|=|\b)/i,
 ];
 
@@ -138,7 +138,7 @@ export const DESTRUCTIVE_FLAG_PATTERNS = [
     /^\s*make\b(?!.*(\s-n\b|\s--dry-run\b|\s--just-print\b))/i,
     // HTTP write verbs via curl (network side-effects, not covered by filesystem sandbox).
     // Blocks -X POST/PUT/DELETE/PATCH, --request, -d/--data* (POST body), --json.
-    /\bcurl\b.*\s(?:-X\s+(?:POST|PUT|DELETE|PATCH)\b|--request(?:=|\s+)(?:POST|PUT|DELETE|PATCH)\b|-d\b|--data(?:\s|=|-\w)|--json\b)/i,
+    /\bcurl\b.*\s(?:-X\s*(?:POST|PUT|DELETE|PATCH)\b|--request(?:=|\s+)(?:POST|PUT|DELETE|PATCH)\b|-d\b|--data(?:\s|=|-\w)|--json\b)/i,
     // HTTP write verbs via wget
     /\bwget\b.*\s--post-(?:data|file)(?:\s|=|\b)/i,
 ];

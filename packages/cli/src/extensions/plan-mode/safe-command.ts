@@ -15,85 +15,83 @@ function hasShortFlag(word: string, flag: string): boolean {
 }
 
 /**
- * Returns true when `env` is being used as a command launcher, i.e. after
- * skipping env's own flags (like -i, -u VAR) and any VAR=val assignments,
- * there is at least one remaining argument that would be the wrapped command.
+ * If `segment` is a wrapper shell invocation that executes an inner command
+ * string, returns the inner command string so it can be evaluated recursively.
  *
- * `env` by itself (just prints environment) returns false.
- * `env FOO=bar rm file` returns true — rm is the wrapped command.
+ * Returns:
+ *  - `null`  — not a wrapper shell invocation (caller should analyse normally)
+ *  - `""`    — IS a wrapper shell but inner command cannot be extracted
+ *               (e.g. `bash -c` with no argument); callers should block conservatively
+ *  - string  — the inner command/script text to evaluate for destructiveness
+ *
+ * Handles:
+ *   - `bash -c 'CMD'`, `sh -lc 'CMD'`, `/usr/bin/bash -c 'CMD'`, etc.
+ *     Inner command is the argument that follows the word containing `-c`.
+ *   - `env [opts] [VAR=val...] COMMAND [args…]`
+ *     Inner command is the reconstructed `COMMAND args` after skipping
+ *     env's own flags and variable assignments.
+ *
+ * Note: `perl -e CODE` is intentionally NOT handled here — Perl code cannot
+ * be re-evaluated as a shell command.  It is already caught by
+ * DESTRUCTIVE_FLAG_PATTERNS and continues to be blocked unconditionally.
  */
-function isEnvWithCommand(words: string[]): boolean {
-    let i = 1; // skip "env"
-    while (i < words.length) {
-        const w = words[i];
-        // Skip known env flags: -i/--ignore-environment, -0/--null, -v/--debug
-        if (w === "-i" || w === "--ignore-environment" || w === "-0" || w === "--null" ||
-            w === "-v" || w === "--debug" || w === "-") {
-            i++;
-            continue;
-        }
-        // Skip -u VAR / --unset VAR (separate argument forms)
-        if ((w === "-u" || w === "--unset") && i + 1 < words.length) {
-            i += 2;
-            continue;
-        }
-        // Skip -u=VAR / --unset=VAR inline forms
-        if (/^(?:-u|--unset)=/.test(w)) {
-            i++;
-            continue;
-        }
-        // Skip VAR=val environment variable assignments
-        if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(w)) {
-            i++;
-            continue;
-        }
-        // Any remaining token is a command argument — env is acting as a launcher
-        return true;
-    }
-    return false;
-}
-
-/**
- * Detects wrapper shell and interpreter invocations that execute arbitrary code
- * via a -c flag, bypassing per-command analysis:
- *
- *   - `bash -c 'cmd'`, `sh -c 'cmd'`, `/usr/bin/bash -c 'cmd'`, etc.
- *   - `perl -e 'code'`, `perl -E 'code'`
- *   - `env [VAR=val...] COMMAND` (env used as a command launcher)
- *
- * These are only blocked in no-sandbox mode (the sandbox-active path handles
- * filesystem writes at the OS level and the check would be too restrictive there).
- *
- * Note: python/ruby/node with inline code flags are already caught by
- * DESTRUCTIVE_FLAG_PATTERNS and don't require a separate check here.
- */
-function isWrapperShellCommand(segment: string): boolean {
+function extractWrapperInnerCommand(segment: string): string | null {
     const words = splitShellWords(segment);
-    if (words.length < 2) return false;
+    if (words.length < 2) return null;
 
     // Strip any leading path component so /usr/bin/bash, /bin/sh, etc. are handled
     const first = words[0].toLowerCase().replace(/^.*[\/\\]/, "");
 
-    // env as a command launcher: env [opts] [VAR=val...] COMMAND
+    // env as a command launcher: env [opts] [VAR=val...] COMMAND [args...]
     if (first === "env") {
-        return isEnvWithCommand(words);
+        let i = 1; // skip "env"
+        while (i < words.length) {
+            const w = words[i];
+            // Skip known env flags: -i/--ignore-environment, -0/--null, -v/--debug
+            if (w === "-i" || w === "--ignore-environment" || w === "-0" || w === "--null" ||
+                w === "-v" || w === "--debug" || w === "-") {
+                i++;
+                continue;
+            }
+            // Skip -u VAR / --unset VAR (separate argument forms)
+            if ((w === "-u" || w === "--unset") && i + 1 < words.length) {
+                i += 2;
+                continue;
+            }
+            // Skip -u=VAR / --unset=VAR inline forms
+            if (/^(?:-u|--unset)=/.test(w)) {
+                i++;
+                continue;
+            }
+            // Skip VAR=val environment variable assignments
+            if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(w)) {
+                i++;
+                continue;
+            }
+            // Remaining tokens form the inner command + arguments
+            return words.slice(i).join(" ");
+        }
+        // Only env options / variable assignments — env by itself prints the
+        // environment and is harmless.  Return null so normal checks run.
+        return null;
     }
 
     // Shell wrappers with -c flag (executes the next argument as shell code)
     if (WRAPPER_SHELLS.has(first)) {
-        // Allow --version / --help queries
-        if (words.some((w) => w === "--version" || w === "--help")) return false;
-        return words.some((w) => hasShortFlag(w, "c"));
+        // --version / --help are safe queries; not a code-execution wrapper
+        if (words.some((w) => w === "--version" || w === "--help")) return null;
+
+        for (let i = 1; i < words.length; i++) {
+            if (hasShortFlag(words[i], "c")) {
+                // The command string is the next positional argument after -c.
+                // If there is none (bare `bash -c`) return "" to block conservatively.
+                return i + 1 < words.length ? words[i + 1] : "";
+            }
+        }
+        return null; // no -c flag → not executing arbitrary code inline
     }
 
-    // perl -e / -E: inline Perl code execution
-    // (belt-and-suspenders: also caught by DESTRUCTIVE_FLAG_PATTERNS for the common form)
-    if (first === "perl") {
-        if (words.some((w) => w === "--version" || w === "--help")) return false;
-        return words.some((w) => hasShortFlag(w, "e") || hasShortFlag(w, "E"));
-    }
-
-    return false;
+    return null;
 }
 
 /**
@@ -141,6 +139,18 @@ export function isDestructiveCommand(command: string, sandboxActive = false): bo
             // sandbox handles filesystem writes (redirection, -o, etc.).
             if (/^\s*git\b/i.test(trimmed)) {
                 if (isDestructiveGitCommand(trimmed)) return true;
+                continue;
+            }
+
+            // Wrapper shells — extract the inner command and evaluate it
+            // against the sandbox-active rules so that e.g.
+            // `bash -c "curl -X POST ..."` and `bash -c "kill 1"` are caught
+            // even when the OS sandbox is on (it only protects the filesystem,
+            // not network mutations or process-control calls).
+            const innerCmdSandbox = extractWrapperInnerCommand(trimmed);
+            if (innerCmdSandbox !== null) {
+                if (innerCmdSandbox === "" || isDestructiveCommand(innerCmdSandbox, true)) return true;
+                continue; // inner command is safe; skip remaining checks
             }
         }
         return false;
@@ -172,9 +182,19 @@ export function isDestructiveCommand(command: string, sandboxActive = false): bo
         // to account for read-only flags / legacy syntax.
         if (isDestructiveTarCommand(trimmed) || isDestructiveGawkCommand(trimmed) || isDestructivePatchCommand(trimmed)) return true;
 
-        // Wrapper shells/interpreters with -c/-e: bash -c, sh -c, perl -e, env COMMAND, etc.
-        // These embed the real command in a string argument, bypassing per-token analysis.
-        if (isWrapperShellCommand(trimmed)) return true;
+        // Wrapper shells/interpreters: bash -c, sh -c, env COMMAND, etc.
+        // Instead of blanket-blocking all wrapper shells, extract the inner command
+        // and evaluate it recursively.  This allows `env HOME=/tmp git status` and
+        // `bash -lc "git status"` while still blocking `bash -c "rm -rf /"`.
+        const innerCmd = extractWrapperInnerCommand(trimmed);
+        if (innerCmd !== null) {
+            // Also block if the outer wrapper itself has unsafe output redirection,
+            // e.g. `bash -c 'git status' > output.txt` writes to a file.
+            if (hasUnsafeOutputRedirection(trimmed)) return true;
+            // Block if no extractable inner command, or if the inner command is destructive.
+            if (innerCmd === "" || isDestructiveCommand(innerCmd, false)) return true;
+            continue; // inner command is safe; skip remaining pattern checks
+        }
 
         const isCmdDestructive = DESTRUCTIVE_CMD_PATTERNS.some((p) => p.test(trimmed));
         const hasUnsafeRedirection = hasUnsafeOutputRedirection(trimmed);

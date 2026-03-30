@@ -218,8 +218,21 @@ export const planModeToggleExtension: ExtensionFactory = (pi) => {
         if (event.toolName === TOGGLE_PLAN_MODE_TOOL) return;
 
         // Block write tools and session-spawning tools.
-        // subagent and spawn_session are blocked because they create child contexts
-        // with full write access, bypassing plan mode restrictions entirely.
+        // spawn_session is blocked unconditionally — spawned child sessions are
+        // independent processes with their own full write access and there is no
+        // mechanism to inject plan-mode restrictions into them.
+        //
+        // subagent is also blocked for now because it similarly creates an isolated
+        // context (separate agent process) that does not inherit plan-mode state.
+        // TODO(plan-mode/subagent): Propagate plan-mode into subagent invocations
+        // instead of blanket-blocking.  This would require the subagent tool to
+        // accept and honor a read-only flag so that legitimate read-only delegation
+        // (e.g. `subagent(agent: "researcher", task: "...")`) can continue to work
+        // in plan mode.  The infrastructure change needed:
+        //   1. Extend the subagent tool API with an `options.planMode: boolean` param.
+        //   2. Have the subagent runner pass PIZZAPI_PLAN_MODE=1 (or equivalent) into
+        //      the spawned agent environment.
+        //   3. Load and enforce plan-mode restrictions inside the subagent session.
         if (WRITE_BLOCKED_TOOL_NAMES.has(event.toolName)) {
             const isSpawnTool = event.toolName === "subagent" || event.toolName === "spawn_session";
             return {
