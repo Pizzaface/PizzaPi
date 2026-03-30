@@ -163,11 +163,19 @@ export const handleAttachmentsRoute: RouteHandler = async (req, url) => {
             return Response.json({ error: "Forbidden" }, { status: 403 });
         }
 
+        // SVGs can carry embedded scripts and execute them when rendered inline by
+        // the browser (e.g. inside an <img> or directly navigated to).  Force the
+        // browser to download SVG files rather than render them by overriding the
+        // MIME type to a non-renderable type and using attachment disposition.
+        const isSvg = attachment.mimeType === "image/svg+xml";
+        const servedMimeType = isSvg ? "application/octet-stream" : attachment.mimeType;
+        const dispositionMode = isSvg ? "attachment" : "inline";
+
         return new Response(Bun.file(attachment.filePath), {
             headers: {
-                "content-type": attachment.mimeType,
+                "content-type": servedMimeType,
                 "content-length": String(attachment.size),
-                "content-disposition": buildContentDisposition(attachment.filename),
+                "content-disposition": buildContentDisposition(attachment.filename, dispositionMode),
                 "x-attachment-id": attachment.attachmentId,
                 "x-attachment-filename": encodeHeaderFilename(attachment.filename),
             },

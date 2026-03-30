@@ -314,8 +314,11 @@ export function renderContent(
             // Block javascript:, data: (non-image), and other dangerous schemes.
             if (url) {
               let isSafeUrl = false;
-              if (url.startsWith("/")) {
-                // Relative path — safe internal reference (e.g. /api/attachments/...)
+              if (url.startsWith("/") && !url.startsWith("//")) {
+                // Relative path — safe internal reference (e.g. /api/attachments/...).
+                // Exclude protocol-relative URLs (//host/path) — they start with "/" but
+                // the browser resolves them as external absolute URLs and must go through
+                // the URL validation path below.
                 isSafeUrl = true;
               } else {
                 try {
