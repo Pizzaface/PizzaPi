@@ -3723,6 +3723,30 @@ export function App() {
   const triggerCounts = useTriggerCount(activeSessionId, viewerSocket);
   const { activePanelIds: activeServicePanels, togglePanel: toggleServicePanel, closePanelById: closeServicePanelById, closeAllPanels: closeAllServicePanels, getPanelPosition: getServicePanelPosition, setPanelPosition: setServicePanelPosition, setEphemeralPanelPosition: setEphemeralServicePanelPosition } = useServicePanelState();
 
+  // Always-current ref so the runner-change effect below can read the active
+  // panel set without listing it as a dependency (avoids a close→reopen loop).
+  const activeServicePanelsRef = React.useRef(activeServicePanels);
+  activeServicePanelsRef.current = activeServicePanels;
+
+  // When the runner's service list changes (session switch, reconnect, etc.),
+  // close any panels whose service is no longer available in this runner.
+  // This covers switching to a session on a different runner OR to a local
+  // session that has no runner at all (availableServices will be empty).
+  React.useEffect(() => {
+    const current = activeServicePanelsRef.current;
+    if (current.size === 0) return;
+    const staticAvailable = new Set(
+      SERVICE_PANELS.filter(p => availableServices.has(p.serviceId)).map(p => p.serviceId),
+    );
+    const dynamicAvailable = new Set(dynamicPanels.map(p => p.serviceId));
+    for (const id of current) {
+      if (!staticAvailable.has(id) && !dynamicAvailable.has(id)) {
+        closeServicePanelById(id);
+      }
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [availableServices, dynamicPanels, closeServicePanelById]);
+
   // Auto-open Tunnel panel when a non-pinned tunnel is registered.
   React.useEffect(() => {
     if (!viewerSocket) return;
