@@ -74,7 +74,7 @@ export function SigilProvider({ sigilDefs, panels, runnerId, children }: SigilPr
   // Resolve cache: keyed by "type:id". Lives in a ref for instant reads.
   // A version counter in state triggers re-renders when data arrives.
   const cacheRef = useRef(new Map<string, SigilResolveState>());
-  const [, setVersion] = useState(0);
+  const [version, setVersion] = useState(0);
   const bump = useCallback(() => setVersion((v) => v + 1), []);
 
   // Build panel port lookup: serviceId → port
@@ -130,9 +130,11 @@ export function SigilProvider({ sigilDefs, panels, runnerId, children }: SigilPr
     [registry, panelPortMap, runnerId, bump],
   );
 
+  // Include version so consumers re-render when resolve data arrives
   const contextValue = useMemo<SigilContextValue>(
     () => ({ registry, resolve, triggerResolve }),
-    [registry, resolve, triggerResolve],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [registry, resolve, triggerResolve, version],
   );
 
   return <SigilCtx.Provider value={contextValue}>{children}</SigilCtx.Provider>;
