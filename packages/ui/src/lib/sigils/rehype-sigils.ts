@@ -79,9 +79,73 @@ function walkText(
 
 // ── Plugin ───────────────────────────────────────────────────────────────────
 
+// ── Sigil span builder ───────────────────────────────────────────────────────
+
+function buildSigilSpan(match: import("./types").SigilMatch): HastElement {
+  const properties: Record<string, unknown> = {
+    "data-sigil-type": match.type,
+    "data-sigil-id": match.id,
+    "data-sigil-raw": match.raw,
+  };
+  if (Object.keys(match.params).length > 0) {
+    properties["data-sigil-params"] = JSON.stringify(match.params);
+  }
+  return { type: "element", tagName: "span", properties, children: [] };
+}
+
+// ── Coalescing ───────────────────────────────────────────────────────────────
+
+/**
+ * Group consecutive sigil nodes (with only whitespace between them)
+ * into a single wrapper span with data-sigil-group="true".
+ */
+function coalesceNodes(nodes: HastNode[]): HastNode[] {
+  const result: HastNode[] = [];
+  let group: HastElement[] = [];
+
+  function flushGroup() {
+    if (group.length === 0) return;
+    if (group.length === 1) {
+      result.push(group[0]);
+    } else {
+      result.push({
+        type: "element",
+        tagName: "span",
+        properties: { "data-sigil-group": "true" },
+        children: group as HastNode[],
+      });
+    }
+    group = [];
+  }
+
+  for (const node of nodes) {
+    const isSigil =
+      node.type === "element" &&
+      (node as HastElement).properties?.["data-sigil-type"];
+
+    const isWhitespaceOnly =
+      node.type === "text" && /^\s+$/.test((node as HastText).value);
+
+    if (isSigil) {
+      group.push(node as HastElement);
+    } else if (isWhitespaceOnly && group.length > 0) {
+      // Whitespace between sigils — absorb into group, will be rendered as gap
+      continue;
+    } else {
+      flushGroup();
+      result.push(node);
+    }
+  }
+
+  flushGroup();
+  return result;
+}
+
+// ── Plugin ───────────────────────────────────────────────────────────────────
+
 /**
  * Rehype plugin factory. Returns a transformer that replaces sigil tokens
- * in text nodes with <sigil> elements.
+ * in text nodes with <span> elements, coalescing adjacent sigils into groups.
  */
 export function rehypeSigils() {
   return (tree: HastRoot) => {
@@ -101,24 +165,7 @@ export function rehypeSigils() {
         if (match.start > cursor) {
           nodes.push({ type: "text", value: text.slice(cursor, match.start) });
         }
-
-        // Serialize params as JSON for the component to parse
-        const properties: Record<string, unknown> = {
-          "data-sigil-type": match.type,
-          "data-sigil-id": match.id,
-          "data-sigil-raw": match.raw,
-        };
-        if (Object.keys(match.params).length > 0) {
-          properties["data-sigil-params"] = JSON.stringify(match.params);
-        }
-
-        nodes.push({
-          type: "element",
-          tagName: "span",
-          properties,
-          children: [],
-        } as HastElement);
-
+        nodes.push(buildSigilSpan(match));
         cursor = match.end;
       }
 
@@ -127,7 +174,7 @@ export function rehypeSigils() {
         nodes.push({ type: "text", value: text.slice(cursor) });
       }
 
-      return nodes;
+      return coalesceNodes(nodes);
     });
   };
 }

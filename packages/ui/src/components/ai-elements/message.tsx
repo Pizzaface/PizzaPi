@@ -329,10 +329,17 @@ const streamdownPlugins = { cjk, code, math, mermaid };
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const sigilRehypePlugins = [[rehypeSigils]] as any;
 
-/** Span override that renders sigil pills when data-sigil-type is present. */
+/** Span override that renders sigil pills or sigil groups. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function SpanOrSigil(props: any) {
   if (props["data-sigil-type"]) return <SigilInline {...props} />;
+  if (props["data-sigil-group"]) {
+    return (
+      <span className="inline-flex items-center gap-0.5 align-baseline">
+        {props.children}
+      </span>
+    );
+  }
   const { node: _node, ...rest } = props;
   return <span {...rest} />;
 }

@@ -253,7 +253,10 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                     allTriggerDefs.push(...entry.triggers);
                 }
                 if (entry.sigils && entry.sigils.length > 0) {
-                    allSigilDefs.push(...entry.sigils);
+                    // Stamp serviceId onto each sigil def so the UI can route resolve calls
+                    for (const sigil of entry.sigils) {
+                        allSigilDefs.push({ ...sigil, serviceId: entry.serviceId });
+                    }
                 }
             }
             (socket as any).emit("service_announce", {

@@ -227,6 +227,12 @@ export interface ServiceSigilDef {
   type: string;
   /** Human-readable label, e.g. "Pull Request" */
   label: string;
+  /**
+   * ID of the service that registered this sigil type.
+   * Populated by the daemon during aggregation — not set in sigils.json.
+   * Used by the UI to route resolve calls to the correct service panel.
+   */
+  serviceId?: string;
   /** Optional description of what this sigil represents */
   description?: string;
   /**

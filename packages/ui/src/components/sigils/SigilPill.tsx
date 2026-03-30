@@ -4,7 +4,7 @@
  * Renders as a compact pill with an icon, label, and optional tooltip.
  * Styling is driven by the SigilRegistry based on type.
  */
-import { useMemo } from "react";
+import { useEffect, useMemo } from "react";
 import {
   Tooltip,
   TooltipContent,
@@ -12,7 +12,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
-import { useSigilRegistry } from "./SigilContext";
+import { useSigilRegistry, useSigilResolve, useSigilTriggerResolve } from "./SigilContext";
 import { SigilIcon } from "./SigilIcon";
 
 export interface SigilPillProps {
@@ -55,11 +55,18 @@ export function SigilPill({ type, id, params, raw }: SigilPillProps) {
   const label = params.label ?? registry.getLabel(type);
   const description = registry.getDescription(type);
 
-  // Build display text: prefer a label param, otherwise show the id
-  const displayId = id || canonicalType;
+  // Trigger resolve for enrichment data
+  const triggerResolve = useSigilTriggerResolve();
+  const resolved = useSigilResolve(canonicalType, id);
+  useEffect(() => {
+    if (id) triggerResolve(canonicalType, id);
+  }, [canonicalType, id, triggerResolve]);
 
-  // Status-specific coloring for check/pr types
-  const statusParam = params.status ?? params.conclusion;
+  // Build display text: prefer resolved title > label param > raw id
+  const displayId = resolved.data?.title ?? params.label ?? (id || canonicalType);
+
+  // Status: prefer resolved status > param
+  const statusParam = resolved.data?.status ?? params.status ?? params.conclusion;
   const statusColorClass = statusParam ? getStatusColor(statusParam) : undefined;
 
   const pill = (
@@ -82,7 +89,7 @@ export function SigilPill({ type, id, params, raw }: SigilPillProps) {
   );
 
   // Wrap in tooltip if there's a description or extra params
-  const tooltipLines = buildTooltipLines(label, description, params, canonicalType, id);
+  const tooltipLines = buildTooltipLines(label, description, params, canonicalType, id, resolved.data);
   if (tooltipLines.length === 0) return pill;
 
   return (
@@ -137,6 +144,7 @@ function buildTooltipLines(
   params: Record<string, string>,
   type: string,
   id: string,
+  resolvedData?: Record<string, unknown>,
 ): string[] {
   const lines: string[] = [];
 
@@ -145,6 +153,16 @@ function buildTooltipLines(
     lines.push(`${label}: ${id}`);
   } else {
     lines.push(label);
+  }
+
+  // Resolved title (if different from id)
+  if (resolvedData?.title && resolvedData.title !== id) {
+    lines.push(String(resolvedData.title));
+  }
+
+  // Resolved author
+  if (resolvedData?.author) {
+    lines.push(`by ${resolvedData.author}`);
   }
 
   // Description from service def

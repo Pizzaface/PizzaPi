@@ -4339,7 +4339,7 @@ export function App() {
                     />
                   ) : (
                     <ErrorBoundary level="section" resetKeys={[activeSessionId]}>
-                      <SigilProvider sigilDefs={runnerSigilDefs}>
+                      <SigilProvider sigilDefs={runnerSigilDefs} panels={dynamicPanels} runnerId={activeSessionInfo?.runnerId ?? undefined}>
                       <SessionViewer
                         sessionId={activeSessionId}
                         sessionName={sessionName}
