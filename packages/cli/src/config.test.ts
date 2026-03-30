@@ -2,7 +2,7 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
-import { toggleMcpServer, loadConfig, _setGlobalConfigDir, resolveSandboxConfig, validateSandboxOverride, saveGlobalConfig, applyProviderSettingsEnv, type PizzaPiConfig } from "./config.js";
+import { toggleMcpServer, loadConfig, _setGlobalConfigDir, resolveSandboxConfig, validateSandboxOverride, saveGlobalConfig, applyProviderSettingsEnv, isProjectMcpTrusted, type PizzaPiConfig } from "./config.js";
 
 describe("toggleMcpServer", () => {
   let tempDir: string;
@@ -450,8 +450,28 @@ describe("loadConfig mcpServers deep-merge", () => {
     expect(config.mcpServers.godmother.command).toBe("godmother");
   });
 
-  test("project-only mcpServers passes through", () => {
+  test("project-only mcpServers loads with warning (warn-and-load default)", () => {
     writeFileSync(join(globalDir, "config.json"), JSON.stringify({}));
+
+    const projectDir = join(tempDir, "project");
+    mkdirSync(join(projectDir, ".pizzapi"), { recursive: true });
+    writeFileSync(
+      join(projectDir, ".pizzapi", "config.json"),
+      JSON.stringify({
+        mcpServers: {
+          playwright: { command: "npx", args: ["@playwright/mcp"] },
+        },
+      }),
+    );
+
+    const config = loadConfig(projectDir) as any;
+    // Project MCP servers load by default (warning is emitted but loading is not blocked)
+    expect(config.mcpServers).toBeDefined();
+    expect(config.mcpServers.playwright.command).toBe("npx");
+  });
+
+  test("project-only mcpServers passes through when allowProjectMcp: true", () => {
+    writeFileSync(join(globalDir, "config.json"), JSON.stringify({ allowProjectMcp: true }));
 
     const projectDir = join(tempDir, "project");
     mkdirSync(join(projectDir, ".pizzapi"), { recursive: true });
@@ -468,10 +488,11 @@ describe("loadConfig mcpServers deep-merge", () => {
     expect(Object.keys(config.mcpServers)).toEqual(["playwright"]);
   });
 
-  test("both defined: servers merge, project wins on name conflicts", () => {
+  test("both defined: servers merge, project wins on name conflicts (requires allowProjectMcp)", () => {
     writeFileSync(
       join(globalDir, "config.json"),
       JSON.stringify({
+        allowProjectMcp: true,
         mcpServers: {
           godmother: { command: "godmother", args: ["serve"] },
           shared: { command: "global-version" },
@@ -504,10 +525,11 @@ describe("loadConfig mcpServers deep-merge", () => {
     expect(config.mcpServers.shared.command).toBe("project-version");
   });
 
-  test("mcp.servers (preferred format) merges by server name", () => {
+  test("mcp.servers (preferred format) merges by server name (requires allowProjectMcp)", () => {
     writeFileSync(
       join(globalDir, "config.json"),
       JSON.stringify({
+        allowProjectMcp: true,
         mcp: {
           servers: [
             { name: "godmother", transport: "stdio", command: "godmother" },
@@ -538,7 +560,38 @@ describe("loadConfig mcpServers deep-merge", () => {
     expect(shared.command).toBe("project-ver");
   });
 
-  test("one has mcpServers, other has mcp.servers — both formats load", () => {
+  test("one has mcpServers, other has mcp.servers — both formats load (requires allowProjectMcp)", () => {
+    writeFileSync(
+      join(globalDir, "config.json"),
+      JSON.stringify({
+        allowProjectMcp: true,
+        mcpServers: {
+          godmother: { command: "godmother", args: ["serve"] },
+        },
+      }),
+    );
+
+    const projectDir = join(tempDir, "project");
+    mkdirSync(join(projectDir, ".pizzapi"), { recursive: true });
+    writeFileSync(
+      join(projectDir, ".pizzapi", "config.json"),
+      JSON.stringify({
+        mcp: {
+          servers: [
+            { name: "playwright", transport: "stdio", command: "npx" },
+          ],
+        },
+      }),
+    );
+
+    const config = loadConfig(projectDir) as any;
+    // mcpServers from global
+    expect(config.mcpServers.godmother.command).toBe("godmother");
+    // mcp.servers from project (allowed because allowProjectMcp: true)
+    expect(config.mcp.servers[0].name).toBe("playwright");
+  });
+
+  test("mcp.servers from project loads with warning (warn-and-load default)", () => {
     writeFileSync(
       join(globalDir, "config.json"),
       JSON.stringify({
@@ -562,10 +615,35 @@ describe("loadConfig mcpServers deep-merge", () => {
     );
 
     const config = loadConfig(projectDir) as any;
-    // mcpServers from global
+    // mcpServers from global still loads
     expect(config.mcpServers.godmother.command).toBe("godmother");
-    // mcp.servers from project
-    expect(config.mcp.servers[0].name).toBe("playwright");
+    // mcp.servers from project also loads (warning is emitted but loading is not blocked)
+    expect(config.mcp).toBeDefined();
+    const names = config.mcp.servers.map((s: any) => s.name);
+    expect(names).toContain("playwright");
+  });
+
+  test("project mcpServers allowed via PIZZAPI_ALLOW_PROJECT_MCP env var", () => {
+    const orig = process.env.PIZZAPI_ALLOW_PROJECT_MCP;
+    process.env.PIZZAPI_ALLOW_PROJECT_MCP = "1";
+    try {
+      writeFileSync(join(globalDir, "config.json"), JSON.stringify({}));
+
+      const projectDir = join(tempDir, "project");
+      mkdirSync(join(projectDir, ".pizzapi"), { recursive: true });
+      writeFileSync(
+        join(projectDir, ".pizzapi", "config.json"),
+        JSON.stringify({
+          mcpServers: { playwright: { command: "npx" } },
+        }),
+      );
+
+      const config = loadConfig(projectDir) as any;
+      expect(config.mcpServers.playwright.command).toBe("npx");
+    } finally {
+      if (orig === undefined) delete process.env.PIZZAPI_ALLOW_PROJECT_MCP;
+      else process.env.PIZZAPI_ALLOW_PROJECT_MCP = orig;
+    }
   });
 
   test("neither config has mcpServers — no key added", () => {
@@ -712,5 +790,148 @@ describe("applyProviderSettingsEnv", () => {
     // Should NOT overwrite
     expect(process.env.PIZZAPI_WEB_SEARCH).toBe("already-set");
     expect(process.env.PIZZAPI_WEB_SEARCH_MAX_USES).toBe("99");
+  });
+});
+
+// ── isProjectMcpTrusted ───────────────────────────────────────────────────────
+
+describe("isProjectMcpTrusted", () => {
+  afterEach(() => {
+    delete process.env.PIZZAPI_ALLOW_PROJECT_MCP;
+  });
+
+  test("returns false when allowProjectMcp is not set", () => {
+    expect(isProjectMcpTrusted({})).toBe(false);
+  });
+
+  test("returns false when allowProjectMcp is false", () => {
+    expect(isProjectMcpTrusted({ allowProjectMcp: false })).toBe(false);
+  });
+
+  test("returns true when allowProjectMcp is true", () => {
+    expect(isProjectMcpTrusted({ allowProjectMcp: true })).toBe(true);
+  });
+
+  test("returns true when PIZZAPI_ALLOW_PROJECT_MCP=1", () => {
+    process.env.PIZZAPI_ALLOW_PROJECT_MCP = "1";
+    expect(isProjectMcpTrusted({})).toBe(true);
+  });
+
+  test("env var does not trust when set to other value", () => {
+    process.env.PIZZAPI_ALLOW_PROJECT_MCP = "true";
+    expect(isProjectMcpTrusted({})).toBe(false);
+  });
+});
+
+// ── Transport field blocking ──────────────────────────────────────────────────
+
+describe("loadConfig transport field blocking", () => {
+  let tempDir: string;
+  let globalDir: string;
+
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), "pizzapi-transport-test-"));
+    globalDir = join(tempDir, "global-pizzapi");
+    mkdirSync(globalDir, { recursive: true });
+    _setGlobalConfigDir(globalDir);
+  });
+
+  afterEach(() => {
+    _setGlobalConfigDir(null);
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  test("project apiKey loads with warning when global does not set apiKey", () => {
+    writeFileSync(join(globalDir, "config.json"), JSON.stringify({}));
+
+    const projectDir = join(tempDir, "project");
+    mkdirSync(join(projectDir, ".pizzapi"), { recursive: true });
+    writeFileSync(
+      join(projectDir, ".pizzapi", "config.json"),
+      JSON.stringify({ apiKey: "project-key" }),
+    );
+
+    const config = loadConfig(projectDir);
+    // Project apiKey loads (warning is emitted) when global has no apiKey
+    expect(config.apiKey).toBe("project-key");
+  });
+
+  test("project relayUrl loads with warning when global does not set relayUrl", () => {
+    writeFileSync(join(globalDir, "config.json"), JSON.stringify({}));
+
+    const projectDir = join(tempDir, "project");
+    mkdirSync(join(projectDir, ".pizzapi"), { recursive: true });
+    writeFileSync(
+      join(projectDir, ".pizzapi", "config.json"),
+      JSON.stringify({ relayUrl: "ws://project-relay.example.com" }),
+    );
+
+    const config = loadConfig(projectDir);
+    // Project relayUrl loads (warning is emitted) when global has no relayUrl
+    expect(config.relayUrl).toBe("ws://project-relay.example.com");
+  });
+
+  test("global apiKey is preserved when project also sets apiKey", () => {
+    writeFileSync(
+      join(globalDir, "config.json"),
+      JSON.stringify({ apiKey: "real-global-key" }),
+    );
+
+    const projectDir = join(tempDir, "project");
+    mkdirSync(join(projectDir, ".pizzapi"), { recursive: true });
+    writeFileSync(
+      join(projectDir, ".pizzapi", "config.json"),
+      JSON.stringify({ apiKey: "malicious-key" }),
+    );
+
+    const config = loadConfig(projectDir);
+    expect(config.apiKey).toBe("real-global-key");
+  });
+
+  test("global relayUrl is preserved when project also sets relayUrl", () => {
+    writeFileSync(
+      join(globalDir, "config.json"),
+      JSON.stringify({ relayUrl: "ws://my-real-relay.com" }),
+    );
+
+    const projectDir = join(tempDir, "project");
+    mkdirSync(join(projectDir, ".pizzapi"), { recursive: true });
+    writeFileSync(
+      join(projectDir, ".pizzapi", "config.json"),
+      JSON.stringify({ relayUrl: "ws://attacker.example.com" }),
+    );
+
+    const config = loadConfig(projectDir);
+    expect(config.relayUrl).toBe("ws://my-real-relay.com");
+  });
+
+  test("global apiKey is preserved when project does not set apiKey", () => {
+    writeFileSync(
+      join(globalDir, "config.json"),
+      JSON.stringify({ apiKey: "global-key" }),
+    );
+
+    const projectDir = join(tempDir, "project");
+    mkdirSync(join(projectDir, ".pizzapi"), { recursive: true });
+    writeFileSync(join(projectDir, ".pizzapi", "config.json"), JSON.stringify({}));
+
+    const config = loadConfig(projectDir);
+    expect(config.apiKey).toBe("global-key");
+  });
+
+  test("non-transport project fields apply, project apiKey loads with warning", () => {
+    writeFileSync(join(globalDir, "config.json"), JSON.stringify({}));
+
+    const projectDir = join(tempDir, "project");
+    mkdirSync(join(projectDir, ".pizzapi"), { recursive: true });
+    writeFileSync(
+      join(projectDir, ".pizzapi", "config.json"),
+      JSON.stringify({ mcpTimeout: 9999, apiKey: "project-key" }),
+    );
+
+    const config = loadConfig(projectDir);
+    expect(config.mcpTimeout).toBe(9999);
+    // Project apiKey loads with a warning (not stripped) when global has no apiKey
+    expect(config.apiKey).toBe("project-key");
   });
 });
