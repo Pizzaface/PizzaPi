@@ -9,7 +9,6 @@
 import * as React from "react";
 import { Loader2, Server, ExternalLink } from "lucide-react";
 import { DynamicLucideIcon } from "@/components/service-panels/lucide-icon";
-import { cn } from "@/lib/utils";
 
 /** Built-in system service IDs — hidden from the user-facing panel. */
 const BUILTIN_SERVICE_IDS = new Set(["terminal", "file-explorer", "git", "tunnel"]);
@@ -90,11 +89,26 @@ export function RunnerServicesPanel({ runnerId }: RunnerServicesPanelProps) {
     );
   }
 
+  // Only show services that have a panel — services that only provide sigils,
+  // triggers, or other non-UI capabilities have no panel and should not appear.
   const panelMap = new Map(panels.map((p) => [p.serviceId, p]));
-  const userServices = userServiceIds.map((id) => ({
-    id,
-    panel: panelMap.get(id) ?? null,
-  }));
+  const userPanels = userServiceIds
+    .map((id) => panelMap.get(id))
+    .filter((p): p is ServicePanel => p !== undefined);
+
+  if (userPanels.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center gap-3 p-8 text-center">
+        <Server className="size-10 text-muted-foreground/30" />
+        <div>
+          <p className="text-sm text-muted-foreground">No services installed</p>
+          <p className="text-xs text-muted-foreground/60 mt-1">
+            Drop service plugins into ~/.pizzapi/services/ to add them.
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   const handleOpen = (panel: ServicePanel) => {
     const url = `/api/tunnel/runner/${encodeURIComponent(runnerId)}/${panel.port}/`;
@@ -103,40 +117,22 @@ export function RunnerServicesPanel({ runnerId }: RunnerServicesPanelProps) {
 
   return (
     <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
-      {userServices.map(({ id, panel }) => {
-        const hasPanel = panel !== null;
-        return (
-          <button
-            key={id}
-            type="button"
-            onClick={hasPanel ? () => handleOpen(panel) : undefined}
-            disabled={!hasPanel}
-            className={cn(
-              "flex flex-col items-center justify-center gap-2 p-4 rounded-lg border relative group",
-              hasPanel
-                ? "bg-muted/10 border-border/50 hover:bg-muted/30 hover:border-border cursor-pointer transition-colors"
-                : "bg-muted/5 border-border/30 cursor-default opacity-70",
-            )}
-          >
-            {hasPanel && (
-              <ExternalLink className="absolute top-2 right-2 size-3 text-muted-foreground/0 group-hover:text-muted-foreground/50 transition-colors" />
-            )}
-            <div className={cn(
-              "flex items-center justify-center size-10 rounded-lg border",
-              hasPanel ? "bg-muted/30 border-border/30" : "bg-muted/10 border-border/20",
-            )}>
-              {panel ? (
-                <DynamicLucideIcon name={panel.icon} className="size-5 text-foreground/70" />
-              ) : (
-                <Server className="size-5 text-muted-foreground/40" />
-              )}
-            </div>
-            <span className="text-xs font-medium text-foreground/80 text-center truncate w-full">
-              {panel?.label ?? id}
-            </span>
-          </button>
-        );
-      })}
+      {userPanels.map((panel) => (
+        <button
+          key={panel.serviceId}
+          type="button"
+          onClick={() => handleOpen(panel)}
+          className="flex flex-col items-center justify-center gap-2 p-4 rounded-lg border relative group bg-muted/10 border-border/50 hover:bg-muted/30 hover:border-border cursor-pointer transition-colors"
+        >
+          <ExternalLink className="absolute top-2 right-2 size-3 text-muted-foreground/0 group-hover:text-muted-foreground/50 transition-colors" />
+          <div className="flex items-center justify-center size-10 rounded-lg border bg-muted/30 border-border/30">
+            <DynamicLucideIcon name={panel.icon} className="size-5 text-foreground/70" />
+          </div>
+          <span className="text-xs font-medium text-foreground/80 text-center truncate w-full">
+            {panel.label}
+          </span>
+        </button>
+      ))}
     </div>
   );
 }

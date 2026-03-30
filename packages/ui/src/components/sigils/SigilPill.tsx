@@ -205,17 +205,39 @@ export function SigilPill({ type, id, params, raw }: SigilPillProps) {
           </div>
         )}
 
-        {/* Link hint */}
+        {/* Link — full-width tappable button so mobile users can navigate */}
         {href && !isPizzaPi && (
-          <div className="flex items-center gap-1 pt-0.5 text-[10px] text-muted-foreground/60">
-            <ExternalLinkIcon className="size-2.5" />
+          <a
+            href={href}
+            target="_blank"
+            rel="noopener noreferrer"
+            onClick={(e) => e.stopPropagation()}
+            className={cn(
+              "flex items-center justify-center gap-1.5 mt-1 w-full rounded-md px-3 py-2",
+              "text-xs font-medium",
+              "bg-muted hover:bg-muted/80 text-foreground",
+              "ring-1 ring-inset ring-border",
+              "transition-colors cursor-pointer no-underline",
+            )}
+          >
+            <ExternalLinkIcon className="size-3 shrink-0" />
             <span className="truncate">{prettifyUrl(href)}</span>
-          </div>
+          </a>
         )}
         {href && isPizzaPi && (
-          <div className="flex items-center gap-1 pt-0.5 text-[10px] text-muted-foreground/60">
-            <span className="truncate">Opens in app</span>
-          </div>
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); navigatePizzaPi(href!); }}
+            className={cn(
+              "flex items-center justify-center gap-1.5 mt-1 w-full rounded-md px-3 py-2",
+              "text-xs font-medium",
+              "bg-muted hover:bg-muted/80 text-foreground",
+              "ring-1 ring-inset ring-border",
+              "transition-colors cursor-pointer",
+            )}
+          >
+            <span>Open in app →</span>
+          </button>
         )}
 
         {/* Raw sigil syntax */}
@@ -236,24 +258,24 @@ function getStatusColor(status: string): string | undefined {
     case "merged":
     case "passed":
     case "healthy":
-      return "bg-green-500/15 text-green-700 dark:text-green-400 ring-green-500/25";
+      return "bg-green-500/20 text-green-800 dark:text-green-300 ring-green-500/35";
     case "failure":
     case "failed":
     case "error":
-      return "bg-red-500/15 text-red-700 dark:text-red-400 ring-red-500/25";
+      return "bg-red-500/20 text-red-800 dark:text-red-300 ring-red-500/35";
     case "closed":
-      return "bg-red-500/10 text-red-600 dark:text-red-400 ring-red-500/20";
+      return "bg-red-500/15 text-red-700 dark:text-red-300 ring-red-500/30";
     case "open":
     case "running":
     case "pending":
-      return "bg-blue-500/15 text-blue-700 dark:text-blue-400 ring-blue-500/25";
+      return "bg-blue-500/20 text-blue-800 dark:text-blue-300 ring-blue-500/35";
     case "draft":
     case "neutral":
     case "skipped":
-      return "bg-zinc-500/15 text-zinc-700 dark:text-zinc-400 ring-zinc-500/25";
+      return "bg-zinc-500/20 text-zinc-800 dark:text-zinc-300 ring-zinc-500/35";
     case "cancelled":
     case "timed_out":
-      return "bg-amber-500/15 text-amber-700 dark:text-amber-400 ring-amber-500/25";
+      return "bg-amber-500/20 text-amber-800 dark:text-amber-300 ring-amber-500/35";
     default:
       return undefined;
   }

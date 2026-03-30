@@ -240,25 +240,38 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             triggers?: ServiceTriggerDef[];
             /** Sigil types declared in this service's manifest */
             sigils?: ServiceSigilDef[];
+            /**
+             * Whether this service has a UI panel shown to users.
+             * false = service has trigger/sigil defs but no panel (e.g. the time service).
+             * Defaults to true for plugin-provided services with a panel manifest.
+             */
+            hasPanel?: boolean;
         };
         const panelEntries = new Map<string, PanelEntry>();
 
         // Register built-in Time service trigger/sigil defs so they flow through service_announce.
-        // The Time service has no panel but needs a panelEntry so its sigil resolve port is tracked
-        // and its trigger/sigil definitions are announced to agents and the UI.
+        // The Time service has no panel — it only runs an HTTP server for sigil resolve calls.
+        // Trigger/sigil defs are tracked via panelEntries (no port here) so they appear in
+        // service_announce. The resolve port is tracked separately in sigilServerPorts and
+        // stamped onto the sigil defs at announce time.
         panelEntries.set("time", {
             serviceId: "time",
             label: "Time",
             icon: "clock",
+            hasPanel: false,
             triggers: TIME_TRIGGER_DEFS,
             sigils: TIME_SIGIL_DEFS,
         });
+
+        // Ports for services that run an HTTP resolve server but have no UI panel.
+        // Keyed by serviceId. Populated when the service calls announceSigilServer().
+        const sigilServerPorts = new Map<string, number>();
 
         /** Emit service_announce with current service IDs, panel metadata, and trigger defs. */
         const emitServiceAnnounce = () => {
             const allServiceIds = registry.getAll().map((s) => s.id);
             const panels = Array.from(panelEntries.values())
-                .filter((p): p is PanelEntry & { port: number } => p.port != null);
+                .filter((p): p is PanelEntry & { port: number } => p.port != null && p.hasPanel !== false);
             // Collect all trigger defs and sigil defs across all services with manifests
             const allTriggerDefs: ServiceTriggerDef[] = [];
             const allSigilDefs: ServiceSigilDef[] = [];
@@ -267,9 +280,15 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                     allTriggerDefs.push(...entry.triggers);
                 }
                 if (entry.sigils && entry.sigils.length > 0) {
-                    // Stamp serviceId onto each sigil def so the UI can route resolve calls
+                    // Stamp serviceId and (if available) resolvePort onto each sigil def.
+                    // resolvePort lets the UI route resolve calls to panel-less services.
+                    const resolvePort = sigilServerPorts.get(entry.serviceId);
                     for (const sigil of entry.sigils) {
-                        allSigilDefs.push({ ...sigil, serviceId: entry.serviceId });
+                        allSigilDefs.push({
+                            ...sigil,
+                            serviceId: entry.serviceId,
+                            ...(resolvePort != null ? { resolvePort } : {}),
+                        });
                     }
                 }
             }
@@ -472,11 +491,28 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                     emitServiceAnnounce();
                 };
 
-                // Init all services — pass announcePanel to those with panel manifests
+                // Build announceSigilServer callback — for services that run an HTTP resolve
+                // server but have no UI panel. Registers with the tunnel for routing and
+                // stamps the port onto sigil defs in service_announce, without adding the
+                // service to the panels array.
+                const announceSigilServer = (serviceId: string) => (port: number) => {
+                    sigilServerPorts.set(serviceId, port);
+                    tunnelService.registerPort(port, serviceId);
+                    logInfo(`[services] sigil resolve server announced for "${serviceId}" on port ${port}`);
+                    emitServiceAnnounce();
+                };
+
+                // Init all services — pass announcePanel to those with a UI panel,
+                // announceSigilServer to panel-less services that only need HTTP resolve routing.
                 for (const handler of registry.getAll()) {
                     const opts: any = { isShuttingDown: () => isShuttingDown };
-                    if (panelEntries.has(handler.id)) {
-                        opts.announcePanel = announcePanel(handler.id);
+                    const entry = panelEntries.get(handler.id);
+                    if (entry) {
+                        if (entry.hasPanel !== false) {
+                            opts.announcePanel = announcePanel(handler.id);
+                        } else {
+                            opts.announceSigilServer = announceSigilServer(handler.id);
+                        }
                     }
                     handler.init(socket, opts);
                 }

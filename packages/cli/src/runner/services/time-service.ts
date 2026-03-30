@@ -215,7 +215,7 @@ export class TimeService implements ServiceHandler {
     #cronIterations = new Map<string, number>();
     #onSubscriptionChanged: ((data: any) => void) | null = null;
 
-    init(socket: Socket, { announcePanel }: ServiceInitOptions): void {
+    init(socket: Socket, { announceSigilServer }: ServiceInitOptions): void {
         this.#socket = socket;
 
         // Start HTTP server for sigil resolve endpoints
@@ -255,10 +255,12 @@ export class TimeService implements ServiceHandler {
             },
         });
 
-        // Announce port so the tunnel proxy can route resolve requests
+        // Announce port so the tunnel proxy can route sigil resolve requests.
+        // Uses announceSigilServer (not announcePanel) so this service does not
+        // appear as a UI panel — it only provides resolve endpoints.
         const port = this.#server.port;
-        if (announcePanel && port) {
-            announcePanel(port);
+        if (announceSigilServer && port) {
+            announceSigilServer(port);
         }
 
         // Listen for subscription changes to start/stop timers
