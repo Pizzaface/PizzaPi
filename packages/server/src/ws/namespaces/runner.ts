@@ -273,7 +273,17 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
     // Maps runnerId → Set<terminalId>. Mirrors terminal ownership already in
     // Redis but kept in-memory for fast O(1) checks on high-frequency
     // terminal_data events without a Redis round-trip per packet.
+    // Entries are only added here AFTER the async Redis ownership check in
+    // terminal_ready has confirmed the runner owns the terminal.
     const runnerTerminalIds = new Map<string, Set<string>>();
+    // Maps terminalId → pending ownership check.  Set by terminal_ready
+    // BEFORE the async Redis round-trip completes.  Consumers
+    // (terminal_data / terminal_exit / terminal_error) await this promise
+    // before forwarding events, closing the TOCTOU window that existed when
+    // terminal IDs were optimistically written to runnerTerminalIds before
+    // ownership was confirmed.  Resolved when ownership is verified; rejected
+    // when ownership fails or the runner disconnects mid-check.
+    const pendingTerminalChecks = new Map<string, { promise: Promise<void>; reject: () => void; runnerId: string }>();
 
     runner.on("connection", (socket) => {
         log.info(`connected: ${socket.id}`);
@@ -633,21 +643,45 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
             if (!terminalId) return;
             const runnerId = socket.data.runnerId;
             if (!runnerId) return;
-            // Optimistically cache the terminal ID immediately so that
-            // terminal_data events that race with the async ownership check
-            // are not dropped (the runner can send terminal_data right after
-            // terminal_ready before we finish the Redis round-trip).
-            if (!runnerTerminalIds.has(runnerId)) runnerTerminalIds.set(runnerId, new Set());
-            runnerTerminalIds.get(runnerId)!.add(terminalId);
-            // Security: verify terminal ownership via Redis in the background.
-            // If ownership fails, evict from cache so subsequent events are
-            // rejected and the viewer does not receive forwarded output.
+            // Guard against duplicate terminal_ready for the same terminal.
+            if (pendingTerminalChecks.has(terminalId) || runnerTerminalIds.get(runnerId)?.has(terminalId)) {
+                log.warn(`terminal_ready ignored: terminalId ${terminalId} already pending or verified for runner ${runnerId}`);
+                return;
+            }
+            // Set up a pending-promise so terminal_data/terminal_exit/terminal_error
+            // events that race with the async Redis ownership check below will
+            // await this promise rather than being silently forwarded or dropped.
+            // Nothing is written to runnerTerminalIds yet — ownership is unconfirmed.
+            let resolveCheck!: () => void;
+            let rejectCheck!: () => void;
+            const checkPromise = new Promise<void>((resolve, reject) => {
+                resolveCheck = resolve;
+                rejectCheck = reject;
+            });
+            pendingTerminalChecks.set(terminalId, { promise: checkPromise, reject: rejectCheck, runnerId });
+            // Async Redis ownership check.
             const entry = await getTerminalEntry(terminalId);
             if (!entry || entry.runnerId !== runnerId) {
                 log.warn(`terminal_ready rejected: terminalId ${terminalId} not owned by runner ${runnerId}`);
-                runnerTerminalIds.get(runnerId)?.delete(terminalId);
+                pendingTerminalChecks.delete(terminalId);
+                rejectCheck();
                 return;
             }
+            // Ownership confirmed.  If the runner disconnected while the check
+            // was in flight the disconnect handler already called rejectCheck()
+            // and deleted the pending entry — bail out to avoid creating a
+            // dangling runnerTerminalIds entry for a gone runner.
+            if (!socket.connected) {
+                pendingTerminalChecks.delete(terminalId);
+                // rejectCheck() may already have been called by disconnect handler;
+                // calling it again is safe (Promise settle is idempotent).
+                rejectCheck();
+                return;
+            }
+            pendingTerminalChecks.delete(terminalId);
+            if (!runnerTerminalIds.has(runnerId)) runnerTerminalIds.set(runnerId, new Set());
+            runnerTerminalIds.get(runnerId)!.add(terminalId);
+            resolveCheck();
             log.info(`terminal_ready terminalId=${terminalId} runnerId=${runnerId}`);
             sendToTerminalViewer(terminalId, {
                 type: "terminal_ready",
@@ -655,14 +689,27 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
             });
         });
 
-        socket.on("terminal_data", (data) => {
+        socket.on("terminal_data", async (data) => {
             const terminalId = data.terminalId;
             if (!terminalId) return;
-            // Security: fast in-memory ownership check (no Redis round-trip).
-            // The set is populated by terminal_ready (verified against Redis)
-            // and seeded from Redis on runner reconnect.
             const runnerId = socket.data.runnerId;
-            if (!runnerId || !runnerTerminalIds.get(runnerId)?.has(terminalId)) return;
+            if (!runnerId) return;
+            // If terminal_ready is still awaiting its Redis ownership check,
+            // block here until it resolves (owned) or rejects (not owned).
+            // This closes the TOCTOU window: no data is forwarded before
+            // ownership is confirmed.
+            const pending = pendingTerminalChecks.get(terminalId);
+            if (pending) {
+                try {
+                    await pending.promise;
+                } catch {
+                    // Ownership check failed or runner disconnected — drop.
+                    return;
+                }
+            }
+            // Security: in-memory ownership check (populated after Redis
+            // verification in terminal_ready, or seeded on runner reconnect).
+            if (!runnerTerminalIds.get(runnerId)?.has(terminalId)) return;
             sendToTerminalViewer(terminalId, {
                 type: "terminal_data",
                 terminalId,
@@ -674,7 +721,20 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
             const terminalId = data.terminalId;
             if (!terminalId) return;
             const runnerId = socket.data.runnerId;
-            if (!runnerId || !runnerTerminalIds.get(runnerId)?.has(terminalId)) {
+            if (!runnerId) return;
+            // If terminal_ready is still awaiting its Redis ownership check,
+            // block here until it resolves or rejects before deciding whether
+            // to forward this event.
+            const pending = pendingTerminalChecks.get(terminalId);
+            if (pending) {
+                try {
+                    await pending.promise;
+                } catch {
+                    // Ownership check failed or runner disconnected — drop.
+                    return;
+                }
+            }
+            if (!runnerTerminalIds.get(runnerId)?.has(terminalId)) {
                 log.warn(`terminal_exit rejected: terminalId ${terminalId} not owned by runner ${runnerId}`);
                 return;
             }
@@ -693,12 +753,23 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
             if (!terminalId) return;
             const runnerId = socket.data.runnerId;
             if (!runnerId) return;
-            // terminal_error can arrive before terminal_ready when a PTY fails
-            // to spawn — in that case the terminal ID is not yet in the
-            // in-memory cache.  Fall back to a Redis ownership check so the
-            // only failure signal is not silently dropped.
             const isInCache = runnerTerminalIds.get(runnerId)?.has(terminalId);
-            if (!isInCache) {
+            const pending = pendingTerminalChecks.get(terminalId);
+            if (pending) {
+                // terminal_ready is in-flight — wait for the ownership check
+                // before deciding whether to forward this error event.
+                try {
+                    await pending.promise;
+                } catch {
+                    // Ownership check failed or runner disconnected — drop.
+                    return;
+                }
+                // Re-check cache after await; runner may have disconnected.
+                if (!runnerTerminalIds.get(runnerId)?.has(terminalId)) return;
+            } else if (!isInCache) {
+                // terminal_error can arrive before terminal_ready when a PTY
+                // fails to spawn — fall back to a Redis ownership check so
+                // the failure signal is not silently dropped.
                 const entry = await getTerminalEntry(terminalId);
                 if (!entry || entry.runnerId !== runnerId) {
                     log.warn(`terminal_error rejected: terminalId ${terminalId} not owned by runner ${runnerId}`);
@@ -836,6 +907,15 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
 
                 // Clean up local session and terminal tracking
                 runnerSessionIds.delete(runnerId);
+                // Reject any pending ownership checks for this runner so that
+                // awaiting terminal_data/exit/error handlers unblock and drop
+                // their events immediately instead of waiting for Redis.
+                for (const [terminalId, entry] of pendingTerminalChecks) {
+                    if (entry.runnerId === runnerId) {
+                        entry.reject();
+                        pendingTerminalChecks.delete(terminalId);
+                    }
+                }
                 runnerTerminalIds.delete(runnerId);
                 runnerServiceAnnounce.delete(runnerId);
                 // Clean up any terminals owned by this runner
