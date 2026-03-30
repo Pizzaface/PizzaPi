@@ -1,35 +1,33 @@
 /**
  * SigilPill — inline rendered component for [[type:id params]] tokens.
  *
- * Renders as a compact pill with an icon, label, and optional tooltip.
- * Styling is driven by the SigilRegistry based on type.
+ * Renders as a compact, interactive pill with:
+ * - Type-colored background with icon
+ * - Rich HoverCard preview with resolved metadata
+ * - Clickable link when a URL is available
+ * - Loading shimmer during resolve
+ * - Status-aware coloring
  */
 import { useEffect, useMemo } from "react";
 import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
+  HoverCard,
+  HoverCardContent,
+  HoverCardTrigger,
+} from "@/components/ui/hover-card";
 import { cn } from "@/lib/utils";
 import { useSigilRegistry, useSigilResolve, useSigilTriggerResolve } from "./SigilContext";
 import { SigilIcon } from "./SigilIcon";
+import { ExternalLinkIcon } from "lucide-react";
+
+// ── SigilInline (Streamdown bridge) ──────────────────────────────────────────
 
 export interface SigilPillProps {
-  /** Sigil type (after alias resolution) */
   type: string;
-  /** Primary identifier */
   id: string;
-  /** Key-value params */
   params: Record<string, string>;
-  /** Original raw text for copy/debug */
   raw: string;
 }
 
-/**
- * The component rendered by Streamdown for <sigil> elements.
- * Reads data attributes set by the rehype plugin.
- */
 export function SigilInline(props: Record<string, unknown>) {
   const type = (props["data-sigil-type"] as string) ?? "";
   const id = (props["data-sigil-id"] as string) ?? "";
@@ -48,46 +46,65 @@ export function SigilInline(props: Record<string, unknown>) {
   return <SigilPill type={type} id={id} params={params} raw={raw} />;
 }
 
+// ── SigilPill ────────────────────────────────────────────────────────────────
+
 export function SigilPill({ type, id, params, raw }: SigilPillProps) {
   const registry = useSigilRegistry();
   const config = registry.getConfig(type);
   const canonicalType = registry.resolveType(type);
-  const label = params.label ?? registry.getLabel(type);
-  const description = registry.getDescription(type);
+  const typeLabel = params.label ?? registry.getLabel(type);
 
-  // Trigger resolve for enrichment data
+  // Resolve enrichment data
   const triggerResolve = useSigilTriggerResolve();
   const resolved = useSigilResolve(canonicalType, id);
   useEffect(() => {
     if (id) triggerResolve(canonicalType, id, params);
   }, [canonicalType, id, triggerResolve, params]);
 
-  // Build display text: prefer resolved title > label param > raw id
-  const displayId = resolved.data?.title ?? params.label ?? (id || canonicalType);
-
-  // Status: prefer resolved status > param
+  const displayText = resolved.data?.title ?? params.label ?? (id || canonicalType);
   const statusParam = resolved.data?.status ?? params.status ?? params.conclusion;
-  const statusColorClass = statusParam ? getStatusColor(statusParam) : undefined;
-
-  // Link: explicit param > resolved url
+  const statusColor = statusParam ? getStatusColor(statusParam) : undefined;
   const href = params.link ?? params.href ?? (resolved.data?.url ? String(resolved.data.url) : undefined);
+  const author = resolved.data?.author ? String(resolved.data.author) : undefined;
+  const description = resolved.data?.description
+    ? String(resolved.data.description)
+    : registry.getDescription(type);
+  const isLoading = resolved.loading;
+
+  // ── Pill element ───────────────────────────────────────────────────────
 
   const pillClasses = cn(
-    "inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5",
-    "text-xs font-medium leading-none align-baseline",
+    // Layout
+    "inline-flex items-center gap-1 rounded-full px-2 py-0.5",
+    // Typography
+    "text-[11px] font-semibold leading-tight align-baseline",
+    // Interaction
     "select-none whitespace-nowrap",
-    "transition-colors hover:brightness-110",
-    href ? "cursor-pointer no-underline hover:brightness-125" : "cursor-default",
-    statusColorClass ?? config.colorClass,
+    "transition-all duration-150 ease-out",
+    // Border
+    "ring-1 ring-inset",
+    // Loading shimmer
+    isLoading && "animate-pulse",
+    // Status or type color
+    statusColor ?? config.colorClass,
+    // Link-specific
+    href && "cursor-pointer no-underline hover:scale-[1.03] hover:shadow-sm active:scale-[0.98]",
+    !href && "cursor-default",
   );
 
-  const pillContent = (
+  const pillInner = (
     <>
-      <SigilIcon name={config.icon ?? "hash"} className="size-3 shrink-0" />
-      <span className="truncate max-w-[20ch]">{displayId}</span>
+      <SigilIcon name={config.icon ?? "hash"} className="size-3 shrink-0 opacity-80" />
+      <span className="truncate max-w-[24ch]">{displayText}</span>
       {statusParam && (
-        <span className="opacity-70 text-[10px]">{statusParam}</span>
+        <span className={cn(
+          "rounded-full px-1 py-px text-[9px] font-bold uppercase tracking-wider",
+          "bg-black/10 dark:bg-white/10",
+        )}>
+          {statusParam}
+        </span>
       )}
+      {href && <ExternalLinkIcon className="size-2.5 shrink-0 opacity-50" />}
     </>
   );
 
@@ -100,31 +117,88 @@ export function SigilPill({ type, id, params, raw }: SigilPillProps) {
       data-sigil={raw}
       onClick={(e) => e.stopPropagation()}
     >
-      {pillContent}
+      {pillInner}
     </a>
   ) : (
     <span className={pillClasses} data-sigil={raw}>
-      {pillContent}
+      {pillInner}
     </span>
   );
 
-  // Wrap in tooltip if there's a description or extra params
-  const tooltipLines = buildTooltipLines(label, description, params, canonicalType, id, resolved.data);
-  if (tooltipLines.length === 0) return pill;
+  // ── HoverCard preview ──────────────────────────────────────────────────
+
+  const hasPreview = id || description || author || statusParam;
+  if (!hasPreview) return pill;
 
   return (
-    <TooltipProvider delayDuration={300}>
-      <Tooltip>
-        <TooltipTrigger asChild>{pill}</TooltipTrigger>
-        <TooltipContent side="top" className="max-w-xs text-xs">
-          {tooltipLines.map((line, i) => (
-            <div key={i} className={i === 0 ? "font-medium" : "opacity-80"}>
-              {line}
+    <HoverCard openDelay={400} closeDelay={100}>
+      <HoverCardTrigger asChild>{pill}</HoverCardTrigger>
+      <HoverCardContent
+        side="top"
+        align="center"
+        className="w-auto min-w-[180px] max-w-[280px] p-3"
+      >
+        <div className="flex flex-col gap-1.5">
+          {/* Header: icon + type label */}
+          <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+            <SigilIcon name={config.icon ?? "hash"} className="size-3.5 opacity-60" />
+            <span className="font-medium">{typeLabel}</span>
+          </div>
+
+          {/* Title / ID */}
+          {id && (
+            <div className="text-sm font-semibold text-foreground leading-snug">
+              {resolved.data?.title && resolved.data.title !== id ? (
+                <>
+                  <span>{String(resolved.data.title)}</span>
+                  <span className="ml-1.5 text-xs font-normal text-muted-foreground">
+                    #{id}
+                  </span>
+                </>
+              ) : (
+                <span className="font-mono">{id}</span>
+              )}
             </div>
-          ))}
-        </TooltipContent>
-      </Tooltip>
-    </TooltipProvider>
+          )}
+
+          {/* Description */}
+          {description && (
+            <p className="text-xs text-muted-foreground leading-relaxed line-clamp-2">
+              {description}
+            </p>
+          )}
+
+          {/* Meta row: author + status */}
+          {(author || statusParam) && (
+            <div className="flex items-center gap-2 pt-0.5">
+              {author && (
+                <span className="text-[11px] text-muted-foreground">
+                  by <span className="font-medium text-foreground">{author}</span>
+                </span>
+              )}
+              {statusParam && (
+                <span className={cn(
+                  "inline-flex items-center rounded-full px-1.5 py-px",
+                  "text-[10px] font-bold uppercase tracking-wider",
+                  "ring-1 ring-inset",
+                  getStatusColor(statusParam) ?? "bg-muted text-muted-foreground ring-border",
+                )}>
+                  {statusParam}
+                </span>
+              )}
+            </div>
+          )}
+
+          {/* Link hint */}
+          {href && (
+            <div className="flex items-center gap-1 pt-0.5 text-[10px] text-muted-foreground/60">
+              <ExternalLinkIcon className="size-2.5" />
+              <span className="truncate">{prettifyUrl(href)}</span>
+            </div>
+          )}
+        </div>
+      </HoverCardContent>
+    </HoverCard>
   );
 }
 
@@ -136,67 +210,30 @@ function getStatusColor(status: string): string | undefined {
     case "merged":
     case "passed":
     case "healthy":
-      return "bg-green-500/15 text-green-700 dark:text-green-400 border-green-500/25";
+      return "bg-green-500/15 text-green-700 dark:text-green-400 ring-green-500/25";
     case "failure":
     case "failed":
     case "error":
+      return "bg-red-500/15 text-red-700 dark:text-red-400 ring-red-500/25";
     case "closed":
-      return "bg-red-500/15 text-red-700 dark:text-red-400 border-red-500/25";
+      return "bg-red-500/10 text-red-600 dark:text-red-400 ring-red-500/20";
     case "open":
     case "running":
     case "pending":
-      return "bg-blue-500/15 text-blue-700 dark:text-blue-400 border-blue-500/25";
+      return "bg-blue-500/15 text-blue-700 dark:text-blue-400 ring-blue-500/25";
     case "draft":
     case "neutral":
     case "skipped":
-      return "bg-zinc-500/15 text-zinc-700 dark:text-zinc-400 border-zinc-500/25";
+      return "bg-zinc-500/15 text-zinc-700 dark:text-zinc-400 ring-zinc-500/25";
     case "cancelled":
     case "timed_out":
-      return "bg-amber-500/15 text-amber-700 dark:text-amber-400 border-amber-500/25";
+      return "bg-amber-500/15 text-amber-700 dark:text-amber-400 ring-amber-500/25";
     default:
       return undefined;
   }
 }
 
-function buildTooltipLines(
-  label: string,
-  description: string | undefined,
-  params: Record<string, string>,
-  type: string,
-  id: string,
-  resolvedData?: Record<string, unknown>,
-): string[] {
-  const lines: string[] = [];
-
-  // Title line: "Pull Request #55" or "Branch: main"
-  if (id) {
-    lines.push(`${label}: ${id}`);
-  } else {
-    lines.push(label);
-  }
-
-  // Resolved title (if different from id)
-  if (resolvedData?.title && resolvedData.title !== id) {
-    lines.push(String(resolvedData.title));
-  }
-
-  // Resolved author
-  if (resolvedData?.author) {
-    lines.push(`by ${resolvedData.author}`);
-  }
-
-  // Description from service def
-  if (description) {
-    lines.push(description);
-  }
-
-  // Non-label, non-status params as extra info
-  const extraParams = Object.entries(params).filter(
-    ([k]) => !["label", "status", "conclusion", "link", "href"].includes(k),
-  );
-  for (const [key, val] of extraParams) {
-    lines.push(`${key}: ${val}`);
-  }
-
-  return lines;
+/** Shorten a URL for display: strip protocol, trailing slash. */
+function prettifyUrl(url: string): string {
+  return url.replace(/^https?:\/\//, "").replace(/\/$/, "");
 }
