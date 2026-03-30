@@ -1201,11 +1201,12 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                 // Handle AGENTS.md separately — it's a standalone file, not JSON config
                 if (section === "agentsMd") {
                     const agentsMdPath = join(homedir(), ".pizzapi", "AGENTS.md");
-                    const { writeFileSync, mkdirSync, existsSync } = await import("fs");
+                    const { writeFileSync, chmodSync: chmodSyncAgents, mkdirSync, existsSync } = await import("fs");
                     const dir = join(homedir(), ".pizzapi");
                     if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
                     const content = typeof value === "string" ? value : "";
                     writeFileSync(agentsMdPath, content, { encoding: "utf-8", mode: 0o600 });
+                    chmodSyncAgents(agentsMdPath, 0o600); // tighten permissions on pre-existing files
                     socket.emit("file_result", {
                         requestId,
                         ok: true,
@@ -1221,7 +1222,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                 if (tuiSections.has(section)) {
                     // Read/merge/write settings.json
                     const settingsPath = join(homedir(), ".pizzapi", "settings.json");
-                    const { readFileSync, writeFileSync, existsSync, mkdirSync } = await import("fs");
+                    const { readFileSync, writeFileSync, chmodSync: chmodSyncSettings, existsSync, mkdirSync } = await import("fs");
                     const dir = join(homedir(), ".pizzapi");
                     if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
                     let existing: Record<string, unknown> = {};
@@ -1236,6 +1237,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                         Object.assign(existing, value);
                     }
                     writeFileSync(settingsPath, JSON.stringify(existing, null, 2), { encoding: "utf-8", mode: 0o600 });
+                    chmodSyncSettings(settingsPath, 0o600); // tighten permissions on pre-existing files
                     socket.emit("file_result", {
                         requestId,
                         ok: true,

@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { dirname, join, resolve } from "path";
 import { fileURLToPath } from "url";
@@ -387,6 +387,7 @@ export function saveGlobalConfig(fields: Partial<PizzaPiConfig>): void {
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
     const existing = readJsonSafe(path);
     writeFileSync(path, JSON.stringify({ ...existing, ...fields }, null, 2), { encoding: "utf-8", mode: 0o600 });
+    chmodSync(path, 0o600); // tighten permissions on pre-existing files
 }
 
 /**
@@ -398,6 +399,7 @@ export function saveProjectConfig(fields: Partial<PizzaPiConfig>, cwd: string = 
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
     const existing = readJsonSafe(path);
     writeFileSync(path, JSON.stringify({ ...existing, ...fields }, null, 2), { encoding: "utf-8", mode: 0o600 });
+    chmodSync(path, 0o600); // tighten permissions on pre-existing files
 }
 
 // ── MCP server disable/enable helpers ─────────────────────────────────────────
@@ -460,7 +462,9 @@ export function toggleMcpServer(
         delete full.disabledMcpServers;
         const dir = join(cwd, ".pizzapi");
         if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
-        writeFileSync(join(dir, "config.json"), JSON.stringify(full, null, 2), { encoding: "utf-8", mode: 0o600 });
+        const configPath = join(dir, "config.json");
+        writeFileSync(configPath, JSON.stringify(full, null, 2), { encoding: "utf-8", mode: 0o600 });
+        chmodSync(configPath, 0o600); // tighten permissions on pre-existing files
         return { changed: true, globallyDisabled: false };
     }
 

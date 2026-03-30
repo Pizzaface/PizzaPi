@@ -228,9 +228,14 @@ describe("isValidPushEndpoint", () => {
         expect(isValidPushEndpoint("https://[::1]/push")).toBe(false);
     });
 
-    it("rejects IPv6 ULA (fc00::/7)", () => {
+    it("rejects IPv6 ULA (fc00::/7) — fc** prefix", () => {
         expect(isValidPushEndpoint("https://[fc00::1]/push")).toBe(false);
         expect(isValidPushEndpoint("https://[fc12:3456::1]/push")).toBe(false);
+    });
+
+    it("rejects IPv6 ULA (fd00::/8) — fd** prefix", () => {
+        expect(isValidPushEndpoint("https://[fd00::1]/push")).toBe(false);
+        expect(isValidPushEndpoint("https://[fd12:3456::1]/push")).toBe(false);
     });
 
     it("rejects IPv6 link-local (fe80::/10)", () => {

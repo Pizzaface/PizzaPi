@@ -97,7 +97,7 @@ const PRIVATE_IP_PATTERNS = [
     /^192\.168\./,               // 192.168.0.0/16
     /^169\.254\./,               // 169.254.0.0/16 link-local
     /^\[::1\]$/,                 // IPv6 loopback — URL API returns "[::1]" with brackets
-    /^\[fc[0-9a-f]{2}:/i,        // IPv6 ULA fc00::/7 — URL API wraps IPv6 in "[...]"
+    /^\[f[cd][0-9a-f]{2}:/i,      // IPv6 ULA fc00::/7 (fc** and fd**) — URL API wraps IPv6 in "[...]"
     /^\[fe[89ab][0-9a-f]:/i,     // IPv6 link-local fe80::/10
     /^0\./,                      // 0.0.0.0/8
 ];
