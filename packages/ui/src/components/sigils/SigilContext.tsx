@@ -6,7 +6,7 @@
  * will automatically pick up type configs, service definitions, and
  * resolve enriched data from service endpoints.
  */
-import { createContext, useCallback, useContext, useMemo, useRef } from "react";
+import { createContext, useCallback, useContext, useMemo, useRef, useState } from "react";
 import type { ServiceSigilDef, ServicePanelInfo } from "@pizzapi/protocol";
 import { SigilRegistry, createRegistry } from "@/lib/sigils/registry";
 
@@ -71,10 +71,11 @@ interface SigilProviderProps {
 export function SigilProvider({ sigilDefs, panels, runnerId, children }: SigilProviderProps) {
   const registry = useMemo(() => createRegistry(sigilDefs), [sigilDefs]);
 
-  // Resolve cache: keyed by "type:id"
+  // Resolve cache: keyed by "type:id". Lives in a ref for instant reads.
+  // A version counter in state triggers re-renders when data arrives.
   const cacheRef = useRef(new Map<string, SigilResolveState>());
-  // Force re-render tracking
-  const subscribersRef = useRef(new Set<() => void>());
+  const [, setVersion] = useState(0);
+  const bump = useCallback(() => setVersion((v) => v + 1), []);
 
   // Build panel port lookup: serviceId → port
   const panelPortMap = useMemo(() => {
@@ -112,18 +113,21 @@ export function SigilProvider({ sigilDefs, panels, runnerId, children }: SigilPr
 
       // Mark as loading
       cache.set(key, { loading: true });
+      bump();
 
       fetch(url)
         .then(async (res) => {
           if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
           const data = (await res.json()) as SigilResolveData;
           cache.set(key, { data, loading: false });
+          bump();
         })
         .catch((err) => {
           cache.set(key, { loading: false, error: String(err) });
+          bump();
         });
     },
-    [registry, panelPortMap, runnerId],
+    [registry, panelPortMap, runnerId, bump],
   );
 
   const contextValue = useMemo<SigilContextValue>(
