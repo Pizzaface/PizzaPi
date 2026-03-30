@@ -371,20 +371,27 @@
   }
 
   /* Font size preference */
-  [data-font-size="small"] .pp-message-content { font-size: 0.8125rem; line-height: 1.5; }
-  [data-font-size="large"] .pp-message-content { font-size: 1rem; line-height: 1.7; }
+  /* Font size — override Tailwind text-sm on message content and all descendants */
+  [data-font-size="small"] .pp-message-content,
+  [data-font-size="small"] .pp-message-content p,
+  [data-font-size="small"] .pp-message-content li,
+  [data-font-size="small"] .pp-message-content td,
+  [data-font-size="small"] .pp-message-content th { font-size: 0.8125rem !important; line-height: 1.5 !important; }
 
-  /* UI density */
-  /* UI density — scale padding, gaps, and margins */
-  :root { --density: 1; }
-  [data-density="compact"] { --density: 0.75; }
-  [data-density="comfortable"] { --density: 1.25; }
+  [data-font-size="large"] .pp-message-content,
+  [data-font-size="large"] .pp-message-content p,
+  [data-font-size="large"] .pp-message-content li,
+  [data-font-size="large"] .pp-message-content td,
+  [data-font-size="large"] .pp-message-content th { font-size: 1rem !important; line-height: 1.75 !important; }
 
-  /* Apply density to message blocks */
-  [data-density="compact"] .pp-message-content { padding-top: 0.25rem; padding-bottom: 0.25rem; }
-  [data-density="compact"] header { padding-top: 0.25rem; padding-bottom: 0.25rem; }
-  [data-density="comfortable"] .pp-message-content { padding-top: 0.75rem; padding-bottom: 0.75rem; }
-  [data-density="comfortable"] header { padding-top: 0.75rem; padding-bottom: 0.75rem; }
+  /* UI density — scale padding/gaps on messages and chrome */
+  [data-density="compact"] .pp-message-content { padding: 0.375rem 0.5rem !important; }
+  [data-density="compact"] .group\/msg { padding-top: 0.25rem !important; padding-bottom: 0.25rem !important; }
+  [data-density="compact"] header { padding-top: 0.25rem !important; padding-bottom: 0.25rem !important; }
+
+  [data-density="comfortable"] .pp-message-content { padding: 0.75rem 1rem !important; }
+  [data-density="comfortable"] .group\/msg { padding-top: 0.75rem !important; padding-bottom: 0.75rem !important; }
+  [data-density="comfortable"] header { padding-top: 0.75rem !important; padding-bottom: 0.75rem !important; }
 
   /* Code font override */
 
