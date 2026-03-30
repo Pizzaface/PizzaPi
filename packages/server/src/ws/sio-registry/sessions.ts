@@ -39,6 +39,7 @@ import {
 } from "../sio-state/index.js";
 import {
     getPersistedRelaySessionRunner,
+    getRelaySessionUserId,
     recordRelaySessionStart,
     recordRelaySessionEnd,
     recordRelaySessionState,
@@ -146,6 +147,24 @@ export async function registerTuiSession(
                 oldSocket.data.sessionId = undefined;
             }
             await endSharedSession(sessionId, "Session reconnected");
+        }
+    }
+
+    // Secondary guard: check SQLite for *ended* sessions that are no longer in
+    // Redis but whose persisted row belongs to a different user.  This covers
+    // the case where a session ended (Redis key deleted) and a different user
+    // subsequently requests the same session ID — the Redis guard above is
+    // bypassed because `existing` is null, but the persisted row still has the
+    // original owner.  Generate a fresh session ID so this user gets their own
+    // slot without touching the other owner's persisted data.
+    if (!existing && requestedSessionId.length > 0 && sessionId === requestedSessionId) {
+        const persistedUserId = await getRelaySessionUserId(sessionId);
+        if (persistedUserId !== null && persistedUserId !== userId) {
+            log.warn(
+                `registerTuiSession: ended session ${sessionId} is owned by a different user in SQLite — generating new session ID`,
+            );
+            sessionId = randomUUID();
+            shareUrl = `${process.env.PIZZAPI_BASE_URL ?? "http://localhost:5173"}/session/${sessionId}`;
         }
     }
 
@@ -486,7 +505,7 @@ export async function updateSessionState(sessionId: string, state: unknown): Pro
         );
     }
 
-    void recordRelaySessionState(sessionId, strippedState).catch((error) => {
+    void recordRelaySessionState(sessionId, session.userId ?? null, strippedState).catch((error) => {
         log.error("Failed to persist relay session state:", error);
     });
 }

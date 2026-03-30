@@ -110,6 +110,7 @@ const mockGetPersistedRelaySessionRunner = mock(
 mock.module("../../sessions/store.js", () => ({
     getEphemeralTtlMs: () => 60_000,
     getPersistedRelaySessionRunner: mockGetPersistedRelaySessionRunner,
+    getRelaySessionUserId: async (_sessionId: string) => null,
     recordRelaySessionStart: async () => {},
     recordRelaySessionEnd: async () => {},
     recordRelaySessionState: async () => {},
