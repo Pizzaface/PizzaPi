@@ -36,13 +36,9 @@ export function usePushState() {
     const [suppressChild, setSuppressChild] = React.useState(false);
     const [suppressChildLoading, setSuppressChildLoading] = React.useState(false);
 
-    React.useEffect(() => {
-        const sup = isPushSupported();
-        setSupported(sup);
-        if (!sup) {
-            setLoading(false);
-            return;
-        }
+    // Initial load + sync when another instance changes state
+    const refreshState = React.useCallback(() => {
+        if (!isPushSupported()) return;
         isPushSubscribed().then((s) => {
             setSubscribed(s);
             setLoading(false);
@@ -50,9 +46,25 @@ export function usePushState() {
                 getSuppressChildNotifications().then((val) => {
                     if (val !== null) setSuppressChild(val);
                 });
+            } else {
+                setSuppressChild(false);
             }
         });
     }, []);
+
+    React.useEffect(() => {
+        const sup = isPushSupported();
+        setSupported(sup);
+        if (!sup) {
+            setLoading(false);
+            return;
+        }
+        refreshState();
+        // Listen for state changes from other usePushState instances
+        const onSync = () => refreshState();
+        window.addEventListener("pp-push-state-changed", onSync);
+        return () => window.removeEventListener("pp-push-state-changed", onSync);
+    }, [refreshState]);
 
     const toggle = React.useCallback(async () => {
         if (loading) return;
@@ -63,6 +75,7 @@ export function usePushState() {
                 if (ok) {
                     setSubscribed(false);
                     setSuppressChild(false);
+                    window.dispatchEvent(new CustomEvent("pp-push-state-changed"));
                 }
             } else {
                 const sub = await subscribeToPush();
@@ -72,6 +85,7 @@ export function usePushState() {
                         if (val !== null) setSuppressChild(val);
                     });
                 }
+                window.dispatchEvent(new CustomEvent("pp-push-state-changed"));
             }
         } catch (err) {
             log.error("toggle failed:", err);
@@ -86,7 +100,10 @@ export function usePushState() {
         try {
             const next = !suppressChild;
             const ok = await setSuppressChildNotifications(next);
-            if (ok) setSuppressChild(next);
+            if (ok) {
+                setSuppressChild(next);
+                window.dispatchEvent(new CustomEvent("pp-push-state-changed"));
+            }
         } catch (err) {
             log.error("suppressChild toggle failed:", err);
         } finally {

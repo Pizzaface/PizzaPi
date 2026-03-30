@@ -27,12 +27,32 @@ function loadHiddenPanels(): Set<string> {
 function saveHiddenPanels(hidden: Set<string>) {
   try {
     localStorage.setItem(HIDDEN_PANELS_KEY, JSON.stringify([...hidden]));
+    // Dispatch custom event for same-tab reactivity (storage event only fires cross-tab)
+    window.dispatchEvent(new CustomEvent("pp-hidden-panels-changed"));
   } catch { /* ignore */ }
 }
 
 /** Export for use by ServicePanelButtons to filter visible panels. */
 export function getHiddenServicePanels(): Set<string> {
   return loadHiddenPanels();
+}
+
+/** Hook that reactively tracks hidden service panels. */
+export function useHiddenServicePanels(): Set<string> {
+  const [hidden, setHidden] = React.useState(loadHiddenPanels);
+  React.useEffect(() => {
+    const update = () => setHidden(loadHiddenPanels());
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === HIDDEN_PANELS_KEY) update();
+    };
+    window.addEventListener("pp-hidden-panels-changed", update);
+    window.addEventListener("storage", onStorage);
+    return () => {
+      window.removeEventListener("pp-hidden-panels-changed", update);
+      window.removeEventListener("storage", onStorage);
+    };
+  }, []);
+  return hidden;
 }
 
 interface ServicePanel {
