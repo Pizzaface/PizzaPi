@@ -322,8 +322,8 @@ export interface PizzaPiConfig {
      * PIZZAPI_ALLOW_PROJECT_MCP=1 env var). Project configs cannot
      * self-authorize.
      *
-     * When false/unset, only MCP servers from ~/.pizzapi/config.json (global) are loaded.
-     * This prevents a malicious project from injecting arbitrary MCP servers.
+     * When false/unset, project MCP servers are still loaded but a security
+     * warning is printed. Set to true to suppress the warning.
      */
     allowProjectMcp?: boolean;
 
