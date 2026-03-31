@@ -393,9 +393,13 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
 
             const requestedLastSeq = typeof lastSeq === "number" && Number.isFinite(lastSeq) ? lastSeq : undefined;
 
+            // Always send the server's authoritative seq — never echo the
+            // client's requestedLastSeq.  If the server seq reset (relay
+            // restart) the client would keep its stale high cursor via
+            // mergeConnectedSeq(Math.max) and reject all new events as stale.
             socket.emit("connected", withHubMetaSource({
                 sessionId: nextSessionId,
-                lastSeq: requestedLastSeq ?? freshSeq,
+                lastSeq: freshSeq,
                 isActive: freshSession.isActive,
                 lastHeartbeatAt: freshSession.lastHeartbeatAt,
                 sessionName: freshSession.sessionName,

@@ -12,8 +12,8 @@ describe("mergeConnectedSeq", () => {
     expect(mergeConnectedSeq(null, 12)).toBe(12);
   });
 
-  test("never rewinds when connected seq is older", () => {
-    expect(mergeConnectedSeq(15, 12)).toBe(15);
+  test("accepts server seq even when lower (seq reset after relay restart)", () => {
+    expect(mergeConnectedSeq(15, 12)).toBe(12);
   });
 
   test("advances when connected seq is newer", () => {
