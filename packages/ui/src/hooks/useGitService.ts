@@ -227,30 +227,36 @@ export function useGitService(cwd: string): UseGitServiceReturn {
                     markStatusRequestSettled(requestId);
                     // Ignore stale responses from a previous cwd
                     if (statusGenRef.current !== generationRef.current) break;
-                    // Ignore late/abandoned full-status responses once fallback has moved on.
-                    if (!requestId || pendingFullStatusRequestRef.current !== requestId) break;
-                    pendingFullStatusRequestRef.current = null;
-                    if (fullStatusFallbackTimerRef.current) {
-                        clearTimeout(fullStatusFallbackTimerRef.current);
-                        fullStatusFallbackTimerRef.current = null;
+
+                    const isInitialFullStatus = !!requestId && pendingFullStatusRequestRef.current === requestId;
+                    if (isInitialFullStatus) {
+                        pendingFullStatusRequestRef.current = null;
+                        if (fullStatusFallbackTimerRef.current) {
+                            clearTimeout(fullStatusFallbackTimerRef.current);
+                            fullStatusFallbackTimerRef.current = null;
+                        }
+                        setLoading(false);
                     }
 
-                    setLoading(false);
                     if (payload.ok) {
-                        const statusPayload = (payload.status as Record<string, unknown> | undefined) ?? payload;
-                        setStatus({
-                            branch: (statusPayload.branch as string) ?? "",
-                            changes: (statusPayload.changes as GitChange[]) ?? [],
-                            ahead: (statusPayload.ahead as number) ?? 0,
-                            behind: (statusPayload.behind as number) ?? 0,
-                            hasUpstream: (statusPayload.hasUpstream as boolean) ?? false,
-                            diffStaged: (statusPayload.diffStaged as string) ?? "",
-                        });
+                        // After fallback, still accept late full-status for auxiliary data
+                        // (branches/worktrees/currentBranch) without overwriting fresher status.
+                        if (isInitialFullStatus) {
+                            const statusPayload = (payload.status as Record<string, unknown> | undefined) ?? payload;
+                            setStatus({
+                                branch: (statusPayload.branch as string) ?? "",
+                                changes: (statusPayload.changes as GitChange[]) ?? [],
+                                ahead: (statusPayload.ahead as number) ?? 0,
+                                behind: (statusPayload.behind as number) ?? 0,
+                                hasUpstream: (statusPayload.hasUpstream as boolean) ?? false,
+                                diffStaged: (statusPayload.diffStaged as string) ?? "",
+                            });
+                        }
                         setBranches((payload.branches as GitBranch[]) ?? []);
                         setCurrentBranch((payload.currentBranch as string) ?? "");
                         setWorktrees((payload.worktrees as GitWorktree[]) ?? []);
                         setError(null);
-                    } else {
+                    } else if (isInitialFullStatus) {
                         setError((payload.message as string) ?? "Failed to get git status");
                     }
                     break;

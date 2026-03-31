@@ -371,7 +371,17 @@ describe("GitService git metadata watchers", () => {
                     if (key === "HEAD") return { stdout: "../.git/HEAD\n", stderr: "" };
                     if (key === "index") return { stdout: "../.git/index\n", stderr: "" };
                     if (key === "packed-refs") return { stdout: "../.git/packed-refs\n", stderr: "" };
-                    if (key === "refs") return { stdout: "../.git/refs\n", stderr: "" };
+                    if (key === "FETCH_HEAD") return { stdout: "../.git/FETCH_HEAD\n", stderr: "" };
+                    if (key === "refs/heads") return { stdout: "../.git/refs/heads\n", stderr: "" };
+                    if (key === "refs/remotes") return { stdout: "../.git/refs/remotes\n", stderr: "" };
+                    if (key === "refs/heads/main") return { stdout: "../.git/refs/heads/main\n", stderr: "" };
+                    if (key === "refs/remotes/origin/main") return { stdout: "../.git/refs/remotes/origin/main\n", stderr: "" };
+                }
+                if (args[0] === "symbolic-ref" && args[1] === "-q" && args[2] === "HEAD") {
+                    return { stdout: "refs/heads/main\n", stderr: "" };
+                }
+                if (args[0] === "rev-parse" && args[1] === "--symbolic-full-name" && args[2] === "@{u}") {
+                    return { stdout: "refs/remotes/origin/main\n", stderr: "" };
                 }
                 if (args[0] === "status") return { stdout: " M watched.ts\0", stderr: "" };
                 if (args[0] === "diff") return { stdout: "", stderr: "" };
@@ -396,7 +406,9 @@ describe("GitService git metadata watchers", () => {
         expect(watchPaths).toContain("/repo/.git/HEAD");
         expect(watchPaths).toContain("/repo/.git/index");
         expect(watchPaths).toContain("/repo/.git/packed-refs");
-        expect(watchPaths).toContain("/repo/.git/refs");
+        expect(watchPaths).toContain("/repo/.git/FETCH_HEAD");
+        expect(watchPaths).toContain("/repo/.git/refs/heads");
+        expect(watchPaths).toContain("/repo/.git/refs/remotes");
     });
 
     test("debounces metadata fs events and pushes status only to interested cwd subscribers", async () => {

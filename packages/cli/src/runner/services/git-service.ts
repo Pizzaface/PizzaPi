@@ -352,7 +352,8 @@ export class GitService implements ServiceHandler {
             this.invalidateStatusCache(cwd);
             const status = await this.getStatusSnapshot(cwd);
             for (const sessionId of subscribers) {
-                this.emit("git_status_result", status, undefined, sessionId);
+                const sessionCwd = this._sessionCwd.get(sessionId) ?? status.cwd;
+                this.emit("git_status_result", { ...status, cwd: sessionCwd }, undefined, sessionId);
             }
         } catch {
             // Ignore transient git/fs failures from proactive refresh.
@@ -381,12 +382,36 @@ export class GitService implements ServiceHandler {
         const head = await resolvePath("HEAD");
         const index = await resolvePath("index");
         const packedRefs = await resolvePath("packed-refs");
-        const refsDir = await resolvePath("refs");
+        const fetchHead = await resolvePath("FETCH_HEAD");
+        const headsDir = await resolvePath("refs/heads");
+        const remotesDir = await resolvePath("refs/remotes");
+
+        let currentBranchRef: string | null = null;
+        try {
+            const { stdout } = await this._execGit(["symbolic-ref", "-q", "HEAD"], { cwd, timeout: 5000 });
+            const ref = stdout.trim();
+            if (ref.startsWith("refs/")) currentBranchRef = await resolvePath(ref);
+        } catch {
+            // Detached HEAD or missing ref info.
+        }
+
+        let upstreamRefPath: string | null = null;
+        try {
+            const { stdout } = await this._execGit(["rev-parse", "--symbolic-full-name", "@{u}"], { cwd, timeout: 5000 });
+            const upstreamRef = stdout.trim();
+            if (upstreamRef.startsWith("refs/")) upstreamRefPath = await resolvePath(upstreamRef);
+        } catch {
+            // Branch may have no upstream.
+        }
 
         if (head) paths.add(head);
         if (index) paths.add(index);
         if (packedRefs) paths.add(packedRefs);
-        if (refsDir) paths.add(refsDir);
+        if (fetchHead) paths.add(fetchHead);
+        if (headsDir) paths.add(headsDir);
+        if (remotesDir) paths.add(remotesDir);
+        if (currentBranchRef) paths.add(currentBranchRef);
+        if (upstreamRefPath) paths.add(upstreamRefPath);
 
         return [...paths];
     }
@@ -399,10 +424,40 @@ export class GitService implements ServiceHandler {
         return next;
     }
 
+    private readonly _cwdRepoRoot = new Map<string, string>();
+
     private invalidateStatusCache(cwd: string): void {
         this.bumpStatusGeneration(cwd);
         this._statusCache.delete(cwd);
         this._statusInFlight.delete(cwd);
+    }
+
+    private async resolveRepoRoot(cwd: string): Promise<string> {
+        try {
+            const { stdout } = await this._execGit(["rev-parse", "--show-toplevel"], { cwd, timeout: 5000 });
+            return stdout.trim() || cwd;
+        } catch {
+            return cwd;
+        }
+    }
+
+    private async invalidateStatusCacheFamily(cwd: string): Promise<void> {
+        const repoRoot = await this.resolveRepoRoot(cwd);
+        this._cwdRepoRoot.set(cwd, repoRoot);
+
+        const seen = new Set<string>();
+        const invalidateKey = (key: string) => {
+            if (seen.has(key)) return;
+            seen.add(key);
+            this.invalidateStatusCache(key);
+        };
+
+        invalidateKey(cwd);
+        invalidateKey(repoRoot);
+
+        for (const [knownCwd, knownRoot] of this._cwdRepoRoot.entries()) {
+            if (knownRoot === repoRoot) invalidateKey(knownCwd);
+        }
     }
 
     private async getStatusSnapshot(cwd: string): Promise<GitStatusResultPayload> {
@@ -438,6 +493,8 @@ export class GitService implements ServiceHandler {
 
         const branch = branchResult.status === "fulfilled" ? branchResult.value.stdout.trim() : "";
         const repoRoot = toplevelResult.status === "fulfilled" ? toplevelResult.value.stdout.trim() : cwd;
+        this._cwdRepoRoot.set(cwd, repoRoot || cwd);
+        if (repoRoot) this._cwdRepoRoot.set(repoRoot, repoRoot);
         const statusOutput = statusResult.status === "fulfilled" ? statusResult.value.stdout : "";
         const diffStaged = diffStagedResult.status === "fulfilled" ? diffStagedResult.value.stdout : "";
 
@@ -702,7 +759,7 @@ export class GitService implements ServiceHandler {
             }
 
             await this._execGit(args, { cwd, timeout: 15000 });
-            this.invalidateStatusCache(cwd);
+            await this.invalidateStatusCacheFamily(cwd);
 
             this.emit("git_checkout_result", {
                 ok: true,
@@ -750,7 +807,7 @@ export class GitService implements ServiceHandler {
 
             const args = all ? ["add", "--all"] : ["add", "--", ...paths];
             await this._execGit(args, { cwd: repoRoot, timeout: 15000 });
-            this.invalidateStatusCache(cwd);
+            await this.invalidateStatusCacheFamily(cwd);
             this.emit("git_stage_result", { ok: true }, requestId, sessionId);
         } catch (err) {
             this.emitError("git_stage_result", err instanceof Error ? err.message : String(err), requestId, sessionId);
@@ -796,7 +853,7 @@ export class GitService implements ServiceHandler {
                 ? ["restore", "--staged", ":/"]
                 : ["restore", "--staged", "--", ...paths];
             await this._execGit(args, { cwd: repoRoot, timeout: 15000 });
-            this.invalidateStatusCache(cwd);
+            await this.invalidateStatusCacheFamily(cwd);
             this.emit("git_unstage_result", { ok: true }, requestId, sessionId);
         } catch (err) {
             this.emitError("git_unstage_result", err instanceof Error ? err.message : String(err), requestId, sessionId);
@@ -826,7 +883,7 @@ export class GitService implements ServiceHandler {
 
             // Parse the short summary (e.g. "[main abc1234] Fix thing\n 1 file changed...")
             const firstLine = stdout.split("\n")[0] ?? "";
-            this.invalidateStatusCache(cwd);
+            await this.invalidateStatusCacheFamily(cwd);
 
             this.emit("git_commit_result", {
                 ok: true,
@@ -975,7 +1032,7 @@ export class GitService implements ServiceHandler {
         try {
             const result = await this._execGit(["pull"], { cwd, timeout: 60000 });
             const output = (result.stdout + "\n" + result.stderr).trim();
-            this.invalidateStatusCache(cwd);
+            await this.invalidateStatusCacheFamily(cwd);
 
             this.emit("git_pull_result", {
                 ok: true,
@@ -1033,7 +1090,7 @@ export class GitService implements ServiceHandler {
             // git push writes to stderr (progress), use a larger timeout for network ops
             const result = await this._execGit(args, { cwd, timeout: 60000 });
             const output = (result.stdout + "\n" + result.stderr).trim();
-            this.invalidateStatusCache(cwd);
+            await this.invalidateStatusCacheFamily(cwd);
 
             this.emit("git_push_result", {
                 ok: true,
