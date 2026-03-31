@@ -1,0 +1,106 @@
+---
+title: Preferences
+description: Customize PizzaPi's appearance, notifications, and model visibility from the User Preferences panel.
+---
+
+import { Aside } from "@astrojs/starlight/components";
+
+The **Preferences** panel centralizes your personal settings — appearance, notifications, and model visibility. Open it from the user menu (avatar icon) → **Preferences**, or from the ⚙️ icon in the toolbar on desktop.
+
+All preferences are stored locally in your browser (`localStorage`) and persist across sessions. They are not tied to any specific runner.
+
+## Appearance
+
+### Theme mode
+
+PizzaPi supports three theme modes:
+
+- **Auto** — follows your operating system's `prefers-color-scheme` setting and updates automatically if you switch system themes.
+- **Light** — forces light mode regardless of system preference.
+- **Dark** — forces dark mode regardless of system preference.
+
+The theme toggle in the user dropdown menu provides a quick cycle through all three modes without opening Preferences.
+
+Theme switches use a smooth 200ms transition to avoid jarring color flashes. A blocking inline script prevents flash of unstyled content (FOUC) on page load — your theme is applied before React hydrates.
+
+### Accent colors
+
+Choose from preset accent color palettes that override the primary and ring colors throughout the UI:
+
+| Accent | Description |
+|--------|-------------|
+| **Default** | Blue — the standard PizzaPi palette |
+| **Green** | Green primary tones |
+| **Orange** | Warm orange primary tones |
+| **Purple** | Purple primary tones |
+
+Accents compose with light/dark modes — every combination works. The selection is applied via a `data-accent` attribute on the root element.
+
+### High contrast
+
+Enable **High contrast** mode for improved readability. This mode:
+
+- Increases all text/background contrast ratios to 7:1+ (WCAG AAA)
+- Uses thicker borders and larger focus indicators
+- Disables decorative animations when `prefers-reduced-motion` is active
+
+PizzaPi also respects the `prefers-contrast: more` media query — if your OS requests higher contrast, it's enabled automatically.
+
+### Font size
+
+Adjust the chat message text size. Choose from **Small**, **Default**, or **Large**. This only affects message content — UI chrome stays at its standard size.
+
+### UI density
+
+Controls spacing and padding throughout the interface:
+
+- **Compact** — tighter padding on messages and headers, ideal for seeing more content
+- **Default** — standard spacing
+- **Comfortable** — more breathing room between elements
+
+### Border radius
+
+Controls the roundness of UI elements (buttons, cards, inputs):
+
+| Option | Value |
+|--------|-------|
+| None | Sharp corners (`0`) |
+| Small | Subtle rounding (`0.375rem`) |
+| Default | Standard (`0.625rem`) |
+| Large | Pill-like (`1rem`) |
+
+### Code font
+
+Choose the monospace font used for code blocks, inline code, and the terminal. Options include **System** (your OS default monospace), **JetBrains Mono**, **Fira Code**, and **Source Code Pro**.
+
+All non-system fonts are bundled with PizzaPi (self-hosted woff2 files, ~500KB total) — no external requests to Google Fonts or CDNs. Fonts load on demand with `font-display: swap` so there's no layout shift.
+
+## Notifications
+
+### Push notifications
+
+Enable browser push notifications to get alerted when sessions need your attention — for example, when an agent asks a question or completes a task.
+
+<Aside type="note">
+Push notifications require HTTPS and a compatible browser. The toggle won't appear if your browser doesn't support the Push API.
+</Aside>
+
+### Suppress child session notifications
+
+When enabled, notifications from child sessions (spawned by a parent agent) are suppressed. Only the parent session's events trigger notifications. This is useful when orchestrating multiple sub-agents to avoid notification spam.
+
+### Haptic feedback
+
+On devices that support the [Vibration API](https://developer.mozilla.org/en-US/docs/Web/API/Vibration_API) (primarily Android), PizzaPi can provide haptic feedback as agent text streams in. The vibration pulse scales with the length of each text chunk.
+
+<Aside type="note">
+iOS Safari ignores `navigator.vibrate()` silently, so the haptics toggle won't appear on iPhones or iPads.
+</Aside>
+
+## Models
+
+### Model visibility
+
+Control which models appear in the model selector dropdown. Hidden models won't show up when switching models in any session, reducing clutter if you have many providers configured.
+
+Click **Manage model visibility** to open the model list. Models are grouped by provider and can be toggled individually or by provider. Use the search box to filter by name or provider.

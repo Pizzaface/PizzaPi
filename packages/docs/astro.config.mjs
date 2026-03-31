@@ -90,6 +90,7 @@ export default defineConfig({
                         { label: "Git Panel", slug: "web-ui/git-panel" },
                         { label: "Web Terminal", slug: "web-ui/terminal" },
                         { label: "Usage Dashboard", slug: "web-ui/usage-dashboard" },
+                        { label: "Preferences", slug: "web-ui/preferences" },
                         { label: "Push Notifications", slug: "web-ui/push-notifications" },
                     ],
                 },

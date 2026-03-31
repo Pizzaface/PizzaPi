@@ -3,16 +3,15 @@ import { readFileSync } from "node:fs";
 import ts from "typescript";
 
 const CALLBACK_NAMES = [
-  "handleToggleDark",
+  "handleShowPreferences",
   "handleShowApiKeys",
   "handleShowRunners",
   "handleShowShortcuts",
-  "handleShowHiddenModels",
   "handleChangePassword",
   "handleToggleSidebar",
+  "handleMobileShowPreferences",
   "handleMobileShowApiKeys",
   "handleMobileShowRunners",
-  "handleMobileShowHiddenModels",
   "handleMobileChangePassword",
   "handleSessionSwitcherOpenChange",
 ] as const;

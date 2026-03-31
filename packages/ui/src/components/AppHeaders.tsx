@@ -11,8 +11,8 @@ import * as React from "react";
 import { PizzaLogo } from "@/components/PizzaLogo";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { UsageIndicator, type ProviderUsageMap } from "@/components/UsageIndicator";
-import { NotificationToggle, MobileNotificationMenuItem } from "@/components/NotificationToggle";
-import { HapticsToggle, MobileHapticsMenuItem } from "@/components/HapticsToggle";
+import { NotificationToggle } from "@/components/NotificationToggle";
+import { HapticsToggle } from "@/components/HapticsToggle";
 import { Button } from "@/components/ui/button";
 import { TooltipProvider, Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 import { Separator } from "@/components/ui/separator";
@@ -27,10 +27,51 @@ import {
 import type { DotState, HubSession } from "@/components/SessionSidebar";
 import type { ConfiguredModelInfo } from "@/lib/types";
 import {
-  Sun, Moon, LogOut, KeyRound, User, ChevronsUpDown, PanelLeftOpen, HardDrive,
-  Keyboard, EyeOff, Lock, Check, Plus,
+  Sun, Moon, Monitor, LogOut, KeyRound, User, ChevronsUpDown, PanelLeftOpen, HardDrive,
+  Keyboard, Lock, Check, Plus, Settings,
 } from "lucide-react";
 import { signOut } from "@/lib/auth-client";
+import { useTheme, type ThemeMode } from "@/components/ThemeProvider";
+
+const THEME_CYCLE: ThemeMode[] = ["auto", "light", "dark"];
+const THEME_ICON: Record<ThemeMode, React.ReactNode> = {
+  auto: <Monitor className="h-4 w-4" />,
+  light: <Sun className="h-4 w-4" />,
+  dark: <Moon className="h-4 w-4" />,
+};
+const THEME_LABEL: Record<ThemeMode, string> = { auto: "Auto", light: "Light", dark: "Dark" };
+
+function ThemeToggleButton() {
+  const { mode, setMode } = useTheme();
+  const next = THEME_CYCLE[(THEME_CYCLE.indexOf(mode) + 1) % THEME_CYCLE.length];
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-9 w-9"
+          onClick={() => setMode(next)}
+          aria-label={`Theme: ${THEME_LABEL[mode]}`}
+        >
+          {THEME_ICON[mode]}
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent>Theme: {THEME_LABEL[mode]}</TooltipContent>
+    </Tooltip>
+  );
+}
+
+function ThemeMenuItems() {
+  const { mode, setMode } = useTheme();
+  const next = THEME_CYCLE[(THEME_CYCLE.indexOf(mode) + 1) % THEME_CYCLE.length];
+  return (
+    <DropdownMenuItem onSelect={() => setMode(next)}>
+      {THEME_ICON[mode]}
+      Theme: {THEME_LABEL[mode]}
+    </DropdownMenuItem>
+  );
+}
 
 // ── Shared helpers ──────────────────────────────────────────────────────────
 
@@ -57,7 +98,6 @@ export function initials(value: string) {
 
 export interface DesktopHeaderProps {
   relayStatus: DotState;
-  isDark: boolean;
   providerUsage: ProviderUsageMap | null;
   authSource: string | null;
   activeProvider: string | undefined;
@@ -65,18 +105,16 @@ export interface DesktopHeaderProps {
   userName: string;
   userEmail: string;
   userLabel: string;
-  onToggleDark: () => void;
+  onShowPreferences: () => void;
   onShowApiKeys: () => void;
   onShowRunners: () => void;
   onShowShortcuts: () => void;
-  onShowHiddenModels: () => void;
   onChangePassword: () => void;
   onRefreshUsage: () => boolean | void;
 }
 
 export const DesktopHeader = React.memo(function DesktopHeader({
   relayStatus,
-  isDark,
   providerUsage,
   authSource,
   activeProvider,
@@ -84,11 +122,10 @@ export const DesktopHeader = React.memo(function DesktopHeader({
   userName,
   userEmail,
   userLabel,
-  onToggleDark,
+  onShowPreferences,
   onShowApiKeys,
   onShowRunners,
   onShowShortcuts,
-  onShowHiddenModels,
   onChangePassword,
   onRefreshUsage,
 }: DesktopHeaderProps) {
@@ -117,20 +154,7 @@ export const DesktopHeader = React.memo(function DesktopHeader({
       </div>
 
       <div className="flex items-center gap-2">
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-9 w-9"
-              onClick={onToggleDark}
-              aria-label="Toggle dark mode"
-            >
-              {isDark ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent>Toggle dark mode</TooltipContent>
-        </Tooltip>
+        <ThemeToggleButton />
 
         <NotificationToggle />
         <HapticsToggle />
@@ -183,6 +207,10 @@ export const DesktopHeader = React.memo(function DesktopHeader({
               <div className="px-2 pb-1 text-xs text-muted-foreground truncate">{userEmail}</div>
             )}
             <DropdownMenuSeparator />
+            <DropdownMenuItem onSelect={onShowPreferences}>
+              <Settings className="h-4 w-4" />
+              Preferences
+            </DropdownMenuItem>
             <DropdownMenuItem onSelect={onShowApiKeys}>
               <KeyRound className="h-4 w-4" />
               API keys
@@ -190,10 +218,6 @@ export const DesktopHeader = React.memo(function DesktopHeader({
             <DropdownMenuItem onSelect={onShowRunners}>
               <HardDrive className="h-4 w-4" />
               Runners
-            </DropdownMenuItem>
-            <DropdownMenuItem onSelect={onShowHiddenModels}>
-              <EyeOff className="h-4 w-4" />
-              Model visibility
             </DropdownMenuItem>
             <DropdownMenuItem onSelect={onChangePassword}>
               <Lock className="h-4 w-4" />
@@ -215,7 +239,6 @@ export const DesktopHeader = React.memo(function DesktopHeader({
 
 export interface MobileHeaderProps {
   relayStatus: DotState;
-  isDark: boolean;
   sidebarOpen: boolean;
   providerUsage: ProviderUsageMap | null;
   authSource: string | null;
@@ -230,10 +253,9 @@ export interface MobileHeaderProps {
   userEmail: string;
   userLabel: string;
   onToggleSidebar: () => void;
-  onToggleDark: () => void;
+  onShowPreferences: () => void;
   onShowApiKeys: () => void;
   onShowRunners: () => void;
-  onShowHiddenModels: () => void;
   onChangePassword: () => void;
   onRefreshUsage: () => boolean | void;
   onOpenSession: (id: string) => void;
@@ -243,7 +265,6 @@ export interface MobileHeaderProps {
 
 export const MobileHeader = React.memo(function MobileHeader({
   relayStatus,
-  isDark,
   sidebarOpen,
   providerUsage,
   authSource,
@@ -258,10 +279,9 @@ export const MobileHeader = React.memo(function MobileHeader({
   userEmail,
   userLabel,
   onToggleSidebar,
-  onToggleDark,
+  onShowPreferences,
   onShowApiKeys,
   onShowRunners,
-  onShowHiddenModels,
   onChangePassword,
   onRefreshUsage,
   onOpenSession,
@@ -416,12 +436,11 @@ export const MobileHeader = React.memo(function MobileHeader({
               </div>
             )}
             <DropdownMenuSeparator />
-            <DropdownMenuItem onSelect={onToggleDark}>
-              {isDark ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
-              {isDark ? "Light mode" : "Dark mode"}
+            <ThemeMenuItems />
+            <DropdownMenuItem onSelect={onShowPreferences}>
+              <Settings className="h-4 w-4" />
+              Preferences
             </DropdownMenuItem>
-            <MobileNotificationMenuItem />
-            <MobileHapticsMenuItem />
             <DropdownMenuItem onSelect={onShowApiKeys}>
               <KeyRound className="h-4 w-4" />
               API keys
@@ -429,10 +448,6 @@ export const MobileHeader = React.memo(function MobileHeader({
             <DropdownMenuItem onSelect={onShowRunners}>
               <HardDrive className="h-4 w-4" />
               Runners
-            </DropdownMenuItem>
-            <DropdownMenuItem onSelect={onShowHiddenModels}>
-              <EyeOff className="h-4 w-4" />
-              Model visibility
             </DropdownMenuItem>
             <DropdownMenuItem onSelect={onChangePassword}>
               <Lock className="h-4 w-4" />

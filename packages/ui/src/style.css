@@ -1,6 +1,13 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
+@import "./accent-colors.css";
+@import "./fonts.css";
+
+/* Override Tailwind's mono font stack with our user-selectable --code-font variable */
+@theme inline {
+  --font-mono: var(--code-font, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace);
+}
 
 @source "../node_modules/streamdown/dist/*.js";
 
@@ -203,6 +210,7 @@
 }
 
 :root {
+  transition: background-color 200ms ease, color 200ms ease;
   --radius: 0.625rem;
   --checker-dark: #e4e4e7;
   --checker-light: #f4f4f5;
@@ -277,6 +285,65 @@
   --chart-5: oklch(0.645 0.246 16.439);
 }
 
+/* High-contrast overrides — layer on top of light or dark */
+[data-contrast="high"] {
+  --foreground: oklch(0 0 0);
+  --background: oklch(1 0 0);
+  --muted-foreground: oklch(0.3 0 0);
+  --border: oklch(0 0 0);
+  --input: oklch(0 0 0);
+  --ring: oklch(0 0 0);
+  --card: oklch(0.98 0 0);
+  --card-foreground: oklch(0 0 0);
+  --popover: oklch(0.98 0 0);
+  --popover-foreground: oklch(0 0 0);
+  --primary: oklch(0.15 0 0);
+  --primary-foreground: oklch(1 0 0);
+  --secondary: oklch(0.95 0 0);
+  --secondary-foreground: oklch(0 0 0);
+  --muted: oklch(0.92 0 0);
+  --accent: oklch(0.92 0 0);
+  --accent-foreground: oklch(0 0 0);
+  --destructive: oklch(0.5 0.3 27);
+  --destructive-foreground: oklch(1 0 0);
+}
+
+.dark[data-contrast="high"] {
+  --foreground: oklch(1 0 0);
+  --background: oklch(0 0 0);
+  --muted-foreground: oklch(0.8 0 0);
+  --border: oklch(1 0 0);
+  --input: oklch(1 0 0);
+  --ring: oklch(1 0 0);
+  --card: oklch(0.08 0 0);
+  --card-foreground: oklch(1 0 0);
+  --popover: oklch(0.08 0 0);
+  --popover-foreground: oklch(1 0 0);
+  --primary: oklch(1 0 0);
+  --primary-foreground: oklch(0 0 0);
+  --secondary: oklch(0.15 0 0);
+  --secondary-foreground: oklch(1 0 0);
+  --muted: oklch(0.15 0 0);
+  --accent: oklch(0.15 0 0);
+  --accent-foreground: oklch(1 0 0);
+  --destructive: oklch(0.65 0.3 27);
+  --destructive-foreground: oklch(0 0 0);
+}
+
+/* Respect prefers-reduced-motion in high-contrast mode */
+@media (prefers-reduced-motion: reduce) {
+  [data-contrast="high"] * {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+[data-contrast="high"] *:focus-visible {
+  outline: 3px solid var(--ring);
+  outline-offset: 2px;
+}
+
 @layer base {
   * {
     box-sizing: border-box;
@@ -293,6 +360,7 @@
 
   body {
     font-family: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+    transition: background-color 200ms ease, color 200ms ease;
     @apply bg-background text-foreground;
   }
 
@@ -301,6 +369,32 @@
     overflow-wrap: anywhere;
     word-break: break-word;
   }
+
+  /* Font size preference */
+  /* Font size — override Tailwind text-sm on message content and all descendants */
+  [data-font-size="small"] .pp-message-content,
+  [data-font-size="small"] .pp-message-content p,
+  [data-font-size="small"] .pp-message-content li,
+  [data-font-size="small"] .pp-message-content td,
+  [data-font-size="small"] .pp-message-content th { font-size: 0.8125rem !important; line-height: 1.5 !important; }
+
+  [data-font-size="large"] .pp-message-content,
+  [data-font-size="large"] .pp-message-content p,
+  [data-font-size="large"] .pp-message-content li,
+  [data-font-size="large"] .pp-message-content td,
+  [data-font-size="large"] .pp-message-content th { font-size: 1rem !important; line-height: 1.75 !important; }
+
+  /* UI density — scale padding/gaps on messages and chrome */
+  [data-density="compact"] .pp-message-content { padding: 0.375rem 0.5rem !important; }
+  [data-density="compact"] .group\/msg { padding-top: 0.25rem !important; padding-bottom: 0.25rem !important; }
+  [data-density="compact"] header { padding-top: 0.25rem !important; padding-bottom: 0.25rem !important; }
+
+  [data-density="comfortable"] .pp-message-content { padding: 0.75rem 1rem !important; }
+  [data-density="comfortable"] .group\/msg { padding-top: 0.75rem !important; padding-bottom: 0.75rem !important; }
+  [data-density="comfortable"] header { padding-top: 0.75rem !important; padding-bottom: 0.75rem !important; }
+
+  /* Code font override */
+
 
   .pp-message-content pre,
   .pp-message-content code {

@@ -29,12 +29,28 @@ import { createLogger } from "@pizzapi/tools";
 
 const log = createLogger("push");
 
-function usePushState() {
+export function usePushState() {
     const [subscribed, setSubscribed] = React.useState(false);
     const [loading, setLoading] = React.useState(true);
     const [supported, setSupported] = React.useState(false);
     const [suppressChild, setSuppressChild] = React.useState(false);
     const [suppressChildLoading, setSuppressChildLoading] = React.useState(false);
+
+    // Initial load + sync when another instance changes state
+    const refreshState = React.useCallback(() => {
+        if (!isPushSupported()) return;
+        isPushSubscribed().then((s) => {
+            setSubscribed(s);
+            setLoading(false);
+            if (s) {
+                getSuppressChildNotifications().then((val) => {
+                    if (val !== null) setSuppressChild(val);
+                });
+            } else {
+                setSuppressChild(false);
+            }
+        });
+    }, []);
 
     React.useEffect(() => {
         const sup = isPushSupported();
@@ -43,16 +59,12 @@ function usePushState() {
             setLoading(false);
             return;
         }
-        isPushSubscribed().then((s) => {
-            setSubscribed(s);
-            setLoading(false);
-            if (s) {
-                getSuppressChildNotifications().then((val) => {
-                    if (val !== null) setSuppressChild(val);
-                });
-            }
-        });
-    }, []);
+        refreshState();
+        // Listen for state changes from other usePushState instances
+        const onSync = () => refreshState();
+        window.addEventListener("pp-push-state-changed", onSync);
+        return () => window.removeEventListener("pp-push-state-changed", onSync);
+    }, [refreshState]);
 
     const toggle = React.useCallback(async () => {
         if (loading) return;
@@ -63,6 +75,7 @@ function usePushState() {
                 if (ok) {
                     setSubscribed(false);
                     setSuppressChild(false);
+                    window.dispatchEvent(new CustomEvent("pp-push-state-changed"));
                 }
             } else {
                 const sub = await subscribeToPush();
@@ -72,6 +85,7 @@ function usePushState() {
                         if (val !== null) setSuppressChild(val);
                     });
                 }
+                window.dispatchEvent(new CustomEvent("pp-push-state-changed"));
             }
         } catch (err) {
             log.error("toggle failed:", err);
@@ -86,7 +100,10 @@ function usePushState() {
         try {
             const next = !suppressChild;
             const ok = await setSuppressChildNotifications(next);
-            if (ok) setSuppressChild(next);
+            if (ok) {
+                setSuppressChild(next);
+                window.dispatchEvent(new CustomEvent("pp-push-state-changed"));
+            }
         } catch (err) {
             log.error("suppressChild toggle failed:", err);
         } finally {

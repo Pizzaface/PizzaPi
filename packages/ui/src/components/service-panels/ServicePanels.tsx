@@ -12,6 +12,7 @@ import { SERVICE_PANELS, type ServicePanelDef } from "./registry";
 import { DynamicLucideIcon } from "./lucide-icon";
 import { IframeServicePanel } from "./IframeServicePanel";
 import type { ServicePanelInfo } from "@pizzapi/protocol";
+import { useHiddenServicePanels } from "@/components/RunnerServicesPanel";
 import type { PanelPosition } from "@/hooks/usePanelLayout";
 
 // ── Buttons for the header bar ────────────────────────────────────────────────
@@ -30,11 +31,13 @@ export function ServicePanelButtons({
     activePanelIds,
     onTogglePanel,
 }: ServicePanelButtonsProps) {
+    // Reactively track user's hidden-panel preference
+    const hiddenPanels = useHiddenServicePanels();
     // Static panels from the compiled registry
-    const visibleStaticPanels = SERVICE_PANELS.filter(p => availableServices.has(p.serviceId));
-    // Dynamic panels — exclude any that have a static panel (static wins)
+    const visibleStaticPanels = SERVICE_PANELS.filter(p => availableServices.has(p.serviceId) && !hiddenPanels.has(p.serviceId));
+    // Dynamic panels — exclude any that have a static panel (static wins) or are hidden
     const staticIds = new Set(SERVICE_PANELS.map(p => p.serviceId));
-    const visibleDynamicPanels = dynamicPanels.filter(p => !staticIds.has(p.serviceId));
+    const visibleDynamicPanels = dynamicPanels.filter(p => !staticIds.has(p.serviceId) && !hiddenPanels.has(p.serviceId));
 
     if (visibleStaticPanels.length === 0 && visibleDynamicPanels.length === 0) return null;
 

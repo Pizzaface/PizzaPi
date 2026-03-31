@@ -1,10 +1,12 @@
 import * as React from "react";
+import { ThemeProvider } from "@/components/ThemeProvider";
 import { initAnimationSync } from "@/lib/synced-animation";
 import { SessionSidebar, type DotState, type HubSession } from "@/components/SessionSidebar";
 import { SessionViewer, type RelayMessage } from "@/components/SessionViewer";
 import type { CommandResultData } from "@/components/session-viewer/rendering";
 import { detectInFlightTools } from "@/components/session-viewer/utils";
 import { DesktopHeader, MobileHeader } from "@/components/AppHeaders";
+import { UserPreferencesPanel } from "@/components/UserPreferencesPanel";
 import { AuthPage } from "@/components/AuthPage";
 import { ApiKeyManager } from "@/components/ApiKeyManager";
 import { RunnerTokenManager } from "@/components/RunnerTokenManager";
@@ -217,10 +219,7 @@ export function App() {
     enabled: !isPending && !!session?.user?.id,
     userId: session?.user?.id ?? undefined,
   });
-  const [isDark, setIsDark] = React.useState(() => {
-    const saved = localStorage.getItem("theme");
-    return saved === "dark" || (!saved && window.matchMedia("(prefers-color-scheme: dark)").matches);
-  });
+
   // ─── Consolidated session state ─────────────────────────────────────────────
   // clearSelection() resets this entire object in a single atomic call.
   const [sessionState, setSessionState] = React.useState<SessionState>(createInitialSessionState);
@@ -378,6 +377,7 @@ export function App() {
     message: null,
     protocolCompatible: true,
   });
+  const [showPreferences, setShowPreferences] = React.useState(false);
   const [showApiKeys, setShowApiKeys] = React.useState(false);
   const [apiKeyVersion, setApiKeyVersion] = React.useState(0);
   const [showRunners, setShowRunners] = React.useState(false);
@@ -727,11 +727,6 @@ export function App() {
   const thinkingStartTimesRef = React.useRef<Map<number, number>>(new Map());
   // contentIndex → elapsed seconds at thinking_end
   const thinkingDurationsRef = React.useRef<Map<number, number>>(new Map());
-
-  React.useEffect(() => {
-    document.documentElement.classList.toggle("dark", isDark);
-    localStorage.setItem("theme", isDark ? "dark" : "light");
-  }, [isDark]);
 
   // Fetch hidden models from server once authenticated — server is the
   // source of truth; localStorage is the fast-load cache.
@@ -4004,17 +3999,17 @@ export function App() {
   //
   // Keeping them here also preserves referential stability so React.memo can
   // skip re-rendering when only session-scoped state changes.
-  const handleToggleDark = React.useCallback(() => setIsDark((d) => !d), []);
+
+  const handleShowPreferences = React.useCallback(() => setShowPreferences(true), []);
   const handleShowApiKeys = React.useCallback(() => { setShowApiKeys(true); setShowRunners(false); }, []);
   const handleShowRunners = React.useCallback(() => { setShowRunners(true); setShowApiKeys(false); activeSessionRef.current = null; setActiveSessionId(null); }, []);
   const handleShowShortcuts = React.useCallback(() => setShowShortcutsHelp(true), []);
-  const handleShowHiddenModels = React.useCallback(() => setHiddenModelsOpen(true), []);
   const handleChangePassword = React.useCallback(() => setChangePasswordOpen(true), []);
   const handleToggleSidebar = React.useCallback(() => setSidebarOpen((prev) => !prev), []);
   // Mobile-specific variants that also close the sidebar
+  const handleMobileShowPreferences = React.useCallback(() => { setShowPreferences(true); setSidebarOpen(false); }, []);
   const handleMobileShowApiKeys = React.useCallback(() => { setShowApiKeys(true); setShowRunners(false); setSidebarOpen(false); }, []);
   const handleMobileShowRunners = React.useCallback(() => { setShowRunners(true); setShowApiKeys(false); activeSessionRef.current = null; setActiveSessionId(null); setSidebarOpen(false); }, []);
-  const handleMobileShowHiddenModels = React.useCallback(() => { setHiddenModelsOpen(true); setSidebarOpen(false); }, []);
   const handleMobileChangePassword = React.useCallback(() => { setChangePasswordOpen(true); setSidebarOpen(false); }, []);
   const handleSessionSwitcherOpenChange = React.useCallback((open: boolean) => setSessionSwitcherOpen(open), []);
 
@@ -4072,6 +4067,7 @@ export function App() {
   }
 
   return (
+    <ThemeProvider>
     <HubSocketContext.Provider value={hubSocket}>
     <ViewerSocketContext.Provider value={viewerSocket}>
     <TooltipProvider delayDuration={0}>
@@ -4085,7 +4081,6 @@ export function App() {
       {/* ── Desktop header (memoized — skips re-render on same-runner session switch) ── */}
       <DesktopHeader
         relayStatus={relayStatus}
-        isDark={isDark}
         providerUsage={providerUsage}
         authSource={authSource}
         activeProvider={activeModel?.provider}
@@ -4093,11 +4088,10 @@ export function App() {
         userName={userName}
         userEmail={userEmail}
         userLabel={userLabel}
-        onToggleDark={handleToggleDark}
+        onShowPreferences={handleShowPreferences}
         onShowApiKeys={handleShowApiKeys}
         onShowRunners={handleShowRunners}
         onShowShortcuts={handleShowShortcuts}
-        onShowHiddenModels={handleShowHiddenModels}
         onChangePassword={handleChangePassword}
         onRefreshUsage={refreshUsage}
       />
@@ -4105,7 +4099,6 @@ export function App() {
       {/* ── Mobile header (memoized — skips re-render on same-runner session switch) ── */}
       <MobileHeader
         relayStatus={relayStatus}
-        isDark={isDark}
         sidebarOpen={sidebarOpen}
         providerUsage={providerUsage}
         authSource={authSource}
@@ -4120,10 +4113,9 @@ export function App() {
         userEmail={userEmail}
         userLabel={userLabel}
         onToggleSidebar={handleToggleSidebar}
-        onToggleDark={handleToggleDark}
+        onShowPreferences={handleMobileShowPreferences}
         onShowApiKeys={handleMobileShowApiKeys}
         onShowRunners={handleMobileShowRunners}
-        onShowHiddenModels={handleMobileShowHiddenModels}
         onChangePassword={handleMobileChangePassword}
         onRefreshUsage={refreshUsage}
         onOpenSession={handleOpenSession}
@@ -4649,6 +4641,14 @@ export function App() {
           onSpawn={handleWizardSpawn}
         />
 
+        {showPreferences && (
+          <UserPreferencesPanel
+            onClose={() => setShowPreferences(false)}
+            onShowHiddenModels={() => setHiddenModelsOpen(true)}
+            hiddenModelCount={availableModels.filter(m => hiddenModels.has(modelKey(m.provider, m.id))).length}
+          />
+        )}
+
         {showApiKeys && (
           <div className="absolute inset-y-0 right-0 z-40 flex w-full max-w-md flex-col shadow-xl border-l bg-background">
             <div className="flex items-center justify-between px-4 py-3 border-b">
@@ -4683,5 +4683,6 @@ export function App() {
     </TooltipProvider>
     </ViewerSocketContext.Provider>
     </HubSocketContext.Provider>
+    </ThemeProvider>
   );
 }

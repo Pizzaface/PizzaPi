@@ -6,6 +6,46 @@
         <title>PizzaPi</title>
         <meta name="theme-color" content="#1c1917" />
         <meta name="description" content="PizzaPi — AI coding agent interface" />
+        <script>
+          (function(){
+            var old = localStorage.getItem("theme");
+            if (old === "dark" || old === "light") { localStorage.setItem("theme-mode", old); localStorage.removeItem("theme"); }
+            var m = localStorage.getItem("theme-mode") || "auto";
+            var isDark = m === "dark" || (m === "auto" && window.matchMedia("(prefers-color-scheme: dark)").matches);
+            if (isDark) document.documentElement.classList.add("dark");
+            document.querySelector('meta[name="theme-color"]').setAttribute("content", isDark ? "#1c1917" : "#ffffff");
+            var hc = localStorage.getItem("theme-high-contrast");
+            if (hc === "true") document.documentElement.setAttribute("data-contrast", "high");
+            var ah = localStorage.getItem('theme-accent-hex');
+            if (ah) {
+              // Inline hex→oklch approximation for FOUC prevention
+              function h2o(hex, L) {
+                var h = hex.replace('#',''), r=parseInt(h.slice(0,2),16)/255, g=parseInt(h.slice(2,4),16)/255, b=parseInt(h.slice(4,6),16)/255;
+                function lin(c) { return c<=0.04045?c/12.92:Math.pow((c+0.055)/1.055,2.4); }
+                r=lin(r);g=lin(g);b=lin(b);
+                var x=0.4124*r+0.3576*g+0.1805*b, y=0.2126*r+0.7152*g+0.0722*b, z=0.0193*r+0.1192*g+0.9505*b;
+                var l=Math.cbrt(0.8189*x+0.3619*y-0.1289*z), m=Math.cbrt(0.0330*x+0.9293*y+0.0361*z), s=Math.cbrt(0.0482*x+0.2641*y+0.6338*z);
+                var C=Math.sqrt(Math.pow(1.978*l-2.4286*m+0.4506*s,2)+Math.pow(0.0259*l+0.7827*m-0.8087*s,2));
+                var H=((Math.atan2(0.0259*l+0.7827*m-0.8087*s,1.978*l-2.4286*m+0.4506*s)*180/Math.PI)+360)%360;
+                return 'oklch('+L.toFixed(3)+' '+C.toFixed(3)+' '+H.toFixed(1)+')';
+              }
+              var p = h2o(ah, isDark ? 0.65 : 0.45), fg = isDark ? 'oklch(0.1 0 0)' : 'oklch(0.985 0 0)';
+              var s = document.documentElement.style;
+              s.setProperty('--primary', p); s.setProperty('--primary-foreground', fg);
+              s.setProperty('--sidebar-primary', p); s.setProperty('--sidebar-primary-foreground', fg);
+              s.setProperty('--ring', p);
+              document.documentElement.setAttribute('data-accent', 'custom');
+            }
+            var fs = localStorage.getItem('theme-font-size');
+            if (fs && fs !== 'default') document.documentElement.setAttribute('data-font-size', fs);
+            var den = localStorage.getItem('theme-density');
+            if (den && den !== 'default') document.documentElement.setAttribute('data-density', den);
+            var rad = localStorage.getItem('theme-radius');
+            if (rad) document.documentElement.style.setProperty('--radius', rad);
+            var cf = localStorage.getItem('theme-code-font');
+            if (cf) document.documentElement.style.setProperty('--code-font', cf);
+          })();
+        </script>
         <meta name="mobile-web-app-capable" content="yes" />
         <meta name="apple-mobile-web-app-capable" content="yes" />
         <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />

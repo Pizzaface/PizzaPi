@@ -16,7 +16,7 @@ import {
   setHapticsEnabled,
 } from "@/lib/haptics";
 
-function useHapticsState() {
+export function useHapticsState() {
   const [enabled, setEnabled] = React.useState(isHapticsEnabled);
   const supported = React.useMemo(() => supportsHaptics(), []);
 
