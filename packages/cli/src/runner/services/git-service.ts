@@ -1,11 +1,67 @@
 import { execFile } from "node:child_process";
+import { watch } from "node:fs";
 import { promisify } from "node:util";
-import { resolve, normalize } from "node:path";
+import { normalize } from "node:path";
 import type { Socket } from "socket.io-client";
 import type { ServiceHandler, ServiceInitOptions, ServiceEnvelope } from "../service-handler.js";
 import { isCwdAllowed } from "../workspace.js";
 
 const execFileAsync = promisify(execFile);
+const STATUS_CACHE_TTL_MS = 2_500;
+const METADATA_DEBOUNCE_MS = 300;
+
+type WatchHandle = { close(): void };
+type WatchFs = (path: string, listener: () => void) => WatchHandle;
+type SetTimeoutFn = (callback: () => void, delayMs: number) => ReturnType<typeof setTimeout>;
+type ClearTimeoutFn = (timeout: ReturnType<typeof setTimeout>) => void;
+
+type GitExec = (
+    args: string[],
+    options: { cwd: string; timeout: number },
+) => Promise<{ stdout: string; stderr: string }>;
+
+type GitStatusResultPayload = {
+    ok: true;
+    branch: string;
+    repoRoot: string;
+    changes: Array<{ status: string; path: string; originalPath?: string }>;
+    ahead: number;
+    behind: number;
+    hasUpstream: boolean;
+    diffStaged: string;
+};
+
+type GitBranchResultPayload = {
+    currentBranch: string;
+    branches: Array<{
+        name: string;
+        shortHash: string;
+        lastCommit: string;
+        isCurrent: boolean;
+        isRemote: boolean;
+    }>;
+};
+
+type GitWorktreeResultPayload = {
+    worktrees: Array<{
+        path: string;
+        displayPath: string;
+        branch: string;
+        shortHash: string;
+        isDetached: boolean;
+        isMain: boolean;
+        changeCount: number;
+        ahead: number;
+        behind: number;
+    }>;
+};
+
+type RepoWatchState = {
+    watchers: WatchHandle[];
+    debounceTimer: ReturnType<typeof setTimeout> | null;
+    refreshInFlight: boolean;
+    needsRefresh: boolean;
+};
 
 // ── Validation helpers ──────────────────────────────────────────────────────
 
@@ -44,6 +100,31 @@ export class GitService implements ServiceHandler {
     private _socket: Socket | null = null;
     private _onServiceMessage: ((envelope: ServiceEnvelope) => void) | null = null;
     private _isShuttingDown: () => boolean = () => false;
+    private readonly _execGit: GitExec;
+    private readonly _watchFs: WatchFs;
+    private readonly _setTimeout: SetTimeoutFn;
+    private readonly _clearTimeout: ClearTimeoutFn;
+    private readonly _now: () => number;
+    private readonly _statusCache = new Map<string, { expiresAt: number; generation: number; payload: GitStatusResultPayload }>();
+    private readonly _statusInFlight = new Map<string, Promise<GitStatusResultPayload>>();
+    private readonly _statusGeneration = new Map<string, number>();
+    private readonly _cwdSubscribers = new Map<string, Set<string>>();
+    private readonly _sessionCwd = new Map<string, string>();
+    private readonly _repoWatchers = new Map<string, RepoWatchState>();
+
+    constructor(options?: {
+        execGit?: GitExec;
+        watchFs?: WatchFs;
+        setTimeoutFn?: SetTimeoutFn;
+        clearTimeoutFn?: ClearTimeoutFn;
+        now?: () => number;
+    }) {
+        this._execGit = options?.execGit ?? ((args, execOptions) => execFileAsync("git", args, execOptions));
+        this._watchFs = options?.watchFs ?? ((path, listener) => watch(path, { persistent: false }, listener));
+        this._setTimeout = options?.setTimeoutFn ?? ((callback, delayMs) => setTimeout(callback, delayMs));
+        this._clearTimeout = options?.clearTimeoutFn ?? ((timeout) => clearTimeout(timeout));
+        this._now = options?.now ?? (() => Date.now());
+    }
 
     init(socket: Socket, { isShuttingDown }: ServiceInitOptions): void {
         this._socket = socket;
@@ -66,6 +147,9 @@ export class GitService implements ServiceHandler {
                     break;
                 case "git_branches":
                     void this.handleBranches(payload, requestId, sessionId);
+                    break;
+                case "git_full_status":
+                    void this.handleFullStatus(payload, requestId, sessionId);
                     break;
                 case "git_checkout":
                     void this.handleCheckout(payload, requestId, sessionId);
@@ -98,6 +182,11 @@ export class GitService implements ServiceHandler {
         if (this._socket && this._onServiceMessage) {
             (this._socket as any).off("service_message", this._onServiceMessage);
         }
+        for (const cwd of this._repoWatchers.keys()) {
+            this.stopWatchingRepo(cwd);
+        }
+        this._cwdSubscribers.clear();
+        this._sessionCwd.clear();
         this._socket = null;
         this._onServiceMessage = null;
     }
@@ -134,7 +223,267 @@ export class GitService implements ServiceHandler {
         return cwd;
     }
 
+    private registerSubscriber(cwd: string, sessionId?: string): void {
+        if (!sessionId) return;
+
+        const previousCwd = this._sessionCwd.get(sessionId);
+        if (previousCwd && previousCwd !== cwd) {
+            this.removeSubscriber(previousCwd, sessionId);
+        }
+
+        this._sessionCwd.set(sessionId, cwd);
+        let subscribers = this._cwdSubscribers.get(cwd);
+        if (!subscribers) {
+            subscribers = new Set<string>();
+            this._cwdSubscribers.set(cwd, subscribers);
+        }
+        subscribers.add(sessionId);
+
+        if (!this._repoWatchers.has(cwd)) {
+            void this.startWatchingRepo(cwd);
+        }
+    }
+
+    private removeSubscriber(cwd: string, sessionId: string): void {
+        const subscribers = this._cwdSubscribers.get(cwd);
+        if (!subscribers) return;
+        subscribers.delete(sessionId);
+        if (subscribers.size > 0) return;
+        this._cwdSubscribers.delete(cwd);
+        this.stopWatchingRepo(cwd);
+    }
+
+    private async startWatchingRepo(cwd: string): Promise<void> {
+        if (this._repoWatchers.has(cwd)) return;
+
+        const watchState: RepoWatchState = {
+            watchers: [],
+            debounceTimer: null,
+            refreshInFlight: false,
+            needsRefresh: false,
+        };
+        this._repoWatchers.set(cwd, watchState);
+
+        try {
+            const metadataPaths = await this.resolveGitMetadataWatchPaths(cwd);
+            if (this._repoWatchers.get(cwd) !== watchState) return;
+
+            for (const path of metadataPaths) {
+                try {
+                    const handle = this._watchFs(path, () => this.scheduleRepoRefresh(cwd));
+                    if (this._repoWatchers.get(cwd) !== watchState) {
+                        handle.close();
+                        return;
+                    }
+                    watchState.watchers.push(handle);
+                } catch {
+                    // Best-effort watcher registration: metadata paths vary by repo layout.
+                }
+            }
+        } catch {
+            // If git metadata paths can't be resolved, keep service functional.
+        }
+
+        if (this._repoWatchers.get(cwd) === watchState && watchState.watchers.length === 0) {
+            this.stopWatchingRepo(cwd);
+        }
+    }
+
+    private stopWatchingRepo(cwd: string): void {
+        const watchState = this._repoWatchers.get(cwd);
+        if (!watchState) return;
+
+        if (watchState.debounceTimer) {
+            this._clearTimeout(watchState.debounceTimer);
+            watchState.debounceTimer = null;
+        }
+
+        for (const watcher of watchState.watchers) {
+            try {
+                watcher.close();
+            } catch {
+                // Ignore close failures.
+            }
+        }
+
+        this._repoWatchers.delete(cwd);
+    }
+
+    private scheduleRepoRefresh(cwd: string): void {
+        const watchState = this._repoWatchers.get(cwd);
+        if (!watchState) return;
+
+        if (watchState.debounceTimer) {
+            this._clearTimeout(watchState.debounceTimer);
+        }
+
+        watchState.debounceTimer = this._setTimeout(() => {
+            watchState.debounceTimer = null;
+            void this.pushStatusUpdateForSubscribers(cwd);
+        }, METADATA_DEBOUNCE_MS);
+    }
+
+    private async pushStatusUpdateForSubscribers(cwd: string): Promise<void> {
+        const watchState = this._repoWatchers.get(cwd);
+        if (!watchState) return;
+
+        if (watchState.refreshInFlight) {
+            watchState.needsRefresh = true;
+            return;
+        }
+
+        const subscribers = this._cwdSubscribers.get(cwd);
+        if (!subscribers || subscribers.size === 0) {
+            this.stopWatchingRepo(cwd);
+            return;
+        }
+
+        watchState.refreshInFlight = true;
+        try {
+            this.invalidateStatusCache(cwd);
+            const status = await this.getStatusSnapshot(cwd);
+            for (const sessionId of subscribers) {
+                this.emit("git_status_result", status, undefined, sessionId);
+            }
+        } catch {
+            // Ignore transient git/fs failures from proactive refresh.
+        } finally {
+            watchState.refreshInFlight = false;
+            if (watchState.needsRefresh) {
+                watchState.needsRefresh = false;
+                this.scheduleRepoRefresh(cwd);
+            }
+        }
+    }
+
+    private async resolveGitMetadataWatchPaths(cwd: string): Promise<string[]> {
+        const resolvePath = async (gitPath: string): Promise<string | null> => {
+            try {
+                const { stdout } = await this._execGit(["rev-parse", "--git-path", gitPath], { cwd, timeout: 5000 });
+                const resolved = stdout.trim();
+                return resolved || null;
+            } catch {
+                return null;
+            }
+        };
+
+        const paths = new Set<string>();
+        const head = await resolvePath("HEAD");
+        const index = await resolvePath("index");
+        const packedRefs = await resolvePath("packed-refs");
+        const refsDir = await resolvePath("refs");
+
+        if (head) paths.add(head);
+        if (index) paths.add(index);
+        if (packedRefs) paths.add(packedRefs);
+        if (refsDir) paths.add(refsDir);
+
+        return [...paths];
+    }
+
     // ── git status ──────────────────────────────────────────────────────
+
+    private bumpStatusGeneration(cwd: string): number {
+        const next = (this._statusGeneration.get(cwd) ?? 0) + 1;
+        this._statusGeneration.set(cwd, next);
+        return next;
+    }
+
+    private invalidateStatusCache(cwd: string): void {
+        this.bumpStatusGeneration(cwd);
+        this._statusCache.delete(cwd);
+        this._statusInFlight.delete(cwd);
+    }
+
+    private async getStatusSnapshot(cwd: string): Promise<GitStatusResultPayload> {
+        const now = this._now();
+        const generation = this._statusGeneration.get(cwd) ?? 0;
+
+        const cached = this._statusCache.get(cwd);
+        if (cached && cached.generation === generation && cached.expiresAt > now) {
+            return cached.payload;
+        }
+
+        const existing = this._statusInFlight.get(cwd);
+        if (existing) return existing;
+
+        const pending = this.collectStatus(cwd, generation).finally(() => {
+            const current = this._statusInFlight.get(cwd);
+            if (current === pending) this._statusInFlight.delete(cwd);
+        });
+        this._statusInFlight.set(cwd, pending);
+        return pending;
+    }
+
+    private async collectStatus(cwd: string, generationAtStart: number): Promise<GitStatusResultPayload> {
+        const [branchResult, toplevelResult, statusResult, diffStagedResult, abResult] = await Promise.allSettled([
+            this._execGit(["rev-parse", "--abbrev-ref", "HEAD"], { cwd, timeout: 5000 }),
+            this._execGit(["rev-parse", "--show-toplevel"], { cwd, timeout: 5000 }),
+            // Use -z for NUL-delimited output — avoids C-quoting of filenames
+            // with spaces/special chars and makes parsing unambiguous.
+            this._execGit(["status", "--porcelain=v1", "-uall", "-z"], { cwd, timeout: 10000 }),
+            this._execGit(["diff", "--cached", "--stat"], { cwd, timeout: 10000 }),
+            this._execGit(["rev-list", "--left-right", "--count", "HEAD...@{u}"], { cwd, timeout: 5000 }),
+        ]);
+
+        const branch = branchResult.status === "fulfilled" ? branchResult.value.stdout.trim() : "";
+        const repoRoot = toplevelResult.status === "fulfilled" ? toplevelResult.value.stdout.trim() : cwd;
+        const statusOutput = statusResult.status === "fulfilled" ? statusResult.value.stdout : "";
+        const diffStaged = diffStagedResult.status === "fulfilled" ? diffStagedResult.value.stdout : "";
+
+        // Parse porcelain v1 -z output (NUL-delimited).
+        // Format: XY PATH\0 (for renames: XY ORIG\0NEW\0)
+        // IMPORTANT: preserve the raw 2-char XY status (e.g. " M", "M ", "MM", "??").
+        const changes: Array<{ status: string; path: string; originalPath?: string }> = [];
+        const entries = statusOutput.split("\0");
+        let i = 0;
+        while (i < entries.length) {
+            const entry = entries[i];
+            if (!entry || entry.length < 3) { i++; continue; }
+            const xy = entry.substring(0, 2);
+            const path = entry.substring(3);
+            // Renames (R/C) have a second NUL-delimited field for the new path
+            if (xy[0] === "R" || xy[0] === "C") {
+                const newPath = entries[i + 1] ?? path;
+                changes.push({ status: xy, path: newPath, originalPath: path });
+                i += 2;
+            } else {
+                changes.push({ status: xy, path });
+                i++;
+            }
+        }
+
+        let ahead = 0;
+        let behind = 0;
+        // If rev-list against @{u} failed, the branch has no upstream
+        const hasUpstream = abResult.status === "fulfilled";
+        if (hasUpstream) {
+            const [a, b] = abResult.value.stdout.trim().split(/\s+/);
+            ahead = parseInt(a, 10) || 0;
+            behind = parseInt(b, 10) || 0;
+        }
+
+        const result: GitStatusResultPayload = {
+            ok: true,
+            branch,
+            repoRoot,
+            changes,
+            ahead,
+            behind,
+            hasUpstream,
+            diffStaged,
+        };
+
+        if ((this._statusGeneration.get(cwd) ?? 0) === generationAtStart) {
+            this._statusCache.set(cwd, {
+                generation: generationAtStart,
+                payload: result,
+                expiresAt: this._now() + STATUS_CACHE_TTL_MS,
+            });
+        }
+
+        return result;
+    }
 
     private async handleStatus(
         payload: Record<string, unknown>,
@@ -143,65 +492,11 @@ export class GitService implements ServiceHandler {
     ): Promise<void> {
         const cwd = this.validateCwd(payload.cwd, "git_status_result", requestId, sessionId);
         if (!cwd) return;
+        this.registerSubscriber(cwd, sessionId);
 
         try {
-            const [branchResult, toplevelResult, statusResult, diffStagedResult, abResult] = await Promise.allSettled([
-                execFileAsync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd, timeout: 5000 }),
-                execFileAsync("git", ["rev-parse", "--show-toplevel"], { cwd, timeout: 5000 }),
-                // Use -z for NUL-delimited output — avoids C-quoting of filenames
-                // with spaces/special chars and makes parsing unambiguous.
-                execFileAsync("git", ["status", "--porcelain=v1", "-uall", "-z"], { cwd, timeout: 10000 }),
-                execFileAsync("git", ["diff", "--cached", "--stat"], { cwd, timeout: 10000 }),
-                execFileAsync("git", ["rev-list", "--left-right", "--count", "HEAD...@{u}"], { cwd, timeout: 5000 }),
-            ]);
-
-            const branch = branchResult.status === "fulfilled" ? branchResult.value.stdout.trim() : "";
-            const repoRoot = toplevelResult.status === "fulfilled" ? toplevelResult.value.stdout.trim() : cwd;
-            const statusOutput = statusResult.status === "fulfilled" ? statusResult.value.stdout : "";
-            const diffStaged = diffStagedResult.status === "fulfilled" ? diffStagedResult.value.stdout : "";
-
-            // Parse porcelain v1 -z output (NUL-delimited).
-            // Format: XY PATH\0 (for renames: XY ORIG\0NEW\0)
-            // IMPORTANT: preserve the raw 2-char XY status (e.g. " M", "M ", "MM", "??").
-            const changes: Array<{ status: string; path: string; originalPath?: string }> = [];
-            const entries = statusOutput.split("\0");
-            let i = 0;
-            while (i < entries.length) {
-                const entry = entries[i];
-                if (!entry || entry.length < 3) { i++; continue; }
-                const xy = entry.substring(0, 2);
-                const path = entry.substring(3);
-                // Renames (R/C) have a second NUL-delimited field for the new path
-                if (xy[0] === "R" || xy[0] === "C") {
-                    const newPath = entries[i + 1] ?? path;
-                    changes.push({ status: xy, path: newPath, originalPath: path });
-                    i += 2;
-                } else {
-                    changes.push({ status: xy, path });
-                    i++;
-                }
-            }
-
-            let ahead = 0;
-            let behind = 0;
-            // If rev-list against @{u} failed, the branch has no upstream
-            const hasUpstream = abResult.status === "fulfilled";
-            if (hasUpstream) {
-                const [a, b] = abResult.value.stdout.trim().split(/\s+/);
-                ahead = parseInt(a, 10) || 0;
-                behind = parseInt(b, 10) || 0;
-            }
-
-            this.emit("git_status_result", {
-                ok: true,
-                branch,
-                repoRoot,
-                changes,
-                ahead,
-                behind,
-                hasUpstream,
-                diffStaged,
-            }, requestId, sessionId);
+            const status = await this.getStatusSnapshot(cwd);
+            this.emit("git_status_result", status, requestId, sessionId);
         } catch (err) {
             this.emitError("git_status_result", err instanceof Error ? err.message : String(err), requestId, sessionId);
         }
@@ -228,22 +523,80 @@ export class GitService implements ServiceHandler {
         try {
             // Resolve repo root — paths from git status are repo-root-relative,
             // so diff must run from repo root for paths to resolve correctly.
-            const { stdout: toplevel } = await execFileAsync(
-                "git", ["rev-parse", "--show-toplevel"], { cwd, timeout: 5000 },
+            const { stdout: toplevel } = await this._execGit(["rev-parse", "--show-toplevel"], { cwd, timeout: 5000 },
             );
             const repoRoot = toplevel.trim() || cwd;
 
             const args = staged
                 ? ["diff", "--cached", "--", filePath]
                 : ["diff", "--", filePath];
-            const { stdout: diff } = await execFileAsync("git", args, { cwd: repoRoot, timeout: 10000 });
+            const { stdout: diff } = await this._execGit(args, { cwd: repoRoot, timeout: 10000 });
             this.emit("git_diff_result", { ok: true, diff }, requestId, sessionId);
         } catch (err) {
             this.emitError("git_diff_result", err instanceof Error ? err.message : String(err), requestId, sessionId);
         }
     }
 
-    // ── git branches ────────────────────────────────────────────────────
+    // ── git branches / full status ───────────────────────────────────────
+
+    private async collectBranches(cwd: string): Promise<GitBranchResultPayload> {
+        const { stdout: currentBranch } = await this._execGit(["rev-parse", "--abbrev-ref", "HEAD"],
+            { cwd, timeout: 5000 },
+        );
+
+        // Use for-each-ref for reliable branch listing with ref-type awareness.
+        // List local branches from refs/heads and remote branches from refs/remotes,
+        // excluding remote HEAD aliases (e.g. refs/remotes/origin/HEAD).
+        const [localResult, remoteResult] = await Promise.allSettled([
+            this._execGit(["for-each-ref", "--sort=-committerdate",
+                    "--format=%(refname:short)\t%(objectname:short)\t%(committerdate:relative)\t%(HEAD)",
+                    "refs/heads"],
+                { cwd, timeout: 10000 },
+            ),
+            this._execGit(["for-each-ref", "--sort=-committerdate",
+                    "--format=%(refname:short)\t%(objectname:short)\t%(committerdate:relative)",
+                    "refs/remotes", "--exclude=refs/remotes/*/HEAD"],
+                { cwd, timeout: 10000 },
+            ),
+        ]);
+
+        const branches: GitBranchResultPayload["branches"] = [];
+
+        // Parse local branches
+        const localOutput = localResult.status === "fulfilled" ? localResult.value.stdout : "";
+        for (const line of localOutput.split("\n")) {
+            if (!line.trim()) continue;
+            const [name, shortHash, lastCommit, head] = line.split("\t");
+            if (!name) continue;
+            branches.push({
+                name: name.trim(),
+                shortHash: shortHash?.trim() ?? "",
+                lastCommit: lastCommit?.trim() ?? "",
+                isCurrent: head?.trim() === "*",
+                isRemote: false,
+            });
+        }
+
+        // Parse remote branches
+        const remoteOutput = remoteResult.status === "fulfilled" ? remoteResult.value.stdout : "";
+        for (const line of remoteOutput.split("\n")) {
+            if (!line.trim()) continue;
+            const [name, shortHash, lastCommit] = line.split("\t");
+            if (!name) continue;
+            branches.push({
+                name: name.trim(),
+                shortHash: shortHash?.trim() ?? "",
+                lastCommit: lastCommit?.trim() ?? "",
+                isCurrent: false,
+                isRemote: true,
+            });
+        }
+
+        return {
+            currentBranch: currentBranch.trim(),
+            branches,
+        };
+    }
 
     private async handleBranches(
         payload: Record<string, unknown>,
@@ -252,79 +605,43 @@ export class GitService implements ServiceHandler {
     ): Promise<void> {
         const cwd = this.validateCwd(payload.cwd, "git_branches_result", requestId, sessionId);
         if (!cwd) return;
+        this.registerSubscriber(cwd, sessionId);
 
         try {
-            // Get current branch
-            const { stdout: currentBranch } = await execFileAsync(
-                "git", ["rev-parse", "--abbrev-ref", "HEAD"],
-                { cwd, timeout: 5000 },
-            );
-
-            // Use for-each-ref for reliable branch listing with ref-type awareness.
-            // List local branches from refs/heads and remote branches from refs/remotes,
-            // excluding remote HEAD aliases (e.g. refs/remotes/origin/HEAD).
-            const [localResult, remoteResult] = await Promise.allSettled([
-                execFileAsync(
-                    "git",
-                    ["for-each-ref", "--sort=-committerdate",
-                     "--format=%(refname:short)\t%(objectname:short)\t%(committerdate:relative)\t%(HEAD)",
-                     "refs/heads"],
-                    { cwd, timeout: 10000 },
-                ),
-                execFileAsync(
-                    "git",
-                    ["for-each-ref", "--sort=-committerdate",
-                     "--format=%(refname:short)\t%(objectname:short)\t%(committerdate:relative)",
-                     "refs/remotes", "--exclude=refs/remotes/*/HEAD"],
-                    { cwd, timeout: 10000 },
-                ),
-            ]);
-
-            const branches: Array<{
-                name: string;
-                shortHash: string;
-                lastCommit: string;
-                isCurrent: boolean;
-                isRemote: boolean;
-            }> = [];
-
-            // Parse local branches
-            const localOutput = localResult.status === "fulfilled" ? localResult.value.stdout : "";
-            for (const line of localOutput.split("\n")) {
-                if (!line.trim()) continue;
-                const [name, shortHash, lastCommit, head] = line.split("\t");
-                if (!name) continue;
-                branches.push({
-                    name: name.trim(),
-                    shortHash: shortHash?.trim() ?? "",
-                    lastCommit: lastCommit?.trim() ?? "",
-                    isCurrent: head?.trim() === "*",
-                    isRemote: false,
-                });
-            }
-
-            // Parse remote branches
-            const remoteOutput = remoteResult.status === "fulfilled" ? remoteResult.value.stdout : "";
-            for (const line of remoteOutput.split("\n")) {
-                if (!line.trim()) continue;
-                const [name, shortHash, lastCommit] = line.split("\t");
-                if (!name) continue;
-                branches.push({
-                    name: name.trim(),
-                    shortHash: shortHash?.trim() ?? "",
-                    lastCommit: lastCommit?.trim() ?? "",
-                    isCurrent: false,
-                    isRemote: true,
-                });
-            }
-
+            const branchData = await this.collectBranches(cwd);
             this.emit("git_branches_result", {
                 ok: true,
-                currentBranch: currentBranch.trim(),
-                branches,
+                ...branchData,
             }, requestId, sessionId);
         } catch (err) {
             this.emitError("git_branches_result", err instanceof Error ? err.message : String(err), requestId, sessionId);
+        }
+    }
+
+    private async handleFullStatus(
+        payload: Record<string, unknown>,
+        requestId?: string,
+        sessionId?: string,
+    ): Promise<void> {
+        const cwd = this.validateCwd(payload.cwd, "git_full_status_result", requestId, sessionId);
+        if (!cwd) return;
+        this.registerSubscriber(cwd, sessionId);
+
+        try {
+            const [status, branchData, worktreeData] = await Promise.all([
+                this.getStatusSnapshot(cwd),
+                this.collectBranches(cwd),
+                this.collectWorktrees(cwd),
+            ]);
+
+            this.emit("git_full_status_result", {
+                ok: true,
+                status,
+                ...branchData,
+                ...worktreeData,
+            }, requestId, sessionId);
+        } catch (err) {
+            this.emitError("git_full_status_result", err instanceof Error ? err.message : String(err), requestId, sessionId);
         }
     }
 
@@ -361,7 +678,7 @@ export class GitService implements ServiceHandler {
                 }
                 // Check if a local branch with this name already exists
                 try {
-                    await execFileAsync("git", ["rev-parse", "--verify", `refs/heads/${targetBranch}`], { cwd, timeout: 5000 });
+                    await this._execGit(["rev-parse", "--verify", `refs/heads/${targetBranch}`], { cwd, timeout: 5000 });
                     // Local branch exists, just check it out
                     args.push("checkout", targetBranch);
                 } catch {
@@ -373,7 +690,8 @@ export class GitService implements ServiceHandler {
                 args.push("checkout", targetBranch);
             }
 
-            await execFileAsync("git", args, { cwd, timeout: 15000 });
+            await this._execGit(args, { cwd, timeout: 15000 });
+            this.invalidateStatusCache(cwd);
 
             this.emit("git_checkout_result", {
                 ok: true,
@@ -415,13 +733,13 @@ export class GitService implements ServiceHandler {
         try {
             // Resolve repo root — paths from git status are repo-root-relative,
             // so operations must run from repo root for paths to resolve correctly.
-            const { stdout: toplevel } = await execFileAsync(
-                "git", ["rev-parse", "--show-toplevel"], { cwd, timeout: 5000 },
+            const { stdout: toplevel } = await this._execGit(["rev-parse", "--show-toplevel"], { cwd, timeout: 5000 },
             );
             const repoRoot = toplevel.trim() || cwd;
 
             const args = all ? ["add", "--all"] : ["add", "--", ...paths];
-            await execFileAsync("git", args, { cwd: repoRoot, timeout: 15000 });
+            await this._execGit(args, { cwd: repoRoot, timeout: 15000 });
+            this.invalidateStatusCache(cwd);
             this.emit("git_stage_result", { ok: true }, requestId, sessionId);
         } catch (err) {
             this.emitError("git_stage_result", err instanceof Error ? err.message : String(err), requestId, sessionId);
@@ -459,15 +777,15 @@ export class GitService implements ServiceHandler {
             // Resolve repo root — run from there so repo-root-relative paths work.
             // For unstage-all, use ":/" pathspec (magic "repo root") instead of "."
             // which would only cover the cwd subtree.
-            const { stdout: toplevel } = await execFileAsync(
-                "git", ["rev-parse", "--show-toplevel"], { cwd, timeout: 5000 },
+            const { stdout: toplevel } = await this._execGit(["rev-parse", "--show-toplevel"], { cwd, timeout: 5000 },
             );
             const repoRoot = toplevel.trim() || cwd;
 
             const args = all
                 ? ["restore", "--staged", ":/"]
                 : ["restore", "--staged", "--", ...paths];
-            await execFileAsync("git", args, { cwd: repoRoot, timeout: 15000 });
+            await this._execGit(args, { cwd: repoRoot, timeout: 15000 });
+            this.invalidateStatusCache(cwd);
             this.emit("git_unstage_result", { ok: true }, requestId, sessionId);
         } catch (err) {
             this.emitError("git_unstage_result", err instanceof Error ? err.message : String(err), requestId, sessionId);
@@ -491,13 +809,13 @@ export class GitService implements ServiceHandler {
         }
 
         try {
-            const { stdout } = await execFileAsync(
-                "git", ["commit", "-m", message],
+            const { stdout } = await this._execGit(["commit", "-m", message],
                 { cwd, timeout: 30000 },
             );
 
             // Parse the short summary (e.g. "[main abc1234] Fix thing\n 1 file changed...")
             const firstLine = stdout.split("\n")[0] ?? "";
+            this.invalidateStatusCache(cwd);
 
             this.emit("git_commit_result", {
                 ok: true,
@@ -510,6 +828,109 @@ export class GitService implements ServiceHandler {
 
     // ── git worktrees ─────────────────────────────────────────────────
 
+    private async collectWorktrees(cwd: string): Promise<GitWorktreeResultPayload> {
+        // Get repo root so we can show relative paths
+        const { stdout: toplevel } = await this._execGit(["rev-parse", "--show-toplevel"], { cwd, timeout: 5000 },
+        );
+        const repoRoot = toplevel.trim();
+
+        // Parse porcelain output — each worktree block is separated by a blank line
+        const { stdout: listOutput } = await this._execGit(["worktree", "list", "--porcelain"],
+            { cwd, timeout: 10000 },
+        );
+
+        interface WorktreeEntry {
+            path: string;
+            head: string;
+            branch: string;
+            isBare: boolean;
+            isDetached: boolean;
+        }
+
+        const worktrees: WorktreeEntry[] = [];
+        let current: Partial<WorktreeEntry> = {};
+
+        for (const line of listOutput.split("\n")) {
+            if (line === "") {
+                if (current.path) {
+                    worktrees.push({
+                        path: current.path,
+                        head: current.head ?? "",
+                        branch: current.branch ?? "",
+                        isBare: current.isBare ?? false,
+                        isDetached: current.isDetached ?? false,
+                    });
+                }
+                current = {};
+                continue;
+            }
+            if (line.startsWith("worktree ")) current.path = line.substring(9);
+            else if (line.startsWith("HEAD ")) current.head = line.substring(5);
+            else if (line.startsWith("branch ")) {
+                // Strip refs/heads/ prefix for display
+                const ref = line.substring(7);
+                current.branch = ref.startsWith("refs/heads/") ? ref.substring(11) : ref;
+            } else if (line === "bare") current.isBare = true;
+            else if (line === "detached") current.isDetached = true;
+        }
+        // Handle last entry if no trailing newline
+        if (current.path) {
+            worktrees.push({
+                path: current.path,
+                head: current.head ?? "",
+                branch: current.branch ?? "",
+                isBare: current.isBare ?? false,
+                isDetached: current.isDetached ?? false,
+            });
+        }
+
+        // For each worktree, get change count in parallel
+        const enriched = await Promise.all(
+            worktrees.filter((w) => !w.isBare).map(async (wt) => {
+                let changeCount = 0;
+                let ahead = 0;
+                let behind = 0;
+                try {
+                    const { stdout } = await this._execGit(["status", "--porcelain=v1", "-uall"],
+                        { cwd: wt.path, timeout: 5000 },
+                    );
+                    changeCount = stdout.split("\n").filter((l) => l.length > 0).length;
+                } catch { /* ignore — worktree might be mid-operation */ }
+
+                try {
+                    const { stdout } = await this._execGit(["rev-list", "--left-right", "--count", "HEAD...@{u}"],
+                        { cwd: wt.path, timeout: 5000 },
+                    );
+                    const [a, b] = stdout.trim().split(/\s+/);
+                    ahead = parseInt(a, 10) || 0;
+                    behind = parseInt(b, 10) || 0;
+                } catch { /* no upstream */ }
+
+                // Build a relative display path from the repo root
+                let displayPath = wt.path;
+                if (wt.path.startsWith(repoRoot)) {
+                    const rel = wt.path.substring(repoRoot.length);
+                    displayPath = rel.startsWith("/") ? rel.substring(1) : rel;
+                    if (!displayPath) displayPath = "."; // main worktree
+                }
+
+                return {
+                    path: wt.path,
+                    displayPath,
+                    branch: wt.branch,
+                    shortHash: wt.head.substring(0, 7),
+                    isDetached: wt.isDetached,
+                    isMain: wt.path === repoRoot,
+                    changeCount,
+                    ahead,
+                    behind,
+                };
+            }),
+        );
+
+        return { worktrees: enriched };
+    }
+
     private async handleWorktrees(
         payload: Record<string, unknown>,
         requestId?: string,
@@ -517,114 +938,13 @@ export class GitService implements ServiceHandler {
     ): Promise<void> {
         const cwd = this.validateCwd(payload.cwd, "git_worktrees_result", requestId, sessionId);
         if (!cwd) return;
+        this.registerSubscriber(cwd, sessionId);
 
         try {
-            // Get repo root so we can show relative paths
-            const { stdout: toplevel } = await execFileAsync(
-                "git", ["rev-parse", "--show-toplevel"], { cwd, timeout: 5000 },
-            );
-            const repoRoot = toplevel.trim();
-
-            // Parse porcelain output — each worktree block is separated by a blank line
-            const { stdout: listOutput } = await execFileAsync(
-                "git", ["worktree", "list", "--porcelain"],
-                { cwd, timeout: 10000 },
-            );
-
-            interface WorktreeEntry {
-                path: string;
-                head: string;
-                branch: string;
-                isBare: boolean;
-                isDetached: boolean;
-            }
-
-            const worktrees: WorktreeEntry[] = [];
-            let current: Partial<WorktreeEntry> = {};
-
-            for (const line of listOutput.split("\n")) {
-                if (line === "") {
-                    if (current.path) {
-                        worktrees.push({
-                            path: current.path,
-                            head: current.head ?? "",
-                            branch: current.branch ?? "",
-                            isBare: current.isBare ?? false,
-                            isDetached: current.isDetached ?? false,
-                        });
-                    }
-                    current = {};
-                    continue;
-                }
-                if (line.startsWith("worktree ")) current.path = line.substring(9);
-                else if (line.startsWith("HEAD ")) current.head = line.substring(5);
-                else if (line.startsWith("branch ")) {
-                    // Strip refs/heads/ prefix for display
-                    const ref = line.substring(7);
-                    current.branch = ref.startsWith("refs/heads/") ? ref.substring(11) : ref;
-                } else if (line === "bare") current.isBare = true;
-                else if (line === "detached") current.isDetached = true;
-            }
-            // Handle last entry if no trailing newline
-            if (current.path) {
-                worktrees.push({
-                    path: current.path,
-                    head: current.head ?? "",
-                    branch: current.branch ?? "",
-                    isBare: current.isBare ?? false,
-                    isDetached: current.isDetached ?? false,
-                });
-            }
-
-            // For each worktree, get change count in parallel
-            const enriched = await Promise.all(
-                worktrees.filter((w) => !w.isBare).map(async (wt) => {
-                    let changeCount = 0;
-                    let ahead = 0;
-                    let behind = 0;
-                    try {
-                        const { stdout } = await execFileAsync(
-                            "git", ["status", "--porcelain=v1", "-uall"],
-                            { cwd: wt.path, timeout: 5000 },
-                        );
-                        changeCount = stdout.split("\n").filter((l) => l.length > 0).length;
-                    } catch { /* ignore — worktree might be mid-operation */ }
-
-                    try {
-                        const { stdout } = await execFileAsync(
-                            "git", ["rev-list", "--left-right", "--count", "HEAD...@{u}"],
-                            { cwd: wt.path, timeout: 5000 },
-                        );
-                        const [a, b] = stdout.trim().split(/\s+/);
-                        ahead = parseInt(a, 10) || 0;
-                        behind = parseInt(b, 10) || 0;
-                    } catch { /* no upstream */ }
-
-                    // Build a relative display path from the repo root
-                    let displayPath = wt.path;
-                    if (wt.path.startsWith(repoRoot)) {
-                        const rel = wt.path.substring(repoRoot.length);
-                        displayPath = rel.startsWith("/") ? rel.substring(1) : rel;
-                        if (!displayPath) displayPath = "."; // main worktree
-                    }
-
-                    return {
-                        path: wt.path,
-                        displayPath,
-                        branch: wt.branch,
-                        shortHash: wt.head.substring(0, 7),
-                        isDetached: wt.isDetached,
-                        isMain: wt.path === repoRoot,
-                        changeCount,
-                        ahead,
-                        behind,
-                    };
-                }),
-            );
-
+            const worktreeData = await this.collectWorktrees(cwd);
             this.emit("git_worktrees_result", {
                 ok: true,
-                worktrees: enriched,
+                ...worktreeData,
             }, requestId, sessionId);
         } catch (err) {
             this.emitError("git_worktrees_result", err instanceof Error ? err.message : String(err), requestId, sessionId);
@@ -642,8 +962,9 @@ export class GitService implements ServiceHandler {
         if (!cwd) return;
 
         try {
-            const result = await execFileAsync("git", ["pull"], { cwd, timeout: 60000 });
+            const result = await this._execGit(["pull"], { cwd, timeout: 60000 });
             const output = (result.stdout + "\n" + result.stderr).trim();
+            this.invalidateStatusCache(cwd);
 
             this.emit("git_pull_result", {
                 ok: true,
@@ -668,8 +989,7 @@ export class GitService implements ServiceHandler {
 
         try {
             // Determine current branch for --set-upstream
-            const { stdout: branchName } = await execFileAsync(
-                "git", ["rev-parse", "--abbrev-ref", "HEAD"],
+            const { stdout: branchName } = await this._execGit(["rev-parse", "--abbrev-ref", "HEAD"],
                 { cwd, timeout: 5000 },
             );
             const branch = branchName.trim();
@@ -680,16 +1000,14 @@ export class GitService implements ServiceHandler {
                 // Try the configured push remote, then fall back to the first remote.
                 let remote = "origin";
                 try {
-                    const { stdout } = await execFileAsync(
-                        "git", ["config", "--get", `branch.${branch}.remote`],
+                    const { stdout } = await this._execGit(["config", "--get", `branch.${branch}.remote`],
                         { cwd, timeout: 5000 },
                     );
                     if (stdout.trim()) remote = stdout.trim();
                 } catch {
                     // No tracked remote — try first remote in list
                     try {
-                        const { stdout } = await execFileAsync(
-                            "git", ["remote"],
+                        const { stdout } = await this._execGit(["remote"],
                             { cwd, timeout: 5000 },
                         );
                         const firstRemote = stdout.trim().split("\n")[0]?.trim();
@@ -702,8 +1020,9 @@ export class GitService implements ServiceHandler {
             }
 
             // git push writes to stderr (progress), use a larger timeout for network ops
-            const result = await execFileAsync("git", args, { cwd, timeout: 60000 });
+            const result = await this._execGit(args, { cwd, timeout: 60000 });
             const output = (result.stdout + "\n" + result.stderr).trim();
+            this.invalidateStatusCache(cwd);
 
             this.emit("git_push_result", {
                 ok: true,

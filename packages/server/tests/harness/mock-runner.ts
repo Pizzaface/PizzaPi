@@ -876,6 +876,43 @@ export async function createMockRunner(
                 });
                 break;
             }
+            case "git_full_status": {
+                const cwd = payload.cwd;
+                if (!cwd) {
+                    emitGit("git_full_status_result", { ok: false, message: "Missing cwd" });
+                    return;
+                }
+                emitGit("git_full_status_result", {
+                    ok: true,
+                    status: {
+                        branch: gitStatus.branch,
+                        changes: gitStatus.changes,
+                        ahead: gitStatus.ahead,
+                        behind: gitStatus.behind,
+                        hasUpstream: true,
+                        diffStaged: gitStatus.diffStaged,
+                    },
+                    currentBranch: gitStatus.branch,
+                    branches: [
+                        { name: gitStatus.branch, shortHash: "abc1234", lastCommit: "2 hours ago", isCurrent: true, isRemote: false },
+                        { name: "main", shortHash: "def5678", lastCommit: "1 day ago", isCurrent: false, isRemote: false },
+                    ],
+                    worktrees: [
+                        {
+                            path: cwd,
+                            displayPath: ".",
+                            branch: gitStatus.branch,
+                            shortHash: "abc1234",
+                            isDetached: false,
+                            isMain: true,
+                            changeCount: gitStatus.changes.length,
+                            ahead: gitStatus.ahead,
+                            behind: gitStatus.behind,
+                        },
+                    ],
+                });
+                break;
+            }
             case "git_diff": {
                 const cwd = payload.cwd;
                 const filePath = payload.path;
