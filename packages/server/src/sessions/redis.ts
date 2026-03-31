@@ -226,7 +226,7 @@ export async function getCachedRelayEventsAfterSeq(
         // (lTrim), earlier events may be missing — return empty so the
         // caller falls back to a full snapshot/resync instead of silently
         // skipping events.
-        if (events.length > 0 && afterSeq > 0) {
+        if (events.length > 0) {
             const first = events[0];
             if (!first || first.seq !== afterSeq + 1) {
                 return [];
