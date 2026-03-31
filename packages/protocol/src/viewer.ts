@@ -19,6 +19,8 @@ export interface ViewerServerToClientEvents {
     isActive?: boolean;
     lastHeartbeatAt?: string | null;
     sessionName?: string | null;
+    /** Authoritative meta source for this session connection. */
+    meta_source?: "hub";
     /** Optional switch generation echoed back during logical session switches. */
     generation?: number;
   }) => void;

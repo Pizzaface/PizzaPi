@@ -122,6 +122,21 @@ export function onViewerReadyForRunnerSignal(
 }
 
 /** @internal — exported for unit tests only */
+export function withHubMetaSource<T extends Record<string, unknown>>(payload: T): T & { meta_source: "hub" } {
+    return { ...payload, meta_source: "hub" };
+}
+
+/** @internal — exported for unit tests only */
+export function withMetaViaHubHint<T extends Record<string, unknown>>(event: T): T & { _metaViaHub: true } {
+    return { ...event, _metaViaHub: true };
+}
+
+/** @internal — exported for unit tests only */
+export function withLivenessOnlyHint<T extends Record<string, unknown>>(event: T): T & { _livenessOnly: true } {
+    return { ...event, _livenessOnly: true };
+}
+
+/** @internal — exported for unit tests only */
 export function isViewerSwitchCurrent(currentGeneration: number | undefined, requestedGeneration?: number): boolean {
     return requestedGeneration === undefined || currentGeneration === requestedGeneration;
 }
@@ -160,7 +175,7 @@ async function replayPersistedSnapshot(
             return;
         }
 
-        socket.emit("connected", { sessionId, replayOnly: true, generation });
+        socket.emit("connected", withHubMetaSource({ sessionId, replayOnly: true, generation }));
 
         // Fast path: send only the latest snapshot from Redis cache
         // (ownership already validated by persisted snapshot lookup above)
@@ -176,7 +191,7 @@ async function replayPersistedSnapshot(
                 return;
             }
             socket.emit("event", {
-                event: { type: "session_active", state: snapshot.state },
+                event: withMetaViaHubHint({ type: "session_active", state: snapshot.state }),
                 generation,
             });
         }
@@ -335,14 +350,14 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
                 return;
             }
 
-            socket.emit("connected", {
+            socket.emit("connected", withHubMetaSource({
                 sessionId: nextSessionId,
                 lastSeq: freshSeq,
                 isActive: freshSession.isActive,
                 lastHeartbeatAt: freshSession.lastHeartbeatAt,
                 sessionName: freshSession.sessionName,
                 generation,
-            });
+            }));
 
             // Send cached service_announce so the viewer knows which runner
             // services are available without waiting for a fresh announce.
@@ -360,7 +375,11 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
             // session_active in response to "connected".
             if (freshSession.lastHeartbeat) {
                 try {
-                    socket.emit("event", { event: JSON.parse(freshSession.lastHeartbeat), seq: freshSeq, generation });
+                    socket.emit("event", {
+                        event: withLivenessOnlyHint(JSON.parse(freshSession.lastHeartbeat)),
+                        seq: freshSeq,
+                        generation,
+                    });
                 } catch {}
             }
 
@@ -374,7 +393,7 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
             if (freshSession.lastState && !chunkedPending) {
                 try {
                     socket.emit("event", {
-                        event: { type: "session_active", state: JSON.parse(freshSession.lastState) },
+                        event: withMetaViaHubHint({ type: "session_active", state: JSON.parse(freshSession.lastState) }),
                         seq: freshSeq,
                         generation,
                     });

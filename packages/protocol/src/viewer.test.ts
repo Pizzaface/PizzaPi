@@ -21,6 +21,7 @@ describe("viewer — ViewerServerToClientEvents payloads", () => {
     expect(minimal.lastSeq).toBeUndefined();
     expect(minimal.replayOnly).toBeUndefined();
     expect(minimal.isActive).toBeUndefined();
+    expect(minimal.meta_source).toBeUndefined();
     expect(minimal.generation).toBeUndefined();
 
     const full: Payload = {
@@ -30,11 +31,13 @@ describe("viewer — ViewerServerToClientEvents payloads", () => {
       isActive: false,
       lastHeartbeatAt: null,
       sessionName: "My Session",
+      meta_source: "hub",
       generation: 7,
     };
     expect(full.lastSeq).toBe(42);
     expect(full.replayOnly).toBe(true);
     expect(full.sessionName).toBe("My Session");
+    expect(full.meta_source).toBe("hub");
     expect(full.generation).toBe(7);
   });
 

@@ -526,6 +526,9 @@ export function App() {
   // Tracks the highest meta state version seen per session, to prevent stale
   // state_snapshot from rolling back state already updated by meta_event.
   const metaVersionsRef = React.useRef<Map<string, number>>(new Map());
+  // When true, the viewer socket should treat hub meta rooms as the sole
+  // authoritative source for meta state.
+  const metaSourceHubRef = React.useRef(false);
 
   // Tracks which session's meta room we've joined so we can unsubscribe when needed.
   const prevMetaSessionRef = React.useRef<string | null>(null);
@@ -1393,10 +1396,13 @@ export function App() {
         ts?: number;
         /** Old (fat) CLI heartbeats may carry mcpStartupReport inline. */
         mcpStartupReport?: Record<string, unknown> | null;
+        /** Liveness-only marker emitted by the viewer namespace for backwards compatibility. */
+        _livenessOnly?: boolean;
       };
 
       const nextAgentActive = hb.active === true;
       const nextIsCompacting = hb.isCompacting === true;
+      const livenessOnly = hb._livenessOnly === true;
       const cachePatch: Partial<SessionUiCacheEntry> = {
         agentActive: nextAgentActive,
         isCompacting: nextIsCompacting,
@@ -1425,17 +1431,19 @@ export function App() {
         cachePatch.lastHeartbeatAt = hb.ts;
       }
 
-      if (Object.prototype.hasOwnProperty.call(hb, "sessionName")) {
-        const nextName = normalizeSessionName(hb.sessionName);
-        setSessionName(nextName);
-        cachePatch.sessionName = nextName;
-      }
+      if (!livenessOnly && !metaSourceHubRef.current) {
+        if (Object.prototype.hasOwnProperty.call(hb, "sessionName")) {
+          const nextName = normalizeSessionName(hb.sessionName);
+          setSessionName(nextName);
+          cachePatch.sessionName = nextName;
+        }
 
-      if (hb.model) {
-        const m = normalizeModel(hb.model);
-        if (m) {
-          setActiveModel(m);
-          cachePatch.activeModel = m;
+        if (hb.model) {
+          const m = normalizeModel(hb.model);
+          if (m) {
+            setActiveModel(m);
+            cachePatch.activeModel = m;
+          }
         }
       }
 
@@ -1475,6 +1483,13 @@ export function App() {
       // Lightweight metadata-only heartbeat — messages haven't changed.
       // Update metadata state without touching the messages array.
       const meta = (evt.metadata ?? {}) as Record<string, unknown>;
+      const metaChannelHub = evt._metaChannel === "hub";
+      if (metaChannelHub) {
+        metaSourceHubRef.current = true;
+      }
+      if (metaSourceHubRef.current || metaChannelHub) {
+        return;
+      }
       const cachePatch: Partial<SessionUiCacheEntry> = {};
 
       const metaModel = normalizeModel(meta.model);
@@ -1526,6 +1541,10 @@ export function App() {
       const normalizedMessages = normalizeMessages(rawMessages);
       const hasSessionName = !!state && Object.prototype.hasOwnProperty.call(state, "sessionName");
       const nextSessionName = hasSessionName ? normalizeSessionName(state?.sessionName) : null;
+      const metaViaHub = metaSourceHubRef.current || evt._metaViaHub === true;
+      if (evt._metaViaHub === true) {
+        metaSourceHubRef.current = true;
+      }
 
       // Flush any queued streaming-delta RAF before replacing state so stale
       // partials can't be re-inserted on top of the fresh snapshot.
@@ -1534,9 +1553,11 @@ export function App() {
       // aren't part of the server-side state snapshot.
       const injected = injectedMessagesRef.current;
       setMessages(injected.length > 0 ? [...normalizedMessages, ...injected] : normalizedMessages);
-      setActiveModel(stateModel);
-      if (hasSessionName) {
-        setSessionName(nextSessionName);
+      if (!metaViaHub) {
+        setActiveModel(stateModel);
+        if (hasSessionName) {
+          setSessionName(nextSessionName);
+        }
       }
       setAvailableModels(stateModels);
 
@@ -1602,22 +1623,29 @@ export function App() {
       // including any follow-ups that were consumed by the agent.
       setMessageQueue([]);
 
-      // Extract thinkingLevel from session snapshot too
-      const thinkingLevel = typeof state?.thinkingLevel === "string" ? state.thinkingLevel : null;
-      setEffortLevel(thinkingLevel);
+      if (!metaViaHub) {
+        // Extract thinkingLevel from session snapshot too
+        const thinkingLevel = typeof state?.thinkingLevel === "string" ? state.thinkingLevel : null;
+        setEffortLevel(thinkingLevel);
 
-      // Extract todoList from session snapshot
-      const stateTodos = Array.isArray(state?.todoList) ? (state.todoList as TodoItem[]) : [];
-      setTodoList(stateTodos);
+        // Extract todoList from session snapshot
+        const stateTodos = Array.isArray(state?.todoList) ? (state.todoList as TodoItem[]) : [];
+        setTodoList(stateTodos);
 
-      patchSessionCache({
-        messages: normalizedMessages,
-        activeModel: stateModel,
-        ...(hasSessionName ? { sessionName: nextSessionName } : {}),
-        availableModels: stateModels,
-        effortLevel: thinkingLevel,
-        todoList: stateTodos,
-      });
+        patchSessionCache({
+          messages: normalizedMessages,
+          activeModel: stateModel,
+          ...(hasSessionName ? { sessionName: nextSessionName } : {}),
+          availableModels: stateModels,
+          effortLevel: thinkingLevel,
+          todoList: stateTodos,
+        });
+      } else {
+        patchSessionCache({
+          messages: normalizedMessages,
+          availableModels: stateModels,
+        });
+      }
       return;
     }
 
@@ -2664,6 +2692,7 @@ export function App() {
     chunkedDeliveryRef.current = null;
     lastCompletedSnapshotRef.current = null;
     injectedMessagesRef.current = [];
+    metaSourceHubRef.current = false;
     setActiveSessionId(relaySessionId);
     setViewerStatus("Connecting…");
     setRetryState(null);
@@ -2757,6 +2786,7 @@ export function App() {
         }
         lastViewerEventAtRef.current = Date.now();
 
+        metaSourceHubRef.current = data.meta_source === "hub";
         const replayOnly = data.replayOnly === true;
         setViewerStatus(replayOnly ? "Snapshot replay" : "Connected");
 

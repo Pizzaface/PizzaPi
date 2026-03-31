@@ -14,6 +14,9 @@ import {
     onViewerConnectedSignal,
     onViewerReadyForRunnerSignal,
     isViewerSwitchCurrent,
+    withHubMetaSource,
+    withMetaViaHubHint,
+    withLivenessOnlyHint,
 } from "./viewer.js";
 
 // ── isAgentEndEvent ──────────────────────────────────────────────────────────
@@ -178,6 +181,33 @@ describe("viewer connected signal gating", () => {
         expect(onViewerReadyForRunnerSignal(false)).toEqual({
             pendingConnectedSignal: false,
             forwardNow: false,
+        });
+    });
+});
+
+// ── meta routing hints ──────────────────────────────────────────────────────
+
+describe("meta routing hints", () => {
+    test("marks connected payloads as hub-authored", () => {
+        expect(withHubMetaSource({ sessionId: "sess-1" })).toEqual({
+            sessionId: "sess-1",
+            meta_source: "hub",
+        });
+    });
+
+    test("marks session_active snapshots as hub-based meta", () => {
+        expect(withMetaViaHubHint({ type: "session_active", state: {} })).toEqual({
+            type: "session_active",
+            state: {},
+            _metaViaHub: true,
+        });
+    });
+
+    test("marks heartbeat snapshots as liveness only", () => {
+        expect(withLivenessOnlyHint({ type: "heartbeat", active: true })).toEqual({
+            type: "heartbeat",
+            active: true,
+            _livenessOnly: true,
         });
     });
 });

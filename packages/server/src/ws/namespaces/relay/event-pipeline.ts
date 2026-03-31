@@ -354,7 +354,10 @@ export function registerEventHandler(socket: RelaySocket): void {
             // Reconnecting viewers will get the full lastState snapshot instead.
             const isMetadataOnlyUpdate = event.type === "session_metadata_update";
             if (event.type === "session_messages_chunk" || isChunkedSessionActive || isMetadataOnlyUpdate) {
-                await broadcastSessionEventToViewers(sessionId, eventToPublish);
+                const viewerEvent = isMetadataOnlyUpdate && eventToPublish && typeof eventToPublish === "object"
+                    ? { ...(eventToPublish as Record<string, unknown>), _metaChannel: "hub" as const }
+                    : eventToPublish;
+                await broadcastSessionEventToViewers(sessionId, viewerEvent);
             } else {
                 // Publish to viewers via Redis cache + Socket.IO rooms
                 await publishSessionEvent(sessionId, eventToPublish);
