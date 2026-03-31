@@ -78,6 +78,10 @@ function normalizeSessionName(value: unknown): string | null {
     return trimmed.length > 0 ? trimmed : null;
 }
 
+function isSlimHeartbeat(heartbeat: Record<string, unknown>): boolean {
+    return heartbeat._slim === true;
+}
+
 // ── Session Management ──────────────────────────────────────────────────────
 
 export interface RegisterTuiSessionOpts {
@@ -648,6 +652,7 @@ export async function updateSessionHeartbeat(
     if (!session) return;
 
     const prevHeartbeat = session.lastHeartbeat ? safeJsonParse(session.lastHeartbeat) : null;
+    const isSlim = isSlimHeartbeat(heartbeat);
     const prevModel = modelFromHeartbeat(prevHeartbeat);
     const prevModelKey = prevModel ? `${prevModel.provider}/${prevModel.id}` : null;
 
@@ -657,7 +662,7 @@ export async function updateSessionHeartbeat(
     const wasActive = session.isActive;
     const isActive = heartbeat.active === true;
     const lastHeartbeatAt = new Date().toISOString();
-    const nextSessionName = hasSessionName
+    const nextSessionName = !isSlim && hasSessionName
         ? normalizeSessionName(heartbeat.sessionName)
         : session.sessionName;
 
@@ -667,7 +672,7 @@ export async function updateSessionHeartbeat(
         lastHeartbeat: JSON.stringify(heartbeat),
     };
 
-    if (hasSessionName) {
+    if (!isSlim && hasSessionName) {
         fields.sessionName = nextSessionName;
     }
 
@@ -680,8 +685,11 @@ export async function updateSessionHeartbeat(
     // Backward compat: extract meta-state from fat heartbeat payload.
     // Old CLI sessions still send all meta fields in the heartbeat.
     // New CLI sessions send slim heartbeats + discrete meta events separately.
-    // This ensures the Redis metaState is always populated regardless of CLI version.
-    await extractMetaFromHeartbeat(sessionId, heartbeat);
+    // Slim heartbeats skip extraction so meta updates flow only through
+    // the discrete meta channel.
+    if (!isSlim) {
+        await extractMetaFromHeartbeat(sessionId, heartbeat);
+    }
 
     // Heartbeats bypass touchSessionActivity, so refresh the runner
     // association TTL here to prevent it from expiring on long-lived
@@ -695,7 +703,7 @@ export async function updateSessionHeartbeat(
     const modelChanged = prevModelKey !== nextModelKey;
     const sessionNameChanged = hasSessionName && prevSessionName !== nextSessionName;
 
-    if (wasActive !== isActive || modelChanged || sessionNameChanged) {
+    if (wasActive !== isActive || (!isSlim && (modelChanged || sessionNameChanged))) {
         await broadcastToHub(
             "session_status",
             {
@@ -703,7 +711,7 @@ export async function updateSessionHeartbeat(
                 isActive,
                 lastHeartbeatAt,
                 sessionName: nextSessionName,
-                model: nextModel,
+                model: isSlim ? undefined : nextModel,
             },
             session.userId ?? undefined,
         );
