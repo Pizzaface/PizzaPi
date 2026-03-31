@@ -69,6 +69,8 @@ import { clearSessionSubscriptions } from "../../sessions/trigger-subscription-s
 import { pushTriggerHistory } from "../../sessions/trigger-store.js";
 
 const log = createLogger("sio-registry");
+const lastRelaySessionStateWriteTimes = new Map<string, number>();
+const SQLITE_STATE_WRITE_THROTTLE_MS = 30_000;
 
 // ── Internal helpers ─────────────────────────────────────────────────────────
 
@@ -494,6 +496,19 @@ export async function updateSessionState(sessionId: string, state: unknown): Pro
 
     await updateSessionFields(session.sessionId, fields);
 
+    const now = Date.now();
+    const stateMessages = stateObj && Array.isArray(stateObj.messages) ? stateObj.messages : null;
+    const shouldPersistState =
+        stateMessages !== null && stateMessages.length > 0 ||
+        now - (lastRelaySessionStateWriteTimes.get(sessionId) ?? 0) >= SQLITE_STATE_WRITE_THROTTLE_MS;
+
+    if (shouldPersistState) {
+        lastRelaySessionStateWriteTimes.set(sessionId, now);
+        void recordRelaySessionState(sessionId, session.userId ?? null, strippedState).catch((error) => {
+            log.error("Failed to persist relay session state:", error);
+        });
+    }
+
     if (sessionNameChanged) {
         const heartbeat = session.lastHeartbeat ? safeJsonParse(session.lastHeartbeat) : null;
         await broadcastToHub(
@@ -509,9 +524,6 @@ export async function updateSessionState(sessionId: string, state: unknown): Pro
         );
     }
 
-    void recordRelaySessionState(sessionId, session.userId ?? null, strippedState).catch((error) => {
-        log.error("Failed to persist relay session state:", error);
-    });
 }
 
 /** Get session last state from Redis. */
@@ -616,7 +628,10 @@ export async function publishSessionEvent(sessionId: string, event: unknown): Pr
     // Await the cache write so the event is durably stored before we broadcast.
     // If this also fails (same Redis blip), the event is lost — but at least
     // we don't falsely claim it was cached when swallowing the broadcast error.
-    await appendRelayEventToCache(sessionId, strippedEvent, { isEphemeral: session?.isEphemeral });
+    await appendRelayEventToCache(sessionId, strippedEvent, {
+        isEphemeral: session?.isEphemeral,
+        seq,
+    });
 
     // Broadcast to all viewer sockets in the session room
     try {
@@ -821,6 +836,7 @@ export async function endSharedSession(sessionId: string, reason: string = "Sess
 
     // Delete from Redis
     await deleteSession(sessionId);
+    lastRelaySessionStateWriteTimes.delete(sessionId);
 
     // Persist end in SQLite
     void recordRelaySessionEnd(sessionId).catch((error) => {

@@ -72,6 +72,7 @@ import { mapUserError } from "@/lib/user-error-message";
 import { getConfirmedMetaSubscriptionTargets } from "@/lib/meta-subscriptions";
 import { evaluateVersionNegotiation } from "@/lib/version-negotiation";
 import { useRunnerServices, attachServiceAnnounceListener, seedServiceCache, setViewerSwitchGeneration } from "@/hooks/useRunnerServices";
+import { useRunnerData } from "@/hooks/useRunnerData";
 import { SigilProvider } from "@/components/sigils/SigilContext";
 import { PizzaPiNavProvider, type PizzaPiNavActions } from "@/components/sigils/PizzaPiNavContext";
 import { ServicePanelButtons, useServicePanelState } from "@/components/service-panels/ServicePanels";
@@ -2772,6 +2773,7 @@ export function App() {
         nextSocket.emit("switch_session", {
           sessionId: currentSessionId,
           generation: viewerSwitchGenerationRef.current,
+          lastSeq: lastSeqRef.current ?? undefined,
         });
       });
 
@@ -2831,15 +2833,21 @@ export function App() {
 
         const seq = typeof data.seq === "number" ? data.seq : null;
         if (seq !== null) {
-          const decision = analyzeIncomingSeq(lastSeqRef.current, seq);
-          if (!decision.accept) {
-            return;
+          if (data.deltaReplay === true) {
+            lastSeqRef.current = seq;
+          } else {
+            const decision = analyzeIncomingSeq(lastSeqRef.current, seq);
+            if (!decision.accept) {
+              return;
+            }
+            if (decision.gap && decision.expected !== null) {
+              log.warn(`Sequence gap: expected ${decision.expected}, got ${seq}. Requesting resync.`);
+              nextSocket.emit("resync", {
+                lastSeq: lastSeqRef.current ?? undefined,
+              });
+            }
+            lastSeqRef.current = decision.nextSeq;
           }
-          if (decision.gap && decision.expected !== null) {
-            log.warn(`Sequence gap: expected ${decision.expected}, got ${seq}. Requesting resync.`);
-            nextSocket.emit("resync", {});
-          }
-          lastSeqRef.current = decision.nextSeq;
         }
 
         handleRelayEvent(data.event, seq ?? undefined);
@@ -3717,10 +3725,7 @@ export function App() {
     };
   }, [activeSessionId, liveSessions]);
 
-  const activeRunnerInfo = React.useMemo(
-    () => feedRunners.find(r => r.runnerId === activeSessionInfo?.runnerId) ?? null,
-    [feedRunners, activeSessionInfo?.runnerId],
-  );
+  const activeRunnerInfo = useRunnerData(feedRunners, activeSessionInfo?.runnerId);
 
   // Stable session ID for tunnel URLs — stays constant across same-runner
   // session switches so iframe service panels don't reload. The tunnel proxy
@@ -3744,7 +3749,7 @@ export function App() {
   }, [activeSessionId, activeSessionInfo?.runnerId, liveSessions]);
 
   // Runner service panels — dynamically discovered
-  const { services: availableServices, panels: dynamicPanels, triggerDefs: runnerTriggerDefs, sigilDefs: runnerSigilDefs } = useRunnerServices(viewerSocket);
+  const { services: availableServices, panels: dynamicPanels, triggerDefs: runnerTriggerDefs, sigilDefs: runnerSigilDefs } = useRunnerServices(viewerSocket, activeRunnerInfo);
   const triggerCounts = useTriggerCount(activeSessionId, viewerSocket);
   const { activePanelIds: activeServicePanels, togglePanel: toggleServicePanel, closePanelById: closeServicePanelById, closeAllPanels: closeAllServicePanels, getPanelPosition: getServicePanelPosition, setPanelPosition: setServicePanelPosition, setEphemeralPanelPosition: setEphemeralServicePanelPosition, getNavParams: getServicePanelNavParams } = useServicePanelState();
 

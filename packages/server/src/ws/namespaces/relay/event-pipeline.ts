@@ -11,6 +11,7 @@ import {
     broadcastSessionEventToViewers,
     publishSessionEvent,
 } from "../../sio-registry.js";
+import { incrementSeq } from "../../sio-state/index.js";
 import { appendRelayEventToCache } from "../../../sessions/redis.js";
 import { storeAndReplaceImagesInEvent, stripImagesFromPipelineEvent } from "../../strip-images.js";
 import { updateSessionMetaState, broadcastToSessionMeta, getSessionMetaState } from "../../sio-registry/meta.js";
@@ -246,8 +247,10 @@ export function registerEventHandler(socket: RelaySocket): void {
                     } catch {
                         // Fall back to original if image stripping fails
                     }
+                    const seq = await incrementSeq(sessionId);
                     await appendRelayEventToCache(sessionId, eventToCache, {
                         isEphemeral: session?.isEphemeral,
+                        seq,
                     });
                 } else {
                     await touchSessionActivity(sessionId);

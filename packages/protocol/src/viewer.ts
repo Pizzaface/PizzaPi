@@ -30,6 +30,7 @@ export interface ViewerServerToClientEvents {
     event: unknown;
     seq?: number;
     replay?: boolean;
+    deltaReplay?: true;
     /** Optional switch generation echoed back during logical session switches. */
     generation?: number;
   }) => void;
@@ -96,10 +97,13 @@ export interface ViewerClientToServerEvents {
   switch_session: (data: {
     sessionId: string;
     generation?: number;
+    lastSeq?: number;
   }) => void;
 
   /** Request a fresh snapshot resync */
-  resync: (data: Record<string, never>) => void;
+  resync: (data: {
+    lastSeq?: number;
+  }) => void;
 
   /** Send user input to TUI (collab mode) */
   input: (data: {

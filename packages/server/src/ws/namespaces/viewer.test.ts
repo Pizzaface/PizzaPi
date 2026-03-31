@@ -6,7 +6,7 @@
 // snapshot-scanning helpers that have no I/O dependencies.
 // ============================================================================
 
-import { describe, test, expect } from "bun:test";
+import { describe, test, expect, mock } from "bun:test";
 import {
     isAgentEndEvent,
     isSessionActiveEvent,
@@ -17,6 +17,7 @@ import {
     withHubMetaSource,
     withMetaViaHubHint,
     withLivenessOnlyHint,
+    sendCachedDeltaReplayEvents,
 } from "./viewer.js";
 
 // ── isAgentEndEvent ──────────────────────────────────────────────────────────
@@ -209,5 +210,45 @@ describe("meta routing hints", () => {
             active: true,
             _livenessOnly: true,
         });
+    });
+});
+
+// ── delta replay emission ───────────────────────────────────────────────────
+
+describe("sendCachedDeltaReplayEvents", () => {
+    test("emits sequenced replay events with deltaReplay flag", () => {
+        const emit = mock(() => {});
+        const socket = { emit };
+
+        const sent = sendCachedDeltaReplayEvents(socket, [
+            { seq: 11, event: { type: "message_start" } },
+            { seq: 12, event: { type: "message_end" } },
+        ], 7);
+
+        expect(sent).toBe(true);
+        expect(emit).toHaveBeenCalledTimes(2);
+        expect(emit.mock.calls[0][0]).toBe("event");
+        expect(emit.mock.calls[0][1]).toEqual({
+            event: { type: "message_start" },
+            seq: 11,
+            replay: true,
+            deltaReplay: true,
+            generation: 7,
+        });
+        expect(emit.mock.calls[1][1]).toEqual({
+            event: { type: "message_end" },
+            seq: 12,
+            replay: true,
+            deltaReplay: true,
+            generation: 7,
+        });
+    });
+
+    test("returns false when there are no sequenced events to replay", () => {
+        const emit = mock(() => {});
+        const sent = sendCachedDeltaReplayEvents({ emit }, [{ event: { type: "message_start" } }]);
+
+        expect(sent).toBe(false);
+        expect(emit).not.toHaveBeenCalled();
     });
 });
