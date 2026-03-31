@@ -16,7 +16,7 @@
  */
 import { useState, useEffect, useRef } from "react";
 import type { Socket } from "socket.io-client";
-import type { ServiceAnnounceData, ServiceAnnounceDelta, ServicePanelInfo, ServiceTriggerDef, ServiceSigilDef } from "@pizzapi/protocol";
+import type { RunnerInfo, ServiceAnnounceData, ServiceAnnounceDelta, ServicePanelInfo, ServiceTriggerDef, ServiceSigilDef } from "@pizzapi/protocol";
 import { matchesViewerGeneration } from "@/lib/viewer-switch";
 
 const SERVICE_IDS_KEY = "__serviceIds" as const;
@@ -141,11 +141,30 @@ export interface RunnerServicesState {
     sigilDefs: ServiceSigilDef[];
 }
 
-export function useRunnerServices(socket: Socket | null): RunnerServicesState {
-    const [services, setServices] = useState<Set<string>>(() => getEagerServiceIds(socket));
-    const [panels, setPanels] = useState<ServicePanelInfo[]>(() => getEagerPanels(socket));
-    const [triggerDefs, setTriggerDefs] = useState<ServiceTriggerDef[]>(() => getEagerTriggerDefs(socket));
-    const [sigilDefs, setSigilDefs] = useState<ServiceSigilDef[]>(() => getEagerSigilDefs(socket));
+function hasRunnerServiceMetadata(runnerInfo: RunnerInfo | null | undefined): boolean {
+    return !!runnerInfo && (
+        (runnerInfo.serviceIds?.length ?? 0) > 0 ||
+        (runnerInfo.panels?.length ?? 0) > 0 ||
+        (runnerInfo.triggerDefs?.length ?? 0) > 0 ||
+        (runnerInfo.sigilDefs?.length ?? 0) > 0
+    );
+}
+
+function runnerInfoToServices(runnerInfo: RunnerInfo | null | undefined): RunnerServicesState {
+    return {
+        services: new Set(runnerInfo?.serviceIds ?? []),
+        panels: runnerInfo?.panels ?? [],
+        triggerDefs: runnerInfo?.triggerDefs ?? [],
+        sigilDefs: runnerInfo?.sigilDefs ?? [],
+    };
+}
+
+export function useRunnerServices(socket: Socket | null, runnerInfo: RunnerInfo | null = null): RunnerServicesState {
+    const initialFromRunner = hasRunnerServiceMetadata(runnerInfo) ? runnerInfoToServices(runnerInfo) : null;
+    const [services, setServices] = useState<Set<string>>(() => initialFromRunner?.services ?? getEagerServiceIds(socket));
+    const [panels, setPanels] = useState<ServicePanelInfo[]>(() => initialFromRunner?.panels ?? getEagerPanels(socket));
+    const [triggerDefs, setTriggerDefs] = useState<ServiceTriggerDef[]>(() => initialFromRunner?.triggerDefs ?? getEagerTriggerDefs(socket));
+    const [sigilDefs, setSigilDefs] = useState<ServiceSigilDef[]>(() => initialFromRunner?.sigilDefs ?? getEagerSigilDefs(socket));
     const prevSocketRef = useRef(socket);
 
     if (socket !== prevSocketRef.current) {
@@ -161,23 +180,34 @@ export function useRunnerServices(socket: Socket | null): RunnerServicesState {
             return;
         }
 
-        // Read eagerly in case announce arrived before this effect ran
-        // (e.g. seeded via seedServiceCache for same-runner switches).
-        const cached = getEagerServiceIds(socket);
-        if (cached.size > 0) {
-            setServices(cached);
-        }
-        const cachedPanels = getEagerPanels(socket);
-        if (cachedPanels.length > 0) {
-            setPanels(cachedPanels);
-        }
-        const cachedDefs = getEagerTriggerDefs(socket);
-        if (cachedDefs.length > 0) {
-            setTriggerDefs(cachedDefs);
-        }
-        const cachedSigilDefs = getEagerSigilDefs(socket);
-        if (cachedSigilDefs.length > 0) {
-            setSigilDefs(cachedSigilDefs);
+        // Prefer runner-feed metadata when available. The feed now carries the
+        // runner's service metadata, so the viewer can join by runnerId instead
+        // of depending on per-session service_announce copies.
+        if (runnerInfo) {
+            const next = runnerInfoToServices(runnerInfo);
+            setServices(next.services);
+            setPanels(next.panels);
+            setTriggerDefs(next.triggerDefs);
+            setSigilDefs(next.sigilDefs);
+        } else {
+            // Read eagerly in case announce arrived before this effect ran
+            // (e.g. seeded via seedServiceCache for same-runner switches).
+            const cached = getEagerServiceIds(socket);
+            if (cached.size > 0) {
+                setServices(cached);
+            }
+            const cachedPanels = getEagerPanels(socket);
+            if (cachedPanels.length > 0) {
+                setPanels(cachedPanels);
+            }
+            const cachedDefs = getEagerTriggerDefs(socket);
+            if (cachedDefs.length > 0) {
+                setTriggerDefs(cachedDefs);
+            }
+            const cachedSigilDefs = getEagerSigilDefs(socket);
+            if (cachedSigilDefs.length > 0) {
+                setSigilDefs(cachedSigilDefs);
+            }
         }
 
         const handleAnnounce = (data: ServiceAnnounceData & { generation?: number }) => {
@@ -185,10 +215,17 @@ export function useRunnerServices(socket: Socket | null): RunnerServicesState {
             if (!matchesViewerGeneration(currentGeneration, data.generation)) {
                 return;
             }
-            setServices(new Set(data.serviceIds));
-            setPanels(data.panels ?? []);
-            setTriggerDefs(data.triggerDefs ?? []);
-            setSigilDefs(data.sigilDefs ?? []);
+            const useRunnerFeed = data._runnerRef === true && runnerInfo?.runnerId === data.runnerId && hasRunnerServiceMetadata(runnerInfo);
+            const next = useRunnerFeed ? runnerInfoToServices(runnerInfo) : {
+                services: new Set(data.serviceIds),
+                panels: data.panels ?? [],
+                triggerDefs: data.triggerDefs ?? [],
+                sigilDefs: data.sigilDefs ?? [],
+            };
+            setServices(next.services);
+            setPanels(next.panels);
+            setTriggerDefs(next.triggerDefs);
+            setSigilDefs(next.sigilDefs);
         };
 
         const handleDelta = (data: ServiceAnnounceDelta & { generation?: number }) => {
@@ -202,6 +239,15 @@ export function useRunnerServices(socket: Socket | null): RunnerServicesState {
             const newPanels = (socket as any)[PANELS_KEY] as ServicePanelInfo[] | undefined;
             const newTriggerDefs = (socket as any)[TRIGGER_DEFS_KEY] as ServiceTriggerDef[] | undefined;
             const newSigilDefs = (socket as any)[SIGIL_DEFS_KEY] as ServiceSigilDef[] | undefined;
+            const useRunnerFeed = data._runnerRef === true && runnerInfo?.runnerId === data.runnerId && hasRunnerServiceMetadata(runnerInfo);
+            if (useRunnerFeed) {
+                const next = runnerInfoToServices(runnerInfo);
+                setServices(next.services);
+                setPanels(next.panels);
+                setTriggerDefs(next.triggerDefs);
+                setSigilDefs(next.sigilDefs);
+                return;
+            }
             setServices(new Set(newIds ?? []));
             setPanels(newPanels ?? []);
             setTriggerDefs(newTriggerDefs ?? []);
@@ -224,7 +270,7 @@ export function useRunnerServices(socket: Socket | null): RunnerServicesState {
             socket.off("service_announce", handleAnnounce);
             socket.off("service_announce_delta", handleDelta);
         };
-    }, [socket]);
+    }, [socket, runnerInfo]);
 
     return { services, panels, triggerDefs, sigilDefs };
 }

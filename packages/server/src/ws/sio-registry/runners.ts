@@ -207,20 +207,14 @@ export async function registerRunner(
 export async function updateRunnerSkills(runnerId: string, skills: RunnerSkill[]): Promise<void> {
     const normalized = normalizeSkills(skills);
     await updateRunnerFields(runnerId, { skills: JSON.stringify(normalized) });
-    const fresh = await getRunnerState(runnerId);
-    if (fresh) {
-        void broadcastToRunnersNs("runner_updated", runnerDataToInfo(fresh), fresh.userId ?? undefined);
-    }
+    await broadcastRunnerUpdated(runnerId);
 }
 
 /** Update agents for an already-registered runner. */
 export async function updateRunnerAgents(runnerId: string, agents: RunnerAgent[]): Promise<void> {
     const normalized = normalizeAgents(agents);
     await updateRunnerFields(runnerId, { agents: JSON.stringify(normalized) });
-    const fresh = await getRunnerState(runnerId);
-    if (fresh) {
-        void broadcastToRunnersNs("runner_updated", runnerDataToInfo(fresh), fresh.userId ?? undefined);
-    }
+    await broadcastRunnerUpdated(runnerId);
 }
 
 /**
@@ -236,10 +230,7 @@ export async function updateRunnerPlugins(runnerId: string, plugins: unknown[]):
             .filter((p): p is Record<string, unknown> => p !== null)
         : [];
     await updateRunnerFields(runnerId, { plugins: JSON.stringify(normalized) });
-    const fresh = await getRunnerState(runnerId);
-    if (fresh) {
-        void broadcastToRunnersNs("runner_updated", runnerDataToInfo(fresh), fresh.userId ?? undefined);
-    }
+    await broadcastRunnerUpdated(runnerId);
 }
 
 /** Add a warning to the runner's warnings list. Deduplicates by message. */
@@ -250,19 +241,13 @@ export async function addRunnerWarning(runnerId: string, message: string): Promi
     if (current.includes(message)) return; // already present
     current.push(message);
     await updateRunnerFields(runnerId, { warnings: JSON.stringify(current) });
-    const fresh = await getRunnerState(runnerId);
-    if (fresh) {
-        void broadcastToRunnersNs("runner_updated", runnerDataToInfo(fresh), fresh.userId ?? undefined);
-    }
+    await broadcastRunnerUpdated(runnerId);
 }
 
 /** Clear all warnings for a runner. */
 export async function clearRunnerWarnings(runnerId: string): Promise<void> {
     await updateRunnerFields(runnerId, { warnings: "[]" });
-    const fresh = await getRunnerState(runnerId);
-    if (fresh) {
-        void broadcastToRunnersNs("runner_updated", runnerDataToInfo(fresh), fresh.userId ?? undefined);
-    }
+    await broadcastRunnerUpdated(runnerId);
 }
 
 /**
@@ -297,8 +282,7 @@ export async function updateRunnerServices(
         fields.sigilDefs = "[]";
     }
     await updateRunnerFields(runnerId, fields);
-    // No broadcast here — service_announce is already forwarded to viewers
-    // in real-time via the socket event. This is just persistence.
+    await broadcastRunnerUpdated(runnerId);
 }
 
 /**
@@ -413,9 +397,9 @@ export async function getConnectedSessionsForRunner(runnerId: string): Promise<A
 
 /**
  * Convert a single RedisRunnerData to RunnerInfo for WS broadcast.
- * sessionCount is set to 0 — the client computes it from live sessions.
+ * The caller supplies sessionCount when it is available.
  */
-function runnerDataToInfo(r: RedisRunnerData): RunnerInfo {
+function runnerDataToInfo(r: RedisRunnerData, sessionCount = 0): RunnerInfo {
     const serviceIds: string[] | undefined = r.serviceIds ? safeJsonParse(r.serviceIds) ?? undefined : undefined;
     const panels = r.panels ? safeJsonParse(r.panels) ?? undefined : undefined;
     const triggerDefs = r.triggerDefs ? safeJsonParse(r.triggerDefs) ?? undefined : undefined;
@@ -425,7 +409,7 @@ function runnerDataToInfo(r: RedisRunnerData): RunnerInfo {
         runnerId: r.runnerId,
         name: r.name,
         roots: safeJsonParse(r.roots) ?? [],
-        sessionCount: 0,
+        sessionCount,
         skills: safeJsonParse(r.skills) ?? [],
         agents: safeJsonParse(r.agents ?? "[]") ?? [],
         plugins: safeJsonParse(r.plugins ?? "[]") ?? [],
@@ -438,6 +422,15 @@ function runnerDataToInfo(r: RedisRunnerData): RunnerInfo {
         ...(sigilDefs && sigilDefs.length > 0 ? { sigilDefs } : {}),
         ...(warnings && warnings.length > 0 ? { warnings } : {}),
     };
+}
+
+async function broadcastRunnerUpdated(runnerId: string): Promise<void> {
+    const fresh = await getRunnerState(runnerId);
+    if (!fresh) return;
+
+    const allSessions = await getAllSessionSummaries(fresh.userId ?? undefined);
+    const sessionCount = allSessions.reduce((count, session) => count + (session.runnerId === runnerId ? 1 : 0), 0);
+    void broadcastToRunnersNs("runner_updated", runnerDataToInfo(fresh, sessionCount), fresh.userId ?? undefined);
 }
 
 /** Get all runners as RunnerInfo, optionally filtered by user. */
@@ -458,18 +451,7 @@ export async function getRunners(filterUserId?: string): Promise<RunnerInfo[]> {
     const results: RunnerInfo[] = [];
 
     for (const r of runners) {
-        results.push({
-            runnerId: r.runnerId,
-            name: r.name,
-            roots: safeJsonParse(r.roots) ?? [],
-            sessionCount: sessionCounts.get(r.runnerId) ?? 0,
-            skills: safeJsonParse(r.skills) ?? [],
-            agents: safeJsonParse(r.agents ?? "[]") ?? [],
-            plugins: safeJsonParse(r.plugins ?? "[]") ?? [],
-            hooks: safeJsonParse(r.hooks ?? "[]") ?? [],
-            version: r.version ?? null,
-            platform: r.platform ?? null,
-        });
+        results.push(runnerDataToInfo(r, sessionCounts.get(r.runnerId) ?? 0));
     }
 
     return results;

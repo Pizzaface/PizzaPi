@@ -218,6 +218,7 @@ export async function sendRunnerCommand(
 import type { ServiceAnnounceData } from "@pizzapi/protocol";
 import { updateRunnerServices, getRunnerServices, addRunnerWarning, clearRunnerWarnings } from "../sio-registry/index.js";
 import { chooseServiceAnnounceSeed, isSameServiceAnnounce, shouldSkipServiceAnnounceFanout, computeServiceAnnounceDelta, isEmptyDelta } from "./runner.service-announce.js";
+import { withRunnerRefHint } from "./runner-ref.js";
 export { chooseServiceAnnounceSeed, isSameServiceAnnounce, shouldSkipServiceAnnounceFanout, computeServiceAnnounceDelta, isEmptyDelta };
 
 const runnerServiceAnnounce = new Map<string, ServiceAnnounceData>();
@@ -995,17 +996,19 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
 
             if (isFirstLiveAnnounce || !previous) {
                 // Full announce — first time or no previous to diff against
+                const hinted = withRunnerRefHint(runnerId, data);
                 for (const sessionId of sessionIds) {
                     log.info(`[service_announce] runner=${runnerId} full fanout -> session=${sessionId}`);
-                    broadcastToSessionViewers(sessionId, "service_announce", data);
+                    broadcastToSessionViewers(sessionId, "service_announce", hinted);
                 }
             } else {
                 // Compute delta and send only the changes
                 const delta = computeServiceAnnounceDelta(previous, data);
                 if (delta && !isEmptyDelta(delta)) {
+                    const hintedDelta = { ...delta, runnerId, _runnerRef: true as const };
                     for (const sessionId of sessionIds) {
                         log.info(`[service_announce] runner=${runnerId} delta fanout -> session=${sessionId}`);
-                        broadcastToSessionViewers(sessionId, "service_announce_delta", delta);
+                        broadcastToSessionViewers(sessionId, "service_announce_delta", hintedDelta);
                     }
                 }
             }

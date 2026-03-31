@@ -217,8 +217,8 @@ describe("meta routing hints", () => {
 
 describe("sendCachedDeltaReplayEvents", () => {
     test("emits sequenced replay events with deltaReplay flag", () => {
-        const emit = mock(() => {});
-        const socket = { emit };
+        const calls: unknown[][] = [];
+        const socket = { emit: (...args: unknown[]) => { calls.push(args); return true; } } as any;
 
         const sent = sendCachedDeltaReplayEvents(socket, [
             { seq: 11, event: { type: "message_start" } },
@@ -226,16 +226,16 @@ describe("sendCachedDeltaReplayEvents", () => {
         ], 7);
 
         expect(sent).toBe(true);
-        expect(emit).toHaveBeenCalledTimes(2);
-        expect(emit.mock.calls[0][0]).toBe("event");
-        expect(emit.mock.calls[0][1]).toEqual({
+        expect(calls.length).toBe(2);
+        expect(calls[0][0]).toBe("event");
+        expect(calls[0][1]).toEqual({
             event: { type: "message_start" },
             seq: 11,
             replay: true,
             deltaReplay: true,
             generation: 7,
         });
-        expect(emit.mock.calls[1][1]).toEqual({
+        expect(calls[1][1]).toEqual({
             event: { type: "message_end" },
             seq: 12,
             replay: true,
@@ -245,10 +245,10 @@ describe("sendCachedDeltaReplayEvents", () => {
     });
 
     test("returns false when there are no sequenced events to replay", () => {
-        const emit = mock(() => {});
-        const sent = sendCachedDeltaReplayEvents({ emit }, [{ event: { type: "message_start" } }]);
+        const calls: unknown[][] = [];
+        const sent = sendCachedDeltaReplayEvents({ emit: (...args: unknown[]) => { calls.push(args); return true; } } as any, [{ event: { type: "message_start" } }]);
 
         expect(sent).toBe(false);
-        expect(emit).not.toHaveBeenCalled();
+        expect(calls.length).toBe(0);
     });
 });

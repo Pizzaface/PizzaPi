@@ -1,4 +1,4 @@
-import { describe, expect, it, mock, beforeEach } from "bun:test";
+import { afterAll, describe, expect, it, mock, beforeEach } from "bun:test";
 import { shouldIncludePersistedSessions } from "./sessions.js";
 
 describe("shouldIncludePersistedSessions", () => {
@@ -47,6 +47,8 @@ mock.module("../sessions/store.js", () => ({
 mock.module("../middleware.js", () => ({
     requireSession: mockRequireSession,
 }));
+
+afterAll(() => mock.restore());
 
 import { handleSessionsRoute } from "./sessions.js";
 
