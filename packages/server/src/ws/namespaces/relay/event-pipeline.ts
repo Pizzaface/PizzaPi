@@ -11,7 +11,6 @@ import {
     broadcastSessionEventToViewers,
     publishSessionEvent,
 } from "../../sio-registry.js";
-import { incrementSeq } from "../../sio-state/index.js";
 import { appendRelayEventToCache } from "../../../sessions/redis.js";
 import { storeAndReplaceImagesInEvent, stripImagesFromPipelineEvent } from "../../strip-images.js";
 import { updateSessionMetaState, broadcastToSessionMeta, getSessionMetaState } from "../../sio-registry/meta.js";
@@ -247,10 +246,13 @@ export function registerEventHandler(socket: RelaySocket): void {
                     } catch {
                         // Fall back to original if image stripping fails
                     }
-                    const seq = await incrementSeq(sessionId);
+                    // Do NOT call incrementSeq() here — this entry is never
+                    // broadcast to viewers.  Advancing the shared counter
+                    // would create a seq gap that triggers unnecessary
+                    // viewer resyncs (viewers would expect seq N but the
+                    // next broadcast would be N+1).
                     await appendRelayEventToCache(sessionId, eventToCache, {
                         isEphemeral: session?.isEphemeral,
-                        seq,
                     });
                 } else {
                     await touchSessionActivity(sessionId);

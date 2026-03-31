@@ -201,7 +201,8 @@ export async function getCachedRelayEventsAfterSeq(
 
     try {
         const rows = await redis.lRange(eventsKey(sessionId), 0, -1);
-        const events: CachedRelayEventRecord[] = [];
+        type SequencedRecord = CachedRelayEventRecord & { seq: number };
+        const events: SequencedRecord[] = [];
         let sawLegacyRow = false;
 
         for (const row of rows) {
@@ -218,6 +219,25 @@ export async function getCachedRelayEventsAfterSeq(
 
         if (afterSeq > 0 && sawLegacyRow) {
             return [];
+        }
+
+        // Verify contiguity: the first event must be afterSeq+1 and all
+        // subsequent seqs must be consecutive.  If the cache was trimmed
+        // (lTrim), earlier events may be missing — return empty so the
+        // caller falls back to a full snapshot/resync instead of silently
+        // skipping events.
+        if (events.length > 0 && afterSeq > 0) {
+            const first = events[0];
+            if (!first || first.seq !== afterSeq + 1) {
+                return [];
+            }
+            for (let i = 1; i < events.length; i++) {
+                const curr = events[i];
+                const prev = events[i - 1];
+                if (!curr || !prev || curr.seq !== prev.seq + 1) {
+                    return [];
+                }
+            }
         }
 
         return events;

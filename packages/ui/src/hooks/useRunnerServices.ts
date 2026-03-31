@@ -183,7 +183,10 @@ export function useRunnerServices(socket: Socket | null, runnerInfo: RunnerInfo 
         // Prefer runner-feed metadata when available. The feed now carries the
         // runner's service metadata, so the viewer can join by runnerId instead
         // of depending on per-session service_announce copies.
-        if (runnerInfo) {
+        // Gate on hasRunnerServiceMetadata() — truthy runnerInfo with no
+        // metadata arrays would clear services and bypass the socket-cache
+        // fallback, causing missing panels/triggers until a full announce.
+        if (hasRunnerServiceMetadata(runnerInfo)) {
             const next = runnerInfoToServices(runnerInfo);
             setServices(next.services);
             setPanels(next.panels);
