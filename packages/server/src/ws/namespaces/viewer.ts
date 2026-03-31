@@ -228,8 +228,11 @@ async function replayPersistedSnapshot(
                 socket.disconnect();
                 return;
             }
+            // Don't add _metaViaHub for replay-only sessions — there is no
+            // live hub meta subscription, so the client must apply metadata
+            // (model, sessionName, etc.) from this snapshot directly.
             socket.emit("event", {
-                event: withMetaViaHubHint({ type: "session_active", state: snapshot.state }),
+                event: { type: "session_active", state: snapshot.state },
                 generation,
             });
         }
