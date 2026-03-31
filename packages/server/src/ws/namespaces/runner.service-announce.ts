@@ -5,6 +5,13 @@
  */
 import type { ServiceAnnounceData } from "@pizzapi/protocol";
 
+export function chooseServiceAnnounceSeed(
+    current: ServiceAnnounceData | null | undefined,
+    persisted: ServiceAnnounceData | null | undefined,
+): ServiceAnnounceData | null {
+    return current ?? persisted ?? null;
+}
+
 /**
  * Returns true when two ServiceAnnounceData payloads are semantically
  * identical (same serviceIds in the same order, same panel metadata,
@@ -78,7 +85,8 @@ export function isSameServiceAnnounce(
             left.description !== right.description ||
             left.icon !== right.icon ||
             left.serviceId !== right.serviceId ||
-            left.resolve !== right.resolve
+            left.resolve !== right.resolve ||
+            left.resolvePort !== right.resolvePort
         ) {
             return false;
         }
@@ -91,4 +99,16 @@ export function isSameServiceAnnounce(
     }
 
     return true;
+}
+
+export function shouldSkipServiceAnnounceFanout({
+    previous,
+    next,
+    hasBroadcastLiveAnnounce,
+}: {
+    previous: ServiceAnnounceData | null | undefined;
+    next: ServiceAnnounceData | null | undefined;
+    hasBroadcastLiveAnnounce: boolean;
+}): boolean {
+    return hasBroadcastLiveAnnounce && isSameServiceAnnounce(previous, next);
 }

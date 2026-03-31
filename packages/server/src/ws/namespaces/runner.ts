@@ -217,8 +217,8 @@ export async function sendRunnerCommand(
 // restart) can receive the data without waiting for a fresh announce.
 import type { ServiceAnnounceData } from "@pizzapi/protocol";
 import { updateRunnerServices, getRunnerServices, addRunnerWarning, clearRunnerWarnings } from "../sio-registry/index.js";
-import { isSameServiceAnnounce } from "./runner.service-announce.js";
-export { isSameServiceAnnounce };
+import { chooseServiceAnnounceSeed, isSameServiceAnnounce, shouldSkipServiceAnnounceFanout } from "./runner.service-announce.js";
+export { chooseServiceAnnounceSeed, isSameServiceAnnounce, shouldSkipServiceAnnounceFanout };
 
 const runnerServiceAnnounce = new Map<string, ServiceAnnounceData>();
 
@@ -240,13 +240,19 @@ export function getRunnerServiceAnnounce(runnerId: string): ServiceAnnounceData 
 export async function seedServiceAnnounceCache(runnerId: string): Promise<void> {
     if (runnerServiceAnnounce.has(runnerId)) return; // already cached
     const persisted = await getRunnerServices(runnerId);
-    if (persisted) {
-        runnerServiceAnnounce.set(runnerId, {
-            serviceIds: persisted.serviceIds,
-            panels: persisted.panels,
-            triggerDefs: persisted.triggerDefs,
-            sigilDefs: persisted.sigilDefs,
-        });
+    const next = chooseServiceAnnounceSeed(
+        runnerServiceAnnounce.get(runnerId),
+        persisted
+            ? {
+                serviceIds: persisted.serviceIds,
+                panels: persisted.panels,
+                triggerDefs: persisted.triggerDefs,
+                sigilDefs: persisted.sigilDefs,
+            }
+            : null,
+    );
+    if (next && !runnerServiceAnnounce.has(runnerId)) {
+        runnerServiceAnnounce.set(runnerId, next);
     }
 }
 
@@ -270,6 +276,11 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
     // in Redis, but is kept in-memory here to avoid async Redis reads on every
     // service_message event (which may be high-frequency terminal output).
     const runnerSessionIds = new Map<string, Set<string>>();
+    // Tracks whether this process has already fanned out a live
+    // service_announce from the currently connected runner. Redis can seed
+    // cached service metadata after a relay restart, but viewers still need
+    // the first live announce to rehydrate service panels, triggers, and sigils.
+    const runnerHasBroadcastLiveServiceAnnounce = new Set<string>();
     // Maps runnerId → Set<terminalId>. Mirrors terminal ownership already in
     // Redis but kept in-memory for fast O(1) checks on high-frequency
     // terminal_data events without a Redis round-trip per packet.
@@ -338,6 +349,7 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
             }
 
             socket.data.runnerId = result;
+            runnerHasBroadcastLiveServiceAnnounce.delete(result);
 
             // Start periodic Redis TTL refresh for this runner
             if (runnerTtlTimer) clearInterval(runnerTtlTimer);
@@ -379,11 +391,11 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
                 log.info(`[runner reconnect] runner=${result} seeded runnerTerminalIds=[${existingTerminalIds.join(",")}]`);
             }
 
-            // Seed in-memory service announce cache from Redis.
-            // On reconnect the runner will emit a fresh service_announce after
-            // service init, but this ensures viewers connecting in the gap
-            // between registration and announce still get service data.
-            void seedServiceAnnounceCache(result).catch(() => {});
+            // Seed in-memory service announce cache from Redis before the
+            // runner proceeds with service init. This closes the gap where a
+            // viewer can reconnect after runner registration but before the
+            // fresh live service_announce arrives.
+            await seedServiceAnnounceCache(result);
 
             socket.emit("runner_registered", {
                 runnerId: result,
@@ -932,19 +944,29 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
             if (!runnerId) return;
 
             const previous = runnerServiceAnnounce.get(runnerId);
-            // Skip no-op announces to avoid redundant Redis writes and fan-out
-            // to every viewer on this runner when nothing actually changed.
-            if (isSameServiceAnnounce(previous, data)) {
+            const sameAsCached = isSameServiceAnnounce(previous, data);
+            // Skip redundant fanout only after this process has already
+            // broadcast a live announce from the current runner connection.
+            // After a relay restart the cache may be warm from Redis, but
+            // viewers still need the first live announce to rehydrate.
+            if (shouldSkipServiceAnnounceFanout({
+                previous,
+                next: data,
+                hasBroadcastLiveAnnounce: runnerHasBroadcastLiveServiceAnnounce.has(runnerId),
+            })) {
                 log.info(`[service_announce] runner=${runnerId} skipped (no-op)`);
                 return;
             }
 
             // Cache in memory for fast lookups
             runnerServiceAnnounce.set(runnerId, data);
-            // Persist to Redis so the data survives server restarts
-            void updateRunnerServices(runnerId, data.serviceIds, data.panels, data.triggerDefs, data.sigilDefs).catch((err) => {
-                log.error(`failed to persist service_announce to Redis for ${runnerId}:`, err);
-            });
+            // Persist to Redis so the data survives server restarts.
+            // Identical payloads can skip the write; viewers still need fanout.
+            if (!sameAsCached) {
+                void updateRunnerServices(runnerId, data.serviceIds, data.panels, data.triggerDefs, data.sigilDefs).catch((err) => {
+                    log.error(`failed to persist service_announce to Redis for ${runnerId}:`, err);
+                });
+            }
 
             let sessionIds = runnerSessionIds.get(runnerId);
             log.info(`[service_announce] runner=${runnerId} initial sessionIds=${sessionIds ? Array.from(sessionIds).join(",") : "<none>"}`);
@@ -965,6 +987,7 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
             }
 
             if (!sessionIds || sessionIds.size === 0) return;
+            runnerHasBroadcastLiveServiceAnnounce.add(runnerId);
             for (const sessionId of sessionIds) {
                 log.info(`[service_announce] runner=${runnerId} fanout -> session=${sessionId}`);
                 broadcastToSessionViewers(sessionId, "service_announce", data);
@@ -1015,6 +1038,7 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
                 }
                 runnerTerminalIds.delete(runnerId);
                 runnerServiceAnnounce.delete(runnerId);
+                runnerHasBroadcastLiveServiceAnnounce.delete(runnerId);
                 // Clean up any terminals owned by this runner
                 const terminalIds = await getTerminalIdsForRunner(runnerId);
                 for (const tid of terminalIds) {

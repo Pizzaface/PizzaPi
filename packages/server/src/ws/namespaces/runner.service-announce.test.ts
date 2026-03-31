@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { isSameServiceAnnounce } from "./runner.service-announce.js";
+import { chooseServiceAnnounceSeed, isSameServiceAnnounce, shouldSkipServiceAnnounceFanout } from "./runner.service-announce.js";
 
 describe("isSameServiceAnnounce", () => {
     test("returns true when serviceIds and panels are identical", () => {
@@ -194,9 +194,76 @@ describe("isSameServiceAnnounce", () => {
         expect(isSameServiceAnnounce(left, right)).toBe(false);
     });
 
+    test("returns false when sigilDef resolvePort differs", () => {
+        const left = { serviceIds: ["github"], sigilDefs: [{ type: "pr", label: "PR", resolvePort: 4173 }] };
+        const right = { serviceIds: ["github"], sigilDefs: [{ type: "pr", label: "PR", resolvePort: 8080 }] };
+        expect(isSameServiceAnnounce(left, right)).toBe(false);
+    });
+
     test("treats absent sigilDefs as empty array", () => {
         const left = { serviceIds: ["github"] };
         const right = { serviceIds: ["github"], sigilDefs: [] };
         expect(isSameServiceAnnounce(left, right)).toBe(true);
+    });
+});
+
+describe("chooseServiceAnnounceSeed", () => {
+    test("uses persisted data when no live announce is cached", () => {
+        const persisted = { serviceIds: ["github"] };
+        expect(chooseServiceAnnounceSeed(null, persisted)).toEqual(persisted);
+    });
+
+    test("keeps the live announce when async seeding loses a race to reconnect", () => {
+        const live = { serviceIds: ["github"], sigilDefs: [{ type: "pr", label: "PR", resolvePort: 4173 }] };
+        const persisted = { serviceIds: ["github"], sigilDefs: [{ type: "pr", label: "PR", resolvePort: 8080 }] };
+        expect(chooseServiceAnnounceSeed(live, persisted)).toEqual(live);
+    });
+});
+
+describe("shouldSkipServiceAnnounceFanout", () => {
+    const announce = {
+        serviceIds: ["github"],
+        sigilDefs: [{ type: "pr", label: "PR", serviceId: "github", resolve: "/api/resolve/pr/{id}" }],
+    };
+
+    test("does not skip the first live announce after reconnect when payload matches cached state", () => {
+        expect(shouldSkipServiceAnnounceFanout({
+            previous: announce,
+            next: announce,
+            hasBroadcastLiveAnnounce: false,
+        })).toBe(false);
+    });
+
+    test("skips redundant announces after a live announce was already broadcast", () => {
+        expect(shouldSkipServiceAnnounceFanout({
+            previous: announce,
+            next: announce,
+            hasBroadcastLiveAnnounce: true,
+        })).toBe(true);
+    });
+
+    test("does not skip when payload changed", () => {
+        expect(shouldSkipServiceAnnounceFanout({
+            previous: announce,
+            next: {
+                ...announce,
+                sigilDefs: [{ type: "issue", label: "Issue", serviceId: "github", resolve: "/api/resolve/issue/{id}" }],
+            },
+            hasBroadcastLiveAnnounce: true,
+        })).toBe(false);
+    });
+
+    test("does not skip when only sigil resolvePort changed", () => {
+        expect(shouldSkipServiceAnnounceFanout({
+            previous: {
+                serviceIds: ["github"],
+                sigilDefs: [{ type: "pr", label: "PR", serviceId: "github", resolve: "/api/resolve/pr/{id}", resolvePort: 4173 }],
+            },
+            next: {
+                serviceIds: ["github"],
+                sigilDefs: [{ type: "pr", label: "PR", serviceId: "github", resolve: "/api/resolve/pr/{id}", resolvePort: 8080 }],
+            },
+            hasBroadcastLiveAnnounce: true,
+        })).toBe(false);
     });
 });
