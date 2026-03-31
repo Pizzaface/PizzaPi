@@ -12,7 +12,7 @@ import {
     publishSessionEvent,
 } from "../../sio-registry.js";
 import { appendRelayEventToCache } from "../../../sessions/redis.js";
-import { storeAndReplaceImagesInEvent } from "../../strip-images.js";
+import { storeAndReplaceImagesInEvent, stripImagesFromPipelineEvent } from "../../strip-images.js";
 import { updateSessionMetaState, broadcastToSessionMeta, getSessionMetaState } from "../../sio-registry/meta.js";
 import { isMetaRelayEvent, metaEventToPatch, type MetaRelayEvent, type SessionMetaState } from "@pizzapi/protocol";
 import { updateSessionFields } from "../../sio-state/index.js";
@@ -153,6 +153,27 @@ export function registerEventHandler(socket: RelaySocket): void {
 
         // Serialize async processing per session to guarantee chunk order.
         enqueueSessionEvent(sessionId, async () => {
+
+        // ── Single-pass image stripping ──────────────────────────────────
+        // Strip inline base64 images ONCE at ingestion so all downstream
+        // consumers (state storage, Redis cache, viewer broadcast) see
+        // already-stripped payloads. The _imagesStripped flag causes
+        // storeAndReplaceImages / storeAndReplaceImagesInEvent to skip.
+        const session = await getSharedSession(sessionId);
+        const userId = session?.userId ?? "unknown";
+        try {
+            const stripped = await stripImagesFromPipelineEvent(event, sessionId, userId);
+            if (stripped !== event) {
+                // Mutate `event` reference used by all downstream code.
+                // We copy all properties from the stripped event back onto the
+                // original reference so existing closures over `event` see the
+                // stripped data without needing to rebind every downstream use.
+                Object.assign(event, stripped);
+            }
+        } catch (err) {
+            // Non-fatal: downstream stripping will still catch images
+            console.error(`[sio/relay] Pipeline image stripping failed for ${sessionId}:`, err);
+        }
 
         // Cache session_active state so new viewers get an immediate snapshot
         if (event.type === "session_active") {
