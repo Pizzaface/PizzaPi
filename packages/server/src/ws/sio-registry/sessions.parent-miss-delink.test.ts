@@ -101,9 +101,10 @@ const mockRedis = {
 
 // No mock.module for redis — mock client is injected directly via initStateRedis().
 
-// Prevent this unit test from touching the real SQLite-backed session store or
-// the global Socket.IO hub registry. Those are covered by separate integration
-// tests; here we only care about parent link resolution.
+// Prevent this unit test from touching the real Redis-backed session state,
+// SQLite-backed session store, or global Socket.IO hub registry. Those are
+// covered by separate integration tests; here we only care about parent link
+// resolution and related reconnect behavior.
 const mockGetPersistedRelaySessionRunner = mock(
     async (_sessionId: string): Promise<{ runnerId: string | null; runnerName: string | null } | null> => null,
 );
@@ -116,6 +117,69 @@ mock.module("../../sessions/store.js", () => ({
     recordRelaySessionEnd: async () => {},
     recordRelaySessionState: async () => {},
     touchRelaySession: async () => {},
+}));
+
+mock.module("../sio-state/index.js", () => ({
+    setSession: async (sessionId: string, data: Record<string, unknown>) => {
+        store.set(`__hash__:pizzapi:sio:session:${sessionId}`, JSON.stringify(data));
+    },
+    getSession: async (sessionId: string) => {
+        const raw = store.get(`__hash__:pizzapi:sio:session:${sessionId}`);
+        return raw ? (JSON.parse(raw) as Record<string, unknown>) : null;
+    },
+    getSessionSummary: async (sessionId: string) => {
+        const raw = store.get(`__hash__:pizzapi:sio:session:${sessionId}`);
+        return raw ? (JSON.parse(raw) as Record<string, unknown>) : null;
+    },
+    updateSessionFields: async (sessionId: string, fields: Record<string, unknown>) => {
+        const raw = store.get(`__hash__:pizzapi:sio:session:${sessionId}`);
+        if (!raw) return;
+        store.set(`__hash__:pizzapi:sio:session:${sessionId}`, JSON.stringify({ ...JSON.parse(raw), ...fields }));
+    },
+    deleteSession: async (sessionId: string) => {
+        store.delete(`__hash__:pizzapi:sio:session:${sessionId}`);
+    },
+    getAllSessionSummaries: async () => [],
+    refreshSessionTTL: async () => {},
+    incrementSeq: async () => 1,
+    getSeq: async () => 0,
+    setPendingRunnerLink: async () => {},
+    getPendingRunnerLink: async () => null,
+    deletePendingRunnerLink: async () => {},
+    getRunnerAssociation: async () => null,
+    setRunnerAssociation: async (sessionId: string, runnerId: string, runnerName: string | null) => {
+        store.set(
+            `pizzapi:sio:runner-assoc:${sessionId}`,
+            JSON.stringify({ runnerId, runnerName }),
+        );
+    },
+    refreshRunnerAssociationTTL: async () => {},
+    scanExpiredSessions: async () => [],
+    addChildSession: async (parentSessionId: string, childSessionId: string) => {
+        const s = setStore.get(`pizzapi:sio:children:${parentSessionId}`) ?? new Set();
+        s.add(childSessionId);
+        setStore.set(`pizzapi:sio:children:${parentSessionId}`, s);
+    },
+    addChildSessionMembership: async (parentSessionId: string, childSessionId: string) => {
+        const s = setStore.get(`pizzapi:sio:children:${parentSessionId}`) ?? new Set();
+        s.add(childSessionId);
+        setStore.set(`pizzapi:sio:children:${parentSessionId}`, s);
+    },
+    removeChildSession: async (parentSessionId: string, childSessionId: string) => {
+        setStore.get(`pizzapi:sio:children:${parentSessionId}`)?.delete(childSessionId);
+    },
+    isChildDelinked: async (childSessionId: string) => store.has(`pizzapi:sio:delinked:${childSessionId}`),
+    clearParentSessionId: async (childSessionId: string) => {
+        const raw = store.get(`__hash__:pizzapi:sio:session:${childSessionId}`);
+        if (!raw) return;
+        store.set(
+            `__hash__:pizzapi:sio:session:${childSessionId}`,
+            JSON.stringify({ ...JSON.parse(raw), parentSessionId: "", linkedParentId: "" }),
+        );
+    },
+    refreshChildSessionsTTL: async () => {},
+    removePendingParentDelinkChild: async () => {},
+    getRunner: async () => null,
 }));
 
 mock.module("./hub.js", () => ({
