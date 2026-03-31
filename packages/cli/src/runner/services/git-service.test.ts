@@ -355,6 +355,50 @@ describe("GitService git metadata watchers", () => {
         expect(Array.from(watchListeners.keys()).some((p) => p.startsWith("/repo-a/.git/"))).toBe(false);
     });
 
+    test("normalizes relative git metadata paths to absolute paths before watching", async () => {
+        const watchPaths: string[] = [];
+
+        const service = new GitService({
+            watchFs: (path) => {
+                watchPaths.push(path);
+                return { close: () => {} };
+            },
+            execGit: async (args, options) => {
+                if (args[0] === "rev-parse" && args[1] === "--abbrev-ref") return { stdout: "main\n", stderr: "" };
+                if (args[0] === "rev-parse" && args[1] === "--show-toplevel") return { stdout: "/repo\n", stderr: "" };
+                if (args[0] === "rev-parse" && args[1] === "--git-path") {
+                    const key = args[2];
+                    if (key === "HEAD") return { stdout: "../.git/HEAD\n", stderr: "" };
+                    if (key === "index") return { stdout: "../.git/index\n", stderr: "" };
+                    if (key === "packed-refs") return { stdout: "../.git/packed-refs\n", stderr: "" };
+                    if (key === "refs") return { stdout: "../.git/refs\n", stderr: "" };
+                }
+                if (args[0] === "status") return { stdout: " M watched.ts\0", stderr: "" };
+                if (args[0] === "diff") return { stdout: "", stderr: "" };
+                if (args[0] === "rev-list") return { stdout: "0 0\n", stderr: "" };
+                throw new Error(`Unexpected git args: ${args.join(" ")}`);
+            },
+        });
+
+        const socket = createMockSocket();
+        service.init(socket as any, { isShuttingDown: () => false });
+
+        dispatchServiceMessage(socket, {
+            serviceId: "git",
+            type: "git_status",
+            requestId: "repo-subdir",
+            sessionId: "session-1",
+            payload: { cwd: "/repo/subdir" },
+        });
+        await waitForResult(socket, "repo-subdir", "git_status_result");
+        await waitForCondition(() => watchPaths.length > 0);
+
+        expect(watchPaths).toContain("/repo/.git/HEAD");
+        expect(watchPaths).toContain("/repo/.git/index");
+        expect(watchPaths).toContain("/repo/.git/packed-refs");
+        expect(watchPaths).toContain("/repo/.git/refs");
+    });
+
     test("debounces metadata fs events and pushes status only to interested cwd subscribers", async () => {
         const watchListeners = new Map<string, () => void>();
         const statusCalls = new Map<string, number>();

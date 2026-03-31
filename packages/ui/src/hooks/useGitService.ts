@@ -166,6 +166,19 @@ export function useGitService(cwd: string): UseGitServiceReturn {
         sendRef.current("git_status", { cwd: targetCwd }, requestId);
     }, [makeRequestId, markStatusRequestInFlight, registerRequestGeneration]);
 
+    const clearPendingDiffs = useCallback((resolution: string) => {
+        for (const timeoutId of pendingDiffTimeoutsRef.current.values()) {
+            clearTimeout(timeoutId);
+        }
+        pendingDiffTimeoutsRef.current.clear();
+
+        for (const [requestId, resolveDiff] of pendingDiffsRef.current.entries()) {
+            requestGenerationRef.current.delete(requestId);
+            resolveDiff(resolution);
+        }
+        pendingDiffsRef.current.clear();
+    }, []);
+
     const postMutationRefreshSchedulerRef = useRef(
         createPostMutationRefreshScheduler({
             debounceMs: POST_MUTATION_STATUS_REFRESH_DEBOUNCE_MS,
@@ -186,6 +199,10 @@ export function useGitService(cwd: string): UseGitServiceReturn {
                     if (requestId) {
                         if (!isRequestCurrentGeneration(requestId)) break;
                         markStatusRequestSettled(requestId);
+                    } else {
+                        // Proactive push with no requestId: accept only for current cwd.
+                        const payloadCwd = typeof payload.cwd === "string" ? payload.cwd : null;
+                        if (!payloadCwd || payloadCwd !== cwdRef.current) break;
                     }
                     // Ignore stale responses from a previous cwd
                     if (statusGenRef.current !== generationRef.current) break;
@@ -245,6 +262,7 @@ export function useGitService(cwd: string): UseGitServiceReturn {
                             clearTimeout(timeoutId);
                             pendingDiffTimeoutsRef.current.delete(requestId);
                         }
+                        requestGenerationRef.current.delete(requestId);
                         const resolve = pendingDiffsRef.current.get(requestId)!;
                         pendingDiffsRef.current.delete(requestId);
                         resolve(
@@ -314,11 +332,7 @@ export function useGitService(cwd: string): UseGitServiceReturn {
     // Clean up pending diffs on unmount
     useEffect(() => {
         return () => {
-            for (const timeoutId of pendingDiffTimeoutsRef.current.values()) {
-                clearTimeout(timeoutId);
-            }
-            pendingDiffTimeoutsRef.current.clear();
-            pendingDiffsRef.current.clear();
+            clearPendingDiffs("(diff request cancelled)");
             optimisticSnapshotsRef.current.clear();
             statusRequestsInFlightRef.current.clear();
             requestGenerationRef.current.clear();
@@ -328,7 +342,7 @@ export function useGitService(cwd: string): UseGitServiceReturn {
                 fullStatusFallbackTimerRef.current = null;
             }
         };
-    }, []);
+    }, [clearPendingDiffs]);
 
     // ── Actions ─────────────────────────────────────────────────────────
 
@@ -479,11 +493,7 @@ export function useGitService(cwd: string): UseGitServiceReturn {
         setError(null);
         setOperationInProgress(null);
         setLastOperationResult(null);
-        for (const timeoutId of pendingDiffTimeoutsRef.current.values()) {
-            clearTimeout(timeoutId);
-        }
-        pendingDiffTimeoutsRef.current.clear();
-        pendingDiffsRef.current.clear();
+        clearPendingDiffs("(diff request cancelled)");
         requestGenerationRef.current.clear();
         pendingFullStatusRequestRef.current = null;
         optimisticSnapshotsRef.current.clear();
@@ -519,7 +529,7 @@ export function useGitService(cwd: string): UseGitServiceReturn {
         } else {
             setLoading(false);
         }
-    }, [available, cwd, makeRequestId, markStatusRequestInFlight, markStatusRequestSettled, registerRequestGeneration, send, sendStatusRequest]);
+    }, [available, clearPendingDiffs, cwd, makeRequestId, markStatusRequestInFlight, markStatusRequestSettled, registerRequestGeneration, send, sendStatusRequest]);
 
     return {
         available,

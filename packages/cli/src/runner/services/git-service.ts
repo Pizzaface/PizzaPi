@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { watch } from "node:fs";
 import { promisify } from "node:util";
-import { normalize } from "node:path";
+import { isAbsolute, normalize, resolve } from "node:path";
 import type { Socket } from "socket.io-client";
 import type { ServiceHandler, ServiceInitOptions, ServiceEnvelope } from "../service-handler.js";
 import { isCwdAllowed } from "../workspace.js";
@@ -22,6 +22,7 @@ type GitExec = (
 
 type GitStatusResultPayload = {
     ok: true;
+    cwd: string;
     branch: string;
     repoRoot: string;
     changes: Array<{ status: string; path: string; originalPath?: string }>;
@@ -368,8 +369,9 @@ export class GitService implements ServiceHandler {
         const resolvePath = async (gitPath: string): Promise<string | null> => {
             try {
                 const { stdout } = await this._execGit(["rev-parse", "--git-path", gitPath], { cwd, timeout: 5000 });
-                const resolved = stdout.trim();
-                return resolved || null;
+                const gitPathResult = stdout.trim();
+                if (!gitPathResult) return null;
+                return isAbsolute(gitPathResult) ? gitPathResult : resolve(cwd, gitPathResult);
             } catch {
                 return null;
             }
@@ -473,6 +475,7 @@ export class GitService implements ServiceHandler {
 
         const result: GitStatusResultPayload = {
             ok: true,
+            cwd,
             branch,
             repoRoot,
             changes,
