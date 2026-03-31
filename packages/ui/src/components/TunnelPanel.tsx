@@ -85,7 +85,7 @@ export function TunnelPanel({ sessionId, runnerId }: TunnelPanelProps) {
             : `/api/tunnel/${sessionId}/${port}/`;
 
     return (
-        <div className="flex flex-col h-full">
+        <div className="flex flex-col h-full overflow-hidden">
             {/* Toolbar: tunnel list + controls */}
             <div className="flex items-center gap-1.5 px-3 py-1.5 border-b border-border bg-muted/20 shrink-0 flex-wrap">
                 {/* Tunnel tabs */}

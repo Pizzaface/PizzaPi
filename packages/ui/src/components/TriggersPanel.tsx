@@ -1962,7 +1962,7 @@ export function TriggersPanel({ sessionId, triggerDefs = [], viewerSocket }: Tri
   const pendingCount = pendingGroups.length;
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col h-full overflow-hidden">
       {/* Toolbar with tabs */}
       <div className="flex items-center border-b border-border bg-muted/20 shrink-0">
         {/* Tab buttons */}
