@@ -84,6 +84,12 @@ function copyAssets(piPkgDir: string, outDir: string): void {
     if (existsSync(templatesSrc)) {
         cpSync(templatesSrc, join(outDir, "templates"), { recursive: true });
     }
+
+    // 5. skills/ — built-in SKILL.md files shipped with the CLI
+    const skillsSrc = join(import.meta.dirname ?? __dirname, "src", "skills");
+    if (existsSync(skillsSrc)) {
+        cpSync(skillsSrc, join(outDir, "skills"), { recursive: true });
+    }
 }
 
 // ---------------------------------------------------------------------------
