@@ -278,6 +278,32 @@ export interface ServiceAnnounceData {
   sigilDefs?: ServiceSigilDef[];
 }
 
+/** Delta payload for the service_announce_delta event.
+ *  Sent instead of a full service_announce when only a subset changed. */
+export interface ServiceAnnounceDelta {
+  added: {
+    serviceIds: string[];
+    panels: ServicePanelInfo[];
+    triggerDefs: ServiceTriggerDef[];
+    sigilDefs: ServiceSigilDef[];
+  };
+  removed: {
+    /** Service IDs that were removed. */
+    serviceIds: string[];
+    /** Panel serviceIds that were removed. */
+    panels: string[];
+    /** Trigger types that were removed. */
+    triggerDefs: string[];
+    /** Sigil types that were removed. */
+    sigilDefs: string[];
+  };
+  updated: {
+    panels: ServicePanelInfo[];
+    triggerDefs: ServiceTriggerDef[];
+    sigilDefs: ServiceSigilDef[];
+  };
+}
+
 // ── Tunnel service types ──────────────────────────────────────────────────────
 
 /** Information about an exposed tunnel port. */

@@ -16,7 +16,7 @@
  */
 import { useState, useEffect, useRef } from "react";
 import type { Socket } from "socket.io-client";
-import type { ServiceAnnounceData, ServicePanelInfo, ServiceTriggerDef, ServiceSigilDef } from "@pizzapi/protocol";
+import type { ServiceAnnounceData, ServiceAnnounceDelta, ServicePanelInfo, ServiceTriggerDef, ServiceSigilDef } from "@pizzapi/protocol";
 import { matchesViewerGeneration } from "@/lib/viewer-switch";
 
 const SERVICE_IDS_KEY = "__serviceIds" as const;
@@ -24,6 +24,42 @@ const PANELS_KEY = "__panels" as const;
 const TRIGGER_DEFS_KEY = "__triggerDefs" as const;
 const SIGIL_DEFS_KEY = "__sigilDefs" as const;
 const VIEWER_SWITCH_GENERATION_KEY = "__viewerSwitchGeneration" as const;
+
+/** Apply a delta to the socket's cached service state in-place. */
+function applyDeltaToSocket(socket: Socket, delta: ServiceAnnounceDelta): void {
+    // Service IDs
+    const ids: string[] = ((socket as any)[SERVICE_IDS_KEY] as string[] | undefined) ?? [];
+    const removedIds = new Set(delta.removed.serviceIds);
+    const filtered = ids.filter((id) => !removedIds.has(id));
+    (socket as any)[SERVICE_IDS_KEY] = [...filtered, ...delta.added.serviceIds];
+
+    // Panels (keyed by serviceId)
+    const panels: ServicePanelInfo[] = ((socket as any)[PANELS_KEY] as ServicePanelInfo[] | undefined) ?? [];
+    const removedPanels = new Set(delta.removed.panels);
+    const updatedPanelMap = new Map(delta.updated.panels.map((p) => [p.serviceId, p]));
+    const newPanels = panels
+        .filter((p) => !removedPanels.has(p.serviceId))
+        .map((p) => updatedPanelMap.get(p.serviceId) ?? p);
+    (socket as any)[PANELS_KEY] = [...newPanels, ...delta.added.panels];
+
+    // Trigger defs (keyed by type)
+    const triggers: ServiceTriggerDef[] = ((socket as any)[TRIGGER_DEFS_KEY] as ServiceTriggerDef[] | undefined) ?? [];
+    const removedTriggers = new Set(delta.removed.triggerDefs);
+    const updatedTriggerMap = new Map(delta.updated.triggerDefs.map((t) => [t.type, t]));
+    const newTriggers = triggers
+        .filter((t) => !removedTriggers.has(t.type))
+        .map((t) => updatedTriggerMap.get(t.type) ?? t);
+    (socket as any)[TRIGGER_DEFS_KEY] = [...newTriggers, ...delta.added.triggerDefs];
+
+    // Sigil defs (keyed by type)
+    const sigils: ServiceSigilDef[] = ((socket as any)[SIGIL_DEFS_KEY] as ServiceSigilDef[] | undefined) ?? [];
+    const removedSigils = new Set(delta.removed.sigilDefs);
+    const updatedSigilMap = new Map(delta.updated.sigilDefs.map((s) => [s.type, s]));
+    const newSigils = sigils
+        .filter((s) => !removedSigils.has(s.type))
+        .map((s) => updatedSigilMap.get(s.type) ?? s);
+    (socket as any)[SIGIL_DEFS_KEY] = [...newSigils, ...delta.added.sigilDefs];
+}
 
 /**
  * Call this synchronously right after creating the viewer socket.
@@ -40,6 +76,13 @@ export function attachServiceAnnounceListener(socket: Socket): void {
         (socket as any)[PANELS_KEY] = data.panels;
         (socket as any)[TRIGGER_DEFS_KEY] = data.triggerDefs;
         (socket as any)[SIGIL_DEFS_KEY] = data.sigilDefs;
+    });
+    socket.on("service_announce_delta", (data: ServiceAnnounceDelta & { generation?: number }) => {
+        const currentGeneration = (socket as any)[VIEWER_SWITCH_GENERATION_KEY] as number | undefined;
+        if (!matchesViewerGeneration(currentGeneration, data.generation)) {
+            return;
+        }
+        applyDeltaToSocket(socket, data);
     });
     socket.on("disconnect", () => {
         (socket as any)[SERVICE_IDS_KEY] = undefined;
@@ -148,6 +191,23 @@ export function useRunnerServices(socket: Socket | null): RunnerServicesState {
             setSigilDefs(data.sigilDefs ?? []);
         };
 
+        const handleDelta = (data: ServiceAnnounceDelta & { generation?: number }) => {
+            const currentGeneration = (socket as any)[VIEWER_SWITCH_GENERATION_KEY] as number | undefined;
+            if (!matchesViewerGeneration(currentGeneration, data.generation)) {
+                return;
+            }
+            // Apply the delta to socket cache (already done by the persistent listener)
+            // and then read back the updated values for React state.
+            const newIds = (socket as any)[SERVICE_IDS_KEY] as string[] | undefined;
+            const newPanels = (socket as any)[PANELS_KEY] as ServicePanelInfo[] | undefined;
+            const newTriggerDefs = (socket as any)[TRIGGER_DEFS_KEY] as ServiceTriggerDef[] | undefined;
+            const newSigilDefs = (socket as any)[SIGIL_DEFS_KEY] as ServiceSigilDef[] | undefined;
+            setServices(new Set(newIds ?? []));
+            setPanels(newPanels ?? []);
+            setTriggerDefs(newTriggerDefs ?? []);
+            setSigilDefs(newSigilDefs ?? []);
+        };
+
         // NOTE: No handleDisconnect listener — we intentionally preserve
         // the previous services/panels state when the socket disconnects
         // during a session switch. The old socket fires `disconnect`
@@ -158,9 +218,11 @@ export function useRunnerServices(socket: Socket | null): RunnerServicesState {
         // replace the values once it arrives.
 
         socket.on("service_announce", handleAnnounce);
+        socket.on("service_announce_delta", handleDelta);
 
         return () => {
             socket.off("service_announce", handleAnnounce);
+            socket.off("service_announce_delta", handleDelta);
         };
     }, [socket]);
 

@@ -23,6 +23,7 @@ export type {
   TriggerFilter,
   TriggerFilterMode,
   ServiceAnnounceData,
+  ServiceAnnounceDelta,
   TunnelInfo,
 } from "./shared.js";
 

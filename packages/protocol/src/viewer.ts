@@ -2,7 +2,7 @@
 // /viewer namespace — Browser viewer ↔ Server
 // ============================================================================
 
-import type { Attachment, ServiceAnnounceData, ServiceEnvelope, SocketClientMetadata } from "./shared.js";
+import type { Attachment, ServiceAnnounceData, ServiceAnnounceDelta, ServiceEnvelope, SocketClientMetadata } from "./shared.js";
 
 export type ViewerDisconnectCode = "snapshot_replay" | "session_ended" | "session_reconnected";
 
@@ -55,6 +55,13 @@ export interface ViewerServerToClientEvents {
 
   /** Announces which services the connected runner supports. */
   service_announce: (data: ServiceAnnounceData & {
+    /** Optional switch generation echoed back during logical session switches. */
+    generation?: number;
+  }) => void;
+
+  /** Incremental delta update for service announcements.
+   *  Sent instead of a full service_announce when only a subset changed. */
+  service_announce_delta: (data: ServiceAnnounceDelta & {
     /** Optional switch generation echoed back during logical session switches. */
     generation?: number;
   }) => void;
