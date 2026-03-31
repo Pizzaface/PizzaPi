@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, writeFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
-import { formatTokens, formatUsageStats, toFinitePositiveInt } from "./subagent.js";
+import { formatTokens, formatUsageStats, toFinitePositiveInt, PARALLEL_SPILL_THRESHOLD } from "./subagent.js";
 import { _setGlobalConfigDir, loadConfig, loadGlobalConfig } from "../config.js";
 
 /**
@@ -182,6 +182,19 @@ describe("toFinitePositiveInt", () => {
         expect(toFinitePositiveInt([], 99)).toBe(99);
         expect(toFinitePositiveInt(null, 99)).toBe(99);
         expect(toFinitePositiveInt(undefined, 99)).toBe(99);
+    });
+});
+
+describe("PARALLEL_SPILL_THRESHOLD", () => {
+    test("is exported and equals 100KB", () => {
+        expect(PARALLEL_SPILL_THRESHOLD).toBe(100 * 1024);
+    });
+
+    test("is a reasonable threshold for context window management", () => {
+        // Should be at least 10KB (too small = unnecessary file I/O)
+        expect(PARALLEL_SPILL_THRESHOLD).toBeGreaterThanOrEqual(10 * 1024);
+        // Should be at most 1MB (too large = blows up context)
+        expect(PARALLEL_SPILL_THRESHOLD).toBeLessThanOrEqual(1024 * 1024);
     });
 });
 

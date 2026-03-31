@@ -11,6 +11,8 @@ import type { AgentScope } from "../subagent-agents.js";
 export const DEFAULT_MAX_PARALLEL_TASKS = 8;
 export const DEFAULT_MAX_CONCURRENCY = 4;
 export const COLLAPSED_ITEM_COUNT = 10;
+/** Byte threshold for spilling parallel results to temp files instead of inline. */
+export const PARALLEL_SPILL_THRESHOLD = 100 * 1024; // 100KB
 
 /** Coerce an unknown config value to a finite positive integer, or return the fallback. */
 export function toFinitePositiveInt(value: unknown, fallback: number): number {

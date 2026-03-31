@@ -18,6 +18,9 @@
  * `details` payloads for web UI consumption.
  */
 
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { type ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { type AgentScope, discoverAgents } from "../subagent-agents.js";
 import { getPluginAgentPaths } from "../claude-plugins.js";
@@ -25,6 +28,7 @@ import { loadGlobalConfig } from "../../config.js";
 import {
     DEFAULT_MAX_PARALLEL_TASKS,
     DEFAULT_MAX_CONCURRENCY,
+    PARALLEL_SPILL_THRESHOLD,
     toFinitePositiveInt,
     isFailed,
     getFinalOutput,
@@ -285,16 +289,36 @@ export const subagentExtension = (pi: ExtensionAPI) => {
                 });
 
                 const successCount = results.filter((r) => !isFailed(r)).length;
-                const summaries = results.map((r) => {
-                    const output = getFinalOutput(r.messages);
-                    const preview = output.slice(0, 100) + (output.length > 100 ? "..." : "");
-                    return `[${r.agent}] ${isFailed(r) ? "failed" : "completed"}: ${preview || "(no output)"}`;
-                });
                 const hasFailures = results.some(isFailed);
+
+                // Build full output per task
+                const sections = results.map((r) => {
+                    const output = getFinalOutput(r.messages);
+                    const status = isFailed(r) ? "failed" : "completed";
+                    return `## [${r.agent}] ${status}\n\n${output || "(no output)"}`;
+                });
+                const fullText = `Parallel: ${successCount}/${results.length} succeeded\n\n${sections.join("\n\n---\n\n")}`;
+
+                // If combined output is very large, spill each task's output to a temp file
+                // so the LLM can selectively read what it needs without blowing up context
+                let contentText: string;
+                if (fullText.length > PARALLEL_SPILL_THRESHOLD) {
+                    const spillDir = mkdtempSync(join(tmpdir(), "subagent-parallel-"));
+                    const fileSummaries = results.map((r, i) => {
+                        const output = getFinalOutput(r.messages);
+                        const status = isFailed(r) ? "failed" : "completed";
+                        const filePath = join(spillDir, `${i}-${r.agent}.md`);
+                        writeFileSync(filePath, `# [${r.agent}] ${status}\n\nTask: ${r.task}\n\n${output || "(no output)"}`);
+                        const preview = output.slice(0, 200) + (output.length > 200 ? "..." : "");
+                        return `[${r.agent}] ${status} (${output.length} chars) → ${filePath}\n${preview}`;
+                    });
+                    contentText = `Parallel: ${successCount}/${results.length} succeeded\n\nOutputs exceeded ${Math.round(PARALLEL_SPILL_THRESHOLD / 1024)}KB — full results saved to temp files. Use \`read\` to access them.\n\n${fileSummaries.join("\n\n")}`;
+                } else {
+                    contentText = fullText;
+                }
+
                 return {
-                    content: [
-                        { type: "text", text: `Parallel: ${successCount}/${results.length} succeeded\n\n${summaries.join("\n\n")}` },
-                    ],
+                    content: [{ type: "text", text: contentText }],
                     details: makeDetails("parallel")(results),
                     ...(hasFailures && { isError: true }),
                 };
