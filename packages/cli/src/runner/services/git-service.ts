@@ -349,7 +349,7 @@ export class GitService implements ServiceHandler {
 
         watchState.refreshInFlight = true;
         try {
-            this.invalidateStatusCache(cwd);
+            await this.invalidateStatusCacheFamily(cwd);
             const status = await this.getStatusSnapshot(cwd);
             for (const sessionId of subscribers) {
                 const sessionCwd = this._sessionCwd.get(sessionId) ?? status.cwd;
@@ -696,11 +696,23 @@ export class GitService implements ServiceHandler {
         this.registerSubscriber(cwd, sessionId);
 
         try {
-            const [status, branchData, worktreeData] = await Promise.all([
+            const [statusResult, branchResult, worktreeResult] = await Promise.allSettled([
                 this.getStatusSnapshot(cwd),
                 this.collectBranches(cwd),
                 this.collectWorktrees(cwd),
             ]);
+
+            if (statusResult.status !== "fulfilled") {
+                throw statusResult.reason;
+            }
+
+            const status = statusResult.value;
+            const branchData = branchResult.status === "fulfilled"
+                ? branchResult.value
+                : { currentBranch: status.branch, branches: [] };
+            const worktreeData = worktreeResult.status === "fulfilled"
+                ? worktreeResult.value
+                : { worktrees: [] };
 
             this.emit("git_full_status_result", {
                 ok: true,

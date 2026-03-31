@@ -258,6 +258,8 @@ export function useGitService(cwd: string): UseGitServiceReturn {
                         setError(null);
                     } else if (isInitialFullStatus) {
                         setError((payload.message as string) ?? "Failed to get git status");
+                        // Explicit failure from full-status should immediately fall back.
+                        sendStatusRequest(cwdRef.current);
                     }
                     break;
                 }
