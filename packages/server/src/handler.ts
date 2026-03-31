@@ -185,7 +185,7 @@ export function withSecurityHeaders(res: Response): Response {
         headers.set("X-Frame-Options", "DENY");
         headers.set(
             "Content-Security-Policy",
-            "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' ws: wss: blob:; font-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self'",
+            "default-src 'self'; script-src 'self' 'wasm-unsafe-eval' 'sha256-4gSUsZcLv5hWmJpSRF6gl939rcZJHXery+eyOKMEgaQ='; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' ws: wss: blob:; font-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self'",
         );
     }
 

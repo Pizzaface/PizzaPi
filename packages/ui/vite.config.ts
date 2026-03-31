@@ -134,6 +134,9 @@ export default defineConfig({
     define: {
         __PIZZAPI_UI_VERSION__: JSON.stringify(uiVersion),
         __PIZZAPI_BUILD_TIMESTAMP__: JSON.stringify(buildTimestamp),
+        __PIZZAPI_DEBUG_VIEW__: JSON.stringify(
+            process.env.PIZZAPI_DEBUG_VIEW === "1" || process.env.VITE_PIZZAPI_DEBUG_VIEW === "1",
+        ),
     },
     resolve: {
         alias: {

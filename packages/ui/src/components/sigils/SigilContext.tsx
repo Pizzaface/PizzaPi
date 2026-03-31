@@ -9,6 +9,8 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import type { ServiceSigilDef, ServicePanelInfo } from "@pizzapi/protocol";
 import { SigilRegistry, createRegistry } from "@/lib/sigils/registry";
+import { recordViewerDebugEvent } from "@/lib/viewer-debug-events";
+import { buildSigilResolveFailure } from "@/lib/sigil-resolve-error";
 
 // ── Resolve types ────────────────────────────────────────────────────────────
 
@@ -86,6 +88,7 @@ export function SigilProvider({ sigilDefs, panels, runnerId, children }: SigilPr
 
   // Resolve cache: keyed by "gen:type:id". Lives in a ref for instant reads.
   const cacheRef = useRef(new Map<string, SigilResolveState>());
+  const retryTimersRef = useRef(new Map<string, ReturnType<typeof setTimeout>>());
   const [generation, setGeneration] = useState(0);
   const bump = useCallback(() => setGeneration((g) => g + 1), []);
 
@@ -93,8 +96,17 @@ export function SigilProvider({ sigilDefs, panels, runnerId, children }: SigilPr
   // so stale entries don't block re-fetching with new panel ports.
   useEffect(() => {
     cacheRef.current.clear();
+    for (const timer of retryTimersRef.current.values()) clearTimeout(timer);
+    retryTimersRef.current.clear();
     bump();
   }, [panels, runnerId, sigilDefs, bump]);
+
+  useEffect(() => {
+    return () => {
+      for (const timer of retryTimersRef.current.values()) clearTimeout(timer);
+      retryTimersRef.current.clear();
+    };
+  }, []);
 
   // Build panel port lookup: serviceId → port
   const panelPortMap = useMemo(() => {
@@ -112,6 +124,8 @@ export function SigilProvider({ sigilDefs, panels, runnerId, children }: SigilPr
     // Skip the initial mount — only invalidate on actual changes
     if (prev.panels !== panels || prev.runnerId !== runnerId || prev.sigilDefs !== sigilDefs) {
       cacheRef.current.clear();
+      for (const timer of retryTimersRef.current.values()) clearTimeout(timer);
+      retryTimersRef.current.clear();
       setGeneration((g) => g + 1);
     }
     prevInfraRef.current = { panels, runnerId, sigilDefs };
@@ -130,8 +144,11 @@ export function SigilProvider({ sigilDefs, panels, runnerId, children }: SigilPr
       const key = `${type}:${id}`;
       const cache = cacheRef.current;
 
-      // Already resolved or in-flight
+      // Already resolved, in-flight, or waiting for a scheduled retry.
       if (cache.has(key)) return;
+
+      const existingRetry = retryTimersRef.current.get(key);
+      if (existingRetry) return;
 
       const canonical = registry.resolveType(type);
       const def = registry.getServiceDef(canonical);
@@ -154,17 +171,59 @@ export function SigilProvider({ sigilDefs, panels, runnerId, children }: SigilPr
 
       // Mark as loading
       cache.set(key, { loading: true });
+      recordViewerDebugEvent({
+        source: "sigil",
+        type: "resolve_start",
+        payload: { type: canonical, id, runnerId, serviceId: def.serviceId, port, url },
+      });
       setGeneration((g) => g + 1);
 
       fetch(url)
         .then(async (res) => {
-          if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+          if (!res.ok) {
+            throw await buildSigilResolveFailure(undefined, res);
+          }
           const data = (await res.json()) as SigilResolveData;
           cache.set(key, { data, loading: false });
+          const retryTimer = retryTimersRef.current.get(key);
+          if (retryTimer) {
+            clearTimeout(retryTimer);
+            retryTimersRef.current.delete(key);
+          }
+          recordViewerDebugEvent({
+            source: "sigil",
+            type: "resolve_success",
+            payload: { type: canonical, id, runnerId, serviceId: def.serviceId, port, data },
+          });
           setGeneration((g) => g + 1);
         })
-        .catch((err) => {
-          cache.set(key, { loading: false, error: String(err) });
+        .catch(async (err) => {
+          const failure = typeof err === "object" && err && "message" in err && "retryable" in err
+            ? err as Awaited<ReturnType<typeof buildSigilResolveFailure>>
+            : await buildSigilResolveFailure(err);
+          cache.set(key, { loading: false, error: failure.message });
+          recordViewerDebugEvent({
+            source: "sigil",
+            type: "resolve_error",
+            payload: {
+              type: canonical,
+              id,
+              runnerId,
+              serviceId: def.serviceId,
+              port,
+              error: failure.message,
+              status: failure.status,
+              retryable: failure.retryable,
+            },
+          });
+          if (failure.retryable && !retryTimersRef.current.has(key)) {
+            const timer = setTimeout(() => {
+              retryTimersRef.current.delete(key);
+              cache.delete(key);
+              setGeneration((g) => g + 1);
+            }, 3000);
+            retryTimersRef.current.set(key, timer);
+          }
           setGeneration((g) => g + 1);
         });
     },

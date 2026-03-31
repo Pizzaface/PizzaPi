@@ -362,7 +362,7 @@ describe("withSecurityHeaders", () => {
         const csp = res.headers.get("Content-Security-Policy");
         expect(csp).not.toBeNull();
         expect(csp).toContain("default-src 'self'");
-        expect(csp).toContain("script-src 'self' 'wasm-unsafe-eval'");
+        expect(csp).toContain("script-src 'self' 'wasm-unsafe-eval' 'sha256-4gSUsZcLv5hWmJpSRF6gl939rcZJHXery+eyOKMEgaQ='");
         expect(csp).toContain("connect-src 'self' ws: wss: blob:");
         expect(csp).toContain("object-src 'none'");
     });

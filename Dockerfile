@@ -60,12 +60,16 @@ RUN node_modules/typescript/bin/tsc --build packages/server/tsconfig.json
 # even though the host dist/ has new content.
 ARG PREBUILT_UI=false
 ARG UI_DIST_HASH=none
+ARG PIZZAPI_DEBUG_VIEW=0
 FROM builder AS build-ui
 ARG PREBUILT_UI
 ARG UI_DIST_HASH
+ARG PIZZAPI_DEBUG_VIEW
+ENV PIZZAPI_DEBUG_VIEW=$PIZZAPI_DEBUG_VIEW
 COPY packages/tools/ packages/tools/
 COPY packages/ui/ packages/ui/
 RUN echo "ui-dist-hash: $UI_DIST_HASH" \
+    && echo "pizzapi-debug-view: $PIZZAPI_DEBUG_VIEW" \
     && if [ "$PREBUILT_UI" = "true" ] && [ -d packages/ui/dist ]; then \
         echo "Using pre-built UI dist from host"; \
     else \

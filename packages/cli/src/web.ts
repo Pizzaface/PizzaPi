@@ -105,7 +105,10 @@ function computeUiSignature(repoPath: string): string | null {
             { encoding: "utf-8" }
         ).trim();
         const lockHash = hashFile(join(repoPath, "bun.lock")) ?? "";
-        return createHash("sha256").update(head).update("\n").update(status).update("\n").update(lockHash).digest("hex");
+        const debugView = process.env.PIZZAPI_DEBUG_VIEW === "1" || process.env.VITE_PIZZAPI_DEBUG_VIEW === "1"
+            ? "1"
+            : "0";
+        return createHash("sha256").update(head).update("\n").update(status).update("\n").update(lockHash).update("\n").update(debugView).digest("hex");
     } catch {
         return null;
     }
@@ -608,6 +611,7 @@ services:
       args:
         PREBUILT_UI: "{{PREBUILT_UI}}"
         UI_DIST_HASH: "{{UI_DIST_HASH}}"
+        PIZZAPI_DEBUG_VIEW: "{{PIZZAPI_DEBUG_VIEW}}"
     ports:
       - "{{PORT}}:7492"
     environment:
@@ -821,6 +825,10 @@ function generateComposeFile(opts: {
     const uiDependsOnLine = useLocalUiBuild ? "" : "      ui:\n        condition: service_healthy\n";
     const serverBuildTarget = useLocalUiBuild ? "runtime" : "runtime-no-ui";
 
+    const debugViewBuildArg = process.env.PIZZAPI_DEBUG_VIEW === "1" || process.env.VITE_PIZZAPI_DEBUG_VIEW === "1"
+        ? "1"
+        : "0";
+
     const compose = template
         .replace(/\{\{REDIS_PLATFORM_LINE}}/g, redisPlatformLine)
         .replace(/\{\{REPO_PATH}}/g, repoPath)
@@ -838,7 +846,8 @@ function generateComposeFile(opts: {
         .replace(/\{\{UI_DEPENDS_ON_LINE}}/g, uiDependsOnLine)
         .replace(/\{\{SERVER_BUILD_TARGET}}/g, serverBuildTarget)
         .replace(/\{\{PREBUILT_UI}}/g, prebuiltUi ? "true" : "false")
-        .replace(/\{\{UI_DIST_HASH}}/g, uiDistHash ?? "none");
+        .replace(/\{\{UI_DIST_HASH}}/g, uiDistHash ?? "none")
+        .replace(/\{\{PIZZAPI_DEBUG_VIEW}}/g, debugViewBuildArg);
 
     // Only write if changed
     const existing = existsSync(composePath) ? readFileSync(composePath, "utf-8") : null;

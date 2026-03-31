@@ -18,6 +18,7 @@ import { useState, useEffect, useRef } from "react";
 import type { Socket } from "socket.io-client";
 import type { ServiceAnnounceData, ServicePanelInfo, ServiceTriggerDef, ServiceSigilDef } from "@pizzapi/protocol";
 import { matchesViewerGeneration } from "@/lib/viewer-switch";
+import { recordViewerDebugEvent } from "@/lib/viewer-debug-events";
 
 const SERVICE_IDS_KEY = "__serviceIds" as const;
 const PANELS_KEY = "__panels" as const;
@@ -40,12 +41,24 @@ export function attachServiceAnnounceListener(socket: Socket): void {
         (socket as any)[PANELS_KEY] = data.panels;
         (socket as any)[TRIGGER_DEFS_KEY] = data.triggerDefs;
         (socket as any)[SIGIL_DEFS_KEY] = data.sigilDefs;
+        recordViewerDebugEvent({
+            source: "viewer-socket",
+            type: "service_announce",
+            payload: {
+                serviceIds: data.serviceIds,
+                panels: data.panels,
+                triggerDefs: data.triggerDefs,
+                sigilDefs: data.sigilDefs,
+                generation: data.generation,
+            },
+        });
     });
-    socket.on("disconnect", () => {
+    socket.on("disconnect", (reason) => {
         (socket as any)[SERVICE_IDS_KEY] = undefined;
         (socket as any)[PANELS_KEY] = undefined;
         (socket as any)[TRIGGER_DEFS_KEY] = undefined;
         (socket as any)[SIGIL_DEFS_KEY] = undefined;
+        recordViewerDebugEvent({ source: "viewer-socket", type: "disconnect", payload: { reason } });
     });
 }
 

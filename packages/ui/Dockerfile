@@ -1,6 +1,8 @@
 # syntax=docker/dockerfile:1
 
 FROM oven/bun:1.3.10 AS build
+ARG PIZZAPI_DEBUG_VIEW=0
+ENV PIZZAPI_DEBUG_VIEW=$PIZZAPI_DEBUG_VIEW
 WORKDIR /app
 
 # Keep layer caching efficient by installing dependencies before copying sources.

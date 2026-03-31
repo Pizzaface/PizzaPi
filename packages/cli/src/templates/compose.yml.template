@@ -14,6 +14,7 @@ services:
       args:
         PREBUILT_UI: "{{PREBUILT_UI}}"
         UI_DIST_HASH: "{{UI_DIST_HASH}}"
+        PIZZAPI_DEBUG_VIEW: "{{PIZZAPI_DEBUG_VIEW}}"
     ports:
       - "{{PORT}}:7492"
     environment:

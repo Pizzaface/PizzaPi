@@ -130,6 +130,9 @@ import {
 } from "@/lib/session-seq";
 import { createLogger } from "@pizzapi/tools";
 import { isActiveViewerSessionPayload, matchesViewerGeneration } from "@/lib/viewer-switch";
+import { recordViewerDebugEvent } from "@/lib/viewer-debug-events";
+import { shouldShowViewerEventsDebugPage } from "@/lib/debug-view";
+import { ViewerEventsDebugPage } from "@/components/debug/ViewerEventsDebugPage";
 
 const log = createLogger("relay");
 
@@ -137,6 +140,7 @@ const log = createLogger("relay");
 initAnimationSync();
 
 declare const __PIZZAPI_UI_VERSION__: string;
+declare const __PIZZAPI_DEBUG_VIEW__: boolean;
 const UI_VERSION = typeof __PIZZAPI_UI_VERSION__ === "string" && __PIZZAPI_UI_VERSION__.trim()
   ? __PIZZAPI_UI_VERSION__.trim()
   : "0.0.0";
@@ -2737,6 +2741,11 @@ export function App() {
 
       nextSocket.on("connect", () => {
         const currentSessionId = activeSessionRef.current;
+        recordViewerDebugEvent({
+          source: "viewer-socket",
+          type: "connect",
+          payload: { sessionId: currentSessionId, generation: viewerSwitchGenerationRef.current },
+        });
         if (!currentSessionId) return;
         setViewerStatus("Connecting…");
         setViewerSwitchGeneration(nextSocket, viewerSwitchGenerationRef.current);
@@ -2747,6 +2756,7 @@ export function App() {
       });
 
       nextSocket.on("connected", (data) => {
+        recordViewerDebugEvent({ source: "viewer-socket", type: "connected", payload: data });
         if (!isActiveViewerSessionPayload(
           activeSessionRef.current,
           data.sessionId,
@@ -2779,13 +2789,22 @@ export function App() {
       });
 
       nextSocket.on("event", (data) => {
+        const rawEvent = data.event;
+        const debugEventType =
+          rawEvent && typeof rawEvent === "object" && typeof (rawEvent as Record<string, unknown>).type === "string"
+            ? (rawEvent as Record<string, unknown>).type as string
+            : "unknown";
+        recordViewerDebugEvent({
+          source: "viewer-socket",
+          type: `event:${debugEventType}`,
+          payload: { seq: data.seq, replay: data.replay, generation: data.generation, event: rawEvent },
+        });
         if (!matchesViewerGeneration(viewerSwitchGenerationRef.current, data.generation)) {
           return;
         }
         if (!activeSessionRef.current) return;
         lastViewerEventAtRef.current = Date.now();
 
-        const rawEvent = data.event;
         const eventType =
           rawEvent && typeof rawEvent === "object" && typeof (rawEvent as Record<string, unknown>).type === "string"
             ? (rawEvent as Record<string, unknown>).type as string
@@ -4012,6 +4031,10 @@ export function App() {
   const handleMobileShowRunners = React.useCallback(() => { setShowRunners(true); setShowApiKeys(false); activeSessionRef.current = null; setActiveSessionId(null); setSidebarOpen(false); }, []);
   const handleMobileChangePassword = React.useCallback(() => { setChangePasswordOpen(true); setSidebarOpen(false); }, []);
   const handleSessionSwitcherOpenChange = React.useCallback((open: boolean) => setSessionSwitcherOpen(open), []);
+  const showViewerEventsDebugPage = shouldShowViewerEventsDebugPage(
+    window.location.pathname,
+    typeof __PIZZAPI_DEBUG_VIEW__ === "boolean" ? __PIZZAPI_DEBUG_VIEW__ : false,
+  );
 
   if (isPending) {
     return (
@@ -4631,6 +4654,17 @@ export function App() {
             </div>
           )}
         </div>
+
+        {showViewerEventsDebugPage && (
+          <>
+            <div className="hidden lg:flex w-[5px] shrink-0 items-center justify-center">
+              <div className="h-full w-px bg-border" />
+            </div>
+            <aside className="hidden lg:flex h-full w-[28rem] shrink-0 min-h-0 flex-col border-l bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/80">
+              <ViewerEventsDebugPage embedded className="h-full" />
+            </aside>
+          </>
+        )}
         <NewSessionWizardDialog
           open={newSessionOpen}
           onOpenChange={(open) => { if (!spawningSession) setNewSessionOpen(open); }}

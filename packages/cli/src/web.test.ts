@@ -40,6 +40,7 @@ services:
       args:
         PREBUILT_UI: "{{PREBUILT_UI}}"
         UI_DIST_HASH: "{{UI_DIST_HASH}}"
+        PIZZAPI_DEBUG_VIEW: "{{PIZZAPI_DEBUG_VIEW}}"
     ports:
       - "{{PORT}}:7492"
     environment:
@@ -171,6 +172,7 @@ describe("readBooleanEnv", () => {
         expect(COMPOSE_TEMPLATE).toContain("{{SERVER_BUILD_TARGET}}");
         expect(COMPOSE_TEMPLATE).toContain("{{PREBUILT_UI}}");
         expect(COMPOSE_TEMPLATE).toContain("{{UI_DIST_HASH}}");
+        expect(COMPOSE_TEMPLATE).toContain("{{PIZZAPI_DEBUG_VIEW}}");
     });
 
     test("template substitution produces valid compose structure", () => {
@@ -191,7 +193,8 @@ describe("readBooleanEnv", () => {
             .replace(/\{\{UI_DEPENDS_ON_LINE}}/g, "      - ui\n")
             .replace(/\{\{SERVER_BUILD_TARGET}}/g, "runtime-no-ui")
             .replace(/\{\{PREBUILT_UI}}/g, "true")
-            .replace(/\{\{UI_DIST_HASH}}/g, "abc123def456");
+            .replace(/\{\{UI_DIST_HASH}}/g, "abc123def456")
+            .replace(/\{\{PIZZAPI_DEBUG_VIEW}}/g, "1");
 
         // No unsubstituted placeholders remain
         expect(composed).not.toContain("{{");
@@ -213,6 +216,7 @@ describe("readBooleanEnv", () => {
         expect(composed).toContain("/home/user/.pizzapi/web/data:/app/data:Z");
         expect(composed).toContain("ui-dist:/app/packages/ui/dist:ro");
         expect(composed).toContain('PREBUILT_UI: "true"');
+        expect(composed).toContain('PIZZAPI_DEBUG_VIEW: "1"');
     });
 
     test("template with no extra origins produces commented-out line", () => {
@@ -233,7 +237,8 @@ describe("readBooleanEnv", () => {
             .replace(/\{\{UI_DEPENDS_ON_LINE}}/g, "")
             .replace(/\{\{SERVER_BUILD_TARGET}}/g, "runtime")
             .replace(/\{\{PREBUILT_UI}}/g, "false")
-            .replace(/\{\{UI_DIST_HASH}}/g, "none");
+            .replace(/\{\{UI_DIST_HASH}}/g, "none")
+            .replace(/\{\{PIZZAPI_DEBUG_VIEW}}/g, "0");
 
         expect(composed).toContain("# - PIZZAPI_EXTRA_ORIGINS=");
         expect(composed).not.toContain("{{");
