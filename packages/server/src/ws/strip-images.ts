@@ -193,6 +193,9 @@ export async function storeAndReplaceImages(
     if (!state || typeof state !== "object") return state;
     const s = state as Record<string, unknown>;
 
+    // Fast exit if images were already stripped upstream (single-pass pipeline)
+    if ((s as any)._imagesStripped === true) return state;
+
     if (!Array.isArray(s.messages) || s.messages.length === 0) return state;
 
     const result = extractImages(s.messages, sessionId, userId);
@@ -231,6 +234,9 @@ export async function storeAndReplaceImagesInEvent(
     if (!event || typeof event !== "object") return event;
     const evt = event as Record<string, unknown>;
 
+    // Fast exit if images were already stripped upstream (single-pass pipeline)
+    if ((evt as any)._imagesStripped === true) return event;
+
     if (evt.type !== "agent_end" || !Array.isArray(evt.messages)) return event;
 
     const result = extractImages(evt.messages, sessionId, userId);
@@ -254,4 +260,89 @@ export async function storeAndReplaceImagesInEvent(
     );
 
     return { ...evt, messages: result.messages };
+}
+
+// ── Pipeline-level image stripping ───────────────────────────────────────────
+
+/**
+ * Strip inline base64 images from any event type that carries a messages array.
+ * Intended to be called ONCE at the top of the event ingestion pipeline so that
+ * all downstream consumers (state storage, Redis cache, viewer broadcast) see
+ * already-stripped payloads.
+ *
+ * Handles:
+ *   - session_active  → event.state.messages
+ *   - agent_end       → event.messages
+ *   - session_messages_chunk → event.messages
+ *
+ * Sets `_imagesStripped: true` on the returned event so downstream calls to
+ * storeAndReplaceImages / storeAndReplaceImagesInEvent can skip redundant work.
+ */
+export async function stripImagesFromPipelineEvent(
+    event: unknown,
+    sessionId: string,
+    userId: string,
+): Promise<unknown> {
+    if (!event || typeof event !== "object") return event;
+    const evt = event as Record<string, unknown>;
+
+    // Already processed — nothing to do
+    if (evt._imagesStripped === true) return event;
+
+    const eventType = evt.type;
+
+    if (eventType === "session_active") {
+        const state = evt.state as Record<string, unknown> | undefined;
+        if (!state || !Array.isArray(state.messages) || state.messages.length === 0) return event;
+
+        const result = extractImages(state.messages, sessionId, userId);
+        if (result.extracted.length === 0) return event;
+
+        await Promise.all(
+            result.extracted.map((img) =>
+                storeExtractedImage({
+                    attachmentId: img.attachmentId,
+                    sessionId,
+                    ownerUserId: userId,
+                    mimeType: img.mimeType,
+                    base64Data: img.base64Data,
+                }),
+            ),
+        );
+
+        log.info(
+            `[pipeline] Extracted ${result.extracted.length} image(s) from session_active for ${sessionId}, ` +
+            `saved ~${(result.savedBytes / 1024 / 1024).toFixed(1)} MB`,
+        );
+
+        return { ...evt, state: { ...state, messages: result.messages }, _imagesStripped: true };
+    }
+
+    if (eventType === "agent_end" || eventType === "session_messages_chunk") {
+        if (!Array.isArray(evt.messages) || evt.messages.length === 0) return event;
+
+        const result = extractImages(evt.messages as unknown[], sessionId, userId);
+        if (result.extracted.length === 0) return event;
+
+        await Promise.all(
+            result.extracted.map((img) =>
+                storeExtractedImage({
+                    attachmentId: img.attachmentId,
+                    sessionId,
+                    ownerUserId: userId,
+                    mimeType: img.mimeType,
+                    base64Data: img.base64Data,
+                }),
+            ),
+        );
+
+        log.info(
+            `[pipeline] Extracted ${result.extracted.length} image(s) from ${eventType} for ${sessionId}, ` +
+            `saved ~${(result.savedBytes / 1024 / 1024).toFixed(1)} MB`,
+        );
+
+        return { ...evt, messages: result.messages, _imagesStripped: true };
+    }
+
+    return event;
 }

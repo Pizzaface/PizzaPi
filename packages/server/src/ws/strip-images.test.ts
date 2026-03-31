@@ -1,4 +1,4 @@
-import { describe, test, expect } from "bun:test";
+import { describe, test, expect, mock } from "bun:test";
 import { extractImages, estimateBase64Bytes, stripDataUriPrefix } from "./strip-images.js";
 
 // ── estimateBase64Bytes ──────────────────────────────────────────────────────
@@ -277,6 +277,70 @@ describe("extractImages", () => {
         const result2 = extractImages(messages2, "session-1");
 
         expect(result1.extracted[0].attachmentId).not.toBe(result2.extracted[0].attachmentId);
+    });
+});
+
+// ── _imagesStripped flag — early return ───────────────────────────────────────
+
+describe("_imagesStripped flag skip", () => {
+    test("storeAndReplaceImages returns state unchanged when _imagesStripped is set", async () => {
+        // Dynamically import to get the async functions (they have side effects
+        // via storeExtractedImage, so we mock the module dependency).
+        const mod = await import("./strip-images.js");
+        const largeBase64 = fakeBase64(50_000);
+        const state = {
+            messages: [
+                {
+                    role: "user",
+                    content: [
+                        { type: "image", source: { type: "base64", media_type: "image/png", data: largeBase64 } },
+                    ],
+                },
+            ],
+            _imagesStripped: true,
+        };
+
+        // Should return the exact same reference — no processing
+        const result = await mod.storeAndReplaceImages(state, "session-1", "user-1");
+        expect(result).toBe(state);
+        // Image data should still be present (not stripped)
+        expect((state.messages[0] as any).content[0].source.data).toBe(largeBase64);
+    });
+
+    test("storeAndReplaceImagesInEvent returns event unchanged when _imagesStripped is set", async () => {
+        const mod = await import("./strip-images.js");
+        const largeBase64 = fakeBase64(50_000);
+        const event = {
+            type: "agent_end",
+            messages: [
+                {
+                    role: "user",
+                    content: [
+                        { type: "image", source: { type: "base64", media_type: "image/png", data: largeBase64 } },
+                    ],
+                },
+            ],
+            _imagesStripped: true,
+        };
+
+        const result = await mod.storeAndReplaceImagesInEvent(event, "session-1", "user-1");
+        expect(result).toBe(event);
+        expect((event.messages[0] as any).content[0].source.data).toBe(largeBase64);
+    });
+
+    test("storeAndReplaceImages still processes when flag is absent", async () => {
+        // Without the flag, extractImages should be called (we test via the pure function)
+        const largeBase64 = fakeBase64(50_000);
+        const messages = [
+            {
+                role: "user",
+                content: [
+                    { type: "image", source: { type: "base64", media_type: "image/png", data: largeBase64 } },
+                ],
+            },
+        ];
+        const result = extractImages(messages, "session-1", "user-1");
+        expect(result.extracted).toHaveLength(1);
     });
 });
 

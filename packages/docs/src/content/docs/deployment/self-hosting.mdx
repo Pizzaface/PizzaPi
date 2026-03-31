@@ -20,7 +20,7 @@ pizzapi web
 This automatically:
 1. Clones the PizzaPi repo (if not already present) to `~/.pizzapi/web/repo`
 2. Generates required secrets (including `BETTER_AUTH_SECRET` and VAPID keys) and a Docker Compose file in `~/.pizzapi/web/`
-3. Pulls the UI image from GHCR (`ghcr.io/pizzaface/pizzapi-ui:latest` by default)
+3. Uses the GHCR UI image by default — or the local dev stack (`bun run dev` / `dev:ui`) when you run `--dev-ui` from a local checkout (UI on port 5173)
 4. Builds and starts Redis + the relay server
 5. Serves the web UI at **http://localhost:7492**
 
@@ -36,8 +36,11 @@ pizzapi web --origins "https://example.com"
 # Pull a specific GHCR UI tag
 pizzapi web --tag main
 
-# Fallback to local UI build mode
+# Build the UI locally (fallback mode)
 pizzapi web --build
+
+# Run the local dev UI stack (repo checkout only)
+pizzapi web --dev-ui
 
 # Run in the foreground
 pizzapi web --foreground
@@ -58,7 +61,7 @@ All settings are persisted in `~/.pizzapi/web/config.json` and applied on every 
 Persistent data (SQLite database) is stored in `~/.pizzapi/web/data/`.
 
 <Aside type="tip">
-  `pizza web` is ideal for personal use or quick evaluation. For production deployments with custom domains and TLS, see the manual Docker Compose setup below. See the [CLI Reference](/PizzaPi/running/cli-reference/#pizzapi-web) for the full list of commands and config keys. Use `--build` if GHCR is unavailable; in that mode, set `PIZZAPI_PREBUILD_UI=false` to force Docker-side UI builds.
+  `pizza web` is ideal for personal use or quick evaluation. For production deployments with custom domains and TLS, see the manual Docker Compose setup below. See the [CLI Reference](/PizzaPi/running/cli-reference/#pizzapi-web) for the full list of commands and config keys. Use `--build` for the old local-build fallback behavior. Use `--dev-ui` if you want the hot-reloaded dev stack (`bun run dev`, which includes `dev:ui`) from a local PizzaPi checkout.
 </Aside>
 
 ---

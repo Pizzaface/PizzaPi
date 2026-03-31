@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, mock, test } from "bun:test";
 import {
     _resetRelayRedisCacheForTesting,
     _injectRedisForTesting,
+    getCachedRelayEventsAfterSeq,
     getLatestCachedSnapshotEvent,
     initializeRelayRedisCache,
 } from "./redis";
@@ -15,7 +16,8 @@ const mockLlen = mock((key: string) => Promise.resolve((rowsByKey.get(key) ?? []
 const mockLrange = mock((key: string, start: number, end: number) => {
     lRangeCalls.push({ key, start, end });
     const rows = rowsByKey.get(key) ?? [];
-    return Promise.resolve(rows.slice(start, end + 1));
+    const normalizedEnd = end < 0 ? rows.length - 1 : end;
+    return Promise.resolve(rows.slice(start, normalizedEnd + 1));
 });
 
 const mockRedisClient = {
@@ -37,8 +39,12 @@ function keyForSession(sessionId: string): string {
     return `pizzapi:relay:session:${sessionId}:events`;
 }
 
-function rowForEvent(event: unknown): string {
-    return JSON.stringify({ ts: Date.now(), event });
+function rowForEvent(event: unknown, seq?: number): string {
+    return JSON.stringify(
+        typeof seq === "number"
+            ? { seq, event }
+            : { ts: Date.now(), event },
+    );
 }
 
 function noiseEvent(index: number): Record<string, unknown> {
@@ -46,6 +52,49 @@ function noiseEvent(index: number): Record<string, unknown> {
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
+
+describe("getCachedRelayEventsAfterSeq", () => {
+    beforeEach(async () => {
+        rowsByKey.clear();
+        lRangeCalls.length = 0;
+        mockLlen.mockClear();
+        mockLrange.mockClear();
+        _resetRelayRedisCacheForTesting();
+        _injectRedisForTesting(mockRedisClient);
+        process.env.PIZZAPI_RELAY_SNAPSHOT_SCAN_CHUNK_SIZE = "4";
+        await initializeRelayRedisCache();
+    });
+
+    test("returns only events newer than the requested seq", async () => {
+        const sessionId = "s-delta";
+        const key = keyForSession(sessionId);
+        rowsByKey.set(key, [
+            rowForEvent({ type: "heartbeat", status: "older" }, 10),
+            rowForEvent({ type: "message_start", id: "m-1" }, 11),
+            rowForEvent({ type: "message_end", id: "m-1" }, 12),
+        ]);
+
+        const events = await getCachedRelayEventsAfterSeq(sessionId, 10);
+
+        expect(events).toEqual([
+            { seq: 11, event: { type: "message_start", id: "m-1" } },
+            { seq: 12, event: { type: "message_end", id: "m-1" } },
+        ]);
+    });
+
+    test("falls back to empty when legacy cache rows do not carry seq data", async () => {
+        const sessionId = "s-legacy";
+        const key = keyForSession(sessionId);
+        rowsByKey.set(key, [
+            rowForEvent({ type: "session_active", state: { messages: [] } }),
+            rowForEvent({ type: "message_start", id: "m-1" }, 3),
+        ]);
+
+        const events = await getCachedRelayEventsAfterSeq(sessionId, 1);
+
+        expect(events).toEqual([]);
+    });
+});
 
 describe("getLatestCachedSnapshotEvent", () => {
     beforeEach(async () => {

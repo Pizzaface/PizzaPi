@@ -86,10 +86,6 @@ const mockRedis = {
 
 // No mock.module for redis — mock client is injected directly via initStateRedis().
 mock.module("./hub.js", () => ({ broadcastToHub: mock(async () => {}) }));
-mock.module("../../sessions/store.js", () => ({
-    getEphemeralTtlMs: () => 60_000,
-    updateRelaySessionRunner: mock(async () => {}),
-}));
 
 // Restore all module mocks after this file so they don't bleed into other
 // test files running in the same worker process.
@@ -346,6 +342,13 @@ describe("runners broadcast", () => {
             ["terminal", "file-explorer", "git", "tunnel", "monitor"],
             [{ serviceId: "monitor", port: 9090, label: "System Monitor", icon: "activity" }],
         );
+
+        const updated = emitCalls.find(
+            (c) => c.namespace === "/runners" && c.room === runnersUserRoom("user6") && c.event === "runner_updated",
+        );
+        expect(updated).toBeDefined();
+        expect((updated!.data as any).runnerId).toBe(runnerId);
+        expect((updated!.data as any).serviceIds).toEqual(["terminal", "file-explorer", "git", "tunnel", "monitor"]);
 
         // Retrieve
         const after = await getRunnerServices(runnerId);

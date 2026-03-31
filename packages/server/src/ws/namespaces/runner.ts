@@ -217,8 +217,9 @@ export async function sendRunnerCommand(
 // restart) can receive the data without waiting for a fresh announce.
 import type { ServiceAnnounceData } from "@pizzapi/protocol";
 import { updateRunnerServices, getRunnerServices, addRunnerWarning, clearRunnerWarnings } from "../sio-registry/index.js";
-import { chooseServiceAnnounceSeed, isSameServiceAnnounce, shouldSkipServiceAnnounceFanout } from "./runner.service-announce.js";
-export { chooseServiceAnnounceSeed, isSameServiceAnnounce, shouldSkipServiceAnnounceFanout };
+import { chooseServiceAnnounceSeed, isSameServiceAnnounce, shouldSkipServiceAnnounceFanout, computeServiceAnnounceDelta, isEmptyDelta } from "./runner.service-announce.js";
+import { withRunnerRefHint } from "./runner-ref.js";
+export { chooseServiceAnnounceSeed, isSameServiceAnnounce, shouldSkipServiceAnnounceFanout, computeServiceAnnounceDelta, isEmptyDelta };
 
 const runnerServiceAnnounce = new Map<string, ServiceAnnounceData>();
 
@@ -987,10 +988,29 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
             }
 
             if (!sessionIds || sessionIds.size === 0) return;
+
+            // Decide whether to send a full announce or a delta.
+            // First announce after runner registration always sends full.
+            const isFirstLiveAnnounce = !runnerHasBroadcastLiveServiceAnnounce.has(runnerId);
             runnerHasBroadcastLiveServiceAnnounce.add(runnerId);
-            for (const sessionId of sessionIds) {
-                log.info(`[service_announce] runner=${runnerId} fanout -> session=${sessionId}`);
-                broadcastToSessionViewers(sessionId, "service_announce", data);
+
+            if (isFirstLiveAnnounce || !previous) {
+                // Full announce — first time or no previous to diff against
+                const hinted = withRunnerRefHint(runnerId, data);
+                for (const sessionId of sessionIds) {
+                    log.info(`[service_announce] runner=${runnerId} full fanout -> session=${sessionId}`);
+                    broadcastToSessionViewers(sessionId, "service_announce", hinted);
+                }
+            } else {
+                // Compute delta and send only the changes
+                const delta = computeServiceAnnounceDelta(previous, data);
+                if (delta && !isEmptyDelta(delta)) {
+                    const hintedDelta = { ...delta, runnerId, _runnerRef: true as const };
+                    for (const sessionId of sessionIds) {
+                        log.info(`[service_announce] runner=${runnerId} delta fanout -> session=${sessionId}`);
+                        broadcastToSessionViewers(sessionId, "service_announce_delta", hintedDelta);
+                    }
+                }
             }
         });
 

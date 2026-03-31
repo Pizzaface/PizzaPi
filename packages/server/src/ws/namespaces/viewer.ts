@@ -21,6 +21,7 @@ import type {
 type ServiceEnvelope = { serviceId: string; type: string; requestId?: string; payload: unknown };
 import { sessionCookieAuthMiddleware } from "./auth.js";
 import { getRunnerServiceAnnounce } from "./runner.js";
+import { withRunnerRefHint } from "./runner-ref.js";
 import {
     getSharedSession,
     getSharedSessionSummary,
@@ -37,7 +38,7 @@ import {
 import { isChildOfParent } from "../sio-state/index.js";
 import { getPendingChunkedSnapshot } from "./relay/index.js";
 import { getPersistedRelaySessionSnapshot } from "../../sessions/store.js";
-import { getCachedRelayEvents, getLatestCachedSnapshotEvent } from "../../sessions/redis.js";
+import { getCachedRelayEventsAfterSeq, getLatestCachedSnapshotEvent } from "../../sessions/redis.js";
 import { recordTriggerResponse } from "../../sessions/trigger-store.js";
 import { createLogger } from "@pizzapi/tools";
 
@@ -122,6 +123,21 @@ export function onViewerReadyForRunnerSignal(
 }
 
 /** @internal — exported for unit tests only */
+export function withHubMetaSource<T extends Record<string, unknown>>(payload: T): T & { meta_source: "hub" } {
+    return { ...payload, meta_source: "hub" };
+}
+
+/** @internal — exported for unit tests only */
+export function withMetaViaHubHint<T extends Record<string, unknown>>(event: T): T & { _metaViaHub: true } {
+    return { ...event, _metaViaHub: true };
+}
+
+/** @internal — exported for unit tests only */
+export function withLivenessOnlyHint<T extends Record<string, unknown>>(event: T): T & { _livenessOnly: true } {
+    return { ...event, _livenessOnly: true };
+}
+
+/** @internal — exported for unit tests only */
 export function isViewerSwitchCurrent(currentGeneration: number | undefined, requestedGeneration?: number): boolean {
     return requestedGeneration === undefined || currentGeneration === requestedGeneration;
 }
@@ -142,6 +158,40 @@ async function sendLatestSnapshotFromCache(
     return true;
 }
 
+export function sendCachedDeltaReplayEvents(
+    socket: Pick<ViewerSocket, "emit">,
+    cachedEvents: Array<{ seq?: number; event: unknown }>,
+    generation?: number,
+): boolean {
+    let sentAny = false;
+
+    for (const cachedEvent of cachedEvents) {
+        if (typeof cachedEvent.seq !== "number" || !Number.isFinite(cachedEvent.seq)) {
+            continue;
+        }
+        sentAny = true;
+        socket.emit("event", {
+            event: cachedEvent.event,
+            seq: cachedEvent.seq,
+            replay: true,
+            deltaReplay: true,
+            generation,
+        });
+    }
+
+    return sentAny;
+}
+
+async function sendDeltaReplayFromCache(
+    socket: ViewerSocket,
+    sessionId: string,
+    afterSeq: number,
+    generation?: number,
+): Promise<boolean> {
+    const cachedEvents = await getCachedRelayEventsAfterSeq(sessionId, afterSeq);
+    return sendCachedDeltaReplayEvents(socket, cachedEvents, generation);
+}
+
 /**
  * Replay a persisted (SQLite + Redis) snapshot for a session that is
  * no longer live. Sends the snapshot, then disconnects the viewer.
@@ -160,6 +210,9 @@ async function replayPersistedSnapshot(
             return;
         }
 
+        // Don't mark replay-only connections as hub-meta authoritative — there
+        // is no live hub meta subscription, so the client must apply metadata
+        // from the session_active snapshot directly.
         socket.emit("connected", { sessionId, replayOnly: true, generation });
 
         // Fast path: send only the latest snapshot from Redis cache
@@ -175,6 +228,9 @@ async function replayPersistedSnapshot(
                 socket.disconnect();
                 return;
             }
+            // Don't add _metaViaHub for replay-only sessions — there is no
+            // live hub meta subscription, so the client must apply metadata
+            // (model, sessionName, etc.) from this snapshot directly.
             socket.emit("event", {
                 event: { type: "session_active", state: snapshot.state },
                 generation,
@@ -258,7 +314,7 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
         const getCurrentGeneration = (): number | undefined =>
             typeof socket.data.generation === "number" ? socket.data.generation : undefined;
 
-        const activateSession = async (nextSessionId: string, generation?: number): Promise<void> => {
+        const activateSession = async (nextSessionId: string, generation?: number, lastSeq?: number): Promise<void> => {
             if (!nextSessionId) {
                 socket.data.sessionId = undefined;
                 return;
@@ -335,14 +391,20 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
                 return;
             }
 
-            socket.emit("connected", {
+            const requestedLastSeq = typeof lastSeq === "number" && Number.isFinite(lastSeq) ? lastSeq : undefined;
+
+            // Always send the server's authoritative seq — never echo the
+            // client's requestedLastSeq.  If the server seq reset (relay
+            // restart) the client would keep its stale high cursor via
+            // mergeConnectedSeq(Math.max) and reject all new events as stale.
+            socket.emit("connected", withHubMetaSource({
                 sessionId: nextSessionId,
                 lastSeq: freshSeq,
                 isActive: freshSession.isActive,
                 lastHeartbeatAt: freshSession.lastHeartbeatAt,
                 sessionName: freshSession.sessionName,
                 generation,
-            });
+            }));
 
             // Send cached service_announce so the viewer knows which runner
             // services are available without waiting for a fresh announce.
@@ -352,7 +414,15 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
                 const serviceIds = announce?.serviceIds ?? [];
                 log.info(`service_announce: runnerId=${freshSession.runnerId}, cached serviceIds=[${serviceIds.join(",")}]`);
                 if (serviceIds.length > 0) {
-                    socket.emit("service_announce", { ...announce!, generation });
+                    socket.emit("service_announce", { ...withRunnerRefHint(freshSession.runnerId, announce!), generation });
+                }
+            }
+
+            const chunkedPending = getPendingChunkedSnapshot(nextSessionId);
+            if (requestedLastSeq !== undefined && !chunkedPending) {
+                const deltaReplaySent = await sendDeltaReplayFromCache(socket, nextSessionId, requestedLastSeq, generation);
+                if (deltaReplaySent) {
+                    return;
                 }
             }
 
@@ -360,7 +430,11 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
             // session_active in response to "connected".
             if (freshSession.lastHeartbeat) {
                 try {
-                    socket.emit("event", { event: JSON.parse(freshSession.lastHeartbeat), seq: freshSeq, generation });
+                    socket.emit("event", {
+                        event: withLivenessOnlyHint(JSON.parse(freshSession.lastHeartbeat)),
+                        seq: freshSeq,
+                        generation,
+                    });
                 } catch {}
             }
 
@@ -370,11 +444,10 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
             // viewer already received via the room broadcast, clear chunk-tracking
             // in App.tsx, and cause remaining chunks to be dropped. Skip it and
             // let the runner's fresh chunked delivery hydrate the viewer instead.
-            const chunkedPending = getPendingChunkedSnapshot(nextSessionId);
             if (freshSession.lastState && !chunkedPending) {
                 try {
                     socket.emit("event", {
-                        event: { type: "session_active", state: JSON.parse(freshSession.lastState) },
+                        event: withMetaViaHubHint({ type: "session_active", state: JSON.parse(freshSession.lastState) }),
                         seq: freshSeq,
                         generation,
                     });
@@ -393,7 +466,11 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
         // ── switch_session — reuse the viewer socket across session changes ─
         socket.on("switch_session", async (data) => {
             if (!data || typeof data.sessionId !== "string" || !data.sessionId) return;
-            await activateSession(data.sessionId, typeof data.generation === "number" ? data.generation : undefined);
+            await activateSession(
+                data.sessionId,
+                typeof data.generation === "number" ? data.generation : undefined,
+                typeof data.lastSeq === "number" ? data.lastSeq : undefined,
+            );
         });
 
         // ── connected — viewer greeting, notify TUI ─────────────────────────
@@ -410,7 +487,7 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
         });
 
         // ── resync — send fresh snapshot ─────────────────────────────────────
-        socket.on("resync", async () => {
+        socket.on("resync", async (data) => {
             const currentSessionId = getCurrentSessionId();
             if (!currentSessionId) return;
             // If a chunked delivery is in-flight on this node, skip
@@ -427,7 +504,14 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
             // sendSnapshotToViewer(), which is the same behaviour as before this
             // guard was added — a degraded-but-safe fallback for a deployment
             // topology PizzaPi doesn't formally support.
+            const requestedLastSeq = typeof data?.lastSeq === "number" && Number.isFinite(data.lastSeq) ? data.lastSeq : undefined;
             const resyncChunkedPending = getPendingChunkedSnapshot(currentSessionId);
+            if (requestedLastSeq !== undefined && !resyncChunkedPending) {
+                const deltaReplaySent = await sendDeltaReplayFromCache(socket, currentSessionId, requestedLastSeq, getCurrentGeneration());
+                if (deltaReplaySent) {
+                    return;
+                }
+            }
             if (resyncChunkedPending) {
                 // A chunked delivery is in-flight on this node.  DON'T request
                 // a room-wide re-emit via emitToRelaySession("connected") —

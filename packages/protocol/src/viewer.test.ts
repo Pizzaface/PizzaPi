@@ -21,6 +21,7 @@ describe("viewer — ViewerServerToClientEvents payloads", () => {
     expect(minimal.lastSeq).toBeUndefined();
     expect(minimal.replayOnly).toBeUndefined();
     expect(minimal.isActive).toBeUndefined();
+    expect(minimal.meta_source).toBeUndefined();
     expect(minimal.generation).toBeUndefined();
 
     const full: Payload = {
@@ -30,11 +31,13 @@ describe("viewer — ViewerServerToClientEvents payloads", () => {
       isActive: false,
       lastHeartbeatAt: null,
       sessionName: "My Session",
+      meta_source: "hub",
       generation: 7,
     };
     expect(full.lastSeq).toBe(42);
     expect(full.replayOnly).toBe(true);
     expect(full.sessionName).toBe("My Session");
+    expect(full.meta_source).toBe("hub");
     expect(full.generation).toBe(7);
   });
 
@@ -51,10 +54,12 @@ describe("viewer — ViewerServerToClientEvents payloads", () => {
       event: { type: "message_update", content: "Hello" },
       seq: 100,
       replay: true,
+      deltaReplay: true,
       generation: 7,
     };
     expect(full.seq).toBe(100);
     expect(full.replay).toBe(true);
+    expect(full.deltaReplay).toBe(true);
     expect(full.generation).toBe(7);
   });
 
@@ -120,21 +125,26 @@ describe("viewer — ViewerClientToServerEvents payloads", () => {
     expect(Object.keys(p)).toHaveLength(0);
   });
 
-  test("switch_session carries target session with optional generation", () => {
+  test("switch_session carries target session with optional generation and lastSeq", () => {
     type Payload = Parameters<ViewerClientToServerEvents["switch_session"]>[0];
     const minimal: Payload = { sessionId: "sess-1" };
     expect(minimal.sessionId).toBe("sess-1");
     expect(minimal.generation).toBeUndefined();
+    expect(minimal.lastSeq).toBeUndefined();
 
-    const full: Payload = { sessionId: "sess-2", generation: 10 };
+    const full: Payload = { sessionId: "sess-2", generation: 10, lastSeq: 77 };
     expect(full.sessionId).toBe("sess-2");
     expect(full.generation).toBe(10);
+    expect(full.lastSeq).toBe(77);
   });
 
-  test("resync sends empty record", () => {
+  test("resync sends optional lastSeq", () => {
     type Payload = Parameters<ViewerClientToServerEvents["resync"]>[0];
     const p: Payload = {};
     expect(Object.keys(p)).toHaveLength(0);
+
+    const withSeq: Payload = { lastSeq: 123 };
+    expect(withSeq.lastSeq).toBe(123);
   });
 
   test("input carries text with optional fields", () => {

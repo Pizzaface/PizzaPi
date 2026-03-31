@@ -1,14 +1,15 @@
 /**
- * Merge lastSeq from a viewer "connected" payload into the current cursor
- * without ever moving backward.
+ * Merge lastSeq from a viewer "connected" payload into the current cursor.
+ * The server sends its authoritative seq — always accept it so a seq reset
+ * (relay restart) correctly rewinds the client cursor instead of leaving it
+ * stuck at a stale high value that rejects all new events.
  */
 export function mergeConnectedSeq(
-  currentSeq: number | null,
+  _currentSeq: number | null,
   connectedLastSeq: number,
 ): number {
-  if (!Number.isFinite(connectedLastSeq)) return currentSeq ?? 0;
-  if (currentSeq === null) return connectedLastSeq;
-  return Math.max(currentSeq, connectedLastSeq);
+  if (!Number.isFinite(connectedLastSeq)) return _currentSeq ?? 0;
+  return connectedLastSeq;
 }
 
 export function shouldDeferEventForHydration(

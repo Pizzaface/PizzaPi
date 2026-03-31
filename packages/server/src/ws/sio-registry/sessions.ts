@@ -69,6 +69,8 @@ import { clearSessionSubscriptions } from "../../sessions/trigger-subscription-s
 import { pushTriggerHistory } from "../../sessions/trigger-store.js";
 
 const log = createLogger("sio-registry");
+const lastRelaySessionStateWriteTimes = new Map<string, number>();
+const SQLITE_STATE_WRITE_THROTTLE_MS = 30_000;
 
 // ── Internal helpers ─────────────────────────────────────────────────────────
 
@@ -76,6 +78,10 @@ function normalizeSessionName(value: unknown): string | null {
     if (typeof value !== "string") return null;
     const trimmed = value.trim();
     return trimmed.length > 0 ? trimmed : null;
+}
+
+function isSlimHeartbeat(heartbeat: Record<string, unknown>): boolean {
+    return heartbeat._slim === true;
 }
 
 // ── Session Management ──────────────────────────────────────────────────────
@@ -490,6 +496,19 @@ export async function updateSessionState(sessionId: string, state: unknown): Pro
 
     await updateSessionFields(session.sessionId, fields);
 
+    const now = Date.now();
+    const stateMessages = stateObj && Array.isArray(stateObj.messages) ? stateObj.messages : null;
+    const shouldPersistState =
+        stateMessages !== null && stateMessages.length > 0 ||
+        now - (lastRelaySessionStateWriteTimes.get(sessionId) ?? 0) >= SQLITE_STATE_WRITE_THROTTLE_MS;
+
+    if (shouldPersistState) {
+        lastRelaySessionStateWriteTimes.set(sessionId, now);
+        void recordRelaySessionState(sessionId, session.userId ?? null, strippedState).catch((error) => {
+            log.error("Failed to persist relay session state:", error);
+        });
+    }
+
     if (sessionNameChanged) {
         const heartbeat = session.lastHeartbeat ? safeJsonParse(session.lastHeartbeat) : null;
         await broadcastToHub(
@@ -505,9 +524,6 @@ export async function updateSessionState(sessionId: string, state: unknown): Pro
         );
     }
 
-    void recordRelaySessionState(sessionId, session.userId ?? null, strippedState).catch((error) => {
-        log.error("Failed to persist relay session state:", error);
-    });
 }
 
 /** Get session last state from Redis. */
@@ -612,7 +628,10 @@ export async function publishSessionEvent(sessionId: string, event: unknown): Pr
     // Await the cache write so the event is durably stored before we broadcast.
     // If this also fails (same Redis blip), the event is lost — but at least
     // we don't falsely claim it was cached when swallowing the broadcast error.
-    await appendRelayEventToCache(sessionId, strippedEvent, { isEphemeral: session?.isEphemeral });
+    await appendRelayEventToCache(sessionId, strippedEvent, {
+        isEphemeral: session?.isEphemeral,
+        seq,
+    });
 
     // Broadcast to all viewer sockets in the session room
     try {
@@ -648,6 +667,7 @@ export async function updateSessionHeartbeat(
     if (!session) return;
 
     const prevHeartbeat = session.lastHeartbeat ? safeJsonParse(session.lastHeartbeat) : null;
+    const isSlim = isSlimHeartbeat(heartbeat);
     const prevModel = modelFromHeartbeat(prevHeartbeat);
     const prevModelKey = prevModel ? `${prevModel.provider}/${prevModel.id}` : null;
 
@@ -657,7 +677,7 @@ export async function updateSessionHeartbeat(
     const wasActive = session.isActive;
     const isActive = heartbeat.active === true;
     const lastHeartbeatAt = new Date().toISOString();
-    const nextSessionName = hasSessionName
+    const nextSessionName = !isSlim && hasSessionName
         ? normalizeSessionName(heartbeat.sessionName)
         : session.sessionName;
 
@@ -667,7 +687,7 @@ export async function updateSessionHeartbeat(
         lastHeartbeat: JSON.stringify(heartbeat),
     };
 
-    if (hasSessionName) {
+    if (!isSlim && hasSessionName) {
         fields.sessionName = nextSessionName;
     }
 
@@ -680,8 +700,11 @@ export async function updateSessionHeartbeat(
     // Backward compat: extract meta-state from fat heartbeat payload.
     // Old CLI sessions still send all meta fields in the heartbeat.
     // New CLI sessions send slim heartbeats + discrete meta events separately.
-    // This ensures the Redis metaState is always populated regardless of CLI version.
-    await extractMetaFromHeartbeat(sessionId, heartbeat);
+    // Slim heartbeats skip extraction so meta updates flow only through
+    // the discrete meta channel.
+    if (!isSlim) {
+        await extractMetaFromHeartbeat(sessionId, heartbeat);
+    }
 
     // Heartbeats bypass touchSessionActivity, so refresh the runner
     // association TTL here to prevent it from expiring on long-lived
@@ -695,7 +718,7 @@ export async function updateSessionHeartbeat(
     const modelChanged = prevModelKey !== nextModelKey;
     const sessionNameChanged = hasSessionName && prevSessionName !== nextSessionName;
 
-    if (wasActive !== isActive || modelChanged || sessionNameChanged) {
+    if (wasActive !== isActive || (!isSlim && (modelChanged || sessionNameChanged))) {
         await broadcastToHub(
             "session_status",
             {
@@ -703,7 +726,7 @@ export async function updateSessionHeartbeat(
                 isActive,
                 lastHeartbeatAt,
                 sessionName: nextSessionName,
-                model: nextModel,
+                model: isSlim ? undefined : nextModel,
             },
             session.userId ?? undefined,
         );
@@ -813,6 +836,7 @@ export async function endSharedSession(sessionId: string, reason: string = "Sess
 
     // Delete from Redis
     await deleteSession(sessionId);
+    lastRelaySessionStateWriteTimes.delete(sessionId);
 
     // Persist end in SQLite
     void recordRelaySessionEnd(sessionId).catch((error) => {

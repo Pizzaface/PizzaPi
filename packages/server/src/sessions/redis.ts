@@ -8,8 +8,13 @@ const DEFAULT_EVENT_BUFFER_SIZE = 1000;
 const DEFAULT_EVENT_TTL_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_SNAPSHOT_SCAN_CHUNK_SIZE = 64;
 
-interface CachedRelayEventEnvelope {
-    ts: number;
+export interface CachedRelayEventRecord {
+    seq?: number;
+    event: unknown;
+}
+
+interface ParsedCachedRelayEventRecord {
+    seq?: number;
     event: unknown;
 }
 
@@ -104,17 +109,19 @@ export async function initializeRelayRedisCache(): Promise<void> {
 export async function appendRelayEventToCache(
     sessionId: string,
     event: unknown,
-    opts: { isEphemeral?: boolean } = {},
+    opts: { isEphemeral?: boolean; seq?: number } = {},
 ): Promise<void> {
     if (isRedisDisabled()) return;
 
     const redis = await getClient();
     if (!redis) return;
 
-    const payload: CachedRelayEventEnvelope = {
-        ts: Date.now(),
+    const payload: ParsedCachedRelayEventRecord = {
         event,
     };
+    if (typeof opts.seq === "number" && Number.isFinite(opts.seq)) {
+        payload.seq = opts.seq;
+    }
     const ttlMs = ttlMsForSession(opts.isEphemeral);
 
     try {
@@ -129,7 +136,32 @@ export async function appendRelayEventToCache(
     }
 }
 
-export async function getCachedRelayEvents(sessionId: string): Promise<unknown[]> {
+function parseCachedRelayEventRow(row: string): CachedRelayEventRecord | null {
+    try {
+        const parsed = JSON.parse(row) as unknown;
+        if (!parsed || typeof parsed !== "object") {
+            return { event: parsed };
+        }
+
+        const record = parsed as Record<string, unknown>;
+        if (Object.prototype.hasOwnProperty.call(record, "event")) {
+            return {
+                seq: typeof record.seq === "number" && Number.isFinite(record.seq) ? record.seq : undefined,
+                event: record.event,
+            };
+        }
+
+        return { event: parsed };
+    } catch {
+        return null;
+    }
+}
+
+function isSequencedCachedRelayEvent(record: CachedRelayEventRecord): record is CachedRelayEventRecord & { seq: number } {
+    return typeof record.seq === "number" && Number.isFinite(record.seq);
+}
+
+export async function getCachedRelayEvents(sessionId: string): Promise<CachedRelayEventRecord[]> {
     if (isRedisDisabled()) return [];
 
     const redis = await getClient();
@@ -137,13 +169,11 @@ export async function getCachedRelayEvents(sessionId: string): Promise<unknown[]
 
     try {
         const rows = await redis.lRange(eventsKey(sessionId), 0, -1);
-        const events: unknown[] = [];
+        const events: CachedRelayEventRecord[] = [];
         for (const row of rows) {
-            try {
-                const parsed = JSON.parse(row) as CachedRelayEventEnvelope;
-                events.push(parsed?.event);
-            } catch {
-                // Ignore malformed cache entries.
+            const parsed = parseCachedRelayEventRow(row);
+            if (parsed) {
+                events.push(parsed);
             }
         }
         return events;
@@ -160,6 +190,63 @@ export async function getCachedRelayEvents(sessionId: string): Promise<unknown[]
  * This avoids parsing the entire event list on each viewer switch when the
  * newest snapshot is near the tail (common case).
  */
+export async function getCachedRelayEventsAfterSeq(
+    sessionId: string,
+    afterSeq: number,
+): Promise<CachedRelayEventRecord[]> {
+    if (isRedisDisabled()) return [];
+
+    const redis = await getClient();
+    if (!redis) return [];
+
+    try {
+        const rows = await redis.lRange(eventsKey(sessionId), 0, -1);
+        type SequencedRecord = CachedRelayEventRecord & { seq: number };
+        const events: SequencedRecord[] = [];
+        let sawLegacyRow = false;
+
+        for (const row of rows) {
+            const parsed = parseCachedRelayEventRow(row);
+            if (!parsed) continue;
+            if (!isSequencedCachedRelayEvent(parsed)) {
+                sawLegacyRow = true;
+                continue;
+            }
+            if (parsed.seq > afterSeq) {
+                events.push(parsed);
+            }
+        }
+
+        if (afterSeq > 0 && sawLegacyRow) {
+            return [];
+        }
+
+        // Verify contiguity: the first event must be afterSeq+1 and all
+        // subsequent seqs must be consecutive.  If the cache was trimmed
+        // (lTrim), earlier events may be missing — return empty so the
+        // caller falls back to a full snapshot/resync instead of silently
+        // skipping events.
+        if (events.length > 0) {
+            const first = events[0];
+            if (!first || first.seq !== afterSeq + 1) {
+                return [];
+            }
+            for (let i = 1; i < events.length; i++) {
+                const curr = events[i];
+                const prev = events[i - 1];
+                if (!curr || !prev || curr.seq !== prev.seq + 1) {
+                    return [];
+                }
+            }
+        }
+
+        return events;
+    } catch (error) {
+        logUnavailableOnce("Failed to read relay event cache from Redis", error);
+        return [];
+    }
+}
+
 export async function getLatestCachedSnapshotEvent(sessionId: string): Promise<Record<string, unknown> | null> {
     if (isRedisDisabled()) return null;
 
@@ -177,13 +264,9 @@ export async function getLatestCachedSnapshotEvent(sessionId: string): Promise<R
             const rows = await redis.lRange(key, start, end);
             for (let i = rows.length - 1; i >= 0; i--) {
                 const row = rows[i];
-                try {
-                    const parsed = JSON.parse(row) as CachedRelayEventEnvelope;
-                    if (isSnapshotEvent(parsed?.event)) {
-                        return parsed.event;
-                    }
-                } catch {
-                    // Ignore malformed cache entries.
+                const parsed = parseCachedRelayEventRow(row);
+                if (parsed && isSnapshotEvent(parsed.event)) {
+                    return parsed.event;
                 }
             }
         }

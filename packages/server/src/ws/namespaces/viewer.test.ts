@@ -6,7 +6,7 @@
 // snapshot-scanning helpers that have no I/O dependencies.
 // ============================================================================
 
-import { describe, test, expect } from "bun:test";
+import { describe, test, expect, mock } from "bun:test";
 import {
     isAgentEndEvent,
     isSessionActiveEvent,
@@ -14,6 +14,10 @@ import {
     onViewerConnectedSignal,
     onViewerReadyForRunnerSignal,
     isViewerSwitchCurrent,
+    withHubMetaSource,
+    withMetaViaHubHint,
+    withLivenessOnlyHint,
+    sendCachedDeltaReplayEvents,
 } from "./viewer.js";
 
 // ── isAgentEndEvent ──────────────────────────────────────────────────────────
@@ -179,5 +183,72 @@ describe("viewer connected signal gating", () => {
             pendingConnectedSignal: false,
             forwardNow: false,
         });
+    });
+});
+
+// ── meta routing hints ──────────────────────────────────────────────────────
+
+describe("meta routing hints", () => {
+    test("marks connected payloads as hub-authored", () => {
+        expect(withHubMetaSource({ sessionId: "sess-1" })).toEqual({
+            sessionId: "sess-1",
+            meta_source: "hub",
+        });
+    });
+
+    test("marks session_active snapshots as hub-based meta", () => {
+        expect(withMetaViaHubHint({ type: "session_active", state: {} })).toEqual({
+            type: "session_active",
+            state: {},
+            _metaViaHub: true,
+        });
+    });
+
+    test("marks heartbeat snapshots as liveness only", () => {
+        expect(withLivenessOnlyHint({ type: "heartbeat", active: true })).toEqual({
+            type: "heartbeat",
+            active: true,
+            _livenessOnly: true,
+        });
+    });
+});
+
+// ── delta replay emission ───────────────────────────────────────────────────
+
+describe("sendCachedDeltaReplayEvents", () => {
+    test("emits sequenced replay events with deltaReplay flag", () => {
+        const calls: unknown[][] = [];
+        const socket = { emit: (...args: unknown[]) => { calls.push(args); return true; } } as any;
+
+        const sent = sendCachedDeltaReplayEvents(socket, [
+            { seq: 11, event: { type: "message_start" } },
+            { seq: 12, event: { type: "message_end" } },
+        ], 7);
+
+        expect(sent).toBe(true);
+        expect(calls.length).toBe(2);
+        expect(calls[0][0]).toBe("event");
+        expect(calls[0][1]).toEqual({
+            event: { type: "message_start" },
+            seq: 11,
+            replay: true,
+            deltaReplay: true,
+            generation: 7,
+        });
+        expect(calls[1][1]).toEqual({
+            event: { type: "message_end" },
+            seq: 12,
+            replay: true,
+            deltaReplay: true,
+            generation: 7,
+        });
+    });
+
+    test("returns false when there are no sequenced events to replay", () => {
+        const calls: unknown[][] = [];
+        const sent = sendCachedDeltaReplayEvents({ emit: (...args: unknown[]) => { calls.push(args); return true; } } as any, [{ event: { type: "message_start" } }]);
+
+        expect(sent).toBe(false);
+        expect(calls.length).toBe(0);
     });
 });

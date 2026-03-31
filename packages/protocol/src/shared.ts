@@ -276,6 +276,40 @@ export interface ServiceAnnounceData {
   triggerDefs?: ServiceTriggerDef[];
   /** Sigil types declared by services on this runner. */
   sigilDefs?: ServiceSigilDef[];
+  /** Runner ID associated with this announce when the data was routed via a session. */
+  runnerId?: string;
+  /** Hint that the payload is a reference to runner metadata, not a standalone source. */
+  _runnerRef?: true;
+}
+
+/** Delta payload for the service_announce_delta event.
+ *  Sent instead of a full service_announce when only a subset changed. */
+export interface ServiceAnnounceDelta {
+  added: {
+    serviceIds: string[];
+    panels: ServicePanelInfo[];
+    triggerDefs: ServiceTriggerDef[];
+    sigilDefs: ServiceSigilDef[];
+  };
+  removed: {
+    /** Service IDs that were removed. */
+    serviceIds: string[];
+    /** Panel serviceIds that were removed. */
+    panels: string[];
+    /** Trigger types that were removed. */
+    triggerDefs: string[];
+    /** Sigil types that were removed. */
+    sigilDefs: string[];
+  };
+  updated: {
+    panels: ServicePanelInfo[];
+    triggerDefs: ServiceTriggerDef[];
+    sigilDefs: ServiceSigilDef[];
+  };
+  /** Runner ID associated with this delta when routed via a session. */
+  runnerId?: string;
+  /** Hint that the payload is a reference to runner metadata, not a standalone source. */
+  _runnerRef?: true;
 }
 
 // ── Tunnel service types ──────────────────────────────────────────────────────

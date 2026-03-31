@@ -2,7 +2,7 @@
 // /viewer namespace — Browser viewer ↔ Server
 // ============================================================================
 
-import type { Attachment, ServiceAnnounceData, ServiceEnvelope, SocketClientMetadata } from "./shared.js";
+import type { Attachment, ServiceAnnounceData, ServiceAnnounceDelta, ServiceEnvelope, SocketClientMetadata } from "./shared.js";
 
 export type ViewerDisconnectCode = "snapshot_replay" | "session_ended" | "session_reconnected";
 
@@ -19,6 +19,8 @@ export interface ViewerServerToClientEvents {
     isActive?: boolean;
     lastHeartbeatAt?: string | null;
     sessionName?: string | null;
+    /** Authoritative meta source for this session connection. */
+    meta_source?: "hub";
     /** Optional switch generation echoed back during logical session switches. */
     generation?: number;
   }) => void;
@@ -28,6 +30,7 @@ export interface ViewerServerToClientEvents {
     event: unknown;
     seq?: number;
     replay?: boolean;
+    deltaReplay?: true;
     /** Optional switch generation echoed back during logical session switches. */
     generation?: number;
   }) => void;
@@ -55,6 +58,13 @@ export interface ViewerServerToClientEvents {
 
   /** Announces which services the connected runner supports. */
   service_announce: (data: ServiceAnnounceData & {
+    /** Optional switch generation echoed back during logical session switches. */
+    generation?: number;
+  }) => void;
+
+  /** Incremental delta update for service announcements.
+   *  Sent instead of a full service_announce when only a subset changed. */
+  service_announce_delta: (data: ServiceAnnounceDelta & {
     /** Optional switch generation echoed back during logical session switches. */
     generation?: number;
   }) => void;
@@ -87,10 +97,13 @@ export interface ViewerClientToServerEvents {
   switch_session: (data: {
     sessionId: string;
     generation?: number;
+    lastSeq?: number;
   }) => void;
 
   /** Request a fresh snapshot resync */
-  resync: (data: Record<string, never>) => void;
+  resync: (data: {
+    lastSeq?: number;
+  }) => void;
 
   /** Send user input to TUI (collab mode) */
   input: (data: {

@@ -147,14 +147,15 @@ Flags:
   --origins <list>    Set extra allowed CORS origins (comma-separated, persisted)
   --tag <tag>         UI image tag from GHCR (default: latest)
   --build             Build UI locally (fallback mode)
+  --dev-ui            Run the local dev UI stack (repo checkout only)
   -f, --foreground    Run in the foreground (don't detach)
   --no-cache          Rebuild Docker image without layer cache
   -h, --help          Show this help
 
-Local build fallback (`--build` only):
-  PIZZAPI_PREBUILD_UI=false   Skip host prebuild and build UI inside Docker
+Local dev UI stack (`--dev-ui` on a repo checkout):
+  Runs the server and `dev:ui` together in Docker; the UI stays hot-reloaded on port 5173.
 
-Docker build args (local fallback mode):
+Docker build args (fallback mode):
   PREBUILT_UI (auto)    Set by pizza web based on the host prebuild result
 
 Configuration (~/.pizzapi/web/config.json):
@@ -176,8 +177,11 @@ pizzapi web --origins "https://example.com,https://other.com"
 # Pull a specific GHCR UI tag
 pizzapi web --tag main
 
-# Fallback to local UI build mode
+# Build the UI locally (fallback mode)
 pizzapi web --build
+
+# Run the local dev UI stack (repo checkout only)
+pizzapi web --dev-ui
 
 # Run in the foreground (don't detach)
 pizzapi web --foreground
@@ -193,7 +197,7 @@ pizzapi web status
 </Aside>
 
 <Aside type="tip">
-  By default `pizza web` pulls `ghcr.io/pizzaface/pizzapi-ui:latest` before startup (or your `--tag` value). Use `--build` to fall back to local UI builds; in that mode, set `PIZZAPI_PREBUILD_UI=false` if you want Docker to build the UI instead of host-side Bun.
+  By default `pizza web` pulls `ghcr.io/pizzaface/pizzapi-ui:latest` before startup (or your `--tag` value). Use `--build` to keep the old local-build fallback behavior. Use `--dev-ui` if you want the hot-reloaded dev stack (`bun run dev`, which includes `dev:ui` on port 5173) from a local PizzaPi checkout.
 </Aside>
 
 | Subcommand | Description |
@@ -211,6 +215,7 @@ pizzapi web status
 | `--origins <list>` | Extra CORS origins, comma-separated. Persisted to `config.json`. |
 | `--tag <tag>` | UI image tag to pull from `ghcr.io/pizzaface/pizzapi-ui` (default: `latest`). |
 | `--build` | Build UI locally instead of pulling GHCR image (fallback mode). |
+| `--dev-ui` | Run the local dev UI stack from a repo checkout. |
 | `--foreground`, `-f` | Run in the foreground instead of detaching |
 | `--no-cache` | Rebuild Docker image without layer cache |
 | `--help`, `-h` | Show help |

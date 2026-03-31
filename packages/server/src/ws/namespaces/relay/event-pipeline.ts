@@ -12,7 +12,7 @@ import {
     publishSessionEvent,
 } from "../../sio-registry.js";
 import { appendRelayEventToCache } from "../../../sessions/redis.js";
-import { storeAndReplaceImagesInEvent } from "../../strip-images.js";
+import { storeAndReplaceImagesInEvent, stripImagesFromPipelineEvent } from "../../strip-images.js";
 import { updateSessionMetaState, broadcastToSessionMeta, getSessionMetaState } from "../../sio-registry/meta.js";
 import { isMetaRelayEvent, metaEventToPatch, type MetaRelayEvent, type SessionMetaState } from "@pizzapi/protocol";
 import { updateSessionFields } from "../../sio-state/index.js";
@@ -154,6 +154,27 @@ export function registerEventHandler(socket: RelaySocket): void {
         // Serialize async processing per session to guarantee chunk order.
         enqueueSessionEvent(sessionId, async () => {
 
+        // ── Single-pass image stripping ──────────────────────────────────
+        // Strip inline base64 images ONCE at ingestion so all downstream
+        // consumers (state storage, Redis cache, viewer broadcast) see
+        // already-stripped payloads. The _imagesStripped flag causes
+        // storeAndReplaceImages / storeAndReplaceImagesInEvent to skip.
+        const session = await getSharedSession(sessionId);
+        const userId = session?.userId ?? "unknown";
+        try {
+            const stripped = await stripImagesFromPipelineEvent(event, sessionId, userId);
+            if (stripped !== event) {
+                // Mutate `event` reference used by all downstream code.
+                // We copy all properties from the stripped event back onto the
+                // original reference so existing closures over `event` see the
+                // stripped data without needing to rebind every downstream use.
+                Object.assign(event, stripped);
+            }
+        } catch (err) {
+            // Non-fatal: downstream stripping will still catch images
+            console.error(`[sio/relay] Pipeline image stripping failed for ${sessionId}:`, err);
+        }
+
         // Cache session_active state so new viewers get an immediate snapshot
         if (event.type === "session_active") {
             const state = event.state as Record<string, unknown> | undefined;
@@ -225,6 +246,11 @@ export function registerEventHandler(socket: RelaySocket): void {
                     } catch {
                         // Fall back to original if image stripping fails
                     }
+                    // Do NOT call incrementSeq() here — this entry is never
+                    // broadcast to viewers.  Advancing the shared counter
+                    // would create a seq gap that triggers unnecessary
+                    // viewer resyncs (viewers would expect seq N but the
+                    // next broadcast would be N+1).
                     await appendRelayEventToCache(sessionId, eventToCache, {
                         isEphemeral: session?.isEphemeral,
                     });
@@ -333,7 +359,10 @@ export function registerEventHandler(socket: RelaySocket): void {
             // Reconnecting viewers will get the full lastState snapshot instead.
             const isMetadataOnlyUpdate = event.type === "session_metadata_update";
             if (event.type === "session_messages_chunk" || isChunkedSessionActive || isMetadataOnlyUpdate) {
-                await broadcastSessionEventToViewers(sessionId, eventToPublish);
+                const viewerEvent = isMetadataOnlyUpdate && eventToPublish && typeof eventToPublish === "object"
+                    ? { ...(eventToPublish as Record<string, unknown>), _metaChannel: "hub" as const }
+                    : eventToPublish;
+                await broadcastSessionEventToViewers(sessionId, viewerEvent);
             } else {
                 // Publish to viewers via Redis cache + Socket.IO rooms
                 await publishSessionEvent(sessionId, eventToPublish);

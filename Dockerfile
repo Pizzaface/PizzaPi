@@ -18,7 +18,7 @@ RUN cat /tmp/full-package.json | bun -e ' \
     const slim = { \
         name: f.name, version: f.version, \
         workspaces: ["packages/protocol","packages/tunnel","packages/tools","packages/server","packages/ui"], \
-        devDependencies: { typescript: f.devDependencies?.typescript ?? "^5.7.0" }, \
+        devDependencies: { concurrently: f.devDependencies?.concurrently, typescript: f.devDependencies?.typescript ?? "^5.7.0" }, \
         patchedDependencies: f.patchedDependencies \
     }; \
     await Bun.write("/app/package.json", JSON.stringify(slim, null, 2));'
