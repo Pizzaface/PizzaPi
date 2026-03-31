@@ -155,7 +155,7 @@ export function GitChangesView({
 
   if (selectedDiff) {
     return (
-      <div ref={diffContainerRef} tabIndex={-1} className="flex flex-col h-full outline-none">
+      <div ref={diffContainerRef} tabIndex={-1} className="flex flex-col h-full overflow-hidden outline-none">
         <div className="flex items-center gap-2 px-3 py-2 border-b border-border bg-muted/50">
           <button
             type="button"
@@ -193,7 +193,7 @@ export function GitChangesView({
   const hasChanges = gitStatus.changes.length > 0;
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col h-full overflow-hidden">
       {/* Branch header */}
       <div className="flex items-center gap-2 px-3 py-2 border-b border-border bg-muted/50">
         <GitBranch className="size-4 text-green-600 dark:text-green-400" />

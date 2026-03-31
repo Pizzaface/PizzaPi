@@ -176,9 +176,9 @@ export function GitPanel({ cwd, className }: GitPanelProps) {
     const showPull = git.status.behind > 0 && git.status.hasUpstream;
 
     return (
-        <div className={cn("flex flex-col h-full", className)}>
+        <div className={cn("flex flex-col h-full overflow-hidden", className)}>
             {/* Branch header */}
-            <div className="flex items-center gap-1 px-2 py-1.5 border-b border-border bg-muted/50 min-h-[40px]">
+            <div className="flex items-center gap-1 px-2 py-1.5 border-b border-border bg-muted/50 min-h-[40px] overflow-hidden">
                 <GitBranchSelector
                     currentBranch={git.status.branch}
                     branches={git.branches}
