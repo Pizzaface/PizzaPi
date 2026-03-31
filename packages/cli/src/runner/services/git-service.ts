@@ -253,6 +253,14 @@ export class GitService implements ServiceHandler {
         this.stopWatchingRepo(cwd);
     }
 
+    /** Cleanup subscriber/watcher state when a session ends. */
+    handleSessionEnded(sessionId: string): void {
+        const cwd = this._sessionCwd.get(sessionId);
+        if (!cwd) return;
+        this._sessionCwd.delete(sessionId);
+        this.removeSubscriber(cwd, sessionId);
+    }
+
     private async startWatchingRepo(cwd: string): Promise<void> {
         if (this._repoWatchers.has(cwd)) return;
 

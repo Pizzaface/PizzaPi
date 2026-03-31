@@ -314,6 +314,47 @@ describe("GitService git metadata watchers", () => {
         expect(Array.from(watchListeners.keys()).length).toBe(0);
     });
 
+    test("removes repo subscriptions/watchers when a session ends", async () => {
+        const watchListeners = new Map<string, () => void>();
+
+        const service = new GitService({
+            watchFs: (path, listener) => {
+                watchListeners.set(path, listener);
+                return {
+                    close: () => {
+                        watchListeners.delete(path);
+                    },
+                };
+            },
+            execGit: async (args, options) => {
+                if (args[0] === "rev-parse" && args[1] === "--abbrev-ref") return { stdout: "main\n", stderr: "" };
+                if (args[0] === "rev-parse" && args[1] === "--show-toplevel") return { stdout: `${options.cwd}\n`, stderr: "" };
+                if (args[0] === "rev-parse" && args[1] === "--git-path") return { stdout: `${options.cwd}/.git/${args[2]}\n`, stderr: "" };
+                if (args[0] === "status") return { stdout: " M watched.ts\0", stderr: "" };
+                if (args[0] === "diff") return { stdout: "", stderr: "" };
+                if (args[0] === "rev-list") return { stdout: "0 0\n", stderr: "" };
+                throw new Error(`Unexpected git args: ${args.join(" ")}`);
+            },
+        });
+
+        const socket = createMockSocket();
+        service.init(socket as any, { isShuttingDown: () => false });
+
+        dispatchServiceMessage(socket, {
+            serviceId: "git",
+            type: "git_status",
+            requestId: "repo-a",
+            sessionId: "session-1",
+            payload: { cwd: "/repo-a" },
+        });
+        await waitForResult(socket, "repo-a", "git_status_result");
+        await waitForCondition(() => Array.from(watchListeners.keys()).some((p) => p.startsWith("/repo-a/.git/")));
+
+        service.handleSessionEnded("session-1");
+
+        expect(Array.from(watchListeners.keys()).some((p) => p.startsWith("/repo-a/.git/"))).toBe(false);
+    });
+
     test("debounces metadata fs events and pushes status only to interested cwd subscribers", async () => {
         const watchListeners = new Map<string, () => void>();
         const statusCalls = new Map<string, number>();

@@ -23,6 +23,7 @@ describe("applyOptimisticMutation", () => {
             { status: " M", path: "src/a.ts" },
             { status: "??", path: "src/new.ts" },
             { status: "M ", path: "src/already-staged.ts" },
+            { status: "AM", path: "src/new-and-modified.ts" },
         ]);
 
         const next = applyOptimisticMutation(status, {
@@ -34,6 +35,7 @@ describe("applyOptimisticMutation", () => {
             { status: "M ", path: "src/a.ts" },
             { status: "A ", path: "src/new.ts" },
             { status: "M ", path: "src/already-staged.ts" },
+            { status: "AM", path: "src/new-and-modified.ts" },
         ]);
     });
 
@@ -41,6 +43,7 @@ describe("applyOptimisticMutation", () => {
         const status = makeStatus([
             { status: " M", path: "src/a.ts" },
             { status: "MM", path: "src/b.ts" },
+            { status: "AM", path: "src/already-added.ts" },
             { status: "??", path: "src/c.ts" },
             { status: "M ", path: "src/staged.ts" },
         ]);
@@ -53,6 +56,7 @@ describe("applyOptimisticMutation", () => {
         expect(next?.changes).toEqual([
             { status: "M ", path: "src/a.ts" },
             { status: "M ", path: "src/b.ts" },
+            { status: "A ", path: "src/already-added.ts" },
             { status: "A ", path: "src/c.ts" },
             { status: "M ", path: "src/staged.ts" },
         ]);

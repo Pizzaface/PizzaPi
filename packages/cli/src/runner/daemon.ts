@@ -204,6 +204,12 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
         registry.register(new TerminalService());
         registry.register(new FileExplorerService());
         registry.register(new GitService());
+        const cleanupGitSessionState = (sessionId: string) => {
+            const gitService = registry.get("git");
+            if (!gitService) return;
+            const maybeGitService = gitService as GitService & { handleSessionEnded?: (id: string) => void };
+            maybeGitService.handleSessionEnded?.(sessionId);
+        };
         const tunnelService = new TunnelService();
         registry.register(tunnelService);
         const timeService = new TimeService();
@@ -646,6 +652,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                     socket.emit("disconnect_session", { sessionId });
                 }
                 runningSessions.delete(sessionId);
+                cleanupGitSessionState(sessionId);
                 logInfo(`killed session ${sessionId}${entry.adopted ? " (adopted)" : ""}`);
                 socket.emit("session_killed", { sessionId });
                 // Clean up persisted attachments for this session
@@ -699,6 +706,8 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                 logInfo(`session_ended for unknown/already-removed session ${sessionId}`);
             }
             // else: duplicate session_ended for a session we already handled — silently ignore
+
+            cleanupGitSessionState(sessionId);
 
             // Clean up persisted attachments.  For spawned sessions child.on("exit")
             // already ran cleanup, so this is a no-op (idempotent).  For adopted sessions

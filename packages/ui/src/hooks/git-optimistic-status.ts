@@ -35,12 +35,14 @@ function applyOptimisticStage(change: GitChange): GitChange {
 
     if (change.status.length !== 2) return change;
 
+    const indexStatus = change.status[0];
     const worktreeStatus = change.status[1];
     if (worktreeStatus === " " || worktreeStatus === "?" || worktreeStatus === "!") {
         return change;
     }
 
-    return { ...change, status: `${worktreeStatus} ` };
+    const hasExistingIndexStatus = indexStatus !== " " && indexStatus !== "?" && indexStatus !== "!";
+    return { ...change, status: `${hasExistingIndexStatus ? indexStatus : worktreeStatus} ` };
 }
 
 function applyOptimisticUnstage(change: GitChange): GitChange | null {

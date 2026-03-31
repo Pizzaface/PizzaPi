@@ -107,7 +107,7 @@ export function useGitService(cwd: string): UseGitServiceReturn {
     const pendingDiffsRef = useRef(new Map<string, (diff: string) => void>());
     const pendingFullStatusRequestRef = useRef<string | null>(null);
     const fullStatusFallbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-    const statusRequestsInFlightRef = useRef(0);
+    const statusRequestsInFlightRef = useRef(new Set<string>());
     const optimisticSnapshotsRef = useRef(new Map<string, GitStatus | null>());
 
     // Generation counter — incremented on cwd change. Responses from stale
@@ -128,19 +128,29 @@ export function useGitService(cwd: string): UseGitServiceReturn {
     // Ref for sendGit so callbacks can access latest version
     const sendRef = useRef<(type: string, payload: unknown, requestId?: string) => void>(() => {});
 
+    const markStatusRequestInFlight = useCallback((requestId: string) => {
+        statusRequestsInFlightRef.current.add(requestId);
+    }, []);
+
+    const markStatusRequestSettled = useCallback((requestId?: string) => {
+        if (!requestId) return;
+        statusRequestsInFlightRef.current.delete(requestId);
+    }, []);
+
     const sendStatusRequest = useCallback((targetCwd: string) => {
         statusGenRef.current = generationRef.current;
-        statusRequestsInFlightRef.current += 1;
+        const requestId = makeRequestId();
+        markStatusRequestInFlight(requestId);
         setLoading(true);
         setError(null);
-        sendRef.current("git_status", { cwd: targetCwd }, makeRequestId());
-    }, [makeRequestId]);
+        sendRef.current("git_status", { cwd: targetCwd }, requestId);
+    }, [makeRequestId, markStatusRequestInFlight]);
 
     const postMutationRefreshSchedulerRef = useRef(
         createPostMutationRefreshScheduler({
             debounceMs: POST_MUTATION_STATUS_REFRESH_DEBOUNCE_MS,
             getGeneration: () => generationRef.current,
-            isStatusRequestInFlight: () => statusRequestsInFlightRef.current > 0,
+            isStatusRequestInFlight: () => statusRequestsInFlightRef.current.size > 0,
             triggerRefresh: () => {
                 sendStatusRequest(cwdRef.current);
             },
@@ -153,7 +163,7 @@ export function useGitService(cwd: string): UseGitServiceReturn {
 
             switch (type) {
                 case "git_status_result": {
-                    statusRequestsInFlightRef.current = Math.max(0, statusRequestsInFlightRef.current - 1);
+                    markStatusRequestSettled(requestId);
                     // Ignore stale responses from a previous cwd
                     if (statusGenRef.current !== generationRef.current) break;
                     setLoading(false);
@@ -173,7 +183,7 @@ export function useGitService(cwd: string): UseGitServiceReturn {
                     break;
                 }
                 case "git_full_status_result": {
-                    statusRequestsInFlightRef.current = Math.max(0, statusRequestsInFlightRef.current - 1);
+                    markStatusRequestSettled(requestId);
                     // Ignore stale responses from a previous cwd
                     if (statusGenRef.current !== generationRef.current) break;
                     if (requestId && pendingFullStatusRequestRef.current === requestId) {
@@ -273,6 +283,7 @@ export function useGitService(cwd: string): UseGitServiceReturn {
         return () => {
             pendingDiffsRef.current.clear();
             optimisticSnapshotsRef.current.clear();
+            statusRequestsInFlightRef.current.clear();
             postMutationRefreshSchedulerRef.current.dispose();
             if (fullStatusFallbackTimerRef.current) {
                 clearTimeout(fullStatusFallbackTimerRef.current);
@@ -414,7 +425,7 @@ export function useGitService(cwd: string): UseGitServiceReturn {
         pendingFullStatusRequestRef.current = null;
         optimisticSnapshotsRef.current.clear();
         postMutationRefreshSchedulerRef.current.cancel();
-        statusRequestsInFlightRef.current = 0;
+        statusRequestsInFlightRef.current.clear();
         if (fullStatusFallbackTimerRef.current) {
             clearTimeout(fullStatusFallbackTimerRef.current);
             fullStatusFallbackTimerRef.current = null;
@@ -422,7 +433,6 @@ export function useGitService(cwd: string): UseGitServiceReturn {
 
         if (available && cwd) {
             statusGenRef.current = generationRef.current;
-            statusRequestsInFlightRef.current += 1;
             setLoading(true);
 
             // Initial load optimization: request status + branches + worktrees in one round-trip.
@@ -430,19 +440,22 @@ export function useGitService(cwd: string): UseGitServiceReturn {
             // fall back to git_status after a short delay.
             const requestId = makeRequestId();
             pendingFullStatusRequestRef.current = requestId;
+            markStatusRequestInFlight(requestId);
             send("git_full_status", { cwd }, requestId);
 
             fullStatusFallbackTimerRef.current = setTimeout(() => {
                 fullStatusFallbackTimerRef.current = null;
                 if (statusGenRef.current !== generationRef.current) return;
-                if (!pendingFullStatusRequestRef.current) return;
+                const abandonedRequestId = pendingFullStatusRequestRef.current;
+                if (!abandonedRequestId) return;
                 pendingFullStatusRequestRef.current = null;
+                markStatusRequestSettled(abandonedRequestId);
                 sendStatusRequest(cwdRef.current);
             }, 1200);
         } else {
             setLoading(false);
         }
-    }, [available, cwd]); // eslint-disable-line react-hooks/exhaustive-deps
+    }, [available, cwd, makeRequestId, markStatusRequestInFlight, markStatusRequestSettled, send, sendStatusRequest]);
 
     return {
         available,

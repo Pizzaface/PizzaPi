@@ -52,7 +52,7 @@ describe("createPostMutationRefreshScheduler", () => {
         expect(refreshCount).toBe(1);
     });
 
-    test("does not schedule while a status request is already in flight", () => {
+    test("keeps a pending refresh while status is in flight and runs trailing refresh after settle", () => {
         const fakeTimers = createFakeTimers();
         let inFlight = true;
         let refreshCount = 0;
@@ -68,16 +68,21 @@ describe("createPostMutationRefreshScheduler", () => {
         });
 
         scheduler.schedule();
-        expect(fakeTimers.pendingCount()).toBe(0);
-
-        inFlight = false;
-        scheduler.schedule();
         expect(fakeTimers.pendingCount()).toBe(1);
+
+        // First tick sees in-flight and reschedules.
+        fakeTimers.runAll();
+        expect(refreshCount).toBe(0);
+        expect(fakeTimers.pendingCount()).toBe(1);
+
+        // Once settled, next tick triggers the trailing refresh.
+        inFlight = false;
         fakeTimers.runAll();
         expect(refreshCount).toBe(1);
+        expect(fakeTimers.pendingCount()).toBe(0);
     });
 
-    test("skips triggering when a request becomes in flight before timer fires", () => {
+    test("retries later when a request becomes in flight before timer fires", () => {
         const fakeTimers = createFakeTimers();
         let inFlight = false;
         let refreshCount = 0;
@@ -97,6 +102,11 @@ describe("createPostMutationRefreshScheduler", () => {
         fakeTimers.runAll();
 
         expect(refreshCount).toBe(0);
+        expect(fakeTimers.pendingCount()).toBe(1);
+
+        inFlight = false;
+        fakeTimers.runAll();
+        expect(refreshCount).toBe(1);
     });
 
     test("drops scheduled refresh when generation changes", () => {

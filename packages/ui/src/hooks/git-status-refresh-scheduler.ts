@@ -23,8 +23,28 @@ export function createPostMutationRefreshScheduler({
 }: CreatePostMutationRefreshSchedulerOptions): PostMutationRefreshScheduler {
     let timerId: ReturnType<typeof setTimeout> | null = null;
     let disposed = false;
+    let hasPendingRefresh = false;
+
+    const runWhenReady = (generationAtSchedule: number) => {
+        timerId = null;
+        if (disposed) return;
+        if (getGeneration() !== generationAtSchedule) {
+            hasPendingRefresh = false;
+            return;
+        }
+        if (!hasPendingRefresh) return;
+
+        if (isStatusRequestInFlight()) {
+            timerId = setTimer(() => runWhenReady(generationAtSchedule), debounceMs);
+            return;
+        }
+
+        hasPendingRefresh = false;
+        triggerRefresh();
+    };
 
     const cancel = () => {
+        hasPendingRefresh = false;
         if (!timerId) return;
         clearTimer(timerId);
         timerId = null;
@@ -32,18 +52,12 @@ export function createPostMutationRefreshScheduler({
 
     const schedule = () => {
         if (disposed) return;
-        if (isStatusRequestInFlight()) return;
+        hasPendingRefresh = true;
 
         const generationAtSchedule = getGeneration();
-        cancel();
+        if (timerId) clearTimer(timerId);
 
-        timerId = setTimer(() => {
-            timerId = null;
-            if (disposed) return;
-            if (getGeneration() !== generationAtSchedule) return;
-            if (isStatusRequestInFlight()) return;
-            triggerRefresh();
-        }, debounceMs);
+        timerId = setTimer(() => runWhenReady(generationAtSchedule), debounceMs);
     };
 
     const dispose = () => {
