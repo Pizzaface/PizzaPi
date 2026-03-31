@@ -210,7 +210,10 @@ async function replayPersistedSnapshot(
             return;
         }
 
-        socket.emit("connected", withHubMetaSource({ sessionId, replayOnly: true, generation }));
+        // Don't mark replay-only connections as hub-meta authoritative — there
+        // is no live hub meta subscription, so the client must apply metadata
+        // from the session_active snapshot directly.
+        socket.emit("connected", { sessionId, replayOnly: true, generation });
 
         // Fast path: send only the latest snapshot from Redis cache
         // (ownership already validated by persisted snapshot lookup above)

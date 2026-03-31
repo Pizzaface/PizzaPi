@@ -30,36 +30,14 @@ services:
   redis:
     image: redis:7-alpine
 {{REDIS_PLATFORM_LINE}}    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     restart: unless-stopped
 
-{{UI_SERVICE_BLOCK}}  server:
-    build:
-      context: {{REPO_PATH}}
-      dockerfile: Dockerfile
-      target: {{SERVER_BUILD_TARGET}}
-      args:
-        PREBUILT_UI: "{{PREBUILT_UI}}"
-        UI_DIST_HASH: "{{UI_DIST_HASH}}"
-    ports:
-      - "{{PORT}}:7492"
-    environment:
-      - PORT=7492
-      - PIZZAPI_REDIS_URL=redis://redis:6379
-      - BETTER_AUTH_SECRET={{BETTER_AUTH_SECRET}}
-      - VAPID_PUBLIC_KEY={{VAPID_PUBLIC_KEY}}
-      - VAPID_PRIVATE_KEY={{VAPID_PRIVATE_KEY}}
-      - VAPID_SUBJECT={{VAPID_SUBJECT}}
-{{EXTRA_ORIGINS_LINE}}{{TRUST_PROXY_LINE}}{{PROXY_DEPTH_LINE}}    volumes:
-      - {{DATA_DIR}}:/app/data:Z
-{{UI_VOLUME_LINE}}    depends_on:
-      redis:
-        condition: service_started
-{{UI_DEPENDS_ON_LINE}}    restart: unless-stopped
-    stop_grace_period: 30s
-
-volumes:
-  ui-dist:
-`;
+{{APP_SERVICE_BLOCK}}{{VOLUMES_SECTION}}`;
 
 describe("web.ts compose template", () => {
     test("inlined template matches external template file", () => {
@@ -70,6 +48,73 @@ describe("web.ts compose template", () => {
         const external = readFileSync(externalPath, "utf-8");
         expect(COMPOSE_TEMPLATE).toBe(external);
     });
+
+    test("template contains all required placeholders", () => {
+        expect(COMPOSE_TEMPLATE).toContain("{{REDIS_PLATFORM_LINE}}");
+        expect(COMPOSE_TEMPLATE).toContain("{{APP_SERVICE_BLOCK}}");
+        expect(COMPOSE_TEMPLATE).toContain("{{VOLUMES_SECTION}}");
+        expect(COMPOSE_TEMPLATE).not.toContain("{{UI_SERVICE_BLOCK}}");
+        expect(COMPOSE_TEMPLATE).not.toContain("{{UI_VOLUME_LINE}}");
+        expect(COMPOSE_TEMPLATE).not.toContain("{{UI_DEPENDS_ON_LINE}}");
+    });
+
+    test("template substitution produces dev compose structure", () => {
+        const devBlock = `  dev:\n    build:\n      context: /home/user/.pizzapi/web/repo\n      dockerfile: Dockerfile\n      target: builder\n    command: bun run dev\n    ports:\n      - "7492:7492"\n      - "5173:5173"\n    environment:\n      - PORT=7492\n      - PIZZAPI_REDIS_URL=redis://redis:6379\n      - BETTER_AUTH_SECRET=Secret123\n      - AUTH_DB_PATH=/app/data/auth.db\n      - VAPID_PUBLIC_KEY=BTestPublicKey123\n      - VAPID_PRIVATE_KEY=TestPrivateKey456\n      - VAPID_SUBJECT=mailto:admin@pizzapi.local\n      - PIZZAPI_EXTRA_ORIGINS=https://example.com\n      # - PIZZAPI_TRUST_PROXY=\n      # - PIZZAPI_PROXY_DEPTH=\n    volumes:\n      - /home/user/.pizzapi/web/repo:/app:Z\n      - /app/node_modules\n      - /home/user/.pizzapi/web/data:/app/data:Z\n    depends_on:\n      redis:\n        condition: service_healthy\n    restart: unless-stopped\n    stop_grace_period: 30s\n\n`;
+        const composed = COMPOSE_TEMPLATE
+            .replace(/\{\{REDIS_PLATFORM_LINE}}/g, "    platform: linux/arm64\n")
+            .replace(/\{\{APP_SERVICE_BLOCK}}/g, devBlock)
+            .replace(/\{\{VOLUMES_SECTION}}/g, "");
+
+        expect(composed).not.toContain("{{");
+        expect(composed).not.toContain("}}");
+        expect(composed).toContain("services:");
+        expect(composed).toContain("redis:");
+        expect(composed).toContain("redis-cli");
+        expect(composed).toContain("dev:");
+        expect(composed).toContain('target: builder');
+        expect(composed).toContain('command: bun run dev');
+        expect(composed).toContain('"7492:7492"');
+        expect(composed).toContain('"5173:5173"');
+        expect(composed).toContain("BETTER_AUTH_SECRET=Secret123");
+        expect(composed).toContain("VAPID_PUBLIC_KEY=BTestPublicKey123");
+        expect(composed).toContain("VAPID_PRIVATE_KEY=TestPrivateKey456");
+        expect(composed).toContain("VAPID_SUBJECT=mailto:admin@pizzapi.local");
+        expect(composed).toContain("PIZZAPI_EXTRA_ORIGINS=https://example.com");
+        expect(composed).toContain("AUTH_DB_PATH=/app/data/auth.db");
+        expect(composed).toContain("/home/user/.pizzapi/web/data:/app/data:Z");
+        expect(composed).toContain("/home/user/.pizzapi/web/repo:/app:Z");
+        expect(composed).toContain("/app/node_modules");
+    });
+
+    test("template substitution produces prod compose structure", () => {
+        const prodBlock = `  ui:\n    image: ghcr.io/pizzaface/pizzapi-ui:latest\n    pull_policy: always\n    command: ["/bin/sh", "-c", "rm -rf /ui-dist/* && cp -a /usr/share/nginx/html/. /ui-dist/ && tail -f /dev/null"]\n    volumes:\n      - ui-dist:/ui-dist\n    healthcheck:\n      test: ["CMD", "test", "-f", "/ui-dist/index.html"]\n      interval: 10s\n      timeout: 5s\n      retries: 5\n    restart: unless-stopped\n\n  server:\n    build:\n      context: /home/user/.pizzapi/web/repo\n      dockerfile: Dockerfile\n      target: runtime-no-ui\n      args:\n        PREBUILT_UI: "true"\n        UI_DIST_HASH: "abc123def456"\n    ports:\n      - "7492:7492"\n    environment:\n      - PORT=7492\n      - PIZZAPI_REDIS_URL=redis://redis:6379\n      - BETTER_AUTH_SECRET=Secret123\n      - VAPID_PUBLIC_KEY=BTestPublicKey123\n      - VAPID_PRIVATE_KEY=TestPrivateKey456\n      - VAPID_SUBJECT=mailto:admin@pizzapi.local\n      - PIZZAPI_EXTRA_ORIGINS=https://example.com\n      # - PIZZAPI_TRUST_PROXY=\n      # - PIZZAPI_PROXY_DEPTH=\n    volumes:\n      - /home/user/.pizzapi/web/data:/app/data:Z\n      - ui-dist:/app/packages/ui/dist:ro\n    depends_on:\n      redis:\n        condition: service_started\n      ui:\n        condition: service_healthy\n    restart: unless-stopped\n    stop_grace_period: 30s\n\n`;
+        const composed = COMPOSE_TEMPLATE
+            .replace(/\{\{REDIS_PLATFORM_LINE}}/g, "    platform: linux/arm64\n")
+            .replace(/\{\{APP_SERVICE_BLOCK}}/g, prodBlock)
+            .replace(/\{\{VOLUMES_SECTION}}/g, "volumes:\n  ui-dist:\n");
+
+        expect(composed).not.toContain("{{");
+        expect(composed).not.toContain("}}");
+        expect(composed).toContain('target: runtime-no-ui');
+        expect(composed).toContain('redis-cli');
+        expect(composed).toContain('image: ghcr.io/pizzaface/pizzapi-ui:latest');
+        expect(composed).toContain('ui-dist:/app/packages/ui/dist:ro');
+        expect(composed).toContain('PREBUILT_UI: "true"');
+        expect(composed).toContain('UI_DIST_HASH: "abc123def456"');
+    });
+
+    test("template with no extra origins produces commented-out line", () => {
+        const devBlock = `  dev:\n    build:\n      context: /repo\n      dockerfile: Dockerfile\n      target: builder\n    command: bun run dev\n    ports:\n      - "7492:7492"\n      - "5173:5173"\n    environment:\n      - PORT=7492\n      - PIZZAPI_REDIS_URL=redis://redis:6379\n      - BETTER_AUTH_SECRET=Secret\n      - VAPID_PUBLIC_KEY=key\n      - VAPID_PRIVATE_KEY=key\n      - VAPID_SUBJECT=mailto:test@test.com\n      # - PIZZAPI_EXTRA_ORIGINS=\n      # - PIZZAPI_TRUST_PROXY=\n      # - PIZZAPI_PROXY_DEPTH=\n    volumes:\n      - /repo:/app:Z\n      - /app/node_modules\n      - /data:/app/data:Z\n    depends_on:\n      redis:\n        condition: service_healthy\n    restart: unless-stopped\n    stop_grace_period: 30s\n\n`;
+        const composed = COMPOSE_TEMPLATE
+            .replace(/\{\{REDIS_PLATFORM_LINE}}/g, "    platform: linux/amd64\n")
+            .replace(/\{\{APP_SERVICE_BLOCK}}/g, devBlock)
+            .replace(/\{\{VOLUMES_SECTION}}/g, "");
+
+        expect(composed).toContain("# - PIZZAPI_EXTRA_ORIGINS=");
+        expect(composed).toContain("redis-cli");
+        expect(composed).not.toContain("{{");
+    });
+});
 
 describe("shouldInstallDependencies", () => {
     test("requires install when node_modules missing", () => {
@@ -154,92 +199,6 @@ describe("readBooleanEnv", () => {
         expect(readBooleanEnv("maybe", true)).toBe(true);
     });
 });
-
-    test("template contains all required placeholders", () => {
-        expect(COMPOSE_TEMPLATE).toContain("{{REPO_PATH}}");
-        expect(COMPOSE_TEMPLATE).toContain("{{PORT}}");
-        expect(COMPOSE_TEMPLATE).toContain("{{DATA_DIR}}");
-        expect(COMPOSE_TEMPLATE).toContain("{{BETTER_AUTH_SECRET}}");
-        expect(COMPOSE_TEMPLATE).toContain("{{VAPID_PUBLIC_KEY}}");
-        expect(COMPOSE_TEMPLATE).toContain("{{VAPID_PRIVATE_KEY}}");
-        expect(COMPOSE_TEMPLATE).toContain("{{VAPID_SUBJECT}}");
-        expect(COMPOSE_TEMPLATE).toContain("{{REDIS_PLATFORM_LINE}}");
-        expect(COMPOSE_TEMPLATE).toContain("{{EXTRA_ORIGINS_LINE}}");
-        expect(COMPOSE_TEMPLATE).toContain("{{UI_SERVICE_BLOCK}}");
-        expect(COMPOSE_TEMPLATE).toContain("{{UI_VOLUME_LINE}}");
-        expect(COMPOSE_TEMPLATE).toContain("{{UI_DEPENDS_ON_LINE}}");
-        expect(COMPOSE_TEMPLATE).toContain("{{SERVER_BUILD_TARGET}}");
-        expect(COMPOSE_TEMPLATE).toContain("{{PREBUILT_UI}}");
-        expect(COMPOSE_TEMPLATE).toContain("{{UI_DIST_HASH}}");
-    });
-
-    test("template substitution produces valid compose structure", () => {
-        const composed = COMPOSE_TEMPLATE
-            .replace(/\{\{REDIS_PLATFORM_LINE}}/g, "    platform: linux/arm64\n")
-            .replace(/\{\{REPO_PATH}}/g, "/home/user/.pizzapi/web/repo")
-            .replace(/\{\{PORT}}/g, "7492")
-            .replace(/\{\{DATA_DIR}}/g, "/home/user/.pizzapi/web/data")
-            .replace(/\{\{BETTER_AUTH_SECRET}}/g, "Secret123")
-            .replace(/\{\{VAPID_PUBLIC_KEY}}/g, "BTestPublicKey123")
-            .replace(/\{\{VAPID_PRIVATE_KEY}}/g, "TestPrivateKey456")
-            .replace(/\{\{VAPID_SUBJECT}}/g, "mailto:admin@pizzapi.local")
-            .replace(/\{\{EXTRA_ORIGINS_LINE}}/g, "      - PIZZAPI_EXTRA_ORIGINS=https://example.com\n")
-            .replace(/\{\{TRUST_PROXY_LINE}}/g, "      # - PIZZAPI_TRUST_PROXY=\n")
-            .replace(/\{\{PROXY_DEPTH_LINE}}/g, "      # - PIZZAPI_PROXY_DEPTH=\n")
-            .replace(/\{\{UI_SERVICE_BLOCK}}/g, "  ui:\n    image: ghcr.io/pizzaface/pizzapi-ui:latest\n")
-            .replace(/\{\{UI_VOLUME_LINE}}/g, "      - ui-dist:/app/packages/ui/dist:ro\n")
-            .replace(/\{\{UI_DEPENDS_ON_LINE}}/g, "      - ui\n")
-            .replace(/\{\{SERVER_BUILD_TARGET}}/g, "runtime-no-ui")
-            .replace(/\{\{PREBUILT_UI}}/g, "true")
-            .replace(/\{\{UI_DIST_HASH}}/g, "abc123def456");
-
-        // No unsubstituted placeholders remain
-        expect(composed).not.toContain("{{");
-        expect(composed).not.toContain("}}");
-
-        // Basic structural checks
-        expect(composed).toContain("services:");
-        expect(composed).toContain("redis:");
-        expect(composed).toContain("server:");
-        expect(composed).toContain('context: /home/user/.pizzapi/web/repo');
-        expect(composed).toContain('target: runtime-no-ui');
-        expect(composed).toContain('image: ghcr.io/pizzaface/pizzapi-ui:latest');
-        expect(composed).toContain('"7492:7492"');
-        expect(composed).toContain("BETTER_AUTH_SECRET=Secret123");
-        expect(composed).toContain("VAPID_PUBLIC_KEY=BTestPublicKey123");
-        expect(composed).toContain("VAPID_PRIVATE_KEY=TestPrivateKey456");
-        expect(composed).toContain("VAPID_SUBJECT=mailto:admin@pizzapi.local");
-        expect(composed).toContain("PIZZAPI_EXTRA_ORIGINS=https://example.com");
-        expect(composed).toContain("/home/user/.pizzapi/web/data:/app/data:Z");
-        expect(composed).toContain("ui-dist:/app/packages/ui/dist:ro");
-        expect(composed).toContain('PREBUILT_UI: "true"');
-    });
-
-    test("template with no extra origins produces commented-out line", () => {
-        const composed = COMPOSE_TEMPLATE
-            .replace(/\{\{REDIS_PLATFORM_LINE}}/g, "    platform: linux/amd64\n")
-            .replace(/\{\{REPO_PATH}}/g, "/repo")
-            .replace(/\{\{PORT}}/g, "7492")
-            .replace(/\{\{DATA_DIR}}/g, "/data")
-            .replace(/\{\{BETTER_AUTH_SECRET}}/g, "Secret")
-            .replace(/\{\{VAPID_PUBLIC_KEY}}/g, "key")
-            .replace(/\{\{VAPID_PRIVATE_KEY}}/g, "key")
-            .replace(/\{\{VAPID_SUBJECT}}/g, "mailto:test@test.com")
-            .replace(/\{\{EXTRA_ORIGINS_LINE}}/g, "      # - PIZZAPI_EXTRA_ORIGINS=\n")
-            .replace(/\{\{TRUST_PROXY_LINE}}/g, "      # - PIZZAPI_TRUST_PROXY=\n")
-            .replace(/\{\{PROXY_DEPTH_LINE}}/g, "      # - PIZZAPI_PROXY_DEPTH=\n")
-            .replace(/\{\{UI_SERVICE_BLOCK}}/g, "")
-            .replace(/\{\{UI_VOLUME_LINE}}/g, "")
-            .replace(/\{\{UI_DEPENDS_ON_LINE}}/g, "")
-            .replace(/\{\{SERVER_BUILD_TARGET}}/g, "runtime")
-            .replace(/\{\{PREBUILT_UI}}/g, "false")
-            .replace(/\{\{UI_DIST_HASH}}/g, "none");
-
-        expect(composed).toContain("# - PIZZAPI_EXTRA_ORIGINS=");
-        expect(composed).not.toContain("{{");
-    });
-});
-
 // --- Migration tests ---
 
 const FULL_COMPOSE = `services:
@@ -534,10 +493,11 @@ describe("resolveMissingProxySettings", () => {
 });
 
 describe("parseArgs", () => {
-    test("defaults: latest tag, local build off, detach true, noCache false, help false", () => {
+    test("defaults: latest tag, local build off, dev ui off, detach true, noCache false, help false", () => {
         const r = parseArgs([]);
         expect(r.tag).toBe("latest");
         expect(r.build).toBe(false);
+        expect(r.devUi).toBe(false);
         expect(r.detach).toBe(true);
         expect(r.noCache).toBe(false);
         expect(r.help).toBe(false);
@@ -548,9 +508,14 @@ describe("parseArgs", () => {
         expect(r.tag).toBe("main");
     });
 
-    test("--build enables local build fallback", () => {
+    test("--build enables local build mode", () => {
         const r = parseArgs(["--build"]);
         expect(r.build).toBe(true);
+    });
+
+    test("--dev-ui enables local dev ui mode", () => {
+        const r = parseArgs(["--dev-ui"]);
+        expect(r.devUi).toBe(true);
     });
 
     test("--no-cache sets noCache", () => {
@@ -568,12 +533,13 @@ describe("parseArgs", () => {
     });
 
     test("combines multiple flags", () => {
-        const r = parseArgs(["--no-cache", "-f", "--port", "9000", "--tag", "sha123", "--build"]);
+        const r = parseArgs(["--no-cache", "-f", "--port", "9000", "--tag", "sha123", "--build", "--dev-ui"]);
         expect(r.noCache).toBe(true);
         expect(r.detach).toBe(false);
         expect(r.port).toBe(9000);
         expect(r.tag).toBe("sha123");
         expect(r.build).toBe(true);
+        expect(r.devUi).toBe(true);
     });
 });
 
