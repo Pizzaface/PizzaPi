@@ -111,7 +111,10 @@ describe("hydrateViewerFromCache — delta resume path", () => {
         expect(getLatestCachedSnapshotEvent).not.toHaveBeenCalled();
     });
 
-    test("falls back to snapshot when delta returns no events after lastSeq", async () => {
+    test("returns false (runner recovery) when delta returns no events after lastSeq", async () => {
+        // When lastSeq is provided but delta replay yields nothing, we must NOT fall back
+        // to a snapshot — it has no seq and could roll back the client transcript.
+        // Return false so the caller triggers runner-driven recovery instead.
         const snapshot = { type: "session_active", state: { messages: [] } };
         const deps = createDeps({
             getCachedRelayEventsAfterSeq: mock(async () => []),
@@ -121,10 +124,8 @@ describe("hydrateViewerFromCache — delta resume path", () => {
         const { emit, calls } = createMockSocket();
         const result = await hydrateViewerFromCache({ emit }, "sess-011", { lastSeq: 5 }, deps);
 
-        expect(result).toBe(true);
-        expect(calls.length).toBe(1);
-        expect(calls[0].payload).toMatchObject({ event: snapshot, replay: true });
-        expect((calls[0].payload as Record<string, unknown>).deltaReplay).toBeUndefined();
+        expect(result).toBe(false);
+        expect(calls.length).toBe(0);
     });
 
     test("returns false when both delta and snapshot are empty — cold start", async () => {
@@ -155,7 +156,10 @@ describe("hydrateViewerFromCache — delta resume path", () => {
         expect(calls[0].payload).toMatchObject({ seq: 42, deltaReplay: true });
     });
 
-    test("falls back to snapshot when all delta events lack seq (legacy cache)", async () => {
+    test("returns false (runner recovery) when all delta events lack seq (legacy cache)", async () => {
+        // All cached events pre-date seq stamping — none have a seq field, so delta
+        // replay emits nothing.  Same reasoning as above: don't snapshot-fallback;
+        // return false and let the caller request runner recovery.
         const snapshot = { type: "session_active", state: { messages: [{ role: "assistant" }] } };
         const deps = createDeps({
             getCachedRelayEventsAfterSeq: mock(async () => [{ event: { type: "old_event" } }]),
@@ -165,9 +169,8 @@ describe("hydrateViewerFromCache — delta resume path", () => {
         const { emit, calls } = createMockSocket();
         const result = await hydrateViewerFromCache({ emit }, "sess-014", { lastSeq: 3 }, deps);
 
-        expect(result).toBe(true);
-        expect(calls.length).toBe(1);
-        expect(calls[0].payload).toMatchObject({ event: snapshot, replay: true });
+        expect(result).toBe(false);
+        expect(calls.length).toBe(0);
     });
 });
 
