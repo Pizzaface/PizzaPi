@@ -61,7 +61,38 @@ const SESSION_SUBS_KEY = (sessionId: string) =>
 const RUNNER_TYPE_INDEX_KEY = (runnerId: string, triggerType: string) =>
     `pizzapi:trigger-subs:runner:${runnerId}:${triggerType}`;
 
+// Shared Redis key for the globally monotonic revision counter.
+// All server nodes INCR the same key so revisions are ordered cluster-wide.
+const TRIGGER_SUB_REVISION_KEY = "pizzapi:trigger-sub-revision";
+
 const DEFAULT_TTL_SECONDS = 24 * 60 * 60; // 24 hours
+
+// ── Global revision counter ──────────────────────────────────────────────────
+
+// Process-local fallback counter used only when Redis is unavailable.
+let _localRevision = 0;
+
+/**
+ * Atomically increment and return the global trigger subscription revision.
+ *
+ * Uses Redis INCR so the counter is monotonically increasing across ALL server
+ * nodes in a cluster. This prevents the runner's stale-drop filter from
+ * discarding valid deltas that originated on a different server node.
+ *
+ * Falls back to a process-local counter when Redis is unavailable (single-node
+ * mode or during startup before Redis connects).
+ */
+export async function nextTriggerSubRevision(): Promise<number> {
+    const redis = await getClient();
+    if (redis) {
+        try {
+            return await redis.incr(TRIGGER_SUB_REVISION_KEY);
+        } catch (err) {
+            log.warn("Failed to increment trigger sub revision in Redis, using local counter:", err);
+        }
+    }
+    return ++_localRevision;
+}
 
 // ── Public API ───────────────────────────────────────────────────────────
 

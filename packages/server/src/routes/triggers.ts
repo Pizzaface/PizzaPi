@@ -616,7 +616,7 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
         // Also emit the legacy subscription_params_changed event for backward
         // compat with runners that haven't been updated yet.
         if (session.runnerId) {
-            emitTriggerSubscriptionDelta(session.runnerId, {
+            void emitTriggerSubscriptionDelta(session.runnerId, {
                 action: "subscribe",
                 subscription: {
                     sessionId,
@@ -674,7 +674,7 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
         // Notify the runner via typed delta so it can clean up runtime state
         // (e.g. cancel timers). Uses cluster-safe emitTriggerSubscriptionDelta.
         if (session.runnerId) {
-            emitTriggerSubscriptionDelta(session.runnerId, {
+            void emitTriggerSubscriptionDelta(session.runnerId, {
                 action: "unsubscribe",
                 subscription: {
                     sessionId,
@@ -824,7 +824,7 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
 
         // Notify the runner via typed delta and legacy event
         if (session.runnerId) {
-            emitTriggerSubscriptionDelta(session.runnerId, {
+            void emitTriggerSubscriptionDelta(session.runnerId, {
                 action: "update",
                 subscription: {
                     sessionId,

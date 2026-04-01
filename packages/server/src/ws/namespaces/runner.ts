@@ -23,7 +23,7 @@ import type {
 } from "@pizzapi/protocol";
 import { shouldPreserveOnSocketDisconnect } from "../../health.js";
 import { apiKeyAuthMiddleware } from "./auth.js";
-import { getSubscriptionsForRunnerSessions } from "../../sessions/trigger-subscription-store.js";
+import { getSubscriptionsForRunnerSessions, nextTriggerSubRevision } from "../../sessions/trigger-subscription-store.js";
 
 // Inline definitions mirror packages/protocol/src/shared.ts.
 // Using local aliases avoids a cross-worktree symlink resolution issue where
@@ -32,26 +32,24 @@ import { getSubscriptionsForRunnerSessions } from "../../sessions/trigger-subscr
 type ServiceEnvelope = { serviceId: string; type: string; requestId?: string; payload: unknown };
 
 // ── Trigger subscription reconciliation ──────────────────────────────────────
-// Monotonic revision counter for ordering snapshots and deltas.
-// Starts at 1 so that revision 0 is reserved for "never seen a snapshot".
-let triggerSubRevision = 0;
-
-/** Get the next revision number for trigger subscription events. */
-function nextTriggerSubRevision(): number {
-    return ++triggerSubRevision;
-}
+// Revision counter is now Redis-backed (globally monotonic across all server
+// nodes). See nextTriggerSubRevision() in trigger-subscription-store.ts.
 
 /**
  * Emit a trigger_subscription_delta to a runner. Exported so the triggers
  * REST API can notify runners of subscribe/update/unsubscribe changes.
+ *
+ * Async because the revision is fetched from Redis INCR to ensure it is
+ * globally monotonic across all server nodes in a cluster.
  */
-export function emitTriggerSubscriptionDelta(
+export async function emitTriggerSubscriptionDelta(
     runnerId: string,
     delta: Omit<TriggerSubscriptionDelta, "revision">,
-): void {
+): Promise<void> {
+    const revision = await nextTriggerSubRevision();
     emitToRunnerRoom(runnerId, "trigger_subscription_delta", {
         ...delta,
-        revision: nextTriggerSubRevision(),
+        revision,
     });
 }
 
@@ -452,10 +450,16 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
                         if (!sessionIdsList.includes(sid)) sessionIdsList.push(sid);
                     }
                 }
+                // P1 fix: capture the revision BEFORE the async snapshot read.
+                // Any delta emitted concurrently will call nextTriggerSubRevision()
+                // after this point and therefore receive a strictly higher revision,
+                // so the runner will never overwrite delta-applied state with a stale
+                // snapshot.
+                const snapshotRevision = await nextTriggerSubRevision();
                 if (sessionIdsList.length > 0) {
                     const allSubs = await getSubscriptionsForRunnerSessions(sessionIdsList);
                     socket.emit("trigger_subscriptions_snapshot" as any, {
-                        revision: nextTriggerSubRevision(),
+                        revision: snapshotRevision,
                         subscriptions: allSubs.map(s => ({
                             sessionId: s.sessionId,
                             triggerType: s.triggerType,
@@ -469,7 +473,7 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
                 } else {
                     // No sessions — send empty snapshot so runner knows state is clean
                     socket.emit("trigger_subscriptions_snapshot" as any, {
-                        revision: nextTriggerSubRevision(),
+                        revision: snapshotRevision,
                         subscriptions: [],
                     });
                     log.info(`[trigger-reconciliation] sent empty snapshot to runner ${result}`);
