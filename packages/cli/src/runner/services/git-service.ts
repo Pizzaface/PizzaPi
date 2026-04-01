@@ -199,6 +199,10 @@ export class GitService implements ServiceHandler {
         }
         this._cwdSubscribers.clear();
         this._sessionCwd.clear();
+        this._cwdRepoRoot.clear();
+        this._statusCache.clear();
+        this._statusGeneration.clear();
+        this._statusInFlight.clear();
         this._socket = null;
         this._onServiceMessage = null;
     }
@@ -263,6 +267,33 @@ export class GitService implements ServiceHandler {
         if (subscribers.size > 0) return;
         this._cwdSubscribers.delete(cwd);
         this.stopWatchingRepo(cwd);
+        // Evict all cache entries for this cwd so maps stay bounded across sessions.
+        this.evictCwdCacheEntries(cwd);
+    }
+
+    /**
+     * Evict all cwd-keyed cache state when the last subscriber for a cwd leaves.
+     * Without this, _cwdRepoRoot / _statusCache / _statusGeneration grow unboundedly
+     * and invalidateStatusCacheFamily() degrades to an O(N) scan over dead entries.
+     */
+    private evictCwdCacheEntries(cwd: string): void {
+        const repoRoot = this._cwdRepoRoot.get(cwd);
+        this._cwdRepoRoot.delete(cwd);
+        this._statusCache.delete(cwd);
+        this._statusGeneration.delete(cwd);
+        this._statusInFlight.delete(cwd);
+
+        // If the repoRoot self-mapping (repoRoot → repoRoot) is no longer referenced
+        // by any remaining active cwd, evict it too.
+        if (repoRoot && repoRoot !== cwd) {
+            const stillReferenced = [...this._cwdRepoRoot.values()].some((r) => r === repoRoot);
+            if (!stillReferenced) {
+                this._cwdRepoRoot.delete(repoRoot);
+                this._statusCache.delete(repoRoot);
+                this._statusGeneration.delete(repoRoot);
+                this._statusInFlight.delete(repoRoot);
+            }
+        }
     }
 
     /** Cleanup subscriber/watcher state when a session ends. */
