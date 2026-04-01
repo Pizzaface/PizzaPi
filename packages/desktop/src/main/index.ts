@@ -46,6 +46,32 @@ function createWindow(): BrowserWindow {
     },
   });
 
+  // Make the top of the page draggable (window title bar region).
+  // Inject CSS after every page load so the user can drag the window
+  // from the top bar area, just like a native macOS app.
+  win.webContents.on("did-finish-load", () => {
+    win.webContents.insertCSS(`
+      /* Draggable title bar region for Electron */
+      body::before {
+        content: '';
+        display: block;
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        height: 38px;
+        -webkit-app-region: drag;
+        z-index: 99999;
+        pointer-events: auto;
+      }
+      /* Make interactive elements within the title bar area clickable */
+      button, a, input, select, textarea, [role="button"], [role="menuitem"],
+      [data-radix-collection-item], [cmdk-input], [cmdk-item] {
+        -webkit-app-region: no-drag;
+      }
+    `);
+  });
+
   // Hide instead of close (app lives in tray)
   win.on("close", (event) => {
     if (!isQuitting) {
