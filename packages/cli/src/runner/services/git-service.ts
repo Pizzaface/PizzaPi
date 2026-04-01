@@ -1116,10 +1116,10 @@ export class GitService implements ServiceHandler {
     ): Promise<void> {
         const cwd = this.validateCwd(payload.cwd, "git_pull_result", requestId, sessionId);
         if (!cwd) return;
-        const rebase = payload.rebase === true;
+        const rebase = payload.rebase !== false;
 
         try {
-            const args = rebase ? ["pull", "--rebase"] : ["pull"];
+            const args = rebase ? ["pull", "--rebase"] : ["pull", "--ff-only"];
             const result = await this._execGit(args, { cwd, timeout: 60000 });
             const output = (result.stdout + "\n" + result.stderr).trim();
             await this.invalidateStatusCacheFamily(cwd);
@@ -1133,6 +1133,8 @@ export class GitService implements ServiceHandler {
         }
     }
 
+    // ── git merge ───────────────────────────────────────────────────────
+
     private async handleMerge(
         payload: Record<string, unknown>,
         requestId?: string,
@@ -1140,6 +1142,7 @@ export class GitService implements ServiceHandler {
     ): Promise<void> {
         const cwd = this.validateCwd(payload.cwd, "git_merge_result", requestId, sessionId);
         if (!cwd) return;
+
         const branch = typeof payload.branch === "string" ? payload.branch : "";
         if (!branch || !isValidBranchName(branch)) {
             this.emitError("git_merge_result", "Invalid branch name", requestId, sessionId);

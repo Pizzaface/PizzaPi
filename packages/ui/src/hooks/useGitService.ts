@@ -563,7 +563,7 @@ export function useGitService(cwd: string): UseGitServiceReturn {
         send("git_push", { cwd, setUpstream }, requestId);
     }, [available, send, cwd, makeRequestId, registerRequestGeneration]);
 
-    const pull = useCallback((rebase = false) => {
+    const pull = useCallback((rebase = true) => {
         if (!available) return;
         const requestId = makeRequestId();
         registerRequestGeneration(requestId);
