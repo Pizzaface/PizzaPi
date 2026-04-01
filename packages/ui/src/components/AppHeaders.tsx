@@ -32,6 +32,7 @@ import {
 } from "lucide-react";
 import { signOut } from "@/lib/auth-client";
 import { useTheme, type ThemeMode } from "@/components/ThemeProvider";
+import { ActionCenterButton } from "@/components/action-center/ActionCenterButton";
 
 const THEME_CYCLE: ThemeMode[] = ["auto", "light", "dark"];
 const THEME_ICON: Record<ThemeMode, React.ReactNode> = {
@@ -111,6 +112,7 @@ export interface DesktopHeaderProps {
   onShowShortcuts: () => void;
   onChangePassword: () => void;
   onRefreshUsage: () => boolean | void;
+  onOpenActionCenter?: () => void;
 }
 
 export const DesktopHeader = React.memo(function DesktopHeader({
@@ -128,6 +130,7 @@ export const DesktopHeader = React.memo(function DesktopHeader({
   onShowShortcuts,
   onChangePassword,
   onRefreshUsage,
+  onOpenActionCenter,
 }: DesktopHeaderProps) {
   return (
     <header className="hidden md:flex items-center justify-between gap-3 border-b bg-background px-4 pb-2 pt-[calc(0.5rem_+_env(safe-area-inset-top))] flex-shrink-0">
@@ -154,6 +157,10 @@ export const DesktopHeader = React.memo(function DesktopHeader({
       </div>
 
       <div className="flex items-center gap-2">
+        {onOpenActionCenter && (
+          <ActionCenterButton onClick={onOpenActionCenter} />
+        )}
+
         <ThemeToggleButton />
 
         <NotificationToggle />
@@ -261,6 +268,7 @@ export interface MobileHeaderProps {
   onOpenSession: (id: string) => void;
   onNewSession: () => void;
   onSessionSwitcherOpenChange: (open: boolean) => void;
+  onOpenActionCenter?: () => void;
 }
 
 export const MobileHeader = React.memo(function MobileHeader({
@@ -287,6 +295,7 @@ export const MobileHeader = React.memo(function MobileHeader({
   onOpenSession,
   onNewSession,
   onSessionSwitcherOpenChange,
+  onOpenActionCenter,
 }: MobileHeaderProps) {
   return (
     <header
@@ -390,8 +399,11 @@ export const MobileHeader = React.memo(function MobileHeader({
         </DropdownMenu>
       </div>
 
-      {/* Right: usage + account */}
+      {/* Right: action center + usage + account */}
       <div className="flex items-center gap-1 flex-shrink-0">
+        {onOpenActionCenter && (
+          <ActionCenterButton onClick={onOpenActionCenter} compact />
+        )}
         {(providerUsage || authSource) && (
           <div className="hidden xs:flex">
             <UsageIndicator

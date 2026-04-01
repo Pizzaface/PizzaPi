@@ -2,6 +2,7 @@ import { createRoot } from "react-dom/client";
 import { createElement } from "react";
 import { App } from "./App.js";
 import { ErrorBoundary } from "./components/ui/error-boundary.js";
+import { AttentionProvider } from "./attention/index.js";
 import "./style.css";
 
 // Apply dark mode before first render to avoid flash
@@ -16,5 +17,7 @@ const root = document.getElementById("app")!;
 // so the boundary must be *outside* App — hence it lives here in main.ts rather than
 // inside App's own render method.
 createRoot(root).render(
-    createElement(ErrorBoundary, { level: "root", children: createElement(App) }),
+    createElement(ErrorBoundary, { level: "root", children:
+        createElement(AttentionProvider, null, createElement(App)),
+    }),
 );
