@@ -4,7 +4,7 @@
  * Tests the route handler logic with mocked dependencies (Redis, SIO registry).
  */
 
-import { describe, test, expect, beforeEach, afterAll, mock, spyOn } from "bun:test";
+import { describe, test, expect, beforeEach, afterEach, afterAll, mock, spyOn } from "bun:test";
 
 const isCI = !!process.env.CI;
 
@@ -73,6 +73,8 @@ const mockGetSubscribersForTrigger = mock((_rid: string, _type: string) => Promi
 const mockGetSubscriptionParams = mock((_sid: string, _type: string) => Promise.resolve(undefined as any));
 const mockGetSubscriptionFilters = mock((_sid: string, _type: string) => Promise.resolve(undefined as any));
 const mockUpdateSessionSubscription = mock((_sid: string, _type: string, _updates: any) => Promise.resolve({ updated: false } as any));
+const mockClearSessionSubscriptions = mock((_sid: string) => Promise.resolve());
+const mockGetSubscriptionsForRunnerSessions = mock((_runnerId: string, _sessionIds: string[]) => Promise.resolve([] as any[]));
 mock.module("../sessions/trigger-subscription-store.js", () => ({
     subscribeSessionToTrigger: mockSubscribeSessionToTrigger,
     unsubscribeSessionFromTrigger: mockUnsubscribeSessionFromTrigger,
@@ -81,16 +83,28 @@ mock.module("../sessions/trigger-subscription-store.js", () => ({
     getSubscriptionParams: mockGetSubscriptionParams,
     getSubscriptionFilters: mockGetSubscriptionFilters,
     updateSessionSubscription: mockUpdateSessionSubscription,
+    clearSessionSubscriptions: mockClearSessionSubscriptions,
+    getSubscriptionsForRunnerSessions: mockGetSubscriptionsForRunnerSessions,
 }));
 
 // ── Mock runners registry ────────────────────────────────────────────────
-// Use spyOn instead of mock.module to avoid poisoning the module cache
-// for other test files that import runners.js in the same Bun process.
+// Use per-test spyOn setup instead of a file-global spy so mocked runner
+// helpers cannot leak into later test files running in the same Bun worker.
 import * as _runnersModule from "../ws/sio-registry/runners.js";
-const mockGetRunnerServices = spyOn(_runnersModule, "getRunnerServices")
-    .mockImplementation((_rid: string) => Promise.resolve(null as any));
-const mockGetRunnerData = spyOn(_runnersModule, "getRunnerData")
-    .mockImplementation((_rid: string) => Promise.resolve({ userId: "user-1", runnerId: "runner-A" } as any));
+let mockGetRunnerServices: ReturnType<typeof spyOn>;
+let mockGetRunnerData: ReturnType<typeof spyOn>;
+
+beforeEach(() => {
+    mockGetRunnerServices = spyOn(_runnersModule, "getRunnerServices")
+        .mockImplementation((_rid: string) => Promise.resolve(null as any));
+    mockGetRunnerData = spyOn(_runnersModule, "getRunnerData")
+        .mockImplementation((_rid: string) => Promise.resolve({ userId: "user-1", runnerId: "runner-A" } as any));
+});
+
+afterEach(() => {
+    mockGetRunnerServices.mockRestore();
+    mockGetRunnerData.mockRestore();
+});
 
 // ── Mock logger ──────────────────────────────────────────────────────────
 // NOTE: @pizzapi/tools mock removed — log calls in tests are harmless,

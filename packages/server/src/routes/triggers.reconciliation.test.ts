@@ -8,7 +8,7 @@
  * These tests mock all external dependencies so they run with no Redis or Socket.IO.
  */
 
-import { describe, test, expect, beforeEach, mock } from "bun:test";
+import { afterAll, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
 
 // ── Mock emitTriggerSubscriptionDelta ────────────────────────────────────────
 // Must be declared before the dynamic import of the route handler so the
@@ -85,20 +85,24 @@ mock.module("../ws/runner-control.js", () => ({
     waitForSpawnAck: mock(() => Promise.resolve({ ok: true })),
 }));
 
-// ── Mock runners registry (spyOn not viable across modules; use mock.module) ──
+// ── Mock runners registry ──────────────────────────────────────────────────
+// Use spyOn instead of mock.module so this file cannot poison the module cache
+// for later test files that import runners.js in the same Bun worker.
 import * as _runnersModule from "../ws/sio-registry/runners.js";
 
 // Default: no runner services. Individual tests override as needed.
-const mockGetRunnerServices = mock((_rid: string) => Promise.resolve(null as any));
-const mockGetRunnerData = mock(() => Promise.resolve({ userId: "user-1", runnerId: "runner-A" } as any));
-
-mock.module("../ws/sio-registry/runners.js", () => ({
-    ..._runnersModule,
-    getRunnerServices: mockGetRunnerServices,
-    getRunnerData: mockGetRunnerData,
-}));
+const mockGetRunnerServices = spyOn(_runnersModule, "getRunnerServices")
+    .mockImplementation((_rid: string) => Promise.resolve(null as any));
+const mockGetRunnerData = spyOn(_runnersModule, "getRunnerData")
+    .mockImplementation(() => Promise.resolve({ userId: "user-1", runnerId: "runner-A" } as any));
 
 // ── Import route handler (after mocks) ──────────────────────────────────────
+afterAll(() => {
+    mockGetRunnerServices.mockRestore();
+    mockGetRunnerData.mockRestore();
+    mock.restore();
+});
+
 const { handleTriggersRoute } = await import("./triggers.js");
 
 // ── Helpers ──────────────────────────────────────────────────────────────────

@@ -94,6 +94,10 @@ afterAll(() => mock.restore());
 // Instead of mocking ./runners-broadcast.js (which is brittle if another test
 // imports it first), we provide a fake Socket.IO server via initSioRegistry()
 // and assert on emitted events.
+//
+// Reset any spies/mocks that may have leaked from previously-loaded test files
+// before importing the real runners module for this file.
+mock.restore();
 
 type EmitCall = {
     namespace: string;
