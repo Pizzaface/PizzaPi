@@ -388,6 +388,36 @@ export async function clearSessionSubscriptions(sessionId: string): Promise<void
     }
 }
 
+/**
+ * Get all active subscriptions for all sessions on a specific runner.
+ * Used to build the trigger_subscriptions_snapshot sent after runner registration.
+ *
+ * This scans all sessions connected to the runner and collects their subscriptions.
+ * The sessionIds parameter should come from getConnectedSessionsForRunner().
+ */
+export async function getSubscriptionsForRunnerSessions(
+    sessionIds: string[],
+): Promise<Array<{ sessionId: string; triggerType: string; runnerId: string; params?: SubscriptionParams; filters?: SubscriptionFilter[]; filterMode?: SubscriptionFilterMode }>> {
+    if (sessionIds.length === 0) return [];
+    const redis = await getClient();
+    if (!redis) return [];
+
+    const results: Array<{ sessionId: string; triggerType: string; runnerId: string; params?: SubscriptionParams; filters?: SubscriptionFilter[]; filterMode?: SubscriptionFilterMode }> = [];
+
+    for (const sessionId of sessionIds) {
+        try {
+            const subs = await listSessionSubscriptions(sessionId);
+            for (const sub of subs) {
+                results.push({ sessionId, ...sub });
+            }
+        } catch (err) {
+            log.warn(`Failed to list subscriptions for session ${sessionId}:`, err);
+        }
+    }
+
+    return results;
+}
+
 /** @deprecated Use `_resetRedisForTesting` instead. */
 export function _resetTriggerSubscriptionStoreForTesting(): void {
     _resetRedisForTesting();

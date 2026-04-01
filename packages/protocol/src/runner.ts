@@ -2,7 +2,60 @@
 // /runner namespace — Runner daemon ↔ Server
 // ============================================================================
 
-import type { RunnerSkill, RunnerAgent, RunnerPlugin, RunnerHook, ServiceAnnounceData, ServiceEnvelope, SocketClientMetadata } from "./shared.js";
+import type { RunnerSkill, RunnerAgent, RunnerPlugin, RunnerHook, ServiceAnnounceData, ServiceEnvelope, SocketClientMetadata, TriggerFilter, TriggerFilterMode } from "./shared.js";
+
+// ---------------------------------------------------------------------------
+// Trigger subscription reconciliation types
+// ---------------------------------------------------------------------------
+
+/**
+ * A single trigger subscription entry used in reconciliation snapshots/deltas.
+ * Mirrors the data stored in Redis by trigger-subscription-store.ts.
+ */
+export interface TriggerSubscriptionEntry {
+  sessionId: string;
+  triggerType: string;
+  runnerId: string;
+  params?: Record<string, string | number | boolean | Array<string | number | boolean>>;
+  filters?: TriggerFilter[];
+  filterMode?: TriggerFilterMode;
+}
+
+/**
+ * Full snapshot of all active subscriptions for a runner's sessions.
+ * Sent server → runner after registration so the runner can rebuild state.
+ */
+export interface TriggerSubscriptionsSnapshot {
+  /** Monotonic revision number for ordering. */
+  revision: number;
+  /** All active subscriptions for sessions on this runner. */
+  subscriptions: TriggerSubscriptionEntry[];
+}
+
+/**
+ * A single subscription change (add/update/remove).
+ * Sent server → runner when a subscription changes at runtime.
+ */
+export interface TriggerSubscriptionDelta {
+  /** Monotonic revision number for ordering. */
+  revision: number;
+  /** The type of change. */
+  action: "subscribe" | "update" | "unsubscribe";
+  /** The affected subscription entry. For unsubscribe, only sessionId + triggerType are required. */
+  subscription: TriggerSubscriptionEntry;
+}
+
+/**
+ * Ack from runner → server confirming it applied a snapshot or delta.
+ */
+export interface TriggerSubscriptionsApplied {
+  /** The revision number that was applied. */
+  revision: number;
+  /** Number of subscriptions successfully reconciled. */
+  applied: number;
+  /** Optional error messages for subscriptions that failed to reconcile. */
+  errors?: string[];
+}
 
 // ---------------------------------------------------------------------------
 // Client → Server (Runner daemon sends to server)
@@ -126,6 +179,9 @@ export interface RunnerClientToServerEvents {
   disconnect_session: (data: {
     sessionId: string;
   }) => void;
+
+  /** Ack that the runner applied a trigger subscription snapshot or delta. */
+  trigger_subscriptions_applied: (data: TriggerSubscriptionsApplied) => void;
 
   /** Generic service message from runner → relay → viewer.
    *  The relay forwards this verbatim; it does not inspect serviceId. */
@@ -385,6 +441,14 @@ export interface RunnerServerToClientEvents {
     /** The new value for that section */
     value: unknown;
   }) => void;
+
+  /** Full snapshot of active trigger subscriptions for this runner's sessions.
+   *  Sent after runner_registered so the runner can rebuild subscription state. */
+  trigger_subscriptions_snapshot: (data: TriggerSubscriptionsSnapshot) => void;
+
+  /** Single subscription change (add/update/remove).
+   *  Sent at runtime when a session subscribes, updates, or unsubscribes. */
+  trigger_subscription_delta: (data: TriggerSubscriptionDelta) => void;
 
   /** Generic service message from viewer → relay → runner.
    *  The relay forwards this verbatim; it does not inspect serviceId. */

@@ -43,6 +43,7 @@ import {
     linkSessionToRunner,
 } from "../ws/sio-registry.js";
 import { getRunnerServices, getRunnerData } from "../ws/sio-registry/runners.js";
+import { emitTriggerSubscriptionDelta } from "../ws/namespaces/runner.js";
 import type { RouteHandler } from "./types.js";
 import { randomUUID } from "crypto";
 import { createLogger } from "@pizzapi/tools";
@@ -611,18 +612,34 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
         log.info(`Session ${sessionId} subscribed to trigger type '${triggerType}' on runner ${session.runnerId}${logParts.length > 0 ? ` with ${logParts.join(", ")}` : ""}`);
         broadcastToSessionViewers(sessionId, "trigger_subscriptions_changed", { triggerType, action: "subscribe" });
 
-        // Notify the runner service about the new subscription params
-        if (subParams && session.runnerId) {
-            const runnerSocket = getLocalRunnerSocket(session.runnerId);
-            if (runnerSocket) {
-                runnerSocket.emit("subscription_params_changed" as any, {
+        // Notify the runner via typed delta (always, even without params).
+        // Also emit the legacy subscription_params_changed event for backward
+        // compat with runners that haven't been updated yet.
+        if (session.runnerId) {
+            emitTriggerSubscriptionDelta(session.runnerId, {
+                action: "subscribe",
+                subscription: {
                     sessionId,
                     triggerType,
-                    params: subParams,
-                    filters: subFilters ?? [],
-                    filterMode: subFilterMode ?? "and",
-                    action: "subscribe",
-                });
+                    runnerId: session.runnerId,
+                    ...(subParams ? { params: subParams } : {}),
+                    ...(subFilters ? { filters: subFilters } : {}),
+                    ...(subFilterMode ? { filterMode: subFilterMode } : {}),
+                },
+            });
+            // Legacy: subscription_params_changed for older runners
+            if (subParams) {
+                const runnerSocket = getLocalRunnerSocket(session.runnerId);
+                if (runnerSocket) {
+                    runnerSocket.emit("subscription_params_changed" as any, {
+                        sessionId,
+                        triggerType,
+                        params: subParams,
+                        filters: subFilters ?? [],
+                        filterMode: subFilterMode ?? "and",
+                        action: "subscribe",
+                    });
+                }
             }
         }
 
@@ -653,6 +670,20 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
         await unsubscribeSessionFromTrigger(sessionId, triggerType);
         log.info(`Session ${sessionId} unsubscribed from trigger type '${triggerType}'`);
         broadcastToSessionViewers(sessionId, "trigger_subscriptions_changed", { triggerType, action: "unsubscribe" });
+
+        // Notify the runner via typed delta so it can clean up runtime state
+        // (e.g. cancel timers). Uses cluster-safe emitTriggerSubscriptionDelta.
+        if (session.runnerId) {
+            emitTriggerSubscriptionDelta(session.runnerId, {
+                action: "unsubscribe",
+                subscription: {
+                    sessionId,
+                    triggerType,
+                    runnerId: session.runnerId,
+                },
+            });
+        }
+
         return Response.json({ ok: true, triggerType });
     }
 
@@ -791,8 +822,20 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
         log.info(`Session ${sessionId} updated subscription for '${triggerType}'${logParts.length > 0 ? ` with ${logParts.join(", ")}` : ""}`);
         broadcastToSessionViewers(sessionId, "trigger_subscriptions_changed", { triggerType, action: "update" });
 
-        // Notify the runner service about param changes so it can react
+        // Notify the runner via typed delta and legacy event
         if (session.runnerId) {
+            emitTriggerSubscriptionDelta(session.runnerId, {
+                action: "update",
+                subscription: {
+                    sessionId,
+                    triggerType,
+                    runnerId: session.runnerId,
+                    ...(subParams ? { params: subParams } : {}),
+                    ...(subFilters ? { filters: subFilters } : {}),
+                    ...(subFilterMode ? { filterMode: subFilterMode } : {}),
+                },
+            });
+            // Legacy: subscription_params_changed for older runners
             const runnerSocket = getLocalRunnerSocket(session.runnerId);
             if (runnerSocket) {
                 runnerSocket.emit("subscription_params_changed" as any, {

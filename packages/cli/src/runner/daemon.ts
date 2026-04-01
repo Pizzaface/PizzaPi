@@ -22,7 +22,7 @@ import { TunnelClient } from "@pizzapi/tunnel";
 import { loadGlobalConfig, defaultAgentDir, expandHome, loadConfig } from "../config.js";
 import { cleanupSessionAttachments, sweepOrphanedAttachments } from "../extensions/session-attachments.js";
 import { AuthStorage, ModelRegistry } from "@mariozechner/pi-coding-agent";
-import type { ServiceTriggerDef, ServiceSigilDef } from "@pizzapi/protocol";
+import type { ServiceTriggerDef, ServiceSigilDef, TriggerSubscriptionEntry } from "@pizzapi/protocol";
 import { setLogComponent, logInfo, logWarn, logError } from "./logger.js";
 import { extractHookSummary } from "./hook-summary.js";
 import { sanitizeConfigForUI, restoreMaskedServerEntry, MASK_SENTINEL } from "./daemon-config-sanitize.js";
@@ -69,6 +69,61 @@ function resolveConfigRelayUrl(): string | undefined {
     const cfg = loadGlobalConfig();
     const url = cfg.relayUrl;
     return url && url !== "off" ? url : undefined;
+}
+
+type TriggerReconciliationLogger = {
+    info: (message: string) => void;
+    warn: (message: string) => void;
+    error: (message: string) => void;
+};
+
+export function reconcileSnapshotSubscriptions(
+    registry: ServiceRegistry,
+    subscriptions: TriggerSubscriptionEntry[],
+    logger: TriggerReconciliationLogger = {
+        info: logInfo,
+        warn: logWarn,
+        error: logError,
+    },
+): { applied: number; errors: string[] } {
+    const byServicePrefix = new Map<string, TriggerSubscriptionEntry[]>();
+    for (const sub of subscriptions) {
+        const prefix = sub.triggerType?.split(":")[0];
+        if (!prefix) continue;
+        if (!byServicePrefix.has(prefix)) byServicePrefix.set(prefix, []);
+        byServicePrefix.get(prefix)!.push(sub);
+    }
+
+    for (const [prefix, subs] of byServicePrefix) {
+        const service = registry.get(prefix);
+        if (!service) {
+            logger.warn(`[trigger-reconciliation] no service found for prefix "${prefix}" (${subs.length} subscriptions)`);
+            continue;
+        }
+        if (typeof service.reconcileSubscriptions !== "function") {
+            logger.info(`[trigger-reconciliation] service "${prefix}" does not implement reconcileSubscriptions, skipping ${subs.length} subscriptions`);
+        }
+    }
+
+    let totalApplied = 0;
+    const allErrors: string[] = [];
+
+    for (const service of registry.getAll()) {
+        if (typeof service.reconcileSubscriptions !== "function") continue;
+
+        const subs = byServicePrefix.get(service.id) ?? [];
+        try {
+            const result = service.reconcileSubscriptions(subs, { mode: "snapshot" });
+            totalApplied += result.applied;
+            if (result.errors?.length) allErrors.push(...result.errors);
+        } catch (err) {
+            const msg = `service "${service.id}" reconcile failed: ${err instanceof Error ? err.message : String(err)}`;
+            logger.error(`[trigger-reconciliation] ${msg}`);
+            allErrors.push(msg);
+        }
+    }
+
+    return { applied: totalApplied, errors: allErrors };
 }
 
 /**
@@ -467,6 +522,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             // daemon in a half-initialized state.
             try {
                 runnerId = data.runnerId;
+                lastAppliedRevision = -1;
                 if (runnerId !== identity.runnerId) {
                     logWarn(`server assigned unexpected ID ${runnerId} (expected ${identity.runnerId})`);
                 }
@@ -549,6 +605,104 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                 void sweepOrphanedAttachments(new Set(runningSessions.keys())).catch(() => {});
             } catch (err) {
                 logError(`[daemon] runner_registered handler failed: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`);
+            }
+        });
+
+        // ── Trigger subscription reconciliation ──────────────────────────
+
+        // Track the last applied revision to ignore stale/duplicate messages.
+        // -1 means "accept the next snapshot/delta regardless of revision" and is
+        // used on initial startup and after relay re-registration, because the
+        // server-side revision counter is process-local and restarts from 0/1.
+        let lastAppliedRevision = -1;
+
+        (socket as any).on("trigger_subscriptions_snapshot", (data: any) => {
+            if (isShuttingDown) return;
+            try {
+                const { revision, subscriptions } = data ?? {};
+                if (typeof revision !== "number" || !Array.isArray(subscriptions)) {
+                    logWarn("[trigger-reconciliation] invalid snapshot payload");
+                    return;
+                }
+
+                // Ignore stale snapshots (e.g. from a retransmission).
+                if (revision <= lastAppliedRevision) {
+                    logInfo(`[trigger-reconciliation] ignoring stale snapshot revision=${revision} (last=${lastAppliedRevision})`);
+                    return;
+                }
+                lastAppliedRevision = revision;
+
+                logInfo(`[trigger-reconciliation] received snapshot revision=${revision} with ${subscriptions.length} subscriptions`);
+
+                const { applied: totalApplied, errors: allErrors } = reconcileSnapshotSubscriptions(registry, subscriptions);
+
+                // Ack back to the server
+                socket.emit("trigger_subscriptions_applied" as any, {
+                    revision,
+                    applied: totalApplied,
+                    ...(allErrors.length > 0 ? { errors: allErrors } : {}),
+                });
+
+                logInfo(`[trigger-reconciliation] applied ${totalApplied} subscriptions from snapshot revision=${revision}${allErrors.length ? `, ${allErrors.length} errors` : ""}`);
+            } catch (err) {
+                logError(`[trigger-reconciliation] snapshot handler failed: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`);
+            }
+        });
+
+        (socket as any).on("trigger_subscription_delta", (data: any) => {
+            if (isShuttingDown) return;
+            try {
+                const { revision, action, subscription } = data ?? {};
+                if (
+                    typeof revision !== "number" ||
+                    (action !== "subscribe" && action !== "update" && action !== "unsubscribe") ||
+                    !subscription?.triggerType
+                ) {
+                    logWarn("[trigger-reconciliation] invalid delta payload");
+                    return;
+                }
+
+                // Ignore stale deltas.
+                if (revision <= lastAppliedRevision) {
+                    logInfo(`[trigger-reconciliation] ignoring stale delta revision=${revision} (last=${lastAppliedRevision})`);
+                    return;
+                }
+                lastAppliedRevision = revision;
+
+                const prefix = subscription.triggerType.split(":")[0];
+                if (!prefix) return;
+
+                let applied = 0;
+                const errors: string[] = [];
+                const service = registry.get(prefix);
+                if (!service) {
+                    logWarn(`[trigger-reconciliation] no service found for prefix "${prefix}" (delta ${action})`);
+                } else if (typeof service.reconcileSubscriptions !== "function") {
+                    logInfo(`[trigger-reconciliation] service "${prefix}" does not implement reconcileSubscriptions, skipping delta ${action}`);
+                } else {
+                    try {
+                        const result = service.reconcileSubscriptions([subscription], {
+                            mode: "delta",
+                            action,
+                        });
+                        applied += result.applied;
+                        if (result.errors?.length) errors.push(...result.errors);
+                    } catch (err) {
+                        const msg = `service "${prefix}" reconcile failed: ${err instanceof Error ? err.message : String(err)}`;
+                        logError(`[trigger-reconciliation] ${msg}`);
+                        errors.push(msg);
+                    }
+                }
+
+                socket.emit("trigger_subscriptions_applied" as any, {
+                    revision,
+                    applied,
+                    ...(errors.length > 0 ? { errors } : {}),
+                });
+
+                logInfo(`[trigger-reconciliation] delta: ${action} ${subscription.triggerType} for session ${subscription.sessionId} applied=${applied}${errors.length ? ` errors=${errors.length}` : ""}`);
+            } catch (err) {
+                logError(`[trigger-reconciliation] delta handler failed: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`);
             }
         });
 

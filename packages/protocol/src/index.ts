@@ -59,6 +59,10 @@ export type {
   RunnerServerToClientEvents,
   RunnerInterServerEvents,
   RunnerSocketData,
+  TriggerSubscriptionEntry,
+  TriggerSubscriptionsSnapshot,
+  TriggerSubscriptionDelta,
+  TriggerSubscriptionsApplied,
 } from "./runner.js";
 
 // /terminal namespace (Browser terminal viewer ↔ Server)

@@ -18,8 +18,8 @@ import { homedir } from "node:os";
 import type { Socket } from "socket.io-client";
 // Bun's Server generic requires a WebSocketData type param; we don't use WS so `unknown` suffices.
 type BunServer = import("bun").Server<unknown>;
-import type { ServiceHandler, ServiceInitOptions } from "../service-handler.js";
-import type { ServiceTriggerDef, ServiceSigilDef } from "@pizzapi/protocol";
+import type { ReconcileOptions, ServiceHandler, ServiceInitOptions } from "../service-handler.js";
+import type { ServiceTriggerDef, ServiceSigilDef, TriggerSubscriptionEntry } from "@pizzapi/protocol";
 import {
     parseDuration,
     formatDuration,
@@ -283,6 +283,74 @@ export class TimeService implements ServiceHandler {
         logInfo(`[time] service started, resolve server on port ${this.#server.port}`);
     }
 
+    /**
+     * Reconcile in-memory timer/cron state from either a full subscription snapshot
+     * or a single live delta.
+     *
+     * For time:timer_fired and time:cron, the timer restarts from scratch (no elapsed
+     * time is preserved across restarts). For time:at, the target time is absolute, so
+     * the timer fires at the right time (or immediately if already past).
+     */
+    reconcileSubscriptions(subscriptions: TriggerSubscriptionEntry[], options: ReconcileOptions = {}): { applied: number; errors?: string[] } {
+        const mode = options.mode ?? "snapshot";
+        const action = options.action ?? "subscribe";
+
+        // Only handle our trigger types
+        const timeSubs = subscriptions.filter(
+            (s) =>
+                s.triggerType === "time:timer_fired" ||
+                s.triggerType === "time:at" ||
+                s.triggerType === "time:cron",
+        );
+
+        if (mode === "snapshot") {
+            // Build a lookup of (sessionId + triggerType) → entry for the snapshot
+            const snapshotKeys = new Set(timeSubs.map((s) => `${s.sessionId}\0${s.triggerType}`));
+
+            // Remove any timers/crons NOT present in the snapshot (stale from a previous connection)
+            for (const [key, timer] of this.#timers) {
+                // Key format: "timer:<sessionId>" or "at:<sessionId>"
+                const colonIdx = key.indexOf(":");
+                const typePrefix = key.slice(0, colonIdx); // "timer" | "at"
+                const sessionId = key.slice(colonIdx + 1);
+                const triggerType = typePrefix === "timer" ? "time:timer_fired" : "time:at";
+                if (!snapshotKeys.has(`${sessionId}\0${triggerType}`)) {
+                    clearTimeout(timer.handle);
+                    this.#timers.delete(key);
+                    logInfo(`[time] reconcile: removed stale timer ${key}`);
+                }
+            }
+            for (const [key, cron] of this.#crons) {
+                // Key format: "cron:<sessionId>"
+                const sessionId = key.slice("cron:".length);
+                if (!snapshotKeys.has(`${sessionId}\0time:cron`)) {
+                    clearInterval(cron.handle);
+                    this.#crons.delete(key);
+                    this.#cronIterations.delete(key);
+                    logInfo(`[time] reconcile: removed stale cron ${key}`);
+                }
+            }
+        }
+
+        // Create/update/remove timers for the relevant subscriptions.
+        let applied = 0;
+        const errors: string[] = [];
+
+        for (const sub of timeSubs) {
+            try {
+                this.#applySubscription(sub, mode === "delta" ? action : "subscribe");
+                applied++;
+            } catch (err) {
+                const msg = `${sub.sessionId}/${sub.triggerType}: ${err instanceof Error ? err.message : String(err)}`;
+                logWarn(`[time] reconcile error: ${msg}`);
+                errors.push(msg);
+            }
+        }
+
+        logInfo(`[time] reconciled ${applied}/${timeSubs.length} subscriptions from ${mode}${mode === "delta" ? ` (${action})` : ""}`);
+        return { applied, ...(errors.length > 0 ? { errors } : {}) };
+    }
+
     dispose(): void {
         // Clear all timers
         for (const timer of this.#timers.values()) {
@@ -369,6 +437,17 @@ export class TimeService implements ServiceHandler {
     }
 
     // ── Timer subscription handlers ──────────────────────────────────────
+
+    #applySubscription(sub: TriggerSubscriptionEntry, action: "subscribe" | "update" | "unsubscribe"): void {
+        const { sessionId, triggerType, params } = sub;
+        if (triggerType === "time:timer_fired") {
+            this.#handleTimerSubscription(sessionId, params, action);
+        } else if (triggerType === "time:at") {
+            this.#handleAtSubscription(sessionId, params, action);
+        } else if (triggerType === "time:cron") {
+            this.#handleCronSubscription(sessionId, params, action);
+        }
+    }
 
     #handleTimerSubscription(sessionId: string, params: any, action: string): void {
         const key = `timer:${sessionId}`;
