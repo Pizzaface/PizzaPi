@@ -8,7 +8,8 @@
     "packages/server",
     "packages/ui",
     "packages/cli",
-    "packages/docs"
+    "packages/docs",
+    "packages/desktop"
   ],
   "scripts": {
     "build": "bun run build:protocol && bun run build:tunnel && bun run build:tools && bun run build:server && bun run build:ui && bun run build:cli",
@@ -29,6 +30,9 @@
     "dev:server": "cd packages/server && bun run dev",
     "dev:ui": "cd packages/ui && bun run dev",
     "dev:cli": "bun packages/cli/src/index.ts",
+    "dev:desktop": "cd packages/desktop && bun run dev",
+    "build:desktop": "bun run build:ui && bun run build:server && bun run build:cli && cd packages/desktop && bun run build",
+    "package:desktop": "bun run build:desktop && cd packages/desktop && bun run package",
     "dev:runner": "bun packages/cli/src/index.ts runner",
     "test": "bun test packages/protocol/src packages/tunnel/src packages/server/src packages/server/tests packages/tools/src && cd packages/cli && bun test src && cd ../ui && bun test src",
     "typecheck": "bun packages/cli/scripts/compile-prompt.ts && tsc --build && bun run --cwd packages/protocol typecheck:tests && bun run --cwd packages/server typecheck:tests",

@@ -1,0 +1,37 @@
+appId: com.pizzapi.desktop
+productName: PizzaPi
+copyright: Copyright © 2026 PizzaPi
+
+directories:
+  output: release
+
+mac:
+  category: public.app-category.developer-tools
+  target:
+    - target: dir
+      arch:
+        - arm64
+  icon: assets/icon.png
+
+files:
+  - dist/**/*
+  - assets/**/*
+  - package.json
+  # Bundle the built UI assets
+  - from: ../ui/dist
+    to: ui-dist
+    filter:
+      - "**/*"
+  # Bundle the built server
+  - from: ../server/dist
+    to: server-dist
+    filter:
+      - "**/*"
+  # Bundle the built CLI (runner)
+  - from: ../cli/dist
+    to: cli-dist
+    filter:
+      - "**/*"
+
+extraMetadata:
+  main: dist/main/index.js
