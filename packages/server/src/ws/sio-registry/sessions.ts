@@ -68,6 +68,8 @@ import { createLogger } from "@pizzapi/tools";
 import { clearSessionSubscriptions } from "../../sessions/trigger-subscription-store.js";
 import { pushTriggerHistory } from "../../sessions/trigger-store.js";
 
+export { pendingRecoverySessionIds, markPendingRecovery, consumePendingRecovery } from "./viewer-recovery.js";
+
 const log = createLogger("sio-registry");
 const lastRelaySessionStateWriteTimes = new Map<string, number>();
 const SQLITE_STATE_WRITE_THROTTLE_MS = 30_000;
@@ -462,8 +464,17 @@ export async function getSharedSessionSummary(sessionId: string): Promise<RedisS
     return getSessionSummary(sessionId);
 }
 
+export interface UpdateSessionStateOpts {
+    /**
+     * When true, skip the SQLite persistence write.  Used for viewer-recovery
+     * paths where the runner re-sends the same state in response to a
+     * reconnecting viewer.  Redis is still updated for fast cache reads.
+     */
+    isRecovery?: boolean;
+}
+
 /** Update session state (lastState + sessionName detection). */
-export async function updateSessionState(sessionId: string, state: unknown): Promise<void> {
+export async function updateSessionState(sessionId: string, state: unknown, opts?: UpdateSessionStateOpts): Promise<void> {
     const session = await getSession(sessionId);
     if (!session) return;
 
@@ -502,7 +513,10 @@ export async function updateSessionState(sessionId: string, state: unknown): Pro
         stateMessages !== null && stateMessages.length > 0 ||
         now - (lastRelaySessionStateWriteTimes.get(sessionId) ?? 0) >= SQLITE_STATE_WRITE_THROTTLE_MS;
 
-    if (shouldPersistState) {
+    // Skip SQLite write for viewer-recovery events.  The runner re-sent the
+    // same state in response to a reconnecting viewer — Redis already has the
+    // data and SQLite doesn't need another write for identical content.
+    if (shouldPersistState && !opts?.isRecovery) {
         lastRelaySessionStateWriteTimes.set(sessionId, now);
         void recordRelaySessionState(sessionId, session.userId ?? null, strippedState).catch((error) => {
             log.error("Failed to persist relay session state:", error);

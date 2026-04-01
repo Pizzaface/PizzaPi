@@ -34,13 +34,16 @@ import {
     emitToRelaySessionVerified,
     emitToRunner,
     broadcastToSessionViewers,
+    markPendingRecovery,
 } from "../sio-registry.js";
 import { isChildOfParent } from "../sio-state/index.js";
 import { getPendingChunkedSnapshot } from "./relay/index.js";
 import { getPersistedRelaySessionSnapshot } from "../../sessions/store.js";
-import { getCachedRelayEventsAfterSeq, getLatestCachedSnapshotEvent } from "../../sessions/redis.js";
 import { recordTriggerResponse } from "../../sessions/trigger-store.js";
 import { createLogger } from "@pizzapi/tools";
+import { hydrateViewerFromCache, sendCachedDeltaReplayEvents, sendLatestSnapshotFromCache } from "./viewer-cache.js";
+
+export { hydrateViewerFromCache, sendCachedDeltaReplayEvents } from "./viewer-cache.js";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -142,54 +145,23 @@ export function isViewerSwitchCurrent(currentGeneration: number | undefined, req
     return requestedGeneration === undefined || currentGeneration === requestedGeneration;
 }
 
-/**
- * Try to send the latest snapshot event from the Redis event cache.
- * Returns true if a snapshot was sent, false otherwise.
- */
-async function sendLatestSnapshotFromCache(
-    socket: ViewerSocket,
-    sessionId: string,
-    generation?: number,
-): Promise<boolean> {
-    const snapshotEvent = await getLatestCachedSnapshotEvent(sessionId);
-    if (!snapshotEvent) return false;
-
-    socket.emit("event", { event: snapshotEvent, replay: true, generation });
-    return true;
+export interface RecoveryConnectedSignalDeps {
+    markPendingRecovery: typeof markPendingRecovery;
+    emitToRelaySession: typeof emitToRelaySession;
 }
 
-export function sendCachedDeltaReplayEvents(
-    socket: Pick<ViewerSocket, "emit">,
-    cachedEvents: Array<{ seq?: number; event: unknown }>,
-    generation?: number,
-): boolean {
-    let sentAny = false;
+const defaultRecoveryConnectedSignalDeps: RecoveryConnectedSignalDeps = {
+    markPendingRecovery,
+    emitToRelaySession,
+};
 
-    for (const cachedEvent of cachedEvents) {
-        if (typeof cachedEvent.seq !== "number" || !Number.isFinite(cachedEvent.seq)) {
-            continue;
-        }
-        sentAny = true;
-        socket.emit("event", {
-            event: cachedEvent.event,
-            seq: cachedEvent.seq,
-            replay: true,
-            deltaReplay: true,
-            generation,
-        });
-    }
-
-    return sentAny;
-}
-
-async function sendDeltaReplayFromCache(
-    socket: ViewerSocket,
+/** @internal — exported for unit tests only */
+export function forwardRecoveryConnectedSignal(
     sessionId: string,
-    afterSeq: number,
-    generation?: number,
-): Promise<boolean> {
-    const cachedEvents = await getCachedRelayEventsAfterSeq(sessionId, afterSeq);
-    return sendCachedDeltaReplayEvents(socket, cachedEvents, generation);
+    deps: RecoveryConnectedSignalDeps = defaultRecoveryConnectedSignalDeps,
+): void {
+    deps.markPendingRecovery(sessionId);
+    deps.emitToRelaySession(sessionId, "connected" as string, {});
 }
 
 /**
@@ -309,6 +281,10 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
         // before addViewer() completes, forcing a resync and visible startup lag.
         let viewerReadyForRunnerSignal = false;
         let pendingConnectedSignal = false;
+        // Set by cache-first hydration to prevent the client's "connected" echo
+        // from triggering a runner signal when the viewer was already hydrated
+        // from the server-side Redis cache.
+        let suppressRunnerSignal = false;
 
         const getCurrentSessionId = (): string | null => socket.data.sessionId ?? null;
         const getCurrentGeneration = (): number | undefined =>
@@ -362,19 +338,12 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
             }
 
             socket.data.sessionId = nextSessionId;
-            viewerReadyForRunnerSignal = true;
-            const flush = onViewerReadyForRunnerSignal(pendingConnectedSignal);
-            pendingConnectedSignal = flush.pendingConnectedSignal;
-            if (flush.forwardNow) {
-                emitToRelaySession(nextSessionId, "connected" as string, {});
-            }
 
-            // Re-fetch session state and seq AFTER addViewer() to avoid emitting
-            // stale data. Between the initial fetch and here, the runner may have
-            // published a newer session_active (especially for chunked delivery).
-            // Using the old lastState + old lastSeq would overwrite the fresh
-            // snapshot and rewind lastSeqRef on the client, triggering a bogus
-            // resync on actively changing sessions.
+            // ── Cache-first hydration ────────────────────────────────────
+            // Re-fetch session state and seq AFTER addViewer() to avoid
+            // emitting stale data. Between the initial fetch and here, the
+            // runner may have published a newer session_active (especially
+            // for chunked delivery).
             const [freshSession, freshSeq] = await Promise.all([
                 getSharedSession(nextSessionId),
                 getSessionSeq(nextSessionId),
@@ -418,16 +387,48 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
                 }
             }
 
+            // ── Try server-side cache before signaling the runner ────────
+            // This is the core optimization: hydrate the joining viewer from
+            // the existing Redis snapshot/delta cache instead of asking the
+            // runner to rebuild and rebroadcast the full transcript.
+            //
+            // Benefits:
+            //   • Read-path only — no write amplification to Redis/SQLite
+            //   • Per-socket emit — no room-wide broadcast to other viewers
+            //   • Avoids runner CPU cost of rebuilding the transcript
+            //
+            // Fallback: if the cache is empty or stale (cold start, eviction),
+            // we fall through to the existing runner-signal path.
             const chunkedPending = getPendingChunkedSnapshot(nextSessionId);
-            if (requestedLastSeq !== undefined && !chunkedPending) {
-                const deltaReplaySent = await sendDeltaReplayFromCache(socket, nextSessionId, requestedLastSeq, generation);
-                if (deltaReplaySent) {
+            if (!chunkedPending) {
+                const cacheHydrated = await hydrateViewerFromCache(socket, nextSessionId, {
+                    lastSeq: requestedLastSeq,
+                    generation,
+                });
+                if (cacheHydrated) {
+                    // Cache hit — viewer is fully hydrated.  Suppress the
+                    // runner "connected" signal so it doesn't rebuild and
+                    // broadcast to all viewers in the room.
+                    suppressRunnerSignal = true;
+                    log.info(`cache-first hydration: sessionId=${nextSessionId} viewer=${socket.id} (${requestedLastSeq !== undefined ? "delta" : "snapshot"})`);
                     return;
                 }
             }
 
-            // Emit an immediate heartbeat snapshot while the runner pushes a fresh
-            // session_active in response to "connected".
+            // ── Cache miss — cold-start fallback ─────────────────────────
+            // Signal the runner so it rebuilds and emits session_active.
+            // This is the existing pre-optimization path.
+            log.info(`cache miss fallback: sessionId=${nextSessionId} viewer=${socket.id}`);
+            suppressRunnerSignal = false;
+            viewerReadyForRunnerSignal = true;
+            const flush = onViewerReadyForRunnerSignal(pendingConnectedSignal);
+            pendingConnectedSignal = flush.pendingConnectedSignal;
+            if (flush.forwardNow) {
+                forwardRecoveryConnectedSignal(nextSessionId);
+            }
+
+            // Emit an immediate heartbeat snapshot while the runner pushes a
+            // fresh session_active in response to "connected".
             if (freshSession.lastHeartbeat) {
                 try {
                     socket.emit("event", {
@@ -458,7 +459,7 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
                 // non-chunked SA events, set lastCompletedSnapshotRef, and cause
                 // the UI to reject subsequent chunks from the active stream.
                 // The runner re-emits a fresh snapshot on the "connected" event
-                // below, which will properly restart chunked delivery.
+                // above, which will properly restart chunked delivery.
                 await sendLatestSnapshotFromCache(socket, nextSessionId, generation);
             }
         };
@@ -479,10 +480,14 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
         socket.on("connected", () => {
             const currentSessionId = getCurrentSessionId();
             if (!currentSessionId) return;
+            // When the viewer was hydrated from the server-side cache,
+            // suppress the runner signal — the runner doesn't need to
+            // rebuild and rebroadcast the transcript.
+            if (suppressRunnerSignal) return;
             const next = onViewerConnectedSignal(viewerReadyForRunnerSignal, pendingConnectedSignal);
             pendingConnectedSignal = next.pendingConnectedSignal;
             if (next.forwardNow) {
-                emitToRelaySession(currentSessionId, "connected" as string, {});
+                forwardRecoveryConnectedSignal(currentSessionId);
             }
         });
 
@@ -507,8 +512,11 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
             const requestedLastSeq = typeof data?.lastSeq === "number" && Number.isFinite(data.lastSeq) ? data.lastSeq : undefined;
             const resyncChunkedPending = getPendingChunkedSnapshot(currentSessionId);
             if (requestedLastSeq !== undefined && !resyncChunkedPending) {
-                const deltaReplaySent = await sendDeltaReplayFromCache(socket, currentSessionId, requestedLastSeq, getCurrentGeneration());
-                if (deltaReplaySent) {
+                const cacheHydrated = await hydrateViewerFromCache(socket, currentSessionId, {
+                    lastSeq: requestedLastSeq,
+                    generation: getCurrentGeneration(),
+                });
+                if (cacheHydrated) {
                     return;
                 }
             }

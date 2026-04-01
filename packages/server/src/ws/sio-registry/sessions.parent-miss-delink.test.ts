@@ -120,6 +120,7 @@ mock.module("../../sessions/store.js", () => ({
 }));
 
 mock.module("../sio-state/index.js", () => ({
+    initStateRedis: async () => {},
     setSession: async (sessionId: string, data: Record<string, unknown>) => {
         store.set(`__hash__:pizzapi:sio:session:${sessionId}`, JSON.stringify(data));
     },
@@ -131,6 +132,7 @@ mock.module("../sio-state/index.js", () => ({
         const raw = store.get(`__hash__:pizzapi:sio:session:${sessionId}`);
         return raw ? (JSON.parse(raw) as Record<string, unknown>) : null;
     },
+    getSessionField: async () => null,
     updateSessionFields: async (sessionId: string, fields: Record<string, unknown>) => {
         const raw = store.get(`__hash__:pizzapi:sio:session:${sessionId}`);
         if (!raw) return;
@@ -179,6 +181,9 @@ mock.module("../sio-state/index.js", () => ({
     },
     refreshChildSessionsTTL: async () => {},
     removePendingParentDelinkChild: async () => {},
+    markChildAsDelinked: async (childSessionId: string) => {
+        store.set(`pizzapi:sio:delinked:${childSessionId}`, "1");
+    },
     getRunner: async () => null,
 }));
 
@@ -193,7 +198,7 @@ afterAll(() => mock.restore());
 // Dynamic imports so that mock.module("../../sessions/store.js", …) is in place
 // before sessions.js (and its transitive store.js dependency) is resolved.
 // The redis mock has been removed — mockRedis is injected via initStateRedis() instead.
-const { initStateRedis, markChildAsDelinked } = await import("../sio-state.js");
+const { initStateRedis, markChildAsDelinked } = await import("../sio-state/index.js");
 const { registerTuiSession } = await import("./sessions.js");
 
 describe("registerTuiSession parent resolution", () => {

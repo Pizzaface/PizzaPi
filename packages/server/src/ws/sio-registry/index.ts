@@ -7,7 +7,7 @@
 
 export { initSioRegistry, emitToRunner, emitToRelaySession, emitToRelaySessionVerified, emitToRelaySessionAwaitingAck, runnersUserRoom, broadcastToSessionViewers } from "./context.js";
 export { broadcastToHub, addHubClient, removeHubClient } from "./hub.js";
-export type { RegisterTuiSessionOpts } from "./sessions.js";
+export type { RegisterTuiSessionOpts, UpdateSessionStateOpts } from "./sessions.js";
 export {
     registerTuiSession,
     getLocalTuiSocket,
@@ -31,6 +31,8 @@ export {
     removeViewer,
     broadcastToViewers,
     getViewerCount,
+    markPendingRecovery,
+    consumePendingRecovery,
 } from "./sessions.js";
 export type { RegisterRunnerOpts } from "./runners.js";
 export {

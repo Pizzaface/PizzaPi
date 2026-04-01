@@ -14,6 +14,7 @@ import {
     onViewerConnectedSignal,
     onViewerReadyForRunnerSignal,
     isViewerSwitchCurrent,
+    forwardRecoveryConnectedSignal,
     withHubMetaSource,
     withMetaViaHubHint,
     withLivenessOnlyHint,
@@ -171,6 +172,30 @@ describe("viewer connected signal gating", () => {
         });
     });
 
+    test("socket.on(\"connected\") forwarding marks recovery before emitting to relay", () => {
+        const calls: string[] = [];
+        const next = onViewerConnectedSignal(true, false);
+
+        expect(next).toEqual({
+            pendingConnectedSignal: false,
+            forwardNow: true,
+        });
+
+        forwardRecoveryConnectedSignal("sess-connected", {
+            markPendingRecovery: mock((sessionId: string) => {
+                calls.push(`mark:${sessionId}`);
+            }),
+            emitToRelaySession: mock((sessionId: string, event: string) => {
+                calls.push(`emit:${event}:${sessionId}`);
+            }) as any,
+        });
+
+        expect(calls).toEqual([
+            "mark:sess-connected",
+            "emit:connected:sess-connected",
+        ]);
+    });
+
     test("flushes pending signal when viewer becomes ready", () => {
         expect(onViewerReadyForRunnerSignal(true)).toEqual({
             pendingConnectedSignal: false,
@@ -183,6 +208,30 @@ describe("viewer connected signal gating", () => {
             pendingConnectedSignal: false,
             forwardNow: false,
         });
+    });
+
+    test("ready-transition forwarding also marks recovery before emitting to relay", () => {
+        const calls: string[] = [];
+        const flush = onViewerReadyForRunnerSignal(true);
+
+        expect(flush).toEqual({
+            pendingConnectedSignal: false,
+            forwardNow: true,
+        });
+
+        forwardRecoveryConnectedSignal("sess-pending", {
+            markPendingRecovery: mock((sessionId: string) => {
+                calls.push(`mark:${sessionId}`);
+            }),
+            emitToRelaySession: mock((sessionId: string, event: string) => {
+                calls.push(`emit:${event}:${sessionId}`);
+            }) as any,
+        });
+
+        expect(calls).toEqual([
+            "mark:sess-pending",
+            "emit:connected:sess-pending",
+        ]);
     });
 });
 

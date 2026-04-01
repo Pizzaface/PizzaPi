@@ -10,6 +10,7 @@ import {
     getSharedSession,
     broadcastSessionEventToViewers,
     publishSessionEvent,
+    consumePendingRecovery,
 } from "../../sio-registry.js";
 import { appendRelayEventToCache } from "../../../sessions/redis.js";
 import { storeAndReplaceImagesInEvent, stripImagesFromPipelineEvent } from "../../strip-images.js";
@@ -81,6 +82,66 @@ export function hasAllChunkIndexes(pending: ChunkedSessionState): boolean {
 
 export function canFinalizeChunkedSnapshot(pending: ChunkedSessionState): boolean {
     return pending.finalChunkSeen && hasAllChunkIndexes(pending);
+}
+
+export interface FinalizeChunkedSnapshotDeps {
+    consumePendingRecovery: typeof consumePendingRecovery;
+    updateSessionState: typeof updateSessionState;
+    getSharedSession: typeof getSharedSession;
+    storeAndReplaceImagesInEvent: typeof storeAndReplaceImagesInEvent;
+    appendRelayEventToCache: typeof appendRelayEventToCache;
+}
+
+const defaultFinalizeChunkedSnapshotDeps: FinalizeChunkedSnapshotDeps = {
+    consumePendingRecovery,
+    updateSessionState,
+    getSharedSession,
+    storeAndReplaceImagesInEvent,
+    appendRelayEventToCache,
+};
+
+export async function finalizeChunkedSnapshot(
+    sessionId: string,
+    pending: ChunkedSessionState,
+    deps: FinalizeChunkedSnapshotDeps = defaultFinalizeChunkedSnapshotDeps,
+): Promise<Record<string, unknown>> {
+    const allMessages = pending.chunks.flat();
+    const fullState = { ...pending.metadata, messages: allMessages };
+    const isRecovery = deps.consumePendingRecovery(sessionId);
+    await deps.updateSessionState(sessionId, fullState, { isRecovery });
+
+    // Append a full session_active to the Redis replay cache
+    // so that findLatestSnapshotEvent() finds the assembled
+    // state instead of the metadata-only SA from chunk start.
+    // We do NOT use publishSessionEvent() here because that
+    // would broadcast the full assembled state as a single
+    // oversized frame to all viewers — the same transport
+    // issue chunking was designed to avoid.  Viewers already
+    // have the complete data from the chunk stream.
+    // Strip inline images before caching to keep the cache
+    // entry small and consistent with publishSessionEvent's
+    // image-stripping pipeline.
+    const session = await deps.getSharedSession(sessionId);
+    const userId = session?.userId ?? "unknown";
+    const snapshotEvent = { type: "session_active" as const, state: fullState };
+    let eventToCache: unknown = snapshotEvent;
+    try {
+        eventToCache = await deps.storeAndReplaceImagesInEvent(
+            snapshotEvent, sessionId, userId,
+        );
+    } catch {
+        // Fall back to original if image stripping fails
+    }
+    // Do NOT call incrementSeq() here — this entry is never
+    // broadcast to viewers.  Advancing the shared counter
+    // would create a seq gap that triggers unnecessary
+    // viewer resyncs (viewers would expect seq N but the
+    // next broadcast would be N+1).
+    await deps.appendRelayEventToCache(sessionId, eventToCache, {
+        isEphemeral: session?.isEphemeral,
+    });
+
+    return fullState;
 }
 
 // ── Per-session event serialization ──────────────────────────────────────────
@@ -195,9 +256,13 @@ export function registerEventHandler(socket: RelaySocket): void {
                 // Touch activity but DON'T update lastState yet
                 await touchSessionActivity(sessionId);
             } else {
-                // Non-chunked: persist immediately (original path)
+                // Non-chunked: persist immediately (original path).
+                // Check if this session_active was triggered by a viewer
+                // reconnect (cold-start fallback) — if so, skip the SQLite
+                // write since it's redundant recovery data.
+                const isRecovery = consumePendingRecovery(sessionId);
                 pendingChunkedStates.delete(sessionId);
-                await updateSessionState(sessionId, event.state);
+                await updateSessionState(sessionId, event.state, { isRecovery });
             }
         } else if (event.type === "session_messages_chunk") {
             // Accumulate chunk into the pending state.  When the final
@@ -219,41 +284,8 @@ export function registerEventHandler(socket: RelaySocket): void {
 
                 if (canFinalizeChunkedSnapshot(pending)) {
                     // All chunks received — assemble and persist the full state
-                    const allMessages = pending.chunks.flat();
-                    const fullState = { ...pending.metadata, messages: allMessages };
                     pendingChunkedStates.delete(sessionId);
-                    await updateSessionState(sessionId, fullState);
-
-                    // Append a full session_active to the Redis replay cache
-                    // so that findLatestSnapshotEvent() finds the assembled
-                    // state instead of the metadata-only SA from chunk start.
-                    // We do NOT use publishSessionEvent() here because that
-                    // would broadcast the full assembled state as a single
-                    // oversized frame to all viewers — the same transport
-                    // issue chunking was designed to avoid.  Viewers already
-                    // have the complete data from the chunk stream.
-                    // Strip inline images before caching to keep the cache
-                    // entry small and consistent with publishSessionEvent's
-                    // image-stripping pipeline.
-                    const session = await getSharedSession(sessionId);
-                    const userId = session?.userId ?? "unknown";
-                    const snapshotEvent = { type: "session_active" as const, state: fullState };
-                    let eventToCache: unknown = snapshotEvent;
-                    try {
-                        eventToCache = await storeAndReplaceImagesInEvent(
-                            snapshotEvent, sessionId, userId,
-                        );
-                    } catch {
-                        // Fall back to original if image stripping fails
-                    }
-                    // Do NOT call incrementSeq() here — this entry is never
-                    // broadcast to viewers.  Advancing the shared counter
-                    // would create a seq gap that triggers unnecessary
-                    // viewer resyncs (viewers would expect seq N but the
-                    // next broadcast would be N+1).
-                    await appendRelayEventToCache(sessionId, eventToCache, {
-                        isEphemeral: session?.isEphemeral,
-                    });
+                    await finalizeChunkedSnapshot(sessionId, pending);
                 } else {
                     await touchSessionActivity(sessionId);
                 }

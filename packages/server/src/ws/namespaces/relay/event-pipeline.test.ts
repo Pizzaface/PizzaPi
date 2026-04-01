@@ -3,9 +3,15 @@ import {
     applyChunkToPendingState,
     canFinalizeChunkedSnapshot,
     enqueueSessionEvent,
+    finalizeChunkedSnapshot,
     sessionEventQueues,
     type ChunkedSessionState,
 } from "./event-pipeline.js";
+import {
+    consumePendingRecovery,
+    markPendingRecovery,
+    pendingRecoverySessionIds,
+} from "../../sio-registry/viewer-recovery.js";
 
 async function flushQueue(): Promise<void> {
     for (let i = 0; i < 5; i++) {
@@ -53,6 +59,10 @@ describe("enqueueSessionEvent", () => {
 });
 
 describe("chunked snapshot assembly", () => {
+    afterEach(() => {
+        pendingRecoverySessionIds.clear();
+    });
+
     test("duplicate chunk retransmits are idempotent", () => {
         const pending = createPendingState();
 
@@ -172,5 +182,51 @@ describe("chunked snapshot assembly", () => {
         // the original server-side ordering.
         const assembled = pending.chunks.flat();
         expect(assembled).toEqual(["c0", "c1", "c2"]);
+    });
+
+    test("chunked finalization consumes and clears the recovery flag", async () => {
+        const pending: ChunkedSessionState = {
+            snapshotId: "snap-recovery",
+            metadata: { sessionName: "Recovered" },
+            chunks: [[{ id: "m1" }], [{ id: "m2" }]],
+            totalChunks: 2,
+            receivedChunkIndexes: new Set<number>([0, 1]),
+            finalChunkSeen: true,
+        };
+        const updateSessionState = spyOn({
+            updateSessionState: async () => {},
+        }, "updateSessionState");
+        const getSharedSession = spyOn({
+            getSharedSession: async () => ({ userId: "user-1", isEphemeral: false }),
+        }, "getSharedSession");
+        const storeAndReplaceImagesInEvent = spyOn({
+            storeAndReplaceImagesInEvent: async (event: unknown) => event,
+        }, "storeAndReplaceImagesInEvent");
+        const appendRelayEventToCache = spyOn({
+            appendRelayEventToCache: async () => {},
+        }, "appendRelayEventToCache");
+
+        markPendingRecovery("sess-chunked-recovery");
+
+        const fullState = await finalizeChunkedSnapshot("sess-chunked-recovery", pending, {
+            consumePendingRecovery,
+            updateSessionState: updateSessionState as any,
+            getSharedSession: getSharedSession as any,
+            storeAndReplaceImagesInEvent: storeAndReplaceImagesInEvent as any,
+            appendRelayEventToCache: appendRelayEventToCache as any,
+        });
+
+        expect(fullState).toEqual({
+            sessionName: "Recovered",
+            messages: [{ id: "m1" }, { id: "m2" }],
+        });
+        expect(updateSessionState).toHaveBeenCalledWith(
+            "sess-chunked-recovery",
+            fullState,
+            { isRecovery: true },
+        );
+        expect(pendingRecoverySessionIds.has("sess-chunked-recovery")).toBe(false);
+        expect(consumePendingRecovery("sess-chunked-recovery")).toBe(false);
+        expect(appendRelayEventToCache).toHaveBeenCalledTimes(1);
     });
 });
