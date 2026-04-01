@@ -107,7 +107,7 @@ export function useGitService(cwd: string): UseGitServiceReturn {
     const pendingDiffsRef = useRef(new Map<string, (diff: string) => void>());
     const pendingDiffTimeoutsRef = useRef(new Map<string, ReturnType<typeof setTimeout>>());
     const pendingFullStatusRequestRef = useRef<string | null>(null);
-    const fullStatusFallbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const fullStatusFallbackTimersRef = useRef(new Map<string, ReturnType<typeof setTimeout>>());
     const statusRequestsInFlightRef = useRef(new Set<string>());
     const optimisticSnapshotsRef = useRef(new Map<string, GitStatus | null>());
     const requestGenerationRef = useRef(new Map<string, number>());
@@ -166,7 +166,11 @@ export function useGitService(cwd: string): UseGitServiceReturn {
         sendRef.current("git_status", { cwd: targetCwd }, requestId);
     }, [makeRequestId, markStatusRequestInFlight, registerRequestGeneration]);
 
-    const sendFullStatusRequest = useCallback((targetCwd: string, asInitial = false) => {
+    const sendFullStatusRequest = useCallback((targetCwd: string, options?: { asInitial?: boolean; fallbackToStatus?: boolean; fallbackMs?: number }) => {
+        const asInitial = options?.asInitial === true;
+        const fallbackToStatus = options?.fallbackToStatus === true;
+        const fallbackMs = options?.fallbackMs ?? 1200;
+
         statusGenRef.current = generationRef.current;
         const requestId = makeRequestId();
         registerRequestGeneration(requestId);
@@ -177,7 +181,21 @@ export function useGitService(cwd: string): UseGitServiceReturn {
         setLoading(true);
         setError(null);
         sendRef.current("git_full_status", { cwd: targetCwd }, requestId);
-    }, [makeRequestId, markStatusRequestInFlight, registerRequestGeneration]);
+
+        if (fallbackToStatus) {
+            const timerId = setTimeout(() => {
+                fullStatusFallbackTimersRef.current.delete(requestId);
+                if (statusGenRef.current !== generationRef.current) return;
+                if (asInitial && pendingFullStatusRequestRef.current !== requestId) return;
+                if (asInitial) pendingFullStatusRequestRef.current = null;
+                markStatusRequestSettled(requestId);
+                sendStatusRequest(cwdRef.current);
+            }, fallbackMs);
+            fullStatusFallbackTimersRef.current.set(requestId, timerId);
+        }
+
+        return requestId;
+    }, [makeRequestId, markStatusRequestInFlight, markStatusRequestSettled, registerRequestGeneration, sendStatusRequest]);
 
     const clearPendingDiffs = useCallback((resolution: string) => {
         for (const timeoutId of pendingDiffTimeoutsRef.current.values()) {
@@ -198,7 +216,7 @@ export function useGitService(cwd: string): UseGitServiceReturn {
             getGeneration: () => generationRef.current,
             isStatusRequestInFlight: () => statusRequestsInFlightRef.current.size > 0,
             triggerRefresh: () => {
-                sendFullStatusRequest(cwdRef.current, false);
+                sendFullStatusRequest(cwdRef.current, { asInitial: false, fallbackToStatus: true, fallbackMs: 1200 });
             },
         })
     );
@@ -238,40 +256,38 @@ export function useGitService(cwd: string): UseGitServiceReturn {
                 case "git_full_status_result": {
                     if (!isRequestCurrentGeneration(requestId)) break;
                     markStatusRequestSettled(requestId);
+                    if (requestId) {
+                        const timerId = fullStatusFallbackTimersRef.current.get(requestId);
+                        if (timerId) {
+                            clearTimeout(timerId);
+                            fullStatusFallbackTimersRef.current.delete(requestId);
+                        }
+                    }
                     // Ignore stale responses from a previous cwd
                     if (statusGenRef.current !== generationRef.current) break;
 
                     const isInitialFullStatus = !!requestId && pendingFullStatusRequestRef.current === requestId;
                     if (isInitialFullStatus) {
                         pendingFullStatusRequestRef.current = null;
-                        if (fullStatusFallbackTimerRef.current) {
-                            clearTimeout(fullStatusFallbackTimerRef.current);
-                            fullStatusFallbackTimerRef.current = null;
-                        }
-                        setLoading(false);
                     }
 
+                    setLoading(false);
                     if (payload.ok) {
-                        if (isInitialFullStatus) {
-                            const statusPayload = (payload.status as Record<string, unknown> | undefined) ?? payload;
-                            setStatus({
-                                branch: (statusPayload.branch as string) ?? "",
-                                changes: (statusPayload.changes as GitChange[]) ?? [],
-                                ahead: (statusPayload.ahead as number) ?? 0,
-                                behind: (statusPayload.behind as number) ?? 0,
-                                hasUpstream: (statusPayload.hasUpstream as boolean) ?? false,
-                                diffStaged: (statusPayload.diffStaged as string) ?? "",
-                            });
-                        }
-                        // Late same-generation full-status can still provide fresh
-                        // branches/worktrees metadata after fallback/manual refresh.
+                        const statusPayload = (payload.status as Record<string, unknown> | undefined) ?? payload;
+                        setStatus({
+                            branch: (statusPayload.branch as string) ?? "",
+                            changes: (statusPayload.changes as GitChange[]) ?? [],
+                            ahead: (statusPayload.ahead as number) ?? 0,
+                            behind: (statusPayload.behind as number) ?? 0,
+                            hasUpstream: (statusPayload.hasUpstream as boolean) ?? false,
+                            diffStaged: (statusPayload.diffStaged as string) ?? "",
+                        });
                         setBranches((payload.branches as GitBranch[]) ?? []);
                         setCurrentBranch((payload.currentBranch as string) ?? "");
                         setWorktrees((payload.worktrees as GitWorktree[]) ?? []);
                         setError(null);
-                    } else if (isInitialFullStatus) {
+                    } else {
                         setError((payload.message as string) ?? "Failed to get git status");
-                        // Explicit failure from full-status should immediately fall back.
                         sendStatusRequest(cwdRef.current);
                     }
                     break;
@@ -359,10 +375,10 @@ export function useGitService(cwd: string): UseGitServiceReturn {
             statusRequestsInFlightRef.current.clear();
             requestGenerationRef.current.clear();
             postMutationRefreshSchedulerRef.current.dispose();
-            if (fullStatusFallbackTimerRef.current) {
-                clearTimeout(fullStatusFallbackTimerRef.current);
-                fullStatusFallbackTimerRef.current = null;
+            for (const timerId of fullStatusFallbackTimersRef.current.values()) {
+                clearTimeout(timerId);
             }
+            fullStatusFallbackTimersRef.current.clear();
         };
     }, [clearPendingDiffs]);
 
@@ -521,10 +537,10 @@ export function useGitService(cwd: string): UseGitServiceReturn {
         optimisticSnapshotsRef.current.clear();
         postMutationRefreshSchedulerRef.current.cancel();
         statusRequestsInFlightRef.current.clear();
-        if (fullStatusFallbackTimerRef.current) {
-            clearTimeout(fullStatusFallbackTimerRef.current);
-            fullStatusFallbackTimerRef.current = null;
+        for (const timerId of fullStatusFallbackTimersRef.current.values()) {
+            clearTimeout(timerId);
         }
+        fullStatusFallbackTimersRef.current.clear();
 
         if (available && cwd) {
             statusGenRef.current = generationRef.current;
@@ -533,17 +549,7 @@ export function useGitService(cwd: string): UseGitServiceReturn {
             // Initial load optimization: request status + branches + worktrees in one round-trip.
             // Compatibility fallback: if an older runner doesn't support git_full_status,
             // fall back to git_status after a short delay.
-            sendFullStatusRequest(cwd, true);
-
-            fullStatusFallbackTimerRef.current = setTimeout(() => {
-                fullStatusFallbackTimerRef.current = null;
-                if (statusGenRef.current !== generationRef.current) return;
-                const abandonedRequestId = pendingFullStatusRequestRef.current;
-                if (!abandonedRequestId) return;
-                pendingFullStatusRequestRef.current = null;
-                markStatusRequestSettled(abandonedRequestId);
-                sendStatusRequest(cwdRef.current);
-            }, 1200);
+            sendFullStatusRequest(cwd, { asInitial: true, fallbackToStatus: true, fallbackMs: 1200 });
         } else {
             setLoading(false);
         }
