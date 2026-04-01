@@ -54,6 +54,9 @@ export function _injectRedisForTesting(client: unknown): void {
 export function _resetRedisForTesting(): void {
     _redis = null;
     _initPromise = null;
+    // Reset revision counters so revision-order assertions don't leak across tests.
+    _localRevision = 0;
+    _lastKnownRedisRevision = 0;
 }
 
 const SESSION_SUBS_KEY = (sessionId: string) =>
@@ -61,7 +64,54 @@ const SESSION_SUBS_KEY = (sessionId: string) =>
 const RUNNER_TYPE_INDEX_KEY = (runnerId: string, triggerType: string) =>
     `pizzapi:trigger-subs:runner:${runnerId}:${triggerType}`;
 
+// Shared Redis key for the globally monotonic revision counter.
+// All server nodes INCR the same key so revisions are ordered cluster-wide.
+const TRIGGER_SUB_REVISION_KEY = "pizzapi:trigger-sub-revision";
+
 const DEFAULT_TTL_SECONDS = 24 * 60 * 60; // 24 hours
+
+// ── Global revision counter ──────────────────────────────────────────────────
+
+// Process-local fallback counter used only when Redis is unavailable.
+let _localRevision = 0;
+
+// Tracks the highest revision successfully returned by Redis INCR.
+// When Redis becomes unavailable, _localRevision is seeded from this value
+// so fallback revisions are always strictly greater than any previously
+// issued Redis revision. Without this, a runner that has already applied
+// revision N (from Redis) would drop all fallback revisions 1..N as stale.
+let _lastKnownRedisRevision = 0;
+
+/**
+ * Atomically increment and return the global trigger subscription revision.
+ *
+ * Uses Redis INCR so the counter is monotonically increasing across ALL server
+ * nodes in a cluster. This prevents the runner's stale-drop filter from
+ * discarding valid deltas that originated on a different server node.
+ *
+ * Falls back to a process-local counter when Redis is unavailable (single-node
+ * mode or during startup before Redis connects). The fallback is seeded from
+ * _lastKnownRedisRevision so it never issues a revision that a runner would
+ * treat as stale.
+ */
+export async function nextTriggerSubRevision(): Promise<number> {
+    const redis = await getClient();
+    if (redis) {
+        try {
+            const rev = await redis.incr(TRIGGER_SUB_REVISION_KEY);
+            _lastKnownRedisRevision = rev;
+            return rev;
+        } catch (err) {
+            log.warn("Failed to increment trigger sub revision in Redis, using local counter:", err);
+        }
+    }
+    // Seed the local counter from the last known Redis value so fallback
+    // revisions are always > any revision the runner has already applied.
+    if (_localRevision < _lastKnownRedisRevision) {
+        _localRevision = _lastKnownRedisRevision;
+    }
+    return ++_localRevision;
+}
 
 // ── Public API ───────────────────────────────────────────────────────────
 
@@ -386,6 +436,34 @@ export async function clearSessionSubscriptions(sessionId: string): Promise<void
     } catch (err) {
         log.warn("Failed to clear session subscriptions (best-effort):", err);
     }
+}
+
+/**
+ * Get all active subscriptions for all sessions on a specific runner.
+ * Used to build the trigger_subscriptions_snapshot sent after runner registration.
+ *
+ * This scans all sessions connected to the runner and collects their subscriptions.
+ * The sessionIds parameter should come from getConnectedSessionsForRunner().
+ */
+export async function getSubscriptionsForRunnerSessions(
+    sessionIds: string[],
+): Promise<Array<{ sessionId: string; triggerType: string; runnerId: string; params?: SubscriptionParams; filters?: SubscriptionFilter[]; filterMode?: SubscriptionFilterMode }>> {
+    if (sessionIds.length === 0) return [];
+    const redis = await getClient();
+    if (!redis) return [];
+
+    const perSessionResults = await Promise.all(
+        sessionIds.map(async (sessionId) => {
+            try {
+                const subs = await listSessionSubscriptions(sessionId);
+                return subs.map(sub => ({ sessionId, ...sub }));
+            } catch (err) {
+                log.warn(`Failed to list subscriptions for session ${sessionId}:`, err);
+                return [];
+            }
+        })
+    );
+    return perSessionResults.flat();
 }
 
 /** @deprecated Use `_resetRedisForTesting` instead. */

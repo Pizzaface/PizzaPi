@@ -1,4 +1,5 @@
 import type { Socket } from "socket.io-client";
+import type { TriggerSubscriptionDelta, TriggerSubscriptionEntry } from "@pizzapi/protocol";
 import { logError } from "./logger.js";
 
 /**
@@ -20,6 +21,33 @@ export interface ServiceHandler {
      * Called on socket disconnect or daemon shutdown.
      */
     dispose(): void;
+
+    /**
+     * Reconcile in-memory subscription state against a full snapshot from the server.
+     * Called after runner reconnection with the subset of subscriptions relevant to
+     * this service's trigger types. Services that manage runtime state per subscription
+     * (e.g. timers, watchers) should implement this to rebuild that state.
+     *
+     * Optional — services that don't manage per-subscription state can skip this.
+     */
+    reconcileSubscriptions?(subscriptions: TriggerSubscriptionEntry[], options?: ReconcileOptions): ReconcileResult;
+}
+
+/**
+ * Result of a reconcileSubscriptions call.
+ */
+export interface ReconcileResult {
+    /** Number of subscriptions successfully reconciled. */
+    applied: number;
+    /** Optional error messages for subscriptions that failed. */
+    errors?: string[];
+}
+
+export interface ReconcileOptions {
+    /** Full snapshot rebuild vs. single live delta application. */
+    mode?: "snapshot" | "delta";
+    /** Delta action when mode === "delta". */
+    action?: TriggerSubscriptionDelta["action"];
 }
 
 export interface ServiceInitOptions {

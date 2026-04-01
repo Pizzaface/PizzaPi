@@ -18,15 +18,43 @@ import type {
     RunnerSocketData,
     RunnerSkill,
     RunnerAgent,
+    TriggerSubscriptionEntry,
+    TriggerSubscriptionDelta,
 } from "@pizzapi/protocol";
 import { shouldPreserveOnSocketDisconnect } from "../../health.js";
 import { apiKeyAuthMiddleware } from "./auth.js";
+import { getSubscriptionsForRunnerSessions, nextTriggerSubRevision } from "../../sessions/trigger-subscription-store.js";
 
 // Inline definitions mirror packages/protocol/src/shared.ts.
 // Using local aliases avoids a cross-worktree symlink resolution issue where
 // node_modules/@pizzapi/protocol points to the main branch's dist, not this
 // worktree's updated dist.
 type ServiceEnvelope = { serviceId: string; type: string; requestId?: string; payload: unknown };
+
+// ── Trigger subscription reconciliation ──────────────────────────────────────
+// Revision counter is now Redis-backed (globally monotonic across all server
+// nodes). See nextTriggerSubRevision() in trigger-subscription-store.ts.
+
+/**
+ * Emit a trigger_subscription_delta to a runner. Exported so the triggers
+ * REST API can notify runners of subscribe/update/unsubscribe changes.
+ *
+ * Async because the revision is fetched from Redis INCR to ensure it is
+ * globally monotonic across all server nodes in a cluster.
+ */
+export async function emitTriggerSubscriptionDelta(
+    runnerId: string,
+    delta: Omit<TriggerSubscriptionDelta, "revision">,
+): Promise<void> {
+    const revision = await nextTriggerSubRevision();
+    emitToRunnerRoom(runnerId, "trigger_subscription_delta", {
+        ...delta,
+        revision,
+    });
+}
+
+// Forward declaration — filled in during registerRunnerNamespace() below.
+let emitToRunnerRoom: (runnerId: string, event: string, data: unknown) => void = () => {};
 import {
     registerRunner,
     updateRunnerSkills,
@@ -216,7 +244,7 @@ export async function sendRunnerCommand(
 // via updateRunnerServices() so late-joining viewers (or viewers after a server
 // restart) can receive the data without waiting for a fresh announce.
 import type { ServiceAnnounceData } from "@pizzapi/protocol";
-import { updateRunnerServices, getRunnerServices, addRunnerWarning, clearRunnerWarnings } from "../sio-registry/index.js";
+import { updateRunnerServices, getRunnerServices, addRunnerWarning, clearRunnerWarnings, emitToRunner } from "../sio-registry/index.js";
 import { chooseServiceAnnounceSeed, isSameServiceAnnounce, shouldSkipServiceAnnounceFanout, computeServiceAnnounceDelta, isEmptyDelta } from "./runner.service-announce.js";
 import { withRunnerRefHint } from "./runner-ref.js";
 export { chooseServiceAnnounceSeed, isSameServiceAnnounce, shouldSkipServiceAnnounceFanout, computeServiceAnnounceDelta, isEmptyDelta };
@@ -269,6 +297,11 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
 
     // Auth: validate API key from handshake
     runner.use(apiKeyAuthMiddleware() as Parameters<typeof runner.use>[0]);
+
+    // Wire up the cluster-wide emitToRunnerRoom helper now that we have `io`.
+    emitToRunnerRoom = (runnerId: string, event: string, data: unknown) => {
+        emitToRunner(runnerId, event, data);
+    };
 
     // ── Per-runner session tracking (in-memory) ──────────────────────────────
     // Maps runnerId → Set<sessionId>. Used to broadcast service_message and
@@ -402,6 +435,54 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
                 runnerId: result,
                 ...(existingSessions.length > 0 ? { existingSessions } : {}),
             });
+
+            // ── Send trigger subscriptions snapshot ──────────────────────────
+            // After runner_registered, send a full snapshot of all active trigger
+            // subscriptions for this runner's sessions so the runner can rebuild
+            // its in-memory subscription state (timers, watchers, etc.).
+            try {
+                const sessionIdsList = existingSessions.map((s: { sessionId: string }) => s.sessionId);
+                // Also include sessions from our in-memory tracking (may include sessions
+                // not in existingSessions if they were already connected before this registration).
+                const trackedSessions = runnerSessionIds.get(result);
+                if (trackedSessions) {
+                    for (const sid of trackedSessions) {
+                        if (!sessionIdsList.includes(sid)) sessionIdsList.push(sid);
+                    }
+                }
+                // P1 fix: capture the revision BEFORE the async snapshot read.
+                // Any delta emitted concurrently will call nextTriggerSubRevision()
+                // after this point and therefore receive a strictly higher revision,
+                // so the runner will never overwrite delta-applied state with a stale
+                // snapshot.
+                const snapshotRevision = await nextTriggerSubRevision();
+                if (sessionIdsList.length > 0) {
+                    const allSubs = await getSubscriptionsForRunnerSessions(sessionIdsList);
+                    socket.emit("trigger_subscriptions_snapshot" as any, {
+                        revision: snapshotRevision,
+                        isReconnect: true,
+                        subscriptions: allSubs.map(s => ({
+                            sessionId: s.sessionId,
+                            triggerType: s.triggerType,
+                            runnerId: s.runnerId,
+                            ...(s.params ? { params: s.params } : {}),
+                            ...(s.filters && s.filters.length > 0 ? { filters: s.filters } : {}),
+                            ...(s.filterMode ? { filterMode: s.filterMode } : {}),
+                        })),
+                    });
+                    log.info(`[trigger-reconciliation] sent reconnect snapshot with ${allSubs.length} subscriptions to runner ${result}`);
+                } else {
+                    // No sessions — send empty snapshot so runner knows state is clean
+                    socket.emit("trigger_subscriptions_snapshot" as any, {
+                        revision: snapshotRevision,
+                        isReconnect: true,
+                        subscriptions: [],
+                    });
+                    log.info(`[trigger-reconciliation] sent empty reconnect snapshot to runner ${result}`);
+                }
+            } catch (err) {
+                log.warn(`[trigger-reconciliation] failed to send snapshot to runner ${result}:`, err);
+            }
         });
 
         // ── skills_list — runner reports updated skills ──────────────────────
@@ -598,6 +679,13 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
                 return;
             }
             await publishSessionEvent(data.sessionId, data.event);
+        });
+
+        // ── trigger_subscriptions_applied — runner ack ───────────────────────
+        socket.on("trigger_subscriptions_applied" as any, (data: any) => {
+            const runnerId = socket.data.runnerId;
+            if (!runnerId) return;
+            log.info(`[trigger-reconciliation] runner ${runnerId} applied revision ${data?.revision}, ${data?.applied ?? 0} subscriptions${data?.errors?.length ? `, ${data.errors.length} errors` : ""}`);
         });
 
         // ── session_ready — worker session connected ─────────────────────────
