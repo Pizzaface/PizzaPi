@@ -115,6 +115,7 @@ import { ActionCenter } from "@/components/action-center/ActionCenter";
 import { ActionCenterButton } from "@/components/action-center/ActionCenterButton";
 import { useAttentionIngestion } from "@/hooks/useAttentionIngestion";
 import { useMobileSidebar } from "@/hooks/useMobileSidebar";
+import { useBrowserNotifications } from "@/hooks/useBrowserNotifications";
 import {
   toRelayMessage,
   deduplicateMessages,
@@ -567,6 +568,23 @@ export function App() {
     handleSidebarPointerDown, handleSidebarPointerMove, handleSidebarPointerUp,
   } = useMobileSidebar();
   const [liveSessions, setLiveSessions] = React.useState<HubSession[]>([]);
+
+  // Derive a sessionId → sessionName map for browser notifications.
+  const sessionNamesMap = React.useMemo(() => {
+    const map = new Map<string, string | null>();
+    for (const s of liveSessions) {
+      map.set(s.sessionId, s.sessionName ?? null);
+    }
+    return map;
+  }, [liveSessions]);
+
+  // Fire browser Notification API alerts when a session is awaiting input
+  // and the tab is hidden or the user is viewing a different session.
+  useBrowserNotifications({
+    sessionsAwaitingInput,
+    activeSessionId,
+    sessionNames: sessionNamesMap,
+  });
   // Ref kept in sync with liveSessions so openSession can look up runner IDs
   // without including liveSessions in its dependency array.
   const liveSessionsRef = React.useRef<HubSession[]>(liveSessions);
@@ -3384,6 +3402,16 @@ export function App() {
     };
     navigator.serviceWorker.addEventListener("message", handler);
     return () => navigator.serviceWorker.removeEventListener("message", handler);
+  }, [handleOpenSession]);
+
+  // Listen for browser notification clicks to navigate to the session.
+  React.useEffect(() => {
+    const handler = (e: Event) => {
+      const sessionId = (e as CustomEvent).detail?.sessionId;
+      if (typeof sessionId === "string") handleOpenSession(sessionId);
+    };
+    window.addEventListener("pp-navigate-session", handler);
+    return () => window.removeEventListener("pp-navigate-session", handler);
   }, [handleOpenSession]);
 
   const handleClearSelection = React.useCallback(() => {
