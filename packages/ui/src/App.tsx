@@ -385,6 +385,7 @@ export function App() {
   const [showApiKeys, setShowApiKeys] = React.useState(false);
   const [apiKeyVersion, setApiKeyVersion] = React.useState(0);
   const [showRunners, setShowRunners] = React.useState(false);
+  const [showHistory, setShowHistory] = React.useState(false);
   const [selectedRunnerId, setSelectedRunnerId] = React.useState<string | null>(null);
   const [runnersForSidebar, setRunnersForSidebar] = React.useState<Array<{
     runnerId: string;
@@ -3426,6 +3427,7 @@ export function App() {
 
   const handleOpenSession = React.useCallback((id: string) => {
     setShowRunners(false);
+    setShowHistory(false);
     openSession(id);
     setSidebarOpen(false);
   }, [openSession]);
@@ -3454,6 +3456,7 @@ export function App() {
 
   const handleClearSelection = React.useCallback(() => {
     setShowRunners(false);
+    setShowHistory(false);
     clearSelection();
     setSidebarOpen(false);
   }, [clearSelection]);
@@ -3822,6 +3825,98 @@ export function App() {
     }
   }, [activeSessionId, liveSessions, handleOpenSession, waitForSessionToGoLive]);
 
+  // ── Resume a historical session on a runner ────────────────────────────
+  // Queued resume exec — fires once the viewer socket connects to the new session
+  const pendingResumeExecRef = React.useRef<string | null>(null);
+
+  const handleResumeHistoricalSession = React.useCallback(async (
+    _historicalSessionId: string,
+    runnerId: string,
+    cwd: string,
+  ) => {
+    setViewerStatus("Resuming session…");
+
+    try {
+      const res = await fetch("/api/runners/spawn", {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ runnerId, ...(cwd ? { cwd } : {}) }),
+      });
+
+      const body = await res.json().catch(() => null) as { error?: string; sessionId?: string } | null;
+      if (!res.ok) {
+        const mapped = mapUserError({
+          error: body?.error,
+          statusCode: res.status,
+          context: "session_spawn",
+        });
+        console.error("Failed to spawn resume session:", mapped.technicalMessage, body);
+        setViewerStatus(mapped.userMessage);
+        return;
+      }
+
+      const sessionId = typeof body?.sessionId === "string" ? body.sessionId : null;
+      if (!sessionId) {
+        setViewerStatus("Failed to spawn session — missing session ID");
+        return;
+      }
+
+      // Wait for the session to come live
+      const live = await waitForSessionToGoLive(sessionId, 30_000);
+      if (!live) {
+        setViewerStatus("Session is starting… it will appear in the sidebar soon");
+        return;
+      }
+
+      // Queue the /resume exec to fire once the viewer socket connects.
+      // The "connected" handler in openSession will pick this up.
+      pendingResumeExecRef.current = sessionId;
+
+      handleOpenSession(sessionId);
+      setViewerStatus("Connecting…");
+    } catch (err) {
+      const mapped = mapUserError({
+        error: err,
+        context: "session_spawn",
+      });
+      console.error("Failed to resume session:", err);
+      setViewerStatus(mapped.userMessage);
+    }
+  }, [handleOpenSession, waitForSessionToGoLive]);
+
+  // Fire the queued resume exec when the viewer socket connects
+  React.useEffect(() => {
+    const pendingSessionId = pendingResumeExecRef.current;
+    if (!pendingSessionId) return;
+    if (activeSessionId !== pendingSessionId) return;
+
+    // Small delay to ensure the socket is fully connected
+    const timer = setTimeout(() => {
+      if (pendingResumeExecRef.current !== pendingSessionId) return;
+      pendingResumeExecRef.current = null;
+
+      const socket = viewerWsRef.current;
+      if (!socket || !socket.connected) return;
+
+      const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      socket.emit("exec", { type: "exec", id, command: "list_resume_sessions" });
+
+      // After listing, issue the actual resume with the most recent session
+      // (the runner will pick the latest session to resume)
+      setTimeout(() => {
+        if (activeSessionRef.current !== pendingSessionId) return;
+        const resumeSocket = viewerWsRef.current;
+        if (!resumeSocket || !resumeSocket.connected) return;
+        const resumeId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+        resumeSocket.emit("exec", { type: "exec", id: resumeId, command: "resume_session" });
+        setViewerStatus("Resuming previous conversation…");
+      }, 500);
+    }, 300);
+
+    return () => clearTimeout(timer);
+  }, [activeSessionId]);
+
   // Derive runner/cwd for the active session (used by File Explorer)
   const activeSessionInfo = React.useMemo(() => {
     if (!activeSessionId) return null;
@@ -4173,15 +4268,17 @@ export function App() {
   // skip re-rendering when only session-scoped state changes.
 
   const handleShowPreferences = React.useCallback(() => setShowPreferences(true), []);
-  const handleShowApiKeys = React.useCallback(() => { setShowApiKeys(true); setShowRunners(false); }, []);
-  const handleShowRunners = React.useCallback(() => { setShowRunners(true); setShowApiKeys(false); activeSessionRef.current = null; setActiveSessionId(null); }, []);
+  const handleShowApiKeys = React.useCallback(() => { setShowApiKeys(true); setShowRunners(false); setShowHistory(false); }, []);
+  const handleShowRunners = React.useCallback(() => { setShowRunners(true); setShowHistory(false); setShowApiKeys(false); activeSessionRef.current = null; setActiveSessionId(null); }, []);
+  const handleShowHistory = React.useCallback(() => { setShowHistory(true); setShowRunners(false); setShowApiKeys(false); }, []);
   const handleShowShortcuts = React.useCallback(() => setShowShortcutsHelp(true), []);
   const handleChangePassword = React.useCallback(() => setChangePasswordOpen(true), []);
   const handleToggleSidebar = React.useCallback(() => setSidebarOpen((prev) => !prev), []);
   // Mobile-specific variants that also close the sidebar
   const handleMobileShowPreferences = React.useCallback(() => { setShowPreferences(true); setSidebarOpen(false); }, []);
-  const handleMobileShowApiKeys = React.useCallback(() => { setShowApiKeys(true); setShowRunners(false); setSidebarOpen(false); }, []);
-  const handleMobileShowRunners = React.useCallback(() => { setShowRunners(true); setShowApiKeys(false); activeSessionRef.current = null; setActiveSessionId(null); setSidebarOpen(false); }, []);
+  const handleMobileShowApiKeys = React.useCallback(() => { setShowApiKeys(true); setShowRunners(false); setShowHistory(false); setSidebarOpen(false); }, []);
+  const handleMobileShowRunners = React.useCallback(() => { setShowRunners(true); setShowHistory(false); setShowApiKeys(false); activeSessionRef.current = null; setActiveSessionId(null); setSidebarOpen(false); }, []);
+  const handleMobileShowHistory = React.useCallback(() => { setShowHistory(true); setShowRunners(false); setShowApiKeys(false); setSidebarOpen(false); }, []);
   const handleMobileChangePassword = React.useCallback(() => { setChangePasswordOpen(true); setSidebarOpen(false); }, []);
   const handleSessionSwitcherOpenChange = React.useCallback((open: boolean) => setSessionSwitcherOpen(open), []);
 
@@ -4388,7 +4485,7 @@ export function App() {
               onOpenSession={handleOpenSession}
               onNewSession={handleNewSession}
               onClearSelection={handleClearSelection}
-              onShowRunners={() => { setShowRunners(true); setShowApiKeys(false); activeSessionRef.current = null; setActiveSessionId(null); }}
+              onShowRunners={() => { setShowRunners(true); setShowHistory(false); setShowApiKeys(false); activeSessionRef.current = null; setActiveSessionId(null); }}
               activeSessionId={activeSessionId}
               showRunners={showRunners}
               activeModel={activeModel}
@@ -4400,7 +4497,10 @@ export function App() {
               runners={runnersForSidebar}
               selectedRunnerId={selectedRunnerId}
               onSelectRunner={setSelectedRunnerId}
-              onShowSessions={() => setShowRunners(false)}
+              onShowSessions={() => { setShowRunners(false); setShowHistory(false); }}
+              showHistory={showHistory}
+              onShowHistory={handleShowHistory}
+              onResumeSession={handleResumeHistoricalSession}
               sessionsAwaitingInput={sessionsAwaitingInput}
               sessionsCompacting={sessionsCompacting}
             />

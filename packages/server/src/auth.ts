@@ -93,6 +93,7 @@ export interface RelaySessionTable {
     isPinned: number;
     runnerId: string | null;
     runnerName: string | null;
+    sessionName: string | null;
 }
 
 export interface RelaySessionStateTable {
