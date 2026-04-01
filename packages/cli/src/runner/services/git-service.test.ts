@@ -548,6 +548,89 @@ describe("GitService git_full_status", () => {
         expect(payload.worktrees[0].isMain).toBe(true);
     });
 
+    test("re-collects branches/worktrees when generation changes mid full-status", async () => {
+        const cwd = "/repo";
+        let branchName = "main";
+        let releaseStatus: () => void = () => {
+            throw new Error("Expected status gate release function");
+        };
+        const statusGate = new Promise<void>((resolve) => {
+            releaseStatus = resolve;
+        });
+
+        const service = new GitService({
+            execGit: async (args, options) => {
+                const cmd = args[0];
+
+                if (cmd === "rev-parse" && args[1] === "--abbrev-ref") {
+                    return { stdout: `${branchName}\n`, stderr: "" };
+                }
+                if (cmd === "rev-parse" && args[1] === "--show-toplevel") {
+                    return { stdout: `${cwd}\n`, stderr: "" };
+                }
+                if (cmd === "status" && args.includes("-z")) {
+                    await statusGate;
+                    return { stdout: " M src/index.ts\0", stderr: "" };
+                }
+                if (cmd === "status") {
+                    return { stdout: " M src/index.ts\n", stderr: "" };
+                }
+                if (cmd === "diff") return { stdout: "", stderr: "" };
+                if (cmd === "rev-list") return { stdout: "0 0\n", stderr: "" };
+                if (cmd === "for-each-ref" && args.includes("refs/heads")) {
+                    if (branchName === "feature/new") {
+                        return { stdout: "feature/new\tabc1234\tjust now\t*\nmain\tdef5678\t1 day ago\t\n", stderr: "" };
+                    }
+                    return { stdout: "main\tdef5678\t1 day ago\t*\nfeature/new\tabc1234\tjust now\t\n", stderr: "" };
+                }
+                if (cmd === "for-each-ref" && args.includes("refs/remotes")) {
+                    return { stdout: "origin/main\tdef5678\t1 day ago\norigin/feature/new\tabc1234\tjust now\n", stderr: "" };
+                }
+                if (cmd === "worktree") {
+                    return {
+                        stdout: `worktree ${cwd}\nHEAD abc123456789\nbranch refs/heads/${branchName}\n`,
+                        stderr: "",
+                    };
+                }
+                if (cmd === "checkout") {
+                    branchName = args[1] ?? branchName;
+                    return { stdout: "", stderr: "" };
+                }
+
+                throw new Error(`Unexpected git args: ${args.join(" ")}`);
+            },
+        });
+
+        const socket = createMockSocket();
+        service.init(socket as any, { isShuttingDown: () => false });
+
+        dispatchServiceMessage(socket, {
+            serviceId: "git",
+            type: "git_full_status",
+            requestId: "full-race",
+            payload: { cwd },
+        });
+
+        // Bump status generation while full-status is in-flight.
+        dispatchServiceMessage(socket, {
+            serviceId: "git",
+            type: "git_checkout",
+            requestId: "checkout-race",
+            payload: { cwd, branch: "feature/new", isRemote: false },
+        });
+        await waitForResult(socket, "checkout-race", "git_checkout_result");
+
+        releaseStatus();
+
+        const result = await waitForResult(socket, "full-race", "git_full_status_result");
+        const payload = result.payload as any;
+
+        expect(payload.ok).toBe(true);
+        expect(payload.status.branch).toBe("feature/new");
+        expect(payload.currentBranch).toBe("feature/new");
+        expect(payload.worktrees[0].branch).toBe("feature/new");
+    });
+
     test("returns git_full_status_result error for missing cwd", async () => {
         const service = new GitService();
         const socket = createMockSocket();

@@ -723,22 +723,39 @@ export class GitService implements ServiceHandler {
             }
 
             let statusSnapshot = statusResult.value;
-            if (statusSnapshot.generation !== (this._statusGeneration.get(cwd) ?? 0)) {
-                statusSnapshot = await this.getStatusSnapshot(cwd);
-            }
-            const status = statusSnapshot.payload;
-            const branchData = branchResult.status === "fulfilled"
+            let branchData = branchResult.status === "fulfilled"
                 ? branchResult.value
-                : { currentBranch: status.branch, branches: [] };
-            const worktreeData = worktreeResult.status === "fulfilled"
+                : null;
+            let worktreeData = worktreeResult.status === "fulfilled"
                 ? worktreeResult.value
-                : { worktrees: [] };
+                : null;
+
+            if (statusSnapshot.generation !== (this._statusGeneration.get(cwd) ?? 0)) {
+                // Full-status collection crossed an invalidation boundary.
+                // Re-read all components so we don't mix fresh status with stale metadata.
+                const [freshStatus, freshBranches, freshWorktrees] = await Promise.allSettled([
+                    this.getStatusSnapshot(cwd),
+                    this.collectBranches(cwd),
+                    this.collectWorktrees(cwd),
+                ]);
+
+                if (freshStatus.status !== "fulfilled") {
+                    throw freshStatus.reason;
+                }
+                statusSnapshot = freshStatus.value;
+                branchData = freshBranches.status === "fulfilled" ? freshBranches.value : null;
+                worktreeData = freshWorktrees.status === "fulfilled" ? freshWorktrees.value : null;
+            }
+
+            const status = statusSnapshot.payload;
+            const safeBranchData = branchData ?? { currentBranch: status.branch, branches: [] };
+            const safeWorktreeData = worktreeData ?? { worktrees: [] };
 
             this.emit("git_full_status_result", {
                 ok: true,
                 status,
-                ...branchData,
-                ...worktreeData,
+                ...safeBranchData,
+                ...safeWorktreeData,
             }, requestId, sessionId);
         } catch (err) {
             this.emitError("git_full_status_result", err instanceof Error ? err.message : String(err), requestId, sessionId);
