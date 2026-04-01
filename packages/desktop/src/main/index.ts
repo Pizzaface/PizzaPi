@@ -13,6 +13,18 @@ import { notifyServiceError } from "./notifications.js";
 import { isDev, DEFAULT_SERVER_PORT, VITE_DEV_URL, getUIDistPath } from "./config.js";
 import log from "./logger.js";
 
+// ── Suppress EPIPE errors ────────────────────────────────────────────────────
+// electron-log writes to stdout/stderr via console transports. When child
+// processes (server, runner) exit, their piped streams close and the next
+// console.warn/log call triggers an EPIPE. This is harmless — swallow it
+// so Electron doesn't show the ugly crash dialog.
+process.on("uncaughtException", (err: Error) => {
+  const code = (err as NodeJS.ErrnoException).code;
+  if (code === "EPIPE") return; // silently ignore
+  // For anything else, log and show the default dialog
+  log.error("Uncaught exception:", err);
+});
+
 let mainWindow: BrowserWindow | null = null;
 let tray: AppTray | null = null;
 let serverManager: ServerManager | null = null;
