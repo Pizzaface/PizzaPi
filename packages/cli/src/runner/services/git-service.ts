@@ -355,7 +355,10 @@ export class GitService implements ServiceHandler {
         watchState.refreshInFlight = true;
         try {
             await this.invalidateStatusCacheFamily(cwd);
-            const snapshot = await this.getStatusSnapshot(cwd);
+            let snapshot = await this.getStatusSnapshot(cwd);
+            if (snapshot.generation !== (this._statusGeneration.get(cwd) ?? 0)) {
+                snapshot = await this.getStatusSnapshot(cwd);
+            }
             const status = snapshot.payload;
             for (const sessionId of subscribers) {
                 const sessionCwd = this._sessionCwd.get(sessionId) ?? status.cwd;
