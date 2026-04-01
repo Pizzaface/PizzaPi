@@ -36,6 +36,15 @@ export interface TriggerSubscriptionsSnapshot {
   revision: number;
   /** All active subscriptions for sessions on this runner. */
   subscriptions: TriggerSubscriptionEntry[];
+  /**
+   * True when this snapshot is sent as part of a reconnect/re-registration
+   * handshake. The runner must treat it as an authoritative full baseline and
+   * apply it unconditionally, ignoring any previously cached revision number.
+   * This prevents the lost-baseline race where a concurrent delta arrives with
+   * a higher revision before the snapshot, causing the snapshot to be dropped
+   * as stale even though it contains the complete pre-existing state.
+   */
+  isReconnect?: boolean;
 }
 
 /**

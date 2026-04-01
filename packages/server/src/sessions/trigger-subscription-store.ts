@@ -54,6 +54,9 @@ export function _injectRedisForTesting(client: unknown): void {
 export function _resetRedisForTesting(): void {
     _redis = null;
     _initPromise = null;
+    // Reset revision counters so revision-order assertions don't leak across tests.
+    _localRevision = 0;
+    _lastKnownRedisRevision = 0;
 }
 
 const SESSION_SUBS_KEY = (sessionId: string) =>

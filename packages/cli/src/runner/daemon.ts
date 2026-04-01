@@ -631,10 +631,29 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
         (socket as any).on("trigger_subscriptions_snapshot", (data: any) => {
             if (isShuttingDown) return;
             try {
-                const { revision, subscriptions } = data ?? {};
+                const { revision, subscriptions, isReconnect } = data ?? {};
                 if (typeof revision !== "number" || !Array.isArray(subscriptions)) {
                     logWarn("[trigger-reconciliation] invalid snapshot payload");
                     return;
+                }
+
+                // Reconnect snapshots are authoritative full baselines: they must be
+                // applied unconditionally regardless of any revision the daemon has
+                // already seen.  Without this, the following lost-baseline race can
+                // occur on reconnect:
+                //   1. Server reserves snapshotRevision=N BEFORE the async read.
+                //   2. A concurrent delta fires at revision=N+1 (higher, as intended).
+                //   3. The delta reaches the daemon first → lastAppliedRevision = N+1.
+                //   4. The snapshot arrives at revision=N → dropped as stale (N ≤ N+1).
+                //   5. All pre-existing subscriptions NOT covered by the delta are
+                //      silently missing after reconnect.
+                //
+                // By resetting lastAppliedRevision to 0 when isReconnect=true we force
+                // the snapshot to be accepted, while still allowing any subsequent
+                // delta (revision > snapshotRevision) to be applied on top of it.
+                if (isReconnect) {
+                    lastAppliedRevision = 0;
+                    logInfo(`[trigger-reconciliation] accepting reconnect snapshot revision=${revision} as authoritative baseline (resetting stale-drop counter)`);
                 }
 
                 // Ignore stale snapshots (e.g. from a retransmission).

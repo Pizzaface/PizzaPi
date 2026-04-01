@@ -460,6 +460,7 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
                     const allSubs = await getSubscriptionsForRunnerSessions(sessionIdsList);
                     socket.emit("trigger_subscriptions_snapshot" as any, {
                         revision: snapshotRevision,
+                        isReconnect: true,
                         subscriptions: allSubs.map(s => ({
                             sessionId: s.sessionId,
                             triggerType: s.triggerType,
@@ -469,14 +470,15 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
                             ...(s.filterMode ? { filterMode: s.filterMode } : {}),
                         })),
                     });
-                    log.info(`[trigger-reconciliation] sent snapshot with ${allSubs.length} subscriptions to runner ${result}`);
+                    log.info(`[trigger-reconciliation] sent reconnect snapshot with ${allSubs.length} subscriptions to runner ${result}`);
                 } else {
                     // No sessions — send empty snapshot so runner knows state is clean
                     socket.emit("trigger_subscriptions_snapshot" as any, {
                         revision: snapshotRevision,
+                        isReconnect: true,
                         subscriptions: [],
                     });
-                    log.info(`[trigger-reconciliation] sent empty snapshot to runner ${result}`);
+                    log.info(`[trigger-reconciliation] sent empty reconnect snapshot to runner ${result}`);
                 }
             } catch (err) {
                 log.warn(`[trigger-reconciliation] failed to send snapshot to runner ${result}:`, err);
