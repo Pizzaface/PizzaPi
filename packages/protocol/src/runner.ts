@@ -11,6 +11,12 @@ import type { RunnerSkill, RunnerAgent, RunnerPlugin, RunnerHook, ServiceAnnounc
 /**
  * A single trigger subscription entry used in reconciliation snapshots/deltas.
  * Mirrors the data stored in Redis by trigger-subscription-store.ts.
+ *
+ * @note The reconciliation protocol currently assumes **at most one active
+ * subscription per (sessionId, triggerType) pair**. Multiple subscriptions to
+ * the same trigger type from the same session are not supported — the last
+ * subscription wins. The dedup key `${sessionId}\0${triggerType}` used in
+ * snapshot reconciliation enforces this at the protocol layer.
  */
 export interface TriggerSubscriptionEntry {
   sessionId: string;

@@ -290,6 +290,12 @@ export class TimeService implements ServiceHandler {
      * For time:timer_fired and time:cron, the timer restarts from scratch (no elapsed
      * time is preserved across restarts). For time:at, the target time is absolute, so
      * the timer fires at the right time (or immediately if already past).
+     *
+     * @note This implementation assumes **at most one active subscription per
+     * (sessionId, triggerType) pair**. The internal timer keys are keyed as
+     * `timer:<sessionId>`, `at:<sessionId>`, and `cron:<sessionId>`, which allows
+     * only one slot per session per type. A second subscription for the same
+     * (sessionId, triggerType) will silently overwrite the first.
      */
     reconcileSubscriptions(subscriptions: TriggerSubscriptionEntry[], options: ReconcileOptions = {}): { applied: number; errors?: string[] } {
         const mode = options.mode ?? "snapshot";

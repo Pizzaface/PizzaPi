@@ -402,20 +402,18 @@ export async function getSubscriptionsForRunnerSessions(
     const redis = await getClient();
     if (!redis) return [];
 
-    const results: Array<{ sessionId: string; triggerType: string; runnerId: string; params?: SubscriptionParams; filters?: SubscriptionFilter[]; filterMode?: SubscriptionFilterMode }> = [];
-
-    for (const sessionId of sessionIds) {
-        try {
-            const subs = await listSessionSubscriptions(sessionId);
-            for (const sub of subs) {
-                results.push({ sessionId, ...sub });
+    const perSessionResults = await Promise.all(
+        sessionIds.map(async (sessionId) => {
+            try {
+                const subs = await listSessionSubscriptions(sessionId);
+                return subs.map(sub => ({ sessionId, ...sub }));
+            } catch (err) {
+                log.warn(`Failed to list subscriptions for session ${sessionId}:`, err);
+                return [];
             }
-        } catch (err) {
-            log.warn(`Failed to list subscriptions for session ${sessionId}:`, err);
-        }
-    }
-
-    return results;
+        })
+    );
+    return perSessionResults.flat();
 }
 
 /** @deprecated Use `_resetRedisForTesting` instead. */

@@ -77,6 +77,18 @@ type TriggerReconciliationLogger = {
     error: (message: string) => void;
 };
 
+/**
+ * Reconcile all active subscriptions from a full snapshot into each registered
+ * service. Called once after a runner registers with the server so that
+ * in-memory state (timers, crons, etc.) is rebuilt from the server's source of
+ * truth.
+ *
+ * @note This function assumes **at most one active subscription per
+ * (sessionId, triggerType) pair**. The snapshot uses
+ * `${sessionId}\0${triggerType}` as a dedup key, so if multiple entries exist
+ * for the same pair, only the last one processed will take effect. This
+ * constraint is enforced by the protocol layer — see `TriggerSubscriptionEntry`.
+ */
 export function reconcileSnapshotSubscriptions(
     registry: ServiceRegistry,
     subscriptions: TriggerSubscriptionEntry[],
