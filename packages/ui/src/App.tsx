@@ -111,8 +111,6 @@ import { metaEventToStatePatch, type MetaStatePatch } from "@/lib/meta-state-app
 import { usePanelLayout } from "@/hooks/usePanelLayout";
 import { useTriggerCount } from "@/hooks/useTriggerCount";
 // Attention store: AttentionProvider is mounted in main.ts around <App/>
-import { ActionCenter } from "@/components/action-center/ActionCenter";
-import { ActionCenterButton } from "@/components/action-center/ActionCenterButton";
 import { useAttentionIngestion } from "@/hooks/useAttentionIngestion";
 import { useMobileSidebar } from "@/hooks/useMobileSidebar";
 import { useBrowserNotifications } from "@/hooks/useBrowserNotifications";
@@ -493,7 +491,6 @@ export function App() {
     return /Mac|iPhone|iPad/i.test(platform);
   }, []);
   const [showShortcutsHelp, setShowShortcutsHelp] = React.useState(false);
-  const [actionCenterOpen, setActionCenterOpen] = React.useState(false);
 
   // Sequence tracking for gap detection
   const lastSeqRef = React.useRef<number | null>(null);
@@ -3891,11 +3888,6 @@ export function App() {
     sessionNamesById: attentionSessionNames,
   });
 
-  const handleActionCenterNavigate = React.useCallback((sessionId: string) => {
-    if (sessionId !== activeSessionId) {
-      openSession(sessionId);
-    }
-  }, [activeSessionId, openSession]);
   const { activePanelIds: activeServicePanels, togglePanel: toggleServicePanel, closePanelById: closeServicePanelById, closeAllPanels: closeAllServicePanels, getPanelPosition: getServicePanelPosition, setPanelPosition: setServicePanelPosition, setEphemeralPanelPosition: setEphemeralServicePanelPosition, getNavParams: getServicePanelNavParams } = useServicePanelState();
 
   // Always-current ref so the runner-change effect below can read the active
@@ -4274,7 +4266,6 @@ export function App() {
         onShowShortcuts={handleShowShortcuts}
         onChangePassword={handleChangePassword}
         onRefreshUsage={refreshUsage}
-        onOpenActionCenter={() => setActionCenterOpen(true)}
       />
 
       {/* ── Mobile header (memoized — skips re-render on same-runner session switch) ── */}
@@ -4302,7 +4293,7 @@ export function App() {
         onOpenSession={handleOpenSession}
         onNewSession={handleNewSession}
         onSessionSwitcherOpenChange={handleSessionSwitcherOpenChange}
-        onOpenActionCenter={() => setActionCenterOpen(true)}
+        needsResponseCount={sessionsAwaitingInput.size}
       />
       {/* Spacer that reserves the exact height of the fixed mobile header */}
       <div className="md:hidden flex-shrink-0" style={{ height: "calc(3.25rem + env(safe-area-inset-top))" }} aria-hidden="true" />
@@ -4863,11 +4854,6 @@ export function App() {
         )}
 
         <ShortcutsDialog open={showShortcutsHelp} onOpenChange={setShowShortcutsHelp} />
-        <ActionCenter
-          open={actionCenterOpen}
-          onOpenChange={setActionCenterOpen}
-          onNavigateToSession={handleActionCenterNavigate}
-        />
       </div>
     </div>
     </TooltipProvider>

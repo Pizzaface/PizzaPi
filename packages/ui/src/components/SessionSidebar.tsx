@@ -849,9 +849,13 @@ export const SessionSidebar = React.memo(function SessionSidebar({
             runnerMap.get(key)!.sessions.push(s);
         }
 
-        // Step 2: sort sessions within each runner — pinned first, then by most recently active/started.
+        // Step 2: sort sessions within each runner — awaiting input first, then pinned, then by most recently active/started.
         for (const entry of runnerMap.values()) {
             entry.sessions.sort((a, b) => {
+                // Awaiting input floats to the very top
+                const aAwaiting = sessionsAwaitingInput?.has(a.sessionId) ? 1 : 0;
+                const bAwaiting = sessionsAwaitingInput?.has(b.sessionId) ? 1 : 0;
+                if (bAwaiting !== aAwaiting) return bAwaiting - aAwaiting;
                 const aPinned = pinnedSessionIds.has(a.sessionId) ? 1 : 0;
                 const bPinned = pinnedSessionIds.has(b.sessionId) ? 1 : 0;
                 if (bPinned !== aPinned) return bPinned - aPinned;
@@ -886,9 +890,13 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                 sessions: cwdSessions,
             }));
 
-            // Sort projects — groups containing a pinned session float first,
-            // then by most recently active session within the group.
+            // Sort projects — groups containing an awaiting session float first,
+            // then pinned, then by most recently active session within the group.
             projects.sort((a, b) => {
+                const hasAwaiting = (grp: ProjectGroup) =>
+                    grp.sessions.some((s) => sessionsAwaitingInput?.has(s.sessionId)) ? 1 : 0;
+                const awaitDiff = hasAwaiting(b) - hasAwaiting(a);
+                if (awaitDiff !== 0) return awaitDiff;
                 const hasPinned = (grp: ProjectGroup) =>
                     grp.sessions.some((s) => pinnedSessionIds.has(s.sessionId)) ? 1 : 0;
                 const pinDiff = hasPinned(b) - hasPinned(a);
@@ -911,7 +919,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
         });
 
         return result;
-    }, [liveSessions, pinnedSessionIds]);
+    }, [liveSessions, pinnedSessionIds, sessionsAwaitingInput]);
 
     // Find session name for the confirm dialog
     const confirmSession = confirmEndSessionId
