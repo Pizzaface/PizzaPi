@@ -24,12 +24,17 @@ mock.module("electron", () => ({
   },
 }));
 
-// Mock config to avoid __dirname issues in test context
+// Mock config to avoid electron dependency in test context.
+// Include ALL exports — bun test shares modules across files in the same run.
 mock.module("../src/main/config.js", () => ({
   getServerEntryPath: () => "/fake/server/index.ts",
+  getRunnerEntryPath: () => "/fake/runner/index.js",
+  getUIDistPath: () => "/fake/ui/dist",
   HEALTH_CHECK_INTERVAL: 10,
   HEALTH_CHECK_TIMEOUT: 1000,
   MAX_RESTART_ATTEMPTS: 3,
+  DEFAULT_SERVER_PORT: 3001,
+  VITE_DEV_URL: "http://localhost:5173",
   isDev: true,
 }));
 

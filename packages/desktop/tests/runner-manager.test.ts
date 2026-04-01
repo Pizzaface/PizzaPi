@@ -21,10 +21,14 @@ mock.module("electron", () => ({
   },
 }));
 
-// Mock config to avoid __dirname issues in test
+// Mock config to avoid electron dependency in test
 mock.module("../src/main/config.js", () => ({
   getRunnerEntryPath: () => "/fake/runner/index.js",
+  getServerEntryPath: () => "/fake/server/index.ts",
   MAX_RESTART_ATTEMPTS: 3,
+  HEALTH_CHECK_INTERVAL: 10,
+  HEALTH_CHECK_TIMEOUT: 1000,
+  isDev: true,
 }));
 
 const mockKill = mock(() => true);
