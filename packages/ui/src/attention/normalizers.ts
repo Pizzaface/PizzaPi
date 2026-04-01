@@ -207,7 +207,7 @@ export function normalizeTriggerHistory(
         payload: { triggerId: pending.triggerId, type: pending.type, source, summary },
       });
     } else if (hasCompleted) {
-      const completeEvent = events.find((e) => e.type === "session_complete")!;
+      const completeEvent = events.findLast((e) => e.type === "session_complete")!;
       const responseAction = completeEvent.response?.action;
 
       if (responseAction === "followUp") {

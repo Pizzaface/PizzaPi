@@ -330,7 +330,7 @@ export function getIncompleteTriggers(triggers: TriggerHistoryEntry[]): Incomple
       continue;
     }
 
-    const latestComplete = group.events.find((e) => e.type === "session_complete");
+    const latestComplete = group.events.findLast((e) => e.type === "session_complete");
     if (latestComplete && latestComplete.response?.action !== "followUp") continue;
 
     // Still active (connected, no terminal session_complete)
