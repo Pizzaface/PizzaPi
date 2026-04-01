@@ -147,7 +147,9 @@ export function useAttentionIngestion(params: AttentionIngestionParams): void {
     return () => {
       cancelled = true;
     };
-    // Re-run when triggerCounts change (indicates trigger history changed)
+    // Re-run when triggerCounts change (indicates trigger history changed).
+    // historyLength is included so that any new inbound trigger (even non-pending
+    // service triggers) causes re-ingestion, not just changes to pending/subscriptions.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeSessionId, triggerCounts.pending, triggerCounts.subscriptions, store]);
+  }, [activeSessionId, triggerCounts.pending, triggerCounts.subscriptions, triggerCounts.historyLength, store]);
 }

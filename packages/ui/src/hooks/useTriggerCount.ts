@@ -15,6 +15,13 @@ export interface TriggerCounts {
   subscriptions: number;
   /** Total of both */
   total: number;
+  /**
+   * Raw count of trigger history entries fetched on the last refresh.
+   * Used as a dep signal in useAttentionIngestion so that any new inbound
+   * trigger (even non-pending ones) causes the Action Center to re-ingest,
+   * regardless of whether `pending` or `subscriptions` changed.
+   */
+  historyLength: number;
 }
 
 export function useTriggerCount(
@@ -22,11 +29,11 @@ export function useTriggerCount(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   viewerSocket?: any,
 ): TriggerCounts {
-  const [counts, setCounts] = useState<TriggerCounts>({ pending: 0, subscriptions: 0, total: 0 });
+  const [counts, setCounts] = useState<TriggerCounts>({ pending: 0, subscriptions: 0, total: 0, historyLength: 0 });
 
   const refresh = useCallback(async () => {
     if (!sessionId) {
-      setCounts({ pending: 0, subscriptions: 0, total: 0 });
+      setCounts({ pending: 0, subscriptions: 0, total: 0, historyLength: 0 });
       return;
     }
     try {
@@ -34,15 +41,16 @@ export function useTriggerCount(
         fetch(`/api/sessions/${encodeURIComponent(sessionId)}/triggers?limit=50`, { credentials: "include" }),
         fetch(`/api/sessions/${encodeURIComponent(sessionId)}/trigger-subscriptions`, { credentials: "include" }),
       ]);
-      const pending = trigRes.ok
-        ? getIncompleteTriggers(((await trigRes.json()) as { triggers: TriggerHistoryEntry[] }).triggers ?? []).length
-        : 0;
+      const triggerHistory = trigRes.ok
+        ? ((await trigRes.json()) as { triggers: TriggerHistoryEntry[] }).triggers ?? []
+        : [];
+      const pending = getIncompleteTriggers(triggerHistory).length;
       const subscriptions = subRes.ok
         ? ((await subRes.json()) as { subscriptions?: unknown[] }).subscriptions?.length ?? 0
         : 0;
-      setCounts({ pending, subscriptions, total: pending + subscriptions });
+      setCounts({ pending, subscriptions, total: pending + subscriptions, historyLength: triggerHistory.length });
     } catch {
-      setCounts({ pending: 0, subscriptions: 0, total: 0 });
+      setCounts({ pending: 0, subscriptions: 0, total: 0, historyLength: 0 });
     }
   }, [sessionId]);
 

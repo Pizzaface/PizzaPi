@@ -110,11 +110,16 @@ describe("normalizeSessionMeta", () => {
 
 // ── normalizeTriggerHistory ──────────────────────────────────────────────────
 
+// A valid UUID-format child session source (matches the isChildSessionSource check)
+const CHILD_UUID = "a1b2c3d4-e5f6-7890-abcd-ef1234567890";
+const CHILD_UUID_A = "aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa";
+const CHILD_UUID_B = "bbbbbbbb-bbbb-4bbb-bbbb-bbbbbbbbbbbb";
+
 function makeTrigger(overrides: Partial<TriggerHistoryEntry> = {}): TriggerHistoryEntry {
   return {
     triggerId: `trig-${Math.random().toString(36).slice(2)}`,
     type: "session_connect",
-    source: "child-session-xyz",
+    source: CHILD_UUID,
     payload: {},
     deliverAs: "steer",
     ts: new Date().toISOString(),
@@ -185,9 +190,22 @@ describe("normalizeTriggerHistory", () => {
     expect(items).toEqual([]);
   });
 
+  test("skips runner-service sources (non-UUID plain strings)", () => {
+    // Runner services like "github", "godmother", "time" must never be treated as
+    // child sessions — they never emit session_complete and would permanently
+    // appear as false 'child_running' items in the Action Center.
+    const serviceItems = normalizeTriggerHistory(SESSION_ID, [
+      makeTrigger({ source: "github", direction: "inbound" }),
+      makeTrigger({ source: "godmother", direction: "inbound" }),
+      makeTrigger({ source: "time", direction: "inbound" }),
+      makeTrigger({ source: "some-custom-service", direction: "inbound" }),
+    ]);
+    expect(serviceItems).toEqual([]);
+  });
+
   test("produces child_running item for connected session with no pending or complete", () => {
     const items = normalizeTriggerHistory(SESSION_ID, [
-      makeTrigger({ source: "child-s1", type: "session_connect", direction: "inbound" }),
+      makeTrigger({ source: CHILD_UUID, type: "session_connect", direction: "inbound" }),
     ]);
     expect(items).toHaveLength(1);
     const [item] = items;
@@ -202,7 +220,7 @@ describe("normalizeTriggerHistory", () => {
     const items = normalizeTriggerHistory(SESSION_ID, [
       makeTrigger({
         triggerId,
-        source: "child-s1",
+        source: CHILD_UUID,
         type: "ask_user_question",
         direction: "inbound",
         response: undefined, // no response = pending
@@ -219,7 +237,7 @@ describe("normalizeTriggerHistory", () => {
   test("pending plan_review has priority 10", () => {
     const items = normalizeTriggerHistory(SESSION_ID, [
       makeTrigger({
-        source: "child-s1",
+        source: CHILD_UUID,
         type: "plan_review",
         direction: "inbound",
         response: undefined,
@@ -231,7 +249,7 @@ describe("normalizeTriggerHistory", () => {
   test("pending escalate trigger has priority 5", () => {
     const items = normalizeTriggerHistory(SESSION_ID, [
       makeTrigger({
-        source: "child-s1",
+        source: CHILD_UUID,
         type: "escalate",
         direction: "inbound",
         response: undefined,
@@ -243,10 +261,10 @@ describe("normalizeTriggerHistory", () => {
   test("produces session_complete item for completed (un-acked) session", () => {
     const triggerId = "trig-complete";
     const items = normalizeTriggerHistory(SESSION_ID, [
-      makeTrigger({ source: "child-s1", type: "session_connect", direction: "inbound" }),
+      makeTrigger({ source: CHILD_UUID, type: "session_connect", direction: "inbound" }),
       makeTrigger({
         triggerId,
-        source: "child-s1",
+        source: CHILD_UUID,
         type: "session_complete",
         direction: "inbound",
         response: undefined, // not acked
@@ -256,14 +274,14 @@ describe("normalizeTriggerHistory", () => {
     const [item] = items;
     expect(item.kind).toBe("session_complete");
     expect(item.category).toBe("completed");
-    expect(item.id).toBe(`trigger:${SESSION_ID}:complete:child-s1`);
+    expect(item.id).toBe(`trigger:${SESSION_ID}:complete:${CHILD_UUID}`);
   });
 
   test("produces session_complete item when it was acked", () => {
     const items = normalizeTriggerHistory(SESSION_ID, [
-      makeTrigger({ source: "child-s1", type: "session_connect", direction: "inbound" }),
+      makeTrigger({ source: CHILD_UUID, type: "session_connect", direction: "inbound" }),
       makeTrigger({
-        source: "child-s1",
+        source: CHILD_UUID,
         type: "session_complete",
         direction: "inbound",
         response: { action: "ack", ts: new Date().toISOString() },
@@ -279,10 +297,10 @@ describe("normalizeTriggerHistory", () => {
   test("treats followUp after session_complete as still running", () => {
     const responseTs = new Date().toISOString();
     const items = normalizeTriggerHistory(SESSION_ID, [
-      makeTrigger({ source: "child-s1", type: "session_connect", direction: "inbound" }),
+      makeTrigger({ source: CHILD_UUID, type: "session_connect", direction: "inbound" }),
       makeTrigger({
         triggerId: "trig-follow-up",
-        source: "child-s1",
+        source: CHILD_UUID,
         type: "session_complete",
         direction: "inbound",
         response: { action: "followUp", text: "keep going", ts: responseTs },
@@ -290,7 +308,7 @@ describe("normalizeTriggerHistory", () => {
     ]);
     expect(items).toHaveLength(1);
     expect(items[0]).toMatchObject({
-      id: `trigger:${SESSION_ID}:running:child-s1`,
+      id: `trigger:${SESSION_ID}:running:${CHILD_UUID}`,
       kind: "child_running",
       category: "running",
       createdAt: responseTs,
@@ -301,18 +319,18 @@ describe("normalizeTriggerHistory", () => {
     // API returns triggers newest-first: ack (most recent) before followUp, connect last
     const items = normalizeTriggerHistory(SESSION_ID, [
       makeTrigger({
-        source: "child-s1",
+        source: CHILD_UUID,
         type: "session_complete",
         direction: "inbound",
         response: { action: "ack", ts: new Date().toISOString() },
       }),
       makeTrigger({
-        source: "child-s1",
+        source: CHILD_UUID,
         type: "session_complete",
         direction: "inbound",
         response: { action: "followUp", ts: new Date().toISOString() },
       }),
-      makeTrigger({ source: "child-s1", type: "session_connect", direction: "inbound" }),
+      makeTrigger({ source: CHILD_UUID, type: "session_connect", direction: "inbound" }),
     ]);
     // find() on newest-first data returns the ack (first match), not the older followUp
     expect(items).toHaveLength(1);
@@ -325,15 +343,15 @@ describe("normalizeTriggerHistory", () => {
   test("pending trigger takes precedence over completed", () => {
     // If a source has both a pending trigger AND a complete, the pending wins
     const items = normalizeTriggerHistory(SESSION_ID, [
-      makeTrigger({ source: "child-s1", type: "session_connect", direction: "inbound" }),
+      makeTrigger({ source: CHILD_UUID, type: "session_connect", direction: "inbound" }),
       makeTrigger({
-        source: "child-s1",
+        source: CHILD_UUID,
         type: "session_complete",
         direction: "inbound",
         response: undefined,
       }),
       makeTrigger({
-        source: "child-s1",
+        source: CHILD_UUID,
         type: "ask_user_question",
         direction: "inbound",
         response: undefined,
@@ -345,18 +363,18 @@ describe("normalizeTriggerHistory", () => {
 
   test("handles multiple independent child sessions", () => {
     const items = normalizeTriggerHistory(SESSION_ID, [
-      makeTrigger({ source: "child-a", type: "session_connect", direction: "inbound" }),
-      makeTrigger({ source: "child-b", type: "session_connect", direction: "inbound" }),
+      makeTrigger({ source: CHILD_UUID_A, type: "session_connect", direction: "inbound" }),
+      makeTrigger({ source: CHILD_UUID_B, type: "session_connect", direction: "inbound" }),
     ]);
     expect(items).toHaveLength(2);
     const sources = items.map((i) => (i.payload as Record<string, unknown>)?.source);
-    expect(sources).toContain("child-a");
-    expect(sources).toContain("child-b");
+    expect(sources).toContain(CHILD_UUID_A);
+    expect(sources).toContain(CHILD_UUID_B);
   });
 
   test("all produced items have the parent sessionId", () => {
     const items = normalizeTriggerHistory(SESSION_ID, [
-      makeTrigger({ source: "child-s1", direction: "inbound" }),
+      makeTrigger({ source: CHILD_UUID, direction: "inbound" }),
     ]);
     for (const item of items) {
       expect(item.sessionId).toBe(SESSION_ID);

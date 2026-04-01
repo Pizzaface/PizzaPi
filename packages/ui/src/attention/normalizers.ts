@@ -170,6 +170,16 @@ export function normalizeTriggerHistory(
 ): AttentionItem[] {
   const items: AttentionItem[] = [];
 
+  /**
+   * Only classify a trigger source as a child session if it looks like a UUID.
+   * Runner-service sources (e.g. "github", "godmother", "time") are plain strings,
+   * never UUIDs — they don't emit session_complete and must not be tracked as
+   * child sessions.  The old exclusion-list approach ("api", "external:*") was
+   * incomplete; UUID matching is unambiguous and future-proof.
+   */
+  const isChildSessionSource = (source: string) =>
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(source);
+
   // Group by source to detect child session lifecycle
   const sourceGroups = new Map<string, TriggerHistoryEntry[]>();
   for (const t of triggers) {
@@ -181,8 +191,8 @@ export function normalizeTriggerHistory(
   }
 
   for (const [source, events] of sourceGroups) {
-    // Skip external/API sources — they're not child sessions
-    if (source === "api" || source.startsWith("external:")) continue;
+    // Skip non-UUID sources — they are not child sessions
+    if (!isChildSessionSource(source)) continue;
 
     const pending = events.find(isPendingTrigger);
     const hasCompleted = events.some((e) => e.type === "session_complete");
