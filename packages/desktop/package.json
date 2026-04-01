@@ -8,6 +8,8 @@
     "dev": "concurrently \"bun run dev:electron\" \"bun run --cwd ../ui dev\" \"bun run --cwd ../server dev\" --kill-others-on-exit",
     "dev:electron": "electron --inspect . --dev",
     "build": "tsc --build",
+    "test": "bun test tests",
+    "typecheck": "tsc --noEmit",
     "package": "electron-builder --mac",
     "start": "electron ."
   },
