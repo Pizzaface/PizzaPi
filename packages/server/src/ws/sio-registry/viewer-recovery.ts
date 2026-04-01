@@ -27,17 +27,29 @@ export function markPendingRecovery(sessionId: string): void {
 
 /**
  * Check and consume the recovery flag for a session.
- * Returns true (and removes the flag) if the session had a pending recovery.
+ * Returns true (and removes the flag) if the session had a non-stale pending recovery.
+ * Stale entries (older than RECOVERY_FLAG_TTL_MS) are evicted and treated as absent,
+ * so a missed recovery snapshot never permanently marks a session as recovering.
  */
 export function consumePendingRecovery(sessionId: string): boolean {
-    const has = pendingRecoveryTimestamps.has(sessionId);
+    const ts = pendingRecoveryTimestamps.get(sessionId);
+    if (ts === undefined) return false;
     pendingRecoveryTimestamps.delete(sessionId);
-    return has;
+    return Date.now() - ts <= RECOVERY_FLAG_TTL_MS;
 }
 
-/** Check whether a session has a pending recovery flag (non-consuming). */
+/**
+ * Check whether a session has a pending recovery flag (non-consuming).
+ * Evicts the entry if it is stale (older than RECOVERY_FLAG_TTL_MS).
+ */
 export function hasPendingRecovery(sessionId: string): boolean {
-    return pendingRecoveryTimestamps.has(sessionId);
+    const ts = pendingRecoveryTimestamps.get(sessionId);
+    if (ts === undefined) return false;
+    if (Date.now() - ts > RECOVERY_FLAG_TTL_MS) {
+        pendingRecoveryTimestamps.delete(sessionId);
+        return false;
+    }
+    return true;
 }
 
 /** Clear all pending recovery flags. For test isolation only. */
