@@ -1,6 +1,10 @@
 // packages/desktop/src/main/tray.ts
 import { Tray, Menu, nativeImage, type BrowserWindow } from "electron";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 import log from "./logger.js";
 
 export type ServiceHealth = "healthy" | "degraded" | "error";
