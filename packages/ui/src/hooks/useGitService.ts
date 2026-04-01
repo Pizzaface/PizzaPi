@@ -200,6 +200,8 @@ export function useGitService(cwd: string): UseGitServiceReturn {
                 if (statusGenRef.current !== generationRef.current) return;
                 if (asInitial && pendingFullStatusRequestRef.current !== requestId) return;
                 if (asInitial) pendingFullStatusRequestRef.current = null;
+                // Retire this full-status request so late responses are ignored.
+                requestGenerationRef.current.delete(requestId);
                 markStatusRequestSettled(requestId);
                 sendLegacySnapshotRequests(cwdRef.current);
             }, fallbackMs);
