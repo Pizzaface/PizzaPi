@@ -583,6 +583,9 @@ export function useGitService(cwd: string): UseGitServiceReturn {
     // Bump generation so in-flight responses from the old cwd are discarded.
     useEffect(() => {
         generationRef.current++;
+        // Reset branch-fetch throttle so the first fetch in the new context
+        // always runs immediately, even if the previous fetch happened <500ms ago.
+        lastBranchFetchRef.current = 0;
         // Clear state immediately so old data doesn't flash
         setStatus(null);
         setBranches([]);

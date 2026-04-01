@@ -74,6 +74,9 @@ type RepoWatchState = {
 /** Validate that a branch name doesn't contain shell-dangerous characters. */
 function isValidBranchName(name: string): boolean {
     if (!name || name.length > 256) return false;
+    // Reject names starting with "-": they are never valid branch refs and
+    // would be interpreted as git options (e.g. --abort, --continue).
+    if (name.startsWith("-")) return false;
     // Reject control chars, space-only, "..", "~", "^", ":", "\\", NUL
     if (/[\x00-\x1f\x7f~^:\\]/.test(name)) return false;
     if (name.includes("..")) return false;
@@ -1119,7 +1122,9 @@ export class GitService implements ServiceHandler {
                 return;
             }
 
-            const result = await this._execGit(["merge", branch], { cwd, timeout: 60000 });
+            // Use "--" end-of-options separator so `branch` is always treated as
+            // a ref, never as a git option (guards against e.g. "--abort" injection).
+            const result = await this._execGit(["merge", "--", branch], { cwd, timeout: 60000 });
             const output = (result.stdout + "\n" + result.stderr).trim();
             await this.invalidateStatusCacheFamily(cwd);
             this.emit("git_merge_result", { ok: true, output }, requestId, sessionId);
