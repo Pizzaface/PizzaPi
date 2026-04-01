@@ -57,5 +57,8 @@
   "patchedDependencies": {
     "@mariozechner/pi-coding-agent@0.63.1": "patches/@mariozechner%2Fpi-coding-agent@0.63.1.patch",
     "@mariozechner/pi-ai@0.63.1": "patches/@mariozechner%2Fpi-ai@0.63.1.patch"
+  },
+  "overrides": {
+    "@types/node": "22.19.15"
   }
 }
