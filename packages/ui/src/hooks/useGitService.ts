@@ -166,6 +166,19 @@ export function useGitService(cwd: string): UseGitServiceReturn {
         sendRef.current("git_status", { cwd: targetCwd }, requestId);
     }, [makeRequestId, markStatusRequestInFlight, registerRequestGeneration]);
 
+    const sendFullStatusRequest = useCallback((targetCwd: string, asInitial = false) => {
+        statusGenRef.current = generationRef.current;
+        const requestId = makeRequestId();
+        registerRequestGeneration(requestId);
+        markStatusRequestInFlight(requestId);
+        if (asInitial) {
+            pendingFullStatusRequestRef.current = requestId;
+        }
+        setLoading(true);
+        setError(null);
+        sendRef.current("git_full_status", { cwd: targetCwd }, requestId);
+    }, [makeRequestId, markStatusRequestInFlight, registerRequestGeneration]);
+
     const clearPendingDiffs = useCallback((resolution: string) => {
         for (const timeoutId of pendingDiffTimeoutsRef.current.values()) {
             clearTimeout(timeoutId);
@@ -185,7 +198,7 @@ export function useGitService(cwd: string): UseGitServiceReturn {
             getGeneration: () => generationRef.current,
             isStatusRequestInFlight: () => statusRequestsInFlightRef.current.size > 0,
             triggerRefresh: () => {
-                sendStatusRequest(cwdRef.current);
+                sendFullStatusRequest(cwdRef.current, false);
             },
         })
     );
@@ -238,19 +251,20 @@ export function useGitService(cwd: string): UseGitServiceReturn {
                         setLoading(false);
                     }
 
-                    // Ignore late full-status responses once initial request was superseded.
-                    if (!isInitialFullStatus) break;
-
                     if (payload.ok) {
-                        const statusPayload = (payload.status as Record<string, unknown> | undefined) ?? payload;
-                        setStatus({
-                            branch: (statusPayload.branch as string) ?? "",
-                            changes: (statusPayload.changes as GitChange[]) ?? [],
-                            ahead: (statusPayload.ahead as number) ?? 0,
-                            behind: (statusPayload.behind as number) ?? 0,
-                            hasUpstream: (statusPayload.hasUpstream as boolean) ?? false,
-                            diffStaged: (statusPayload.diffStaged as string) ?? "",
-                        });
+                        if (isInitialFullStatus) {
+                            const statusPayload = (payload.status as Record<string, unknown> | undefined) ?? payload;
+                            setStatus({
+                                branch: (statusPayload.branch as string) ?? "",
+                                changes: (statusPayload.changes as GitChange[]) ?? [],
+                                ahead: (statusPayload.ahead as number) ?? 0,
+                                behind: (statusPayload.behind as number) ?? 0,
+                                hasUpstream: (statusPayload.hasUpstream as boolean) ?? false,
+                                diffStaged: (statusPayload.diffStaged as string) ?? "",
+                            });
+                        }
+                        // Late same-generation full-status can still provide fresh
+                        // branches/worktrees metadata after fallback/manual refresh.
                         setBranches((payload.branches as GitBranch[]) ?? []);
                         setCurrentBranch((payload.currentBranch as string) ?? "");
                         setWorktrees((payload.worktrees as GitWorktree[]) ?? []);
@@ -315,17 +329,18 @@ export function useGitService(cwd: string): UseGitServiceReturn {
                     setOperationInProgress(null);
                     setLastOperationResult(payload as GitOperationResult);
 
-                    const rollbackStatus = consumeRollbackSnapshot(
+                    consumeRollbackSnapshot(
                         optimisticSnapshotsRef.current,
                         requestId,
                         payload.ok === true,
                     );
-                    if (payload.ok !== true && rollbackStatus !== undefined) {
-                        setStatus(rollbackStatus);
-                    }
 
                     if (payload.ok) {
                         postMutationRefreshSchedulerRef.current.schedule();
+                    } else {
+                        // Avoid stale rollback races across overlapping optimistic mutations.
+                        // Re-sync from authoritative runner state instead.
+                        sendStatusRequest(cwdRef.current);
                     }
                     break;
                 }
@@ -518,11 +533,7 @@ export function useGitService(cwd: string): UseGitServiceReturn {
             // Initial load optimization: request status + branches + worktrees in one round-trip.
             // Compatibility fallback: if an older runner doesn't support git_full_status,
             // fall back to git_status after a short delay.
-            const requestId = makeRequestId();
-            registerRequestGeneration(requestId);
-            pendingFullStatusRequestRef.current = requestId;
-            markStatusRequestInFlight(requestId);
-            send("git_full_status", { cwd }, requestId);
+            sendFullStatusRequest(cwd, true);
 
             fullStatusFallbackTimerRef.current = setTimeout(() => {
                 fullStatusFallbackTimerRef.current = null;
@@ -536,7 +547,7 @@ export function useGitService(cwd: string): UseGitServiceReturn {
         } else {
             setLoading(false);
         }
-    }, [available, clearPendingDiffs, cwd, makeRequestId, markStatusRequestInFlight, markStatusRequestSettled, registerRequestGeneration, send, sendStatusRequest]);
+    }, [available, clearPendingDiffs, cwd, markStatusRequestSettled, sendFullStatusRequest, sendStatusRequest]);
 
     return {
         available,
