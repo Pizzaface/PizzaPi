@@ -87,16 +87,25 @@ export async function hydrateViewerFromCache(
     } = {},
     deps: ViewerCacheDeps = defaultViewerCacheDeps,
 ): Promise<boolean> {
-    if (opts.lastSeq !== undefined) {
-        const deltaOk = await sendDeltaReplayFromCache(
-            socket,
-            sessionId,
-            opts.lastSeq,
-            opts.generation,
-            deps,
-        );
-        if (deltaOk) return true;
-    }
+    try {
+        if (opts.lastSeq !== undefined) {
+            const deltaOk = await sendDeltaReplayFromCache(
+                socket,
+                sessionId,
+                opts.lastSeq,
+                opts.generation,
+                deps,
+            );
+            if (deltaOk) return true;
+        }
 
-    return sendLatestSnapshotFromCache(socket, sessionId, opts.generation, deps);
+        return sendLatestSnapshotFromCache(socket, sessionId, opts.generation, deps);
+    } catch (err) {
+        // Log and fall through to runner-driven recovery
+        const errMsg = err instanceof Error ? err.message : String(err);
+        console.warn(
+            `[viewer-cache] hydrateViewerFromCache failed for ${sessionId}, falling back to runner recovery: ${errMsg}`,
+        );
+        return false;
+    }
 }

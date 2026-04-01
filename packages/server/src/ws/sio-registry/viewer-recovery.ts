@@ -7,11 +7,22 @@
 // pipeline can skip redundant SQLite writes.
 // ============================================================================
 
-export const pendingRecoverySessionIds = new Set<string>();
+const pendingRecoveryTimestamps = new Map<string, number>();
+const RECOVERY_FLAG_TTL_MS = 60_000;
+
+function sweepStalePendingRecoveries(): void {
+    const now = Date.now();
+    for (const [sessionId, ts] of pendingRecoveryTimestamps) {
+        if (now - ts > RECOVERY_FLAG_TTL_MS) {
+            pendingRecoveryTimestamps.delete(sessionId);
+        }
+    }
+}
 
 /** Mark a session as expecting a recovery-origin session_active. */
 export function markPendingRecovery(sessionId: string): void {
-    pendingRecoverySessionIds.add(sessionId);
+    sweepStalePendingRecoveries();
+    pendingRecoveryTimestamps.set(sessionId, Date.now());
 }
 
 /**
@@ -19,5 +30,17 @@ export function markPendingRecovery(sessionId: string): void {
  * Returns true (and removes the flag) if the session had a pending recovery.
  */
 export function consumePendingRecovery(sessionId: string): boolean {
-    return pendingRecoverySessionIds.delete(sessionId);
+    const has = pendingRecoveryTimestamps.has(sessionId);
+    pendingRecoveryTimestamps.delete(sessionId);
+    return has;
+}
+
+/** Check whether a session has a pending recovery flag (non-consuming). */
+export function hasPendingRecovery(sessionId: string): boolean {
+    return pendingRecoveryTimestamps.has(sessionId);
+}
+
+/** Clear all pending recovery flags. For test isolation only. */
+export function _resetPendingRecoveriesForTesting(): void {
+    pendingRecoveryTimestamps.clear();
 }

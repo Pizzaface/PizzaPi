@@ -10,7 +10,8 @@ import {
 import {
     consumePendingRecovery,
     markPendingRecovery,
-    pendingRecoverySessionIds,
+    hasPendingRecovery,
+    _resetPendingRecoveriesForTesting,
 } from "../../sio-registry/viewer-recovery.js";
 
 async function flushQueue(): Promise<void> {
@@ -60,7 +61,7 @@ describe("enqueueSessionEvent", () => {
 
 describe("chunked snapshot assembly", () => {
     afterEach(() => {
-        pendingRecoverySessionIds.clear();
+        _resetPendingRecoveriesForTesting();
     });
 
     test("duplicate chunk retransmits are idempotent", () => {
@@ -225,7 +226,7 @@ describe("chunked snapshot assembly", () => {
             fullState,
             { isRecovery: true },
         );
-        expect(pendingRecoverySessionIds.has("sess-chunked-recovery")).toBe(false);
+        expect(hasPendingRecovery("sess-chunked-recovery")).toBe(false);
         expect(consumePendingRecovery("sess-chunked-recovery")).toBe(false);
         expect(appendRelayEventToCache).toHaveBeenCalledTimes(1);
     });

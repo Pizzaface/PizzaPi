@@ -33,6 +33,7 @@ export {
     getViewerCount,
     markPendingRecovery,
     consumePendingRecovery,
+    hasPendingRecovery,
 } from "./sessions.js";
 export type { RegisterRunnerOpts } from "./runners.js";
 export {

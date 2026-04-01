@@ -68,7 +68,7 @@ import { createLogger } from "@pizzapi/tools";
 import { clearSessionSubscriptions } from "../../sessions/trigger-subscription-store.js";
 import { pushTriggerHistory } from "../../sessions/trigger-store.js";
 
-export { pendingRecoverySessionIds, markPendingRecovery, consumePendingRecovery } from "./viewer-recovery.js";
+export { markPendingRecovery, consumePendingRecovery, hasPendingRecovery, _resetPendingRecoveriesForTesting } from "./viewer-recovery.js";
 
 const log = createLogger("sio-registry");
 const lastRelaySessionStateWriteTimes = new Map<string, number>();
