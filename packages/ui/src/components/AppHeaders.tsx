@@ -28,7 +28,7 @@ import type { DotState, HubSession } from "@/components/SessionSidebar";
 import type { ConfiguredModelInfo } from "@/lib/types";
 import {
   Sun, Moon, Monitor, LogOut, KeyRound, User, ChevronsUpDown, PanelLeftOpen, HardDrive,
-  Keyboard, Lock, Check, Plus, Settings,
+  Keyboard, Lock, Check, Plus, Settings, Clock,
 } from "lucide-react";
 import { signOut } from "@/lib/auth-client";
 import { useTheme, type ThemeMode } from "@/components/ThemeProvider";
@@ -111,6 +111,7 @@ export interface DesktopHeaderProps {
   onShowShortcuts: () => void;
   onChangePassword: () => void;
   onRefreshUsage: () => boolean | void;
+  onShowHistory?: () => void;
 }
 
 export const DesktopHeader = React.memo(function DesktopHeader({
@@ -128,6 +129,7 @@ export const DesktopHeader = React.memo(function DesktopHeader({
   onShowShortcuts,
   onChangePassword,
   onRefreshUsage,
+  onShowHistory,
 }: DesktopHeaderProps) {
   return (
     <header className="hidden md:flex items-center justify-between gap-3 border-b bg-background px-4 pb-2 pt-[calc(0.5rem_+_env(safe-area-inset-top))] flex-shrink-0">
@@ -154,6 +156,23 @@ export const DesktopHeader = React.memo(function DesktopHeader({
       </div>
 
       <div className="flex items-center gap-2">
+        {onShowHistory && (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-9 w-9"
+                onClick={onShowHistory}
+                aria-label="Session history"
+              >
+                <Clock className="h-4 w-4" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>Session history (⌘H)</TooltipContent>
+          </Tooltip>
+        )}
+
         <ThemeToggleButton />
 
         <NotificationToggle />
@@ -219,6 +238,12 @@ export const DesktopHeader = React.memo(function DesktopHeader({
               <HardDrive className="h-4 w-4" />
               Runners
             </DropdownMenuItem>
+            {onShowHistory && (
+              <DropdownMenuItem onSelect={onShowHistory}>
+                <Clock className="h-4 w-4" />
+                Session history
+              </DropdownMenuItem>
+            )}
             <DropdownMenuItem onSelect={onChangePassword}>
               <Lock className="h-4 w-4" />
               Change password
@@ -263,6 +288,7 @@ export interface MobileHeaderProps {
   onSessionSwitcherOpenChange: (open: boolean) => void;
   /** Number of sessions needing user response — shown as badge on sidebar toggle. */
   needsResponseCount?: number;
+  onShowHistory?: () => void;
 }
 
 export const MobileHeader = React.memo(function MobileHeader({
@@ -290,6 +316,7 @@ export const MobileHeader = React.memo(function MobileHeader({
   onNewSession,
   onSessionSwitcherOpenChange,
   needsResponseCount = 0,
+  onShowHistory,
 }: MobileHeaderProps) {
   return (
     <header
@@ -457,6 +484,12 @@ export const MobileHeader = React.memo(function MobileHeader({
               <HardDrive className="h-4 w-4" />
               Runners
             </DropdownMenuItem>
+            {onShowHistory && (
+              <DropdownMenuItem onSelect={onShowHistory}>
+                <Clock className="h-4 w-4" />
+                Session history
+              </DropdownMenuItem>
+            )}
             <DropdownMenuItem onSelect={onChangePassword}>
               <Lock className="h-4 w-4" />
               Change password
