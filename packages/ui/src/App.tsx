@@ -3504,8 +3504,8 @@ export function App() {
         return;
       }
 
-      // Cmd/Ctrl + H — Toggle session history palette
-      if (meta && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "h") {
+      // Cmd/Ctrl + Shift + H — Toggle session history palette
+      if (meta && e.shiftKey && !e.altKey && e.key.toLowerCase() === "h") {
         e.preventDefault();
         setHistoryOpen((v) => !v);
         return;
