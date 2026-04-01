@@ -16,12 +16,14 @@ export interface TriggerCounts {
   /** Total of both */
   total: number;
   /**
-   * Raw count of trigger history entries fetched on the last refresh.
+   * The triggerId of the most recent entry in trigger history (index 0).
    * Used as a dep signal in useAttentionIngestion so that any new inbound
-   * trigger (even non-pending ones) causes the Action Center to re-ingest,
-   * regardless of whether `pending` or `subscriptions` changed.
+   * trigger (even non-pending ones) causes the Action Center to re-ingest.
+   * Using the ID rather than array length means the effect re-runs even when
+   * the history is saturated at the fetch limit (50) and one old event is
+   * evicted for every new one (length stays constant but this key changes).
    */
-  historyLength: number;
+  latestTriggerKey: string;
 }
 
 export function useTriggerCount(
@@ -29,11 +31,11 @@ export function useTriggerCount(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   viewerSocket?: any,
 ): TriggerCounts {
-  const [counts, setCounts] = useState<TriggerCounts>({ pending: 0, subscriptions: 0, total: 0, historyLength: 0 });
+  const [counts, setCounts] = useState<TriggerCounts>({ pending: 0, subscriptions: 0, total: 0, latestTriggerKey: "" });
 
   const refresh = useCallback(async () => {
     if (!sessionId) {
-      setCounts({ pending: 0, subscriptions: 0, total: 0, historyLength: 0 });
+      setCounts({ pending: 0, subscriptions: 0, total: 0, latestTriggerKey: "" });
       return;
     }
     try {
@@ -48,9 +50,9 @@ export function useTriggerCount(
       const subscriptions = subRes.ok
         ? ((await subRes.json()) as { subscriptions?: unknown[] }).subscriptions?.length ?? 0
         : 0;
-      setCounts({ pending, subscriptions, total: pending + subscriptions, historyLength: triggerHistory.length });
+      setCounts({ pending, subscriptions, total: pending + subscriptions, latestTriggerKey: triggerHistory[0]?.triggerId ?? "" });
     } catch {
-      setCounts({ pending: 0, subscriptions: 0, total: 0, historyLength: 0 });
+      setCounts({ pending: 0, subscriptions: 0, total: 0, latestTriggerKey: "" });
     }
   }, [sessionId]);
 
