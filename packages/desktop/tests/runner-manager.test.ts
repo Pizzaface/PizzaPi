@@ -25,9 +25,10 @@ mock.module("electron", () => ({
 mock.module("../src/main/config.js", () => ({
   getRunnerEntryPath: () => "/fake/runner/index.js",
   getServerEntryPath: () => "/fake/server/index.ts",
+  getBunPath: () => "bun",
   MAX_RESTART_ATTEMPTS: 3,
   HEALTH_CHECK_INTERVAL: 10,
-  HEALTH_CHECK_TIMEOUT: 1000,
+  HEALTH_CHECK_TIMEOUT: 500,
   isDev: true,
 }));
 
@@ -59,18 +60,40 @@ describe("RunnerManager", () => {
     const { RunnerManager } = await import("../src/main/runner-manager.js");
     const mgr = new RunnerManager({ serverPort: 3001, isDev: true });
 
-    mgr.start();
+    // Mock fetch so waitForReady sees a registered runner
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = mock(() =>
+      Promise.resolve(new Response(JSON.stringify({ runners: [{ runnerId: "test" }] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }))
+    ) as any;
+
+    await mgr.start();
 
     expect(mockSpawn).toHaveBeenCalled();
     expect(mgr.isRunning()).toBe(true);
+
+    globalThis.fetch = originalFetch;
   });
 
   test("stop() sends SIGTERM to runner", async () => {
     const { RunnerManager } = await import("../src/main/runner-manager.js");
     const mgr = new RunnerManager({ serverPort: 3001, isDev: true });
 
-    mgr.start();
+    // Mock fetch so start() completes
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = mock(() =>
+      Promise.resolve(new Response(JSON.stringify({ runners: [{ runnerId: "test" }] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }))
+    ) as any;
+
+    await mgr.start();
     mgr.stop();
+
+    globalThis.fetch = originalFetch;
 
     expect(mockKill).toHaveBeenCalledWith("SIGTERM");
     expect(mgr.isRunning()).toBe(false);

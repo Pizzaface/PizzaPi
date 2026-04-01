@@ -21,8 +21,9 @@ import log from "./logger.js";
 process.on("uncaughtException", (err: Error) => {
   const code = (err as NodeJS.ErrnoException).code;
   if (code === "EPIPE") return; // silently ignore
-  // For anything else, log and show the default dialog
+  // For anything else, log and exit to avoid running in a corrupted state
   log.error("Uncaught exception:", err);
+  process.exit(1);
 });
 
 let mainWindow: BrowserWindow | null = null;
@@ -169,8 +170,14 @@ async function startServices(): Promise<void> {
   // Start runner daemon
   runnerManager = new RunnerManager({ serverPort, isDev });
   tray?.updateStatus({ runner: "starting" });
-  runnerManager.start();
-  tray?.updateStatus({ runner: "running" });
+  try {
+    await runnerManager.start();
+    tray?.updateStatus({ runner: "running" });
+  } catch (err) {
+    log.error("Failed to start runner:", err);
+    tray?.updateStatus({ runner: "error" });
+    // Non-fatal — the UI can still load, runner may recover via auto-restart
+  }
 
   if (mainWindow) {
     sendServiceStatus(mainWindow, {

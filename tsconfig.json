@@ -6,6 +6,7 @@
         { "path": "packages/tools" },
         { "path": "packages/server" },
         { "path": "packages/ui" },
-        { "path": "packages/cli" }
+        { "path": "packages/cli" },
+        { "path": "packages/desktop" }
     ]
 }

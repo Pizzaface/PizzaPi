@@ -6,14 +6,12 @@ import { fileURLToPath } from "node:url";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 import log from "./logger.js";
+import type { ServiceStatus } from "../shared/types.js";
 
 export type ServiceHealth = "healthy" | "degraded" | "error";
 
-export interface TrayStatus {
-  server: "starting" | "running" | "error" | "stopped";
-  runner: "starting" | "running" | "error" | "stopped";
-  redis: "connected" | "disconnected";
-}
+/** @deprecated Use ServiceStatus from shared/types.ts */
+export type TrayStatus = ServiceStatus;
 
 export class AppTray {
   private tray: Tray;

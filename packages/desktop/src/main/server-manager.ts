@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import {
   getServerEntryPath,
+  getBunPath,
   HEALTH_CHECK_INTERVAL,
   HEALTH_CHECK_TIMEOUT,
   MAX_RESTART_ATTEMPTS,
@@ -18,6 +19,7 @@ export class ServerManager {
   private isDev: boolean;
   private restartCount = 0;
   private stopping = false;
+  private initialStartup = false;
 
   constructor(opts: ServerManagerOptions) {
     this.port = opts.port;
@@ -27,6 +29,7 @@ export class ServerManager {
   /** Spawn the relay server and wait for it to become healthy. */
   async start(): Promise<void> {
     this.stopping = false;
+    this.initialStartup = true;
 
     // Check if port is available before spawning
     const portFree = await this.isPortFree(this.port);
@@ -47,7 +50,8 @@ export class ServerManager {
     let earlyExit = false;
     let earlyExitCode: number | null = null;
 
-    this.child = spawn("bun", ["run", entry], {
+    const bunPath = getBunPath();
+    this.child = spawn(bunPath, ["run", entry], {
       env,
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -65,7 +69,9 @@ export class ServerManager {
       earlyExit = true;
       earlyExitCode = code;
       this.child = null;
-      if (!this.stopping && this.restartCount < MAX_RESTART_ATTEMPTS) {
+      // Don't auto-restart during initial startup — let start() reject cleanly
+      // so the caller can handle the error without a background restart race.
+      if (!this.stopping && !this.initialStartup && this.restartCount < MAX_RESTART_ATTEMPTS) {
         this.restartCount++;
         log.warn(`Restarting server (attempt ${this.restartCount}/${MAX_RESTART_ATTEMPTS})...`);
         this.start().catch((err) => log.error("Server restart failed:", err));
@@ -73,6 +79,7 @@ export class ServerManager {
     });
 
     await this.waitForHealthy(() => earlyExit);
+    this.initialStartup = false;
     this.restartCount = 0;
     log.info(`Relay server healthy on port ${this.port}`);
   }

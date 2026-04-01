@@ -30,6 +30,7 @@ mock.module("../src/main/config.js", () => ({
   getServerEntryPath: () => "/fake/server/index.ts",
   getRunnerEntryPath: () => "/fake/runner/index.js",
   getUIDistPath: () => "/fake/ui/dist",
+  getBunPath: () => "bun",
   HEALTH_CHECK_INTERVAL: 10,
   HEALTH_CHECK_TIMEOUT: 1000,
   MAX_RESTART_ATTEMPTS: 3,
@@ -60,7 +61,8 @@ describe("ServerManager", () => {
 
   test("start() spawns a child process with the correct entry path", async () => {
     const { ServerManager } = await import("../src/main/server-manager.js");
-    const mgr = new ServerManager({ port: 3001, isDev: true });
+    const port = 10000 + Math.floor(Math.random() * 50000);
+    const mgr = new ServerManager({ port, isDev: true });
 
     // Mock fetch for health check
     const originalFetch = globalThis.fetch;
@@ -78,7 +80,8 @@ describe("ServerManager", () => {
 
   test("stop() sends SIGTERM to the child process", async () => {
     const { ServerManager } = await import("../src/main/server-manager.js");
-    const mgr = new ServerManager({ port: 3001, isDev: true });
+    const port = 10000 + Math.floor(Math.random() * 50000);
+    const mgr = new ServerManager({ port, isDev: true });
 
     const originalFetch = globalThis.fetch;
     globalThis.fetch = mock(() =>
