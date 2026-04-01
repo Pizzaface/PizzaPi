@@ -3796,9 +3796,9 @@ export function App() {
   // Feed session meta + trigger data into the attention store
   useAttentionIngestion({
     activeSessionId,
-    pendingQuestion: pendingQuestion ? { toolCallId: pendingQuestion.toolCallId } : null,
-    pendingPlan: pendingPlan ? { toolCallId: pendingPlan.toolCallId, title: pendingPlan.title } : null,
-    pluginTrustPrompt: pluginTrustPrompt ? { promptId: pluginTrustPrompt.promptId } : null,
+    pendingQuestion,
+    pendingPlan,
+    pluginTrustPrompt,
     isCompacting,
     agentActive,
     sessionName,

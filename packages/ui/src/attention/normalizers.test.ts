@@ -298,22 +298,23 @@ describe("normalizeTriggerHistory", () => {
   });
 
   test("followUp→ack lifecycle: session clears after ack (not stuck as running)", () => {
+    // API returns triggers newest-first: ack (most recent) before followUp, connect last
     const items = normalizeTriggerHistory(SESSION_ID, [
-      makeTrigger({ source: "child-s1", type: "session_connect", direction: "inbound" }),
-      makeTrigger({
-        source: "child-s1",
-        type: "session_complete",
-        direction: "inbound",
-        response: { action: "followUp", ts: new Date().toISOString() },
-      }),
       makeTrigger({
         source: "child-s1",
         type: "session_complete",
         direction: "inbound",
         response: { action: "ack", ts: new Date().toISOString() },
       }),
+      makeTrigger({
+        source: "child-s1",
+        type: "session_complete",
+        direction: "inbound",
+        response: { action: "followUp", ts: new Date().toISOString() },
+      }),
+      makeTrigger({ source: "child-s1", type: "session_connect", direction: "inbound" }),
     ]);
-    // findLast ensures we read the ack, not the earlier followUp
+    // find() on newest-first data returns the ack (first match), not the older followUp
     expect(items).toHaveLength(1);
     expect(items[0]).toMatchObject({
       kind: "session_complete",
