@@ -15,8 +15,10 @@ export interface FolderBrowserProps {
     onSelect: (path: string) => void;
     /** Called when user clicks "Cancel" to go back to recent projects. */
     onCancel: () => void;
-    /** Initial path to browse from. */
+    /** Initial path to browse from. Defaults to first workspace root or "/". */
     initialPath?: string;
+    /** Runner workspace roots — used to pick a sensible default start path. */
+    roots?: string[];
     disabled?: boolean;
 }
 
@@ -29,10 +31,13 @@ export function FolderBrowser({
     runnerId,
     onSelect,
     onCancel,
-    initialPath = "/",
+    initialPath,
+    roots,
     disabled = false,
 }: FolderBrowserProps) {
-    const [currentPath, setCurrentPath] = React.useState(initialPath);
+    // Pick a sensible default: explicit initialPath > first workspace root > "/"
+    const defaultPath = initialPath || (roots && roots.length > 0 ? roots[0] : "/");
+    const [currentPath, setCurrentPath] = React.useState(defaultPath);
     const [directories, setDirectories] = React.useState<DirEntry[]>([]);
     const [loading, setLoading] = React.useState(false);
     const [error, setError] = React.useState<string | null>(null);
@@ -40,31 +45,31 @@ export function FolderBrowser({
 
     // Fetch directories whenever currentPath changes
     React.useEffect(() => {
-        let cancelled = false;
+        const controller = new AbortController();
         setLoading(true);
         setError(null);
 
         fetch(
             `/api/runners/${encodeURIComponent(runnerId)}/browse?path=${encodeURIComponent(currentPath)}`,
-            { credentials: "include" },
+            { credentials: "include", signal: controller.signal },
         )
             .then((res) => {
                 if (!res.ok) return res.json().then((b) => { throw new Error(b.error || `HTTP ${res.status}`); });
                 return res.json();
             })
             .then((body: any) => {
-                if (cancelled) return;
+                if (controller.signal.aborted) return;
                 setDirectories(Array.isArray(body?.directories) ? body.directories : []);
             })
             .catch((err) => {
-                if (cancelled) return;
+                if (controller.signal.aborted) return;
                 setError(err instanceof Error ? err.message : "Failed to browse directory");
             })
             .finally(() => {
-                if (!cancelled) setLoading(false);
+                if (!controller.signal.aborted) setLoading(false);
             });
 
-        return () => { cancelled = true; };
+        return () => { controller.abort(); };
     }, [runnerId, currentPath]);
 
     // Scroll to top when navigating

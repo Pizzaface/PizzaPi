@@ -402,7 +402,8 @@ export function NewSessionWizardDialog({
                         {browsing && selectedRunnerId && (
                             <FolderBrowser
                                 runnerId={selectedRunnerId}
-                                initialPath={cwd.trim() || "/"}
+                                initialPath={cwd.trim() || undefined}
+                                roots={selectedRunner?.roots}
                                 onSelect={(path) => {
                                     setCwd(path);
                                     setBrowsing(false);

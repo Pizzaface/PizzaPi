@@ -322,6 +322,13 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
         if (runner.userId !== identity.userId) return Response.json({ error: "Forbidden" }, { status: 403 });
 
         const path = url.searchParams.get("path") || "/";
+
+        // Enforce workspace roots at the server layer (defense-in-depth).
+        const roots = parseJsonArray(runner.roots);
+        if (roots.length > 0 && !cwdMatchesRoots(roots, path)) {
+            return Response.json({ error: "Path outside allowed workspace roots" }, { status: 400 });
+        }
+
         try {
             const result = await sendRunnerCommand(runnerId, {
                 type: "browse_directory",
