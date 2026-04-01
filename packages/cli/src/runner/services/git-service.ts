@@ -32,6 +32,11 @@ type GitStatusResultPayload = {
     diffStaged: string;
 };
 
+type GitStatusSnapshot = {
+    generation: number;
+    payload: GitStatusResultPayload;
+};
+
 type GitBranchResultPayload = {
     currentBranch: string;
     branches: Array<{
@@ -106,8 +111,8 @@ export class GitService implements ServiceHandler {
     private readonly _setTimeout: SetTimeoutFn;
     private readonly _clearTimeout: ClearTimeoutFn;
     private readonly _now: () => number;
-    private readonly _statusCache = new Map<string, { expiresAt: number; generation: number; payload: GitStatusResultPayload }>();
-    private readonly _statusInFlight = new Map<string, Promise<GitStatusResultPayload>>();
+    private readonly _statusCache = new Map<string, { expiresAt: number; snapshot: GitStatusSnapshot }>();
+    private readonly _statusInFlight = new Map<string, Promise<GitStatusSnapshot>>();
     private readonly _statusGeneration = new Map<string, number>();
     private readonly _cwdSubscribers = new Map<string, Set<string>>();
     private readonly _sessionCwd = new Map<string, string>();
@@ -350,7 +355,8 @@ export class GitService implements ServiceHandler {
         watchState.refreshInFlight = true;
         try {
             await this.invalidateStatusCacheFamily(cwd);
-            const status = await this.getStatusSnapshot(cwd);
+            const snapshot = await this.getStatusSnapshot(cwd);
+            const status = snapshot.payload;
             for (const sessionId of subscribers) {
                 const sessionCwd = this._sessionCwd.get(sessionId) ?? status.cwd;
                 this.emit("git_status_result", { ...status, cwd: sessionCwd }, undefined, sessionId);
@@ -460,13 +466,13 @@ export class GitService implements ServiceHandler {
         }
     }
 
-    private async getStatusSnapshot(cwd: string): Promise<GitStatusResultPayload> {
+    private async getStatusSnapshot(cwd: string): Promise<GitStatusSnapshot> {
         const now = this._now();
         const generation = this._statusGeneration.get(cwd) ?? 0;
 
         const cached = this._statusCache.get(cwd);
-        if (cached && cached.generation === generation && cached.expiresAt > now) {
-            return cached.payload;
+        if (cached && cached.snapshot.generation === generation && cached.expiresAt > now) {
+            return cached.snapshot;
         }
 
         const existing = this._statusInFlight.get(cwd);
@@ -480,7 +486,7 @@ export class GitService implements ServiceHandler {
         return pending;
     }
 
-    private async collectStatus(cwd: string, generationAtStart: number): Promise<GitStatusResultPayload> {
+    private async collectStatus(cwd: string, generationAtStart: number): Promise<GitStatusSnapshot> {
         const [branchResult, toplevelResult, statusResult, diffStagedResult, abResult] = await Promise.allSettled([
             this._execGit(["rev-parse", "--abbrev-ref", "HEAD"], { cwd, timeout: 5000 }),
             this._execGit(["rev-parse", "--show-toplevel"], { cwd, timeout: 5000 }),
@@ -530,7 +536,7 @@ export class GitService implements ServiceHandler {
             behind = parseInt(b, 10) || 0;
         }
 
-        const result: GitStatusResultPayload = {
+        const payload: GitStatusResultPayload = {
             ok: true,
             cwd,
             branch,
@@ -542,15 +548,19 @@ export class GitService implements ServiceHandler {
             diffStaged,
         };
 
+        const snapshot: GitStatusSnapshot = {
+            generation: generationAtStart,
+            payload,
+        };
+
         if ((this._statusGeneration.get(cwd) ?? 0) === generationAtStart) {
             this._statusCache.set(cwd, {
-                generation: generationAtStart,
-                payload: result,
+                snapshot,
                 expiresAt: this._now() + STATUS_CACHE_TTL_MS,
             });
         }
 
-        return result;
+        return snapshot;
     }
 
     private async handleStatus(
@@ -563,8 +573,11 @@ export class GitService implements ServiceHandler {
         this.registerSubscriber(cwd, sessionId);
 
         try {
-            const status = await this.getStatusSnapshot(cwd);
-            this.emit("git_status_result", status, requestId, sessionId);
+            let snapshot = await this.getStatusSnapshot(cwd);
+            if (snapshot.generation !== (this._statusGeneration.get(cwd) ?? 0)) {
+                snapshot = await this.getStatusSnapshot(cwd);
+            }
+            this.emit("git_status_result", snapshot.payload, requestId, sessionId);
         } catch (err) {
             this.emitError("git_status_result", err instanceof Error ? err.message : String(err), requestId, sessionId);
         }
@@ -706,7 +719,11 @@ export class GitService implements ServiceHandler {
                 throw statusResult.reason;
             }
 
-            const status = statusResult.value;
+            let statusSnapshot = statusResult.value;
+            if (statusSnapshot.generation !== (this._statusGeneration.get(cwd) ?? 0)) {
+                statusSnapshot = await this.getStatusSnapshot(cwd);
+            }
+            const status = statusSnapshot.payload;
             const branchData = branchResult.status === "fulfilled"
                 ? branchResult.value
                 : { currentBranch: status.branch, branches: [] };
