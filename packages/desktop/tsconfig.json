@@ -9,8 +9,5 @@
     "declaration": true,
     "sourceMap": true
   },
-  "include": ["src"],
-  "references": [
-    { "path": "../protocol" }
-  ]
+  "include": ["src"]
 }

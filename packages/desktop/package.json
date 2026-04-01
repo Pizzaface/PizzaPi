@@ -14,7 +14,6 @@
     "start": "electron ."
   },
   "dependencies": {
-    "@pizzapi/protocol": "workspace:*",
     "electron-log": "^5.3.0"
   },
   "devDependencies": {

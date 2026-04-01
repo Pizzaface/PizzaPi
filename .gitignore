@@ -30,3 +30,4 @@ packages/cli/src/config/system-prompt.precompiled.ts
 01-landing.png
 .playwright-cli/
 .superpowers/
+packages/desktop/bun.lock
