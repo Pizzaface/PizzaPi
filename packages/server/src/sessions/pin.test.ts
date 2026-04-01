@@ -150,9 +150,9 @@ describe.skip("listPersistedRelaySessionsForUser", () => {
         await insertSession({ sessionId: "s6", isPinned: 1, isEphemeral: false });
         await insertSession({ sessionId: "s7", isPinned: 0, isEphemeral: false });
 
-        const sessions = await listPersistedRelaySessionsForUser(TEST_USER_ID);
-        const pinned = sessions.find((s) => s.sessionId === "s6");
-        const unpinned = sessions.find((s) => s.sessionId === "s7");
+        const { sessions } = await listPersistedRelaySessionsForUser(TEST_USER_ID);
+        const pinned = sessions.find((s: any) => s.sessionId === "s6");
+        const unpinned = sessions.find((s: any) => s.sessionId === "s7");
 
         expect(pinned?.isPinned).toBe(true);
         expect(unpinned?.isPinned).toBe(false);
@@ -162,7 +162,7 @@ describe.skip("listPersistedRelaySessionsForUser", () => {
         await insertSession({ sessionId: "s-old-pinned", isPinned: 1, isEphemeral: false });
         await insertSession({ sessionId: "s-new-unpinned", isPinned: 0, isEphemeral: false });
 
-        const sessions = await listPersistedRelaySessionsForUser(TEST_USER_ID);
+        const { sessions } = await listPersistedRelaySessionsForUser(TEST_USER_ID);
         expect(sessions.length).toBe(2);
         expect(sessions[0].sessionId).toBe("s-old-pinned");
     });
@@ -173,8 +173,8 @@ describe.skip("listPersistedRelaySessionsForUser", () => {
         await insertSession({ sessionId: "s-expired-pinned", isPinned: 1, expiresAt: pastDate });
         await insertSession({ sessionId: "s-expired-unpinned", isPinned: 0, expiresAt: pastDate });
 
-        const sessions = await listPersistedRelaySessionsForUser(TEST_USER_ID);
-        const ids = sessions.map((s) => s.sessionId);
+        const { sessions } = await listPersistedRelaySessionsForUser(TEST_USER_ID);
+        const ids = sessions.map((s: any) => s.sessionId);
 
         expect(ids).toContain("s-expired-pinned");
         expect(ids).not.toContain("s-expired-unpinned");

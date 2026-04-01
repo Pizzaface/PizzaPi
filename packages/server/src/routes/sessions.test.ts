@@ -167,7 +167,7 @@ describe("handleSessionsRoute — GET /api/sessions", () => {
         mockGetSessions.mockImplementation(async () => { calls.push("sessions"); return []; });
         mockListPersistedRelaySessionsForUser.mockImplementation(async () => {
             calls.push("persisted");
-            return [];
+            return { sessions: [], nextCursor: null };
         });
 
         const [req, url] = makeRequest("/api/sessions");
