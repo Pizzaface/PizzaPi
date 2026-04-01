@@ -1,10 +1,17 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { readdir, stat } from "node:fs/promises";
+import { readdir, stat, realpath } from "node:fs/promises";
 import { join } from "node:path";
 import type { Socket } from "socket.io-client";
 import type { ServiceHandler, ServiceInitOptions } from "../service-handler.js";
-import { isCwdAllowed } from "../workspace.js";
+import { isCwdAllowed, getWorkspaceRoots } from "../workspace.js";
+
+// Sensitive dotfolders that should never appear in the folder browser
+// when browsing outside configured workspace roots.
+const SENSITIVE_DOTDIRS = new Set([
+    ".ssh", ".gnupg", ".gpg", ".aws", ".docker", ".kube",
+    ".config", ".local", ".cache", ".npm", ".bun",
+]);
 
 const execFileAsync = promisify(execFile);
 
@@ -19,6 +26,7 @@ export class FileExplorerService implements ServiceHandler {
     private _onListFiles: ((data: any) => void) | null = null;
     private _onSearchFiles: ((data: any) => void) | null = null;
     private _onReadFile: ((data: any) => void) | null = null;
+    private _onBrowseDirectory: ((data: any) => void) | null = null;
 
     init(socket: Socket, { isShuttingDown }: ServiceInitOptions): void {
         this._socket = socket;
@@ -87,6 +95,69 @@ export class FileExplorerService implements ServiceHandler {
             }
         };
         socket.on("list_files", this._onListFiles);
+
+        // browse_directory — lists only subdirectories at a given path (for folder picker UI)
+        this._onBrowseDirectory = async (data: any) => {
+            if (isShuttingDown()) return;
+            const requestId = data.requestId;
+            const dirPath = data.path ?? "";
+            if (!dirPath) {
+                emitFileResult({ requestId, ok: false, message: "Missing path" });
+                return;
+            }
+            if (!isCwdAllowed(dirPath)) {
+                emitFileResult({ requestId, ok: false, message: "Path outside allowed roots" });
+                return;
+            }
+            try {
+                const entries = await readdir(dirPath, { withFileTypes: true });
+
+                // Determine if we're inside a workspace root (if any are configured).
+                // When outside roots, filter sensitive dotfolders for safety.
+                const roots = getWorkspaceRoots();
+                const insideRoot = roots.length === 0 || roots.some((root) => {
+                    const nRoot = root.replace(/\/+$/, "") || "/";
+                    const nDir = dirPath.replace(/\/+$/, "") || "/";
+                    return nDir === nRoot || nDir.startsWith(nRoot + "/");
+                });
+
+                // Resolve entries: include directories and symlinks-to-directories
+                const dirResults: { name: string; path: string }[] = [];
+                for (const e of entries) {
+                    // Always skip .git and node_modules
+                    if (e.name === ".git" || e.name === "node_modules") continue;
+                    // Filter sensitive dotfolders when outside workspace roots
+                    if (!insideRoot && SENSITIVE_DOTDIRS.has(e.name)) continue;
+
+                    const fullPath = join(dirPath, e.name);
+
+                    if (e.isDirectory()) {
+                        dirResults.push({ name: e.name, path: fullPath });
+                    } else if (e.isSymbolicLink()) {
+                        // Resolve symlink to check if it points to a directory
+                        try {
+                            const resolved = await realpath(fullPath);
+                            const s = await stat(resolved);
+                            if (s.isDirectory()) {
+                                dirResults.push({ name: e.name, path: fullPath });
+                            }
+                        } catch {
+                            // Broken symlink or permission error — skip
+                        }
+                    }
+                }
+
+                dirResults.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
+                emitFileResult({ requestId, ok: true, directories: dirResults });
+            } catch (err) {
+                emitFileResult({
+                    requestId,
+                    ok: false,
+                    message: err instanceof Error ? err.message : String(err),
+                });
+            }
+        };
+        socket.on("browse_directory", this._onBrowseDirectory);
 
         this._onSearchFiles = async (data: any) => {
             if (isShuttingDown()) return;
@@ -209,10 +280,12 @@ export class FileExplorerService implements ServiceHandler {
             if (this._onListFiles) (this._socket as any).off("list_files", this._onListFiles);
             if (this._onSearchFiles) (this._socket as any).off("search_files", this._onSearchFiles);
             if (this._onReadFile) (this._socket as any).off("read_file", this._onReadFile);
+            if (this._onBrowseDirectory) (this._socket as any).off("browse_directory", this._onBrowseDirectory);
             this._socket = null;
         }
         this._onListFiles = null;
         this._onSearchFiles = null;
         this._onReadFile = null;
+        this._onBrowseDirectory = null;
     }
 }

@@ -7,11 +7,12 @@
  */
 import * as React from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { FolderOpen, Loader2, X, ChevronLeft, Monitor } from "lucide-react";
+import { FolderOpen, FolderSearch, Loader2, X, ChevronLeft, Monitor } from "lucide-react";
 import { SiApple, SiLinux } from "react-icons/si";
 import { cn } from "@/lib/utils";
 import { formatPathTail } from "@/lib/path";
 import { filterFolders } from "@/lib/filterFolders";
+import { FolderBrowser } from "@/components/FolderBrowser";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -126,6 +127,9 @@ export function NewSessionWizardDialog({
     const [recentFoldersLoading, setRecentFoldersLoading] = React.useState(false);
     const [recentFoldersError, setRecentFoldersError] = React.useState<string | null>(null);
 
+    // Folder browser mode
+    const [browsing, setBrowsing] = React.useState(false);
+
     // Filtered list (derived)
     const filteredFolders = React.useMemo(
         () => filterFolders(recentFolders, cwd),
@@ -152,6 +156,7 @@ export function NewSessionWizardDialog({
         setSpawnError(null);
         setDisconnectedMsg(null);
         setRecentFolders([]);
+        setBrowsing(false);
     }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
 
     // Fetch recent folders when entering Step 2
@@ -220,6 +225,7 @@ export function NewSessionWizardDialog({
         setStep("runner");
         setRecentFolders([]);
         setSpawnError(null);
+        setBrowsing(false);
     }
 
     function handleSelectRecent(folder: string) {
@@ -364,35 +370,63 @@ export function NewSessionWizardDialog({
                                 Working directory{" "}
                                 <span className="text-muted-foreground font-normal">(optional)</span>
                             </Label>
-                            <Input
-                                id="wizard-cwd"
-                                value={cwd}
-                                onChange={(e) => setCwd(e.target.value)}
-                                onKeyDown={(e) => { if (e.key === "Enter") void handleSpawn(); }}
-                                placeholder="/path/to/project"
-                                className="font-mono text-sm"
-                                disabled={spawning}
-                                autoFocus
-                            />
+                            <div className="flex gap-1.5">
+                                <Input
+                                    id="wizard-cwd"
+                                    value={cwd}
+                                    onChange={(e) => setCwd(e.target.value)}
+                                    onKeyDown={(e) => { if (e.key === "Enter") void handleSpawn(); }}
+                                    placeholder="/path/to/project"
+                                    className="font-mono text-sm flex-1"
+                                    disabled={spawning}
+                                    autoFocus
+                                />
+                                <Button
+                                    type="button"
+                                    variant={browsing ? "secondary" : "outline"}
+                                    size="icon"
+                                    onClick={() => setBrowsing(!browsing)}
+                                    disabled={spawning}
+                                    title="Browse folders"
+                                    className="flex-shrink-0"
+                                >
+                                    <FolderSearch className="h-4 w-4" />
+                                </Button>
+                            </div>
                             <p className="text-xs text-muted-foreground">
                                 This is the path on the runner machine.
                             </p>
                         </div>
 
-                        {/* Recent projects */}
-                        {recentFoldersLoading && (
+                        {/* Folder browser */}
+                        {browsing && selectedRunnerId && (
+                            <FolderBrowser
+                                runnerId={selectedRunnerId}
+                                initialPath={cwd.trim() || undefined}
+                                roots={selectedRunner?.roots}
+                                onSelect={(path) => {
+                                    setCwd(path);
+                                    setBrowsing(false);
+                                }}
+                                onCancel={() => setBrowsing(false)}
+                                disabled={spawning}
+                            />
+                        )}
+
+                        {/* Recent projects (hidden when browsing) */}
+                        {!browsing && recentFoldersLoading && (
                             <div className="flex items-center gap-2 text-xs text-muted-foreground">
                                 <Loader2 className="h-3 w-3 animate-spin" />
                                 Loading recent projects…
                             </div>
                         )}
-                        {!recentFoldersLoading && recentFoldersError && (
+                        {!browsing && !recentFoldersLoading && recentFoldersError && (
                             <p className="text-xs text-destructive">{recentFoldersError}</p>
                         )}
-                        {!recentFoldersLoading && !recentFoldersError && recentFolders.length === 0 && (
+                        {!browsing && !recentFoldersLoading && !recentFoldersError && recentFolders.length === 0 && (
                             <p className="text-xs text-muted-foreground">No recent projects yet.</p>
                         )}
-                        {!recentFoldersLoading && !recentFoldersError && recentFolders.length > 0 && (
+                        {!browsing && !recentFoldersLoading && !recentFoldersError && recentFolders.length > 0 && (
                             <div className="flex flex-col gap-1">
                                 <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
                                     Recent projects
