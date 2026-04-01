@@ -291,11 +291,18 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
             typeof socket.data.generation === "number" ? socket.data.generation : undefined;
 
         const activateSession = async (nextSessionId: string, generation?: number, lastSeq?: number): Promise<void> => {
-            // Reset on every session switch so a prior cache-hit's
-            // suppressRunnerSignal=true cannot bleed into a subsequent
-            // cache-miss session and silently drop the runner "connected"
-            // signal, leaving the viewer on stale state.
+            // Reset on every session switch so a prior session's signal state
+            // cannot bleed into the new session.  Specifically:
+            //   - suppressRunnerSignal=true (cache hit) must not silence the
+            //     runner signal for a subsequent cache-miss session.
+            //   - viewerReadyForRunnerSignal=true (cache miss) must not cause
+            //     the client "connected" echo to forward a runner signal before
+            //     cache hydration has had a chance to run on the new session.
+            //   - pendingConnectedSignal=true must not carry over and trigger
+            //     forwardRecoveryConnectedSignal() against the wrong session.
             suppressRunnerSignal = false;
+            viewerReadyForRunnerSignal = false;
+            pendingConnectedSignal = false;
 
             if (!nextSessionId) {
                 socket.data.sessionId = undefined;
