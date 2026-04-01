@@ -46,23 +46,13 @@ import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import type { ServiceTriggerDef, ServiceTriggerParamDef } from "@pizzapi/protocol";
 
-// ── Types ──────────────────────────────────────────────────────────────────
+// ── Shared trigger utilities (re-exported for backward compat) ─────────────
+export type { TriggerHistoryEntry } from "../attention/trigger-utils";
+export { isPendingTrigger, RESPONSE_TRIGGER_TYPES } from "../attention/trigger-utils";
+import type { TriggerHistoryEntry } from "../attention/trigger-utils";
+import { isPendingTrigger, RESPONSE_TRIGGER_TYPES } from "../attention/trigger-utils";
 
-export interface TriggerHistoryEntry {
-  triggerId: string;
-  type: string;
-  source: string;
-  summary?: string;
-  payload: Record<string, unknown>;
-  deliverAs: "steer" | "followUp";
-  ts: string;
-  direction: "inbound" | "outbound";
-  response?: {
-    action?: string;
-    text?: string;
-    ts: string;
-  };
-}
+// ── Types ──────────────────────────────────────────────────────────────────
 
 export interface TriggerSubscription {
   triggerType: string;
@@ -137,20 +127,6 @@ function truncateId(id: string, maxLen = 12): string {
   return id.slice(0, maxLen) + "…";
 }
 
-/** Known trigger types that require a response (interactive triggers). */
-export const RESPONSE_TRIGGER_TYPES = new Set([
-  "ask_user_question",
-  "plan_review",
-  "escalate",
-]);
-
-/** Whether a trigger is "pending" — inbound, requires response, and has none. */
-export function isPendingTrigger(entry: TriggerHistoryEntry): boolean {
-  if (entry.direction !== "inbound") return false;
-  if (entry.response) return false;
-  return RESPONSE_TRIGGER_TYPES.has(entry.type);
-}
-
 /** Derive the status of a linked session from its most recent trigger. */
 function deriveSessionStatus(group: LinkedSessionGroup): {
   label: string;
@@ -180,6 +156,9 @@ function deriveSessionStatus(group: LinkedSessionGroup): {
 
   if (latest.type === "session_complete") {
     const action = latest.response?.action;
+    if (action === "followUp") {
+      return { label: "running", color: "blue", icon: <RefreshCw className="size-3.5" /> };
+    }
     if (action === "ack") {
       return { label: "completed", color: "zinc", icon: <CheckCircle2 className="size-3.5" /> };
     }
@@ -322,10 +301,10 @@ export interface IncompleteTriggerItem {
  *
  * "Incomplete" means:
  * - A linked session with a pending interactive trigger (ask_user_question, plan_review, escalate)
- * - A linked session that is still active (no session_complete yet)
+ * - A linked session that is still active (no terminal session_complete, or a session_complete answered with followUp)
  *
- * Sessions that have sent session_complete are considered done regardless of
- * whether the parent has formally ack'd — the child finished its work.
+ * Sessions that have sent session_complete are considered done once the child
+ * actually stopped. A followUp response resumes the child, so it remains incomplete.
  */
 export function getIncompleteTriggers(triggers: TriggerHistoryEntry[]): IncompleteTriggerItem[] {
   const { sessionGroups } = groupByLinkedSession(triggers);
@@ -351,11 +330,11 @@ export function getIncompleteTriggers(triggers: TriggerHistoryEntry[]): Incomple
       continue;
     }
 
-    // Any session_complete event (ack'd or not) means the child finished
-    const hasCompleted = group.events.some(e => e.type === "session_complete");
-    if (hasCompleted) continue;
+    // Events are most-recent-first; find() picks the newest session_complete
+    const latestComplete = group.events.find((e) => e.type === "session_complete");
+    if (latestComplete && latestComplete.response?.action !== "followUp") continue;
 
-    // Still active (connected, no session_complete)
+    // Still active (connected, no terminal session_complete)
     items.push({ label, reason: "Still running", source: group.source });
   }
 

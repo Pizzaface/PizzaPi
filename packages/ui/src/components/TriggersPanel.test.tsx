@@ -307,6 +307,25 @@ describe("TriggersPanel — grouped layout", () => {
     expect(container.textContent).toContain("2 events");
   });
 
+  test("shows followUp-completed child as running", async () => {
+    const trigger = makeTrigger({
+      triggerId: "t-follow-up",
+      type: "session_complete",
+      source: "child-running",
+      direction: "inbound",
+      response: { action: "followUp", text: "keep going", ts: new Date().toISOString() },
+    });
+    fetchState.response = { ok: true, body: { triggers: [trigger] } };
+
+    let container!: HTMLElement;
+    await act(async () => {
+      ({ container } = render(<TriggersPanel sessionId="sess-parent" />));
+    });
+
+    expect(container.textContent).toContain("running");
+    expect(container.textContent).not.toContain("completed");
+  });
+
   test("pending plan_review shows correct waiting text", async () => {
     const trigger = makeTrigger({
       triggerId: "t-plan",

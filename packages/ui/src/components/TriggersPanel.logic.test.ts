@@ -171,7 +171,7 @@ describe("getIncompleteTriggers", () => {
     expect(getIncompleteTriggers(triggers)).toEqual([]);
   });
 
-  test("excludes session_complete with followUp response (child is done)", () => {
+  test("keeps session_complete with followUp response as incomplete", () => {
     const triggers = [
       makeTrigger({
         source: "child-1",
@@ -179,7 +179,9 @@ describe("getIncompleteTriggers", () => {
         response: { action: "followUp", text: "do more", ts: new Date().toISOString() },
       }),
     ];
-    expect(getIncompleteTriggers(triggers)).toEqual([]);
+    expect(getIncompleteTriggers(triggers)).toEqual([
+      { label: "child-1", reason: "Still running", source: "child-1" },
+    ]);
   });
 
   test("detects still-running sessions (linked, no complete)", () => {

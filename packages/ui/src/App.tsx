@@ -58,7 +58,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { X, TerminalIcon, FolderTree, GitBranch, EyeOff, Zap } from "lucide-react";
-import { TriggersPanel } from "@/components/TriggersPanel";
+import { TriggersPanel, type TriggerHistoryEntry } from "@/components/TriggersPanel";
 import type { ProviderUsageMap } from "@/components/UsageIndicator";
 import { TerminalManager } from "@/components/TerminalManager";
 import { FileExplorer } from "@/components/FileExplorer";
@@ -110,6 +110,10 @@ import type { TodoItem, TokenUsage, ConfiguredModelInfo, ResumeSessionOption, Qu
 import { metaEventToStatePatch, type MetaStatePatch } from "@/lib/meta-state-apply";
 import { usePanelLayout } from "@/hooks/usePanelLayout";
 import { useTriggerCount } from "@/hooks/useTriggerCount";
+// Attention store: AttentionProvider is mounted in main.ts around <App/>
+import { ActionCenter } from "@/components/action-center/ActionCenter";
+import { ActionCenterButton } from "@/components/action-center/ActionCenterButton";
+import { useAttentionIngestion } from "@/hooks/useAttentionIngestion";
 import { useMobileSidebar } from "@/hooks/useMobileSidebar";
 import {
   toRelayMessage,
@@ -488,6 +492,7 @@ export function App() {
     return /Mac|iPhone|iPad/i.test(platform);
   }, []);
   const [showShortcutsHelp, setShowShortcutsHelp] = React.useState(false);
+  const [actionCenterOpen, setActionCenterOpen] = React.useState(false);
 
   // Sequence tracking for gap detection
   const lastSeqRef = React.useRef<number | null>(null);
@@ -570,6 +575,18 @@ export function App() {
   React.useEffect(() => {
     confirmedMetaLiveSessionIdsRef.current = new Set(liveSessions.map((s) => s.sessionId));
     setMetaInventoryVersion((version) => version + 1);
+  }, [liveSessions]);
+
+  React.useEffect(() => {
+    const liveSessionIds = new Set(liveSessions.map((session) => session.sessionId));
+    setSessionsAwaitingInput((prev) => {
+      const kept = Array.from(prev).filter((sessionId) => liveSessionIds.has(sessionId));
+      return kept.length === prev.size ? prev : new Set(kept);
+    });
+    setSessionsCompacting((prev) => {
+      const kept = Array.from(prev).filter((sessionId) => liveSessionIds.has(sessionId));
+      return kept.length === prev.size ? prev : new Set(kept);
+    });
   }, [liveSessions]);
 
   // Derive sidebar runners from the /runners WS feed
@@ -2497,6 +2514,17 @@ export function App() {
             return next;
           });
         }
+        if (typeof state.isCompacting === "boolean") {
+          setSessionsCompacting((prev) => {
+            const next = new Set(prev);
+            if (state.isCompacting) {
+              next.add(sessionId);
+            } else {
+              next.delete(sessionId);
+            }
+            return next;
+          });
+        }
         return;
       }
 
@@ -3751,6 +3779,40 @@ export function App() {
   // Runner service panels — dynamically discovered
   const { services: availableServices, panels: dynamicPanels, triggerDefs: runnerTriggerDefs, sigilDefs: runnerSigilDefs } = useRunnerServices(viewerSocket, activeRunnerInfo);
   const triggerCounts = useTriggerCount(activeSessionId, viewerSocket);
+  const attentionSessionNames = React.useMemo(() => {
+    const names = new Map<string, string>();
+    for (const session of liveSessions) {
+      const name = session.sessionName?.trim();
+      if (name) {
+        names.set(session.sessionId, name);
+      }
+    }
+    if (activeSessionId && sessionName?.trim()) {
+      names.set(activeSessionId, sessionName.trim());
+    }
+    return names;
+  }, [activeSessionId, liveSessions, sessionName]);
+
+  // Feed session meta + trigger data into the attention store
+  useAttentionIngestion({
+    activeSessionId,
+    pendingQuestion,
+    pendingPlan,
+    pluginTrustPrompt,
+    isCompacting,
+    agentActive,
+    sessionName,
+    triggerCounts,
+    sessionsAwaitingInput,
+    sessionsCompacting,
+    sessionNamesById: attentionSessionNames,
+  });
+
+  const handleActionCenterNavigate = React.useCallback((sessionId: string) => {
+    if (sessionId !== activeSessionId) {
+      openSession(sessionId);
+    }
+  }, [activeSessionId, openSession]);
   const { activePanelIds: activeServicePanels, togglePanel: toggleServicePanel, closePanelById: closeServicePanelById, closeAllPanels: closeAllServicePanels, getPanelPosition: getServicePanelPosition, setPanelPosition: setServicePanelPosition, setEphemeralPanelPosition: setEphemeralServicePanelPosition, getNavParams: getServicePanelNavParams } = useServicePanelState();
 
   // Always-current ref so the runner-change effect below can read the active
@@ -4129,6 +4191,7 @@ export function App() {
         onShowShortcuts={handleShowShortcuts}
         onChangePassword={handleChangePassword}
         onRefreshUsage={refreshUsage}
+        onOpenActionCenter={() => setActionCenterOpen(true)}
       />
 
       {/* ── Mobile header (memoized — skips re-render on same-runner session switch) ── */}
@@ -4156,6 +4219,7 @@ export function App() {
         onOpenSession={handleOpenSession}
         onNewSession={handleNewSession}
         onSessionSwitcherOpenChange={handleSessionSwitcherOpenChange}
+        onOpenActionCenter={() => setActionCenterOpen(true)}
       />
       {/* Spacer that reserves the exact height of the fixed mobile header */}
       <div className="md:hidden flex-shrink-0" style={{ height: "calc(3.25rem + env(safe-area-inset-top))" }} aria-hidden="true" />
@@ -4713,6 +4777,11 @@ export function App() {
         )}
 
         <ShortcutsDialog open={showShortcutsHelp} onOpenChange={setShowShortcutsHelp} />
+        <ActionCenter
+          open={actionCenterOpen}
+          onOpenChange={setActionCenterOpen}
+          onNavigateToSession={handleActionCenterNavigate}
+        />
       </div>
     </div>
     </TooltipProvider>
