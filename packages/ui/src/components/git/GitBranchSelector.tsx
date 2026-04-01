@@ -1,11 +1,13 @@
-import { useState, useMemo, useRef, useEffect } from "react";
+import { useState, useMemo, useRef, useEffect, useLayoutEffect } from "react";
+import * as ReactDOM from "react-dom";
 import { cn } from "@/lib/utils";
-import { GitBranch as GitBranchIcon, ChevronDown, Search, Check, Globe, Loader2 } from "lucide-react";
-import type { GitBranch } from "@/hooks/useGitService";
+import { GitBranch as GitBranchIcon, ChevronDown, Search, Check, Globe, Loader2, AlertCircle } from "lucide-react";
+import type { GitBranch, BranchesState } from "@/hooks/useGitService";
 
 interface GitBranchSelectorProps {
     currentBranch: string;
     branches: GitBranch[];
+    branchesState: BranchesState;
     onCheckout: (branch: string, isRemote: boolean) => void;
     onOpen: () => void;
     disabled?: boolean;
@@ -15,6 +17,7 @@ interface GitBranchSelectorProps {
 export function GitBranchSelector({
     currentBranch,
     branches,
+    branchesState,
     onCheckout,
     onOpen,
     disabled,
@@ -23,16 +26,19 @@ export function GitBranchSelector({
     const [open, setOpen] = useState(false);
     const [search, setSearch] = useState("");
     const containerRef = useRef<HTMLDivElement>(null);
+    const dropdownRef = useRef<HTMLDivElement>(null);
     const searchInputRef = useRef<HTMLInputElement>(null);
+    const [dropdownStyle, setDropdownStyle] = useState<{ top: number; left: number; width: number }>({ top: 0, left: 0, width: 0 });
 
     // Close on click outside
     useEffect(() => {
         if (!open) return;
         const handler = (e: PointerEvent) => {
-            if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
-                setOpen(false);
-                setSearch("");
-            }
+            const target = e.target as Node;
+            if (containerRef.current && containerRef.current.contains(target)) return;
+            if (dropdownRef.current && dropdownRef.current.contains(target)) return;
+            setOpen(false);
+            setSearch("");
         };
         document.addEventListener("pointerdown", handler, true);
         return () => document.removeEventListener("pointerdown", handler, true);
@@ -57,6 +63,28 @@ export function GitBranchSelector({
         if (open) {
             searchInputRef.current?.focus();
         }
+    }, [open]);
+
+    // Position dropdown on open/resize/scroll
+    useLayoutEffect(() => {
+        if (!open) return;
+        const updatePosition = () => {
+            const trigger = containerRef.current;
+            if (!trigger) return;
+            const rect = trigger.getBoundingClientRect();
+            setDropdownStyle({
+                top: rect.bottom + window.scrollY,
+                left: rect.left + window.scrollX,
+                width: rect.width,
+            });
+        };
+        updatePosition();
+        window.addEventListener("resize", updatePosition);
+        window.addEventListener("scroll", updatePosition, true);
+        return () => {
+            window.removeEventListener("resize", updatePosition);
+            window.removeEventListener("scroll", updatePosition, true);
+        };
     }, [open]);
 
     const handleOpen = () => {
@@ -106,9 +134,20 @@ export function GitBranchSelector({
                 )}
             </button>
 
-            {open && (
-                <div className="absolute top-full left-0 mt-1 w-72 max-h-80 bg-popover border border-border rounded-lg shadow-xl z-50 flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-100">
-                    {/* Search */}
+            {open && ReactDOM.createPortal(
+                <div
+                    ref={dropdownRef}
+                    style={{
+                        position: "absolute",
+                        top: dropdownStyle.top,
+                        left: dropdownStyle.left,
+                        minWidth: dropdownStyle.width || 260,
+                        maxWidth: "90vw",
+                        zIndex: 60,
+                    }}
+                    className="mt-1 w-72 max-h-80 bg-popover border border-border rounded-lg shadow-xl flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-100"
+                >
+                    {/* Search / header */}
                     <div className="flex items-center gap-2 px-3 py-2 border-b border-border/50">
                         <Search className="size-3.5 text-muted-foreground flex-shrink-0" />
                         <input
@@ -119,15 +158,34 @@ export function GitBranchSelector({
                             placeholder="Find a branch…"
                             className="flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground/60"
                         />
+                        {branchesState.loading && <Loader2 className="size-3 animate-spin text-muted-foreground" />}
                     </div>
+
+                    {/* Status bar for partial/error */}
+                    {(branchesState.partial || branchesState.error) && (
+                        <div className={cn(
+                            "px-3 py-1 text-[0.7rem] border-b",
+                            branchesState.error ? "text-red-500 border-border/50" : "text-muted-foreground border-border/50",
+                        )}>
+                            {branchesState.error ? (
+                                <span className="inline-flex items-center gap-1"><AlertCircle className="size-3" />{branchesState.error}</span>
+                            ) : (
+                                "Partial data – status refresh needed for behind/ahead."
+                            )}
+                        </div>
+                    )}
 
                     {/* Branch list */}
                     <div className="flex-1 overflow-auto py-1">
-                        {filtered.length === 0 && (
+                        {branchesState.loading ? (
+                            <div className="px-3 py-4 text-center text-xs text-muted-foreground flex items-center justify-center gap-2">
+                                <Loader2 className="size-3 animate-spin" /> Loading branches…
+                            </div>
+                        ) : filtered.length === 0 ? (
                             <div className="px-3 py-4 text-center text-xs text-muted-foreground">
                                 No branches found
                             </div>
-                        )}
+                        ) : null}
 
                         {localBranches.length > 0 && (
                             <div>
@@ -159,7 +217,8 @@ export function GitBranchSelector({
                             </div>
                         )}
                     </div>
-                </div>
+                </div>,
+                document.body,
             )}
         </div>
     );

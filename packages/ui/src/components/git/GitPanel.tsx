@@ -5,6 +5,7 @@
  * service_message channel (no REST routes). Session-scoped via cwd.
  */
 import { useState, useCallback, useRef, useEffect } from "react";
+import * as ReactDOM from "react-dom";
 import { cn } from "@/lib/utils";
 import {
     ArrowUp,
@@ -16,6 +17,8 @@ import {
     Loader2,
     Check,
     AlertCircle,
+    MoreHorizontal,
+    GitMerge,
 } from "lucide-react";
 import { Spinner } from "@/components/ui/spinner";
 import { Button } from "@/components/ui/button";
@@ -45,6 +48,9 @@ export function GitPanel({ cwd, className }: GitPanelProps) {
 
     // Toast-style feedback for operations
     const [toast, setToast] = useState<{ type: "success" | "error"; message: string } | null>(null);
+    const [syncMenuOpen, setSyncMenuOpen] = useState(false);
+    const syncMenuRef = useRef<HTMLDivElement>(null);
+    const syncMenuContentRef = useRef<HTMLDivElement>(null);
 
     // Show toast when operation completes
     useEffect(() => {
@@ -75,6 +81,19 @@ export function GitPanel({ cwd, className }: GitPanelProps) {
         return () => clearTimeout(timer);
     }, [git.lastOperationResult]);
 
+    // Close sync menu on outside click
+    useEffect(() => {
+        if (!syncMenuOpen) return;
+        const handler = (e: PointerEvent) => {
+            const target = e.target as Node;
+            if (syncMenuRef.current?.contains(target)) return;
+            if (syncMenuContentRef.current?.contains(target)) return;
+            setSyncMenuOpen(false);
+        };
+        document.addEventListener("pointerdown", handler, true);
+        return () => document.removeEventListener("pointerdown", handler, true);
+    }, [syncMenuOpen]);
+
     // ── Diff viewing ────────────────────────────────────────────────────
 
     const viewDiff = useCallback(
@@ -91,6 +110,17 @@ export function GitPanel({ cwd, className }: GitPanelProps) {
         },
         [git],
     );
+
+    const handleMerge = useCallback(() => {
+        const current = git.status?.branch ?? "";
+        const branchName = window.prompt("Merge which branch into current?", "");
+        if (!branchName) return;
+        if (branchName === current) {
+            setToast({ type: "error", message: "Cannot merge the current branch into itself." });
+            return;
+        }
+        git.merge(branchName);
+    }, [git, setToast]);
 
     // Intercept Escape in diff view
     useEffect(() => {
@@ -182,6 +212,7 @@ export function GitPanel({ cwd, className }: GitPanelProps) {
                 <GitBranchSelector
                     currentBranch={git.status.branch}
                     branches={git.branches}
+                    branchesState={git.branchesState}
                     onCheckout={git.checkout}
                     onOpen={git.fetchBranches}
                     isCheckingOut={git.operationInProgress === "checkout"}
@@ -206,6 +237,71 @@ export function GitPanel({ cwd, className }: GitPanelProps) {
                         <ArrowDown className="size-3" /> {git.status.behind}
                     </span>
                 )}
+
+                {/* Sync dropdown */}
+                <div className="relative" ref={syncMenuRef}>
+                    <button
+                        type="button"
+                        onClick={() => setSyncMenuOpen((o) => !o)}
+                        disabled={git.operationInProgress === "pull" || git.operationInProgress === "merge"}
+                        className={cn(
+                            "inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium transition-colors",
+                            "bg-muted/60 hover:bg-muted text-foreground",
+                            git.operationInProgress && "opacity-70",
+                        )}
+                        title="Sync options"
+                    >
+                        <MoreHorizontal className="size-3" /> Sync
+                    </button>
+                    {syncMenuOpen && ReactDOM.createPortal(
+                        <div
+                            ref={syncMenuContentRef}
+                            style={{
+                                position: "fixed",
+                                top: syncMenuRef.current ? syncMenuRef.current.getBoundingClientRect().bottom : 0,
+                                left: syncMenuRef.current ? syncMenuRef.current.getBoundingClientRect().left : 0,
+                                zIndex: 100,
+                                minWidth: 180,
+                            }}
+                            className="mt-1 w-48 bg-popover border border-border rounded-md shadow-lg text-sm"
+                        >
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    setSyncMenuOpen(false);
+                                    git.pull(false);
+                                }}
+                                className="w-full text-left px-3 py-2 hover:bg-accent/50 disabled:opacity-50"
+                                disabled={git.operationInProgress !== null}
+                            >
+                                <div className="flex items-center gap-2"><Download className="size-3" /> Pull (fast-forward)</div>
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    setSyncMenuOpen(false);
+                                    git.pull(true);
+                                }}
+                                className="w-full text-left px-3 py-2 hover:bg-accent/50 disabled:opacity-50"
+                                disabled={git.operationInProgress !== null}
+                            >
+                                <div className="flex items-center gap-2"><Download className="size-3" /> Pull --rebase</div>
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    setSyncMenuOpen(false);
+                                    handleMerge();
+                                }}
+                                className="w-full text-left px-3 py-2 hover:bg-accent/50 disabled:opacity-50"
+                                disabled={git.operationInProgress !== null}
+                            >
+                                <div className="flex items-center gap-2"><GitMerge className="size-3" /> Merge into current…</div>
+                            </button>
+                        </div>,
+                        document.body,
+                    )}
+                </div>
 
                 {/* Pull button */}
                 {showPull && (
