@@ -50,6 +50,7 @@ export function GitPanel({ cwd, className }: GitPanelProps) {
     const [toast, setToast] = useState<{ type: "success" | "error"; message: string } | null>(null);
     const [syncMenuOpen, setSyncMenuOpen] = useState(false);
     const syncMenuRef = useRef<HTMLDivElement>(null);
+    const syncMenuContentRef = useRef<HTMLDivElement>(null);
 
     // Show toast when operation completes
     useEffect(() => {
@@ -85,7 +86,8 @@ export function GitPanel({ cwd, className }: GitPanelProps) {
         if (!syncMenuOpen) return;
         const handler = (e: PointerEvent) => {
             const target = e.target as Node;
-            if (syncMenuRef.current && syncMenuRef.current.contains(target)) return;
+            if (syncMenuRef.current?.contains(target)) return;
+            if (syncMenuContentRef.current?.contains(target)) return;
             setSyncMenuOpen(false);
         };
         document.addEventListener("pointerdown", handler, true);
@@ -253,6 +255,7 @@ export function GitPanel({ cwd, className }: GitPanelProps) {
                     </button>
                     {syncMenuOpen && ReactDOM.createPortal(
                         <div
+                            ref={syncMenuContentRef}
                             style={{
                                 position: "fixed",
                                 top: syncMenuRef.current ? syncMenuRef.current.getBoundingClientRect().bottom : 0,
