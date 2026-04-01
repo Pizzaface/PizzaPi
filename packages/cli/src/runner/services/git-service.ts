@@ -286,7 +286,9 @@ export class GitService implements ServiceHandler {
         // If the repoRoot self-mapping (repoRoot → repoRoot) is no longer referenced
         // by any remaining active cwd, evict it too.
         if (repoRoot && repoRoot !== cwd) {
-            const stillReferenced = [...this._cwdRepoRoot.values()].some((r) => r === repoRoot);
+            const stillReferenced = [...this._cwdRepoRoot.entries()].some(
+                ([k, v]) => v === repoRoot && k !== repoRoot // exclude the repoRoot→repoRoot self-mapping
+            );
             if (!stillReferenced) {
                 this._cwdRepoRoot.delete(repoRoot);
                 this._statusCache.delete(repoRoot);

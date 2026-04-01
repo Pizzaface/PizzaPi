@@ -180,6 +180,12 @@ export function useGitService(cwd: string): UseGitServiceReturn {
             statusRequestRetireTimersRef.current.delete(requestId);
             requestGenerationRef.current.delete(requestId);
             markStatusRequestSettled(requestId);
+            // If no other status requests are still in-flight, clear the loading
+            // state so the panel doesn't stay stuck in an indefinite loading state
+            // when this request is abandoned before a response arrives.
+            if (statusRequestsInFlightRef.current.size === 0) {
+                setLoading(false);
+            }
         }, 8000);
         statusRequestRetireTimersRef.current.set(requestId, retireTimer);
     }, [makeRequestId, markStatusRequestInFlight, markStatusRequestSettled, registerRequestGeneration]);
