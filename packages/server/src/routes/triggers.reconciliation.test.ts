@@ -187,7 +187,7 @@ describe("trigger subscription reconciliation — delta emission", () => {
                     {
                         type: "time:timer_fired",
                         label: "Timer Fired",
-                        params: [{ name: "duration", type: "string", required: true }],
+                        params: [{ name: "duration", label: "Duration", type: "string", required: true }],
                     },
                     {
                         type: "godmother:idea_moved",
