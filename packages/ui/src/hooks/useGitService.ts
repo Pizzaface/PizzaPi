@@ -60,12 +60,19 @@ export interface GitOperationResult {
 
 // ── Hook ────────────────────────────────────────────────────────────────────
 
+export interface BranchesState {
+    loading: boolean;
+    error: string | null;
+    partial: boolean; // true when branches loaded via fallback (full-status failed)
+}
+
 export interface UseGitServiceReturn {
     available: boolean;
 
     // State
     status: GitStatus | null;
     branches: GitBranch[];
+    branchesState: BranchesState;
     worktrees: GitWorktree[];
     currentBranch: string;
     loading: boolean;
@@ -87,7 +94,8 @@ export interface UseGitServiceReturn {
     unstageAll: () => void;
     commit: (message: string) => void;
     push: (setUpstream?: boolean) => void;
-    pull: () => void;
+    pull: (rebase?: boolean) => void;
+    merge: (branch: string) => void;
     clearOperationResult: () => void;
 }
 
@@ -96,6 +104,7 @@ const POST_MUTATION_STATUS_REFRESH_DEBOUNCE_MS = 100;
 export function useGitService(cwd: string): UseGitServiceReturn {
     const [status, setStatus] = useState<GitStatus | null>(null);
     const [branches, setBranches] = useState<GitBranch[]>([]);
+    const [branchesState, setBranchesState] = useState<BranchesState>({ loading: false, error: null, partial: false });
     const [worktrees, setWorktrees] = useState<GitWorktree[]>([]);
     const [currentBranch, setCurrentBranch] = useState("");
     const [loading, setLoading] = useState(false);
@@ -112,6 +121,7 @@ export function useGitService(cwd: string): UseGitServiceReturn {
     const statusRequestsInFlightRef = useRef(new Set<string>());
     const optimisticSnapshotsRef = useRef(new Map<string, GitStatus | null>());
     const requestGenerationRef = useRef(new Map<string, number>());
+    const lastBranchFetchRef = useRef(0);
 
     // Generation counter — incremented on cwd change. Responses from stale
     // generations are discarded so a slow response from the old cwd doesn't
@@ -186,10 +196,11 @@ export function useGitService(cwd: string): UseGitServiceReturn {
         sendRef.current("git_worktrees", { cwd: targetCwd }, worktreesReqId);
     }, [makeRequestId, registerRequestGeneration, sendStatusRequest]);
 
-    const sendFullStatusRequest = useCallback((targetCwd: string, options?: { asInitial?: boolean; fallbackToStatus?: boolean; fallbackMs?: number }) => {
+    const sendFullStatusRequest = useCallback((targetCwd: string, options?: { asInitial?: boolean; fallbackToStatus?: boolean; fallbackMs?: number; markBranchLoad?: boolean }) => {
         const asInitial = options?.asInitial === true;
         const fallbackToStatus = options?.fallbackToStatus === true;
         const fallbackMs = options?.fallbackMs ?? 1200;
+        const markBranchLoad = options?.markBranchLoad === true;
 
         statusGenRef.current = generationRef.current;
         const requestId = makeRequestId();
@@ -197,6 +208,9 @@ export function useGitService(cwd: string): UseGitServiceReturn {
         markStatusRequestInFlight(requestId);
         if (asInitial) {
             pendingFullStatusRequestRef.current = requestId;
+        }
+        if (markBranchLoad) {
+            setBranchesState({ loading: true, error: null, partial: false });
         }
         setLoading(true);
         setError(null);
@@ -312,8 +326,10 @@ export function useGitService(cwd: string): UseGitServiceReturn {
                         setCurrentBranch((payload.currentBranch as string) ?? "");
                         setWorktrees((payload.worktrees as GitWorktree[]) ?? []);
                         setError(null);
+                        setBranchesState((prev) => ({ ...prev, loading: false, error: null, partial: false }));
                     } else {
                         setError((payload.message as string) ?? "Failed to get git status");
+                        setBranchesState((prev) => ({ ...prev, loading: false, error: (payload.message as string) ?? "Failed to get git status", partial: prev.partial }));
                         sendLegacySnapshotRequests(cwdRef.current);
                     }
                     break;
@@ -341,6 +357,9 @@ export function useGitService(cwd: string): UseGitServiceReturn {
                     if (payload.ok) {
                         setBranches((payload.branches as GitBranch[]) ?? []);
                         setCurrentBranch((payload.currentBranch as string) ?? "");
+                        setBranchesState({ loading: false, error: null, partial: true });
+                    } else {
+                        setBranchesState({ loading: false, error: (payload.message as string) ?? "Failed to load branches", partial: false });
                     }
                     break;
                 }
@@ -354,7 +373,8 @@ export function useGitService(cwd: string): UseGitServiceReturn {
                 case "git_checkout_result":
                 case "git_commit_result":
                 case "git_push_result":
-                case "git_pull_result": {
+                case "git_pull_result":
+                case "git_merge_result": {
                     if (!isRequestCurrentGeneration(requestId)) break;
                     setOperationInProgress(null);
                     setLastOperationResult(payload as GitOperationResult);
@@ -382,7 +402,7 @@ export function useGitService(cwd: string): UseGitServiceReturn {
                     } else {
                         // Avoid stale rollback races across overlapping optimistic mutations.
                         // Re-sync from authoritative runner state instead.
-                        sendStatusRequest(cwdRef.current);
+                        sendFullStatusRequest(cwdRef.current, { asInitial: false, fallbackToStatus: true, fallbackMs: 1200 });
                     }
                     break;
                 }
@@ -445,10 +465,11 @@ export function useGitService(cwd: string): UseGitServiceReturn {
 
     const fetchBranches = useCallback(() => {
         if (!available) return;
-        const requestId = makeRequestId();
-        registerRequestGeneration(requestId);
-        send("git_branches", { cwd }, requestId);
-    }, [available, send, cwd, makeRequestId, registerRequestGeneration]);
+        const now = Date.now();
+        if (now - lastBranchFetchRef.current < 500) return;
+        lastBranchFetchRef.current = now;
+        sendFullStatusRequest(cwd, { asInitial: false, fallbackToStatus: true, fallbackMs: 1200, markBranchLoad: true });
+    }, [available, cwd, sendFullStatusRequest]);
 
     const fetchWorktrees = useCallback(() => {
         if (!available) return;
@@ -536,13 +557,22 @@ export function useGitService(cwd: string): UseGitServiceReturn {
         send("git_push", { cwd, setUpstream }, requestId);
     }, [available, send, cwd, makeRequestId, registerRequestGeneration]);
 
-    const pull = useCallback(() => {
+    const pull = useCallback((rebase = false) => {
         if (!available) return;
         const requestId = makeRequestId();
         registerRequestGeneration(requestId);
         setOperationInProgress("pull");
         setLastOperationResult(null);
-        send("git_pull", { cwd }, requestId);
+        send("git_pull", { cwd, rebase }, requestId);
+    }, [available, send, cwd, makeRequestId, registerRequestGeneration]);
+
+    const merge = useCallback((branch: string) => {
+        if (!available || !branch) return;
+        const requestId = makeRequestId();
+        registerRequestGeneration(requestId);
+        setOperationInProgress("merge");
+        setLastOperationResult(null);
+        send("git_merge", { cwd, branch }, requestId);
     }, [available, send, cwd, makeRequestId, registerRequestGeneration]);
 
     const clearOperationResult = useCallback(() => {
@@ -556,6 +586,7 @@ export function useGitService(cwd: string): UseGitServiceReturn {
         // Clear state immediately so old data doesn't flash
         setStatus(null);
         setBranches([]);
+        setBranchesState({ loading: false, error: null, partial: false });
         setWorktrees([]);
         setCurrentBranch("");
         setError(null);
@@ -593,6 +624,7 @@ export function useGitService(cwd: string): UseGitServiceReturn {
         available,
         status,
         branches,
+        branchesState,
         worktrees,
         currentBranch,
         loading,
@@ -611,6 +643,7 @@ export function useGitService(cwd: string): UseGitServiceReturn {
         commit,
         push,
         pull,
+        merge,
         clearOperationResult,
     };
 }

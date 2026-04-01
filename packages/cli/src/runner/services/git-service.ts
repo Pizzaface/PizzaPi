@@ -175,6 +175,9 @@ export class GitService implements ServiceHandler {
                 case "git_pull":
                     void this.handlePull(payload, requestId, sessionId);
                     break;
+                case "git_merge":
+                    void this.handleMerge(payload, requestId, sessionId);
+                    break;
                 case "git_worktrees":
                     void this.handleWorktrees(payload, requestId, sessionId);
                     break;
@@ -1077,9 +1080,11 @@ export class GitService implements ServiceHandler {
     ): Promise<void> {
         const cwd = this.validateCwd(payload.cwd, "git_pull_result", requestId, sessionId);
         if (!cwd) return;
+        const rebase = payload.rebase === true;
 
         try {
-            const result = await this._execGit(["pull"], { cwd, timeout: 60000 });
+            const args = rebase ? ["pull", "--rebase"] : ["pull"];
+            const result = await this._execGit(args, { cwd, timeout: 60000 });
             const output = (result.stdout + "\n" + result.stderr).trim();
             await this.invalidateStatusCacheFamily(cwd);
 
@@ -1089,6 +1094,37 @@ export class GitService implements ServiceHandler {
             }, requestId, sessionId);
         } catch (err) {
             this.emitError("git_pull_result", err instanceof Error ? err.message : String(err), requestId, sessionId);
+        }
+    }
+
+    private async handleMerge(
+        payload: Record<string, unknown>,
+        requestId?: string,
+        sessionId?: string,
+    ): Promise<void> {
+        const cwd = this.validateCwd(payload.cwd, "git_merge_result", requestId, sessionId);
+        if (!cwd) return;
+        const branch = typeof payload.branch === "string" ? payload.branch : "";
+        if (!branch || !isValidBranchName(branch)) {
+            this.emitError("git_merge_result", "Invalid branch name", requestId, sessionId);
+            return;
+        }
+
+        try {
+            // Prevent merging current branch into itself
+            const { stdout: currentBranchOut } = await this._execGit(["rev-parse", "--abbrev-ref", "HEAD"], { cwd, timeout: 5000 });
+            const currentBranch = currentBranchOut.trim();
+            if (currentBranch && currentBranch === branch) {
+                this.emit("git_merge_result", { ok: false, message: "Cannot merge branch into itself." }, requestId, sessionId);
+                return;
+            }
+
+            const result = await this._execGit(["merge", branch], { cwd, timeout: 60000 });
+            const output = (result.stdout + "\n" + result.stderr).trim();
+            await this.invalidateStatusCacheFamily(cwd);
+            this.emit("git_merge_result", { ok: true, output }, requestId, sessionId);
+        } catch (err) {
+            this.emitError("git_merge_result", err instanceof Error ? err.message : String(err), requestId, sessionId);
         }
     }
 
