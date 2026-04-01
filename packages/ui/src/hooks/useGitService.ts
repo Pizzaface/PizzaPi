@@ -166,6 +166,18 @@ export function useGitService(cwd: string): UseGitServiceReturn {
         sendRef.current("git_status", { cwd: targetCwd }, requestId);
     }, [makeRequestId, markStatusRequestInFlight, registerRequestGeneration]);
 
+    const sendLegacySnapshotRequests = useCallback((targetCwd: string) => {
+        sendStatusRequest(targetCwd);
+
+        const branchesReqId = makeRequestId();
+        registerRequestGeneration(branchesReqId);
+        sendRef.current("git_branches", { cwd: targetCwd }, branchesReqId);
+
+        const worktreesReqId = makeRequestId();
+        registerRequestGeneration(worktreesReqId);
+        sendRef.current("git_worktrees", { cwd: targetCwd }, worktreesReqId);
+    }, [makeRequestId, registerRequestGeneration, sendStatusRequest]);
+
     const sendFullStatusRequest = useCallback((targetCwd: string, options?: { asInitial?: boolean; fallbackToStatus?: boolean; fallbackMs?: number }) => {
         const asInitial = options?.asInitial === true;
         const fallbackToStatus = options?.fallbackToStatus === true;
@@ -189,14 +201,13 @@ export function useGitService(cwd: string): UseGitServiceReturn {
                 if (asInitial && pendingFullStatusRequestRef.current !== requestId) return;
                 if (asInitial) pendingFullStatusRequestRef.current = null;
                 markStatusRequestSettled(requestId);
-                sendStatusRequest(cwdRef.current);
+                sendLegacySnapshotRequests(cwdRef.current);
             }, fallbackMs);
             fullStatusFallbackTimersRef.current.set(requestId, timerId);
         }
 
         return requestId;
-    }, [makeRequestId, markStatusRequestInFlight, markStatusRequestSettled, registerRequestGeneration, sendStatusRequest]);
-
+    }, [makeRequestId, markStatusRequestInFlight, markStatusRequestSettled, registerRequestGeneration, sendLegacySnapshotRequests]);
     const clearPendingDiffs = useCallback((resolution: string) => {
         for (const timeoutId of pendingDiffTimeoutsRef.current.values()) {
             clearTimeout(timeoutId);
@@ -288,7 +299,7 @@ export function useGitService(cwd: string): UseGitServiceReturn {
                         setError(null);
                     } else {
                         setError((payload.message as string) ?? "Failed to get git status");
-                        sendStatusRequest(cwdRef.current);
+                        sendLegacySnapshotRequests(cwdRef.current);
                     }
                     break;
                 }
