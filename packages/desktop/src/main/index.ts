@@ -1,0 +1,189 @@
+// packages/desktop/src/main/index.ts
+import { app, BrowserWindow, dialog } from "electron";
+import { join } from "node:path";
+import { ServerManager } from "./server-manager.js";
+import { RunnerManager } from "./runner-manager.js";
+import { AppTray } from "./tray.js";
+import { registerIpcHandlers, sendServiceStatus } from "./ipc.js";
+import { notifyServiceError } from "./notifications.js";
+import { isDev, DEFAULT_SERVER_PORT, VITE_DEV_URL, getUIDistPath } from "./config.js";
+import log from "./logger.js";
+
+let mainWindow: BrowserWindow | null = null;
+let tray: AppTray | null = null;
+let serverManager: ServerManager | null = null;
+let runnerManager: RunnerManager | null = null;
+
+function createWindow(): BrowserWindow {
+  const win = new BrowserWindow({
+    width: 1280,
+    height: 800,
+    minWidth: 800,
+    minHeight: 600,
+    title: "PizzaPi",
+    titleBarStyle: "hiddenInset",
+    trafficLightPosition: { x: 16, y: 16 },
+    webPreferences: {
+      preload: join(__dirname, "..", "preload", "index.js"),
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  });
+
+  // Hide instead of close (app lives in tray)
+  win.on("close", (event) => {
+    if (!isQuitting) {
+      event.preventDefault();
+      win.hide();
+    }
+  });
+
+  return win;
+}
+
+async function checkRedis(): Promise<boolean> {
+  try {
+    // Quick TCP connect check to default Redis port
+    const net = await import("node:net");
+    return new Promise((resolve) => {
+      const socket = net.createConnection({ port: 6379, host: "127.0.0.1" });
+      socket.on("connect", () => {
+        socket.destroy();
+        resolve(true);
+      });
+      socket.on("error", () => {
+        resolve(false);
+      });
+      socket.setTimeout(2000, () => {
+        socket.destroy();
+        resolve(false);
+      });
+    });
+  } catch {
+    return false;
+  }
+}
+
+async function startServices(): Promise<void> {
+  if (!mainWindow) return;
+
+  // Check Redis first
+  tray?.updateStatus({ redis: "disconnected", server: "starting" });
+
+  const redisAvailable = await checkRedis();
+  if (!redisAvailable) {
+    tray?.updateStatus({ redis: "disconnected" });
+    notifyServiceError(mainWindow, "Redis is not available. Please start Redis and relaunch.");
+    dialog.showErrorBox(
+      "Redis Required",
+      "PizzaPi requires Redis to be running.\n\nInstall with: brew install redis\nStart with: redis-server\n\nPlease start Redis and relaunch PizzaPi."
+    );
+    return;
+  }
+
+  tray?.updateStatus({ redis: "connected" });
+
+  // Start relay server
+  serverManager = new ServerManager({ port: DEFAULT_SERVER_PORT, isDev });
+  tray?.updateStatus({ server: "starting" });
+
+  try {
+    await serverManager.start();
+    tray?.updateStatus({ server: "running" });
+    if (mainWindow) {
+      sendServiceStatus(mainWindow, {
+        server: "running",
+        runner: "starting",
+        redis: "connected",
+      });
+    }
+  } catch (err) {
+    log.error("Failed to start server:", err);
+    tray?.updateStatus({ server: "error" });
+    notifyServiceError(mainWindow!, `Server failed to start: ${err}`);
+    return;
+  }
+
+  // Start runner daemon
+  runnerManager = new RunnerManager({ serverPort: DEFAULT_SERVER_PORT, isDev });
+  tray?.updateStatus({ runner: "starting" });
+  runnerManager.start();
+  tray?.updateStatus({ runner: "running" });
+
+  if (mainWindow) {
+    sendServiceStatus(mainWindow, {
+      server: "running",
+      runner: "running",
+      redis: "connected",
+    });
+  }
+
+  // Load the UI
+  if (isDev) {
+    await mainWindow!.loadURL(VITE_DEV_URL);
+    mainWindow!.webContents.openDevTools();
+  } else {
+    const uiPath = getUIDistPath();
+    await mainWindow!.loadFile(join(uiPath, "index.html"));
+  }
+}
+
+async function shutdown(): Promise<void> {
+  log.info("Shutting down...");
+
+  if (runnerManager) {
+    runnerManager.stop();
+    // Wait briefly for graceful shutdown
+    await new Promise((r) => setTimeout(r, 2000));
+    runnerManager.forceKill();
+  }
+
+  if (serverManager) {
+    serverManager.stop();
+    await new Promise((r) => setTimeout(r, 2000));
+    serverManager.forceKill();
+  }
+
+  tray?.destroy();
+}
+
+// ── App lifecycle ─────────────────────────────────────────────────────────────
+
+// Track whether the app is in the process of quitting
+let isQuitting = false;
+
+app.on("before-quit", () => {
+  isQuitting = true;
+});
+
+app.whenReady().then(async () => {
+  log.info(`PizzaPi Desktop starting (dev=${isDev})...`);
+
+  registerIpcHandlers();
+
+  mainWindow = createWindow();
+  tray = new AppTray(mainWindow);
+
+  await startServices();
+});
+
+app.on("will-quit", async (event) => {
+  event.preventDefault();
+  await shutdown();
+  app.exit(0);
+});
+
+app.on("window-all-closed", () => {
+  // On macOS, don't quit when all windows are closed (app lives in tray)
+  if (process.platform !== "darwin") {
+    app.quit();
+  }
+});
+
+app.on("activate", () => {
+  // On macOS, re-show the window when dock icon is clicked
+  if (mainWindow) {
+    mainWindow.show();
+    mainWindow.focus();
+  }
+});
