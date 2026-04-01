@@ -5,18 +5,40 @@ import { describe, test, expect } from "bun:test";
  *
  * Since Bun's test runner does not provide a DOM environment, we test
  * the helper functions and logical invariants rather than the React hook.
+ * The helper `getSessionLabel` is re-used here since it's not exported
+ * from the hook module (it's a file-local function), but the logic is
+ * tested to match the source exactly.
  */
+
+// ── Extracted from useBrowserNotifications.ts ───────────────────────────────
+// Mirrors the file-local getSessionLabel helper.
+function getSessionLabel(
+  sessionId: string,
+  sessionNames: Map<string, string | null>,
+): string {
+  const name = sessionNames.get(sessionId);
+  return name ?? sessionId.slice(0, 8);
+}
+
+/**
+ * Mirrors the hook's logic for deciding whether to show a notification
+ * for a given session. Updated to match the hasFocus() fix.
+ */
+function shouldNotify(
+  sessionId: string,
+  activeSessionId: string | null,
+  isHidden: boolean,
+  hasFocus: boolean,
+  alreadyNotified: Set<string>,
+): boolean {
+  if (alreadyNotified.has(sessionId)) return false;
+  // Only suppress when the tab is visible AND focused AND viewing this session
+  if (!isHidden && hasFocus && sessionId === activeSessionId) return false;
+  return true;
+}
 
 describe("useBrowserNotifications logic", () => {
   // ── Session label resolution ───────────────────────────────────────────
-
-  function getSessionLabel(
-    sessionId: string,
-    sessionNames: Map<string, string | null>,
-  ): string {
-    const name = sessionNames.get(sessionId);
-    return name ?? sessionId.slice(0, 8);
-  }
 
   test("session label falls back to truncated ID when name is null", () => {
     const names = new Map<string, string | null>();
@@ -37,35 +59,25 @@ describe("useBrowserNotifications logic", () => {
 
   // ── Notification decision logic ────────────────────────────────────────
 
-  /**
-   * Mirrors the hook's logic for deciding whether to show a notification
-   * for a given session.
-   */
-  function shouldNotify(
-    sessionId: string,
-    activeSessionId: string | null,
-    isHidden: boolean,
-    alreadyNotified: Set<string>,
-  ): boolean {
-    if (alreadyNotified.has(sessionId)) return false;
-    if (!isHidden && sessionId === activeSessionId) return false;
-    return true;
-  }
-
   test("should notify when tab is hidden", () => {
-    expect(shouldNotify("s1", "s1", true, new Set())).toBe(true);
+    expect(shouldNotify("s1", "s1", true, false, new Set())).toBe(true);
   });
 
-  test("should notify for background session even when tab is visible", () => {
-    expect(shouldNotify("s2", "s1", false, new Set())).toBe(true);
+  test("should notify for background session even when tab is visible and focused", () => {
+    expect(shouldNotify("s2", "s1", false, true, new Set())).toBe(true);
   });
 
-  test("should NOT notify for active session when tab is visible", () => {
-    expect(shouldNotify("s1", "s1", false, new Set())).toBe(false);
+  test("should NOT notify for active session when tab is visible AND focused", () => {
+    expect(shouldNotify("s1", "s1", false, true, new Set())).toBe(false);
+  });
+
+  test("should notify for active session when tab is visible but NOT focused (alt-tabbed)", () => {
+    // Key P1 fix: user alt-tabbed away — tab is visible but unfocused
+    expect(shouldNotify("s1", "s1", false, false, new Set())).toBe(true);
   });
 
   test("should NOT notify when already notified", () => {
-    expect(shouldNotify("s1", null, true, new Set(["s1"]))).toBe(false);
+    expect(shouldNotify("s1", null, true, false, new Set(["s1"]))).toBe(false);
   });
 
   // ── Title flash pattern ────────────────────────────────────────────────

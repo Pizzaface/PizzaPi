@@ -9,7 +9,7 @@
  * another window, or a different session.
  */
 import { useEffect, useRef, useCallback } from "react";
-import { getNotificationPermission, isPushSupported } from "@/lib/push";
+import { getNotificationPermission } from "@/lib/push";
 
 /** How often to alternate the document title when input is needed (ms). */
 const TITLE_FLASH_INTERVAL_MS = 1500;
@@ -89,9 +89,12 @@ export function useBrowserNotifications({
       // Already notified for this session.
       if (notified.has(sessionId)) continue;
 
-      // If the tab is visible and the user is actively viewing this session,
-      // no need to notify — they can see the input prompt.
-      if (!isHidden && sessionId === activeSessionId) continue;
+      // If the tab is visible AND focused AND the user is viewing this session,
+      // no need to notify — they can see the input prompt directly.
+      // We check both document.hidden and document.hasFocus() because:
+      // - document.hidden is false when the tab is visible but the user alt-tabbed
+      // - document.hasFocus() catches the alt-tab case
+      if (!isHidden && document.hasFocus() && sessionId === activeSessionId) continue;
 
       const label = getSessionLabel(sessionId, sessionNames);
       const notification = new Notification("Input needed", {
