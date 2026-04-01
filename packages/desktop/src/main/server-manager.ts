@@ -27,6 +27,13 @@ export class ServerManager {
   /** Spawn the relay server and wait for it to become healthy. */
   async start(): Promise<void> {
     this.stopping = false;
+
+    // Check if port is available before spawning
+    const portFree = await this.isPortFree(this.port);
+    if (!portFree) {
+      throw new Error(`Port ${this.port} is already in use. Stop the existing server or use a different port.`);
+    }
+
     const entry = getServerEntryPath();
     log.info(`Starting relay server on port ${this.port}...`);
 
@@ -35,6 +42,10 @@ export class ServerManager {
       PORT: String(this.port),
       NODE_ENV: this.isDev ? "development" : "production",
     };
+
+    // Track if the child exits early (before health check passes)
+    let earlyExit = false;
+    let earlyExitCode: number | null = null;
 
     this.child = spawn("bun", ["run", entry], {
       env,
@@ -51,6 +62,8 @@ export class ServerManager {
 
     this.child.on("exit", (code, signal) => {
       log.info(`Server exited: code=${code} signal=${signal}`);
+      earlyExit = true;
+      earlyExitCode = code;
       this.child = null;
       if (!this.stopping && this.restartCount < MAX_RESTART_ATTEMPTS) {
         this.restartCount++;
@@ -59,15 +72,31 @@ export class ServerManager {
       }
     });
 
-    await this.waitForHealthy();
+    await this.waitForHealthy(() => earlyExit);
     this.restartCount = 0;
     log.info(`Relay server healthy on port ${this.port}`);
   }
 
-  /** Poll /health until 200 or timeout. */
-  private async waitForHealthy(): Promise<void> {
+  /** Check if a port is free. */
+  private async isPortFree(port: number): Promise<boolean> {
+    const net = await import("node:net");
+    return new Promise((resolve) => {
+      const server = net.createServer();
+      server.once("error", () => resolve(false));
+      server.once("listening", () => {
+        server.close(() => resolve(true));
+      });
+      server.listen(port, "127.0.0.1");
+    });
+  }
+
+  /** Poll /health until 200 or timeout, aborting if the child exits early. */
+  private async waitForHealthy(hasExited: () => boolean): Promise<void> {
     const deadline = Date.now() + HEALTH_CHECK_TIMEOUT;
     while (Date.now() < deadline) {
+      if (hasExited()) {
+        throw new Error("Server process exited before becoming healthy");
+      }
       try {
         const res = await fetch(`http://localhost:${this.port}/health`);
         if (res.ok) return;

@@ -87,29 +87,49 @@ async function startServices(): Promise<void> {
 
   tray?.updateStatus({ redis: "connected" });
 
-  // Start relay server
-  serverManager = new ServerManager({ port: DEFAULT_SERVER_PORT, isDev });
+  // Start relay server — try ports 3001-3010
+  let serverPort = DEFAULT_SERVER_PORT;
   tray?.updateStatus({ server: "starting" });
 
-  try {
-    await serverManager.start();
-    tray?.updateStatus({ server: "running" });
-    if (mainWindow) {
-      sendServiceStatus(mainWindow, {
-        server: "running",
-        runner: "starting",
-        redis: "connected",
-      });
+  let serverStarted = false;
+  for (let port = DEFAULT_SERVER_PORT; port < DEFAULT_SERVER_PORT + 10; port++) {
+    serverManager = new ServerManager({ port, isDev });
+    try {
+      await serverManager.start();
+      serverPort = port;
+      serverStarted = true;
+      break;
+    } catch (err) {
+      const msg = String(err);
+      if (msg.includes("already in use") && port < DEFAULT_SERVER_PORT + 9) {
+        log.warn(`Port ${port} in use, trying ${port + 1}...`);
+        continue;
+      }
+      log.error("Failed to start server:", err);
+      tray?.updateStatus({ server: "error" });
+      notifyServiceError(mainWindow!, `Server failed to start: ${err}`);
+      return;
     }
-  } catch (err) {
-    log.error("Failed to start server:", err);
+  }
+
+  if (!serverStarted) {
     tray?.updateStatus({ server: "error" });
-    notifyServiceError(mainWindow!, `Server failed to start: ${err}`);
+    notifyServiceError(mainWindow!, "Could not find an available port for the server.");
     return;
   }
 
+  log.info(`Server started on port ${serverPort}`);
+  tray?.updateStatus({ server: "running" });
+  if (mainWindow) {
+    sendServiceStatus(mainWindow, {
+      server: "running",
+      runner: "starting",
+      redis: "connected",
+    });
+  }
+
   // Start runner daemon
-  runnerManager = new RunnerManager({ serverPort: DEFAULT_SERVER_PORT, isDev });
+  runnerManager = new RunnerManager({ serverPort, isDev });
   tray?.updateStatus({ runner: "starting" });
   runnerManager.start();
   tray?.updateStatus({ runner: "running" });
@@ -124,8 +144,19 @@ async function startServices(): Promise<void> {
 
   // Load the UI
   if (isDev) {
-    await mainWindow!.loadURL(VITE_DEV_URL);
-    mainWindow!.webContents.openDevTools();
+    try {
+      // Try Vite dev server first (for HMR)
+      await mainWindow!.loadURL(VITE_DEV_URL);
+      mainWindow!.webContents.openDevTools();
+    } catch {
+      // Vite not running — fall back to built UI assets or server URL
+      log.warn("Vite dev server not available, falling back to relay server UI");
+      try {
+        await mainWindow!.loadURL(`http://localhost:${serverPort}`);
+      } catch (err) {
+        log.error("Failed to load UI:", err);
+      }
+    }
   } else {
     const uiPath = getUIDistPath();
     await mainWindow!.loadFile(join(uiPath, "index.html"));
