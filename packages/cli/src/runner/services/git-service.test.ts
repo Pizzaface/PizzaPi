@@ -647,3 +647,82 @@ describe("GitService git_full_status", () => {
         expect(result.payload).toEqual({ ok: false, message: "Missing cwd" });
     });
 });
+
+describe("GitService pull/merge", () => {
+    test("pull defaults to --rebase and ff-only can be requested", async () => {
+        const gitCalls: string[][] = [];
+
+        const service = new GitService({
+            execGit: async (args) => {
+                gitCalls.push([...args]);
+                const cmd = args[0];
+                if (cmd === "pull") return { stdout: "ok", stderr: "" };
+                if (cmd === "rev-parse" && args[1] === "--abbrev-ref") return { stdout: "main\n", stderr: "" };
+                if (cmd === "merge") return { stdout: "merged\n", stderr: "" };
+                if (cmd === "rev-parse") return { stdout: "/tmp/pizzapi-test\n", stderr: "" };
+                if (cmd === "status") return { stdout: "", stderr: "" };
+                if (cmd === "diff") return { stdout: "", stderr: "" };
+                if (cmd === "rev-list") return { stdout: "0 0\n", stderr: "" };
+                throw new Error(`Unexpected git args: ${args.join(" ")}`);
+            },
+        });
+
+        const socket = createMockSocket();
+        service.init(socket as any, { isShuttingDown: () => false });
+
+        // Default pull should use --rebase
+        dispatchServiceMessage(socket, {
+            serviceId: "git",
+            type: "git_pull",
+            requestId: "pull-1",
+            payload: { cwd: "/tmp/pizzapi-test" },
+        });
+        const r1 = await waitForResult(socket, "pull-1", "git_pull_result");
+        expect((r1.payload as any).ok).toBe(true);
+        expect(gitCalls.some((c) => c[0] === "pull" && c[1] === "--rebase")).toBe(true);
+
+        gitCalls.length = 0;
+
+        // Explicit rebase: false should use --ff-only
+        dispatchServiceMessage(socket, {
+            serviceId: "git",
+            type: "git_pull",
+            requestId: "pull-2",
+            payload: { cwd: "/tmp/pizzapi-test", rebase: false },
+        });
+        const r2 = await waitForResult(socket, "pull-2", "git_pull_result");
+        expect((r2.payload as any).ok).toBe(true);
+        expect(gitCalls.some((c) => c[0] === "pull" && c[1] === "--ff-only")).toBe(true);
+    });
+
+    test("merge uses end-of-options separator", async () => {
+        const gitCalls: string[][] = [];
+
+        const service = new GitService({
+            execGit: async (args) => {
+                gitCalls.push([...args]);
+                const cmd = args[0];
+                if (cmd === "rev-parse" && args[1] === "--abbrev-ref") return { stdout: "main\n", stderr: "" };
+                if (cmd === "rev-parse") return { stdout: "/tmp/pizzapi-test\n", stderr: "" };
+                if (cmd === "merge") return { stdout: "merged\n", stderr: "" };
+                if (cmd === "status") return { stdout: "", stderr: "" };
+                if (cmd === "diff") return { stdout: "", stderr: "" };
+                if (cmd === "rev-list") return { stdout: "0 0\n", stderr: "" };
+                throw new Error(`Unexpected git args: ${args.join(" ")}`);
+            },
+        });
+
+        const socket = createMockSocket();
+        service.init(socket as any, { isShuttingDown: () => false });
+
+        dispatchServiceMessage(socket, {
+            serviceId: "git",
+            type: "git_merge",
+            requestId: "merge-1",
+            payload: { cwd: "/tmp/pizzapi-test", branch: "feature-sync-menu" },
+        });
+        const r = await waitForResult(socket, "merge-1", "git_merge_result");
+        expect((r.payload as any).ok).toBe(true);
+        expect(gitCalls.some((c) => c[0] === "merge" && c[1] === "--" && c[2] === "feature-sync-menu")).toBe(true);
+    });
+});
