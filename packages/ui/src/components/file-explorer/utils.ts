@@ -14,6 +14,7 @@ import {
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 export const IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "ico", "avif"]);
+export const MARKDOWN_EXTENSIONS = new Set(["md", "mdx"]);
 
 export const POSITION_OPTIONS = [
   { pos: "left" as const, Icon: PanelLeft, label: "Left" },
@@ -74,6 +75,11 @@ export function getFileIcon(name: string): string {
 export function isImageFile(name: string): boolean {
   const ext = name.split(".").pop()?.toLowerCase() ?? "";
   return IMAGE_EXTENSIONS.has(ext);
+}
+
+export function isMarkdownFile(name: string): boolean {
+  const ext = name.split(".").pop()?.toLowerCase() ?? "";
+  return MARKDOWN_EXTENSIONS.has(ext);
 }
 
 export function getMimeType(name: string): string {
