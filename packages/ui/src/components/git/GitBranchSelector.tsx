@@ -1,5 +1,5 @@
 import { useState, useMemo, useRef, useEffect, useLayoutEffect } from "react";
-import { createPortal } from "react-dom";
+import * as ReactDOM from "react-dom";
 import { cn } from "@/lib/utils";
 import { GitBranch as GitBranchIcon, ChevronDown, Search, Check, Globe, Loader2, AlertCircle } from "lucide-react";
 import type { GitBranch, BranchesState } from "@/hooks/useGitService";
@@ -134,7 +134,7 @@ export function GitBranchSelector({
                 )}
             </button>
 
-            {open && createPortal(
+            {open && ReactDOM.createPortal(
                 <div
                     ref={dropdownRef}
                     style={{

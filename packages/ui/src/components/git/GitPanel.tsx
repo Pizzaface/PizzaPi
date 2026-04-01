@@ -5,6 +5,7 @@
  * service_message channel (no REST routes). Session-scoped via cwd.
  */
 import { useState, useCallback, useRef, useEffect } from "react";
+import * as ReactDOM from "react-dom";
 import { cn } from "@/lib/utils";
 import {
     ArrowUp,
@@ -250,8 +251,17 @@ export function GitPanel({ cwd, className }: GitPanelProps) {
                     >
                         <MoreHorizontal className="size-3" /> Sync
                     </button>
-                    {syncMenuOpen && (
-                        <div className="absolute right-0 mt-1 w-48 bg-popover border border-border rounded-md shadow-lg z-40 text-sm">
+                    {syncMenuOpen && ReactDOM.createPortal(
+                        <div
+                            style={{
+                                position: "fixed",
+                                top: syncMenuRef.current ? syncMenuRef.current.getBoundingClientRect().bottom : 0,
+                                left: syncMenuRef.current ? syncMenuRef.current.getBoundingClientRect().left : 0,
+                                zIndex: 100,
+                                minWidth: 180,
+                            }}
+                            className="mt-1 w-48 bg-popover border border-border rounded-md shadow-lg text-sm"
+                        >
                             <button
                                 type="button"
                                 onClick={() => {
@@ -285,7 +295,8 @@ export function GitPanel({ cwd, className }: GitPanelProps) {
                             >
                                 <div className="flex items-center gap-2"><GitMerge className="size-3" /> Merge into current…</div>
                             </button>
-                        </div>
+                        </div>,
+                        document.body,
                     )}
                 </div>
 
