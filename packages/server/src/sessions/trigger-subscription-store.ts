@@ -72,6 +72,13 @@ const DEFAULT_TTL_SECONDS = 24 * 60 * 60; // 24 hours
 // Process-local fallback counter used only when Redis is unavailable.
 let _localRevision = 0;
 
+// Tracks the highest revision successfully returned by Redis INCR.
+// When Redis becomes unavailable, _localRevision is seeded from this value
+// so fallback revisions are always strictly greater than any previously
+// issued Redis revision. Without this, a runner that has already applied
+// revision N (from Redis) would drop all fallback revisions 1..N as stale.
+let _lastKnownRedisRevision = 0;
+
 /**
  * Atomically increment and return the global trigger subscription revision.
  *
@@ -80,16 +87,25 @@ let _localRevision = 0;
  * discarding valid deltas that originated on a different server node.
  *
  * Falls back to a process-local counter when Redis is unavailable (single-node
- * mode or during startup before Redis connects).
+ * mode or during startup before Redis connects). The fallback is seeded from
+ * _lastKnownRedisRevision so it never issues a revision that a runner would
+ * treat as stale.
  */
 export async function nextTriggerSubRevision(): Promise<number> {
     const redis = await getClient();
     if (redis) {
         try {
-            return await redis.incr(TRIGGER_SUB_REVISION_KEY);
+            const rev = await redis.incr(TRIGGER_SUB_REVISION_KEY);
+            _lastKnownRedisRevision = rev;
+            return rev;
         } catch (err) {
             log.warn("Failed to increment trigger sub revision in Redis, using local counter:", err);
         }
+    }
+    // Seed the local counter from the last known Redis value so fallback
+    // revisions are always > any revision the runner has already applied.
+    if (_localRevision < _lastKnownRedisRevision) {
+        _localRevision = _lastKnownRedisRevision;
     }
     return ++_localRevision;
 }

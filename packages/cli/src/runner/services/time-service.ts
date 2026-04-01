@@ -213,8 +213,6 @@ export class TimeService implements ServiceHandler {
     #timers = new Map<string, TimerEntry>();
     #crons = new Map<string, CronEntry>();
     #cronIterations = new Map<string, number>();
-    #onSubscriptionChanged: ((data: any) => void) | null = null;
-
     init(socket: Socket, { announceSigilServer }: ServiceInitOptions): void {
         this.#socket = socket;
 
@@ -263,22 +261,9 @@ export class TimeService implements ServiceHandler {
             announceSigilServer(port);
         }
 
-        // Listen for subscription changes to start/stop timers
-        this.#onSubscriptionChanged = (data: any) => {
-            if (!data || typeof data !== "object") return;
-            const { sessionId, triggerType, params, action } = data;
-            if (typeof triggerType !== "string" || typeof sessionId !== "string") return;
-
-            if (triggerType === "time:timer_fired") {
-                this.#handleTimerSubscription(sessionId, params, action);
-            } else if (triggerType === "time:at") {
-                this.#handleAtSubscription(sessionId, params, action);
-            } else if (triggerType === "time:cron") {
-                this.#handleCronSubscription(sessionId, params, action);
-            }
-        };
-
-        (socket as any).on("subscription_params_changed", this.#onSubscriptionChanged);
+        // Subscription changes are delivered via trigger_subscription_delta and
+        // handled through reconcileSubscriptions() — no socket listener needed here.
+        // (The legacy subscription_params_changed event has been removed from the server.)
 
         logInfo(`[time] service started, resolve server on port ${this.#server.port}`);
     }
@@ -371,10 +356,7 @@ export class TimeService implements ServiceHandler {
         this.#crons.clear();
         this.#cronIterations.clear();
 
-        // Remove socket listener
-        if (this.#socket && this.#onSubscriptionChanged) {
-            (this.#socket as any).off("subscription_params_changed", this.#onSubscriptionChanged);
-        }
+        // No socket listener to remove — subscription changes come via reconcileSubscriptions().
         this.#socket = null;
 
         // Stop HTTP server

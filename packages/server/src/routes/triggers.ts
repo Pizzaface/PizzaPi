@@ -613,8 +613,10 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
         broadcastToSessionViewers(sessionId, "trigger_subscriptions_changed", { triggerType, action: "subscribe" });
 
         // Notify the runner via typed delta (always, even without params).
-        // Also emit the legacy subscription_params_changed event for backward
-        // compat with runners that haven't been updated yet.
+        // The reconciliation protocol (trigger_subscription_delta) is the
+        // authoritative path — services use reconcileSubscriptions() to apply it.
+        // The legacy subscription_params_changed event has been removed to
+        // prevent double-apply when both server and runner are updated.
         if (session.runnerId) {
             void emitTriggerSubscriptionDelta(session.runnerId, {
                 action: "subscribe",
@@ -627,20 +629,6 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
                     ...(subFilterMode ? { filterMode: subFilterMode } : {}),
                 },
             });
-            // Legacy: subscription_params_changed for older runners
-            if (subParams) {
-                const runnerSocket = getLocalRunnerSocket(session.runnerId);
-                if (runnerSocket) {
-                    runnerSocket.emit("subscription_params_changed" as any, {
-                        sessionId,
-                        triggerType,
-                        params: subParams,
-                        filters: subFilters ?? [],
-                        filterMode: subFilterMode ?? "and",
-                        action: "subscribe",
-                    });
-                }
-            }
         }
 
         return Response.json({
@@ -822,7 +810,10 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
         log.info(`Session ${sessionId} updated subscription for '${triggerType}'${logParts.length > 0 ? ` with ${logParts.join(", ")}` : ""}`);
         broadcastToSessionViewers(sessionId, "trigger_subscriptions_changed", { triggerType, action: "update" });
 
-        // Notify the runner via typed delta and legacy event
+        // Notify the runner via typed delta.
+        // The reconciliation protocol (trigger_subscription_delta) is the
+        // authoritative path — the legacy subscription_params_changed event
+        // has been removed to prevent double-apply.
         if (session.runnerId) {
             void emitTriggerSubscriptionDelta(session.runnerId, {
                 action: "update",
@@ -835,17 +826,6 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
                     ...(subFilterMode ? { filterMode: subFilterMode } : {}),
                 },
             });
-            // Legacy: subscription_params_changed for older runners
-            const runnerSocket = getLocalRunnerSocket(session.runnerId);
-            if (runnerSocket) {
-                runnerSocket.emit("subscription_params_changed" as any, {
-                    sessionId,
-                    triggerType,
-                    params: subParams ?? {},
-                    filters: subFilters ?? [],
-                    filterMode: subFilterMode ?? "and",
-                });
-            }
         }
 
         return Response.json({
