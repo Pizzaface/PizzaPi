@@ -260,6 +260,7 @@ function formatMessage(message: RelayMessage): string | null {
           agent?: string;
           task?: string;
           messages?: Array<{ role: string; content: unknown }>;
+          latestOutput?: string;
           exitCode?: number;
           errorMessage?: string;
         }>;
@@ -269,14 +270,16 @@ function formatMessage(message: RelayMessage): string | null {
           const agentName = r.agent || "subagent";
           const lines: string[] = [`#### 🤖 ${agentName}`];
           if (r.task) lines.push(`**Task:** ${r.task}`);
-          // Extract last assistant message as the response
+          // Extract last assistant response, falling back to summary-only latestOutput
           const lastAssistant = r.messages
             ?.filter((m) => m.role === "assistant")
             .pop();
-          if (lastAssistant) {
-            const responseText = contentToString(lastAssistant.content);
-            if (responseText) lines.push(`**Response:**\n${responseText}`);
-          }
+          const responseText = lastAssistant
+            ? contentToString(lastAssistant.content)
+            : typeof r.latestOutput === "string"
+              ? r.latestOutput
+              : null;
+          if (responseText) lines.push(`**Response:**\n${responseText}`);
           if (r.errorMessage) lines.push(`> ⚠️ ${r.errorMessage}`);
           parts.push(lines.join("\n\n"));
         }

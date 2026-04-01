@@ -2,7 +2,16 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, writeFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
-import { formatTokens, formatUsageStats, toFinitePositiveInt, PARALLEL_SPILL_THRESHOLD } from "./subagent.js";
+import {
+    formatTokens,
+    formatUsageStats,
+    toFinitePositiveInt,
+    PARALLEL_SPILL_THRESHOLD,
+    sanitizeAgentFileSegment,
+    shouldSpillParallelOutput,
+    summarizeResultForStreaming,
+    summarizeResultsForStreaming,
+} from "./subagent.js";
 import { _setGlobalConfigDir, loadConfig, loadGlobalConfig } from "../config.js";
 
 /**
@@ -105,6 +114,72 @@ describe("formatUsageStats", () => {
     });
 });
 
+describe("streaming summary helpers", () => {
+    test("summarizeResultForStreaming drops full transcript data while preserving preview fields", () => {
+        const summary = summarizeResultForStreaming({
+            agent: "researcher",
+            agentSource: "user",
+            task: "Investigate the slowdown",
+            exitCode: -1,
+            messages: [
+                {
+                    role: "assistant",
+                    content: [
+                        { type: "text", text: "Thinking out loud" },
+                        { type: "toolCall", id: "tc1", name: "read", arguments: { path: "foo.ts" } },
+                        { type: "text", text: "Latest partial answer" },
+                    ],
+                } as any,
+            ],
+            stderr: "",
+            usage: { input: 12, output: 34, cacheRead: 0, cacheWrite: 0, cost: 0.001, contextTokens: 46, turns: 1 },
+        });
+
+        expect(summary.messages).toEqual([]);
+        expect(summary.summaryOnly).toBe(true);
+        expect(summary.latestOutput).toBe("Latest partial answer");
+        expect(summary.toolCallCount).toBe(1);
+        expect(summary.usage.turns).toBe(1);
+    });
+
+    test("summarizeResultsForStreaming summarizes every completed result", () => {
+        const results = summarizeResultsForStreaming([
+            {
+                agent: "step-1",
+                agentSource: "user",
+                task: "First",
+                exitCode: 0,
+                messages: [{ role: "assistant", content: [{ type: "text", text: "done one" }] } as any],
+                stderr: "",
+                usage: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 3, turns: 1 },
+            },
+            {
+                agent: "step-2",
+                agentSource: "user",
+                task: "Second",
+                exitCode: 0,
+                messages: [{ role: "assistant", content: [{ type: "text", text: "done two" }] } as any],
+                stderr: "",
+                usage: { input: 4, output: 5, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 9, turns: 1 },
+            },
+        ]);
+
+        expect(results.map((r) => r.messages)).toEqual([[], []]);
+        expect(results.map((r) => r.latestOutput)).toEqual(["done one", "done two"]);
+    });
+
+    test("shouldSpillParallelOutput measures utf8 bytes, not UTF-16 code units", () => {
+        const text = "😀".repeat(30_000);
+        expect(text.length).toBeLessThan(PARALLEL_SPILL_THRESHOLD);
+        expect(shouldSpillParallelOutput(text)).toBe(true);
+    });
+
+    test("sanitizeAgentFileSegment strips path separators and dot prefixes", () => {
+        expect(sanitizeAgentFileSegment("../agents/researcher")).toBe("agents-researcher");
+        expect(sanitizeAgentFileSegment("a/../../../tmp/pwn")).toBe("a-..-..-..-tmp-pwn");
+    });
+});
+
 describe("SubagentDetails type exports", () => {
     test("SingleResult interface shape", () => {
         // Verify the interface is importable and usable
@@ -116,6 +191,9 @@ describe("SubagentDetails type exports", () => {
             messages: [],
             stderr: "",
             usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
+            summaryOnly: true,
+            latestOutput: "done",
+            toolCallCount: 1,
         };
         expect(result.agent).toBe("test");
         expect(result.agentSource).toBe("user");

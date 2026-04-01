@@ -22,7 +22,7 @@ import {
 import type { AgentConfig } from "../subagent-agents.js";
 import { defaultAgentDir } from "../../config.js";
 import type { SingleResult, SubagentDetails, OnUpdateCallback } from "./types.js";
-import { getFinalOutput } from "./types.js";
+import { getFinalOutput, summarizeResultForStreaming } from "./types.js";
 
 // ── Built-in tool registry ─────────────────────────────────────────────
 
@@ -141,9 +141,10 @@ export async function runSingleAgent(
 
     const emitUpdate = () => {
         if (onUpdate) {
+            const summary = summarizeResultForStreaming(currentResult);
             onUpdate({
-                content: [{ type: "text", text: getFinalOutput(currentResult.messages) || "(running...)" }],
-                details: makeDetails([currentResult]),
+                content: [{ type: "text", text: summary.latestOutput || "(running...)" }],
+                details: makeDetails([summary]),
             });
         }
     };
@@ -260,7 +261,9 @@ export async function runSingleAgent(
             signal?.removeEventListener("abort", onAbort);
             // Clean up session resources to prevent leaks across repeated calls
             unsubscribe();
-            session.dispose();
+            if (typeof (session as { dispose?: () => void }).dispose === "function") {
+                session.dispose();
+            }
         }
 
         return currentResult;
