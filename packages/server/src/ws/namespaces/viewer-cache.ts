@@ -97,6 +97,12 @@ export async function hydrateViewerFromCache(
                 deps,
             );
             if (deltaOk) return true;
+            // Delta replay was requested but unavailable (seq gap too large /
+            // events evicted).  Return false so the caller triggers runner
+            // recovery rather than treating the snapshot fallback as
+            // authoritative — a snapshot has no seq, so it can roll back the
+            // client's transcript or cause missed updates.
+            return false;
         }
 
         return sendLatestSnapshotFromCache(socket, sessionId, opts.generation, deps);
