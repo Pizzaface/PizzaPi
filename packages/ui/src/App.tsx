@@ -386,7 +386,7 @@ export function App() {
   const [showApiKeys, setShowApiKeys] = React.useState(false);
   const [apiKeyVersion, setApiKeyVersion] = React.useState(0);
   const [showRunners, setShowRunners] = React.useState(false);
-  const [showHistory, setShowHistory] = React.useState(false);
+  const [historyOpen, setHistoryOpen] = React.useState(false);
   const [selectedRunnerId, setSelectedRunnerId] = React.useState<string | null>(null);
   const [runnersForSidebar, setRunnersForSidebar] = React.useState<Array<{
     runnerId: string;
@@ -3428,7 +3428,6 @@ export function App() {
 
   const handleOpenSession = React.useCallback((id: string) => {
     setShowRunners(false);
-    setShowHistory(false);
     openSession(id);
     setSidebarOpen(false);
   }, [openSession]);
@@ -3457,7 +3456,6 @@ export function App() {
 
   const handleClearSelection = React.useCallback(() => {
     setShowRunners(false);
-    setShowHistory(false);
     clearSelection();
     setSidebarOpen(false);
   }, [clearSelection]);
@@ -3506,8 +3504,8 @@ export function App() {
         return;
       }
 
-      // Cmd/Ctrl + Shift + H — Toggle session history palette
-      if (meta && e.shiftKey && !e.altKey && e.key.toLowerCase() === "h") {
+      // Cmd/Ctrl + H — Toggle session history palette
+      if (meta && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "h") {
         e.preventDefault();
         setHistoryOpen((v) => !v);
         return;
@@ -3938,6 +3936,17 @@ export function App() {
 
   const activeRunnerInfo = useRunnerData(feedRunners, activeSessionInfo?.runnerId);
 
+  // Sets for the HistoryCommandPalette
+  const liveSessionIds = React.useMemo(
+    () => new Set(liveSessions.map((s) => s.sessionId)),
+    [liveSessions],
+  );
+  // feedRunners only contains connected (online) runners from the WS feed
+  const onlineRunnerIds = React.useMemo(
+    () => new Set(feedRunners.map((r) => r.runnerId)),
+    [feedRunners],
+  );
+
   // Stable session ID for tunnel URLs — stays constant across same-runner
   // session switches so iframe service panels don't reload. The tunnel proxy
   // resolves sessionId → runnerId anyway, so any valid session on the same
@@ -4276,17 +4285,15 @@ export function App() {
   // skip re-rendering when only session-scoped state changes.
 
   const handleShowPreferences = React.useCallback(() => setShowPreferences(true), []);
-  const handleShowApiKeys = React.useCallback(() => { setShowApiKeys(true); setShowRunners(false); setShowHistory(false); }, []);
-  const handleShowRunners = React.useCallback(() => { setShowRunners(true); setShowHistory(false); setShowApiKeys(false); activeSessionRef.current = null; setActiveSessionId(null); }, []);
-  const handleShowHistory = React.useCallback(() => { setShowHistory(true); setShowRunners(false); setShowApiKeys(false); }, []);
+  const handleShowApiKeys = React.useCallback(() => { setShowApiKeys(true); setShowRunners(false); }, []);
+  const handleShowRunners = React.useCallback(() => { setShowRunners(true); setShowApiKeys(false); activeSessionRef.current = null; setActiveSessionId(null); }, []);
   const handleShowShortcuts = React.useCallback(() => setShowShortcutsHelp(true), []);
   const handleChangePassword = React.useCallback(() => setChangePasswordOpen(true), []);
   const handleToggleSidebar = React.useCallback(() => setSidebarOpen((prev) => !prev), []);
   // Mobile-specific variants that also close the sidebar
   const handleMobileShowPreferences = React.useCallback(() => { setShowPreferences(true); setSidebarOpen(false); }, []);
-  const handleMobileShowApiKeys = React.useCallback(() => { setShowApiKeys(true); setShowRunners(false); setShowHistory(false); setSidebarOpen(false); }, []);
-  const handleMobileShowRunners = React.useCallback(() => { setShowRunners(true); setShowHistory(false); setShowApiKeys(false); activeSessionRef.current = null; setActiveSessionId(null); setSidebarOpen(false); }, []);
-  const handleMobileShowHistory = React.useCallback(() => { setShowHistory(true); setShowRunners(false); setShowApiKeys(false); setSidebarOpen(false); }, []);
+  const handleMobileShowApiKeys = React.useCallback(() => { setShowApiKeys(true); setShowRunners(false); setSidebarOpen(false); }, []);
+  const handleMobileShowRunners = React.useCallback(() => { setShowRunners(true); setShowApiKeys(false); activeSessionRef.current = null; setActiveSessionId(null); setSidebarOpen(false); }, []);
   const handleMobileChangePassword = React.useCallback(() => { setChangePasswordOpen(true); setSidebarOpen(false); }, []);
   const handleSessionSwitcherOpenChange = React.useCallback((open: boolean) => setSessionSwitcherOpen(open), []);
 
@@ -4495,7 +4502,7 @@ export function App() {
               onOpenSession={handleOpenSession}
               onNewSession={handleNewSession}
               onClearSelection={handleClearSelection}
-              onShowRunners={() => { setShowRunners(true); setShowHistory(false); setShowApiKeys(false); activeSessionRef.current = null; setActiveSessionId(null); }}
+              onShowRunners={() => { setShowRunners(true); setShowApiKeys(false); activeSessionRef.current = null; setActiveSessionId(null); }}
               activeSessionId={activeSessionId}
               showRunners={showRunners}
               activeModel={activeModel}
@@ -4507,10 +4514,7 @@ export function App() {
               runners={runnersForSidebar}
               selectedRunnerId={selectedRunnerId}
               onSelectRunner={setSelectedRunnerId}
-              onShowSessions={() => { setShowRunners(false); setShowHistory(false); }}
-              showHistory={showHistory}
-              onShowHistory={handleShowHistory}
-              onResumeSession={handleResumeHistoricalSession}
+              onShowSessions={() => setShowRunners(false)}
               sessionsAwaitingInput={sessionsAwaitingInput}
               sessionsCompacting={sessionsCompacting}
             />
@@ -4920,20 +4924,10 @@ export function App() {
         <HistoryCommandPalette
           open={historyOpen}
           onOpenChange={setHistoryOpen}
-          sessions={resumeSessions}
-          loading={resumeSessionsLoading}
-          onRefresh={requestResumeSessions}
+          liveSessionIds={liveSessionIds}
+          onlineRunnerIds={onlineRunnerIds}
           onOpenSession={(id) => { handleOpenSession(id); setHistoryOpen(false); }}
-          onResumeSession={(sessionId) => {
-            const session = resumeSessions.find((s) => s.id === sessionId);
-            if (!session) return;
-            sendRemoteExec({
-              type: "exec",
-              id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
-              command: "resume_session",
-              sessionPath: session.path,
-            });
-          }}
+          onResumeSession={handleResumeHistoricalSession}
         />
 
         <NewSessionWizardDialog

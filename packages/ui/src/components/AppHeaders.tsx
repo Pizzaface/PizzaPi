@@ -169,7 +169,7 @@ export const DesktopHeader = React.memo(function DesktopHeader({
                 <Clock className="h-4 w-4" />
               </Button>
             </TooltipTrigger>
-            <TooltipContent>Session history (⌘⇧H)</TooltipContent>
+            <TooltipContent>Session history (⌘H)</TooltipContent>
           </Tooltip>
         )}
 

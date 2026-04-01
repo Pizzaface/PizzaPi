@@ -13,8 +13,7 @@ import { cn } from "@/lib/utils";
 import { useHubSocket } from "@/lib/hub-socket-context";
 import { extractWorktreeName, formatPathTail, worktreeRoots } from "@/lib/path";
 import { ProviderIcon } from "@/components/ProviderIcon";
-import { PanelLeftClose, PanelLeftOpen, Plus, X, HardDrive, FolderOpen, CheckSquare, Square, CheckCheck, Trash2, Pin, PinOff, ChevronDown, ChevronRight, MessageSquare, Copy, Clock } from "lucide-react";
-import { HistoryPanel } from "@/components/HistoryPanel";
+import { PanelLeftClose, PanelLeftOpen, Plus, X, HardDrive, FolderOpen, CheckSquare, Square, CheckCheck, Trash2, Pin, PinOff, ChevronDown, ChevronRight, MessageSquare, Copy } from "lucide-react";
 import { buildSessionTree, flattenSessionTree, getSessionIndent, getDescendantSessionIds, getGroupCwd } from "@/lib/session-tree";
 import { pruneSwipeOffsets } from "@/lib/swipe-reveal";
 import { getSessionVisualState } from "@/lib/session-visual-state";
@@ -109,12 +108,6 @@ export interface SessionSidebarProps {
     sessionsAwaitingInput?: Set<string>;
     /** Set of session IDs that are actively compacting their context window. */
     sessionsCompacting?: Set<string>;
-    /** Whether the History tab is currently selected */
-    showHistory?: boolean;
-    /** Called when the user clicks the History tab */
-    onShowHistory?: () => void;
-    /** Called when the user wants to resume a historical session on a runner */
-    onResumeSession?: (sessionId: string, runnerId: string, cwd: string) => void;
 }
 
 function formatRelativeDate(isoString: string): string {
@@ -207,9 +200,6 @@ export const SessionSidebar = React.memo(function SessionSidebar({
     onShowSessions,
     sessionsAwaitingInput,
     sessionsCompacting,
-    showHistory,
-    onShowHistory,
-    onResumeSession,
 }: SessionSidebarProps) {
     const [collapsed, setCollapsed] = React.useState(false);
 
@@ -880,16 +870,6 @@ export const SessionSidebar = React.memo(function SessionSidebar({
         return result;
     }, [liveSessions, pinnedSessionIds]);
 
-    // Sets for the HistoryPanel
-    const liveSessionIds = React.useMemo(
-        () => new Set(liveSessions.map((s) => s.sessionId)),
-        [liveSessions],
-    );
-    const onlineRunnerIds = React.useMemo(
-        () => new Set((runners ?? []).filter((r) => r.isOnline).map((r) => r.runnerId)),
-        [runners],
-    );
-
     // Find session name for the confirm dialog
     const confirmSession = confirmEndSessionId
         ? liveSessions.find((s) => s.sessionId === confirmEndSessionId)
@@ -1129,35 +1109,21 @@ export const SessionSidebar = React.memo(function SessionSidebar({
             )}
 
             <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
-                {/* Sessions / History / Runners nav tabs */}
+                {/* Sessions / Runners nav tabs */}
                 <div className="mx-3 mt-2 mb-1 flex-shrink-0 flex border-b border-sidebar-border/50">
                     <button
                         onClick={onShowSessions}
                         className={cn(
                             "flex items-center justify-center gap-1.5 px-3 pb-2 text-xs font-medium transition-colors relative",
                             "focus-visible:outline-none",
-                            !showRunners && !showHistory
+                            !showRunners
                                 ? "text-sidebar-foreground"
                                 : "text-sidebar-foreground/40 hover:text-sidebar-foreground/70"
                         )}
                     >
                         <MessageSquare className="h-3.5 w-3.5" />
                         <span>Sessions</span>
-                        {!showRunners && !showHistory && <div className="absolute bottom-0 inset-x-1 h-[2px] bg-primary rounded-full" />}
-                    </button>
-                    <button
-                        onClick={onShowHistory}
-                        className={cn(
-                            "flex items-center justify-center gap-1.5 px-3 pb-2 text-xs font-medium transition-colors relative",
-                            "focus-visible:outline-none",
-                            showHistory && !showRunners
-                                ? "text-sidebar-foreground"
-                                : "text-sidebar-foreground/40 hover:text-sidebar-foreground/70"
-                        )}
-                    >
-                        <Clock className="h-3.5 w-3.5" />
-                        <span>History</span>
-                        {showHistory && !showRunners && <div className="absolute bottom-0 inset-x-1 h-[2px] bg-primary rounded-full" />}
+                        {!showRunners && <div className="absolute bottom-0 inset-x-1 h-[2px] bg-primary rounded-full" />}
                     </button>
                     <button
                         onClick={onShowRunners}
@@ -1220,20 +1186,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                     </div>
                 )}
 
-                {/* ── History tab content ───────────────────────────────── */}
-                {showHistory && !showRunners && (
-                    <div className="flex-1 overflow-y-auto overflow-x-hidden" style={{ paddingBottom: "max(0.5rem, env(safe-area-inset-bottom))" }}>
-                        <HistoryPanel
-                            activeSessionId={activeSessionId}
-                            liveSessionIds={liveSessionIds}
-                            onlineRunnerIds={onlineRunnerIds}
-                            onOpenSession={onOpenSession}
-                            onResumeSession={onResumeSession}
-                        />
-                    </div>
-                )}
-
-                {!showRunners && !showHistory && <div className="flex-1 px-2 overflow-y-auto overflow-x-hidden" style={{ paddingBottom: "max(0.5rem, env(safe-area-inset-bottom))" }}>
+                {!showRunners && <div className="flex-1 px-2 overflow-y-auto overflow-x-hidden" style={{ paddingBottom: "max(0.5rem, env(safe-area-inset-bottom))" }}>
                     {pinError && (
                         <p role="alert" aria-live="polite" className="px-2 py-2 text-[0.7rem] text-red-400">
                             {pinError}
@@ -1611,15 +1564,6 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                         aria-label="Expand sidebar"
                     >
                         <PanelLeftOpen className="h-4 w-4" />
-                    </Button>
-                    <Button
-                        variant="ghost"
-                        size="icon"
-                        className={cn("h-8 w-8 hover:bg-sidebar-accent", showHistory ? "text-primary" : "text-sidebar-foreground/60 hover:text-sidebar-foreground")}
-                        onClick={() => { setCollapsed(false); onShowHistory?.(); }}
-                        title="History"
-                    >
-                        <Clock className="h-4 w-4" />
                     </Button>
                     <Button
                         variant="ghost"
