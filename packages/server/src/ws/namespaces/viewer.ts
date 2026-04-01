@@ -38,6 +38,7 @@ import {
 } from "../sio-registry.js";
 import { isChildOfParent } from "../sio-state/index.js";
 import { getPendingChunkedSnapshot } from "./relay/index.js";
+import { getLatestCachedSnapshotEvent } from "../../sessions/redis.js";
 import { getPersistedRelaySessionSnapshot } from "../../sessions/store.js";
 import { recordTriggerResponse } from "../../sessions/trigger-store.js";
 import { createLogger } from "@pizzapi/tools";
@@ -766,6 +767,52 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
             if (!runnerId) return;
             // Attach sessionId so the runner service knows which session to respond to
             emitToRunner(runnerId, "service_message", { ...envelope, sessionId: currentSessionId });
+        });
+
+        // ── load_messages — fetch older transcript pages on demand ──────────
+        socket.on("load_messages", async (data) => {
+            const currentSessionId = getCurrentSessionId();
+            if (!currentSessionId) return;
+            if (!data || data.sessionId !== currentSessionId) return;
+            if (typeof data.before !== "number" || !Number.isFinite(data.before)) return;
+            if (typeof data.limit !== "number" || !Number.isFinite(data.limit)) return;
+
+            let fullState: Record<string, unknown> | null = null;
+            const currentSession = await getSharedSession(currentSessionId);
+            if (currentSession?.lastState) {
+                try {
+                    const parsed = JSON.parse(currentSession.lastState);
+                    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+                        fullState = parsed as Record<string, unknown>;
+                    }
+                } catch {}
+            }
+
+            if (!fullState) {
+                const snapshotEvent = await getLatestCachedSnapshotEvent(currentSessionId);
+                if (snapshotEvent?.type === "session_active") {
+                    const snapshotState = snapshotEvent.state;
+                    if (snapshotState && typeof snapshotState === "object" && !Array.isArray(snapshotState)) {
+                        fullState = snapshotState as Record<string, unknown>;
+                    }
+                } else if (snapshotEvent && Array.isArray(snapshotEvent.messages)) {
+                    fullState = snapshotEvent;
+                }
+            }
+
+            const messages = Array.isArray(fullState?.messages) ? fullState.messages : [];
+            const before = Math.max(0, Math.min(Math.trunc(data.before), messages.length));
+            const limit = Math.max(0, Math.trunc(data.limit));
+            const startIndex = Math.max(0, before - limit);
+            const endIndex = before;
+
+            socket.emit("session_messages_page", {
+                sessionId: currentSessionId,
+                messages: messages.slice(startIndex, endIndex),
+                hasMore: startIndex > 0,
+                oldestIndex: startIndex,
+                generation: getCurrentGeneration(),
+            });
         });
 
         // ── disconnect ───────────────────────────────────────────────────────

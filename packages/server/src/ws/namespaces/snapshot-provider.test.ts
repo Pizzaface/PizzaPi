@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, mock, test } from "bun:test";
 
 import {
+    truncateSnapshotMessages,
     tryDeltaReplay,
     tryCacheSnapshot,
     tryMemoryState,
@@ -34,6 +35,86 @@ function createDeps(overrides: Partial<SnapshotProviderDeps> = {}): SnapshotProv
         getPersistedRelaySessionSnapshot: overrides.getPersistedRelaySessionSnapshot ?? mock(async () => null),
     };
 }
+
+// ── truncateSnapshotMessages ────────────────────────────────────────────────
+
+describe("truncateSnapshotMessages", () => {
+    test("returns all messages with hasMore=false when count is within tail size", () => {
+        const state = {
+            messages: [{ id: 1 }, { id: 2 }],
+            model: { id: "sonnet" },
+            sessionName: "Tail fits",
+        };
+
+        expect(truncateSnapshotMessages(state, 5)).toEqual({
+            ...state,
+            totalMessages: 2,
+            hasMore: false,
+            oldestLoadedIndex: 0,
+        });
+    });
+
+    test("returns the last tailSize messages with hasMore=true when count exceeds tail size", () => {
+        const state = {
+            messages: Array.from({ length: 6 }, (_, index) => ({ id: index })),
+            model: { id: "sonnet" },
+        };
+
+        expect(truncateSnapshotMessages(state, 3)).toEqual({
+            ...state,
+            messages: [{ id: 3 }, { id: 4 }, { id: 5 }],
+            totalMessages: 6,
+            hasMore: true,
+            oldestLoadedIndex: 3,
+        });
+    });
+
+    test("preserves other state properties", () => {
+        const state = {
+            messages: Array.from({ length: 4 }, (_, index) => ({ id: index })),
+            model: { provider: "anthropic", id: "claude" },
+            sessionName: "Preserve me",
+            todoList: [{ title: "task" }],
+        };
+
+        const result = truncateSnapshotMessages(state, 2);
+        expect(result.model).toEqual(state.model);
+        expect(result.sessionName).toBe("Preserve me");
+        expect(result.todoList).toEqual(state.todoList);
+    });
+
+    test("supports a custom tailSize parameter", () => {
+        const state = {
+            messages: Array.from({ length: 5 }, (_, index) => ({ id: index })),
+        };
+
+        expect(truncateSnapshotMessages(state, 1)).toEqual({
+            ...state,
+            messages: [{ id: 4 }],
+            totalMessages: 5,
+            hasMore: true,
+            oldestLoadedIndex: 4,
+        });
+    });
+
+    test("handles an empty messages array", () => {
+        expect(truncateSnapshotMessages({ messages: [] })).toEqual({
+            messages: [],
+            totalMessages: 0,
+            hasMore: false,
+            oldestLoadedIndex: 0,
+        });
+    });
+
+    test("handles state without a messages property gracefully", () => {
+        expect(truncateSnapshotMessages({ sessionName: "No messages yet" })).toEqual({
+            sessionName: "No messages yet",
+            totalMessages: 0,
+            hasMore: false,
+            oldestLoadedIndex: 0,
+        });
+    });
+});
 
 // ── tryDeltaReplay ───────────────────────────────────────────────────────────
 
@@ -161,7 +242,12 @@ describe("tryMemoryState", () => {
         expect(socket.calls[0].event).toBe("event");
         const payload = socket.calls[0].payload as any;
         expect(payload.event.type).toBe("session_active");
-        expect(payload.event.state).toEqual(state);
+        expect(payload.event.state).toMatchObject({
+            ...state,
+            totalMessages: 1,
+            hasMore: false,
+            oldestLoadedIndex: 0,
+        });
         expect(payload.event._metaViaHub).toBe(true);
         expect(payload.generation).toBe(5);
     });
@@ -213,7 +299,12 @@ describe("tryPersistedSnapshot", () => {
         expect(socket.calls.length).toBe(1);
         const payload = socket.calls[0].payload as any;
         expect(payload.event.type).toBe("session_active");
-        expect(payload.event.state).toEqual(state);
+        expect(payload.event.state).toMatchObject({
+            ...state,
+            totalMessages: 0,
+            hasMore: false,
+            oldestLoadedIndex: 0,
+        });
         expect(payload.event._metaViaHub).toBeUndefined();
         expect(payload.generation).toBe(2);
     });

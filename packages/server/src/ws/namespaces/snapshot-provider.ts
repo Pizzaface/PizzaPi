@@ -37,6 +37,33 @@ type ViewerEventEmitter = {
     emit: (...args: any[]) => any;
 };
 
+export const MESSAGE_TAIL_SIZE = 50;
+
+export function truncateSnapshotMessages(
+    state: Record<string, unknown>,
+    tailSize: number = MESSAGE_TAIL_SIZE,
+): Record<string, unknown> {
+    const messages = Array.isArray(state.messages) ? state.messages : [];
+    const totalMessages = messages.length;
+    if (totalMessages <= tailSize) {
+        return { ...state, totalMessages, hasMore: false, oldestLoadedIndex: 0 };
+    }
+    const startIndex = totalMessages - tailSize;
+    return {
+        ...state,
+        messages: messages.slice(startIndex),
+        totalMessages,
+        hasMore: true,
+        oldestLoadedIndex: startIndex,
+    };
+}
+
+function maybeTruncateSnapshotState(state: unknown): unknown {
+    if (!state || typeof state !== "object" || Array.isArray(state)) return state;
+    if ((state as Record<string, unknown>).chunked === true) return state;
+    return truncateSnapshotMessages(state as Record<string, unknown>);
+}
+
 // ── Dependency injection for testability ─────────────────────────────────────
 
 export interface SnapshotProviderDeps {
@@ -95,7 +122,16 @@ export async function tryCacheSnapshot(
     return {
         snapshot: { type: "cache-snapshot", source: "Redis cached snapshot event" },
         send(socket, generation) {
-            socket.emit("event", { event: snapshotEvent, replay: true, generation });
+            let eventToSend: Record<string, unknown> = snapshotEvent;
+            if (snapshotEvent.type === "session_active") {
+                eventToSend = {
+                    ...snapshotEvent,
+                    state: maybeTruncateSnapshotState(snapshotEvent.state),
+                };
+            } else if (Array.isArray(snapshotEvent.messages)) {
+                eventToSend = maybeTruncateSnapshotState(snapshotEvent) as Record<string, unknown>;
+            }
+            socket.emit("event", { event: eventToSend, replay: true, generation });
         },
     };
 }
@@ -122,7 +158,7 @@ export function tryMemoryState(
             // Add _metaViaHub hint so the client knows metadata came from hub,
             // matching the original behavior in viewer.ts
             socket.emit("event", {
-                event: { type: "session_active", state: parsed, _metaViaHub: true },
+                event: { type: "session_active", state: maybeTruncateSnapshotState(parsed), _metaViaHub: true },
                 generation,
             });
         },
@@ -145,7 +181,7 @@ export async function tryPersistedSnapshot(
         snapshot: { type: "persisted", source: "SQLite persisted relay session state" },
         send(socket, generation) {
             socket.emit("event", {
-                event: { type: "session_active", state: snapshot.state },
+                event: { type: "session_active", state: maybeTruncateSnapshotState(snapshot.state) },
                 generation,
             });
         },

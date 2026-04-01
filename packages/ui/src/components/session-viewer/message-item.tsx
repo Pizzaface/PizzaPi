@@ -1,5 +1,5 @@
 import * as React from "react";
-import { AlertTriangleIcon } from "lucide-react";
+import { AlertTriangleIcon, Loader2 } from "lucide-react";
 import type { RelayMessage } from "./types";
 import {
   renderContent,
@@ -204,6 +204,7 @@ SessionMessageItem.displayName = "SessionMessageItem";
 interface PaginationSentinelProps {
   hasMore: boolean;
   onLoadMore: () => void;
+  loading?: boolean;
 }
 
 /**
@@ -214,14 +215,14 @@ interface PaginationSentinelProps {
  * the real scroll container via useConversationScrollRef(). Remounts on session
  * switch (key={sessionId}) — automatically recreating the observer.
  */
-export function PaginationSentinel({ hasMore, onLoadMore }: PaginationSentinelProps) {
+export function PaginationSentinel({ hasMore, onLoadMore, loading = false }: PaginationSentinelProps) {
   const sentinelRef = React.useRef<HTMLDivElement | null>(null);
   const scrollRef = useConversationScrollRef();
 
   React.useEffect(() => {
     const sentinel = sentinelRef.current;
     const scroller = scrollRef.current;
-    if (!sentinel || !scroller || !hasMore) return;
+    if (!sentinel || !scroller || !hasMore || loading) return;
 
     const observer = new IntersectionObserver(
       ([entry]) => {
@@ -232,14 +233,21 @@ export function PaginationSentinel({ hasMore, onLoadMore }: PaginationSentinelPr
     );
     observer.observe(sentinel);
     return () => observer.disconnect();
-  }, [hasMore, onLoadMore, scrollRef]);
+  }, [hasMore, loading, onLoadMore, scrollRef]);
 
   return (
     <>
       <div ref={sentinelRef} className="h-px" />
       {hasMore && (
         <div className="py-2 text-center text-xs text-muted-foreground">
-          Scroll up for older messages
+          {loading ? (
+            <span className="inline-flex items-center gap-2">
+              <Loader2 className="size-3 animate-spin" />
+              Loading earlier messages…
+            </span>
+          ) : (
+            "Scroll up for older messages"
+          )}
         </div>
       )}
     </>
