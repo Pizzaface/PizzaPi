@@ -310,6 +310,35 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
         return undefined;
     }
 
+    // ── Browse directory (folder picker) ───────────────────────────
+    const browseMatch = url.pathname.match(/^\/api\/runners\/([^/]+)\/browse$/);
+    if (browseMatch && req.method === "GET") {
+        const identity = await requireSession(req);
+        if (identity instanceof Response) return identity;
+
+        const runnerId = decodeURIComponent(browseMatch[1]);
+        const runner = await getRunnerData(runnerId);
+        if (!runner) return Response.json({ error: "Runner not found" }, { status: 404 });
+        if (runner.userId !== identity.userId) return Response.json({ error: "Forbidden" }, { status: 403 });
+
+        const path = url.searchParams.get("path") || "/";
+        try {
+            const result = await sendRunnerCommand(runnerId, {
+                type: "browse_directory",
+                path,
+            }, 10_000) as any;
+            if (!result.ok) {
+                return Response.json({ error: result.message || "Browse failed" }, { status: 400 });
+            }
+            return Response.json({ directories: result.directories ?? [] });
+        } catch (err) {
+            return Response.json(
+                { error: err instanceof Error ? err.message : "Browse failed" },
+                { status: 502 },
+            );
+        }
+    }
+
     // ── Available models ───────────────────────────────────────────
     const modelsMatch = url.pathname.match(/^\/api\/runners\/([^/]+)\/models$/);
     if (modelsMatch && req.method === "GET") {
