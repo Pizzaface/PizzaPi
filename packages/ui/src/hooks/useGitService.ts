@@ -108,6 +108,7 @@ export function useGitService(cwd: string): UseGitServiceReturn {
     const pendingDiffTimeoutsRef = useRef(new Map<string, ReturnType<typeof setTimeout>>());
     const pendingFullStatusRequestRef = useRef<string | null>(null);
     const fullStatusFallbackTimersRef = useRef(new Map<string, ReturnType<typeof setTimeout>>());
+    const statusRequestRetireTimersRef = useRef(new Map<string, ReturnType<typeof setTimeout>>());
     const statusRequestsInFlightRef = useRef(new Set<string>());
     const optimisticSnapshotsRef = useRef(new Map<string, GitStatus | null>());
     const requestGenerationRef = useRef(new Map<string, number>());
@@ -164,7 +165,14 @@ export function useGitService(cwd: string): UseGitServiceReturn {
         setLoading(true);
         setError(null);
         sendRef.current("git_status", { cwd: targetCwd }, requestId);
-    }, [makeRequestId, markStatusRequestInFlight, registerRequestGeneration]);
+
+        const retireTimer = setTimeout(() => {
+            statusRequestRetireTimersRef.current.delete(requestId);
+            requestGenerationRef.current.delete(requestId);
+            markStatusRequestSettled(requestId);
+        }, 8000);
+        statusRequestRetireTimersRef.current.set(requestId, retireTimer);
+    }, [makeRequestId, markStatusRequestInFlight, markStatusRequestSettled, registerRequestGeneration]);
 
     const sendLegacySnapshotRequests = useCallback((targetCwd: string) => {
         sendStatusRequest(targetCwd);
@@ -241,6 +249,11 @@ export function useGitService(cwd: string): UseGitServiceReturn {
             switch (type) {
                 case "git_status_result": {
                     if (requestId) {
+                        const timerId = statusRequestRetireTimersRef.current.get(requestId);
+                        if (timerId) {
+                            clearTimeout(timerId);
+                            statusRequestRetireTimersRef.current.delete(requestId);
+                        }
                         if (!isRequestCurrentGeneration(requestId)) break;
                         markStatusRequestSettled(requestId);
                     } else {
@@ -392,6 +405,10 @@ export function useGitService(cwd: string): UseGitServiceReturn {
                 clearTimeout(timerId);
             }
             fullStatusFallbackTimersRef.current.clear();
+            for (const timerId of statusRequestRetireTimersRef.current.values()) {
+                clearTimeout(timerId);
+            }
+            statusRequestRetireTimersRef.current.clear();
         };
     }, [clearPendingDiffs]);
 
@@ -554,6 +571,10 @@ export function useGitService(cwd: string): UseGitServiceReturn {
             clearTimeout(timerId);
         }
         fullStatusFallbackTimersRef.current.clear();
+        for (const timerId of statusRequestRetireTimersRef.current.values()) {
+            clearTimeout(timerId);
+        }
+        statusRequestRetireTimersRef.current.clear();
 
         if (available && cwd) {
             statusGenRef.current = generationRef.current;
