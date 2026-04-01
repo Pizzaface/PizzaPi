@@ -64,11 +64,22 @@ export function useAttentionIngestion(params: AttentionIngestionParams): void {
       return item;
     }), []);
 
+  // Evict stale entries from createdAtRef — any ID no longer live in the store
+  // should be removed so that if the same stable ID reappears it gets a fresh
+  // timestamp instead of the (potentially hours-old) previous one.
+  const pruneCreatedAt = useCallback(() => {
+    const live = store.getState().items;
+    for (const id of createdAtRef.current.keys()) {
+      if (!live.has(id)) createdAtRef.current.delete(id);
+    }
+  }, [store]);
+
   // Ingest session meta changes into the attention store
   useEffect(() => {
     if (!activeSessionId) {
       if (prevSessionIdRef.current) {
         store.removeBySessionId(prevSessionIdRef.current);
+        pruneCreatedAt();
       }
       prevSessionIdRef.current = null;
       return;
@@ -91,7 +102,8 @@ export function useAttentionIngestion(params: AttentionIngestionParams): void {
     const items = preserveCreatedAt(normalizeSessionMeta(activeSessionId, meta));
 
     store.replaceBySessionSource(activeSessionId, "meta", items);
-  }, [activeSessionId, pendingQuestion, pendingPlan, pluginTrustPrompt, isCompacting, agentActive, sessionName, preserveCreatedAt, store]);
+    pruneCreatedAt();
+  }, [activeSessionId, pendingQuestion, pendingPlan, pluginTrustPrompt, isCompacting, agentActive, sessionName, preserveCreatedAt, pruneCreatedAt, store]);
 
   // Ingest background-session meta so the Action Center stays cross-session.
   useEffect(() => {
@@ -123,7 +135,8 @@ export function useAttentionIngestion(params: AttentionIngestionParams): void {
     }
 
     prevBackgroundSessionIdsRef.current = nextBackgroundSessionIds;
-  }, [activeSessionId, preserveCreatedAt, sessionsAwaitingInput, sessionsCompacting, sessionNamesById, store]);
+    pruneCreatedAt();
+  }, [activeSessionId, preserveCreatedAt, pruneCreatedAt, sessionsAwaitingInput, sessionsCompacting, sessionNamesById, store]);
 
   // Ingest trigger history when trigger counts change
   useEffect(() => {

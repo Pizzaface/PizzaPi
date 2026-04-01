@@ -214,7 +214,7 @@ export function normalizeTriggerHistory(
         createdAt: pending.ts,
         priority: pending.type === "escalate" ? 5 : 10,
         source: "trigger",
-        payload: { triggerId: pending.triggerId, type: pending.type, source, summary },
+        payload: { triggerId: pending.triggerId, type: pending.type, source, ...(summary !== undefined ? { summary } : {}) },
       });
     } else if (hasCompleted) {
       // triggers are ordered most-recent-first from the API; find() returns the newest session_complete
@@ -231,7 +231,7 @@ export function normalizeTriggerHistory(
           createdAt: completeEvent.response?.ts ?? completeEvent.ts,
           priority: 50,
           source: "trigger",
-          payload: { triggerId: completeEvent.triggerId, source, summary, resumedFromComplete: true },
+          payload: { triggerId: completeEvent.triggerId, source, ...(summary !== undefined ? { summary } : {}), resumedFromComplete: true },
         });
       } else {
         items.push({
@@ -243,7 +243,7 @@ export function normalizeTriggerHistory(
           createdAt: completeEvent.ts,
           priority: 30,
           source: "trigger",
-          payload: { triggerId: completeEvent.triggerId, source, summary },
+          payload: { triggerId: completeEvent.triggerId, source, ...(summary !== undefined ? { summary } : {}) },
         });
       }
     } else {
@@ -257,7 +257,7 @@ export function normalizeTriggerHistory(
         createdAt: events[0]?.ts ?? new Date().toISOString(),
         priority: 50,
         source: "trigger",
-        payload: { source, summary },
+        payload: { source, ...(summary !== undefined ? { summary } : {}) },
       });
     }
   }

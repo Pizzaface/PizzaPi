@@ -145,9 +145,11 @@ export const AttentionCard = React.memo(function AttentionCard({ item, onClick }
         </div>
 
         {/* Description from payload */}
-        {item.payload != null && typeof item.payload === "object" && "summary" in (item.payload as Record<string, unknown>) && (
+        {item.payload != null && typeof item.payload === "object" &&
+          typeof (item.payload as Record<string, unknown>).summary === "string" &&
+          Boolean((item.payload as Record<string, unknown>).summary) && (
           <p className="text-[11px] text-muted-foreground/70 mt-0.5 truncate">
-            {String((item.payload as Record<string, unknown>).summary)}
+            {(item.payload as Record<string, unknown>).summary as string}
           </p>
         )}
         {item.kind === "plan_review" && item.payload != null && typeof item.payload === "object" && "title" in (item.payload as Record<string, unknown>) && (
