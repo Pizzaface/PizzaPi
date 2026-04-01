@@ -29,3 +29,4 @@ packages/cli/src/config/system-prompt.precompiled.ts
 .python-version
 01-landing.png
 .playwright-cli/
+.superpowers/
