@@ -86,10 +86,6 @@ mock.module("../remote-input.js", () => ({
     buildUserMessageFromRemoteInput: mock(async (text: string) => text),
 }));
 mock.module("../remote-exec-handler.js", () => ({ handleExecFromWeb: mock(async () => {}) }));
-mock.module("../triggers/extension.js", () => ({
-    trackReceivedTrigger: mock(() => {}),
-    receivedTriggers: new Map(),
-}));
 mock.module("./registration-gate.js", () => ({
     resetRelayRegistrationGate: mock(() => {}),
     signalRelayRegistered: mock(() => {}),
