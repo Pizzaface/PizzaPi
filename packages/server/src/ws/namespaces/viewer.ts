@@ -38,10 +38,12 @@ import {
 } from "../sio-registry.js";
 import { isChildOfParent } from "../sio-state/index.js";
 import { getPendingChunkedSnapshot } from "./relay/index.js";
+import { getLatestCachedSnapshotEvent } from "../../sessions/redis.js";
 import { getPersistedRelaySessionSnapshot } from "../../sessions/store.js";
 import { recordTriggerResponse } from "../../sessions/trigger-store.js";
 import { createLogger } from "@pizzapi/tools";
 import { hydrateViewerFromCache, sendCachedDeltaReplayEvents, sendLatestSnapshotFromCache } from "./viewer-cache.js";
+import { getBestSnapshot } from "./snapshot-provider.js";
 
 export { hydrateViewerFromCache, sendCachedDeltaReplayEvents } from "./viewer-cache.js";
 
@@ -166,7 +168,8 @@ export function forwardRecoveryConnectedSignal(
 
 /**
  * Replay a persisted (SQLite + Redis) snapshot for a session that is
- * no longer live. Sends the snapshot, then disconnects the viewer.
+ * no longer live. Uses the SnapshotProvider to find the best available
+ * snapshot, sends it, then disconnects the viewer.
  */
 async function replayPersistedSnapshot(
     socket: ViewerSocket,
@@ -175,8 +178,9 @@ async function replayPersistedSnapshot(
     generation?: number,
 ): Promise<void> {
     try {
-        const snapshot = await getPersistedRelaySessionSnapshot(sessionId, userId);
-        if (!snapshot) {
+        // Validate ownership via persisted snapshot lookup first
+        const persistedRow = await getPersistedRelaySessionSnapshot(sessionId, userId);
+        if (!persistedRow) {
             socket.emit("error", { message: "Session not found" });
             socket.disconnect();
             return;
@@ -187,26 +191,16 @@ async function replayPersistedSnapshot(
         // from the session_active snapshot directly.
         socket.emit("connected", { sessionId, replayOnly: true, generation });
 
-        // Fast path: send only the latest snapshot from Redis cache
-        // (ownership already validated by persisted snapshot lookup above)
-        const sentFromCache = await sendLatestSnapshotFromCache(socket, sessionId, generation);
+        // Use SnapshotProvider to find the best snapshot (cache > persisted)
+        const result = await getBestSnapshot(sessionId, { userId });
 
-        if (!sentFromCache) {
-            // Cache miss — fall back to persisted state from SQLite.
-            // If the persisted state is also null (e.g. no relay_session_state
-            // row yet), there is nothing to replay.
-            if (snapshot.state === null || snapshot.state === undefined) {
-                socket.emit("error", { message: "Session snapshot not available" });
-                socket.disconnect();
-                return;
-            }
-            // Don't add _metaViaHub for replay-only sessions — there is no
-            // live hub meta subscription, so the client must apply metadata
-            // (model, sessionName, etc.) from this snapshot directly.
-            socket.emit("event", {
-                event: { type: "session_active", state: snapshot.state },
-                generation,
-            });
+        if (result) {
+            result.send(socket, generation);
+        } else {
+            // No snapshot available from any source
+            socket.emit("error", { message: "Session snapshot not available" });
+            socket.disconnect();
+            return;
         }
 
         socket.emit("disconnected", {
@@ -400,30 +394,21 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
                 }
             }
 
-            // ── Try server-side cache before signaling the runner ────────
-            // This is the core optimization: hydrate the joining viewer from
-            // the existing Redis snapshot/delta cache instead of asking the
-            // runner to rebuild and rebroadcast the full transcript.
-            //
-            // Benefits:
-            //   • Read-path only — no write amplification to Redis/SQLite
-            //   • Per-socket emit — no room-wide broadcast to other viewers
-            //   • Avoids runner CPU cost of rebuilding the transcript
-            //
-            // Fallback: if the cache is empty or stale (cold start, eviction),
-            // we fall through to the existing runner-signal path.
+            // ── SnapshotProvider: try server-side cache before signaling the runner
             const chunkedPending = getPendingChunkedSnapshot(nextSessionId);
             if (!chunkedPending) {
-                const cacheHydrated = await hydrateViewerFromCache(socket, nextSessionId, {
+                const snapshotResult = await getBestSnapshot(nextSessionId, {
                     lastSeq: requestedLastSeq,
-                    generation,
+                    lastState: freshSession.lastState,
+                    chunkedPending: false,
                 });
-                if (cacheHydrated) {
+                if (snapshotResult) {
                     // Cache hit — viewer is fully hydrated.  Suppress the
                     // runner "connected" signal so it doesn't rebuild and
                     // broadcast to all viewers in the room.
+                    snapshotResult.send(socket, generation);
                     suppressRunnerSignal = true;
-                    log.info(`cache-first hydration: sessionId=${nextSessionId} viewer=${socket.id} (${requestedLastSeq !== undefined ? "delta" : "snapshot"})`);
+                    log.info(`snapshot-provider hydration: sessionId=${nextSessionId} viewer=${socket.id} type=${snapshotResult.snapshot.type}`);
                     return;
                 }
             }
@@ -782,6 +767,52 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
             if (!runnerId) return;
             // Attach sessionId so the runner service knows which session to respond to
             emitToRunner(runnerId, "service_message", { ...envelope, sessionId: currentSessionId });
+        });
+
+        // ── load_messages — fetch older transcript pages on demand ──────────
+        socket.on("load_messages", async (data) => {
+            const currentSessionId = getCurrentSessionId();
+            if (!currentSessionId) return;
+            if (!data || data.sessionId !== currentSessionId) return;
+            if (typeof data.before !== "number" || !Number.isFinite(data.before)) return;
+            if (typeof data.limit !== "number" || !Number.isFinite(data.limit)) return;
+
+            let fullState: Record<string, unknown> | null = null;
+            const currentSession = await getSharedSession(currentSessionId);
+            if (currentSession?.lastState) {
+                try {
+                    const parsed = JSON.parse(currentSession.lastState);
+                    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+                        fullState = parsed as Record<string, unknown>;
+                    }
+                } catch {}
+            }
+
+            if (!fullState) {
+                const snapshotEvent = await getLatestCachedSnapshotEvent(currentSessionId);
+                if (snapshotEvent?.type === "session_active") {
+                    const snapshotState = snapshotEvent.state;
+                    if (snapshotState && typeof snapshotState === "object" && !Array.isArray(snapshotState)) {
+                        fullState = snapshotState as Record<string, unknown>;
+                    }
+                } else if (snapshotEvent && Array.isArray(snapshotEvent.messages)) {
+                    fullState = snapshotEvent;
+                }
+            }
+
+            const messages = Array.isArray(fullState?.messages) ? fullState.messages : [];
+            const before = Math.max(0, Math.min(Math.trunc(data.before), messages.length));
+            const limit = Math.max(0, Math.trunc(data.limit));
+            const startIndex = Math.max(0, before - limit);
+            const endIndex = before;
+
+            socket.emit("session_messages_page", {
+                sessionId: currentSessionId,
+                messages: messages.slice(startIndex, endIndex),
+                hasMore: startIndex > 0,
+                oldestIndex: startIndex,
+                generation: getCurrentGeneration(),
+            });
         });
 
         // ── disconnect ───────────────────────────────────────────────────────

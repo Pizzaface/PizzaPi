@@ -83,6 +83,15 @@ export interface ViewerServerToClientEvents {
     message: string;
     triggerId: string;
   }) => void;
+
+  /** Response to load_messages — a page of older messages */
+  session_messages_page: (data: {
+    sessionId: string;
+    messages: unknown[];
+    hasMore: boolean;
+    oldestIndex: number;
+    generation?: number;
+  }) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -103,6 +112,13 @@ export interface ViewerClientToServerEvents {
   /** Request a fresh snapshot resync */
   resync: (data: {
     lastSeq?: number;
+  }) => void;
+
+  /** Request older messages for pagination */
+  load_messages: (data: {
+    sessionId: string;
+    before: number;
+    limit: number;
   }) => void;
 
   /** Send user input to TUI (collab mode) */

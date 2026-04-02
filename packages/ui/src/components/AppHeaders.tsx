@@ -28,11 +28,10 @@ import type { DotState, HubSession } from "@/components/SessionSidebar";
 import type { ConfiguredModelInfo } from "@/lib/types";
 import {
   Sun, Moon, Monitor, LogOut, KeyRound, User, ChevronsUpDown, PanelLeftOpen, HardDrive,
-  Keyboard, Lock, Check, Plus, Settings,
+  Keyboard, Lock, Check, Plus, Settings, Clock,
 } from "lucide-react";
 import { signOut } from "@/lib/auth-client";
 import { useTheme, type ThemeMode } from "@/components/ThemeProvider";
-import { ActionCenterButton } from "@/components/action-center/ActionCenterButton";
 
 const THEME_CYCLE: ThemeMode[] = ["auto", "light", "dark"];
 const THEME_ICON: Record<ThemeMode, React.ReactNode> = {
@@ -112,7 +111,7 @@ export interface DesktopHeaderProps {
   onShowShortcuts: () => void;
   onChangePassword: () => void;
   onRefreshUsage: () => boolean | void;
-  onOpenActionCenter?: () => void;
+  onShowHistory?: () => void;
 }
 
 export const DesktopHeader = React.memo(function DesktopHeader({
@@ -130,7 +129,7 @@ export const DesktopHeader = React.memo(function DesktopHeader({
   onShowShortcuts,
   onChangePassword,
   onRefreshUsage,
-  onOpenActionCenter,
+  onShowHistory,
 }: DesktopHeaderProps) {
   return (
     <header className="hidden md:flex items-center justify-between gap-3 border-b bg-background px-4 pb-2 pt-[calc(0.5rem_+_env(safe-area-inset-top))] flex-shrink-0">
@@ -157,8 +156,21 @@ export const DesktopHeader = React.memo(function DesktopHeader({
       </div>
 
       <div className="flex items-center gap-2">
-        {onOpenActionCenter && (
-          <ActionCenterButton onClick={onOpenActionCenter} />
+        {onShowHistory && (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-9 w-9"
+                onClick={onShowHistory}
+                aria-label="Session history"
+              >
+                <Clock className="h-4 w-4" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>Session history (⌘⇧H)</TooltipContent>
+          </Tooltip>
         )}
 
         <ThemeToggleButton />
@@ -226,6 +238,12 @@ export const DesktopHeader = React.memo(function DesktopHeader({
               <HardDrive className="h-4 w-4" />
               Runners
             </DropdownMenuItem>
+            {onShowHistory && (
+              <DropdownMenuItem onSelect={onShowHistory}>
+                <Clock className="h-4 w-4" />
+                Session history
+              </DropdownMenuItem>
+            )}
             <DropdownMenuItem onSelect={onChangePassword}>
               <Lock className="h-4 w-4" />
               Change password
@@ -268,7 +286,9 @@ export interface MobileHeaderProps {
   onOpenSession: (id: string) => void;
   onNewSession: () => void;
   onSessionSwitcherOpenChange: (open: boolean) => void;
-  onOpenActionCenter?: () => void;
+  /** Number of sessions needing user response — shown as badge on sidebar toggle. */
+  needsResponseCount?: number;
+  onShowHistory?: () => void;
 }
 
 export const MobileHeader = React.memo(function MobileHeader({
@@ -295,22 +315,28 @@ export const MobileHeader = React.memo(function MobileHeader({
   onOpenSession,
   onNewSession,
   onSessionSwitcherOpenChange,
-  onOpenActionCenter,
+  needsResponseCount = 0,
+  onShowHistory,
 }: MobileHeaderProps) {
   return (
     <header
       className="md:hidden fixed top-0 left-0 right-0 z-50 flex items-center justify-between gap-2 border-b bg-background px-3 pp-safe-left pp-safe-right"
       style={{ paddingTop: "calc(0.5rem + env(safe-area-inset-top))", paddingBottom: "0.5rem" }}
     >
-      {/* Left: sidebar toggle */}
+      {/* Left: sidebar toggle with needs-response badge */}
       <Button
         variant="ghost"
         size="icon"
-        className="h-9 w-9 flex-shrink-0"
+        className="h-9 w-9 flex-shrink-0 relative"
         onClick={onToggleSidebar}
-        aria-label={sidebarOpen ? "Close sidebar" : "Open sidebar"}
+        aria-label={sidebarOpen ? "Close sidebar" : `Open sidebar${needsResponseCount > 0 ? ` — ${needsResponseCount} items need response` : ""}`}
       >
         <PanelLeftOpen className={`h-5 w-5 transition-transform duration-300 ${sidebarOpen ? "rotate-180" : ""}`} />
+        {!sidebarOpen && needsResponseCount > 0 && (
+          <span className="absolute -top-0.5 -right-0.5 flex items-center justify-center min-w-[14px] h-[14px] rounded-full bg-amber-500 text-white text-[8px] font-bold px-0.5 shadow-[0_0_6px_#f59e0b80]">
+            {needsResponseCount > 9 ? "9+" : needsResponseCount}
+          </span>
+        )}
       </Button>
 
       {/* Center: session switcher pill or logo */}
@@ -399,11 +425,8 @@ export const MobileHeader = React.memo(function MobileHeader({
         </DropdownMenu>
       </div>
 
-      {/* Right: action center + usage + account */}
+      {/* Right: usage + account */}
       <div className="flex items-center gap-1 flex-shrink-0">
-        {onOpenActionCenter && (
-          <ActionCenterButton onClick={onOpenActionCenter} compact />
-        )}
         {(providerUsage || authSource) && (
           <div className="hidden xs:flex">
             <UsageIndicator
@@ -461,6 +484,12 @@ export const MobileHeader = React.memo(function MobileHeader({
               <HardDrive className="h-4 w-4" />
               Runners
             </DropdownMenuItem>
+            {onShowHistory && (
+              <DropdownMenuItem onSelect={onShowHistory}>
+                <Clock className="h-4 w-4" />
+                Session history
+              </DropdownMenuItem>
+            )}
             <DropdownMenuItem onSelect={onChangePassword}>
               <Lock className="h-4 w-4" />
               Change password
