@@ -86,15 +86,10 @@ mock.module("../remote-input.js", () => ({
     buildUserMessageFromRemoteInput: mock(async (text: string) => text),
 }));
 mock.module("../remote-exec-handler.js", () => ({ handleExecFromWeb: mock(async () => {}) }));
-mock.module("../triggers/registry.js", () => ({
-    renderTrigger: mock(() => "rendered trigger"),
-    renderTriggerBatch: mock(() => "rendered trigger batch"),
-}));
 mock.module("../triggers/extension.js", () => ({
     trackReceivedTrigger: mock(() => {}),
     receivedTriggers: new Map(),
 }));
-mock.module("./chunked-delivery.js", () => ({ emitSessionActive: mock(() => {}) }));
 mock.module("./registration-gate.js", () => ({
     resetRelayRegistrationGate: mock(() => {}),
     signalRelayRegistered: mock(() => {}),
@@ -182,7 +177,8 @@ describe("remote connection startup gate", () => {
 
         expect(sendUserMessage).toHaveBeenCalledTimes(1);
         const firstCall = sendUserMessage.mock.calls[0] as unknown as [string, { deliverAs?: "followUp" | "steer" }?];
-        expect(firstCall[0]).toBe("rendered trigger batch");
+        expect(firstCall[0]).toContain("<!-- trigger:trig_1");
+        expect(firstCall[0]).toContain("GitHub");
     });
 
     test("buffers remote input until worker startup completes", async () => {
