@@ -37,9 +37,27 @@ describe("toRelayMessage", () => {
     expect(result?.key).toBe("user:id:abc123");
   });
 
-  test("uses toolCallId-based key when id is absent but toolCallId is present", () => {
+  test("uses a stable tool-call key when id is absent but toolCallId is present", () => {
     const result = toRelayMessage({ role: "tool_result", toolCallId: "tc1" }, "fallback");
-    expect(result?.key).toBe("tool_result:tool:tc1");
+    expect(result?.key).toBe("tool-call:tc1");
+    expect(result?.role).toBe("toolResult");
+  });
+
+  test("uses the same stable key for tool and toolResult messages with the same toolCallId", () => {
+    const tool = toRelayMessage({ role: "tool", toolCallId: "tc1" }, "fallback-a");
+    const toolResult = toRelayMessage({ role: "toolResult", toolCallId: "tc1" }, "fallback-b");
+    expect(tool?.key).toBe("tool-call:tc1");
+    expect(toolResult?.key).toBe("tool-call:tc1");
+  });
+
+  test("prefers toolCallId over id for tool messages so final results replace streaming partials", () => {
+    const result = toRelayMessage({ role: "tool", id: "message-123", toolCallId: "tc1" }, "fallback");
+    expect(result?.key).toBe("tool-call:tc1");
+  });
+
+  test("canonicalizes snake_case tool_result role for downstream tool rendering", () => {
+    const result = toRelayMessage({ role: "tool_result", toolName: "subagent", content: "done" }, "fallback");
+    expect(result?.role).toBe("toolResult");
   });
 
   test("uses timestamp-based key when id and toolCallId are absent", () => {

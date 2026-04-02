@@ -32,6 +32,10 @@ import {
     toFinitePositiveInt,
     isFailed,
     getFinalOutput,
+    sanitizeAgentFileSegment,
+    shouldSpillParallelOutput,
+    summarizeResultForStreaming,
+    summarizeResultsForStreaming,
     type OnUpdateCallback,
     type SubagentDetails,
     type SingleResult,
@@ -207,7 +211,7 @@ export const subagentExtension = (pi: ExtensionAPI) => {
                         ? (partial) => {
                             const currentResult = partial.details?.results[0];
                             if (currentResult) {
-                                const allResults = [...results, currentResult];
+                                const allResults = [...summarizeResultsForStreaming(results), currentResult];
                                 onUpdate({
                                     content: partial.content,
                                     details: makeDetails("chain")(allResults),
@@ -226,7 +230,7 @@ export const subagentExtension = (pi: ExtensionAPI) => {
                         const errorMsg = result.errorMessage || result.stderr || getFinalOutput(result.messages) || "(no output)";
                         return {
                             content: [{ type: "text", text: `Chain stopped at step ${i + 1} (${step.agent}): ${errorMsg}` }],
-                            details: makeDetails("chain")(results),
+                            details: makeDetails("chain")(summarizeResultsForStreaming(results)),
                             isError: true,
                         };
                     }
@@ -234,7 +238,7 @@ export const subagentExtension = (pi: ExtensionAPI) => {
                 }
                 return {
                     content: [{ type: "text", text: getFinalOutput(results[results.length - 1].messages) || "(no output)" }],
-                    details: makeDetails("chain")(results),
+                    details: makeDetails("chain")(summarizeResultsForStreaming(results)),
                 };
             }
 
@@ -283,7 +287,7 @@ export const subagentExtension = (pi: ExtensionAPI) => {
                         },
                         makeDetails("parallel"),
                     );
-                    allResults[index] = result;
+                    allResults[index] = summarizeResultForStreaming(result);
                     emitParallelUpdate();
                     return result;
                 });
@@ -302,12 +306,12 @@ export const subagentExtension = (pi: ExtensionAPI) => {
                 // If combined output is very large, spill each task's output to a temp file
                 // so the LLM can selectively read what it needs without blowing up context
                 let contentText: string;
-                if (fullText.length > PARALLEL_SPILL_THRESHOLD) {
+                if (shouldSpillParallelOutput(fullText)) {
                     const spillDir = mkdtempSync(join(tmpdir(), "subagent-parallel-"));
                     const fileSummaries = results.map((r, i) => {
                         const output = getFinalOutput(r.messages);
                         const status = isFailed(r) ? "failed" : "completed";
-                        const filePath = join(spillDir, `${i}-${r.agent}.md`);
+                        const filePath = join(spillDir, `${i}-${sanitizeAgentFileSegment(r.agent)}.md`);
                         writeFileSync(filePath, `# [${r.agent}] ${status}\n\nTask: ${r.task}\n\n${output || "(no output)"}`);
                         const preview = output.slice(0, 200) + (output.length > 200 ? "..." : "");
                         return `[${r.agent}] ${status} (${output.length} chars) → ${filePath}\n${preview}`;
@@ -319,7 +323,7 @@ export const subagentExtension = (pi: ExtensionAPI) => {
 
                 return {
                     content: [{ type: "text", text: contentText }],
-                    details: makeDetails("parallel")(results),
+                    details: makeDetails("parallel")(summarizeResultsForStreaming(results)),
                     ...(hasFailures && { isError: true }),
                 };
             }
@@ -334,13 +338,13 @@ export const subagentExtension = (pi: ExtensionAPI) => {
                     const errorMsg = result.errorMessage || result.stderr || getFinalOutput(result.messages) || "(no output)";
                     return {
                         content: [{ type: "text", text: `Agent ${result.stopReason || "failed"}: ${errorMsg}` }],
-                        details: makeDetails("single")([result]),
+                        details: makeDetails("single")([summarizeResultForStreaming(result)]),
                         isError: true,
                     };
                 }
                 return {
                     content: [{ type: "text", text: getFinalOutput(result.messages) || "(no output)" }],
-                    details: makeDetails("single")([result]),
+                    details: makeDetails("single")([summarizeResultForStreaming(result)]),
                 };
             }
 

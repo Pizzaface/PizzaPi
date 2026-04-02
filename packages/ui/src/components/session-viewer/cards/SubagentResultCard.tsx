@@ -65,6 +65,9 @@ interface SingleResult {
   stopReason?: string;
   errorMessage?: string;
   step?: number;
+  summaryOnly?: boolean;
+  latestOutput?: string;
+  toolCallCount?: number;
 }
 
 interface SubagentDetails {
@@ -114,11 +117,15 @@ function aggregateUsage(results: SingleResult[]): UsageStats {
 
 // ── Extract data from messages ─────────────────────────────────────────
 
-function getFinalOutput(messages: Array<{ role: string; content: unknown[] }>): string {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const msg = messages[i];
+function getFinalOutput(result: SingleResult): string {
+  if (typeof result.latestOutput === "string" && result.latestOutput) {
+    return result.latestOutput;
+  }
+  for (let i = result.messages.length - 1; i >= 0; i--) {
+    const msg = result.messages[i];
     if (msg.role === "assistant") {
-      for (const part of msg.content) {
+      for (let j = msg.content.length - 1; j >= 0; j--) {
+        const part = msg.content[j];
         if (part && typeof part === "object" && "type" in part && (part as any).type === "text") {
           return (part as any).text;
         }
@@ -128,9 +135,10 @@ function getFinalOutput(messages: Array<{ role: string; content: unknown[] }>): 
   return "";
 }
 
-function getToolCallCount(messages: Array<{ role: string; content: unknown[] }>): number {
+function getToolCallCount(result: SingleResult): number {
+  if (typeof result.toolCallCount === "number") return result.toolCallCount;
   let count = 0;
-  for (const msg of messages) {
+  for (const msg of result.messages) {
     if (msg.role === "assistant") {
       for (const part of msg.content) {
         if (part && typeof part === "object" && "type" in part && (part as any).type === "toolCall") {
@@ -287,8 +295,8 @@ function AgentExchange({
   showStepLabel?: boolean;
 }) {
   const isError = result.exitCode !== 0 || result.stopReason === "error" || result.stopReason === "aborted";
-  const finalOutput = getFinalOutput(result.messages);
-  const toolCallCount = getToolCallCount(result.messages);
+  const finalOutput = getFinalOutput(result);
+  const toolCallCount = getToolCallCount(result);
 
   return (
     <>

@@ -45,6 +45,12 @@ export interface SingleResult {
     stopReason?: string;
     errorMessage?: string;
     step?: number;
+    /** True when this result is a lightweight streaming summary, not the full transcript. */
+    summaryOnly?: boolean;
+    /** Latest assistant text preview for summary-only updates. */
+    latestOutput?: string;
+    /** Number of tool calls seen so far for summary-only updates. */
+    toolCallCount?: number;
 }
 
 export interface SubagentDetails {
@@ -71,7 +77,8 @@ export function getFinalOutput(messages: Message[]): string {
     for (let i = messages.length - 1; i >= 0; i--) {
         const msg = messages[i];
         if (msg.role === "assistant") {
-            for (const part of msg.content) {
+            for (let j = msg.content.length - 1; j >= 0; j--) {
+                const part = msg.content[j];
                 if (part.type === "text") return part.text;
             }
         }
@@ -90,4 +97,44 @@ export function getDisplayItems(messages: Message[]): DisplayItem[] {
         }
     }
     return items;
+}
+
+export function getToolCallCount(messages: Message[]): number {
+    let count = 0;
+    for (const msg of messages) {
+        if (msg.role !== "assistant") continue;
+        for (const part of msg.content) {
+            if (part.type === "toolCall") count++;
+        }
+    }
+    return count;
+}
+
+export function summarizeResultForStreaming(result: SingleResult): SingleResult {
+    return {
+        ...result,
+        messages: [],
+        summaryOnly: true,
+        latestOutput: getFinalOutput(result.messages),
+        toolCallCount: getToolCallCount(result.messages),
+    };
+}
+
+export function summarizeResultsForStreaming(results: SingleResult[]): SingleResult[] {
+    return results.map(summarizeResultForStreaming);
+}
+
+export function shouldSpillParallelOutput(text: string, threshold = PARALLEL_SPILL_THRESHOLD): boolean {
+    return Buffer.byteLength(text, "utf8") > threshold;
+}
+
+export function sanitizeAgentFileSegment(agent: string): string {
+    const sanitized = agent
+        .trim()
+        .replace(/[\\/]+/g, "-")
+        .replace(/[^a-zA-Z0-9._-]+/g, "-")
+        .replace(/^[-.]+/, "")
+        .replace(/[-.]+$/, "")
+        .slice(0, 64);
+    return sanitized || "agent";
 }

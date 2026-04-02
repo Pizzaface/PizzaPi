@@ -89,8 +89,8 @@ export function renderSubagentResult(result: any, opts: { expanded: boolean }, t
         const r = details.results[0];
         const isError = r.exitCode !== 0 || r.stopReason === "error" || r.stopReason === "aborted";
         const icon = isError ? theme.fg("error", "✗") : theme.fg("success", "✓");
-        const displayItems = getDisplayItems(r.messages);
-        const finalOutput = getFinalOutput(r.messages);
+        const displayItems = r.summaryOnly ? [] : getDisplayItems(r.messages);
+        const finalOutput = r.latestOutput || getFinalOutput(r.messages);
 
         if (expanded) {
             const container = new Container();
@@ -133,11 +133,11 @@ export function renderSubagentResult(result: any, opts: { expanded: boolean }, t
         let text = `${icon} ${theme.fg("toolTitle", theme.bold(r.agent))}${theme.fg("muted", ` (${r.agentSource})`)}`;
         if (isError && r.stopReason) text += ` ${theme.fg("error", `[${r.stopReason}]`)}`;
         if (isError && r.errorMessage) text += `\n${theme.fg("error", `Error: ${r.errorMessage}`)}`;
-        else if (displayItems.length === 0) text += `\n${theme.fg("muted", "(no output)")}`;
-        else {
+        else if (displayItems.length > 0) {
             text += `\n${renderDisplayItems(displayItems, COLLAPSED_ITEM_COUNT)}`;
             if (displayItems.length > COLLAPSED_ITEM_COUNT) text += `\n${theme.fg("muted", "(Ctrl+O to expand)")}`;
-        }
+        } else if (finalOutput) text += `\n${theme.fg("toolOutput", finalOutput)}`;
+        else text += `\n${theme.fg("muted", "(no output)")}`;
         const usageStr = formatUsageStats(r.usage, r.model);
         if (usageStr) text += `\n${theme.fg("dim", usageStr)}`;
         return new Text(text, 0, 0);
@@ -161,8 +161,8 @@ export function renderSubagentResult(result: any, opts: { expanded: boolean }, t
 
             for (const r of details.results) {
                 const rIcon = r.exitCode === 0 ? theme.fg("success", "✓") : theme.fg("error", "✗");
-                const displayItems = getDisplayItems(r.messages);
-                const finalOutput = getFinalOutput(r.messages);
+                const displayItems = r.summaryOnly ? [] : getDisplayItems(r.messages);
+                const finalOutput = r.latestOutput || getFinalOutput(r.messages);
 
                 container.addChild(new Spacer(1));
                 container.addChild(
@@ -184,6 +184,9 @@ export function renderSubagentResult(result: any, opts: { expanded: boolean }, t
                 if (finalOutput) {
                     container.addChild(new Spacer(1));
                     container.addChild(new Markdown(finalOutput.trim(), 0, 0, mdTheme));
+                } else if (displayItems.length === 0) {
+                    container.addChild(new Spacer(1));
+                    container.addChild(new Text(theme.fg("muted", "(no output)"), 0, 0));
                 }
 
                 const stepUsage = formatUsageStats(r.usage, r.model);
@@ -205,10 +208,12 @@ export function renderSubagentResult(result: any, opts: { expanded: boolean }, t
             theme.fg("accent", `${successCount}/${details.results.length} steps`);
         for (const r of details.results) {
             const rIcon = r.exitCode === 0 ? theme.fg("success", "✓") : theme.fg("error", "✗");
-            const displayItems = getDisplayItems(r.messages);
+            const displayItems = r.summaryOnly ? [] : getDisplayItems(r.messages);
+            const finalOutput = r.latestOutput || getFinalOutput(r.messages);
             text += `\n\n${theme.fg("border", "─── ")}${theme.fg("muted", "Step ")}${theme.fg("accent", `${r.step}: `)}${theme.fg("accent", r.agent)} ${rIcon}`;
-            if (displayItems.length === 0) text += `\n${theme.fg("muted", "(no output)")}`;
-            else text += `\n${renderDisplayItems(displayItems, 5)}`;
+            if (displayItems.length > 0) text += `\n${renderDisplayItems(displayItems, 5)}`;
+            else if (finalOutput) text += `\n${theme.fg("toolOutput", finalOutput)}`;
+            else text += `\n${theme.fg("muted", "(no output)")}`;
         }
         const usageStr = formatUsageStats(aggregateUsage(details.results));
         if (usageStr) text += `\n\n${theme.fg("muted", "Total: ")}${theme.fg("dim", usageStr)}`;
@@ -239,8 +244,8 @@ export function renderSubagentResult(result: any, opts: { expanded: boolean }, t
 
             for (const r of details.results) {
                 const rIcon = r.exitCode === 0 ? theme.fg("success", "✓") : theme.fg("error", "✗");
-                const displayItems = getDisplayItems(r.messages);
-                const finalOutput = getFinalOutput(r.messages);
+                const displayItems = r.summaryOnly ? [] : getDisplayItems(r.messages);
+                const finalOutput = r.latestOutput || getFinalOutput(r.messages);
 
                 container.addChild(new Spacer(1));
                 container.addChild(
@@ -262,6 +267,9 @@ export function renderSubagentResult(result: any, opts: { expanded: boolean }, t
                 if (finalOutput) {
                     container.addChild(new Spacer(1));
                     container.addChild(new Markdown(finalOutput.trim(), 0, 0, mdTheme));
+                } else if (displayItems.length === 0) {
+                    container.addChild(new Spacer(1));
+                    container.addChild(new Text(theme.fg("muted", "(no output)"), 0, 0));
                 }
 
                 const taskUsage = formatUsageStats(r.usage, r.model);
@@ -285,11 +293,12 @@ export function renderSubagentResult(result: any, opts: { expanded: boolean }, t
                     : r.exitCode === 0
                         ? theme.fg("success", "✓")
                         : theme.fg("error", "✗");
-            const displayItems = getDisplayItems(r.messages);
+            const displayItems = r.summaryOnly ? [] : getDisplayItems(r.messages);
+            const finalOutput = r.latestOutput || getFinalOutput(r.messages);
             text += `\n\n${theme.fg("border", "─── ")}${theme.fg("accent", r.agent)} ${rIcon}`;
-            if (displayItems.length === 0)
-                text += `\n${theme.fg("muted", r.exitCode === -1 ? "(running...)" : "(no output)")}`;
-            else text += `\n${renderDisplayItems(displayItems, 5)}`;
+            if (displayItems.length > 0) text += `\n${renderDisplayItems(displayItems, 5)}`;
+            else if (finalOutput) text += `\n${theme.fg("toolOutput", finalOutput)}`;
+            else text += `\n${theme.fg("muted", r.exitCode === -1 ? "(running...)" : "(no output)")}`;
         }
         if (!isRunning) {
             const usageStr = formatUsageStats(aggregateUsage(details.results));

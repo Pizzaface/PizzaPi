@@ -12,18 +12,24 @@ export function toRelayMessage(raw: unknown, fallbackId: string): RelayMessage |
   if (!raw || typeof raw !== "object") return null;
 
   const msg = raw as Record<string, unknown>;
-  const role = typeof msg.role === "string" ? msg.role : "message";
+  const rawRole = typeof msg.role === "string" ? msg.role : "message";
+  const role = rawRole === "tool_result" || rawRole === "toolresult" ? "toolResult" : rawRole;
   const timestamp = typeof msg.timestamp === "number" ? msg.timestamp : undefined;
   const toolCallId = typeof msg.toolCallId === "string" ? msg.toolCallId : "";
   const id = typeof msg.id === "string" ? msg.id : undefined;
 
-  const key = id
-    ? `${role}:id:${id}`
-    : toolCallId
-      ? `${role}:tool:${toolCallId}`
-      : timestamp !== undefined
-        ? `${role}:ts:${timestamp}`
-        : `${role}:fallback:${fallbackId}`;
+  const normalizedRole = role.toLowerCase();
+  const isToolMessage = normalizedRole === "tool" || normalizedRole === "toolresult";
+
+  const key = isToolMessage && toolCallId
+    ? `tool-call:${toolCallId}`
+    : id
+      ? `${role}:id:${id}`
+      : toolCallId
+        ? `${role}:tool:${toolCallId}`
+        : timestamp !== undefined
+          ? `${role}:ts:${timestamp}`
+          : `${role}:fallback:${fallbackId}`;
 
   const stopReason = typeof msg.stopReason === "string" ? msg.stopReason : undefined;
   const errorMessage = typeof msg.errorMessage === "string" ? msg.errorMessage : undefined;

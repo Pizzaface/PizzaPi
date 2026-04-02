@@ -516,6 +516,31 @@ describe("exportToMarkdown", () => {
     expect(md).toContain("Fixed and tested");
   });
 
+  test("subagent tool export falls back to latestOutput for summary-only results", () => {
+    const md = exportToMarkdown([
+      msg({
+        role: "toolResult",
+        toolName: "subagent",
+        content: "Parallel: 1/1 done",
+        details: {
+          mode: "parallel",
+          results: [
+            {
+              agent: "researcher",
+              task: "Find the bug",
+              messages: [],
+              latestOutput: "Found it in app.tsx line 42",
+              exitCode: 0,
+            },
+          ],
+        },
+      }),
+    ]);
+    expect(md).toContain("#### 🤖 researcher");
+    expect(md).toContain("**Task:** Find the bug");
+    expect(md).toContain("Found it in app.tsx line 42");
+  });
+
   test("failed send_message turn shows error state", () => {
     const md = exportToMarkdown([
       msg({
