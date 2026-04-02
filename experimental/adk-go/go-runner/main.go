@@ -275,17 +275,19 @@ func (r *GoRunner) runSession(ctx context.Context, sess *session, prompt string,
 				evType, _ := relayEv["type"].(string)
 				r.logger.Printf("session %s relay event: %v", sessionID[:8], evType)
 
-				// Forward via runner protocol (runner_session_event)
+				// Forward via the /relay session connection — this goes through
+				// the server's event pipeline (state caching, image stripping,
+				// viewer broadcast). This is the primary event delivery path.
+				if sess.relaySession != nil {
+					sess.relaySession.EmitEvent(relayEv)
+				}
+
+				// Also forward via runner protocol for runner-level tracking
+				// (session ownership, heartbeat monitoring).
 				r.client.Emit("runner_session_event", map[string]any{
 					"sessionId": sessionID,
 					"event":     relayEv,
 				})
-
-				// Also forward via the /relay session connection so the
-				// event pipeline processes it (caching, viewer broadcast, etc.)
-				if sess.relaySession != nil {
-					sess.relaySession.EmitEvent(relayEv)
-				}
 			}
 
 		case <-heartbeatTicker.C:

@@ -142,17 +142,18 @@ func TestAdapterFullConversationFlow(t *testing.T) {
 	appendEvents(a.HandleEvent(&ToolResultEvent{ToolID: "tool_abc", Content: "file1.txt\nfile2.txt", IsError: false}))
 	appendEvents(a.HandleEvent(&ResultEvent{InputTokens: 500, OutputTokens: 200, TotalCostUSD: 0.05}))
 
-	if len(relayed) != 8 {
-		t.Fatalf("expected 8 relay events, got %d: %+v", len(relayed), relayed)
+	if len(relayed) != 9 {
+		t.Fatalf("expected 9 relay events, got %d: %+v", len(relayed), relayed)
 	}
 	assertEventType(t, relayed[0], "heartbeat")
-	assertEventType(t, relayed[1], "session_active")
+	assertEventType(t, relayed[1], "session_active")   // initial empty snapshot
 	assertEventType(t, relayed[2], "message_update")
 	assertEventType(t, relayed[3], "message_update")
-	assertEventType(t, relayed[4], "message_update")
-	assertEventType(t, relayed[5], "message_update")
+	assertEventType(t, relayed[4], "message_update")    // final assistant message
+	assertEventType(t, relayed[5], "message_update")    // tool_use block
 	assertEventType(t, relayed[6], "tool_result_message")
-	assertEventType(t, relayed[7], "session_metadata_update")
+	assertEventType(t, relayed[7], "session_active")    // final snapshot with messages
+	assertEventType(t, relayed[8], "session_metadata_update")
 	content := getContent(t, relayed[4])
 	if len(content) != 1 || content[0]["text"] != "Hello world" {
 		t.Fatalf("unexpected final assistant content: %+v", content)
