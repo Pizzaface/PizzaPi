@@ -3831,98 +3831,6 @@ export function App() {
     }
   }, [activeSessionId, liveSessions, handleOpenSession, waitForSessionToGoLive]);
 
-  // ── Resume a historical session on a runner ────────────────────────────
-  // Queued resume exec — fires once the viewer socket connects to the new session
-  const pendingResumeExecRef = React.useRef<string | null>(null);
-
-  const handleResumeHistoricalSession = React.useCallback(async (
-    _historicalSessionId: string,
-    runnerId: string,
-    cwd: string,
-  ) => {
-    setViewerStatus("Resuming session…");
-
-    try {
-      const res = await fetch("/api/runners/spawn", {
-        method: "POST",
-        credentials: "include",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ runnerId, ...(cwd ? { cwd } : {}) }),
-      });
-
-      const body = await res.json().catch(() => null) as { error?: string; sessionId?: string } | null;
-      if (!res.ok) {
-        const mapped = mapUserError({
-          error: body?.error,
-          statusCode: res.status,
-          context: "session_spawn",
-        });
-        console.error("Failed to spawn resume session:", mapped.technicalMessage, body);
-        setViewerStatus(mapped.userMessage);
-        return;
-      }
-
-      const sessionId = typeof body?.sessionId === "string" ? body.sessionId : null;
-      if (!sessionId) {
-        setViewerStatus("Failed to spawn session — missing session ID");
-        return;
-      }
-
-      // Wait for the session to come live
-      const live = await waitForSessionToGoLive(sessionId, 30_000);
-      if (!live) {
-        setViewerStatus("Session is starting… it will appear in the sidebar soon");
-        return;
-      }
-
-      // Queue the /resume exec to fire once the viewer socket connects.
-      // The "connected" handler in openSession will pick this up.
-      pendingResumeExecRef.current = sessionId;
-
-      handleOpenSession(sessionId);
-      setViewerStatus("Connecting…");
-    } catch (err) {
-      const mapped = mapUserError({
-        error: err,
-        context: "session_spawn",
-      });
-      console.error("Failed to resume session:", err);
-      setViewerStatus(mapped.userMessage);
-    }
-  }, [handleOpenSession, waitForSessionToGoLive]);
-
-  // Fire the queued resume exec when the viewer socket connects
-  React.useEffect(() => {
-    const pendingSessionId = pendingResumeExecRef.current;
-    if (!pendingSessionId) return;
-    if (activeSessionId !== pendingSessionId) return;
-
-    // Small delay to ensure the socket is fully connected
-    const timer = setTimeout(() => {
-      if (pendingResumeExecRef.current !== pendingSessionId) return;
-      pendingResumeExecRef.current = null;
-
-      const socket = viewerWsRef.current;
-      if (!socket || !socket.connected) return;
-
-      const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-      socket.emit("exec", { type: "exec", id, command: "list_resume_sessions" });
-
-      // After listing, issue the actual resume with the most recent session
-      // (the runner will pick the latest session to resume)
-      setTimeout(() => {
-        if (activeSessionRef.current !== pendingSessionId) return;
-        const resumeSocket = viewerWsRef.current;
-        if (!resumeSocket || !resumeSocket.connected) return;
-        const resumeId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-        resumeSocket.emit("exec", { type: "exec", id: resumeId, command: "resume_session" });
-        setViewerStatus("Resuming previous conversation…");
-      }, 500);
-    }, 300);
-
-    return () => clearTimeout(timer);
-  }, [activeSessionId]);
-
   // Derive runner/cwd for the active session (used by File Explorer)
   const activeSessionInfo = React.useMemo(() => {
     if (!activeSessionId) return null;
@@ -3935,17 +3843,6 @@ export function App() {
   }, [activeSessionId, liveSessions]);
 
   const activeRunnerInfo = useRunnerData(feedRunners, activeSessionInfo?.runnerId);
-
-  // Sets for the HistoryCommandPalette
-  const liveSessionIds = React.useMemo(
-    () => new Set(liveSessions.map((s) => s.sessionId)),
-    [liveSessions],
-  );
-  // feedRunners only contains connected (online) runners from the WS feed
-  const onlineRunnerIds = React.useMemo(
-    () => new Set(feedRunners.map((r) => r.runnerId)),
-    [feedRunners],
-  );
 
   // Stable session ID for tunnel URLs — stays constant across same-runner
   // session switches so iframe service panels don't reload. The tunnel proxy
@@ -4924,10 +4821,20 @@ export function App() {
         <HistoryCommandPalette
           open={historyOpen}
           onOpenChange={setHistoryOpen}
-          liveSessionIds={liveSessionIds}
-          onlineRunnerIds={onlineRunnerIds}
+          sessions={resumeSessions}
+          loading={resumeSessionsLoading}
+          onRefresh={requestResumeSessions}
           onOpenSession={(id) => { handleOpenSession(id); setHistoryOpen(false); }}
-          onResumeSession={handleResumeHistoricalSession}
+          onResumeSession={(sessionId) => {
+            const session = resumeSessions.find((s) => s.id === sessionId);
+            if (!session) return;
+            sendRemoteExec({
+              type: "exec",
+              id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+              command: "resume_session",
+              sessionPath: session.path,
+            });
+          }}
         />
 
         <NewSessionWizardDialog

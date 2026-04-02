@@ -11,33 +11,21 @@ import {
 import { cn } from "@/lib/utils";
 import { formatPathTail } from "@/lib/path";
 import { FolderOpen, Play, Loader2 } from "lucide-react";
-
-export interface HistoricalSession {
-    sessionId: string;
-    cwd: string;
-    shareUrl: string;
-    startedAt: string;
-    lastActiveAt: string;
-    endedAt: string | null;
-    isEphemeral: boolean;
-    expiresAt: string | null;
-    isPinned: boolean;
-    runnerId: string | null;
-    runnerName: string | null;
-    sessionName: string | null;
-}
+import type { ResumeSessionOption } from "@/lib/types";
 
 export interface HistoryCommandPaletteProps {
     open: boolean;
     onOpenChange: (open: boolean) => void;
-    /** Set of session IDs currently live (filtered out of history) */
-    liveSessionIds: Set<string>;
-    /** Set of runner IDs that are currently online */
-    onlineRunnerIds: Set<string>;
-    /** Called when user selects a historical session to view its snapshot */
+    /** Resume sessions from the runner (same source as /resume) */
+    sessions: ResumeSessionOption[];
+    /** Whether the session list is currently loading */
+    loading: boolean;
+    /** Trigger a refresh of the resume sessions list */
+    onRefresh: () => void;
+    /** Called when user selects a session to view */
     onOpenSession: (sessionId: string) => void;
-    /** Called when user wants to resume a session on a runner */
-    onResumeSession?: (sessionId: string, runnerId: string, cwd: string) => void;
+    /** Called when user wants to resume a session */
+    onResumeSession?: (sessionId: string) => void;
 }
 
 function formatRelativeDate(isoString: string): string {
@@ -71,12 +59,12 @@ function getDateGroup(isoString: string): string {
     return date.toLocaleDateString(undefined, { month: "long", year: "numeric" });
 }
 
-function groupByDate(sessions: HistoricalSession[]): { label: string; sessions: HistoricalSession[] }[] {
-    const groups: Map<string, HistoricalSession[]> = new Map();
+function groupByDate(sessions: ResumeSessionOption[]): { label: string; sessions: ResumeSessionOption[] }[] {
+    const groups: Map<string, ResumeSessionOption[]> = new Map();
     const order: string[] = [];
 
     for (const s of sessions) {
-        const label = getDateGroup(s.lastActiveAt);
+        const label = getDateGroup(s.modified);
         if (!groups.has(label)) {
             groups.set(label, []);
             order.push(label);
@@ -87,96 +75,35 @@ function groupByDate(sessions: HistoricalSession[]): { label: string; sessions: 
     return order.map((label) => ({ label, sessions: groups.get(label)! }));
 }
 
-const PAGE_SIZE = 50;
-
 export const HistoryCommandPalette = React.memo(function HistoryCommandPalette({
     open,
     onOpenChange,
-    liveSessionIds,
-    onlineRunnerIds,
+    sessions,
+    loading,
+    onRefresh,
     onOpenSession,
     onResumeSession,
 }: HistoryCommandPaletteProps) {
-    const [sessions, setSessions] = React.useState<HistoricalSession[]>([]);
-    const [loading, setLoading] = React.useState(false);
-    const [initialLoaded, setInitialLoaded] = React.useState(false);
-    const [hasMore, setHasMore] = React.useState(false);
     const [resumingSessionId, setResumingSessionId] = React.useState<string | null>(null);
 
-    const fetchSessions = React.useCallback(async (offset: number = 0) => {
-        setLoading(true);
-        try {
-            const params = new URLSearchParams({ limit: String(PAGE_SIZE + 1) });
-            if (offset > 0) params.set("offset", String(offset));
-            const res = await fetch(`/api/sessions?${params.toString()}`, { credentials: "include" });
-            if (!res.ok) return;
-            const body = await res.json();
-            const persisted: HistoricalSession[] = Array.isArray(body?.persistedSessions)
-                ? body.persistedSessions.map((s: any) => ({
-                    sessionId: s.sessionId,
-                    cwd: s.cwd ?? "",
-                    shareUrl: s.shareUrl ?? "",
-                    startedAt: s.startedAt ?? "",
-                    lastActiveAt: s.lastActiveAt ?? "",
-                    endedAt: s.endedAt ?? null,
-                    isEphemeral: s.isEphemeral ?? false,
-                    expiresAt: s.expiresAt ?? null,
-                    isPinned: s.isPinned ?? false,
-                    runnerId: s.runnerId ?? null,
-                    runnerName: s.runnerName ?? null,
-                    sessionName: s.sessionName ?? null,
-                }))
-                : [];
-
-            const hasMoreItems = persisted.length > PAGE_SIZE;
-            const pageItems = hasMoreItems ? persisted.slice(0, PAGE_SIZE) : persisted;
-
-            if (offset > 0) {
-                setSessions((prev) => {
-                    const existingIds = new Set(prev.map((s) => s.sessionId));
-                    const newItems = pageItems.filter((s) => !existingIds.has(s.sessionId));
-                    return [...prev, ...newItems];
-                });
-            } else {
-                setSessions(pageItems);
-            }
-            setHasMore(hasMoreItems);
-            setInitialLoaded(true);
-        } catch {
-            // best-effort
-        } finally {
-            setLoading(false);
-        }
-    }, []);
-
-    // Fetch when the palette opens
-    React.useEffect(() => {
-        if (open && !initialLoaded) {
-            fetchSessions();
-        }
-    }, [open, initialLoaded, fetchSessions]);
-
-    // Refresh on re-open (stale data check)
+    // Refresh when the palette opens
     const lastOpenRef = React.useRef(false);
     React.useEffect(() => {
-        if (open && !lastOpenRef.current && initialLoaded) {
-            // Re-opening — refresh the first page
-            fetchSessions(0);
+        if (open && !lastOpenRef.current) {
+            onRefresh();
         }
         lastOpenRef.current = open;
-    }, [open, initialLoaded, fetchSessions]);
+    }, [open, onRefresh]);
 
-    const handleResume = React.useCallback(async (e: React.MouseEvent, s: HistoricalSession) => {
+    const handleResume = React.useCallback((e: React.MouseEvent, s: ResumeSessionOption) => {
         e.stopPropagation();
         e.preventDefault();
-        if (!s.runnerId || !onResumeSession) return;
-        setResumingSessionId(s.sessionId);
-        try {
-            await onResumeSession(s.sessionId, s.runnerId, s.cwd);
-            onOpenChange(false);
-        } finally {
-            setResumingSessionId(null);
-        }
+        if (!onResumeSession) return;
+        setResumingSessionId(s.id);
+        onResumeSession(s.id);
+        onOpenChange(false);
+        // Reset after a delay — the session switch will handle the rest
+        setTimeout(() => setResumingSessionId(null), 2000);
     }, [onResumeSession, onOpenChange]);
 
     const handleSelect = React.useCallback((sessionId: string) => {
@@ -184,13 +111,7 @@ export const HistoryCommandPalette = React.memo(function HistoryCommandPalette({
         onOpenChange(false);
     }, [onOpenSession, onOpenChange]);
 
-    // Filter out live sessions
-    const filteredSessions = React.useMemo(
-        () => sessions.filter((s) => !liveSessionIds.has(s.sessionId)),
-        [sessions, liveSessionIds],
-    );
-
-    const dateGroups = React.useMemo(() => groupByDate(filteredSessions), [filteredSessions]);
+    const dateGroups = React.useMemo(() => groupByDate(sessions), [sessions]);
 
     return (
         <CommandDialog
@@ -201,7 +122,7 @@ export const HistoryCommandPalette = React.memo(function HistoryCommandPalette({
             className="max-w-lg"
             showCloseButton={false}
         >
-            <CommandInput placeholder="Search sessions by name, path, or runner…" />
+            <CommandInput placeholder="Search sessions by name or path…" />
             <CommandList className="max-h-[min(60vh,400px)]">
                 <CommandEmpty>
                     {loading ? (
@@ -219,25 +140,23 @@ export const HistoryCommandPalette = React.memo(function HistoryCommandPalette({
                         {gi > 0 && <CommandSeparator />}
                         <CommandGroup heading={group.label}>
                             {group.sessions.map((s) => {
-                                const canResume = !!s.runnerId && onlineRunnerIds.has(s.runnerId) && !!onResumeSession;
-                                const isResuming = resumingSessionId === s.sessionId;
-                                const displayName = s.sessionName?.trim() || `Session ${s.sessionId.slice(0, 8)}…`;
+                                const isResuming = resumingSessionId === s.id;
+                                const displayName = s.name?.trim() || `Session ${s.id.slice(0, 8)}…`;
 
                                 // Build search keywords for cmdk filtering
                                 const keywords = [
-                                    s.sessionId,
-                                    s.cwd,
-                                    s.runnerName ?? "",
-                                    s.runnerId ?? "",
-                                    s.sessionName ?? "",
+                                    s.id,
+                                    s.path,
+                                    s.name ?? "",
+                                    s.firstMessage ?? "",
                                 ].filter(Boolean);
 
                                 return (
                                     <CommandItem
-                                        key={s.sessionId}
-                                        value={`${displayName} ${s.cwd} ${s.runnerName ?? ""}`}
+                                        key={s.id}
+                                        value={`${displayName} ${s.path}`}
                                         keywords={keywords}
-                                        onSelect={() => handleSelect(s.sessionId)}
+                                        onSelect={() => handleSelect(s.id)}
                                         className="flex items-center gap-2.5 py-2.5"
                                     >
                                         <div className="flex-shrink-0 flex items-center justify-center w-7 h-7 rounded-md bg-muted/50">
@@ -249,23 +168,25 @@ export const HistoryCommandPalette = React.memo(function HistoryCommandPalette({
                                                     {displayName}
                                                 </span>
                                                 <span className="text-[0.65rem] text-muted-foreground flex-shrink-0 whitespace-nowrap">
-                                                    {formatRelativeDate(s.lastActiveAt)}
+                                                    {formatRelativeDate(s.modified)}
                                                 </span>
                                             </div>
                                             <div className="flex items-center gap-1 mt-0.5 min-w-0">
-                                                <span className="text-xs text-muted-foreground/70 truncate" title={s.cwd}>
-                                                    {formatPathTail(s.cwd, 2)}
+                                                <span className="text-xs text-muted-foreground/70 truncate" title={s.path}>
+                                                    {formatPathTail(s.path, 2)}
                                                 </span>
-                                                {(s.runnerName || s.runnerId) && (
-                                                    <span className="text-[0.65rem] text-muted-foreground/50 truncate max-w-[6rem]">
-                                                        · {s.runnerName || `Runner ${s.runnerId?.slice(0, 8)}…`}
-                                                    </span>
-                                                )}
                                             </div>
+                                            {s.firstMessage && (
+                                                <div className="mt-0.5 min-w-0">
+                                                    <span className="text-[0.65rem] text-muted-foreground/50 truncate block">
+                                                        {s.firstMessage.length > 80 ? `${s.firstMessage.slice(0, 80)}…` : s.firstMessage}
+                                                    </span>
+                                                </div>
+                                            )}
                                         </div>
 
                                         {/* Resume button */}
-                                        {canResume && (
+                                        {onResumeSession && (
                                             <button
                                                 type="button"
                                                 onClick={(e) => handleResume(e, s)}
@@ -276,7 +197,7 @@ export const HistoryCommandPalette = React.memo(function HistoryCommandPalette({
                                                         ? "text-muted-foreground/50"
                                                         : "text-green-600 dark:text-green-400 hover:bg-green-500/10",
                                                 )}
-                                                title={`Resume on ${s.runnerName || "runner"}`}
+                                                title="Resume session"
                                             >
                                                 {isResuming ? (
                                                     <Loader2 className="h-3 w-3 animate-spin" />
@@ -292,23 +213,6 @@ export const HistoryCommandPalette = React.memo(function HistoryCommandPalette({
                         </CommandGroup>
                     </React.Fragment>
                 ))}
-
-                {/* Load more */}
-                {hasMore && (
-                    <>
-                        <CommandSeparator />
-                        <div className="p-2">
-                            <button
-                                type="button"
-                                onClick={() => fetchSessions(sessions.length)}
-                                disabled={loading}
-                                className="w-full px-3 py-2 text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-accent rounded-md transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-                            >
-                                {loading ? "Loading…" : "Load more sessions"}
-                            </button>
-                        </div>
-                    </>
-                )}
             </CommandList>
         </CommandDialog>
     );
