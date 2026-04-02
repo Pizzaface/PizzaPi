@@ -123,11 +123,10 @@ func (r *GoRunner) emitRegister() {
 		name = hostname
 	}
 
-	cwd, _ := os.Getwd()
 	r.client.Emit("register_runner", map[string]any{
 		"runnerId": r.runnerID,
 		"name":     name,
-		"roots":    []string{cwd},
+		"roots":    []string{},
 		"skills":   []any{},
 		"agents":   []any{},
 		"plugins":  []any{},
@@ -221,7 +220,7 @@ func (r *GoRunner) handleNewSession(data json.RawMessage) {
 func (r *GoRunner) runSession(ctx context.Context, sess *session, prompt string) {
 	sessionID := sess.sessionID
 
-	events, err := sess.runner.Start(ctx, prompt)
+	events, err := sess.runner.StartInteractive(ctx, prompt)
 	if err != nil {
 		r.logger.Printf("session %s start error: %v", sessionID[:8], err)
 		r.client.Emit("session_error", map[string]any{
@@ -252,9 +251,12 @@ func (r *GoRunner) runSession(ctx context.Context, sess *session, prompt string)
 				return
 			}
 
+			r.logger.Printf("session %s event: type=%s", sessionID[:8], ev.EventType())
+
 			// Convert Claude event to relay events via adapter
 			relayEvents := sess.adapter.HandleEvent(ev)
 			for _, relayEv := range relayEvents {
+				r.logger.Printf("session %s relay event: %v", sessionID[:8], relayEv["type"])
 				r.client.Emit("runner_session_event", map[string]any{
 					"sessionId": sessionID,
 					"event":     relayEv,
