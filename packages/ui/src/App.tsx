@@ -123,6 +123,7 @@ import {
   normalizeSessionName,
   augmentThinkingDurations,
   normalizeModelList,
+  normalizeCommandList,
   mergeChunkSnapshot,
 } from "@/lib/message-helpers";
 import { evictLruIfNeeded, touchSessionCache, MAX_SESSION_UI_CACHE_SIZE } from "@/lib/session-ui-cache";
@@ -1517,10 +1518,7 @@ export function App() {
       const commandsRaw = Array.isArray(evt.commands) ? (evt.commands as unknown[]) : [];
 
       const normalizedModels = normalizeModelList(modelsRaw);
-      const normalizedCommands = commandsRaw
-        .filter((c): c is Record<string, unknown> => c !== null && typeof c === "object" && typeof (c as Record<string, unknown>).name === "string")
-        .map((c) => ({ name: String(c.name), description: typeof c.description === "string" ? c.description : undefined, source: typeof c.source === "string" ? c.source : undefined }))
-        .sort((a, b) => a.name.localeCompare(b.name));
+      const normalizedCommands = normalizeCommandList(commandsRaw);
 
       // Keep model state in sync with capability snapshots too.
       setAvailableModels(normalizedModels);
@@ -1554,6 +1552,14 @@ export function App() {
       if (metaModels) {
         setAvailableModels(metaModels);
         cachePatch.availableModels = metaModels;
+      }
+
+      const metaCommands = Array.isArray(meta.availableCommands)
+        ? normalizeCommandList(meta.availableCommands as unknown[])
+        : null;
+      if (metaCommands) {
+        setAvailableCommands(metaCommands);
+        cachePatch.availableCommands = metaCommands;
       }
 
       if (Object.prototype.hasOwnProperty.call(meta, "sessionName")) {
@@ -1614,6 +1620,15 @@ export function App() {
         }
       }
       setAvailableModels(stateModels);
+
+      // Extract commands from session_active state so cache-first hydration
+      // (which only replays snapshot events) populates the command picker.
+      const stateCommands = Array.isArray(state?.availableCommands)
+        ? normalizeCommandList(state.availableCommands as unknown[])
+        : [];
+      if (stateCommands.length > 0) {
+        setAvailableCommands(stateCommands);
+      }
 
       // Track chunked delivery state — messages arrive as subsequent
       // session_messages_chunk events when the session is large.
@@ -1691,6 +1706,7 @@ export function App() {
           activeModel: stateModel,
           ...(hasSessionName ? { sessionName: nextSessionName } : {}),
           availableModels: stateModels,
+          ...(stateCommands.length > 0 ? { availableCommands: stateCommands } : {}),
           effortLevel: thinkingLevel,
           todoList: stateTodos,
         });
@@ -1698,6 +1714,7 @@ export function App() {
         patchSessionCache({
           messages: normalizedMessages,
           availableModels: stateModels,
+          ...(stateCommands.length > 0 ? { availableCommands: stateCommands } : {}),
         });
       }
       return;

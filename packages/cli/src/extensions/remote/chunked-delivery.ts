@@ -306,6 +306,7 @@ export function emitSessionActive(rctx: RelayContext): void {
         sessionName: rctx.getCurrentSessionName(),
         cwd: rctx.latestCtx.cwd,
         availableModels: rctx.getConfiguredModels(),
+        availableCommands: rctx.getAvailableCommands(),
         todoList: getCurrentTodoList(),
     };
 
@@ -380,6 +381,7 @@ export function emitSessionMetadataUpdate(rctx: RelayContext): void {
             thinkingLevel: rctx.getCurrentThinkingLevel(),
             sessionName: rctx.getCurrentSessionName(),
             availableModels: rctx.getConfiguredModels(),
+            availableCommands: rctx.getAvailableCommands(),
             todoList: getCurrentTodoList(),
         },
     });
