@@ -8,9 +8,10 @@ import {
     CommandItem,
     CommandSeparator,
 } from "@/components/ui/command";
+import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { formatPathTail } from "@/lib/path";
-import { FolderOpen, Play, Loader2 } from "lucide-react";
+import { MessageSquare, Play, Loader2, Clock } from "lucide-react";
 import type { ResumeSessionOption } from "@/lib/types";
 
 export interface HistoryCommandPaletteProps {
@@ -75,6 +76,29 @@ function groupByDate(sessions: ResumeSessionOption[]): { label: string; sessions
     return order.map((label) => ({ label, sessions: groups.get(label)! }));
 }
 
+/* ── Skeleton rows shown while loading ──────────────────────────────────── */
+
+function SkeletonRows() {
+    return (
+        <div className="p-2 space-y-1" role="status" aria-label="Loading sessions">
+            {/* Fake group heading */}
+            <Skeleton className="h-3 w-12 ml-2 mb-2 mt-1" />
+            {[1, 2, 3, 4, 5].map((i) => (
+                <div key={i} className="flex items-center gap-2.5 px-2 py-2.5">
+                    <Skeleton className="h-8 w-8 rounded-md flex-shrink-0" />
+                    <div className="flex-1 min-w-0 space-y-1.5">
+                        <div className="flex items-center justify-between gap-2">
+                            <Skeleton className="h-3.5 rounded" style={{ width: `${40 + (i * 13) % 35}%` }} />
+                            <Skeleton className="h-2.5 w-10 rounded flex-shrink-0" />
+                        </div>
+                        <Skeleton className="h-2.5 rounded" style={{ width: `${55 + (i * 17) % 30}%` }} />
+                    </div>
+                </div>
+            ))}
+        </div>
+    );
+}
+
 export const HistoryCommandPalette = React.memo(function HistoryCommandPalette({
     open,
     onOpenChange,
@@ -92,7 +116,6 @@ export const HistoryCommandPalette = React.memo(function HistoryCommandPalette({
     React.useEffect(() => {
         if (open && !lastOpenRef.current) {
             const now = Date.now();
-            // Skip if we fetched within the last 5 seconds
             if (now - lastFetchRef.current > 5_000 || sessions.length === 0) {
                 lastFetchRef.current = now;
                 onRefresh();
@@ -108,7 +131,6 @@ export const HistoryCommandPalette = React.memo(function HistoryCommandPalette({
         setResumingSessionId(s.id);
         onResumeSession(s.id);
         onOpenChange(false);
-        // Reset after a delay — the session switch will handle the rest
         setTimeout(() => setResumingSessionId(null), 2000);
     }, [onResumeSession, onOpenChange]);
 
@@ -119,106 +141,112 @@ export const HistoryCommandPalette = React.memo(function HistoryCommandPalette({
 
     const dateGroups = React.useMemo(() => groupByDate(sessions), [sessions]);
 
+    const showSkeleton = loading && sessions.length === 0;
+
     return (
         <CommandDialog
             open={open}
             onOpenChange={onOpenChange}
             title="Session History"
             description="Search and resume past sessions"
-            className="max-w-lg"
+            className="max-w-lg max-md:max-w-[calc(100%-1rem)]"
             showCloseButton={false}
         >
-            <CommandInput placeholder="Search sessions by name or path…" />
-            <CommandList className="max-h-[min(60vh,400px)]">
-                <CommandEmpty>
-                    {loading ? (
-                        <div className="flex items-center justify-center gap-2">
-                            <Loader2 className="h-4 w-4 animate-spin" />
-                            <span>Loading sessions…</span>
-                        </div>
-                    ) : (
-                        "No sessions found"
-                    )}
-                </CommandEmpty>
+            <CommandInput placeholder="Search sessions…" />
+            <CommandList className="max-h-[min(70vh,420px)] md:max-h-[min(60vh,400px)]">
+                {showSkeleton ? (
+                    <SkeletonRows />
+                ) : (
+                    <>
+                        <CommandEmpty>
+                            <div className="flex flex-col items-center gap-2 py-4 text-muted-foreground">
+                                <Clock className="h-8 w-8 opacity-30" />
+                                <span className="text-sm">No sessions found</span>
+                            </div>
+                        </CommandEmpty>
 
-                {dateGroups.map((group, gi) => (
-                    <React.Fragment key={group.label}>
-                        {gi > 0 && <CommandSeparator />}
-                        <CommandGroup heading={group.label}>
-                            {group.sessions.map((s) => {
-                                const isResuming = resumingSessionId === s.id;
-                                const displayName = s.name?.trim() || `Session ${s.id.slice(0, 8)}…`;
+                        {dateGroups.map((group, gi) => (
+                            <React.Fragment key={group.label}>
+                                {gi > 0 && <CommandSeparator />}
+                                <CommandGroup heading={group.label}>
+                                    {group.sessions.map((s) => {
+                                        const isResuming = resumingSessionId === s.id;
+                                        const displayName = s.name?.trim() || `Session ${s.id.slice(0, 8)}…`;
+                                        const preview = s.firstMessage && s.firstMessage !== "(no messages)"
+                                            ? s.firstMessage
+                                            : null;
 
-                                // Build search keywords for cmdk filtering
-                                const keywords = [
-                                    s.id,
-                                    s.path,
-                                    s.name ?? "",
-                                    s.firstMessage ?? "",
-                                ].filter(Boolean);
+                                        const keywords = [
+                                            s.id,
+                                            s.path,
+                                            s.name ?? "",
+                                            s.firstMessage ?? "",
+                                        ].filter(Boolean);
 
-                                return (
-                                    <CommandItem
-                                        key={s.id}
-                                        value={`${displayName} ${s.path}`}
-                                        keywords={keywords}
-                                        onSelect={() => handleSelect(s.id)}
-                                        className="flex items-center gap-2.5 py-2.5"
-                                    >
-                                        <div className="flex-shrink-0 flex items-center justify-center w-7 h-7 rounded-md bg-muted/50">
-                                            <FolderOpen className="size-3.5 text-muted-foreground" />
-                                        </div>
-                                        <div className="flex-1 min-w-0">
-                                            <div className="flex items-baseline justify-between gap-2 min-w-0">
-                                                <span className="truncate text-sm font-medium">
-                                                    {displayName}
-                                                </span>
-                                                <span className="text-[0.65rem] text-muted-foreground flex-shrink-0 whitespace-nowrap">
-                                                    {formatRelativeDate(s.modified)}
-                                                </span>
-                                            </div>
-                                            <div className="flex items-center gap-1 mt-0.5 min-w-0">
-                                                <span className="text-xs text-muted-foreground/70 truncate" title={s.path}>
-                                                    {formatPathTail(s.path, 2)}
-                                                </span>
-                                            </div>
-                                            {s.firstMessage && (
-                                                <div className="mt-0.5 min-w-0">
-                                                    <span className="text-[0.65rem] text-muted-foreground/50 truncate block">
-                                                        {s.firstMessage.length > 80 ? `${s.firstMessage.slice(0, 80)}…` : s.firstMessage}
-                                                    </span>
-                                                </div>
-                                            )}
-                                        </div>
-
-                                        {/* Resume button */}
-                                        {onResumeSession && (
-                                            <button
-                                                type="button"
-                                                onClick={(e) => handleResume(e, s)}
-                                                disabled={isResuming}
-                                                className={cn(
-                                                    "flex-shrink-0 flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium transition-colors",
-                                                    isResuming
-                                                        ? "text-muted-foreground/50"
-                                                        : "text-green-600 dark:text-green-400 hover:bg-green-500/10",
-                                                )}
-                                                title="Resume session"
+                                        return (
+                                            <CommandItem
+                                                key={s.id}
+                                                value={`${displayName} ${s.path}`}
+                                                keywords={keywords}
+                                                onSelect={() => handleSelect(s.id)}
+                                                className="flex items-center gap-2.5 py-3 md:py-2.5 rounded-md"
                                             >
-                                                {isResuming ? (
-                                                    <Loader2 className="h-3 w-3 animate-spin" />
-                                                ) : (
-                                                    <Play className="h-3 w-3" />
+                                                <div className="flex-shrink-0 flex items-center justify-center w-8 h-8 md:w-7 md:h-7 rounded-md bg-muted/60">
+                                                    <MessageSquare className="size-4 md:size-3.5 text-muted-foreground/70" />
+                                                </div>
+                                                <div className="flex-1 min-w-0">
+                                                    <div className="flex items-baseline justify-between gap-2 min-w-0">
+                                                        <span className="truncate text-sm font-medium leading-tight">
+                                                            {displayName}
+                                                        </span>
+                                                        <span className="text-[0.6rem] text-muted-foreground/60 flex-shrink-0 whitespace-nowrap tabular-nums">
+                                                            {formatRelativeDate(s.modified)}
+                                                        </span>
+                                                    </div>
+                                                    {preview && (
+                                                        <p className="mt-0.5 text-xs text-muted-foreground/50 truncate leading-tight">
+                                                            {preview.length > 72 ? `${preview.slice(0, 72)}…` : preview}
+                                                        </p>
+                                                    )}
+                                                    <div className="flex items-center gap-1 mt-0.5 min-w-0">
+                                                        <span className="text-[0.65rem] text-muted-foreground/40 truncate leading-tight" title={s.path}>
+                                                            {formatPathTail(s.path, 2)}
+                                                        </span>
+                                                    </div>
+                                                </div>
+
+                                                {/* Resume — icon-only on mobile, label on desktop */}
+                                                {onResumeSession && (
+                                                    <button
+                                                        type="button"
+                                                        onClick={(e) => handleResume(e, s)}
+                                                        disabled={isResuming}
+                                                        className={cn(
+                                                            "flex-shrink-0 flex items-center justify-center gap-1 rounded-md transition-colors",
+                                                            "h-8 w-8 md:h-auto md:w-auto md:px-2 md:py-1",
+                                                            isResuming
+                                                                ? "text-muted-foreground/40"
+                                                                : "text-green-600 dark:text-green-400 hover:bg-green-500/10 active:bg-green-500/20",
+                                                        )}
+                                                        title="Resume session"
+                                                        aria-label="Resume session"
+                                                    >
+                                                        {isResuming ? (
+                                                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                                        ) : (
+                                                            <Play className="h-3.5 w-3.5" />
+                                                        )}
+                                                        <span className="hidden md:inline text-xs font-medium">Resume</span>
+                                                    </button>
                                                 )}
-                                                <span>Resume</span>
-                                            </button>
-                                        )}
-                                    </CommandItem>
-                                );
-                            })}
-                        </CommandGroup>
-                    </React.Fragment>
-                ))}
+                                            </CommandItem>
+                                        );
+                                    })}
+                                </CommandGroup>
+                            </React.Fragment>
+                        ))}
+                    </>
+                )}
             </CommandList>
         </CommandDialog>
     );
