@@ -51,6 +51,13 @@ export function getGitOperationFeedback(result: GitOperationResult): GitOperatio
         };
     }
 
+    if (result.reason === "busy") {
+        return {
+            type: "error",
+            message: "Another git operation is already running for this repo. Wait a moment, then try again.",
+        };
+    }
+
     if (result.reason === "conflict") {
         return {
             type: "error",

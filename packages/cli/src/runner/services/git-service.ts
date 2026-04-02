@@ -147,6 +147,7 @@ export class GitService implements ServiceHandler {
     private readonly _cwdSubscribers = new Map<string, Set<string>>();
     private readonly _sessionCwd = new Map<string, string>();
     private readonly _repoWatchers = new Map<string, RepoWatchState>();
+    private readonly _activeRepoMutations = new Map<string, string>();
 
     constructor(options?: {
         execGit?: GitExec;
@@ -233,6 +234,7 @@ export class GitService implements ServiceHandler {
         this._statusCache.clear();
         this._statusGeneration.clear();
         this._statusInFlight.clear();
+        this._activeRepoMutations.clear();
         this._socket = null;
         this._onServiceMessage = null;
     }
@@ -253,6 +255,35 @@ export class GitService implements ServiceHandler {
 
     private emitError(type: string, message: string, requestId?: string, sessionId?: string): void {
         this.emit(type, { ok: false, message }, requestId, sessionId);
+    }
+
+    private beginRepoMutation(
+        cwd: string,
+        type: string,
+        mutationName: string,
+        requestId?: string,
+        sessionId?: string,
+    ): string | null {
+        const activeMutation = this._activeRepoMutations.get(cwd);
+        if (activeMutation) {
+            this.emit(type, {
+                ok: false,
+                reason: "busy",
+                message: `Another git operation (${activeMutation}) is already running for this repository. Wait for it to finish and try again.`,
+            }, requestId, sessionId);
+            return null;
+        }
+
+        const token = `${mutationName}:${requestId ?? `${Date.now()}`}`;
+        this._activeRepoMutations.set(cwd, token);
+        return token;
+    }
+
+    private endRepoMutation(cwd: string, token: string | null): void {
+        if (!token) return;
+        if (this._activeRepoMutations.get(cwd) === token) {
+            this._activeRepoMutations.delete(cwd);
+        }
     }
 
     // ── cwd validation ──────────────────────────────────────────────────
@@ -851,6 +882,8 @@ export class GitService implements ServiceHandler {
         // clicked (local vs remote). This avoids name heuristics that misclassify
         // local branches like "feature/foo" when a remote named "feature" exists.
         const isRemote = payload.isRemote === true;
+        const mutationToken = this.beginRepoMutation(cwd, "git_checkout_result", "checkout", requestId, sessionId);
+        if (!mutationToken) return;
 
         try {
             let targetBranch = branch;
@@ -885,6 +918,8 @@ export class GitService implements ServiceHandler {
             }, requestId, sessionId);
         } catch (err) {
             this.emitError("git_checkout_result", err instanceof Error ? err.message : String(err), requestId, sessionId);
+        } finally {
+            this.endRepoMutation(cwd, mutationToken);
         }
     }
 
@@ -916,6 +951,9 @@ export class GitService implements ServiceHandler {
             }
         }
 
+        const mutationToken = this.beginRepoMutation(cwd, "git_stage_result", "stage", requestId, sessionId);
+        if (!mutationToken) return;
+
         try {
             // Resolve repo root — paths from git status are repo-root-relative,
             // so operations must run from repo root for paths to resolve correctly.
@@ -929,6 +967,8 @@ export class GitService implements ServiceHandler {
             this.emit("git_stage_result", { ok: true }, requestId, sessionId);
         } catch (err) {
             this.emitError("git_stage_result", err instanceof Error ? err.message : String(err), requestId, sessionId);
+        } finally {
+            this.endRepoMutation(cwd, mutationToken);
         }
     }
 
@@ -959,6 +999,9 @@ export class GitService implements ServiceHandler {
             }
         }
 
+        const mutationToken = this.beginRepoMutation(cwd, "git_unstage_result", "unstage", requestId, sessionId);
+        if (!mutationToken) return;
+
         try {
             // Resolve repo root — run from there so repo-root-relative paths work.
             // For unstage-all, use ":/" pathspec (magic "repo root") instead of "."
@@ -975,6 +1018,8 @@ export class GitService implements ServiceHandler {
             this.emit("git_unstage_result", { ok: true }, requestId, sessionId);
         } catch (err) {
             this.emitError("git_unstage_result", err instanceof Error ? err.message : String(err), requestId, sessionId);
+        } finally {
+            this.endRepoMutation(cwd, mutationToken);
         }
     }
 
@@ -994,6 +1039,9 @@ export class GitService implements ServiceHandler {
             return;
         }
 
+        const mutationToken = this.beginRepoMutation(cwd, "git_commit_result", "commit", requestId, sessionId);
+        if (!mutationToken) return;
+
         try {
             const { stdout } = await this._execGit(["commit", "-m", message],
                 { cwd, timeout: 30000 },
@@ -1009,6 +1057,8 @@ export class GitService implements ServiceHandler {
             }, requestId, sessionId);
         } catch (err) {
             this.emitError("git_commit_result", err instanceof Error ? err.message : String(err), requestId, sessionId);
+        } finally {
+            this.endRepoMutation(cwd, mutationToken);
         }
     }
 
@@ -1236,6 +1286,8 @@ export class GitService implements ServiceHandler {
         const cwd = this.validateCwd(payload.cwd, "git_pull_result", requestId, sessionId);
         if (!cwd) return;
         const rebase = payload.rebase !== false;
+        const mutationToken = this.beginRepoMutation(cwd, "git_pull_result", "pull", requestId, sessionId);
+        if (!mutationToken) return;
 
         try {
             const upstream = await this.resolveUpstream(cwd);
@@ -1289,6 +1341,8 @@ export class GitService implements ServiceHandler {
                 message: classified.message,
                 output: message,
             }, requestId, sessionId);
+        } finally {
+            this.endRepoMutation(cwd, mutationToken);
         }
     }
 
@@ -1310,6 +1364,9 @@ export class GitService implements ServiceHandler {
             this.emitError("git_set_upstream_result", "Invalid branch name", requestId, sessionId);
             return;
         }
+
+        const mutationToken = this.beginRepoMutation(cwd, "git_set_upstream_result", "set-upstream", requestId, sessionId);
+        if (!mutationToken) return;
 
         try {
             const { stdout } = await this._execGit(["rev-parse", "--abbrev-ref", "HEAD"], { cwd, timeout: 5000 });
@@ -1333,6 +1390,8 @@ export class GitService implements ServiceHandler {
             }, requestId, sessionId);
         } catch (err) {
             this.emitError("git_set_upstream_result", err instanceof Error ? err.message : String(err), requestId, sessionId);
+        } finally {
+            this.endRepoMutation(cwd, mutationToken);
         }
     }
 
@@ -1351,6 +1410,9 @@ export class GitService implements ServiceHandler {
             this.emitError("git_merge_result", "Invalid branch name", requestId, sessionId);
             return;
         }
+
+        const mutationToken = this.beginRepoMutation(cwd, "git_merge_result", "merge", requestId, sessionId);
+        if (!mutationToken) return;
 
         try {
             // Prevent merging current branch into itself
@@ -1379,6 +1441,8 @@ export class GitService implements ServiceHandler {
                 message: classified.message,
                 output: message,
             }, requestId, sessionId);
+        } finally {
+            this.endRepoMutation(cwd, mutationToken);
         }
     }
 
@@ -1393,6 +1457,8 @@ export class GitService implements ServiceHandler {
         if (!cwd) return;
 
         const setUpstream = payload.setUpstream === true;
+        const mutationToken = this.beginRepoMutation(cwd, "git_push_result", "push", requestId, sessionId);
+        if (!mutationToken) return;
 
         try {
             // Determine current branch for --set-upstream
@@ -1444,6 +1510,8 @@ export class GitService implements ServiceHandler {
                 message,
                 noUpstream,
             }, requestId, sessionId);
+        } finally {
+            this.endRepoMutation(cwd, mutationToken);
         }
     }
 }

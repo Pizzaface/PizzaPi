@@ -18,6 +18,13 @@ describe("git-operation-feedback", () => {
         });
     });
 
+    test("maps busy repo state to a retry message", () => {
+        expect(getGitOperationFeedback({ ok: false, reason: "busy" })).toEqual({
+            type: "error",
+            message: "Another git operation is already running for this repo. Wait a moment, then try again.",
+        });
+    });
+
     test("parses remote/branch upstream refs", () => {
         expect(parseUpstreamRef("origin/feature/test")).toEqual({ remote: "origin", branch: "feature/test" });
         expect(parseUpstreamRef("origin")).toBeNull();

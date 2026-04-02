@@ -905,6 +905,62 @@ describe("GitService pull/merge", () => {
         expect(result.payload).toMatchObject({ ok: false, reason: "conflict" });
     });
 
+    test("rejects overlapping repo mutations with a busy error", async () => {
+        let checkoutStarted = false;
+        let releaseCheckout: () => void = () => {
+            throw new Error("Expected checkout release function");
+        };
+        const checkoutGate = new Promise<void>((resolve) => {
+            releaseCheckout = resolve;
+        });
+
+        const service = new GitService({
+            execGit: async (args) => {
+                const cmd = args[0];
+                if (cmd === "checkout") {
+                    checkoutStarted = true;
+                    await checkoutGate;
+                    return { stdout: "", stderr: "" };
+                }
+                if (cmd === "rev-parse" && args[1] === "--abbrev-ref") return { stdout: "main\n", stderr: "" };
+                if (cmd === "rev-parse") return { stdout: "/tmp/pizzapi-test\n", stderr: "" };
+                if (cmd === "status") return { stdout: "", stderr: "" };
+                if (cmd === "diff") return { stdout: "", stderr: "" };
+                if (cmd === "rev-list") return { stdout: "0 0\n", stderr: "" };
+                if (cmd === "config" && args[2] === "branch.main.remote") return { stdout: "origin\n", stderr: "" };
+                if (cmd === "config" && args[2] === "branch.main.merge") return { stdout: "refs/heads/main\n", stderr: "" };
+                if (cmd === "fetch") return { stdout: "", stderr: "" };
+                if (cmd === "rebase") return { stdout: "", stderr: "" };
+                throw new Error(`Unexpected git args: ${args.join(" ")}`);
+            },
+        });
+
+        const socket = createMockSocket();
+        service.init(socket as any, { isShuttingDown: () => false });
+
+        dispatchServiceMessage(socket, {
+            serviceId: "git",
+            type: "git_checkout",
+            requestId: "checkout-busy-1",
+            payload: { cwd: "/tmp/pizzapi-test", branch: "main", isRemote: false },
+        });
+
+        await waitForCondition(() => checkoutStarted);
+
+        dispatchServiceMessage(socket, {
+            serviceId: "git",
+            type: "git_pull",
+            requestId: "pull-busy-1",
+            payload: { cwd: "/tmp/pizzapi-test" },
+        });
+        const busyResult = await waitForResult(socket, "pull-busy-1", "git_pull_result");
+        expect(busyResult.payload).toMatchObject({ ok: false, reason: "busy" });
+
+        releaseCheckout();
+        const checkoutResult = await waitForResult(socket, "checkout-busy-1", "git_checkout_result");
+        expect((checkoutResult.payload as any).ok).toBe(true);
+    });
+
     test("merge uses end-of-options separator", async () => {
         const gitCalls: string[][] = [];
 
