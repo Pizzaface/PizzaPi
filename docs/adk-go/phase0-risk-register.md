@@ -6,14 +6,16 @@ Risks, uncertainties, and exit criteria for the Claude CLI wrapper prototype.
 
 ## Protocol Uncertainty
 
-**Severity: HIGH**
+**Severity: HIGH → MEDIUM** (partially resolved)
 
 - Claude CLI `stream-json` format is not formally documented by Anthropic
   (see [anthropics/claude-code#24596](https://github.com/anthropics/claude-code/issues/24596)).
 - Event types and fields may change between Claude CLI versions without notice.
   There is no stability guarantee or versioned schema.
-- The `--input-format stream-json` bidirectional protocol is undocumented
+- ~~The `--input-format stream-json` bidirectional protocol is undocumented~~
   ([anthropics/claude-code#24594](https://github.com/anthropics/claude-code/issues/24594)).
+  **RESOLVED:** Validated via community SDKs (Go, Elixir, Python) and
+  third-party documentation. See `docs/adk-go/phase0-stdin-protocol.md`.
 - Field names, nesting, and even the set of event types are inferred from
   observation, not specification.
 
@@ -27,13 +29,17 @@ Risks, uncertainties, and exit criteria for the Claude CLI wrapper prototype.
 
 ## Tool Round-Trip Uncertainty
 
-**Severity: HIGH**
+**Severity: HIGH → MEDIUM** (path identified)
 
 - Claude CLI handles tool execution internally — the wrapper can only
   **observe** tool calls and results, not **intercept** them.
 - Custom tools (PizzaPi's `plan_mode`, `AskUserQuestion`, `subagent`,
   `spawn_session`, `respond_to_trigger`, etc.) cannot be injected through the
   CLI's tool execution pipeline.
+- **UPDATE:** The `--permission-prompt-tool stdio` flag enables a
+  `control_request`/`control_response` protocol for tool approvals via stdin.
+  This gives us approve/deny control but NOT tool interception.
+  True custom tools require MCP server injection or direct API integration.
 - The CLI's built-in tools (`bash`, `read`, `write`, `search`) are executed
   by the CLI process itself — the wrapper has no hook point.
 - MCP tool calls may have a different event shape than built-in tool calls.
