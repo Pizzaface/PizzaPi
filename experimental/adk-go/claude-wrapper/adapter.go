@@ -272,6 +272,16 @@ func (a *Adapter) HandleEvent(ev ClaudeEvent) []RelayEvent {
 			"stopReason": e.StopReason,
 		})
 
+		// Signal that the agent is idle (turn complete)
+		events = append(events, RelayEvent{
+			"type":         "heartbeat",
+			"active":       false,
+			"isCompacting": false,
+			"ts":           nowMillis(),
+			"model":        a.modelMap(),
+			"cwd":          a.cwd,
+		})
+
 		return events
 	case *UnknownEvent, *ParseError:
 		return nil
