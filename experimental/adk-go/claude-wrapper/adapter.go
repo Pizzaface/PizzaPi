@@ -74,6 +74,8 @@ func (a *Adapter) HandleEvent(ev ClaudeEvent) []RelayEvent {
 			a.toolUseBlocks[e.Index] = toolUseMeta{id: e.ToolID, name: e.ToolName}
 			a.toolInputBuffers[e.Index] = ""
 			a.toolNamesByID[e.ToolID] = e.ToolName
+		case "thinking":
+			a.contentBlocks[e.Index] = map[string]any{"type": "thinking", "thinking": ""}
 		}
 		return nil
 	case *ContentBlockDelta:
@@ -86,6 +88,16 @@ func (a *Adapter) HandleEvent(ev ClaudeEvent) []RelayEvent {
 			text, _ := a.contentBlocks[e.Index]["text"].(string)
 			a.contentBlocks[e.Index]["text"] = text + e.Text
 			return []RelayEvent{a.messageUpdate(false)}
+		case "thinking_delta":
+			a.ensureContentIndex(e.Index)
+			if a.contentBlocks[e.Index] == nil {
+				a.contentBlocks[e.Index] = map[string]any{"type": "thinking", "thinking": ""}
+			}
+			thinking, _ := a.contentBlocks[e.Index]["thinking"].(string)
+			a.contentBlocks[e.Index]["thinking"] = thinking + e.Thinking
+			return nil // thinking streamed but not relayed until final message
+		case "signature_delta":
+			return nil // signature verification data — not relayed
 		case "input_json_delta":
 			a.toolInputBuffers[e.Index] += e.PartialJSON
 		}

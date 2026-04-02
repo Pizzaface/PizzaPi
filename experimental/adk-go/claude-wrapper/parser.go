@@ -87,13 +87,22 @@ func ParseLine(line []byte) ClaudeEvent {
 						Type        string `json:"type"`
 						Text        string `json:"text"`
 						PartialJSON string `json:"partial_json"`
+						Thinking    string `json:"thinking"`
+						Signature   string `json:"signature"`
 					} `json:"delta"`
 				} `json:"event"`
 			}
 			if err := json.Unmarshal(line, &raw); err != nil {
 				return &ParseError{Line: string(line), Message: err.Error()}
 			}
-			return &ContentBlockDelta{Index: raw.Event.Index, DeltaType: raw.Event.Delta.Type, Text: raw.Event.Delta.Text, PartialJSON: raw.Event.Delta.PartialJSON}
+			return &ContentBlockDelta{
+				Index:       raw.Event.Index,
+				DeltaType:   raw.Event.Delta.Type,
+				Text:        raw.Event.Delta.Text,
+				PartialJSON: raw.Event.Delta.PartialJSON,
+				Thinking:    raw.Event.Delta.Thinking,
+				Signature:   raw.Event.Delta.Signature,
+			}
 		case "content_block_stop":
 			var raw struct {
 				Event struct {
