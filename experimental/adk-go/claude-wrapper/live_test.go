@@ -63,3 +63,13 @@ func TestLiveCLIPartialMessages(t *testing.T) {
 func TestLiveCLIThinking(t *testing.T) {
 	runLiveFile(t, "/tmp/claude-thinking.jsonl")
 }
+
+// TestLiveCLIInteractive — TodoWrite, AskUserQuestion, EnterPlanMode tool calls.
+func TestLiveCLIInteractive(t *testing.T) {
+	runLiveFile(t, "/tmp/claude-interactive.jsonl")
+}
+
+// TestLiveCLIEverything — all captures combined (comprehensive coverage).
+func TestLiveCLIEverything(t *testing.T) {
+	runLiveFile(t, "/tmp/claude-everything.jsonl")
+}
