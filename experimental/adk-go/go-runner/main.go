@@ -33,12 +33,13 @@ const version = "0.1.0-phase0"
 
 // session tracks a running Claude CLI subprocess and its adapter.
 type session struct {
-	sessionID string
-	runner    *claudewrapper.Runner
-	adapter   *claudewrapper.Adapter
-	cancel    context.CancelFunc
-	killed    bool
-	mu        sync.Mutex
+	sessionID    string
+	runner       *claudewrapper.Runner
+	adapter      *claudewrapper.Adapter
+	relaySession *RelaySession // per-session /relay connection
+	cancel       context.CancelFunc
+	killed       bool
+	mu           sync.Mutex
 }
 
 // GoRunner is the Phase 0 PizzaPi runner daemon.
@@ -214,11 +215,25 @@ func (r *GoRunner) handleNewSession(data json.RawMessage) {
 	r.sessions.Store(sessionID, sess)
 
 	// Spawn the claude subprocess
-	go r.runSession(ctx, sess, prompt)
+	go r.runSession(ctx, sess, prompt, payload.Cwd)
 }
 
-func (r *GoRunner) runSession(ctx context.Context, sess *session, prompt string) {
+func (r *GoRunner) runSession(ctx context.Context, sess *session, prompt string, cwd string) {
 	sessionID := sess.sessionID
+
+	// Connect to /relay to register the session in the session store.
+	// This is what makes the session visible to the web UI.
+	relaySess := NewRelaySession(r.relayURL, r.apiKey, sessionID, cwd, r.logger)
+	if err := relaySess.Connect(r.relayURL, r.apiKey, cwd); err != nil {
+		r.logger.Printf("session %s relay registration failed: %v", sessionID[:8], err)
+		r.client.Emit("session_error", map[string]any{
+			"sessionId": sessionID,
+			"message":   fmt.Sprintf("relay registration failed: %v", err),
+		})
+		r.sessions.Delete(sessionID)
+		return
+	}
+	sess.relaySession = relaySess
 
 	events, err := sess.runner.StartInteractive(ctx, prompt)
 	if err != nil {
@@ -227,6 +242,7 @@ func (r *GoRunner) runSession(ctx context.Context, sess *session, prompt string)
 			"sessionId": sessionID,
 			"message":   err.Error(),
 		})
+		relaySess.Close()
 		r.sessions.Delete(sessionID)
 		return
 	}
@@ -256,11 +272,20 @@ func (r *GoRunner) runSession(ctx context.Context, sess *session, prompt string)
 			// Convert Claude event to relay events via adapter
 			relayEvents := sess.adapter.HandleEvent(ev)
 			for _, relayEv := range relayEvents {
-				r.logger.Printf("session %s relay event: %v", sessionID[:8], relayEv["type"])
+				evType, _ := relayEv["type"].(string)
+				r.logger.Printf("session %s relay event: %v", sessionID[:8], evType)
+
+				// Forward via runner protocol (runner_session_event)
 				r.client.Emit("runner_session_event", map[string]any{
 					"sessionId": sessionID,
 					"event":     relayEv,
 				})
+
+				// Also forward via the /relay session connection so the
+				// event pipeline processes it (caching, viewer broadcast, etc.)
+				if sess.relaySession != nil {
+					sess.relaySession.EmitEvent(relayEv)
+				}
 			}
 
 		case <-heartbeatTicker.C:
@@ -282,6 +307,11 @@ func (r *GoRunner) runSession(ctx context.Context, sess *session, prompt string)
 
 func (r *GoRunner) handleSessionExit(sess *session) {
 	sessionID := sess.sessionID
+
+	// Close the relay session connection
+	if sess.relaySession != nil {
+		sess.relaySession.Close()
+	}
 
 	// Wait for process to fully exit
 	<-sess.runner.Done()
