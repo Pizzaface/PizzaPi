@@ -421,6 +421,12 @@ export const MobileHeader = React.memo(function MobileHeader({
               <Plus className="h-4 w-4" />
               New session
             </DropdownMenuItem>
+            {onShowHistory && (
+              <DropdownMenuItem onSelect={() => { onShowHistory(); onSessionSwitcherOpenChange(false); }} className="gap-2">
+                <Clock className="h-4 w-4" />
+                Session history
+              </DropdownMenuItem>
+            )}
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
