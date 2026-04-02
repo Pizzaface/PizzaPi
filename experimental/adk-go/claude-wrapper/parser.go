@@ -17,15 +17,26 @@ func ParseLine(line []byte) ClaudeEvent {
 	switch envelope.Type {
 	case "system":
 		var raw struct {
-			SessionID string   `json:"session_id"`
-			Tools     []string `json:"tools"`
-			Cwd       string   `json:"cwd"`
-			Model     string   `json:"model"`
+			SessionID         string   `json:"session_id"`
+			Subtype           string   `json:"subtype"`
+			Tools             []string `json:"tools"`
+			Cwd               string   `json:"cwd"`
+			Model             string   `json:"model"`
+			ClaudeCodeVersion string   `json:"claude_code_version"`
+			PermissionMode    string   `json:"permissionMode"`
 		}
 		if err := json.Unmarshal(line, &raw); err != nil {
 			return &ParseError{Line: string(line), Message: err.Error()}
 		}
-		return &SystemEvent{SessionID: raw.SessionID, Tools: raw.Tools, Cwd: raw.Cwd, Model: raw.Model}
+		return &SystemEvent{
+			SessionID:         raw.SessionID,
+			Subtype:           raw.Subtype,
+			Tools:             raw.Tools,
+			Cwd:               raw.Cwd,
+			Model:             raw.Model,
+			ClaudeCodeVersion: raw.ClaudeCodeVersion,
+			PermissionMode:    raw.PermissionMode,
+		}
 	case "stream_event":
 		var stream struct {
 			Event struct {
@@ -141,11 +152,65 @@ func ParseLine(line []byte) ClaudeEvent {
 			return &ParseError{Line: string(line), Message: err.Error()}
 		}
 		return &ToolResultEvent{ToolID: raw.ToolUseID, Content: raw.Content, IsError: raw.IsError}
+	case "user":
+		// The Claude CLI emits tool results as "user" type messages.
+		// Extract the first tool_result content block for convenience.
+		var raw struct {
+			Message json.RawMessage `json:"message"`
+		}
+		if err := json.Unmarshal(line, &raw); err != nil {
+			return &ParseError{Line: string(line), Message: err.Error()}
+		}
+		// Extract tool result from message.content[]
+		var msg struct {
+			Content []struct {
+				ToolUseID string `json:"tool_use_id"`
+				Type      string `json:"type"`
+				Content   string `json:"content"`
+				IsError   bool   `json:"is_error"`
+			} `json:"content"`
+		}
+		toolUseID, content := "", ""
+		isError := false
+		if err := json.Unmarshal(raw.Message, &msg); err == nil {
+			for _, c := range msg.Content {
+				if c.Type == "tool_result" {
+					toolUseID = c.ToolUseID
+					content = c.Content
+					isError = c.IsError
+					break
+				}
+			}
+		}
+		return &UserMessage{Message: raw.Message, ToolUseID: toolUseID, Content: content, IsError: isError}
+	case "rate_limit_event":
+		var raw struct {
+			RateLimitInfo struct {
+				Status     string `json:"status"`
+				ResetsAt   int64  `json:"resetsAt"`
+				LimitType  string `json:"rateLimitType"`
+				IsOverage  bool   `json:"isUsingOverage"`
+			} `json:"rate_limit_info"`
+		}
+		if err := json.Unmarshal(line, &raw); err != nil {
+			return &ParseError{Line: string(line), Message: err.Error()}
+		}
+		return &RateLimitEvent{
+			Status:    raw.RateLimitInfo.Status,
+			ResetsAt:  raw.RateLimitInfo.ResetsAt,
+			LimitType: raw.RateLimitInfo.LimitType,
+			IsOverage: raw.RateLimitInfo.IsOverage,
+		}
 	case "result":
 		var raw struct {
 			SessionID    string  `json:"session_id"`
-			CostUSD      float64 `json:"cost_usd"`
-			DurationSecs float64 `json:"duration_secs"`
+			Subtype      string  `json:"subtype"`
+			IsError      bool    `json:"is_error"`
+			TotalCostUSD float64 `json:"total_cost_usd"`
+			DurationMs   int     `json:"duration_ms"`
+			NumTurns     int     `json:"num_turns"`
+			StopReason   string  `json:"stop_reason"`
+			Result       string  `json:"result"`
 			Usage        struct {
 				InputTokens  int `json:"input_tokens"`
 				OutputTokens int `json:"output_tokens"`
@@ -154,7 +219,18 @@ func ParseLine(line []byte) ClaudeEvent {
 		if err := json.Unmarshal(line, &raw); err != nil {
 			return &ParseError{Line: string(line), Message: err.Error()}
 		}
-		return &ResultEvent{SessionID: raw.SessionID, CostUSD: raw.CostUSD, DurationSecs: raw.DurationSecs, InputTokens: raw.Usage.InputTokens, OutputTokens: raw.Usage.OutputTokens}
+		return &ResultEvent{
+			SessionID:    raw.SessionID,
+			Subtype:      raw.Subtype,
+			IsError:      raw.IsError,
+			TotalCostUSD: raw.TotalCostUSD,
+			DurationMs:   raw.DurationMs,
+			NumTurns:     raw.NumTurns,
+			StopReason:   raw.StopReason,
+			Result:       raw.Result,
+			InputTokens:  raw.Usage.InputTokens,
+			OutputTokens: raw.Usage.OutputTokens,
+		}
 	default:
 		return &UnknownEvent{RawType: envelope.Type, Raw: json.RawMessage(append([]byte(nil), line...))}
 	}

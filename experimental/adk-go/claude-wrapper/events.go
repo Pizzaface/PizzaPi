@@ -7,10 +7,13 @@ type ClaudeEvent interface {
 }
 
 type SystemEvent struct {
-	SessionID string   `json:"session_id"`
-	Tools     []string `json:"tools"`
-	Cwd       string   `json:"cwd"`
-	Model     string   `json:"model"`
+	SessionID        string   `json:"session_id"`
+	Subtype          string   `json:"subtype"` // "init"
+	Tools            []string `json:"tools"`
+	Cwd              string   `json:"cwd"`
+	Model            string   `json:"model"`
+	ClaudeCodeVersion string  `json:"claude_code_version"`
+	PermissionMode   string   `json:"permission_mode"`
 }
 
 func (*SystemEvent) EventType() string { return "system" }
@@ -83,13 +86,40 @@ func (*ToolResultEvent) EventType() string { return "tool_result" }
 
 type ResultEvent struct {
 	SessionID    string  `json:"session_id"`
-	CostUSD      float64 `json:"cost_usd"`
-	DurationSecs float64 `json:"duration_secs"`
+	Subtype      string  `json:"subtype"` // "success" or "error"
+	IsError      bool    `json:"is_error"`
+	TotalCostUSD float64 `json:"total_cost_usd"`
+	DurationMs   int     `json:"duration_ms"`
+	NumTurns     int     `json:"num_turns"`
+	StopReason   string  `json:"stop_reason"`
+	Result       string  `json:"result"` // final text result
 	InputTokens  int     `json:"input_tokens"`
 	OutputTokens int     `json:"output_tokens"`
 }
 
 func (*ResultEvent) EventType() string { return "result" }
+
+// RateLimitEvent carries rate limit / quota info from the Claude CLI.
+type RateLimitEvent struct {
+	Status      string `json:"status"`       // "allowed", "blocked"
+	ResetsAt    int64  `json:"resets_at"`
+	LimitType   string `json:"limit_type"`   // "five_hour"
+	IsOverage   bool   `json:"is_overage"`
+}
+
+func (*RateLimitEvent) EventType() string { return "rate_limit_event" }
+
+// UserMessage carries tool results from the CLI (the CLI executes tools
+// internally and reports results as "user" type messages).
+type UserMessage struct {
+	Message json.RawMessage `json:"message"`
+	// Extracted tool result metadata for convenience
+	ToolUseID string `json:"tool_use_id"`
+	Content   string `json:"content"`
+	IsError   bool   `json:"is_error"`
+}
+
+func (*UserMessage) EventType() string { return "user" }
 
 type UnknownEvent struct {
 	RawType string          `json:"raw_type"`
