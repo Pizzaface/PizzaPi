@@ -206,10 +206,12 @@ func (r *GoRunner) handleNewSession(data json.RawMessage) {
 
 	// Create and track the session
 	ctx, cancel := context.WithCancel(context.Background())
+	adapter := claudewrapper.NewAdapter()
+	adapter.SetUserPrompt(prompt)
 	sess := &session{
 		sessionID: sessionID,
 		runner:    claudewrapper.NewRunner(cfg),
-		adapter:   claudewrapper.NewAdapter(),
+		adapter:   adapter,
 		cancel:    cancel,
 	}
 	r.sessions.Store(sessionID, sess)
