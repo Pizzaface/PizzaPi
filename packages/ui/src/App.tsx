@@ -183,6 +183,7 @@ interface SessionState {
   availableCommands: Array<{ name: string; description?: string; source?: string }>;
   resumeSessions: ResumeSessionOption[];
   resumeSessionsLoading: boolean;
+  resumeSessionsNextCursor: string | null;
 }
 
 function createInitialSessionState(): SessionState {
@@ -213,6 +214,7 @@ function createInitialSessionState(): SessionState {
     availableCommands: [],
     resumeSessions: [],
     resumeSessionsLoading: false,
+    resumeSessionsNextCursor: null,
   };
 }
 // ─────────────────────────────────────────────────────────────────────────────
@@ -234,7 +236,7 @@ export function App() {
     mcpOAuthPastes, messageQueue, activeModel, sessionName, availableModels,
     modelSelectorOpen, isChangingModel, agentActive, effortLevel, authSource,
     tokenUsage, providerUsage, usageRefreshing, lastHeartbeatAt,
-    availableCommands, resumeSessions, resumeSessionsLoading,
+    availableCommands, resumeSessions, resumeSessionsLoading, resumeSessionsNextCursor,
   } = sessionState;
 
   // Thin setter wrappers — identical signatures to the original useState setters
@@ -370,6 +372,13 @@ export function App() {
       setSessionState((p: SessionState) => ({ ...p, resumeSessionsLoading: typeof v === "function" ? v(p.resumeSessionsLoading) : v })),
     []
   );
+  const setResumeSessionsNextCursor = React.useCallback(
+    (v: string | null) =>
+      setSessionState((p: SessionState) => ({ ...p, resumeSessionsNextCursor: v })),
+    []
+  );
+  // Tracks whether the in-flight list_resume_sessions request is a "load more" (append) vs fresh load
+  const resumeSessionsAppendRef = React.useRef(false);
   // ────────────────────────────────────────────────────────────────────────────
   // Ref kept in sync with `messages` via useLayoutEffect so we can read the
   // latest committed value in event handlers without needing functional updaters.
@@ -1895,9 +1904,23 @@ export function App() {
           });
         }
 
-        setResumeSessions(normalized);
+        const nextCursor = typeof result?.nextCursor === "string" ? result.nextCursor : null;
+        const isAppend = resumeSessionsAppendRef.current;
+        resumeSessionsAppendRef.current = false;
+
+        if (isAppend) {
+          // Append to existing list, deduplicating by id
+          setResumeSessions((prev) => {
+            const existingIds = new Set(prev.map((s) => s.id));
+            const newItems = normalized.filter((s) => !existingIds.has(s.id));
+            return [...prev, ...newItems];
+          });
+        } else {
+          setResumeSessions(normalized);
+        }
+        setResumeSessionsNextCursor(nextCursor);
         setResumeSessionsLoading(false);
-        if (normalized.length === 0) {
+        if (!isAppend && normalized.length === 0) {
           setViewerStatus("No resumable sessions");
         }
         return;
@@ -2760,6 +2783,7 @@ export function App() {
     setUsageRefreshing(false);
     setResumeSessions([]);
     setResumeSessionsLoading(false);
+    setResumeSessionsNextCursor(null);
 
     const cached = sessionUiCacheRef.current.get(relaySessionId);
     touchSessionCache(sessionUiCacheRef.current, relaySessionId);
@@ -3367,16 +3391,19 @@ export function App() {
     });
   }, [sendRemoteExec]);
 
-  const requestResumeSessions = React.useCallback(() => {
+  const requestResumeSessions = React.useCallback((cursor?: string) => {
     if (!activeSessionRef.current) return false;
     setResumeSessionsLoading(true);
+    resumeSessionsAppendRef.current = !!cursor;
     const ok = sendRemoteExec({
       type: "exec",
       id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
       command: "list_resume_sessions",
+      ...(cursor ? { cursor } : {}),
     });
     if (!ok) {
       setResumeSessionsLoading(false);
+      resumeSessionsAppendRef.current = false;
     }
     return ok;
   }, [sendRemoteExec]);
@@ -4825,16 +4852,8 @@ export function App() {
           loading={resumeSessionsLoading}
           onRefresh={requestResumeSessions}
           onOpenSession={(id) => { handleOpenSession(id); setHistoryOpen(false); }}
-          onResumeSession={(sessionId) => {
-            const session = resumeSessions.find((s) => s.id === sessionId);
-            if (!session) return;
-            sendRemoteExec({
-              type: "exec",
-              id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
-              command: "resume_session",
-              sessionPath: session.path,
-            });
-          }}
+          nextCursor={resumeSessionsNextCursor}
+          onLoadMore={() => { if (resumeSessionsNextCursor) requestResumeSessions(resumeSessionsNextCursor); }}
         />
 
         <NewSessionWizardDialog
