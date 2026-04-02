@@ -25,17 +25,14 @@ import (
 	"sync"
 	"syscall"
 	"time"
-
-	claudewrapper "github.com/pizzaface/pizzapi/experimental/adk-go/claude-wrapper"
 )
 
 const version = "0.1.0-phase0"
 
-// session tracks a running Claude CLI subprocess and its adapter.
+// session tracks a running provider session.
 type session struct {
 	sessionID    string
-	runner       *claudewrapper.Runner
-	adapter      *claudewrapper.Adapter
+	provider     Provider      // LLM backend (Claude CLI, API, etc.)
 	relaySession *RelaySession // per-session /relay connection
 	cancel       context.CancelFunc
 	killed       bool
@@ -183,49 +180,75 @@ func (r *GoRunner) handleNewSession(data json.RawMessage) {
 		return
 	}
 
-	// Build runner config
-	cfg := claudewrapper.RunnerConfig{
-		OnStderr: func(line string) {
-			r.logger.Printf("[session:%s:stderr] %s", sessionID[:8], line)
-		},
-	}
-
-	if payload.Cwd != "" {
-		cfg.WorkDir = payload.Cwd
-	}
-
-	if payload.Model != nil && payload.Model.ID != "" {
-		cfg.Model = payload.Model.ID
-	}
-
 	// Determine the initial prompt
 	prompt := payload.Prompt
 	if prompt == "" {
 		prompt = "Hello! I'm ready to help."
 	}
 
+	// Resolve model
+	model := ""
+	if payload.Model != nil && payload.Model.ID != "" {
+		model = payload.Model.ID
+	}
+
+	// Create provider — currently always Claude CLI.
+	// Future: select provider based on model prefix, config, etc.
+	provider := NewClaudeCLIProvider(r.logger)
+
 	// Create and track the session
 	ctx, cancel := context.WithCancel(context.Background())
-	adapter := claudewrapper.NewAdapter()
-	adapter.SetUserPrompt(prompt)
 	sess := &session{
 		sessionID: sessionID,
-		runner:    claudewrapper.NewRunner(cfg),
-		adapter:   adapter,
+		provider:  provider,
 		cancel:    cancel,
 	}
 	r.sessions.Store(sessionID, sess)
 
-	// Spawn the claude subprocess
-	go r.runSession(ctx, sess, prompt, payload.Cwd)
+	// Spawn the provider session
+	go r.runSession(ctx, sess, ProviderContext{
+		Prompt: prompt,
+		Cwd:    payload.Cwd,
+		Model:  model,
+		OnStderr: func(line string) {
+			r.logger.Printf("[session:%s:stderr] %s", sessionID[:8], line)
+		},
+	})
 }
 
-func (r *GoRunner) runSession(ctx context.Context, sess *session, prompt string, cwd string) {
+func (r *GoRunner) runSession(ctx context.Context, sess *session, pctx ProviderContext) {
 	sessionID := sess.sessionID
+	cwd := pctx.Cwd
 
 	// Connect to /relay to register the session in the session store.
 	// This is what makes the session visible to the web UI.
 	relaySess := NewRelaySession(r.relayURL, r.apiKey, sessionID, cwd, r.logger)
+
+	// Wire up user input from web UI → provider
+	relaySess.onInput = func(text string) {
+		r.logger.Printf("session %s: sending user input to provider", sessionID[:8])
+
+		if err := sess.provider.SendMessage(text); err != nil {
+			r.logger.Printf("session %s: send message error: %v", sessionID[:8], err)
+			return
+		}
+
+		// Emit active heartbeat so the UI shows the spinner
+		activeHB := map[string]any{
+			"type":         "heartbeat",
+			"active":       true,
+			"isCompacting": false,
+			"ts":           time.Now().UnixMilli(),
+		}
+		r.client.Emit("runner_session_event", map[string]any{
+			"sessionId": sessionID,
+			"event":     activeHB,
+		})
+		if relaySess != nil {
+			relaySess.EmitEvent(activeHB)
+		}
+	}
+
 	if err := relaySess.Connect(r.relayURL, r.apiKey, cwd); err != nil {
 		r.logger.Printf("session %s relay registration failed: %v", sessionID[:8], err)
 		r.client.Emit("session_error", map[string]any{
@@ -237,7 +260,8 @@ func (r *GoRunner) runSession(ctx context.Context, sess *session, prompt string,
 	}
 	sess.relaySession = relaySess
 
-	events, err := sess.runner.StartInteractive(ctx, prompt)
+	// Start the provider
+	events, err := sess.provider.Start(pctx)
 	if err != nil {
 		r.logger.Printf("session %s start error: %v", sessionID[:8], err)
 		r.client.Emit("session_error", map[string]any{
@@ -264,33 +288,27 @@ func (r *GoRunner) runSession(ctx context.Context, sess *session, prompt string,
 		select {
 		case ev, ok := <-events:
 			if !ok {
-				// Events channel closed — process exited
+				// Events channel closed — provider exited
 				r.handleSessionExit(sess)
 				return
 			}
 
-			r.logger.Printf("session %s event: type=%s", sessionID[:8], ev.EventType())
+			evType, _ := ev["type"].(string)
+			r.logger.Printf("session %s relay event: %v", sessionID[:8], evType)
 
-			// Convert Claude event to relay events via adapter
-			relayEvents := sess.adapter.HandleEvent(ev)
-			for _, relayEv := range relayEvents {
-				evType, _ := relayEv["type"].(string)
-				r.logger.Printf("session %s relay event: %v", sessionID[:8], evType)
-
-				// Forward via the /relay session connection — this goes through
-				// the server's event pipeline (state caching, image stripping,
-				// viewer broadcast). This is the primary event delivery path.
-				if sess.relaySession != nil {
-					sess.relaySession.EmitEvent(relayEv)
-				}
-
-				// Also forward via runner protocol for runner-level tracking
-				// (session ownership, heartbeat monitoring).
-				r.client.Emit("runner_session_event", map[string]any{
-					"sessionId": sessionID,
-					"event":     relayEv,
-				})
+			// Forward via the /relay session connection — this goes through
+			// the server's event pipeline (state caching, image stripping,
+			// viewer broadcast). This is the primary event delivery path.
+			if sess.relaySession != nil {
+				sess.relaySession.EmitEvent(ev)
 			}
+
+			// Also forward via runner protocol for runner-level tracking
+			// (session ownership, heartbeat monitoring).
+			r.client.Emit("runner_session_event", map[string]any{
+				"sessionId": sessionID,
+				"event":     ev,
+			})
 
 		case <-heartbeatTicker.C:
 			r.client.Emit("runner_session_event", map[string]any{
@@ -317,10 +335,10 @@ func (r *GoRunner) handleSessionExit(sess *session) {
 		sess.relaySession.Close()
 	}
 
-	// Wait for process to fully exit
-	<-sess.runner.Done()
+	// Wait for provider to fully exit
+	<-sess.provider.Done()
 
-	exitCode := sess.runner.ExitCode()
+	exitCode := sess.provider.ExitCode()
 	r.logger.Printf("session %s exited (code=%d)", sessionID[:8], exitCode)
 
 	// Send final inactive heartbeat
@@ -373,13 +391,15 @@ func (r *GoRunner) killSession(sess *session) {
 	sess.killed = true
 	sess.mu.Unlock()
 
+	// Stop the provider (sends SIGTERM for subprocess providers)
+	sess.provider.Stop()
 	sess.cancel()
 
-	// Wait for process exit with timeout
+	// Wait for provider exit with timeout
 	select {
-	case <-sess.runner.Done():
+	case <-sess.provider.Done():
 	case <-time.After(10 * time.Second):
-		r.logger.Printf("session %s did not exit after SIGTERM, force killed", sess.sessionID[:8])
+		r.logger.Printf("session %s did not exit after stop, force killed", sess.sessionID[:8])
 	}
 }
 
