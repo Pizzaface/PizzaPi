@@ -11,15 +11,16 @@ type RelayEvent map[string]any
 
 // Adapter accumulates streaming state and converts Claude events to relay events.
 type Adapter struct {
-	currentMessageID string
-	model            AdapterModel
-	cwd              string
-	contentBlocks    []map[string]any
-	messages         []map[string]any // accumulated conversation messages
-	toolInputBuffers map[int]string
-	toolUseBlocks    map[int]toolUseMeta
-	toolNamesByID    map[string]string
-	seq              int
+	currentMessageID  string
+	model             AdapterModel
+	cwd               string
+	contentBlocks     []map[string]any
+	messages          []map[string]any // accumulated conversation messages
+	pendingUserPrompt string           // user prompt to add when system event arrives
+	toolInputBuffers  map[int]string
+	toolUseBlocks     map[int]toolUseMeta
+	toolNamesByID     map[string]string
+	seq               int
 }
 
 type AdapterModel struct {
@@ -40,11 +41,29 @@ func NewAdapter() *Adapter {
 	}
 }
 
+// SetUserPrompt records the user's initial prompt so it appears in the
+// accumulated message list when the system event arrives.
+func (a *Adapter) SetUserPrompt(prompt string) {
+	a.pendingUserPrompt = prompt
+}
+
 func (a *Adapter) HandleEvent(ev ClaudeEvent) []RelayEvent {
 	switch e := ev.(type) {
 	case *SystemEvent:
 		a.model = AdapterModel{Provider: "anthropic", ID: e.Model}
 		a.cwd = e.Cwd
+		// If there's a pending user prompt, add it to the message list now
+		if a.pendingUserPrompt != "" {
+			a.messages = append(a.messages, map[string]any{
+				"role": "user",
+				"content": []any{
+					map[string]any{"type": "text", "text": a.pendingUserPrompt},
+				},
+				"messageId": fmt.Sprintf("user_%02d", a.seq+1),
+				"timestamp": nowMillis(),
+			})
+			a.pendingUserPrompt = ""
+		}
 		return []RelayEvent{
 			// Heartbeat to signal the session is alive
 			{
