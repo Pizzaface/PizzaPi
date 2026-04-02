@@ -2756,7 +2756,8 @@ export function App() {
     const prevRunnerId = prevSessionId
       ? sessions.find((s) => s.sessionId === prevSessionId)?.runnerId ?? null
       : null;
-    const nextRunnerId = sessions.find((s) => s.sessionId === relaySessionId)?.runnerId ?? null;
+    const nextLiveSession = sessions.find((s) => s.sessionId === relaySessionId);
+    const nextRunnerId = nextLiveSession?.runnerId ?? null;
     const sameRunner = !!(prevRunnerId && nextRunnerId && prevRunnerId === nextRunnerId);
     const prevViewerSocket = viewerWsRef.current;
     const nextGeneration = ++viewerSwitchGenerationRef.current;
@@ -2792,7 +2793,7 @@ export function App() {
     // ── Session-scoped state: always reset from cache or defaults ────────
     setMessages(cached?.messages ?? []);
     setActiveModel(cached?.activeModel ?? null);
-    setSessionName(cached?.sessionName ?? null);
+    setSessionName(cached?.sessionName ?? nextLiveSession?.sessionName ?? null);
     setAgentActive(cached?.agentActive ?? false);
     setIsCompacting(cached?.isCompacting ?? false);
     setEffortLevel(cached?.effortLevel ?? null);
