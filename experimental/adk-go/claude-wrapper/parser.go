@@ -171,12 +171,13 @@ func ParseLine(line []byte) ClaudeEvent {
 			return &ParseError{Line: string(line), Message: err.Error()}
 		}
 		// Extract tool result from message.content[]
+		// Note: content field can be a string OR an array of objects (e.g. tool_reference blocks)
 		var msg struct {
 			Content []struct {
-				ToolUseID string `json:"tool_use_id"`
-				Type      string `json:"type"`
-				Content   string `json:"content"`
-				IsError   bool   `json:"is_error"`
+				ToolUseID string          `json:"tool_use_id"`
+				Type      string          `json:"type"`
+				Content   json.RawMessage `json:"content"`
+				IsError   bool            `json:"is_error"`
 			} `json:"content"`
 		}
 		toolUseID, content := "", ""
@@ -185,8 +186,15 @@ func ParseLine(line []byte) ClaudeEvent {
 			for _, c := range msg.Content {
 				if c.Type == "tool_result" {
 					toolUseID = c.ToolUseID
-					content = c.Content
 					isError = c.IsError
+					// content can be a string or an array — try string first
+					var s string
+					if json.Unmarshal(c.Content, &s) == nil {
+						content = s
+					} else {
+						// array or other structure — preserve as JSON string
+						content = string(c.Content)
+					}
 					break
 				}
 			}
