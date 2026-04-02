@@ -29,8 +29,8 @@ export type McpConfig = {
   mcp?: {
     servers?: Array<
       | { name: string; transport: "stdio"; command: string; args?: string[]; env?: Record<string, string>; cwd?: string; deferLoading?: boolean }
-      | { name: string; transport: "http"; url: string; headers?: Record<string, string>; oauthClientName?: string; deferLoading?: boolean }
-      | { name: string; transport: "streamable"; url: string; headers?: Record<string, string>; oauthClientName?: string; deferLoading?: boolean }
+      | { name: string; transport: "http"; url: string; headers?: Record<string, string>; oauthClientName?: string; oauthClientId?: string; oauthClientSecret?: string; oauthCallbackPort?: number; deferLoading?: boolean }
+      | { name: string; transport: "streamable"; url: string; headers?: Record<string, string>; oauthClientName?: string; oauthClientId?: string; oauthClientSecret?: string; oauthCallbackPort?: number; deferLoading?: boolean }
     >;
   };
 
@@ -51,7 +51,7 @@ export type McpConfig = {
   mcpServers?: Record<
     string,
     | { command: string; args?: string[]; env?: Record<string, string>; cwd?: string; deferLoading?: boolean }
-    | { url: string; transport?: "http" | "streamable"; type?: "http" | "sse"; headers?: Record<string, string>; oauthClientName?: string; deferLoading?: boolean }
+    | { url: string; transport?: "http" | "streamable"; type?: "http" | "sse"; headers?: Record<string, string>; oauthClientName?: string; oauthClientId?: string; oauthClientSecret?: string; oauthCallbackPort?: number; deferLoading?: boolean }
   >;
 };
 
@@ -159,6 +159,9 @@ export async function createMcpClientsFromConfig(config: PizzaPiConfig & McpConf
 
   const disabled = new Set(config.disabledMcpServers ?? []);
   const oauthClientName = config.oauthClientName;
+  const oauthClientId = config.oauthClientId;
+  const oauthClientSecret = config.oauthClientSecret;
+  const oauthCallbackPort = config.oauthCallbackPort;
 
   const clients: McpClient[] = [];
 
@@ -195,6 +198,9 @@ export async function createMcpClientsFromConfig(config: PizzaPiConfig & McpConf
         serverUrl: s.url,
         serverName: s.name,
         clientName: s.oauthClientName || oauthClientName,
+        clientId: s.oauthClientId || oauthClientId,
+        clientSecret: s.oauthClientSecret || oauthClientSecret,
+        callbackPort: s.oauthCallbackPort ?? oauthCallbackPort,
         deferRelayWaitTimeoutUntilAnchor: deferOAuthRelayWaitTimeoutUntilAnchor,
       });
       activeOAuthProviders.push(provider);
@@ -234,7 +240,7 @@ export async function createMcpClientsFromConfig(config: PizzaPiConfig & McpConf
     }
 
     if ("url" in def && typeof (def as any).url === "string") {
-      const d = def as { url: string; transport?: string; type?: string; headers?: Record<string, string>; oauthClientName?: string };
+      const d = def as { url: string; transport?: string; type?: string; headers?: Record<string, string>; oauthClientName?: string; oauthClientId?: string; oauthClientSecret?: string; oauthCallbackPort?: number };
 
       // Domain gating for URL-based MCP servers
       if (!isMcpDomainAllowed(d.url, name)) continue;
@@ -251,6 +257,9 @@ export async function createMcpClientsFromConfig(config: PizzaPiConfig & McpConf
           serverUrl: d.url,
           serverName: name,
           clientName: d.oauthClientName || oauthClientName,
+          clientId: d.oauthClientId || oauthClientId,
+          clientSecret: d.oauthClientSecret || oauthClientSecret,
+          callbackPort: d.oauthCallbackPort ?? oauthCallbackPort,
           deferRelayWaitTimeoutUntilAnchor: deferOAuthRelayWaitTimeoutUntilAnchor,
         });
         activeOAuthProviders.push(provider);

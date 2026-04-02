@@ -452,6 +452,94 @@ describe("PizzaPiOAuthProvider", () => {
         });
     });
 
+    describe("pre-registered client credentials (oauthClientId / oauthClientSecret)", () => {
+        test("clientInformation returns static credentials when clientId is set", () => {
+            const provider = new PizzaPiOAuthProvider({
+                serverUrl: `https://static-creds-${Date.now()}.example.com/mcp`,
+                serverName: "static-server",
+                clientId: "my-app-id",
+                clientSecret: "my-app-secret",
+            });
+            const info = provider.clientInformation();
+            expect(info).toBeDefined();
+            expect(info!.client_id).toBe("my-app-id");
+            expect((info as any).client_secret).toBe("my-app-secret");
+        });
+
+        test("clientInformation returns static credentials without secret for public clients", () => {
+            const provider = new PizzaPiOAuthProvider({
+                serverUrl: `https://public-client-${Date.now()}.example.com/mcp`,
+                serverName: "public-server",
+                clientId: "public-app-id",
+            });
+            const info = provider.clientInformation();
+            expect(info).toBeDefined();
+            expect(info!.client_id).toBe("public-app-id");
+            expect((info as any).client_secret).toBeUndefined();
+        });
+
+        test("saveClientInformation is a no-op when static clientId is set", () => {
+            const provider = new PizzaPiOAuthProvider({
+                serverUrl: `https://no-save-${Date.now()}.example.com/mcp`,
+                serverName: "no-save-server",
+                clientId: "my-static-id",
+                clientSecret: "my-static-secret",
+            });
+
+            // Attempt to overwrite with different credentials
+            provider.saveClientInformation({
+                client_id: "dynamic-id",
+                client_secret: "dynamic-secret",
+            } as any);
+
+            // Should still return the static credentials
+            const info = provider.clientInformation();
+            expect(info!.client_id).toBe("my-static-id");
+            expect((info as any).client_secret).toBe("my-static-secret");
+        });
+
+        test("falls back to persisted DCR data when no static clientId", () => {
+            const provider = new PizzaPiOAuthProvider({
+                serverUrl: `https://dcr-fallback-${Date.now()}.example.com/mcp`,
+                serverName: "dcr-server",
+            });
+
+            // No static credentials — should return undefined initially
+            expect(provider.clientInformation()).toBeUndefined();
+
+            // Save DCR credentials — should be returned
+            provider.saveClientInformation({
+                client_id: "dcr-id",
+                client_secret: "dcr-secret",
+            } as any);
+
+            const info = provider.clientInformation();
+            expect(info!.client_id).toBe("dcr-id");
+        });
+    });
+
+    describe("callbackPort", () => {
+        test("callback server uses specified port", () => {
+            const { promise, getPort, close } = startCallbackServer(19876, 5000);
+            try {
+                expect(getPort()).toBe(19876);
+            } finally {
+                promise.catch(() => {});
+                close();
+            }
+        });
+
+        test("callback server uses random port when 0", () => {
+            const { promise, getPort, close } = startCallbackServer(0, 5000);
+            try {
+                expect(getPort()).toBeGreaterThan(0);
+            } finally {
+                promise.catch(() => {});
+                close();
+            }
+        });
+    });
+
     describe("hasTokens", () => {
         test("returns false when no tokens are saved", () => {
             // Use a unique URL so persisted state from other tests doesn't interfere
