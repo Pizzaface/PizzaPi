@@ -254,6 +254,16 @@ func TestAdapterRateLimitEventNoOutput(t *testing.T) {
 	}
 }
 
+func TestAdapterEmptyAssistantSkipped(t *testing.T) {
+	a := NewAdapter()
+	events := a.HandleEvent(&AssistantMessage{Message: mustJSON(t, map[string]any{
+		"id": "msg_01", "role": "assistant", "content": []any{},
+	})})
+	if len(events) != 0 {
+		t.Fatalf("expected 0 events for empty assistant, got %d", len(events))
+	}
+}
+
 func mustJSON(t *testing.T, v any) json.RawMessage {
 	t.Helper()
 	b, err := json.Marshal(v)

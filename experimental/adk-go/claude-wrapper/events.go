@@ -123,6 +123,10 @@ type UserMessage struct {
 
 func (*UserMessage) EventType() string { return "user" }
 
+type ProgressEvent struct{}
+
+func (*ProgressEvent) EventType() string { return "progress" }
+
 type UnknownEvent struct {
 	RawType string          `json:"raw_type"`
 	Raw     json.RawMessage `json:"raw"`
