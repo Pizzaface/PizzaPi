@@ -8,11 +8,14 @@ import (
 func TestAdapterSystemEventHeartbeat(t *testing.T) {
 	a := NewAdapter()
 	events := a.HandleEvent(&SystemEvent{Cwd: "/tmp", Model: "claude-sonnet-4-20250514"})
-	if len(events) != 1 {
-		t.Fatalf("expected 1 event, got %d", len(events))
+	if len(events) != 2 {
+		t.Fatalf("expected 2 events (heartbeat + session_active), got %d", len(events))
 	}
 	if events[0]["type"] != "heartbeat" {
-		t.Fatalf("unexpected type: %+v", events[0])
+		t.Fatalf("unexpected first event type: %+v", events[0])
+	}
+	if events[1]["type"] != "session_active" {
+		t.Fatalf("unexpected second event type: %+v", events[1])
 	}
 	if events[0]["active"] != true {
 		t.Fatalf("expected active=true: %+v", events[0])
@@ -139,19 +142,18 @@ func TestAdapterFullConversationFlow(t *testing.T) {
 	appendEvents(a.HandleEvent(&ToolResultEvent{ToolID: "tool_abc", Content: "file1.txt\nfile2.txt", IsError: false}))
 	appendEvents(a.HandleEvent(&ResultEvent{InputTokens: 500, OutputTokens: 200, TotalCostUSD: 0.05}))
 
-	if len(relayed) != 7 {
-		t.Fatalf("expected 7 relay events, got %d: %+v", len(relayed), relayed)
+	if len(relayed) != 8 {
+		t.Fatalf("expected 8 relay events, got %d: %+v", len(relayed), relayed)
 	}
-	if relayed[0]["type"] != "heartbeat" {
-		t.Fatalf("event 0 = %+v", relayed[0])
-	}
-	assertEventType(t, relayed[1], "message_update")
+	assertEventType(t, relayed[0], "heartbeat")
+	assertEventType(t, relayed[1], "session_active")
 	assertEventType(t, relayed[2], "message_update")
 	assertEventType(t, relayed[3], "message_update")
 	assertEventType(t, relayed[4], "message_update")
-	assertEventType(t, relayed[5], "tool_result_message")
-	assertEventType(t, relayed[6], "session_metadata_update")
-	content := getContent(t, relayed[3])
+	assertEventType(t, relayed[5], "message_update")
+	assertEventType(t, relayed[6], "tool_result_message")
+	assertEventType(t, relayed[7], "session_metadata_update")
+	content := getContent(t, relayed[4])
 	if len(content) != 1 || content[0]["text"] != "Hello world" {
 		t.Fatalf("unexpected final assistant content: %+v", content)
 	}

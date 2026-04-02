@@ -44,15 +44,32 @@ func (a *Adapter) HandleEvent(ev ClaudeEvent) []RelayEvent {
 	case *SystemEvent:
 		a.model = AdapterModel{Provider: "anthropic", ID: e.Model}
 		a.cwd = e.Cwd
-		return []RelayEvent{{
-			"type":         "heartbeat",
-			"active":       true,
-			"isCompacting": false,
-			"ts":           nowMillis(),
-			"model":        a.modelMap(),
-			"sessionName":  nil,
-			"cwd":          e.Cwd,
-		}}
+		return []RelayEvent{
+			// Heartbeat to signal the session is alive
+			{
+				"type":         "heartbeat",
+				"active":       true,
+				"isCompacting": false,
+				"ts":           nowMillis(),
+				"model":        a.modelMap(),
+				"sessionName":  nil,
+				"cwd":          e.Cwd,
+			},
+			// session_active snapshot so the UI unblocks message rendering.
+			// Without this, the UI waits for session_active/agent_end before
+			// displaying any message_update events.
+			{
+				"type":     "session_active",
+				"messages": []any{},
+				"model":    a.modelMap(),
+				"cwd":      e.Cwd,
+				"metadata": map[string]any{
+					"model":    a.modelMap(),
+					"cwd":      e.Cwd,
+					"todoList": nil,
+				},
+			},
+		}
 	case *MessageStart:
 		a.currentMessageID = e.MessageID
 		if a.currentMessageID == "" {
