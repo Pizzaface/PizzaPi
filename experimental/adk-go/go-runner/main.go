@@ -303,12 +303,15 @@ func (r *GoRunner) runSession(ctx context.Context, sess *session, pctx ProviderC
 				sess.relaySession.EmitEvent(ev)
 			}
 
-			// Also forward via runner protocol for runner-level tracking
-			// (session ownership, heartbeat monitoring).
-			r.client.Emit("runner_session_event", map[string]any{
-				"sessionId": sessionID,
-				"event":     ev,
-			})
+			// Only forward heartbeats via runner protocol — the relay needs
+			// them for session liveness tracking. All other events go
+			// exclusively through /relay to avoid double-publishing.
+			if evType == "heartbeat" {
+				r.client.Emit("runner_session_event", map[string]any{
+					"sessionId": sessionID,
+					"event":     ev,
+				})
+			}
 
 		case <-heartbeatTicker.C:
 			r.client.Emit("runner_session_event", map[string]any{
