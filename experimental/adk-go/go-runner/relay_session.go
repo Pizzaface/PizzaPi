@@ -20,6 +20,7 @@ type RelaySession struct {
 	token     string // auth token returned by relay registration
 	client    *SIOClient
 	logger    *log.Logger
+	onInput   func(text string) // callback when user sends input from web UI
 	done      chan struct{}
 	closeOnce sync.Once
 }
@@ -82,6 +83,21 @@ func (rs *RelaySession) Connect(relayURL, apiKey, cwd string) error {
 		rs.logger.Printf("session %s: received exec: %s", rs.sessionID[:8], string(data))
 	})
 
+	// Handle user input from the web UI (collab mode)
+	rs.client.On("input", func(data json.RawMessage) {
+		var payload struct {
+			Text string `json:"text"`
+		}
+		if err := json.Unmarshal(data, &payload); err != nil {
+			rs.logger.Printf("session %s: failed to parse input: %v", rs.sessionID[:8], err)
+			return
+		}
+		rs.logger.Printf("session %s: received user input: %s", rs.sessionID[:8], payload.Text[:min(len(payload.Text), 80)])
+		if rs.onInput != nil {
+			rs.onInput(payload.Text)
+		}
+	})
+
 	if err := rs.client.Connect(); err != nil {
 		return fmt.Errorf("connect to /relay: %w", err)
 	}
@@ -114,4 +130,11 @@ func (rs *RelaySession) Close() {
 // Done returns a channel that closes when the session is done.
 func (rs *RelaySession) Done() <-chan struct{} {
 	return rs.done
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
