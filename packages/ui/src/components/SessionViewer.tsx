@@ -74,7 +74,7 @@ import { resolveCommandPopoverState } from "@/components/session-viewer/utils";
 import { ContextDonut } from "@/components/session-viewer/rendering";
 
 // ── Sub-module imports ────────────────────────────────────────────────────────
-import type { SessionViewerProps, CmdEntry } from "@/components/session-viewer/viewer-types";
+import type { SessionViewerProps as BaseSessionViewerProps, CmdEntry } from "@/components/session-viewer/viewer-types";
 import { formatTokenCount } from "@/components/session-viewer/formatters";
 import { useMessageProcessor } from "@/components/session-viewer/message-processor";
 import { useDraftManagement } from "@/components/session-viewer/draft-management";
@@ -94,7 +94,7 @@ import { SessionMessageItem, PaginationSentinel } from "@/components/session-vie
 // ── Public re-exports (existing consumers import these from SessionViewer) ────
 export type { RelayMessage } from "@/components/session-viewer/types";
 export type { TodoItem, TokenUsage, QueuedMessage, ResumeSessionOption } from "@/lib/types";
-export type { SessionViewerProps };
+export type { SessionViewerProps } from "@/components/session-viewer/viewer-types";
 
 // ── Main component ────────────────────────────────────────────────────────────
 
@@ -155,7 +155,14 @@ export function SessionViewer({
   onMcpOAuthPaste,
   onMcpOAuthPasteDismiss,
   onMcpServerDisable,
-}: SessionViewerProps) {
+  hasMoreServerMessages,
+  onLoadMoreServerMessages,
+  loadingOlderMessages,
+}: BaseSessionViewerProps & {
+  hasMoreServerMessages?: boolean;
+  onLoadMoreServerMessages?: () => void;
+  loadingOlderMessages?: boolean;
+}) {
   // ── Misc local state ──────────────────────────────────────────────────────
   const [composerError, setComposerError] = React.useState<string | null>(null);
 
@@ -682,7 +689,14 @@ export function SessionViewer({
             ) : shouldShowSessionTranscript(sessionId, viewerStatus, visibleMessages.length > 0) ? (
               <Conversation key={sessionId} className="overflow-x-hidden">
                 <ConversationContent className="w-full gap-0 p-0 py-2">
-                  <PaginationSentinel hasMore={hasMore} onLoadMore={loadMoreMessages} />
+                  <PaginationSentinel
+                    hasMore={hasMore || !!hasMoreServerMessages}
+                    onLoadMore={() => {
+                      if (hasMore) loadMoreMessages();
+                      else if (hasMoreServerMessages && onLoadMoreServerMessages) onLoadMoreServerMessages();
+                    }}
+                    loading={loadingOlderMessages}
+                  />
                   {renderedMessages.map((message, index) => (
                     <SessionMessageItem
                       key={message.key}

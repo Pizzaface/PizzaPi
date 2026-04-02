@@ -111,8 +111,6 @@ import { metaEventToStatePatch, type MetaStatePatch } from "@/lib/meta-state-app
 import { usePanelLayout } from "@/hooks/usePanelLayout";
 import { useTriggerCount } from "@/hooks/useTriggerCount";
 // Attention store: AttentionProvider is mounted in main.ts around <App/>
-import { ActionCenter } from "@/components/action-center/ActionCenter";
-import { ActionCenterButton } from "@/components/action-center/ActionCenterButton";
 import { useAttentionIngestion } from "@/hooks/useAttentionIngestion";
 import { useMobileSidebar } from "@/hooks/useMobileSidebar";
 import { useBrowserNotifications } from "@/hooks/useBrowserNotifications";
@@ -493,7 +491,6 @@ export function App() {
     return /Mac|iPhone|iPad/i.test(platform);
   }, []);
   const [showShortcutsHelp, setShowShortcutsHelp] = React.useState(false);
-  const [actionCenterOpen, setActionCenterOpen] = React.useState(false);
 
   // Sequence tracking for gap detection
   const lastSeqRef = React.useRef<number | null>(null);
@@ -672,6 +669,12 @@ export function App() {
   }, [newSessionOpen, spawnRunnerId]);
 
   const viewerWsRef = React.useRef<Socket<ViewerServerToClientEvents, ViewerClientToServerEvents> | null>(null);
+  const paginationStateRef = React.useRef<{
+    totalMessages: number;
+    hasMore: boolean;
+    oldestLoadedIndex: number;
+  } | null>(null);
+  const [loadingOlderMessages, setLoadingOlderMessages] = React.useState(false);
   // viewerSocket is part of SessionState — tracked so ViewerSocketContext consumers re-render.
   const hubSocketRef = React.useRef<Socket<HubServerToClientEvents, HubClientToServerEvents> | null>(null);
   // Tracked as state so HubSocketContext consumers re-render when the socket changes.
@@ -1589,6 +1592,10 @@ export function App() {
       // aren't part of the server-side state snapshot.
       const injected = injectedMessagesRef.current;
       setMessages(injected.length > 0 ? [...normalizedMessages, ...injected] : normalizedMessages);
+      const totalMessages = typeof state?.totalMessages === "number" ? state.totalMessages : normalizedMessages.length;
+      const serverHasMore = state?.hasMore === true;
+      const oldestLoadedIndex = typeof state?.oldestLoadedIndex === "number" ? state.oldestLoadedIndex : 0;
+      paginationStateRef.current = { totalMessages, hasMore: serverHasMore, oldestLoadedIndex };
       if (!metaViaHub) {
         setActiveModel(stateModel);
         if (hasSessionName) {
@@ -2740,6 +2747,8 @@ export function App() {
     lastCompletedSnapshotRef.current = null;
     injectedMessagesRef.current = [];
     metaSourceHubRef.current = false;
+    paginationStateRef.current = null;
+    setLoadingOlderMessages(false);
     setActiveSessionId(relaySessionId);
     setViewerStatus("Connecting…");
     setRetryState(null);
@@ -2906,6 +2915,22 @@ export function App() {
         handleRelayEvent(data.event, seq ?? undefined);
       });
 
+      nextSocket.on("session_messages_page", (data) => {
+        if (data.sessionId !== activeSessionRef.current) return;
+        if (!matchesViewerGeneration(viewerSwitchGenerationRef.current, data.generation)) {
+          return;
+        }
+        lastViewerEventAtRef.current = Date.now();
+        const pageMessages = normalizeMessages(Array.isArray(data.messages) ? data.messages : []);
+        setMessages((prev) => [...pageMessages, ...prev]);
+        paginationStateRef.current = {
+          totalMessages: paginationStateRef.current?.totalMessages ?? 0,
+          hasMore: data.hasMore,
+          oldestLoadedIndex: data.oldestIndex,
+        };
+        setLoadingOlderMessages(false);
+      });
+
       nextSocket.on("exec_result", (data) => {
         // Important: check generation to prevent exec_result events from old sessions
         // being processed after a session switch. Unlike other events, exec_result doesn't
@@ -3055,6 +3080,19 @@ export function App() {
   // Dedup guard: prevent sending the exact same message text within a short window.
   const inputDedupeRef = React.useRef<InputDedupeState | null>(null);
   const inputAttemptIdRef = React.useRef(0);
+
+  const requestOlderMessages = React.useCallback(() => {
+    const socket = viewerWsRef.current;
+    const sessionId = activeSessionRef.current;
+    const pagination = paginationStateRef.current;
+    if (!socket || !socket.connected || !sessionId || !pagination?.hasMore || loadingOlderMessages) return;
+    setLoadingOlderMessages(true);
+    socket.emit("load_messages", {
+      sessionId,
+      before: pagination.oldestLoadedIndex,
+      limit: 50,
+    });
+  }, [loadingOlderMessages]);
 
   const sendSessionInput = React.useCallback(async (message: { text: string; files?: Array<{ file?: File; mediaType?: string; filename?: string; url?: string }>; deliverAs?: "steer" | "followUp" } | string) => {
     const socket = viewerWsRef.current;
@@ -3850,11 +3888,6 @@ export function App() {
     sessionNamesById: attentionSessionNames,
   });
 
-  const handleActionCenterNavigate = React.useCallback((sessionId: string) => {
-    if (sessionId !== activeSessionId) {
-      openSession(sessionId);
-    }
-  }, [activeSessionId, openSession]);
   const { activePanelIds: activeServicePanels, togglePanel: toggleServicePanel, closePanelById: closeServicePanelById, closeAllPanels: closeAllServicePanels, getPanelPosition: getServicePanelPosition, setPanelPosition: setServicePanelPosition, setEphemeralPanelPosition: setEphemeralServicePanelPosition, getNavParams: getServicePanelNavParams } = useServicePanelState();
 
   // Always-current ref so the runner-change effect below can read the active
@@ -4233,7 +4266,6 @@ export function App() {
         onShowShortcuts={handleShowShortcuts}
         onChangePassword={handleChangePassword}
         onRefreshUsage={refreshUsage}
-        onOpenActionCenter={() => setActionCenterOpen(true)}
       />
 
       {/* ── Mobile header (memoized — skips re-render on same-runner session switch) ── */}
@@ -4261,7 +4293,7 @@ export function App() {
         onOpenSession={handleOpenSession}
         onNewSession={handleNewSession}
         onSessionSwitcherOpenChange={handleSessionSwitcherOpenChange}
-        onOpenActionCenter={() => setActionCenterOpen(true)}
+        needsResponseCount={sessionsAwaitingInput.size}
       />
       {/* Spacer that reserves the exact height of the fixed mobile header */}
       <div className="md:hidden flex-shrink-0" style={{ height: "calc(3.25rem + env(safe-area-inset-top))" }} aria-hidden="true" />
@@ -4551,6 +4583,9 @@ export function App() {
                         showTriggersButton={!!activeSessionId}
                         isTriggersOpen={showTriggers}
                         triggerCount={triggerCounts}
+                        hasMoreServerMessages={paginationStateRef.current?.hasMore ?? false}
+                        onLoadMoreServerMessages={requestOlderMessages}
+                        loadingOlderMessages={loadingOlderMessages}
                         extraHeaderButtons={
                           <ServicePanelButtons
                             availableServices={availableServices}
@@ -4819,11 +4854,6 @@ export function App() {
         )}
 
         <ShortcutsDialog open={showShortcutsHelp} onOpenChange={setShowShortcutsHelp} />
-        <ActionCenter
-          open={actionCenterOpen}
-          onOpenChange={setActionCenterOpen}
-          onNavigateToSession={handleActionCenterNavigate}
-        />
       </div>
     </div>
     </TooltipProvider>

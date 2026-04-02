@@ -120,8 +120,8 @@ describe.skip("runner association persistence", () => {
             runnerName: "List Runner",
         });
 
-        const sessions = await listPersistedRelaySessionsForUser(TEST_USER);
-        const found = sessions.find((s) => s.sessionId === "s-ra-4");
+        const { sessions } = await listPersistedRelaySessionsForUser(TEST_USER);
+        const found = sessions.find((s: any) => s.sessionId === "s-ra-4");
 
         expect(found).toBeDefined();
         expect(found!.runnerId).toBe("runner-list");

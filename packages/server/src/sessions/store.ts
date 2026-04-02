@@ -69,6 +69,11 @@ export interface PersistedRelaySessionSummary {
     runnerName: string | null;
 }
 
+export interface PaginatedPersistedSessions {
+    sessions: PersistedRelaySessionSummary[];
+    nextCursor: string | null;
+}
+
 export interface PersistedRelaySessionRunnerInfo {
     runnerId: string | null;
     runnerName: string | null;
@@ -444,39 +449,88 @@ export async function getPersistedRelaySessionSnapshot(
 export async function listPersistedRelaySessionsForUser(
     userId: string,
     limit: number = 50,
-): Promise<PersistedRelaySessionSummary[]> {
+    cursor?: string,
+): Promise<PaginatedPersistedSessions> {
     const nowIso = new Date().toISOString();
-    const rows = await getKysely()
+
+    const selectColumns = [
+        "id as sessionId",
+        "cwd",
+        "shareUrl",
+        "startedAt",
+        "lastActiveAt",
+        "endedAt",
+        "isEphemeral",
+        "expiresAt",
+        "isPinned",
+        "runnerId",
+        "runnerName",
+    ] as const;
+
+    type SessionRow = {
+        sessionId: string;
+        cwd: string;
+        shareUrl: string;
+        startedAt: string;
+        lastActiveAt: string;
+        endedAt: string | null;
+        isEphemeral: number;
+        expiresAt: string | null;
+        isPinned: number;
+        runnerId: string | null;
+        runnerName: string | null;
+    };
+
+    // When using cursor-based pagination, always include all pinned sessions
+    // in a separate query so they are never lost across pages.
+    let pinnedRows: SessionRow[] = [];
+    if (cursor) {
+        pinnedRows = await getKysely()
+            .selectFrom("relay_session")
+            .select([...selectColumns])
+            .where("userId", "=", userId)
+            .where("isPinned", "=", 1)
+            .orderBy("lastActiveAt", "desc")
+            .execute() as SessionRow[];
+    }
+
+    let query = getKysely()
         .selectFrom("relay_session")
-        .select([
-            "id as sessionId",
-            "cwd",
-            "shareUrl",
-            "startedAt",
-            "lastActiveAt",
-            "endedAt",
-            "isEphemeral",
-            "expiresAt",
-            "isPinned",
-            "runnerId",
-            "runnerName",
-        ])
+        .select([...selectColumns])
         .where("userId", "=", userId)
         .where((eb) =>
             eb.or([
-                // Include non-expired sessions
                 eb("expiresAt", "is", null),
                 eb("expiresAt", ">", nowIso),
-                // Always include pinned sessions regardless of expiry
                 eb("isPinned", "=", 1),
             ]),
-        )
+        );
+
+    if (cursor) {
+        query = query.where("lastActiveAt", "<", cursor);
+    }
+
+    const rows = await query
         .orderBy("isPinned", "desc")
         .orderBy("lastActiveAt", "desc")
-        .limit(limit)
-        .execute();
+        .limit(limit + 1)
+        .execute() as SessionRow[];
 
-    return rows.map((row) => ({
+    const hasMore = rows.length > limit;
+    const pageRows = hasMore ? rows.slice(0, limit) : rows;
+
+    // Merge pinned rows from the separate query (if cursor was used)
+    // into the page, deduplicating by sessionId.
+    const seenIds = new Set(pageRows.map((r) => r.sessionId));
+    const mergedRows = [...pageRows];
+    for (const pr of pinnedRows) {
+        if (!seenIds.has(pr.sessionId)) {
+            mergedRows.push(pr);
+            seenIds.add(pr.sessionId);
+        }
+    }
+
+    const sessions = mergedRows.map((row) => ({
         sessionId: row.sessionId,
         cwd: row.cwd,
         shareUrl: row.shareUrl,
@@ -489,6 +543,11 @@ export async function listPersistedRelaySessionsForUser(
         runnerId: row.runnerId ?? null,
         runnerName: row.runnerName ?? null,
     }));
+
+    const lastRow = pageRows[pageRows.length - 1];
+    const nextCursor = hasMore && lastRow ? lastRow.lastActiveAt : null;
+
+    return { sessions, nextCursor };
 }
 
 export async function listPinnedRelaySessionsForUser(
