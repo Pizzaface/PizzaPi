@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"io"
+	"strings"
 )
 
 func ParseLine(line []byte) ClaudeEvent {
@@ -16,6 +17,47 @@ func ParseLine(line []byte) ClaudeEvent {
 
 	switch envelope.Type {
 	case "system":
+		// Check subtype first — system/result is a legacy turn-completion event.
+		var subtypeCheck struct {
+			Subtype string `json:"subtype"`
+		}
+		json.Unmarshal(line, &subtypeCheck)
+		if subtypeCheck.Subtype == "result" {
+			var raw struct {
+				SessionID    string  `json:"session_id"`
+				Subtype      string  `json:"subtype"`
+				IsError      bool    `json:"is_error"`
+				TotalCostUSD float64 `json:"total_cost_usd"`
+				DurationMs   int     `json:"duration_ms"`
+				NumTurns     int     `json:"num_turns"`
+				StopReason   string  `json:"stop_reason"`
+				Result       string  `json:"result"`
+				Usage        struct {
+					InputTokens  int `json:"input_tokens"`
+					OutputTokens int `json:"output_tokens"`
+				} `json:"usage"`
+			}
+			if err := json.Unmarshal(line, &raw); err != nil {
+				return &ParseError{Line: string(line), Message: err.Error()}
+			}
+			result := raw.Result
+			var decoded string
+			if json.Unmarshal([]byte(result), &decoded) == nil {
+				result = decoded
+			}
+			return &ResultEvent{
+				SessionID:    raw.SessionID,
+				Subtype:      raw.Subtype,
+				IsError:      raw.IsError,
+				TotalCostUSD: raw.TotalCostUSD,
+				DurationMs:   raw.DurationMs,
+				NumTurns:     raw.NumTurns,
+				StopReason:   raw.StopReason,
+				Result:       result,
+				InputTokens:  raw.Usage.InputTokens,
+				OutputTokens: raw.Usage.OutputTokens,
+			}
+		}
 		var raw struct {
 			SessionID         string   `json:"session_id"`
 			Subtype           string   `json:"subtype"`
@@ -171,7 +213,7 @@ func ParseLine(line []byte) ClaudeEvent {
 			return &ParseError{Line: string(line), Message: err.Error()}
 		}
 		// Extract tool result from message.content[]
-		// Note: content field can be a string OR an array of objects (e.g. tool_reference blocks)
+		// content can be string, array of text blocks, array of tool_reference blocks, or null
 		var msg struct {
 			Content []struct {
 				ToolUseID string          `json:"tool_use_id"`
@@ -187,13 +229,30 @@ func ParseLine(line []byte) ClaudeEvent {
 				if c.Type == "tool_result" {
 					toolUseID = c.ToolUseID
 					isError = c.IsError
-					// content can be a string or an array — try string first
+					// content can be string, array of text/tool_reference blocks, or null
 					var s string
 					if json.Unmarshal(c.Content, &s) == nil {
 						content = s
 					} else {
-						// array or other structure — preserve as JSON string
-						content = string(c.Content)
+						// Try array of blocks
+						var blocks []struct {
+							Type     string `json:"type"`
+							Text     string `json:"text"`
+							ToolName string `json:"tool_name"`
+						}
+						if json.Unmarshal(c.Content, &blocks) == nil {
+							var parts []string
+							for _, b := range blocks {
+								switch b.Type {
+								case "text":
+									parts = append(parts, b.Text)
+								case "tool_reference":
+									parts = append(parts, "[tool:"+b.ToolName+"]")
+								}
+							}
+							content = strings.Join(parts, "\n")
+						}
+						// else null or unknown — leave content empty
 					}
 					break
 				}
@@ -218,6 +277,8 @@ func ParseLine(line []byte) ClaudeEvent {
 			LimitType: raw.RateLimitInfo.LimitType,
 			IsOverage: raw.RateLimitInfo.IsOverage,
 		}
+	case "progress":
+		return &ProgressEvent{}
 	case "result":
 		var raw struct {
 			SessionID    string  `json:"session_id"`
@@ -236,6 +297,11 @@ func ParseLine(line []byte) ClaudeEvent {
 		if err := json.Unmarshal(line, &raw); err != nil {
 			return &ParseError{Line: string(line), Message: err.Error()}
 		}
+		result := raw.Result
+		var decoded string
+		if json.Unmarshal([]byte(result), &decoded) == nil {
+			result = decoded
+		}
 		return &ResultEvent{
 			SessionID:    raw.SessionID,
 			Subtype:      raw.Subtype,
@@ -244,7 +310,7 @@ func ParseLine(line []byte) ClaudeEvent {
 			DurationMs:   raw.DurationMs,
 			NumTurns:     raw.NumTurns,
 			StopReason:   raw.StopReason,
-			Result:       raw.Result,
+			Result:       result,
 			InputTokens:  raw.Usage.InputTokens,
 			OutputTokens: raw.Usage.OutputTokens,
 		}

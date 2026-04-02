@@ -181,6 +181,47 @@ func TestParseLine(t *testing.T) {
 				if e.Line != `{not valid json` || e.Message == "" { t.Fatalf("unexpected event: %+v", e) }
 			},
 		},
+		{
+			name: "system/result legacy",
+			line: `{"type":"system","subtype":"result","session_id":"sess_123","result":"\"Here is the summary\"","is_error":false}`,
+			check: func(t *testing.T, event ClaudeEvent) {
+				e, ok := event.(*ResultEvent)
+				if !ok { t.Fatalf("got %T, want *ResultEvent", event) }
+				if e.SessionID != "sess_123" { t.Fatalf("session_id = %q", e.SessionID) }
+				if e.Result != "Here is the summary" { t.Fatalf("result = %q (should be un-double-encoded)", e.Result) }
+			},
+		},
+		{
+			name: "progress event",
+			line: `{"type":"progress","data":"loading"}`,
+			check: func(t *testing.T, event ClaudeEvent) {
+				if _, ok := event.(*ProgressEvent); !ok { t.Fatalf("got %T", event) }
+			},
+		},
+		{
+			name: "result with double-encoded result field",
+			line: `{"type":"result","subtype":"success","session_id":"s","result":"\"Task completed.\"","is_error":false,"total_cost_usd":0.01,"duration_ms":100,"usage":{"input_tokens":1,"output_tokens":1}}`,
+			check: func(t *testing.T, event ClaudeEvent) {
+				e := event.(*ResultEvent)
+				if e.Result != "Task completed." { t.Fatalf("result not un-double-encoded: %q", e.Result) }
+			},
+		},
+		{
+			name: "user message with array-of-text-blocks content",
+			line: `{"type":"user","message":{"role":"user","content":[{"tool_use_id":"t1","type":"tool_result","content":[{"type":"text","text":"File edited"}],"is_error":false}]}}`,
+			check: func(t *testing.T, event ClaudeEvent) {
+				e := event.(*UserMessage)
+				if e.Content != "File edited" { t.Fatalf("content = %q", e.Content) }
+			},
+		},
+		{
+			name: "user message with null content",
+			line: `{"type":"user","message":{"role":"user","content":[{"tool_use_id":"t1","type":"tool_result","content":null,"is_error":false}]}}`,
+			check: func(t *testing.T, event ClaudeEvent) {
+				e := event.(*UserMessage)
+				if e.Content != "" { t.Fatalf("content should be empty, got %q", e.Content) }
+			},
+		},
 	}
 
 	for _, tt := range tests {
