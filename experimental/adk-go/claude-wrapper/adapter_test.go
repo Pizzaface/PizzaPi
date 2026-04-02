@@ -94,7 +94,14 @@ func TestAdapterToolResultEvent(t *testing.T) {
 func TestAdapterResultEventMetadata(t *testing.T) {
 	a := NewAdapter()
 	a.HandleEvent(&SystemEvent{Model: "claude-sonnet-4-20250514"})
-	events := a.HandleEvent(&ResultEvent{InputTokens: 500, OutputTokens: 200, CostUSD: 0.05})
+	events := a.HandleEvent(&ResultEvent{
+		InputTokens:  500,
+		OutputTokens: 200,
+		TotalCostUSD: 0.05,
+		DurationMs:   3000,
+		NumTurns:     1,
+		StopReason:   "end_turn",
+	})
 	if len(events) != 1 {
 		t.Fatalf("expected 1 event, got %d", len(events))
 	}
@@ -105,6 +112,9 @@ func TestAdapterResultEventMetadata(t *testing.T) {
 	usage, ok := ev["usage"].(map[string]any)
 	if !ok || usage["inputTokens"] != 500 || usage["outputTokens"] != 200 {
 		t.Fatalf("unexpected usage: %+v", ev["usage"])
+	}
+	if ev["durationMs"] != 3000 || ev["numTurns"] != 1 || ev["stopReason"] != "end_turn" {
+		t.Fatalf("unexpected metadata fields: %+v", ev)
 	}
 }
 
@@ -127,7 +137,7 @@ func TestAdapterFullConversationFlow(t *testing.T) {
 	})}))
 	appendEvents(a.HandleEvent(&ToolUseEvent{ToolID: "tool_abc", Name: "bash", Input: mustJSON(t, map[string]any{"command": "ls"})}))
 	appendEvents(a.HandleEvent(&ToolResultEvent{ToolID: "tool_abc", Content: "file1.txt\nfile2.txt", IsError: false}))
-	appendEvents(a.HandleEvent(&ResultEvent{InputTokens: 500, OutputTokens: 200, CostUSD: 0.05}))
+	appendEvents(a.HandleEvent(&ResultEvent{InputTokens: 500, OutputTokens: 200, TotalCostUSD: 0.05}))
 
 	if len(relayed) != 7 {
 		t.Fatalf("expected 7 relay events, got %d: %+v", len(relayed), relayed)
@@ -207,6 +217,41 @@ func getContent(t *testing.T, ev RelayEvent) []map[string]any {
 		out = append(out, block)
 	}
 	return out
+}
+
+func TestAdapterUserMessageToolResult(t *testing.T) {
+	a := NewAdapter()
+	// Register tool name first via a ToolUseEvent
+	a.HandleEvent(&AssistantMessage{Message: mustJSON(t, map[string]any{
+		"id":   "msg_01",
+		"role": "assistant",
+		"content": []map[string]any{
+			{"type": "tool_use", "id": "toolu_abc", "name": "Bash", "input": map[string]any{"command": "ls"}},
+		},
+	})})
+	events := a.HandleEvent(&UserMessage{
+		ToolUseID: "toolu_abc",
+		Content:   "file1.txt\nfile2.txt",
+		IsError:   false,
+	})
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	ev := events[0]
+	if ev["type"] != "tool_result_message" {
+		t.Fatalf("unexpected type: %+v", ev)
+	}
+	if ev["toolCallId"] != "toolu_abc" || ev["toolName"] != "Bash" {
+		t.Fatalf("unexpected tool result: %+v", ev)
+	}
+}
+
+func TestAdapterRateLimitEventNoOutput(t *testing.T) {
+	a := NewAdapter()
+	events := a.HandleEvent(&RateLimitEvent{Status: "allowed", LimitType: "five_hour"})
+	if len(events) != 0 {
+		t.Fatalf("expected 0 events for rate_limit_event, got %d", len(events))
+	}
 }
 
 func mustJSON(t *testing.T, v any) json.RawMessage {
