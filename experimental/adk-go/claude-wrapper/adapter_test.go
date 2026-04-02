@@ -105,8 +105,8 @@ func TestAdapterResultEventMetadata(t *testing.T) {
 		NumTurns:     1,
 		StopReason:   "end_turn",
 	})
-	if len(events) != 1 {
-		t.Fatalf("expected 1 event, got %d", len(events))
+	if len(events) != 2 {
+		t.Fatalf("expected 2 events (metadata + idle heartbeat), got %d", len(events))
 	}
 	ev := events[0]
 	if ev["type"] != "session_metadata_update" || ev["costUSD"] != 0.05 {
@@ -142,11 +142,11 @@ func TestAdapterFullConversationFlow(t *testing.T) {
 	appendEvents(a.HandleEvent(&ToolResultEvent{ToolID: "tool_abc", Content: "file1.txt\nfile2.txt", IsError: false}))
 	appendEvents(a.HandleEvent(&ResultEvent{InputTokens: 500, OutputTokens: 200, TotalCostUSD: 0.05}))
 
-	if len(relayed) != 9 {
-		t.Fatalf("expected 9 relay events, got %d: %+v", len(relayed), relayed)
+	if len(relayed) != 10 {
+		t.Fatalf("expected 10 relay events, got %d: %+v", len(relayed), relayed)
 	}
 	assertEventType(t, relayed[0], "heartbeat")
-	assertEventType(t, relayed[1], "session_active")   // initial empty snapshot
+	assertEventType(t, relayed[1], "session_active")    // initial empty snapshot
 	assertEventType(t, relayed[2], "message_update")
 	assertEventType(t, relayed[3], "message_update")
 	assertEventType(t, relayed[4], "message_update")    // final assistant message
@@ -154,6 +154,7 @@ func TestAdapterFullConversationFlow(t *testing.T) {
 	assertEventType(t, relayed[6], "tool_result_message")
 	assertEventType(t, relayed[7], "session_active")    // final snapshot with messages
 	assertEventType(t, relayed[8], "session_metadata_update")
+	assertEventType(t, relayed[9], "heartbeat")         // active=false (idle)
 	content := getContent(t, relayed[4])
 	if len(content) != 1 || content[0]["text"] != "Hello world" {
 		t.Fatalf("unexpected final assistant content: %+v", content)
