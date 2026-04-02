@@ -15,6 +15,7 @@ type Adapter struct {
 	model            AdapterModel
 	cwd              string
 	contentBlocks    []map[string]any
+	messages         []map[string]any // accumulated conversation messages
 	toolInputBuffers map[int]string
 	toolUseBlocks    map[int]toolUseMeta
 	toolNamesByID    map[string]string
@@ -58,15 +59,13 @@ func (a *Adapter) HandleEvent(ev ClaudeEvent) []RelayEvent {
 			// session_active snapshot so the UI unblocks message rendering.
 			// Without this, the UI waits for session_active/agent_end before
 			// displaying any message_update events.
+			// The relay event pipeline expects { type: "session_active", state: { ... } }.
 			{
-				"type":     "session_active",
-				"messages": []any{},
-				"model":    a.modelMap(),
-				"cwd":      e.Cwd,
-				"metadata": map[string]any{
+				"type": "session_active",
+				"state": map[string]any{
+					"messages": []any{},
 					"model":    a.modelMap(),
 					"cwd":      e.Cwd,
-					"todoList": nil,
 				},
 			},
 		}
@@ -181,7 +180,7 @@ func (a *Adapter) HandleEvent(ev ClaudeEvent) []RelayEvent {
 			"messageId": a.currentOrGeneratedMessageID(),
 		}}
 	case *ToolResultEvent:
-		return []RelayEvent{{
+		toolMsg := RelayEvent{
 			"type":       "tool_result_message",
 			"role":       "tool_result",
 			"toolCallId": e.ToolID,
@@ -189,12 +188,14 @@ func (a *Adapter) HandleEvent(ev ClaudeEvent) []RelayEvent {
 			"content":    e.Content,
 			"isError":    e.IsError,
 			"timestamp":  nowMillis(),
-		}}
+		}
+		a.messages = append(a.messages, map[string]any(toolMsg))
+		return []RelayEvent{toolMsg}
 	case *UserMessage:
 		// The Claude CLI reports tool results as "user" messages.
 		// Map them to tool_result_message for PizzaPi.
 		if e.ToolUseID != "" {
-			return []RelayEvent{{
+			toolMsg := RelayEvent{
 				"type":       "tool_result_message",
 				"role":       "tool_result",
 				"toolCallId": e.ToolUseID,
@@ -202,7 +203,9 @@ func (a *Adapter) HandleEvent(ev ClaudeEvent) []RelayEvent {
 				"content":    e.Content,
 				"isError":    e.IsError,
 				"timestamp":  nowMillis(),
-			}}
+			}
+			a.messages = append(a.messages, map[string]any(toolMsg))
+			return []RelayEvent{toolMsg}
 		}
 		return nil
 	case *RateLimitEvent:
@@ -212,7 +215,32 @@ func (a *Adapter) HandleEvent(ev ClaudeEvent) []RelayEvent {
 		if a.model.ID == "" {
 			a.model = AdapterModel{Provider: "anthropic", ID: ""}
 		}
-		return []RelayEvent{{
+		// Build a complete session_active with the accumulated messages
+		// so the lastState in Redis has the full conversation for
+		// reconnecting viewers.
+		events := []RelayEvent{}
+
+		// Emit session_active with the assistant message to persist state
+		if len(a.contentBlocks) > 0 {
+			assistantMsg := map[string]any{
+				"role":      "assistant",
+				"content":   cloneBlocks(a.contentBlocks),
+				"messageId": a.currentOrGeneratedMessageID(),
+				"timestamp": nowMillis(),
+			}
+			// Accumulate the full message list
+			a.messages = append(a.messages, assistantMsg)
+			events = append(events, RelayEvent{
+				"type": "session_active",
+				"state": map[string]any{
+					"messages": cloneMessages(a.messages),
+					"model":    a.modelMap(),
+					"cwd":      a.cwd,
+				},
+			})
+		}
+
+		events = append(events, RelayEvent{
 			"type":  "session_metadata_update",
 			"model": a.modelMap(),
 			"usage": map[string]any{
@@ -223,7 +251,9 @@ func (a *Adapter) HandleEvent(ev ClaudeEvent) []RelayEvent {
 			"durationMs": e.DurationMs,
 			"numTurns":   e.NumTurns,
 			"stopReason": e.StopReason,
-		}}
+		})
+
+		return events
 	case *UnknownEvent, *ParseError:
 		return nil
 	default:
@@ -264,6 +294,18 @@ func (a *Adapter) messageUpdate(includeTimestamp bool) RelayEvent {
 
 func (a *Adapter) modelMap() map[string]any {
 	return map[string]any{"provider": a.model.Provider, "id": a.model.ID}
+}
+
+func cloneMessages(msgs []map[string]any) []any {
+	out := make([]any, 0, len(msgs))
+	for _, msg := range msgs {
+		copy := make(map[string]any, len(msg))
+		for k, v := range msg {
+			copy[k] = v
+		}
+		out = append(out, copy)
+	}
+	return out
 }
 
 func cloneBlocks(blocks []map[string]any) []map[string]any {
