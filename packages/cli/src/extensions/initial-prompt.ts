@@ -31,15 +31,17 @@ export const initialPromptExtension: ExtensionFactory = (pi) => {
     const agentName = process.env.PIZZAPI_WORKER_AGENT_NAME?.trim();
     const agentTools = process.env.PIZZAPI_WORKER_AGENT_TOOLS?.trim();
     const agentDisallowedTools = process.env.PIZZAPI_WORKER_AGENT_DISALLOWED_TOOLS?.trim();
+    const resumePath = process.env.PIZZAPI_WORKER_RESUME_PATH?.trim();
 
-    // Nothing to do if no initial prompt, initial model, or agent was set.
-    if (!initialPrompt && !agentName && !(initialModelProvider && initialModelId)) return;
+    // Nothing to do if no initial prompt, initial model, agent, or resume path was set.
+    if (!initialPrompt && !agentName && !resumePath && !(initialModelProvider && initialModelId)) return;
 
-    // Clear prompt/model env vars immediately so restarts don't re-trigger.
+    // Clear prompt/model/resume env vars immediately so restarts don't re-trigger.
     // Agent name is NOT cleared — it should persist across restarts.
     delete process.env.PIZZAPI_WORKER_INITIAL_PROMPT;
     delete process.env.PIZZAPI_WORKER_INITIAL_MODEL_PROVIDER;
     delete process.env.PIZZAPI_WORKER_INITIAL_MODEL_ID;
+    delete process.env.PIZZAPI_WORKER_RESUME_PATH;
 
     let fired = false;
 
@@ -160,6 +162,25 @@ export const initialPromptExtension: ExtensionFactory = (pi) => {
                 log.warn(
                     `pizzapi worker: failed to apply agent tool denylist: ${err instanceof Error ? err.message : String(err)}`,
                 );
+            }
+        }
+
+        // Resume an existing session file if requested.
+        // This loads the previous conversation into this new worker session.
+        if (resumePath) {
+            try {
+                if (typeof (pi as any).switchSession === "function") {
+                    const result = await (pi as any).switchSession(resumePath);
+                    if (result?.cancelled) {
+                        log.warn(`pizzapi worker: resume of ${resumePath} was cancelled`);
+                    } else {
+                        log.info(`pizzapi worker: resumed session from ${resumePath}`);
+                    }
+                } else {
+                    log.warn("pizzapi worker: switchSession not available — cannot resume");
+                }
+            } catch (err) {
+                log.warn(`pizzapi worker: failed to resume session from ${resumePath}: ${err instanceof Error ? err.message : String(err)}`);
             }
         }
 

@@ -142,6 +142,69 @@ export function invalidateSessionListCache(): void {
     }
 }
 
+/**
+ * Find a session's `.jsonl` file path by session ID across all project directories.
+ *
+ * Scans the sessions root directory (e.g. `~/.pizzapi/agent/sessions/`) and checks
+ * the in-memory cache first (O(N) over cache entries). If no cache hit, falls back
+ * to scanning file headers. Returns `null` if not found.
+ */
+export async function findSessionPathById(
+    sessionsRootDir: string,
+    sessionId: string,
+): Promise<string | null> {
+    if (!cacheLoaded) {
+        loadCacheFromDisk();
+        cacheLoaded = true;
+    }
+
+    // Fast path: check cache for a matching session ID
+    for (const [path, entry] of cache.entries()) {
+        if (entry.id === sessionId) {
+            // Verify file still exists
+            if (existsSync(path)) return path;
+            cache.delete(path);
+        }
+    }
+
+    // Slow path: scan all project directories under sessionsRootDir
+    if (!existsSync(sessionsRootDir)) return null;
+
+    try {
+        const dirEntries = readdirSync(sessionsRootDir, { withFileTypes: true });
+        for (const dirEntry of dirEntries) {
+            if (!dirEntry.isDirectory()) continue;
+            const dirPath = join(sessionsRootDir, dirEntry.name);
+            let files: string[];
+            try {
+                files = readdirSync(dirPath).filter(f => f.endsWith(".jsonl"));
+            } catch {
+                continue;
+            }
+            for (const file of files) {
+                const filePath = join(dirPath, file);
+                try {
+                    // Read just the first line to check the session ID
+                    const content = readFileSync(filePath, "utf8");
+                    const firstNewline = content.indexOf("\n");
+                    const firstLine = firstNewline >= 0 ? content.slice(0, firstNewline) : content;
+                    if (!firstLine.trim()) continue;
+                    const header = JSON.parse(firstLine);
+                    if (header.type === "session" && header.id === sessionId) {
+                        return filePath;
+                    }
+                } catch {
+                    continue;
+                }
+            }
+        }
+    } catch {
+        // sessionsRootDir is not readable
+    }
+
+    return null;
+}
+
 // ── Parsing (mirrors upstream buildSessionInfo) ──────────────────────────────
 
 interface RawEntry {

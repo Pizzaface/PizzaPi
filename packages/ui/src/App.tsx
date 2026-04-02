@@ -183,6 +183,7 @@ interface SessionState {
   availableCommands: Array<{ name: string; description?: string; source?: string }>;
   resumeSessions: ResumeSessionOption[];
   resumeSessionsLoading: boolean;
+  resumeSessionsNextCursor: string | null;
 }
 
 function createInitialSessionState(): SessionState {
@@ -213,6 +214,7 @@ function createInitialSessionState(): SessionState {
     availableCommands: [],
     resumeSessions: [],
     resumeSessionsLoading: false,
+    resumeSessionsNextCursor: null,
   };
 }
 // ─────────────────────────────────────────────────────────────────────────────
@@ -234,7 +236,7 @@ export function App() {
     mcpOAuthPastes, messageQueue, activeModel, sessionName, availableModels,
     modelSelectorOpen, isChangingModel, agentActive, effortLevel, authSource,
     tokenUsage, providerUsage, usageRefreshing, lastHeartbeatAt,
-    availableCommands, resumeSessions, resumeSessionsLoading,
+    availableCommands, resumeSessions, resumeSessionsLoading, resumeSessionsNextCursor,
   } = sessionState;
 
   // Thin setter wrappers — identical signatures to the original useState setters
@@ -370,6 +372,13 @@ export function App() {
       setSessionState((p: SessionState) => ({ ...p, resumeSessionsLoading: typeof v === "function" ? v(p.resumeSessionsLoading) : v })),
     []
   );
+  const setResumeSessionsNextCursor = React.useCallback(
+    (v: string | null) =>
+      setSessionState((p: SessionState) => ({ ...p, resumeSessionsNextCursor: v })),
+    []
+  );
+  // Tracks whether the in-flight list_resume_sessions request is a "load more" (append) vs fresh load
+  const resumeSessionsAppendRef = React.useRef(false);
   // ────────────────────────────────────────────────────────────────────────────
   // Ref kept in sync with `messages` via useLayoutEffect so we can read the
   // latest committed value in event handlers without needing functional updaters.
@@ -1889,15 +1898,30 @@ export function App() {
           normalized.push({
             id: entry.id,
             path: entry.path,
+            cwd: typeof entry.cwd === "string" ? entry.cwd : null,
             name: typeof entry.name === "string" ? entry.name : null,
             modified: entry.modified,
             firstMessage: typeof entry.firstMessage === "string" ? entry.firstMessage : undefined,
           });
         }
 
-        setResumeSessions(normalized);
+        const nextCursor = typeof result?.nextCursor === "string" ? result.nextCursor : null;
+        const isAppend = resumeSessionsAppendRef.current;
+        resumeSessionsAppendRef.current = false;
+
+        if (isAppend) {
+          // Append to existing list, deduplicating by id
+          setResumeSessions((prev) => {
+            const existingIds = new Set(prev.map((s) => s.id));
+            const newItems = normalized.filter((s) => !existingIds.has(s.id));
+            return [...prev, ...newItems];
+          });
+        } else {
+          setResumeSessions(normalized);
+        }
+        setResumeSessionsNextCursor(nextCursor);
         setResumeSessionsLoading(false);
-        if (normalized.length === 0) {
+        if (!isAppend && normalized.length === 0) {
           setViewerStatus("No resumable sessions");
         }
         return;
@@ -2732,7 +2756,8 @@ export function App() {
     const prevRunnerId = prevSessionId
       ? sessions.find((s) => s.sessionId === prevSessionId)?.runnerId ?? null
       : null;
-    const nextRunnerId = sessions.find((s) => s.sessionId === relaySessionId)?.runnerId ?? null;
+    const nextLiveSession = sessions.find((s) => s.sessionId === relaySessionId);
+    const nextRunnerId = nextLiveSession?.runnerId ?? null;
     const sameRunner = !!(prevRunnerId && nextRunnerId && prevRunnerId === nextRunnerId);
     const prevViewerSocket = viewerWsRef.current;
     const nextGeneration = ++viewerSwitchGenerationRef.current;
@@ -2760,6 +2785,7 @@ export function App() {
     setUsageRefreshing(false);
     setResumeSessions([]);
     setResumeSessionsLoading(false);
+    setResumeSessionsNextCursor(null);
 
     const cached = sessionUiCacheRef.current.get(relaySessionId);
     touchSessionCache(sessionUiCacheRef.current, relaySessionId);
@@ -2767,7 +2793,7 @@ export function App() {
     // ── Session-scoped state: always reset from cache or defaults ────────
     setMessages(cached?.messages ?? []);
     setActiveModel(cached?.activeModel ?? null);
-    setSessionName(cached?.sessionName ?? null);
+    setSessionName(cached?.sessionName ?? nextLiveSession?.sessionName ?? null);
     setAgentActive(cached?.agentActive ?? false);
     setIsCompacting(cached?.isCompacting ?? false);
     setEffortLevel(cached?.effortLevel ?? null);
@@ -3367,19 +3393,91 @@ export function App() {
     });
   }, [sendRemoteExec]);
 
-  const requestResumeSessions = React.useCallback(() => {
-    if (!activeSessionRef.current) return false;
+  // Tracks whether the current history data came from the server fallback (vs runner-side).
+  // When true, resume uses `resumeId` instead of `resumePath`.
+  const historyIsServerSourcedRef = React.useRef(false);
+
+  /**
+   * Fetch persisted sessions from the server `/api/sessions` endpoint.
+   * Used as a fallback when no active session exists (can't use runner-side
+   * list_resume_sessions). Returns sessions from ALL runners.
+   */
+  const requestPersistedSessions = React.useCallback(async (cursor?: string) => {
     setResumeSessionsLoading(true);
+    const isAppend = !!cursor;
+    try {
+      const params = new URLSearchParams({ includePersisted: "1", limit: "50" });
+      if (cursor) params.set("cursor", cursor);
+      const res = await fetch(`/api/sessions?${params}`, { credentials: "include" });
+      if (!res.ok) {
+        setResumeSessionsLoading(false);
+        return;
+      }
+      const data = await res.json() as {
+        persistedSessions?: Array<{
+          sessionId: string;
+          cwd: string;
+          sessionName: string | null;
+          lastActiveAt: string;
+          runnerId: string | null;
+          runnerName: string | null;
+          startedAt: string;
+          endedAt: string | null;
+        }>;
+        nextCursor?: string | null;
+      };
+      const persisted = Array.isArray(data.persistedSessions) ? data.persistedSessions : [];
+      const mapped: ResumeSessionOption[] = persisted.map((s) => ({
+        id: s.sessionId,
+        path: "", // Server-sourced sessions don't have the .jsonl path; resume uses resumeId instead
+        cwd: s.cwd || null,
+        name: s.sessionName || null,
+        modified: s.lastActiveAt || s.startedAt,
+        runnerId: s.runnerId,
+        runnerName: s.runnerName,
+        serverSourced: true,
+      }));
+
+      const nextCursor = typeof data.nextCursor === "string" ? data.nextCursor : null;
+      if (isAppend) {
+        setResumeSessions((prev) => {
+          const existingIds = new Set(prev.map((s) => s.id));
+          const newItems = mapped.filter((s) => !existingIds.has(s.id));
+          return [...prev, ...newItems];
+        });
+      } else {
+        setResumeSessions(mapped);
+      }
+      setResumeSessionsNextCursor(nextCursor);
+      historyIsServerSourcedRef.current = true;
+    } catch {
+      // Silently fail — user just sees no sessions
+    } finally {
+      setResumeSessionsLoading(false);
+    }
+  }, []);
+
+  const requestResumeSessions = React.useCallback((cursor?: string) => {
+    // If no active session, fall back to server-side persisted sessions
+    if (!activeSessionRef.current) {
+      void requestPersistedSessions(cursor);
+      return true; // Signal that a request was initiated
+    }
+    historyIsServerSourcedRef.current = false;
+    setResumeSessionsLoading(true);
+    resumeSessionsAppendRef.current = !!cursor;
     const ok = sendRemoteExec({
       type: "exec",
       id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
       command: "list_resume_sessions",
+      ...(cursor ? { cursor } : {}),
     });
     if (!ok) {
       setResumeSessionsLoading(false);
+      resumeSessionsAppendRef.current = false;
     }
     return ok;
-  }, [sendRemoteExec]);
+  }, [sendRemoteExec, requestPersistedSessions]);
 
   const refreshUsage = React.useCallback(() => {
     if (usageRefreshing) return false;
@@ -4824,17 +4922,58 @@ export function App() {
           sessions={resumeSessions}
           loading={resumeSessionsLoading}
           onRefresh={requestResumeSessions}
-          onOpenSession={(id) => { handleOpenSession(id); setHistoryOpen(false); }}
-          onResumeSession={(sessionId) => {
+          onResumeSession={async (sessionId) => {
             const session = resumeSessions.find((s) => s.id === sessionId);
             if (!session) return;
-            sendRemoteExec({
-              type: "exec",
-              id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
-              command: "resume_session",
-              sessionPath: session.path,
-            });
+
+            // Determine runnerId: prefer session-level (server-sourced), fall back to active session's runner
+            const runnerId = session.runnerId || activeSessionInfo?.runnerId;
+            if (!runnerId) {
+              setViewerStatus("No runner available for this session");
+              return;
+            }
+            setHistoryOpen(false);
+            setViewerStatus("Resuming session…");
+            try {
+              // Server-sourced sessions don't have the .jsonl path — send resumeId
+              // so the runner daemon resolves the path from the session ID.
+              const payload: any = {
+                runnerId,
+                ...(session.serverSourced
+                  ? { resumeId: session.id }
+                  : { resumePath: session.path }),
+                ...(session.cwd ? { cwd: session.cwd } : {}),
+              };
+              const res = await fetch("/api/runners/spawn", {
+                method: "POST",
+                credentials: "include",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify(payload),
+              });
+              const body = await res.json().catch(() => null) as { error?: string; sessionId?: string } | null;
+              if (!res.ok) {
+                setViewerStatus(body?.error ?? "Failed to resume session");
+                return;
+              }
+              const newSessionId = typeof body?.sessionId === "string" ? body.sessionId : null;
+              if (!newSessionId) {
+                setViewerStatus("Resume failed: missing sessionId");
+                return;
+              }
+              const live = await waitForSessionToGoLive(newSessionId, 30_000);
+              if (!live) {
+                setViewerStatus("Session is starting…");
+                return;
+              }
+              handleOpenSession(newSessionId);
+              setViewerStatus("Connecting…");
+            } catch (err) {
+              setViewerStatus("Failed to resume session");
+              console.error("Resume session error:", err);
+            }
           }}
+          nextCursor={resumeSessionsNextCursor}
+          onLoadMore={() => { if (resumeSessionsNextCursor) requestResumeSessions(resumeSessionsNextCursor); }}
         />
 
         <NewSessionWizardDialog

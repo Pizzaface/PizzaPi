@@ -13,7 +13,7 @@ export type RemoteExecCommand =
   | { command: "compact"; customInstructions?: string }
   | { command: "set_session_name"; name: string }
   | { command: "get_last_assistant_text" }
-  | { command: "list_resume_sessions" }
+  | { command: "list_resume_sessions"; limit?: number; cursor?: string }
   | { command: "resume_session"; query?: string; sessionPath?: string }
   | { command: "new_session" }
   | { command: "restart" }

@@ -20,6 +20,7 @@ import {
 } from "@pizzapi/protocol";
 import { TunnelClient } from "@pizzapi/tunnel";
 import { loadGlobalConfig, defaultAgentDir, expandHome, loadConfig } from "../config.js";
+import { findSessionPathById } from "./session-list-cache.js";
 import { cleanupSessionAttachments, sweepOrphanedAttachments } from "../extensions/session-attachments.js";
 import { AuthStorage, ModelRegistry } from "@mariozechner/pi-coding-agent";
 import type { ServiceTriggerDef, ServiceSigilDef, TriggerSubscriptionEntry } from "@pizzapi/protocol";
@@ -745,9 +746,9 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
 
         // ── Session management ────────────────────────────────────────────
 
-        socket.on("new_session", (data: any) => {
+        socket.on("new_session", async (data: any) => {
             if (isShuttingDown) return;
-            const { sessionId, cwd: requestedCwd, prompt: requestedPrompt, model: requestedModel, hiddenModels: requestedHiddenModels, agent: requestedAgent, parentSessionId: requestedParentSessionId } = data;
+            const { sessionId, cwd: requestedCwd, prompt: requestedPrompt, model: requestedModel, hiddenModels: requestedHiddenModels, agent: requestedAgent, parentSessionId: requestedParentSessionId, resumePath: requestedResumePath, resumeId: requestedResumeId } = data;
 
             if (!sessionId) {
                 socket.emit("session_error", { sessionId: sessionId ?? "", message: "Missing sessionId" });
@@ -793,6 +794,26 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                 }
             }
 
+            // Resolve resumeId → resumePath if needed.
+            // When the UI has a session ID but not the .jsonl file path (e.g.
+            // from server-side persisted sessions), it sends resumeId and the
+            // daemon resolves the path from the local session cache/filesystem.
+            let resolvedResumePath = typeof requestedResumePath === "string" ? requestedResumePath : undefined;
+            if (!resolvedResumePath && typeof requestedResumeId === "string" && requestedResumeId) {
+                const sessionsRootDir = join(defaultAgentDir(), "agent", "sessions");
+                try {
+                    const found = await findSessionPathById(sessionsRootDir, requestedResumeId);
+                    if (found) {
+                        resolvedResumePath = found;
+                        logInfo(`resolved resumeId ${requestedResumeId} → ${found}`);
+                    } else {
+                        logWarn(`resumeId ${requestedResumeId} not found in ${sessionsRootDir}`);
+                    }
+                } catch (err) {
+                    logWarn(`failed to resolve resumeId ${requestedResumeId}: ${err instanceof Error ? err.message : String(err)}`);
+                }
+            }
+
             let isFirstSpawn = true;
             const doSpawn = () => {
                 try {
@@ -800,7 +821,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                     // On restart (exit code 43), the session already has
                     // the prompt in its history — re-sending would duplicate it.
                     const spawnOpts = isFirstSpawn
-                        ? { prompt: requestedPrompt, model: requestedModel, hiddenModels: requestedHiddenModels, agent: resolvedAgent, parentSessionId: requestedParentSessionId }
+                        ? { prompt: requestedPrompt, model: requestedModel, hiddenModels: requestedHiddenModels, agent: resolvedAgent, parentSessionId: requestedParentSessionId, resumePath: resolvedResumePath }
                         : { hiddenModels: requestedHiddenModels, agent: resolvedAgent, parentSessionId: requestedParentSessionId }; // Always pass agent + hidden models + parent on restart
                     isFirstSpawn = false;
                     spawnSession(sessionId, apiKey!, relayRaw, requestedCwd, runningSessions, restartingSessions, killedSessions, doSpawn, spawnOpts);

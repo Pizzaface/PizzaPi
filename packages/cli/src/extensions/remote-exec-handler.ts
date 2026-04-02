@@ -55,6 +55,7 @@ function toResumeSessionSummary(session: SessionInfo) {
     return {
         id: session.id,
         path: session.path,
+        cwd: session.cwd || null,
         name: session.name ?? null,
         modified: session.modified.toISOString(),
         firstMessage: session.firstMessage,
@@ -335,10 +336,40 @@ export async function handleExecFromWeb(
             }
             const sessions = await listSessionsForResume(rctx.latestCtx);
             const currentPath = rctx.latestCtx.sessionManager.getSessionFile();
-            const candidates = sessions.filter((session) => session.path !== currentPath).map(toResumeSessionSummary);
+            let candidates = sessions.filter((session) => session.path !== currentPath);
+
+            // Cursor-based pagination: cursor is the ISO modified date of the last item in the previous page
+            const cursor = typeof req.cursor === "string" ? req.cursor : undefined;
+            if (cursor) {
+                const cursorTime = new Date(cursor).getTime();
+                // Sessions are sorted by modified desc — skip past the cursor
+                const cursorIdx = candidates.findIndex((s) => s.modified.getTime() <= cursorTime);
+                if (cursorIdx === -1) {
+                    // Cursor is older than all sessions — nothing left
+                    candidates = [];
+                } else {
+                    // Start from the item *after* the cursor match (skip items at exactly cursor time too,
+                    // since they were included in the previous page)
+                    let startIdx = cursorIdx;
+                    // Skip all items with the exact cursor timestamp (they were in the previous page)
+                    while (startIdx < candidates.length && candidates[startIdx].modified.getTime() === cursorTime) {
+                        startIdx++;
+                    }
+                    candidates = candidates.slice(startIdx);
+                }
+            }
+
+            const pageSize = typeof req.limit === "number" && req.limit > 0 ? Math.min(req.limit, 200) : 50;
+            const page = candidates.slice(0, pageSize);
+            const hasMore = candidates.length > pageSize;
+            const nextCursor = hasMore && page.length > 0
+                ? page[page.length - 1].modified.toISOString()
+                : null;
+
             replyOk({
                 currentPath: currentPath ?? null,
-                sessions: candidates,
+                sessions: page.map(toResumeSessionSummary),
+                nextCursor,
             });
             return;
         }
