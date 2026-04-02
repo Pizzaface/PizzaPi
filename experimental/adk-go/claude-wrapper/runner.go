@@ -173,6 +173,7 @@ func (r *Runner) BuildInteractiveArgs() []string {
 		"--output-format", "stream-json",
 		"--input-format", "stream-json",
 		"--verbose",
+		"--include-partial-messages",
 	}
 	if r.config.Model != "" {
 		args = append(args, "--model", r.config.Model)
