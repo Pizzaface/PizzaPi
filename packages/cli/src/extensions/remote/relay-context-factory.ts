@@ -150,19 +150,20 @@ export function createRelayContext(
             return buildHeartbeat(rctx);
         },
 
-        buildCapabilitiesState() {
-            if (!rctx.latestCtx) {
-                return { type: "capabilities", models: [], commands: [] };
-            }
-            const commands = ((pi as any).getCommands?.() ?? []).map((c: any) => ({
+        getAvailableCommands(): Array<{ name: string; description?: string; source?: string }> {
+            if (!rctx.latestCtx) return [];
+            return ((pi as any).getCommands?.() ?? []).map((c: any) => ({
                 name: c.name,
                 description: c.description,
                 source: c.source,
             }));
+        },
+
+        buildCapabilitiesState() {
             return {
                 type: "capabilities",
                 models: rctx.getConfiguredModels(),
-                commands,
+                commands: rctx.getAvailableCommands(),
             };
         },
 

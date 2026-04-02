@@ -7,6 +7,7 @@ import {
   normalizeSessionName,
   augmentThinkingDurations,
   normalizeModelList,
+  normalizeCommandList,
   mergeChunkSnapshot,
 } from "./message-helpers";
 import type { RelayMessage } from "@/components/session-viewer/types";
@@ -416,6 +417,42 @@ describe("normalizeModelList", () => {
     const result = normalizeModelList(models);
     expect(result).toHaveLength(1);
     expect(result[0].name).toBe("Second");
+  });
+});
+
+// ── normalizeCommandList ──────────────────────────────────────────────────────
+
+describe("normalizeCommandList", () => {
+  test("returns empty array for empty input", () => {
+    expect(normalizeCommandList([])).toEqual([]);
+  });
+
+  test("filters out invalid entries", () => {
+    const result = normalizeCommandList([null, undefined, "string", 42, { description: "no name" }]);
+    expect(result).toHaveLength(0);
+  });
+
+  test("normalizes valid command entries", () => {
+    const result = normalizeCommandList([
+      { name: "skill:double-check", description: "Double check", source: "skill" },
+      { name: "remote", description: "Show relay URL", source: "extension" },
+    ]);
+    expect(result).toHaveLength(2);
+    expect(result[0]).toEqual({ name: "remote", description: "Show relay URL", source: "extension" });
+    expect(result[1]).toEqual({ name: "skill:double-check", description: "Double check", source: "skill" });
+  });
+
+  test("sorts by name", () => {
+    const result = normalizeCommandList([
+      { name: "zebra", source: "extension" },
+      { name: "alpha", source: "skill" },
+    ]);
+    expect(result.map((c) => c.name)).toEqual(["alpha", "zebra"]);
+  });
+
+  test("handles missing optional fields", () => {
+    const result = normalizeCommandList([{ name: "test" }]);
+    expect(result).toEqual([{ name: "test", description: undefined, source: undefined }]);
   });
 });
 

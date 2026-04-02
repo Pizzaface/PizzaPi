@@ -223,3 +223,22 @@ export function normalizeModelList(rawModels: unknown[]): ConfiguredModelInfo[] 
     return a.id.localeCompare(b.id);
   });
 }
+
+/** Normalize a raw commands array from capabilities / session_active events. */
+export function normalizeCommandList(
+  rawCommands: unknown[],
+): Array<{ name: string; description?: string; source?: string }> {
+  return rawCommands
+    .filter(
+      (c): c is Record<string, unknown> =>
+        c !== null &&
+        typeof c === "object" &&
+        typeof (c as Record<string, unknown>).name === "string",
+    )
+    .map((c) => ({
+      name: String(c.name),
+      description: typeof c.description === "string" ? c.description : undefined,
+      source: typeof c.source === "string" ? c.source : undefined,
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+}

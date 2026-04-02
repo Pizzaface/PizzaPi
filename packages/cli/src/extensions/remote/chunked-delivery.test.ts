@@ -93,6 +93,7 @@ function makeContext(opts: {
         buildHeartbeat: () => ({}),
         buildCapabilitiesState: () => ({}),
         getConfiguredModels: () => [],
+        getAvailableCommands: () => [],
         getCurrentSessionName: () => opts.sessionName ?? null,
         getCurrentThinkingLevel: () => opts.thinkingLevel ?? null,
 
@@ -277,6 +278,7 @@ describe("emitSessionMetadataUpdate", () => {
         expect(keys).toContain("thinkingLevel");
         expect(keys).toContain("todoList");
         expect(keys).toContain("availableModels");
+        expect(keys).toContain("availableCommands");
     });
 
     test("session_active prefers the live current model over transcript-derived state", () => {

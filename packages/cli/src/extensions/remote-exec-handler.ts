@@ -74,8 +74,7 @@ export async function handleExecFromWeb(
 
     try {
         if (req.command === "get_commands") {
-            const commands = (rctx.pi.getCommands?.() ?? []).map((c: any) => ({ name: c.name, description: c.description, source: c.source }));
-            replyOk({ commands });
+            replyOk({ commands: rctx.getAvailableCommands() });
             return;
         }
 
