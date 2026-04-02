@@ -202,6 +202,7 @@ export function GitPanel({ cwd, className }: GitPanelProps) {
 
     const { staged } = partitionChanges(git.status.changes);
     const hasChanges = git.status.changes.length > 0;
+    const isMutating = git.operationInProgress !== null;
     const isPushing = git.operationInProgress === "push";
     const isPulling = git.operationInProgress === "pull";
     // Show push when ahead of remote OR on a branch with no upstream yet
@@ -218,6 +219,7 @@ export function GitPanel({ cwd, className }: GitPanelProps) {
                     branchesState={git.branchesState}
                     onCheckout={git.checkout}
                     onOpen={git.fetchBranches}
+                    disabled={isMutating}
                     isCheckingOut={git.operationInProgress === "checkout"}
                 />
 
@@ -246,7 +248,7 @@ export function GitPanel({ cwd, className }: GitPanelProps) {
                     <button
                         type="button"
                         onClick={() => setSyncMenuOpen((o) => !o)}
-                        disabled={git.operationInProgress === "pull" || git.operationInProgress === "merge"}
+                        disabled={isMutating}
                         className={cn(
                             "inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium transition-colors",
                             "bg-muted/60 hover:bg-muted text-foreground",
@@ -311,7 +313,7 @@ export function GitPanel({ cwd, className }: GitPanelProps) {
                     <button
                         type="button"
                         onClick={() => git.pull()}
-                        disabled={isPulling}
+                        disabled={isMutating}
                         className={cn(
                             "inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium transition-colors",
                             "bg-amber-500/20 text-amber-600 dark:text-amber-400 hover:bg-amber-500/30",
@@ -329,7 +331,7 @@ export function GitPanel({ cwd, className }: GitPanelProps) {
                     <button
                         type="button"
                         onClick={() => git.push(!git.status!.hasUpstream)}
-                        disabled={isPushing}
+                        disabled={isMutating}
                         className={cn(
                             "inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium transition-colors",
                             "bg-green-600/20 text-green-600 dark:text-green-400 hover:bg-green-600/30",
@@ -418,6 +420,7 @@ export function GitPanel({ cwd, className }: GitPanelProps) {
                     hasStagedChanges={staged.length > 0}
                     onCommit={git.commit}
                     isCommitting={git.operationInProgress === "commit"}
+                    disabled={isMutating}
                 />
             )}
 

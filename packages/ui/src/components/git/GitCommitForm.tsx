@@ -6,13 +6,14 @@ interface GitCommitFormProps {
     hasStagedChanges: boolean;
     onCommit: (message: string) => void;
     isCommitting: boolean;
+    disabled?: boolean;
 }
 
-export function GitCommitForm({ hasStagedChanges, onCommit, isCommitting }: GitCommitFormProps) {
+export function GitCommitForm({ hasStagedChanges, onCommit, isCommitting, disabled = false }: GitCommitFormProps) {
     const [message, setMessage] = useState("");
     const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-    const canCommit = hasStagedChanges && message.trim().length > 0 && !isCommitting;
+    const canCommit = hasStagedChanges && message.trim().length > 0 && !isCommitting && !disabled;
 
     const handleCommit = useCallback(() => {
         if (!canCommit) return;
@@ -47,7 +48,7 @@ export function GitCommitForm({ hasStagedChanges, onCommit, isCommitting }: GitC
                 onChange={(e) => setMessage(e.target.value)}
                 onKeyDown={handleKeyDown}
                 placeholder={hasStagedChanges ? "Commit message…" : "Stage changes to commit"}
-                disabled={!hasStagedChanges || isCommitting}
+                disabled={!hasStagedChanges || isCommitting || disabled}
                 rows={1}
                 className={cn(
                     "w-full resize-none rounded border border-border bg-background px-2 py-1.5",
