@@ -69,6 +69,25 @@ type RepoWatchState = {
     needsRefresh: boolean;
 };
 
+type GitUpstreamFailureReason = "detachedHead" | "missingUpstream" | "ambiguousUpstream";
+
+type GitUpstreamResolution =
+    | {
+        ok: true;
+        localBranch: string;
+        remote: string;
+        mergeBranch: string;
+        trackingRef: string;
+    }
+    | {
+        ok: false;
+        reason: GitUpstreamFailureReason;
+        message: string;
+        localBranch?: string;
+        remote?: string;
+        mergeBranches?: string[];
+    };
+
 // ── Validation helpers ──────────────────────────────────────────────────────
 
 /** Validate that a branch name doesn't contain shell-dangerous characters. */
@@ -82,6 +101,14 @@ function isValidBranchName(name: string): boolean {
     if (name.includes("..")) return false;
     if (name.includes("@{")) return false;
     if (name.endsWith(".lock") || name.endsWith(".") || name.endsWith("/") || name.startsWith("/")) return false;
+    return true;
+}
+
+/** Validate remote names used in git commands/config. */
+function isValidRemoteName(name: string): boolean {
+    if (!name || name.length > 256) return false;
+    if (name.startsWith("-")) return false;
+    if (/[^A-Za-z0-9._/-]/.test(name)) return false;
     return true;
 }
 
@@ -120,6 +147,7 @@ export class GitService implements ServiceHandler {
     private readonly _cwdSubscribers = new Map<string, Set<string>>();
     private readonly _sessionCwd = new Map<string, string>();
     private readonly _repoWatchers = new Map<string, RepoWatchState>();
+    private readonly _activeRepoMutations = new Map<string, string>();
 
     constructor(options?: {
         execGit?: GitExec;
@@ -181,6 +209,9 @@ export class GitService implements ServiceHandler {
                 case "git_merge":
                     void this.handleMerge(payload, requestId, sessionId);
                     break;
+                case "git_set_upstream":
+                    void this.handleSetUpstream(payload, requestId, sessionId);
+                    break;
                 case "git_worktrees":
                     void this.handleWorktrees(payload, requestId, sessionId);
                     break;
@@ -203,6 +234,7 @@ export class GitService implements ServiceHandler {
         this._statusCache.clear();
         this._statusGeneration.clear();
         this._statusInFlight.clear();
+        this._activeRepoMutations.clear();
         this._socket = null;
         this._onServiceMessage = null;
     }
@@ -223,6 +255,36 @@ export class GitService implements ServiceHandler {
 
     private emitError(type: string, message: string, requestId?: string, sessionId?: string): void {
         this.emit(type, { ok: false, message }, requestId, sessionId);
+    }
+
+    private async beginRepoMutation(
+        cwd: string,
+        type: string,
+        mutationName: string,
+        requestId?: string,
+        sessionId?: string,
+    ): Promise<{ key: string; token: string } | null> {
+        const key = await this.resolveRepoRoot(cwd);
+        const activeMutation = this._activeRepoMutations.get(key);
+        if (activeMutation) {
+            this.emit(type, {
+                ok: false,
+                reason: "busy",
+                message: `Another git operation (${activeMutation}) is already running for this repository. Wait for it to finish and try again.`,
+            }, requestId, sessionId);
+            return null;
+        }
+
+        const token = `${mutationName}:${requestId ?? `${Date.now()}`}`;
+        this._activeRepoMutations.set(key, token);
+        return { key, token };
+    }
+
+    private endRepoMutation(mutation: { key: string; token: string } | null): void {
+        if (!mutation) return;
+        if (this._activeRepoMutations.get(mutation.key) === mutation.token) {
+            this._activeRepoMutations.delete(mutation.key);
+        }
     }
 
     // ── cwd validation ──────────────────────────────────────────────────
@@ -821,6 +883,8 @@ export class GitService implements ServiceHandler {
         // clicked (local vs remote). This avoids name heuristics that misclassify
         // local branches like "feature/foo" when a remote named "feature" exists.
         const isRemote = payload.isRemote === true;
+        const mutation = await this.beginRepoMutation(cwd, "git_checkout_result", "checkout", requestId, sessionId);
+        if (!mutation) return;
 
         try {
             let targetBranch = branch;
@@ -855,6 +919,8 @@ export class GitService implements ServiceHandler {
             }, requestId, sessionId);
         } catch (err) {
             this.emitError("git_checkout_result", err instanceof Error ? err.message : String(err), requestId, sessionId);
+        } finally {
+            this.endRepoMutation(mutation);
         }
     }
 
@@ -886,6 +952,9 @@ export class GitService implements ServiceHandler {
             }
         }
 
+        const mutation = await this.beginRepoMutation(cwd, "git_stage_result", "stage", requestId, sessionId);
+        if (!mutation) return;
+
         try {
             // Resolve repo root — paths from git status are repo-root-relative,
             // so operations must run from repo root for paths to resolve correctly.
@@ -899,6 +968,8 @@ export class GitService implements ServiceHandler {
             this.emit("git_stage_result", { ok: true }, requestId, sessionId);
         } catch (err) {
             this.emitError("git_stage_result", err instanceof Error ? err.message : String(err), requestId, sessionId);
+        } finally {
+            this.endRepoMutation(mutation);
         }
     }
 
@@ -929,6 +1000,9 @@ export class GitService implements ServiceHandler {
             }
         }
 
+        const mutation = await this.beginRepoMutation(cwd, "git_unstage_result", "unstage", requestId, sessionId);
+        if (!mutation) return;
+
         try {
             // Resolve repo root — run from there so repo-root-relative paths work.
             // For unstage-all, use ":/" pathspec (magic "repo root") instead of "."
@@ -945,6 +1019,8 @@ export class GitService implements ServiceHandler {
             this.emit("git_unstage_result", { ok: true }, requestId, sessionId);
         } catch (err) {
             this.emitError("git_unstage_result", err instanceof Error ? err.message : String(err), requestId, sessionId);
+        } finally {
+            this.endRepoMutation(mutation);
         }
     }
 
@@ -964,6 +1040,9 @@ export class GitService implements ServiceHandler {
             return;
         }
 
+        const mutation = await this.beginRepoMutation(cwd, "git_commit_result", "commit", requestId, sessionId);
+        if (!mutation) return;
+
         try {
             const { stdout } = await this._execGit(["commit", "-m", message],
                 { cwd, timeout: 30000 },
@@ -979,6 +1058,8 @@ export class GitService implements ServiceHandler {
             }, requestId, sessionId);
         } catch (err) {
             this.emitError("git_commit_result", err instanceof Error ? err.message : String(err), requestId, sessionId);
+        } finally {
+            this.endRepoMutation(mutation);
         }
     }
 
@@ -1107,6 +1188,95 @@ export class GitService implements ServiceHandler {
         }
     }
 
+    // ── upstream resolution / sync helpers ──────────────────────────────
+
+    private async readGitConfigValues(cwd: string, key: string): Promise<string[]> {
+        try {
+            const { stdout } = await this._execGit(["config", "--get-all", key], { cwd, timeout: 5000 });
+            return stdout
+                .split("\n")
+                .map((value) => value.trim())
+                .filter(Boolean);
+        } catch {
+            return [];
+        }
+    }
+
+    private async resolveUpstream(cwd: string): Promise<GitUpstreamResolution> {
+        let localBranch = "";
+        try {
+            const { stdout } = await this._execGit(["rev-parse", "--abbrev-ref", "HEAD"], { cwd, timeout: 5000 });
+            localBranch = stdout.trim();
+        } catch (err) {
+            return {
+                ok: false,
+                reason: "detachedHead",
+                message: err instanceof Error ? err.message : String(err),
+            };
+        }
+
+        if (!localBranch || localBranch === "HEAD") {
+            return {
+                ok: false,
+                reason: "detachedHead",
+                message: "Cannot sync a detached HEAD. Check out a branch first.",
+            };
+        }
+
+        const [remotes, mergeRefs] = await Promise.all([
+            this.readGitConfigValues(cwd, `branch.${localBranch}.remote`),
+            this.readGitConfigValues(cwd, `branch.${localBranch}.merge`),
+        ]);
+
+        if (remotes.length > 1 || mergeRefs.length > 1) {
+            return {
+                ok: false,
+                reason: "ambiguousUpstream",
+                message: `Branch ${localBranch} has multiple upstream targets configured. Repair its upstream before pulling.`,
+                localBranch,
+                remote: remotes[0],
+                mergeBranches: mergeRefs,
+            };
+        }
+
+        const remote = remotes[0] ?? "";
+        const mergeRef = mergeRefs[0] ?? "";
+        const mergeBranch = mergeRef.startsWith("refs/heads/") ? mergeRef.slice(11) : mergeRef;
+
+        if (!remote || !mergeBranch) {
+            return {
+                ok: false,
+                reason: "missingUpstream",
+                message: `Branch ${localBranch} does not have exactly one upstream configured. Set its tracking branch first.`,
+                localBranch,
+                remote: remote || undefined,
+            };
+        }
+
+        return {
+            ok: true,
+            localBranch,
+            remote,
+            mergeBranch,
+            trackingRef: `${remote}/${mergeBranch}`,
+        };
+    }
+
+    private classifySyncFailure(message: string): { reason?: "conflict"; message: string } {
+        if (
+            message.includes("CONFLICT")
+            || message.includes("Resolve all conflicts manually")
+            || message.includes("could not apply")
+            || message.includes("Not possible to fast-forward")
+        ) {
+            return {
+                reason: "conflict",
+                message: "Sync stopped because of conflicts. Resolve them in git, then try again.",
+            };
+        }
+        return { message };
+    }
+
     // ── git pull ────────────────────────────────────────────────────────
 
     private async handlePull(
@@ -1117,19 +1287,112 @@ export class GitService implements ServiceHandler {
         const cwd = this.validateCwd(payload.cwd, "git_pull_result", requestId, sessionId);
         if (!cwd) return;
         const rebase = payload.rebase !== false;
+        const mutation = await this.beginRepoMutation(cwd, "git_pull_result", "pull", requestId, sessionId);
+        if (!mutation) return;
 
         try {
-            const args = rebase ? ["pull", "--rebase"] : ["pull", "--ff-only"];
-            const result = await this._execGit(args, { cwd, timeout: 60000 });
-            const output = (result.stdout + "\n" + result.stderr).trim();
+            const upstream = await this.resolveUpstream(cwd);
+            if (!upstream.ok) {
+                this.emit("git_pull_result", {
+                    ok: false,
+                    reason: upstream.reason,
+                    message: upstream.message,
+                    branch: upstream.localBranch,
+                    remote: upstream.remote,
+                    mergeBranches: upstream.mergeBranches,
+                }, requestId, sessionId);
+                return;
+            }
+
+            const fetchResult = await this._execGit(
+                ["fetch", upstream.remote, upstream.mergeBranch],
+                { cwd, timeout: 60000 },
+            );
+
+            const integrateArgs = rebase
+                ? ["rebase", upstream.trackingRef]
+                : ["merge", "--ff-only", upstream.trackingRef];
+            const integrateResult = await this._execGit(integrateArgs, { cwd, timeout: 60000 });
+
+            const output = [
+                fetchResult.stdout,
+                fetchResult.stderr,
+                integrateResult.stdout,
+                integrateResult.stderr,
+            ].join("\n").trim();
+
             await this.invalidateStatusCacheFamily(cwd);
 
             this.emit("git_pull_result", {
                 ok: true,
                 output,
+                branch: upstream.localBranch,
+                remote: upstream.remote,
+                upstream: upstream.trackingRef,
             }, requestId, sessionId);
         } catch (err) {
-            this.emitError("git_pull_result", err instanceof Error ? err.message : String(err), requestId, sessionId);
+            const message = err instanceof Error ? err.message : String(err);
+            const classified = this.classifySyncFailure(message);
+            if (classified.reason === "conflict") {
+                await this.invalidateStatusCacheFamily(cwd);
+            }
+            this.emit("git_pull_result", {
+                ok: false,
+                reason: classified.reason,
+                message: classified.message,
+                output: message,
+            }, requestId, sessionId);
+        } finally {
+            this.endRepoMutation(mutation);
+        }
+    }
+
+    private async handleSetUpstream(
+        payload: Record<string, unknown>,
+        requestId?: string,
+        sessionId?: string,
+    ): Promise<void> {
+        const cwd = this.validateCwd(payload.cwd, "git_set_upstream_result", requestId, sessionId);
+        if (!cwd) return;
+
+        const remote = typeof payload.remote === "string" ? payload.remote.trim() : "";
+        const branch = typeof payload.branch === "string" ? payload.branch.trim() : "";
+        if (!isValidRemoteName(remote)) {
+            this.emitError("git_set_upstream_result", "Invalid remote name", requestId, sessionId);
+            return;
+        }
+        if (!isValidBranchName(branch)) {
+            this.emitError("git_set_upstream_result", "Invalid branch name", requestId, sessionId);
+            return;
+        }
+
+        const mutation = await this.beginRepoMutation(cwd, "git_set_upstream_result", "set-upstream", requestId, sessionId);
+        if (!mutation) return;
+
+        try {
+            const { stdout } = await this._execGit(["rev-parse", "--abbrev-ref", "HEAD"], { cwd, timeout: 5000 });
+            const localBranch = stdout.trim();
+            if (!localBranch || localBranch === "HEAD") {
+                this.emit("git_set_upstream_result", {
+                    ok: false,
+                    reason: "detachedHead",
+                    message: "Cannot set upstream while HEAD is detached.",
+                }, requestId, sessionId);
+                return;
+            }
+
+            await this._execGit(["branch", `--set-upstream-to=${remote}/${branch}`, localBranch], { cwd, timeout: 15000 });
+            await this.invalidateStatusCacheFamily(cwd);
+            this.emit("git_set_upstream_result", {
+                ok: true,
+                summary: `Branch ${localBranch} now tracks ${remote}/${branch}`,
+                branch: localBranch,
+                upstream: `${remote}/${branch}`,
+            }, requestId, sessionId);
+        } catch (err) {
+            this.emitError("git_set_upstream_result", err instanceof Error ? err.message : String(err), requestId, sessionId);
+        } finally {
+            this.endRepoMutation(mutation);
         }
     }
 
@@ -1149,6 +1412,9 @@ export class GitService implements ServiceHandler {
             return;
         }
 
+        const mutation = await this.beginRepoMutation(cwd, "git_merge_result", "merge", requestId, sessionId);
+        if (!mutation) return;
+
         try {
             // Prevent merging current branch into itself
             const { stdout: currentBranchOut } = await this._execGit(["rev-parse", "--abbrev-ref", "HEAD"], { cwd, timeout: 5000 });
@@ -1165,7 +1431,19 @@ export class GitService implements ServiceHandler {
             await this.invalidateStatusCacheFamily(cwd);
             this.emit("git_merge_result", { ok: true, output }, requestId, sessionId);
         } catch (err) {
-            this.emitError("git_merge_result", err instanceof Error ? err.message : String(err), requestId, sessionId);
+            const message = err instanceof Error ? err.message : String(err);
+            const classified = this.classifySyncFailure(message);
+            if (classified.reason === "conflict") {
+                await this.invalidateStatusCacheFamily(cwd);
+            }
+            this.emit("git_merge_result", {
+                ok: false,
+                reason: classified.reason,
+                message: classified.message,
+                output: message,
+            }, requestId, sessionId);
+        } finally {
+            this.endRepoMutation(mutation);
         }
     }
 
@@ -1180,6 +1458,8 @@ export class GitService implements ServiceHandler {
         if (!cwd) return;
 
         const setUpstream = payload.setUpstream === true;
+        const mutation = await this.beginRepoMutation(cwd, "git_push_result", "push", requestId, sessionId);
+        if (!mutation) return;
 
         try {
             // Determine current branch for --set-upstream
@@ -1231,6 +1511,8 @@ export class GitService implements ServiceHandler {
                 message,
                 noUpstream,
             }, requestId, sessionId);
+        } finally {
+            this.endRepoMutation(mutation);
         }
     }
 }

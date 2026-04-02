@@ -75,7 +75,7 @@ export function GitStagingArea({
     operationInProgress,
 }: GitStagingAreaProps) {
     const { staged, unstaged } = partitionChanges(changes);
-    const isBusy = operationInProgress === "stage" || operationInProgress === "unstage";
+    const isBusy = operationInProgress !== null;
 
     return (
         <div className="py-1">

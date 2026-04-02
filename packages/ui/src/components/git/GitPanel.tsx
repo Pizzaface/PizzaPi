@@ -28,6 +28,7 @@ import { GitStagingArea, partitionChanges } from "./GitStagingArea";
 import { GitCommitForm } from "./GitCommitForm";
 import { GitDiffView } from "./GitDiffView";
 import { GitWorktreeList } from "./GitWorktreeList";
+import { getGitOperationFeedback, parseUpstreamRef } from "./git-operation-feedback";
 
 // ── Props ───────────────────────────────────────────────────────────────────
 
@@ -47,35 +48,37 @@ export function GitPanel({ cwd, className }: GitPanelProps) {
     const diffContainerRef = useRef<HTMLDivElement>(null);
 
     // Toast-style feedback for operations
-    const [toast, setToast] = useState<{ type: "success" | "error"; message: string } | null>(null);
+    const [toast, setToast] = useState<{
+        type: "success" | "error";
+        message: string;
+        action?: "setUpstream";
+    } | null>(null);
     const [syncMenuOpen, setSyncMenuOpen] = useState(false);
     const syncMenuRef = useRef<HTMLDivElement>(null);
     const syncMenuContentRef = useRef<HTMLDivElement>(null);
 
+    const handleSetUpstream = useCallback(() => {
+        const currentBranch = git.status?.branch?.trim();
+        const suggestion = currentBranch ? `origin/${currentBranch}` : "origin/main";
+        const response = window.prompt("Set upstream to which remote branch?", suggestion);
+        if (!response) return;
+
+        const parsed = parseUpstreamRef(response);
+        if (!parsed) {
+            setToast({
+                type: "error",
+                message: "Enter the upstream as remote/branch, for example origin/main.",
+            });
+            return;
+        }
+
+        git.setUpstream(parsed.remote, parsed.branch);
+    }, [git]);
+
     // Show toast when operation completes
     useEffect(() => {
         if (!git.lastOperationResult) return;
-        const result = git.lastOperationResult;
-        if (result.ok) {
-            const msg = (result.summary as string)
-                ?? (result.output as string)
-                ?? (result.branch ? `Switched to ${result.branch as string}` : null)
-                ?? "Done";
-            setToast({ type: "success", message: msg });
-        } else {
-            // If push failed because no upstream, offer to retry with --set-upstream
-            if (result.noUpstream) {
-                setToast({
-                    type: "error",
-                    message: "No upstream branch. Click Publish to push and set upstream.",
-                });
-            } else {
-                setToast({
-                    type: "error",
-                    message: (result.message as string) ?? "Operation failed",
-                });
-            }
-        }
+        setToast(getGitOperationFeedback(git.lastOperationResult));
 
         const timer = setTimeout(() => setToast(null), 5000);
         return () => clearTimeout(timer);
@@ -199,6 +202,7 @@ export function GitPanel({ cwd, className }: GitPanelProps) {
 
     const { staged } = partitionChanges(git.status.changes);
     const hasChanges = git.status.changes.length > 0;
+    const isMutating = git.operationInProgress !== null;
     const isPushing = git.operationInProgress === "push";
     const isPulling = git.operationInProgress === "pull";
     // Show push when ahead of remote OR on a branch with no upstream yet
@@ -215,6 +219,7 @@ export function GitPanel({ cwd, className }: GitPanelProps) {
                     branchesState={git.branchesState}
                     onCheckout={git.checkout}
                     onOpen={git.fetchBranches}
+                    disabled={isMutating}
                     isCheckingOut={git.operationInProgress === "checkout"}
                 />
 
@@ -243,7 +248,7 @@ export function GitPanel({ cwd, className }: GitPanelProps) {
                     <button
                         type="button"
                         onClick={() => setSyncMenuOpen((o) => !o)}
-                        disabled={git.operationInProgress === "pull" || git.operationInProgress === "merge"}
+                        disabled={isMutating}
                         className={cn(
                             "inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium transition-colors",
                             "bg-muted/60 hover:bg-muted text-foreground",
@@ -308,7 +313,7 @@ export function GitPanel({ cwd, className }: GitPanelProps) {
                     <button
                         type="button"
                         onClick={() => git.pull()}
-                        disabled={isPulling}
+                        disabled={isMutating}
                         className={cn(
                             "inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium transition-colors",
                             "bg-amber-500/20 text-amber-600 dark:text-amber-400 hover:bg-amber-500/30",
@@ -326,7 +331,7 @@ export function GitPanel({ cwd, className }: GitPanelProps) {
                     <button
                         type="button"
                         onClick={() => git.push(!git.status!.hasUpstream)}
-                        disabled={isPushing}
+                        disabled={isMutating}
                         className={cn(
                             "inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium transition-colors",
                             "bg-green-600/20 text-green-600 dark:text-green-400 hover:bg-green-600/30",
@@ -364,6 +369,15 @@ export function GitPanel({ cwd, className }: GitPanelProps) {
                 >
                     {toast.type === "success" ? <Check className="size-3" /> : <AlertCircle className="size-3" />}
                     <span className="truncate flex-1">{toast.message}</span>
+                    {toast.action === "setUpstream" && (
+                        <button
+                            type="button"
+                            onClick={handleSetUpstream}
+                            className="text-current underline underline-offset-2 hover:no-underline"
+                        >
+                            Set upstream…
+                        </button>
+                    )}
                     <button
                         type="button"
                         onClick={() => setToast(null)}
@@ -406,6 +420,7 @@ export function GitPanel({ cwd, className }: GitPanelProps) {
                     hasStagedChanges={staged.length > 0}
                     onCommit={git.commit}
                     isCommitting={git.operationInProgress === "commit"}
+                    disabled={isMutating}
                 />
             )}
 

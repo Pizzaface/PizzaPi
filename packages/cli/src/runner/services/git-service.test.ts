@@ -200,7 +200,10 @@ describe("GitService status caching", () => {
                 if (cmd === "rev-list") return { stdout: "0 0\n", stderr: "" };
                 if (cmd === "add" || cmd === "restore" || cmd === "checkout") return { stdout: "", stderr: "" };
                 if (cmd === "commit") return { stdout: "[main abc1234] message\n", stderr: "" };
-                if (cmd === "pull" || cmd === "push") return { stdout: "ok", stderr: "" };
+                if (cmd === "fetch" || cmd === "pull" || cmd === "push" || cmd === "rebase") return { stdout: "ok", stderr: "" };
+                if (cmd === "config" && args[2]?.endsWith(".remote")) return { stdout: "origin\n", stderr: "" };
+                if (cmd === "config" && args[2]?.endsWith(".merge")) return { stdout: "refs/heads/main\n", stderr: "" };
+                if (cmd === "remote") return { stdout: "origin\n", stderr: "" };
                 throw new Error(`Unexpected git args: ${args.join(" ")}`);
             },
         });
@@ -649,16 +652,19 @@ describe("GitService git_full_status", () => {
 });
 
 describe("GitService pull/merge", () => {
-    test("pull defaults to --rebase and ff-only can be requested", async () => {
+    test("pull uses fetch + rebase with explicit upstream", async () => {
         const gitCalls: string[][] = [];
 
         const service = new GitService({
             execGit: async (args) => {
                 gitCalls.push([...args]);
                 const cmd = args[0];
-                if (cmd === "pull") return { stdout: "ok", stderr: "" };
+                if (cmd === "fetch") return { stdout: "", stderr: "" };
+                if (cmd === "rebase") return { stdout: "Applied 2 commits\n", stderr: "" };
+                if (cmd === "merge") return { stdout: "Fast-forward\n", stderr: "" };
                 if (cmd === "rev-parse" && args[1] === "--abbrev-ref") return { stdout: "main\n", stderr: "" };
-                if (cmd === "merge") return { stdout: "merged\n", stderr: "" };
+                if (cmd === "config" && args[2] === "branch.main.remote") return { stdout: "origin\n", stderr: "" };
+                if (cmd === "config" && args[2] === "branch.main.merge") return { stdout: "refs/heads/main\n", stderr: "" };
                 if (cmd === "rev-parse") return { stdout: "/tmp/pizzapi-test\n", stderr: "" };
                 if (cmd === "status") return { stdout: "", stderr: "" };
                 if (cmd === "diff") return { stdout: "", stderr: "" };
@@ -670,7 +676,6 @@ describe("GitService pull/merge", () => {
         const socket = createMockSocket();
         service.init(socket as any, { isShuttingDown: () => false });
 
-        // Default pull should use --rebase
         dispatchServiceMessage(socket, {
             serviceId: "git",
             type: "git_pull",
@@ -679,11 +684,11 @@ describe("GitService pull/merge", () => {
         });
         const r1 = await waitForResult(socket, "pull-1", "git_pull_result");
         expect((r1.payload as any).ok).toBe(true);
-        expect(gitCalls.some((c) => c[0] === "pull" && c[1] === "--rebase")).toBe(true);
+        expect(gitCalls).toContainEqual(["fetch", "origin", "main"]);
+        expect(gitCalls).toContainEqual(["rebase", "origin/main"]);
 
         gitCalls.length = 0;
 
-        // Explicit rebase: false should use --ff-only
         dispatchServiceMessage(socket, {
             serviceId: "git",
             type: "git_pull",
@@ -692,7 +697,269 @@ describe("GitService pull/merge", () => {
         });
         const r2 = await waitForResult(socket, "pull-2", "git_pull_result");
         expect((r2.payload as any).ok).toBe(true);
-        expect(gitCalls.some((c) => c[0] === "pull" && c[1] === "--ff-only")).toBe(true);
+        expect(gitCalls).toContainEqual(["fetch", "origin", "main"]);
+        expect(gitCalls).toContainEqual(["merge", "--ff-only", "origin/main"]);
+    });
+
+    test("pull fails with missingUpstream when tracking config is incomplete", async () => {
+        const gitCalls: string[][] = [];
+
+        const service = new GitService({
+            execGit: async (args) => {
+                gitCalls.push([...args]);
+                const cmd = args[0];
+                if (cmd === "rev-parse" && args[1] === "--abbrev-ref") return { stdout: "feature/no-upstream\n", stderr: "" };
+                if (cmd === "config") return { stdout: "", stderr: "" };
+                if (cmd === "rev-parse") return { stdout: "/tmp/pizzapi-test\n", stderr: "" };
+                if (cmd === "status") return { stdout: "", stderr: "" };
+                if (cmd === "diff") return { stdout: "", stderr: "" };
+                if (cmd === "rev-list") return { stdout: "0 0\n", stderr: "" };
+                throw new Error(`Unexpected git args: ${args.join(" ")}`);
+            },
+        });
+
+        const socket = createMockSocket();
+        service.init(socket as any, { isShuttingDown: () => false });
+
+        dispatchServiceMessage(socket, {
+            serviceId: "git",
+            type: "git_pull",
+            requestId: "pull-missing-upstream",
+            payload: { cwd: "/tmp/pizzapi-test" },
+        });
+        const result = await waitForResult(socket, "pull-missing-upstream", "git_pull_result");
+        expect(result.payload).toMatchObject({ ok: false, reason: "missingUpstream", branch: "feature/no-upstream" });
+        expect(gitCalls.some((call) => call[0] === "fetch")).toBe(false);
+    });
+
+    test("pull fails with ambiguousUpstream when multiple merge targets exist", async () => {
+        const service = new GitService({
+            execGit: async (args) => {
+                const cmd = args[0];
+                if (cmd === "rev-parse" && args[1] === "--abbrev-ref") return { stdout: "feature/multi\n", stderr: "" };
+                if (cmd === "config" && args[2] === "branch.feature/multi.remote") return { stdout: "origin\n", stderr: "" };
+                if (cmd === "config" && args[2] === "branch.feature/multi.merge") {
+                    return { stdout: "refs/heads/main\nrefs/heads/release\n", stderr: "" };
+                }
+                if (cmd === "rev-parse") return { stdout: "/tmp/pizzapi-test\n", stderr: "" };
+                if (cmd === "status") return { stdout: "", stderr: "" };
+                if (cmd === "diff") return { stdout: "", stderr: "" };
+                if (cmd === "rev-list") return { stdout: "0 0\n", stderr: "" };
+                throw new Error(`Unexpected git args: ${args.join(" ")}`);
+            },
+        });
+
+        const socket = createMockSocket();
+        service.init(socket as any, { isShuttingDown: () => false });
+
+        dispatchServiceMessage(socket, {
+            serviceId: "git",
+            type: "git_pull",
+            requestId: "pull-ambiguous-upstream",
+            payload: { cwd: "/tmp/pizzapi-test" },
+        });
+        const result = await waitForResult(socket, "pull-ambiguous-upstream", "git_pull_result");
+        expect(result.payload).toMatchObject({
+            ok: false,
+            reason: "ambiguousUpstream",
+            branch: "feature/multi",
+            mergeBranches: ["refs/heads/main", "refs/heads/release"],
+        });
+    });
+
+    test("pull fails with detachedHead when no branch is checked out", async () => {
+        const service = new GitService({
+            execGit: async (args) => {
+                const cmd = args[0];
+                if (cmd === "rev-parse" && args[1] === "--abbrev-ref") return { stdout: "HEAD\n", stderr: "" };
+                if (cmd === "rev-parse") return { stdout: "/tmp/pizzapi-test\n", stderr: "" };
+                if (cmd === "status") return { stdout: "", stderr: "" };
+                if (cmd === "diff") return { stdout: "", stderr: "" };
+                if (cmd === "rev-list") return { stdout: "0 0\n", stderr: "" };
+                throw new Error(`Unexpected git args: ${args.join(" ")}`);
+            },
+        });
+
+        const socket = createMockSocket();
+        service.init(socket as any, { isShuttingDown: () => false });
+
+        dispatchServiceMessage(socket, {
+            serviceId: "git",
+            type: "git_pull",
+            requestId: "pull-detached",
+            payload: { cwd: "/tmp/pizzapi-test" },
+        });
+        const result = await waitForResult(socket, "pull-detached", "git_pull_result");
+        expect(result.payload).toMatchObject({ ok: false, reason: "detachedHead" });
+    });
+
+    test("set_upstream configures the current branch tracking ref", async () => {
+        const gitCalls: string[][] = [];
+
+        const service = new GitService({
+            execGit: async (args) => {
+                gitCalls.push([...args]);
+                const cmd = args[0];
+                if (cmd === "rev-parse" && args[1] === "--abbrev-ref") return { stdout: "feature/test\n", stderr: "" };
+                if (cmd === "branch" && args[1] === "--set-upstream-to=origin/main") return { stdout: "", stderr: "" };
+                if (cmd === "rev-parse") return { stdout: "/tmp/pizzapi-test\n", stderr: "" };
+                if (cmd === "status") return { stdout: "", stderr: "" };
+                if (cmd === "diff") return { stdout: "", stderr: "" };
+                if (cmd === "rev-list") return { stdout: "0 0\n", stderr: "" };
+                throw new Error(`Unexpected git args: ${args.join(" ")}`);
+            },
+        });
+
+        const socket = createMockSocket();
+        service.init(socket as any, { isShuttingDown: () => false });
+
+        dispatchServiceMessage(socket, {
+            serviceId: "git",
+            type: "git_set_upstream",
+            requestId: "set-upstream-1",
+            payload: { cwd: "/tmp/pizzapi-test", remote: "origin", branch: "main" },
+        });
+        const result = await waitForResult(socket, "set-upstream-1", "git_set_upstream_result");
+        expect((result.payload as any).ok).toBe(true);
+        expect(gitCalls).toContainEqual(["branch", "--set-upstream-to=origin/main", "feature/test"]);
+    });
+
+    test("pull conflict returns structured reason and invalidates cached status", async () => {
+        const cwd = "/tmp/pizzapi-test";
+        let statusCalls = 0;
+
+        const service = new GitService({
+            execGit: async (args) => {
+                const cmd = args[0];
+                if (cmd === "rev-parse" && args[1] === "--abbrev-ref") return { stdout: "main\n", stderr: "" };
+                if (cmd === "rev-parse") return { stdout: `${cwd}\n`, stderr: "" };
+                if (cmd === "config" && args[2] === "branch.main.remote") return { stdout: "origin\n", stderr: "" };
+                if (cmd === "config" && args[2] === "branch.main.merge") return { stdout: "refs/heads/main\n", stderr: "" };
+                if (cmd === "fetch") return { stdout: "", stderr: "" };
+                if (cmd === "rebase") throw new Error("CONFLICT (content): Merge conflict in src/app.ts");
+                if (cmd === "status") {
+                    statusCalls++;
+                    return { stdout: ` M conflict-${statusCalls}.ts\0`, stderr: "" };
+                }
+                if (cmd === "diff") return { stdout: "", stderr: "" };
+                if (cmd === "rev-list") return { stdout: "0 0\n", stderr: "" };
+                throw new Error(`Unexpected git args: ${args.join(" ")}`);
+            },
+        });
+
+        const socket = createMockSocket();
+        service.init(socket as any, { isShuttingDown: () => false });
+
+        dispatchServiceMessage(socket, {
+            serviceId: "git",
+            type: "git_status",
+            requestId: "status-before-conflict",
+            payload: { cwd },
+        });
+        await waitForResult(socket, "status-before-conflict", "git_status_result");
+        expect(statusCalls).toBe(1);
+
+        dispatchServiceMessage(socket, {
+            serviceId: "git",
+            type: "git_pull",
+            requestId: "pull-conflict",
+            payload: { cwd },
+        });
+        const conflictResult = await waitForResult(socket, "pull-conflict", "git_pull_result");
+        expect(conflictResult.payload).toMatchObject({ ok: false, reason: "conflict" });
+
+        dispatchServiceMessage(socket, {
+            serviceId: "git",
+            type: "git_status",
+            requestId: "status-after-conflict",
+            payload: { cwd },
+        });
+        await waitForResult(socket, "status-after-conflict", "git_status_result");
+        expect(statusCalls).toBe(2);
+    });
+
+    test("merge conflict returns structured reason", async () => {
+        const service = new GitService({
+            execGit: async (args) => {
+                const cmd = args[0];
+                if (cmd === "rev-parse" && args[1] === "--abbrev-ref") return { stdout: "main\n", stderr: "" };
+                if (cmd === "rev-parse") return { stdout: "/tmp/pizzapi-test\n", stderr: "" };
+                if (cmd === "merge") throw new Error("CONFLICT (content): Merge conflict in src/app.ts");
+                if (cmd === "status") return { stdout: "", stderr: "" };
+                if (cmd === "diff") return { stdout: "", stderr: "" };
+                if (cmd === "rev-list") return { stdout: "0 0\n", stderr: "" };
+                throw new Error(`Unexpected git args: ${args.join(" ")}`);
+            },
+        });
+
+        const socket = createMockSocket();
+        service.init(socket as any, { isShuttingDown: () => false });
+
+        dispatchServiceMessage(socket, {
+            serviceId: "git",
+            type: "git_merge",
+            requestId: "merge-conflict",
+            payload: { cwd: "/tmp/pizzapi-test", branch: "feature-sync-menu" },
+        });
+        const result = await waitForResult(socket, "merge-conflict", "git_merge_result");
+        expect(result.payload).toMatchObject({ ok: false, reason: "conflict" });
+    });
+
+    test("rejects overlapping repo mutations with a busy error even across different cwd values in the same repo", async () => {
+        let checkoutStarted = false;
+        let releaseCheckout: () => void = () => {
+            throw new Error("Expected checkout release function");
+        };
+        const checkoutGate = new Promise<void>((resolve) => {
+            releaseCheckout = resolve;
+        });
+
+        const service = new GitService({
+            execGit: async (args, options) => {
+                const cmd = args[0];
+                if (cmd === "checkout") {
+                    checkoutStarted = true;
+                    await checkoutGate;
+                    return { stdout: "", stderr: "" };
+                }
+                if (cmd === "rev-parse" && args[1] === "--abbrev-ref") return { stdout: "main\n", stderr: "" };
+                if (cmd === "rev-parse" && args[1] === "--show-toplevel") return { stdout: "/tmp/pizzapi-test\n", stderr: "" };
+                if (cmd === "rev-parse") return { stdout: `${options.cwd}\n`, stderr: "" };
+                if (cmd === "status") return { stdout: "", stderr: "" };
+                if (cmd === "diff") return { stdout: "", stderr: "" };
+                if (cmd === "rev-list") return { stdout: "0 0\n", stderr: "" };
+                if (cmd === "config" && args[2] === "branch.main.remote") return { stdout: "origin\n", stderr: "" };
+                if (cmd === "config" && args[2] === "branch.main.merge") return { stdout: "refs/heads/main\n", stderr: "" };
+                if (cmd === "fetch") return { stdout: "", stderr: "" };
+                if (cmd === "rebase") return { stdout: "", stderr: "" };
+                throw new Error(`Unexpected git args: ${args.join(" ")}`);
+            },
+        });
+
+        const socket = createMockSocket();
+        service.init(socket as any, { isShuttingDown: () => false });
+
+        dispatchServiceMessage(socket, {
+            serviceId: "git",
+            type: "git_checkout",
+            requestId: "checkout-busy-1",
+            payload: { cwd: "/tmp/pizzapi-test/packages/ui", branch: "main", isRemote: false },
+        });
+
+        await waitForCondition(() => checkoutStarted);
+
+        dispatchServiceMessage(socket, {
+            serviceId: "git",
+            type: "git_pull",
+            requestId: "pull-busy-1",
+            payload: { cwd: "/tmp/pizzapi-test" },
+        });
+        const busyResult = await waitForResult(socket, "pull-busy-1", "git_pull_result");
+        expect(busyResult.payload).toMatchObject({ ok: false, reason: "busy" });
+
+        releaseCheckout();
+        const checkoutResult = await waitForResult(socket, "checkout-busy-1", "git_checkout_result");
+        expect((checkoutResult.payload as any).ok).toBe(true);
     });
 
     test("merge uses end-of-options separator", async () => {
