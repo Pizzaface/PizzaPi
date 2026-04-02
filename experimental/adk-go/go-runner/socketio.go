@@ -41,6 +41,7 @@ type SIOClient struct {
 	pingTimeout  time.Duration
 
 	done     chan struct{}
+	lastPing chan struct{} // signaled each time server sends EIO ping
 	closed   atomic.Bool
 	logger   *log.Logger
 
@@ -135,6 +136,7 @@ func (c *SIOClient) Connect() error {
 	c.connMu.Unlock()
 
 	c.done = make(chan struct{})
+	c.lastPing = make(chan struct{}, 1)
 
 	// Read the Engine.IO open packet (type 0)
 	_, msg, err := conn.ReadMessage()
@@ -300,13 +302,21 @@ func (c *SIOClient) handleMessage(msg string) {
 
 	// Engine.IO packet type is the first character
 	switch msg[0] {
-	case '2': // ping
+	case '2': // ping from server
+		if c.logger != nil {
+			c.logger.Printf("[sio] received EIO ping, sending pong")
+		}
 		c.connMu.Lock()
 		if c.conn != nil {
 			c.conn.WriteMessage(websocket.TextMessage, []byte("3")) // pong
 		}
 		c.connMu.Unlock()
-	case '3': // pong (response to our ping)
+		// Signal the ping monitor
+		select {
+		case c.lastPing <- struct{}{}:
+		default:
+		}
+	case '3': // pong (unexpected in EIO4 client mode, but handle gracefully)
 		// ok
 	case '4': // message (Socket.IO)
 		c.handleSIOMessage(msg[1:])
@@ -390,24 +400,38 @@ func (c *SIOClient) handleEvent(msg string) {
 }
 
 func (c *SIOClient) pingLoop() {
-	interval := c.pingInterval
-	if interval == 0 {
-		interval = 25 * time.Second
+	// In Engine.IO v4 (EIO=4), the SERVER sends pings ("2") and the CLIENT
+	// responds with pongs ("3"). The client does NOT initiate pings.
+	//
+	// This loop monitors for ping timeout: if the server doesn't send a ping
+	// within (pingInterval + pingTimeout), we assume the connection is dead.
+	timeout := c.pingInterval + c.pingTimeout
+	if timeout == 0 {
+		timeout = 85 * time.Second // default: 25s interval + 60s timeout
 	}
 
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
 
 	for {
 		select {
 		case <-c.done:
 			return
-		case <-ticker.C:
-			c.connMu.Lock()
-			if c.conn != nil {
-				c.conn.WriteMessage(websocket.TextMessage, []byte("2")) // ping
+		case <-c.lastPing:
+			// Server sent a ping — reset the timer
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
 			}
-			c.connMu.Unlock()
+			timer.Reset(timeout)
+		case <-timer.C:
+			if c.logger != nil {
+				c.logger.Printf("[sio] ping timeout — no server ping in %v", timeout)
+			}
+			c.Close()
+			return
 		}
 	}
 }
