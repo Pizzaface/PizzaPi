@@ -86,14 +86,20 @@ export const HistoryCommandPalette = React.memo(function HistoryCommandPalette({
 }: HistoryCommandPaletteProps) {
     const [resumingSessionId, setResumingSessionId] = React.useState<string | null>(null);
 
-    // Refresh when the palette opens
+    // Refresh when the palette opens, but skip if data was fetched recently
     const lastOpenRef = React.useRef(false);
+    const lastFetchRef = React.useRef(0);
     React.useEffect(() => {
         if (open && !lastOpenRef.current) {
-            onRefresh();
+            const now = Date.now();
+            // Skip if we fetched within the last 5 seconds
+            if (now - lastFetchRef.current > 5_000 || sessions.length === 0) {
+                lastFetchRef.current = now;
+                onRefresh();
+            }
         }
         lastOpenRef.current = open;
-    }, [open, onRefresh]);
+    }, [open, onRefresh, sessions.length]);
 
     const handleResume = React.useCallback((e: React.MouseEvent, s: ResumeSessionOption) => {
         e.stopPropagation();
