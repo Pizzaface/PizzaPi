@@ -124,24 +124,28 @@ func (a *Adapter) HandleEvent(ev ClaudeEvent) []RelayEvent {
 	case *MessageStop:
 		return nil
 	case *AssistantMessage:
+		if len(e.Message) == 0 {
+			return nil
+		}
 		var payload struct {
 			ID      string           `json:"id"`
 			Role    string           `json:"role"`
 			Content []map[string]any `json:"content"`
 		}
 		if err := json.Unmarshal(e.Message, &payload); err == nil {
+			if len(payload.Content) == 0 {
+				return nil // skip empty assistant events
+			}
 			if payload.ID != "" {
 				a.currentMessageID = payload.ID
 			}
-			if len(payload.Content) > 0 {
-				a.contentBlocks = cloneBlocks(payload.Content)
-				for _, block := range payload.Content {
-					if blockType, _ := block["type"].(string); blockType == "tool_use" {
-						id, _ := block["id"].(string)
-						name, _ := block["name"].(string)
-						if id != "" && name != "" {
-							a.toolNamesByID[id] = name
-						}
+			a.contentBlocks = cloneBlocks(payload.Content)
+			for _, block := range payload.Content {
+				if blockType, _ := block["type"].(string); blockType == "tool_use" {
+					id, _ := block["id"].(string)
+					name, _ := block["name"].(string)
+					if id != "" && name != "" {
+						a.toolNamesByID[id] = name
 					}
 				}
 			}
