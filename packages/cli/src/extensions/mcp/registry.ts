@@ -29,8 +29,8 @@ export type McpConfig = {
   mcp?: {
     servers?: Array<
       | { name: string; transport: "stdio"; command: string; args?: string[]; env?: Record<string, string>; cwd?: string; deferLoading?: boolean }
-      | { name: string; transport: "http"; url: string; headers?: Record<string, string>; oauthClientName?: string; deferLoading?: boolean }
-      | { name: string; transport: "streamable"; url: string; headers?: Record<string, string>; oauthClientName?: string; deferLoading?: boolean }
+      | { name: string; transport: "http"; url: string; headers?: Record<string, string>; oauthClientName?: string; oauthClientId?: string; oauthClientSecret?: string; oauthCallbackPort?: number; deferLoading?: boolean }
+      | { name: string; transport: "streamable"; url: string; headers?: Record<string, string>; oauthClientName?: string; oauthClientId?: string; oauthClientSecret?: string; oauthCallbackPort?: number; deferLoading?: boolean }
     >;
   };
 
@@ -51,7 +51,7 @@ export type McpConfig = {
   mcpServers?: Record<
     string,
     | { command: string; args?: string[]; env?: Record<string, string>; cwd?: string; deferLoading?: boolean }
-    | { url: string; transport?: "http" | "streamable"; type?: "http" | "sse"; headers?: Record<string, string>; oauthClientName?: string; deferLoading?: boolean }
+    | { url: string; transport?: "http" | "streamable"; type?: "http" | "sse"; headers?: Record<string, string>; oauthClientName?: string; oauthClientId?: string; oauthClientSecret?: string; oauthCallbackPort?: number; deferLoading?: boolean }
   >;
 };
 
@@ -159,6 +159,9 @@ export async function createMcpClientsFromConfig(config: PizzaPiConfig & McpConf
 
   const disabled = new Set(config.disabledMcpServers ?? []);
   const oauthClientName = config.oauthClientName;
+  const oauthClientId = config.oauthClientId;
+  const oauthClientSecret = config.oauthClientSecret;
+  const oauthCallbackPort = config.oauthCallbackPort;
 
   const clients: McpClient[] = [];
 
@@ -191,10 +194,18 @@ export async function createMcpClientsFromConfig(config: PizzaPiConfig & McpConf
       );
     } else if (s.transport === "streamable") {
       if (!isMcpDomainAllowed(s.url, s.name)) continue;
+      // Per-server clientId/clientSecret are a pair: if per-server clientId is set,
+      // use its paired secret (even if undefined) — don't leak the global secret
+      // to a server with a different client identity.
+      const sClientId = s.oauthClientId ?? oauthClientId;
+      const sClientSecret = s.oauthClientId !== undefined ? s.oauthClientSecret : oauthClientSecret;
       const provider = new PizzaPiOAuthProvider({
         serverUrl: s.url,
         serverName: s.name,
         clientName: s.oauthClientName || oauthClientName,
+        clientId: sClientId,
+        clientSecret: sClientSecret,
+        callbackPort: s.oauthCallbackPort ?? oauthCallbackPort,
         deferRelayWaitTimeoutUntilAnchor: deferOAuthRelayWaitTimeoutUntilAnchor,
       });
       activeOAuthProviders.push(provider);
@@ -234,7 +245,7 @@ export async function createMcpClientsFromConfig(config: PizzaPiConfig & McpConf
     }
 
     if ("url" in def && typeof (def as any).url === "string") {
-      const d = def as { url: string; transport?: string; type?: string; headers?: Record<string, string>; oauthClientName?: string };
+      const d = def as { url: string; transport?: string; type?: string; headers?: Record<string, string>; oauthClientName?: string; oauthClientId?: string; oauthClientSecret?: string; oauthCallbackPort?: number };
 
       // Domain gating for URL-based MCP servers
       if (!isMcpDomainAllowed(d.url, name)) continue;
@@ -247,10 +258,16 @@ export async function createMcpClientsFromConfig(config: PizzaPiConfig & McpConf
         (d.type === "http" && d.transport === undefined);
 
       if (useStreamable) {
+        // Per-server clientId/clientSecret are a pair (see comment above)
+        const dClientId = d.oauthClientId ?? oauthClientId;
+        const dClientSecret = d.oauthClientId !== undefined ? d.oauthClientSecret : oauthClientSecret;
         const provider = new PizzaPiOAuthProvider({
           serverUrl: d.url,
           serverName: name,
           clientName: d.oauthClientName || oauthClientName,
+          clientId: dClientId,
+          clientSecret: dClientSecret,
+          callbackPort: d.oauthCallbackPort ?? oauthCallbackPort,
           deferRelayWaitTimeoutUntilAnchor: deferOAuthRelayWaitTimeoutUntilAnchor,
         });
         activeOAuthProviders.push(provider);

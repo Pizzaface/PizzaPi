@@ -55,6 +55,8 @@ interface PersistedAuth {
   clientInfo?: OAuthClientInformationMixed;
   tokens?: OAuthTokens;
   codeVerifier?: string;
+  /** Tracks the last static client ID used, so we can detect config changes. */
+  staticClientId?: string;
 }
 
 function loadPersistedAuth(serverUrl: string): PersistedAuth {
@@ -217,6 +219,16 @@ export type McpOAuthOptions = {
    * When unset, defaults to `"PizzaPi (<serverName>)"`.
    */
   clientName?: string;
+  /**
+   * Pre-registered OAuth client ID. When set, skips dynamic client
+   * registration and uses this client ID directly.
+   */
+  clientId?: string;
+  /**
+   * Pre-registered OAuth client secret. Paired with `clientId` for
+   * confidential clients. Not needed for public clients (PKCE-only).
+   */
+  clientSecret?: string;
   /** Callback port override for local mode. 0 = auto. */
   callbackPort?: number;
   /** Callback when auth starts (for TUI/web notifications). */
@@ -258,6 +270,10 @@ export class PizzaPiOAuthProvider implements OAuthClientProvider {
   private _clientName: string;
   /** True when clientName was explicitly provided (use verbatim, no suffix). */
   private _clientNameExplicit: boolean;
+  /** Pre-registered OAuth client ID (skips dynamic client registration). */
+  private _staticClientId: string | undefined;
+  /** Pre-registered OAuth client secret. */
+  private _staticClientSecret: string | undefined;
   private _persisted: PersistedAuth;
   private _callbackPort: number;
   private _callbackServer: ReturnType<typeof startCallbackServer> | null = null;
@@ -313,12 +329,31 @@ export class PizzaPiOAuthProvider implements OAuthClientProvider {
     this._serverName = opts.serverName;
     this._clientNameExplicit = !!opts.clientName;
     this._clientName = opts.clientName || "PizzaPi";
+    this._staticClientId = opts.clientId;
+    this._staticClientSecret = opts.clientSecret;
     this._callbackPort = opts.callbackPort ?? 0;
     this._onAuthStart = opts.onAuthStart;
     this._onAuthComplete = opts.onAuthComplete;
     this._deferRelayWaitTimeoutUntilAnchor = opts.deferRelayWaitTimeoutUntilAnchor === true;
     this._relayWaitAnchorReady = !this._deferRelayWaitTimeoutUntilAnchor;
     this._persisted = loadPersistedAuth(this._serverUrl);
+
+    // If a static client ID is configured and differs from the last-used one,
+    // the user changed their OAuth client config — invalidate stale tokens and
+    // verifier so we don't reuse credentials issued to the old client.
+    if (this._staticClientId) {
+      const lastStaticId = this._persisted.staticClientId;
+      if (lastStaticId && lastStaticId !== this._staticClientId) {
+        delete this._persisted.tokens;
+        delete this._persisted.codeVerifier;
+        savePersistedAuth(this._serverUrl, this._persisted);
+      }
+      // Always track the current static client ID
+      if (this._persisted.staticClientId !== this._staticClientId) {
+        this._persisted.staticClientId = this._staticClientId;
+        savePersistedAuth(this._serverUrl, this._persisted);
+      }
+    }
   }
 
   /** Relay context — set by the remote extension when relay is connected. */
@@ -535,10 +570,19 @@ export class PizzaPiOAuthProvider implements OAuthClientProvider {
   }
 
   clientInformation(): OAuthClientInformationMixed | undefined {
+    // Pre-registered client credentials take precedence over persisted DCR data.
+    if (this._staticClientId) {
+      return {
+        client_id: this._staticClientId,
+        ...(this._staticClientSecret ? { client_secret: this._staticClientSecret } : {}),
+      };
+    }
     return this._persisted.clientInfo;
   }
 
   saveClientInformation(clientInfo: OAuthClientInformationMixed): void {
+    // Don't overwrite static pre-registered credentials with server responses.
+    if (this._staticClientId) return;
     this._persisted.clientInfo = clientInfo;
     savePersistedAuth(this._serverUrl, this._persisted);
   }

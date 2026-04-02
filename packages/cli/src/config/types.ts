@@ -391,6 +391,44 @@ export interface PizzaPiConfig {
     oauthClientName?: string;
 
     /**
+     * Global default pre-registered OAuth `client_id`.
+     *
+     * When set, skips dynamic client registration and uses this client ID
+     * directly with the MCP server's OAuth flow. Requires the client to be
+     * pre-registered with the MCP server.
+     *
+     * Can also be set per-server via `oauthClientId` in individual
+     * `mcpServers` entries — per-server values take precedence.
+     */
+    oauthClientId?: string;
+
+    /**
+     * Global default pre-registered OAuth `client_secret`.
+     *
+     * Paired with `oauthClientId` for pre-registered OAuth clients.
+     * Not needed for public clients (PKCE-only).
+     *
+     * Can also be set per-server via `oauthClientSecret` in individual
+     * `mcpServers` entries — per-server values take precedence.
+     */
+    oauthClientSecret?: string;
+
+    /**
+     * Global default local callback port for MCP OAuth redirect URI.
+     *
+     * When set, the local OAuth callback server binds to this fixed port
+     * instead of an OS-assigned ephemeral port. Useful when you need a
+     * predictable `http://localhost:PORT/callback` redirect URI for
+     * pre-registered OAuth clients.
+     *
+     * Can also be set per-server via `oauthCallbackPort` in individual
+     * `mcpServers` entries — per-server values take precedence.
+     *
+     * Default: 0 (OS-assigned ephemeral port).
+     */
+    oauthCallbackPort?: number;
+
+    /**
      * Provider-specific settings (web search, etc.).
      * Keys are provider names (e.g., "anthropic").
      *
