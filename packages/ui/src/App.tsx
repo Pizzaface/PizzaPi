@@ -3393,8 +3393,77 @@ export function App() {
     });
   }, [sendRemoteExec]);
 
+  // Tracks whether the current history data came from the server fallback (vs runner-side).
+  // When true, resume uses `resumeId` instead of `resumePath`.
+  const historyIsServerSourcedRef = React.useRef(false);
+
+  /**
+   * Fetch persisted sessions from the server `/api/sessions` endpoint.
+   * Used as a fallback when no active session exists (can't use runner-side
+   * list_resume_sessions). Returns sessions from ALL runners.
+   */
+  const requestPersistedSessions = React.useCallback(async (cursor?: string) => {
+    setResumeSessionsLoading(true);
+    const isAppend = !!cursor;
+    try {
+      const params = new URLSearchParams({ includePersisted: "1", limit: "50" });
+      if (cursor) params.set("cursor", cursor);
+      const res = await fetch(`/api/sessions?${params}`, { credentials: "include" });
+      if (!res.ok) {
+        setResumeSessionsLoading(false);
+        return;
+      }
+      const data = await res.json() as {
+        persistedSessions?: Array<{
+          sessionId: string;
+          cwd: string;
+          sessionName: string | null;
+          lastActiveAt: string;
+          runnerId: string | null;
+          runnerName: string | null;
+          startedAt: string;
+          endedAt: string | null;
+        }>;
+        nextCursor?: string | null;
+      };
+      const persisted = Array.isArray(data.persistedSessions) ? data.persistedSessions : [];
+      const mapped: ResumeSessionOption[] = persisted.map((s) => ({
+        id: s.sessionId,
+        path: "", // Server-sourced sessions don't have the .jsonl path; resume uses resumeId instead
+        cwd: s.cwd || null,
+        name: s.sessionName || null,
+        modified: s.lastActiveAt || s.startedAt,
+        runnerId: s.runnerId,
+        runnerName: s.runnerName,
+        serverSourced: true,
+      }));
+
+      const nextCursor = typeof data.nextCursor === "string" ? data.nextCursor : null;
+      if (isAppend) {
+        setResumeSessions((prev) => {
+          const existingIds = new Set(prev.map((s) => s.id));
+          const newItems = mapped.filter((s) => !existingIds.has(s.id));
+          return [...prev, ...newItems];
+        });
+      } else {
+        setResumeSessions(mapped);
+      }
+      setResumeSessionsNextCursor(nextCursor);
+      historyIsServerSourcedRef.current = true;
+    } catch {
+      // Silently fail — user just sees no sessions
+    } finally {
+      setResumeSessionsLoading(false);
+    }
+  }, []);
+
   const requestResumeSessions = React.useCallback((cursor?: string) => {
-    if (!activeSessionRef.current) return false;
+    // If no active session, fall back to server-side persisted sessions
+    if (!activeSessionRef.current) {
+      void requestPersistedSessions(cursor);
+      return true; // Signal that a request was initiated
+    }
+    historyIsServerSourcedRef.current = false;
     setResumeSessionsLoading(true);
     resumeSessionsAppendRef.current = !!cursor;
     const ok = sendRemoteExec({
@@ -3408,7 +3477,7 @@ export function App() {
       resumeSessionsAppendRef.current = false;
     }
     return ok;
-  }, [sendRemoteExec]);
+  }, [sendRemoteExec, requestPersistedSessions]);
 
   const refreshUsage = React.useCallback(() => {
     if (usageRefreshing) return false;
@@ -4856,17 +4925,23 @@ export function App() {
           onResumeSession={async (sessionId) => {
             const session = resumeSessions.find((s) => s.id === sessionId);
             if (!session) return;
-            const runnerId = activeSessionInfo?.runnerId;
+
+            // Determine runnerId: prefer session-level (server-sourced), fall back to active session's runner
+            const runnerId = session.runnerId || activeSessionInfo?.runnerId;
             if (!runnerId) {
-              setViewerStatus("No active runner");
+              setViewerStatus("No runner available for this session");
               return;
             }
             setHistoryOpen(false);
             setViewerStatus("Resuming session…");
             try {
+              // Server-sourced sessions don't have the .jsonl path — send resumeId
+              // so the runner daemon resolves the path from the session ID.
               const payload: any = {
                 runnerId,
-                resumePath: session.path,
+                ...(session.serverSourced
+                  ? { resumeId: session.id }
+                  : { resumePath: session.path }),
                 ...(session.cwd ? { cwd: session.cwd } : {}),
               };
               const res = await fetch("/api/runners/spawn", {

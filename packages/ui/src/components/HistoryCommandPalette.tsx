@@ -77,7 +77,9 @@ function matchesSearch(session: ResumeSessionOption, query: string): boolean {
     const id = session.id.toLowerCase();
     const path = session.path.toLowerCase();
     const preview = (session.firstMessage ?? "").toLowerCase();
-    return name.includes(q) || id.includes(q) || path.includes(q) || preview.includes(q);
+    const cwd = (session.cwd ?? "").toLowerCase();
+    const runnerName = (session.runnerName ?? "").toLowerCase();
+    return name.includes(q) || id.includes(q) || path.includes(q) || preview.includes(q) || cwd.includes(q) || runnerName.includes(q);
 }
 
 // ── Virtual row types ─────────────────────────────────────────────────────────
@@ -367,8 +369,13 @@ export const HistoryCommandPalette = React.memo(function HistoryCommandPalette({
                                             </p>
                                         )}
                                         <div className="flex items-center gap-1 mt-0.5 min-w-0">
-                                            <span className="text-[0.65rem] text-muted-foreground/40 truncate leading-tight" title={s.path}>
-                                                {formatPathTail(s.path, 2)}
+                                            {s.runnerName && (
+                                                <span className="text-[0.6rem] text-muted-foreground/50 bg-muted/80 rounded px-1 py-px flex-shrink-0 leading-tight">
+                                                    {s.runnerName}
+                                                </span>
+                                            )}
+                                            <span className="text-[0.65rem] text-muted-foreground/40 truncate leading-tight" title={s.path || s.cwd || ""}>
+                                                {s.path ? formatPathTail(s.path, 2) : s.cwd ? formatPathTail(s.cwd, 2) : ""}
                                             </span>
                                         </div>
                                     </div>

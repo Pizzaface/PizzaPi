@@ -40,6 +40,12 @@ export interface ResumeSessionOption {
   name: string | null;
   modified: string;
   firstMessage?: string;
+  /** Runner that owns this session (available for server-sourced sessions). */
+  runnerId?: string | null;
+  /** Human-readable runner name. */
+  runnerName?: string | null;
+  /** Whether this session was loaded from the server (vs runner-side list_resume_sessions). */
+  serverSourced?: boolean;
 }
 
 export interface QueuedMessage {
