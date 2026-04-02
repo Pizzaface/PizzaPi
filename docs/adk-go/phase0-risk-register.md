@@ -156,3 +156,29 @@ After Phase 0, the team decides:
   against the Anthropic Messages API.
 - **Hybrid** — Use CLI wrapper for simple sessions, API-direct for sessions
   requiring custom tools or advanced orchestration.
+
+## Unblock Criteria for Follow-On Work
+
+### idea:L5IOag95 — Phase 0 Prototype (ADK Go + CLI wrapper)
+
+**Can move to `plan` when ALL of these are true:**
+1. ✅ Wrapper parser is stable against sample Claude CLI output (validated via synthetic fixtures — 13 event types, 29 total tests passing)
+2. ✅ Adapter covers streaming text, tool use, tool result, and terminal result → PizzaPi relay shapes
+3. ✅ Subprocess lifecycle is explicit enough for a future Go host (start, stop, stderr, exit code)
+4. ✅ Open risks are documented with explicit severity and mitigation paths
+5. ⬜ **PENDING**: Live validation against actual `claude --output-format stream-json` output
+6. ⬜ **PENDING**: Decision on custom tool injection architecture
+
+**Recommendation:** Move to `plan` now. Items 5 and 6 can be resolved during implementation planning rather than blocking it.
+
+### Ideas Intentionally Still Blocked
+
+These must NOT be moved forward until L5IOag95 validates the full prototype:
+
+| Idea ID | Summary | Blocker |
+|---------|---------|---------|
+| pfyKmDvB | Go daemon: supervisor + session manager | Needs proven session host model |
+| PMzEWAAd | Port core coding tools to ADK Go | Needs proven tool/event integration |
+| 9JXdBqZ5 | Build context compaction system | Needs proven session/event model |
+| Brf0huSf | WebSocket relay client in Go | Needs daemon lifecycle defined |
+| Jqjnnz6p | Multi-provider model abstraction | Needs prototype architecture decision |

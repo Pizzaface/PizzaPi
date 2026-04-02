@@ -526,3 +526,38 @@ to a concrete test the prototype should run against a live Claude CLI.
 8. Does `--include-partial-messages` affect the event types or just add more deltas?
 9. Can `--input-format stream-json` on stdin send follow-up prompts mid-session?
 10. What is the exact process exit code on success vs failure vs context overflow?
+
+## Prototype Verdict
+
+**Status: Viable — proceed to Phase 0 implementation**
+
+### What Worked
+
+1. **NDJSON parser** — Two-phase decode (discriminator → typed struct) handles all known Claude CLI stream-json event types. Table-driven tests cover 13 event shapes including unknown-event tolerance and malformed-line recovery.
+
+2. **PizzaPi relay adapter** — Maps parsed Claude events to PizzaPi's relay event shapes (heartbeat, message_update, tool_result_message, session_metadata_update). Accumulator state machine handles streaming text assembly and tool input buffering correctly. 8 test cases covering the full conversation lifecycle.
+
+3. **Subprocess lifecycle** — Go wrapper manages process start, stop (context cancellation), stderr collection, and exit code tracking. Integration tested with real subprocess (bash) emitting fake NDJSON. Context cancellation kills the process within expected bounds.
+
+4. **Event fidelity** — The adapter produces JSON shapes compatible with PizzaPi's existing web UI expectations (role normalization, toolCallId keying, timestamp injection, content block assembly). The shapes match what `packages/ui/src/lib/message-helpers.ts` and `packages/server/tests/harness/builders.ts` expect.
+
+### What Remains Unknown
+
+1. **Live Claude CLI validation** — All tests use synthetic NDJSON fixtures. The prototype has not been tested against actual `claude --output-format stream-json` output. Field names, nesting, and optional fields may differ from assumptions.
+
+2. **Bidirectional communication** — `--input-format stream-json` is undocumented (see Anthropic issue #24594). Follow-up prompt injection via stdin is unvalidated.
+
+3. **Custom tool injection** — The CLI handles tool execution internally. PizzaPi's custom tools (plan_mode, AskUserQuestion, subagent, spawn_session, etc.) cannot be injected through the CLI wrapper alone. This is the highest-risk open question.
+
+4. **Session resume reliability** — `--resume <session-id>` behavior under long interruptions, session size limits, and cross-version compatibility is unknown.
+
+5. **Streaming partial fidelity** — Whether `--include-partial-messages` changes the event types or just adds more granular deltas is unconfirmed.
+
+### Decision Point
+
+The prototype proves the observation/parsing/adaptation pipeline is sound. The next decision is:
+
+- **If custom tool injection is NOT required for Phase 0**: Proceed with CLI wrapper for built-in tools, custom tools via separate channel later.
+- **If custom tool injection IS required**: Evaluate Anthropic API direct integration or hybrid architecture (CLI for sessions + API for custom tools).
+
+This decision blocks the architecture of the Phase 0 prototype (idea L5IOag95) and must be made before implementation begins.
