@@ -137,6 +137,33 @@ func TestParseLine(t *testing.T) {
 			},
 		},
 		{
+			name: "thinking content_block_start",
+			line: `{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}}}`,
+			check: func(t *testing.T, event ClaudeEvent) {
+				e, ok := event.(*ContentBlockStart)
+				if !ok { t.Fatalf("got %T", event) }
+				if e.Index != 0 || e.BlockType != "thinking" { t.Fatalf("unexpected event: %+v", e) }
+			},
+		},
+		{
+			name: "thinking_delta",
+			line: `{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"Let me think"}}}`,
+			check: func(t *testing.T, event ClaudeEvent) {
+				e, ok := event.(*ContentBlockDelta)
+				if !ok { t.Fatalf("got %T", event) }
+				if e.DeltaType != "thinking_delta" || e.Thinking != "Let me think" { t.Fatalf("unexpected event: %+v", e) }
+			},
+		},
+		{
+			name: "signature_delta",
+			line: `{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"abc123sig"}}}`,
+			check: func(t *testing.T, event ClaudeEvent) {
+				e, ok := event.(*ContentBlockDelta)
+				if !ok { t.Fatalf("got %T", event) }
+				if e.DeltaType != "signature_delta" || e.Signature != "abc123sig" { t.Fatalf("unexpected event: %+v", e) }
+			},
+		},
+		{
 			name: "unknown type",
 			line: `{"type":"custom_event","data":"something"}`,
 			check: func(t *testing.T, event ClaudeEvent) {
