@@ -20,16 +20,18 @@ func (*SystemEvent) EventType() string { return "system" }
 
 type ContentBlockDelta struct {
 	Index       int    `json:"index"`
-	DeltaType   string `json:"delta_type"`
+	DeltaType   string `json:"delta_type"` // "text_delta", "input_json_delta", "thinking_delta", "signature_delta"
 	Text        string `json:"text"`
 	PartialJSON string `json:"partial_json"`
+	Thinking    string `json:"thinking"`  // for thinking_delta
+	Signature   string `json:"signature"` // for signature_delta
 }
 
 func (*ContentBlockDelta) EventType() string { return "content_block_delta" }
 
 type ContentBlockStart struct {
 	Index     int    `json:"index"`
-	BlockType string `json:"block_type"`
+	BlockType string `json:"block_type"` // "text", "tool_use", "thinking"
 	ToolID    string `json:"tool_id"`
 	ToolName  string `json:"tool_name"`
 }
