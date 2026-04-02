@@ -1119,9 +1119,78 @@ export class GitService implements ServiceHandler {
         const rebase = payload.rebase !== false;
 
         try {
-            const args = rebase ? ["pull", "--rebase"] : ["pull", "--ff-only"];
-            const result = await this._execGit(args, { cwd, timeout: 60000 });
-            const output = (result.stdout + "\n" + result.stderr).trim();
+            // Avoid "Cannot rebase onto multiple branches" by splitting into
+            // explicit fetch + rebase/merge steps instead of using `git pull`.
+            // `git pull --rebase` parses FETCH_HEAD internally and fails when
+            // multiple entries are marked for merge — even with an explicit
+            // remote and branch. Using `git fetch` then `git rebase <ref>`
+            // sidesteps FETCH_HEAD entirely.
+
+            // 1. Resolve the upstream remote and branch.
+            let remote: string | null = null;
+            let mergeBranch: string | null = null;
+            let localBranch: string | null = null;
+            try {
+                const { stdout: branchName } = await this._execGit(
+                    ["rev-parse", "--abbrev-ref", "HEAD"], { cwd, timeout: 5000 },
+                );
+                localBranch = branchName.trim() || null;
+                if (localBranch && localBranch !== "HEAD") {
+                    try {
+                        const { stdout } = await this._execGit(
+                            ["config", "--get", `branch.${localBranch}.remote`], { cwd, timeout: 5000 },
+                        );
+                        if (stdout.trim()) remote = stdout.trim();
+                    } catch { /* no tracking remote configured */ }
+
+                    try {
+                        const { stdout } = await this._execGit(
+                            ["config", "--get", `branch.${localBranch}.merge`], { cwd, timeout: 5000 },
+                        );
+                        const ref = stdout.trim();
+                        if (ref) {
+                            mergeBranch = ref.startsWith("refs/heads/") ? ref.slice(11) : ref;
+                        }
+                    } catch { /* no merge ref configured */ }
+                }
+            } catch { /* detached HEAD */ }
+
+            // Fall back to first listed remote.
+            if (!remote) {
+                try {
+                    const { stdout } = await this._execGit(["remote"], { cwd, timeout: 5000 });
+                    const firstRemote = stdout.trim().split("\n")[0]?.trim();
+                    if (firstRemote) remote = firstRemote;
+                } catch { /* no remotes */ }
+            }
+
+            // If no merge branch is configured, assume the remote branch
+            // has the same name as the local branch (common convention).
+            if (!mergeBranch && localBranch && localBranch !== "HEAD") {
+                mergeBranch = localBranch;
+            }
+
+            // 2. Fetch from remote.
+            const fetchArgs = ["fetch"];
+            if (remote) {
+                fetchArgs.push(remote);
+                if (mergeBranch) fetchArgs.push(mergeBranch);
+            }
+            const fetchResult = await this._execGit(fetchArgs, { cwd, timeout: 60000 });
+
+            // 3. Rebase or merge onto the explicit remote-tracking ref.
+            //    Using <remote>/<branch> avoids FETCH_HEAD ambiguity entirely.
+            const targetRef = remote && mergeBranch ? `${remote}/${mergeBranch}` : "FETCH_HEAD";
+            const integrateArgs = rebase
+                ? ["rebase", targetRef]
+                : ["merge", "--ff-only", targetRef];
+            const integrateResult = await this._execGit(integrateArgs, { cwd, timeout: 60000 });
+
+            const output = [
+                fetchResult.stdout, fetchResult.stderr,
+                integrateResult.stdout, integrateResult.stderr,
+            ].join("\n").trim();
+
             await this.invalidateStatusCacheFamily(cwd);
 
             this.emit("git_pull_result", {

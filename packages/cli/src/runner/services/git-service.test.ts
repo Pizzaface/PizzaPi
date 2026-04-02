@@ -200,7 +200,10 @@ describe("GitService status caching", () => {
                 if (cmd === "rev-list") return { stdout: "0 0\n", stderr: "" };
                 if (cmd === "add" || cmd === "restore" || cmd === "checkout") return { stdout: "", stderr: "" };
                 if (cmd === "commit") return { stdout: "[main abc1234] message\n", stderr: "" };
-                if (cmd === "pull" || cmd === "push") return { stdout: "ok", stderr: "" };
+                if (cmd === "fetch" || cmd === "pull" || cmd === "push" || cmd === "rebase") return { stdout: "ok", stderr: "" };
+                if (cmd === "config" && args[2]?.endsWith(".remote")) return { stdout: "origin\n", stderr: "" };
+                if (cmd === "config" && args[2]?.endsWith(".merge")) return { stdout: "refs/heads/main\n", stderr: "" };
+                if (cmd === "remote") return { stdout: "origin\n", stderr: "" };
                 throw new Error(`Unexpected git args: ${args.join(" ")}`);
             },
         });
@@ -649,16 +652,19 @@ describe("GitService git_full_status", () => {
 });
 
 describe("GitService pull/merge", () => {
-    test("pull defaults to --rebase and ff-only can be requested", async () => {
+    test("pull uses fetch + rebase with explicit remote-tracking ref", async () => {
         const gitCalls: string[][] = [];
 
         const service = new GitService({
             execGit: async (args) => {
                 gitCalls.push([...args]);
                 const cmd = args[0];
-                if (cmd === "pull") return { stdout: "ok", stderr: "" };
+                if (cmd === "fetch") return { stdout: "", stderr: "" };
+                if (cmd === "rebase") return { stdout: "Applied 2 commits\n", stderr: "" };
+                if (cmd === "merge") return { stdout: "Fast-forward\n", stderr: "" };
                 if (cmd === "rev-parse" && args[1] === "--abbrev-ref") return { stdout: "main\n", stderr: "" };
-                if (cmd === "merge") return { stdout: "merged\n", stderr: "" };
+                if (cmd === "config" && args[2] === "branch.main.remote") return { stdout: "origin\n", stderr: "" };
+                if (cmd === "config" && args[2] === "branch.main.merge") return { stdout: "refs/heads/main\n", stderr: "" };
                 if (cmd === "rev-parse") return { stdout: "/tmp/pizzapi-test\n", stderr: "" };
                 if (cmd === "status") return { stdout: "", stderr: "" };
                 if (cmd === "diff") return { stdout: "", stderr: "" };
@@ -670,7 +676,7 @@ describe("GitService pull/merge", () => {
         const socket = createMockSocket();
         service.init(socket as any, { isShuttingDown: () => false });
 
-        // Default pull should use --rebase
+        // Default pull (rebase) should fetch then rebase onto remote-tracking ref
         dispatchServiceMessage(socket, {
             serviceId: "git",
             type: "git_pull",
@@ -679,11 +685,12 @@ describe("GitService pull/merge", () => {
         });
         const r1 = await waitForResult(socket, "pull-1", "git_pull_result");
         expect((r1.payload as any).ok).toBe(true);
-        expect(gitCalls.some((c) => c[0] === "pull" && c[1] === "--rebase")).toBe(true);
+        expect(gitCalls.some((c) => c[0] === "fetch" && c[1] === "origin" && c[2] === "main")).toBe(true);
+        expect(gitCalls.some((c) => c[0] === "rebase" && c[1] === "origin/main")).toBe(true);
 
         gitCalls.length = 0;
 
-        // Explicit rebase: false should use --ff-only
+        // ff-only should fetch then merge --ff-only onto remote-tracking ref
         dispatchServiceMessage(socket, {
             serviceId: "git",
             type: "git_pull",
@@ -692,7 +699,45 @@ describe("GitService pull/merge", () => {
         });
         const r2 = await waitForResult(socket, "pull-2", "git_pull_result");
         expect((r2.payload as any).ok).toBe(true);
-        expect(gitCalls.some((c) => c[0] === "pull" && c[1] === "--ff-only")).toBe(true);
+        expect(gitCalls.some((c) => c[0] === "fetch" && c[1] === "origin" && c[2] === "main")).toBe(true);
+        expect(gitCalls.some((c) => c[0] === "merge" && c[1] === "--ff-only" && c[2] === "origin/main")).toBe(true);
+    });
+
+    test("pull falls back to first remote and local branch name when no tracking config", async () => {
+        const gitCalls: string[][] = [];
+
+        const service = new GitService({
+            execGit: async (args) => {
+                gitCalls.push([...args]);
+                const cmd = args[0];
+                if (cmd === "fetch") return { stdout: "", stderr: "" };
+                if (cmd === "rebase") return { stdout: "ok\n", stderr: "" };
+                if (cmd === "rev-parse" && args[1] === "--abbrev-ref") return { stdout: "feature/no-upstream\n", stderr: "" };
+                if (cmd === "config" && args[2] === "branch.feature/no-upstream.remote") throw new Error("not found");
+                if (cmd === "config" && args[2] === "branch.feature/no-upstream.merge") throw new Error("not found");
+                if (cmd === "remote") return { stdout: "upstream\norigin\n", stderr: "" };
+                if (cmd === "rev-parse") return { stdout: "/tmp/pizzapi-test\n", stderr: "" };
+                if (cmd === "status") return { stdout: "", stderr: "" };
+                if (cmd === "diff") return { stdout: "", stderr: "" };
+                if (cmd === "rev-list") return { stdout: "0 0\n", stderr: "" };
+                throw new Error(`Unexpected git args: ${args.join(" ")}`);
+            },
+        });
+
+        const socket = createMockSocket();
+        service.init(socket as any, { isShuttingDown: () => false });
+
+        dispatchServiceMessage(socket, {
+            serviceId: "git",
+            type: "git_pull",
+            requestId: "pull-fallback",
+            payload: { cwd: "/tmp/pizzapi-test" },
+        });
+        const r = await waitForResult(socket, "pull-fallback", "git_pull_result");
+        expect((r.payload as any).ok).toBe(true);
+        // Falls back to first remote + local branch name as merge branch
+        expect(gitCalls.some((c) => c[0] === "fetch" && c[1] === "upstream" && c[2] === "feature/no-upstream")).toBe(true);
+        expect(gitCalls.some((c) => c[0] === "rebase" && c[1] === "upstream/feature/no-upstream")).toBe(true);
     });
 
     test("merge uses end-of-options separator", async () => {
