@@ -108,11 +108,32 @@ func TestParseLine(t *testing.T) {
 		},
 		{
 			name: "result event",
-			line: `{"type":"result","session_id":"sess_123","cost_usd":0.05,"duration_secs":12.5,"usage":{"input_tokens":500,"output_tokens":200}}`,
+			line: `{"type":"result","subtype":"success","is_error":false,"session_id":"sess_123","total_cost_usd":0.05,"duration_ms":3000,"num_turns":1,"stop_reason":"end_turn","result":"Hello world","usage":{"input_tokens":500,"output_tokens":200}}`,
 			check: func(t *testing.T, event ClaudeEvent) {
 				e, ok := event.(*ResultEvent)
 				if !ok { t.Fatalf("got %T", event) }
-				if e.SessionID != "sess_123" || e.CostUSD != 0.05 || e.DurationSecs != 12.5 || e.InputTokens != 500 || e.OutputTokens != 200 { t.Fatalf("unexpected event: %+v", e) }
+				if e.SessionID != "sess_123" || e.TotalCostUSD != 0.05 || e.DurationMs != 3000 { t.Fatalf("unexpected event: %+v", e) }
+				if e.InputTokens != 500 || e.OutputTokens != 200 { t.Fatalf("unexpected tokens: %+v", e) }
+				if e.Subtype != "success" || e.StopReason != "end_turn" || e.NumTurns != 1 { t.Fatalf("unexpected meta: %+v", e) }
+				if e.Result != "Hello world" { t.Fatalf("unexpected result text: %q", e.Result) }
+			},
+		},
+		{
+			name: "rate_limit_event",
+			line: `{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","resetsAt":1775174400,"rateLimitType":"five_hour","isUsingOverage":false}}`,
+			check: func(t *testing.T, event ClaudeEvent) {
+				e, ok := event.(*RateLimitEvent)
+				if !ok { t.Fatalf("got %T", event) }
+				if e.Status != "allowed" || e.LimitType != "five_hour" || e.IsOverage { t.Fatalf("unexpected event: %+v", e) }
+			},
+		},
+		{
+			name: "user message (tool result)",
+			line: `{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_abc","type":"tool_result","content":"output","is_error":false}]}}`,
+			check: func(t *testing.T, event ClaudeEvent) {
+				e, ok := event.(*UserMessage)
+				if !ok { t.Fatalf("got %T", event) }
+				if e.ToolUseID != "toolu_abc" || e.Content != "output" || e.IsError { t.Fatalf("unexpected event: %+v", e) }
 			},
 		},
 		{
@@ -146,7 +167,7 @@ func TestParseStream(t *testing.T) {
 	reader := strings.NewReader(strings.Join([]string{
 		`{"type":"system","session_id":"sess_123","tools":["bash"],"cwd":"/tmp","model":"claude-sonnet-4-20250514"}`,
 		`{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}}`,
-		`{"type":"result","session_id":"sess_123","cost_usd":0.05,"duration_secs":12.5,"usage":{"input_tokens":500,"output_tokens":200}}`,
+		`{"type":"result","subtype":"success","session_id":"sess_123","total_cost_usd":0.05,"duration_ms":3000,"usage":{"input_tokens":500,"output_tokens":200}}`,
 	}, "\n"))
 
 	events := make(chan ClaudeEvent)

@@ -157,6 +157,24 @@ func (a *Adapter) HandleEvent(ev ClaudeEvent) []RelayEvent {
 			"isError":    e.IsError,
 			"timestamp":  nowMillis(),
 		}}
+	case *UserMessage:
+		// The Claude CLI reports tool results as "user" messages.
+		// Map them to tool_result_message for PizzaPi.
+		if e.ToolUseID != "" {
+			return []RelayEvent{{
+				"type":       "tool_result_message",
+				"role":       "tool_result",
+				"toolCallId": e.ToolUseID,
+				"toolName":   a.toolNamesByID[e.ToolUseID],
+				"content":    e.Content,
+				"isError":    e.IsError,
+				"timestamp":  nowMillis(),
+			}}
+		}
+		return nil
+	case *RateLimitEvent:
+		// Rate limit info is logged but not forwarded to the relay.
+		return nil
 	case *ResultEvent:
 		if a.model.ID == "" {
 			a.model = AdapterModel{Provider: "anthropic", ID: ""}
@@ -168,7 +186,10 @@ func (a *Adapter) HandleEvent(ev ClaudeEvent) []RelayEvent {
 				"inputTokens":  e.InputTokens,
 				"outputTokens": e.OutputTokens,
 			},
-			"costUSD": e.CostUSD,
+			"costUSD":    e.TotalCostUSD,
+			"durationMs": e.DurationMs,
+			"numTurns":   e.NumTurns,
+			"stopReason": e.StopReason,
 		}}
 	case *UnknownEvent, *ParseError:
 		return nil
