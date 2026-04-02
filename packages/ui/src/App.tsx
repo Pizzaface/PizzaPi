@@ -4851,7 +4851,16 @@ export function App() {
           sessions={resumeSessions}
           loading={resumeSessionsLoading}
           onRefresh={requestResumeSessions}
-          onOpenSession={(id) => { handleOpenSession(id); setHistoryOpen(false); }}
+          onResumeSession={(sessionId) => {
+            const session = resumeSessions.find((s) => s.id === sessionId);
+            if (!session) return;
+            sendRemoteExec({
+              type: "exec",
+              id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+              command: "resume_session",
+              sessionPath: session.path,
+            });
+          }}
           nextCursor={resumeSessionsNextCursor}
           onLoadMore={() => { if (resumeSessionsNextCursor) requestResumeSessions(resumeSessionsNextCursor); }}
         />

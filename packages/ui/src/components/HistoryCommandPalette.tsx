@@ -21,8 +21,8 @@ export interface HistoryCommandPaletteProps {
     loading: boolean;
     /** Trigger a refresh of the resume sessions list */
     onRefresh: () => void;
-    /** Called when user selects a session to view */
-    onOpenSession: (sessionId: string) => void;
+    /** Called when user selects a session to resume */
+    onResumeSession: (sessionId: string) => void;
     /** Cursor for the next page of sessions (null = no more pages) */
     nextCursor: string | null;
     /** Called when the user scrolls near the bottom to load more */
@@ -131,7 +131,7 @@ export const HistoryCommandPalette = React.memo(function HistoryCommandPalette({
     sessions,
     loading,
     onRefresh,
-    onOpenSession,
+    onResumeSession,
     nextCursor,
     onLoadMore,
 }: HistoryCommandPaletteProps) {
@@ -199,9 +199,9 @@ export const HistoryCommandPalette = React.memo(function HistoryCommandPalette({
 
     // ── Keyboard navigation ──────────────────────────────────────────────
     const handleSelect = React.useCallback((sessionId: string) => {
-        onOpenSession(sessionId);
+        onResumeSession(sessionId);
         onOpenChange(false);
-    }, [onOpenSession, onOpenChange]);
+    }, [onResumeSession, onOpenChange]);
 
     React.useEffect(() => {
         if (!open) return;
