@@ -49,6 +49,7 @@ type GoRunner struct {
 	client   *SIOClient
 	sessions sync.Map // sessionID → *session
 	logger   *log.Logger
+	stop     context.CancelFunc // signals Run() to exit
 }
 
 // NewGoRunner creates a new runner daemon.
@@ -83,11 +84,18 @@ func (r *GoRunner) Run(ctx context.Context) error {
 		},
 	})
 
+	// Internal stop signal — triggered by shutdown/restart commands
+	stopCtx, stopCancel := context.WithCancel(ctx)
+	r.stop = stopCancel
+
 	// Register event handlers
 	r.client.On("runner_registered", r.handleRunnerRegistered)
 	r.client.On("new_session", r.handleNewSession)
 	r.client.On("kill_session", r.handleKillSession)
 	r.client.On("session_ended", r.handleSessionEnded)
+	r.client.On("restart", r.handleRestart)
+	r.client.On("shutdown", r.handleShutdown)
+	r.client.On("list_sessions", r.handleListSessions)
 	r.client.On("ping", r.handlePing)
 	r.client.On("error", r.handleError)
 
@@ -97,7 +105,7 @@ func (r *GoRunner) Run(ctx context.Context) error {
 
 	// Wait for shutdown
 	select {
-	case <-ctx.Done():
+	case <-stopCtx.Done():
 		r.logger.Println("shutting down...")
 	case <-r.client.Done():
 		r.logger.Println("relay connection lost")
@@ -416,6 +424,41 @@ func (r *GoRunner) handleSessionEnded(data json.RawMessage) {
 	}
 	r.logger.Printf("session_ended from relay: %s", payload.SessionID[:8])
 	r.sessions.Delete(payload.SessionID)
+}
+
+func (r *GoRunner) handleRestart(_ json.RawMessage) {
+	r.logger.Println("restart requested by relay — killing all sessions and exiting")
+	r.sessions.Range(func(key, value any) bool {
+		sess := value.(*session)
+		r.killSession(sess)
+		return true
+	})
+	if r.stop != nil {
+		r.stop()
+	}
+}
+
+func (r *GoRunner) handleShutdown(_ json.RawMessage) {
+	r.logger.Println("shutdown requested by relay — killing all sessions and exiting")
+	r.sessions.Range(func(key, value any) bool {
+		sess := value.(*session)
+		r.killSession(sess)
+		return true
+	})
+	if r.stop != nil {
+		r.stop()
+	}
+}
+
+func (r *GoRunner) handleListSessions(_ json.RawMessage) {
+	var ids []string
+	r.sessions.Range(func(key, value any) bool {
+		ids = append(ids, key.(string))
+		return true
+	})
+	r.logger.Printf("list_sessions: %d active", len(ids))
+	// The protocol doesn't define a response event for list_sessions,
+	// but log it for observability.
 }
 
 func (r *GoRunner) handlePing(_ json.RawMessage) {
