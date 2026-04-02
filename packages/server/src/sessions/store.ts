@@ -67,6 +67,7 @@ export interface PersistedRelaySessionSummary {
     isPinned: boolean;
     runnerId: string | null;
     runnerName: string | null;
+    sessionName: string | null;
 }
 
 export interface PaginatedPersistedSessions {
@@ -96,6 +97,7 @@ export async function ensureRelaySessionTables(): Promise<void> {
         .addColumn("isPinned", "integer", (col) => col.notNull().defaultTo(0))
         .addColumn("runnerId", "text")
         .addColumn("runnerName", "text")
+        .addColumn("sessionName", "text")
         .execute();
 
     // Migration: add isPinned column to existing tables
@@ -133,6 +135,19 @@ export async function ensureRelaySessionTables(): Promise<void> {
     } catch (error) {
         if (!isDuplicateColumnError(error, "runnerName")) {
             log.error("Failed to migrate relay_session.runnerName:", error);
+            throw error;
+        }
+    }
+
+    // Migration: add sessionName column to existing tables
+    try {
+        await getKysely().schema
+            .alterTable("relay_session")
+            .addColumn("sessionName", "text")
+            .execute();
+    } catch (error) {
+        if (!isDuplicateColumnError(error, "sessionName")) {
+            log.error("Failed to migrate relay_session.sessionName:", error);
             throw error;
         }
     }
@@ -317,6 +332,21 @@ export async function updateRelaySessionRunner(
 }
 
 /**
+ * Update the session name for a persisted relay session.
+ * Called when the agent sets a session name via set_session_name.
+ */
+export async function updateRelaySessionName(
+    sessionId: string,
+    sessionName: string,
+): Promise<void> {
+    await getKysely()
+        .updateTable("relay_session")
+        .set({ sessionName })
+        .where("id", "=", sessionId)
+        .execute();
+}
+
+/**
  * Returns the userId stored in SQLite for a given session, or null if the
  * session has no row.  Used as a Redis fallback when validating parent-session
  * links after a relay restart (Redis key gone but SQLite record still exists).
@@ -465,6 +495,7 @@ export async function listPersistedRelaySessionsForUser(
         "isPinned",
         "runnerId",
         "runnerName",
+        "sessionName",
     ] as const;
 
     type SessionRow = {
@@ -479,6 +510,7 @@ export async function listPersistedRelaySessionsForUser(
         isPinned: number;
         runnerId: string | null;
         runnerName: string | null;
+        sessionName: string | null;
     };
 
     // When using cursor-based pagination, always include all pinned sessions
@@ -542,6 +574,7 @@ export async function listPersistedRelaySessionsForUser(
         isPinned: row.isPinned === 1,
         runnerId: row.runnerId ?? null,
         runnerName: row.runnerName ?? null,
+        sessionName: row.sessionName ?? null,
     }));
 
     const lastRow = pageRows[pageRows.length - 1];
@@ -569,6 +602,7 @@ export async function listPinnedRelaySessionsForUser(
             "isPinned",
             "runnerId",
             "runnerName",
+            "sessionName",
         ])
         .where("userId", "=", userId)
         .where("isPinned", "=", 1)
@@ -587,6 +621,7 @@ export async function listPinnedRelaySessionsForUser(
         isPinned: true,
         runnerId: row.runnerId ?? null,
         runnerName: row.runnerName ?? null,
+        sessionName: row.sessionName ?? null,
     }));
 }
 

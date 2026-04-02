@@ -17,6 +17,7 @@ import { storeAndReplaceImagesInEvent, stripImagesFromPipelineEvent } from "../.
 import { updateSessionMetaState, broadcastToSessionMeta, getSessionMetaState } from "../../sio-registry/meta.js";
 import { isMetaRelayEvent, metaEventToPatch, type MetaRelayEvent, type SessionMetaState } from "@pizzapi/protocol";
 import { updateSessionFields } from "../../sio-state/index.js";
+import { updateRelaySessionName } from "../../../sessions/store.js";
 import {
     trackThinkingDeltas,
     augmentMessageThinkingDurations,
@@ -329,7 +330,10 @@ export function registerEventHandler(socket: RelaySocket): void {
                 // sessionName lives in the session hash (not metaState).
                 if (Object.prototype.hasOwnProperty.call(meta, "sessionName") &&
                     typeof meta.sessionName === "string" && meta.sessionName.trim()) {
-                    await updateSessionFields(sessionId, { sessionName: meta.sessionName.trim() });
+                    const trimmedName = meta.sessionName.trim();
+                    await updateSessionFields(sessionId, { sessionName: trimmedName });
+                    // Also persist to SQLite so historical session listings show names.
+                    void updateRelaySessionName(sessionId, trimmedName).catch(() => {});
                 }
             }
         } else if (isMetaRelayEvent(event as { type?: unknown }) &&

@@ -51,6 +51,7 @@ interface PinnedSession {
     isPinned: boolean;
     runnerId: string | null;
     runnerName: string | null;
+    sessionName?: string | null;
 }
 
 function isPinnedSession(value: unknown): value is PinnedSession {
@@ -450,50 +451,6 @@ export const SessionSidebar = React.memo(function SessionSidebar({
     const [expandedNodeIds, setExpandedNodeIds] = React.useState<Set<string>>(new Set());
     const pinPendingRef = React.useRef<Set<string>>(new Set());
 
-    // ── Historical (ended, persisted) sessions with cursor pagination ────
-    const [historicalSessions, setHistoricalSessions] = React.useState<PinnedSession[]>([]);
-    const [historicalNextCursor, setHistoricalNextCursor] = React.useState<string | null>(null);
-    const [historicalLoading, setHistoricalLoading] = React.useState(false);
-    const [historicalLoaded, setHistoricalLoaded] = React.useState(false);
-    const HISTORICAL_PAGE_SIZE = 20;
-
-    const fetchHistoricalSessions = React.useCallback(async (cursor?: string) => {
-        setHistoricalLoading(true);
-        try {
-            const params = new URLSearchParams({ limit: String(HISTORICAL_PAGE_SIZE) });
-            if (cursor) params.set("cursor", cursor);
-            const res = await fetch(`/api/sessions?${params.toString()}`, { credentials: "include" });
-            if (!res.ok) return;
-            const body = await res.json();
-            const persisted: PinnedSession[] = Array.isArray(body?.persistedSessions)
-                ? body.persistedSessions
-                : [];
-            if (cursor) {
-                // Append to existing
-                setHistoricalSessions((prev) => {
-                    const existingIds = new Set(prev.map((s) => s.sessionId));
-                    const newItems = persisted.filter((s) => !existingIds.has(s.sessionId));
-                    return [...prev, ...newItems];
-                });
-            } else {
-                setHistoricalSessions(persisted);
-            }
-            setHistoricalNextCursor(body?.nextCursor ?? null);
-            setHistoricalLoaded(true);
-        } catch {
-            // best-effort
-        } finally {
-            setHistoricalLoading(false);
-        }
-    }, []);
-
-    // Load initial page of historical sessions once
-    React.useEffect(() => {
-        if (!historicalLoaded) {
-            fetchHistoricalSessions();
-        }
-    }, [historicalLoaded, fetchHistoricalSessions]);
-
     // Fetch pinned sessions from the API
     const fetchPinnedSessions = React.useCallback(async () => {
         try {
@@ -849,13 +806,9 @@ export const SessionSidebar = React.memo(function SessionSidebar({
             runnerMap.get(key)!.sessions.push(s);
         }
 
-        // Step 2: sort sessions within each runner — awaiting input first, then pinned, then by most recently active/started.
+        // Step 2: sort sessions within each runner — pinned first, then by most recently active/started.
         for (const entry of runnerMap.values()) {
             entry.sessions.sort((a, b) => {
-                // Awaiting input floats to the very top
-                const aAwaiting = sessionsAwaitingInput?.has(a.sessionId) ? 1 : 0;
-                const bAwaiting = sessionsAwaitingInput?.has(b.sessionId) ? 1 : 0;
-                if (bAwaiting !== aAwaiting) return bAwaiting - aAwaiting;
                 const aPinned = pinnedSessionIds.has(a.sessionId) ? 1 : 0;
                 const bPinned = pinnedSessionIds.has(b.sessionId) ? 1 : 0;
                 if (bPinned !== aPinned) return bPinned - aPinned;
@@ -890,13 +843,9 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                 sessions: cwdSessions,
             }));
 
-            // Sort projects — groups containing an awaiting session float first,
-            // then pinned, then by most recently active session within the group.
+            // Sort projects — groups containing a pinned session float first,
+            // then by most recently active session within the group.
             projects.sort((a, b) => {
-                const hasAwaiting = (grp: ProjectGroup) =>
-                    grp.sessions.some((s) => sessionsAwaitingInput?.has(s.sessionId)) ? 1 : 0;
-                const awaitDiff = hasAwaiting(b) - hasAwaiting(a);
-                if (awaitDiff !== 0) return awaitDiff;
                 const hasPinned = (grp: ProjectGroup) =>
                     grp.sessions.some((s) => pinnedSessionIds.has(s.sessionId)) ? 1 : 0;
                 const pinDiff = hasPinned(b) - hasPinned(a);
@@ -919,7 +868,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
         });
 
         return result;
-    }, [liveSessions, pinnedSessionIds, sessionsAwaitingInput]);
+    }, [liveSessions, pinnedSessionIds]);
 
     // Find session name for the confirm dialog
     const confirmSession = confirmEndSessionId
@@ -1597,233 +1546,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                         ))
                     )}
 
-                    {/* ── Pinned (ended) sessions ──────────────────────────────── */}
-                    {(() => {
-                        const liveIds = new Set(liveSessions.map((s) => s.sessionId));
-                        const endedPinned = pinnedSessions.filter(
-                            (p) => p.isPinned && !liveIds.has(p.sessionId),
-                        );
-                        if (endedPinned.length === 0) return null;
-                        return (
-                            <div className="mt-3 border-t border-sidebar-border pt-2">
-                                <div className="flex items-center gap-1.5 px-1.5 py-1 min-w-0">
-                                    <Pin className="h-3 w-3 text-blue-400/60 flex-shrink-0" />
-                                    <span className="text-[0.65rem] font-medium text-sidebar-foreground/45 truncate flex-1">
-                                        Pinned
-                                    </span>
-                                </div>
-                                {endedPinned.map((p) => {
-                                    const isActiveSession = !showRunners && activeSessionId === p.sessionId;
-                                    const timeLabel = isToday(p.startedAt)
-                                        ? formatTime(p.lastActiveAt)
-                                        : formatRelativeDate(p.startedAt);
-                                    const isPinPending = pinPendingSessionIds.has(p.sessionId);
-                                    const swipeOffset = swipeOffsets.get(p.sessionId) ?? 0;
-                                    const isRevealed = revealedSessionId === p.sessionId;
-                                    const hasOffset = swipeOffset !== 0;
 
-                                    return (
-                                        <div
-                                            key={p.sessionId}
-                                            className="relative overflow-hidden rounded-md"
-                                        >
-                                            {/* "Unpin" action behind the card — uses REVEAL_WIDTH to match swipe snap distance */}
-                                            {(hasOffset || isRevealed) && <div
-                                                className="absolute inset-y-0 right-0 flex items-stretch rounded-r-md overflow-hidden"
-                                                style={{ width: REVEAL_WIDTH }}
-                                            >
-                                                <button
-                                                    className={cn(
-                                                        "flex flex-col items-center justify-center w-1/2 text-xs font-semibold gap-0.5 bg-blue-500 text-white transition-colors",
-                                                        isPinPending ? "opacity-60 cursor-not-allowed" : "active:bg-blue-600",
-                                                    )}
-                                                    onClick={(e) => {
-                                                        e.stopPropagation();
-                                                        if (isPinPending) return;
-                                                        togglePinSession(p.sessionId, true);
-                                                        setSwipeOffsets((prev) => {
-                                                            const next = new Map(prev);
-                                                            next.delete(p.sessionId);
-                                                            return next;
-                                                        });
-                                                        setRevealedSessionId(null);
-                                                    }}
-                                                    disabled={isPinPending}
-                                                    aria-label={`Unpin session ${p.sessionId.slice(0, 8)}`}
-                                                >
-                                                    <PinOff className="h-4 w-4" />
-                                                    <span>{isPinPending ? "Saving" : "Unpin"}</span>
-                                                </button>
-                                            </div>}
-
-                                            {/* Sliding session card */}
-                                            <button
-                                                type="button"
-                                                onClick={() => {
-                                                    if (suppressClickRef.current) { suppressClickRef.current = false; return; }
-                                                    if (isRevealed) {
-                                                        handleCloseRevealed();
-                                                        return;
-                                                    }
-                                                    if (revealedSessionId && revealedSessionId !== p.sessionId) {
-                                                        handleCloseRevealed();
-                                                    }
-                                                    onOpenSession(p.sessionId);
-                                                }}
-                                                onPointerDown={(e) => handleSessionPointerDown(e, p.sessionId)}
-                                                onPointerMove={handleSessionPointerMove}
-                                                onPointerUp={handleSessionPointerUp}
-                                                onPointerCancel={handleSessionPointerUp}
-                                                onContextMenu={(e) => e.preventDefault()}
-                                                title={`View pinned session ${p.sessionId}`}
-                                                className={cn(
-                                                    "flex items-center gap-2.5 w-full min-w-0 px-2.5 py-3 md:py-2.5 text-left",
-                                                    !hasOffset && "transition-transform duration-200 ease-out",
-                                                    isActiveSession
-                                                        ? "bg-sidebar-accent text-sidebar-accent-foreground"
-                                                        : "bg-sidebar text-sidebar-foreground/60 hover:bg-sidebar-accent/50",
-                                                )}
-                                                style={{
-                                                    transform: hasOffset ? `translateX(${swipeOffset}px)` : undefined,
-                                                    touchAction: "pan-y",
-                                                }}
-                                            >
-                                                <div className="relative flex-shrink-0 flex items-center justify-center w-7 h-7 rounded-md bg-sidebar-accent/30">
-                                                    <Pin className="size-4 text-blue-400/70" />
-                                                </div>
-                                                <div className="flex-1 min-w-0">
-                                                    <div className="flex items-baseline justify-between gap-1 min-w-0">
-                                                        <span className="truncate text-[0.8rem] font-medium leading-tight opacity-70">
-                                                            {`Session ${p.sessionId.slice(0, 8)}…`}
-                                                        </span>
-                                                        <span className="text-[0.65rem] text-sidebar-foreground/35 flex-shrink-0">
-                                                            {timeLabel}
-                                                        </span>
-                                                    </div>
-                                                    <div className="flex items-center gap-1 mt-0.5 min-w-0">
-                                                        <span className="text-[0.65rem] text-sidebar-foreground/30 truncate" title={p.cwd}>
-                                                            {formatPathTail(p.cwd, 2)}
-                                                        </span>
-                                                        {(p.runnerName || p.runnerId) && (
-                                                            <span className="text-[0.6rem] text-sidebar-foreground/25 truncate max-w-[6rem]" title={p.runnerName ?? `Runner ${p.runnerId}`}>
-                                                                · {p.runnerName || `Runner ${p.runnerId?.slice(0, 8)}…`}
-                                                            </span>
-                                                        )}
-                                                        <span className="text-[0.6rem] text-sidebar-foreground/25">· ended</span>
-                                                    </div>
-                                                </div>
-
-                                                {/* Desktop: inline unpin icon */}
-                                                <div
-                                                    className={cn(
-                                                        "hidden md:flex flex-shrink-0 p-1 rounded transition-colors",
-                                                        isPinPending
-                                                            ? "opacity-60 cursor-not-allowed"
-                                                            : "hover:bg-sidebar-accent/80 text-sidebar-foreground/40 hover:text-sidebar-foreground/70",
-                                                    )}
-                                                    role="button"
-                                                    tabIndex={0}
-                                                    onClick={(e) => {
-                                                        e.stopPropagation();
-                                                        if (!isPinPending) togglePinSession(p.sessionId, true);
-                                                    }}
-                                                    onKeyDown={(e) => {
-                                                        if (e.key === "Enter" || e.key === " ") {
-                                                            e.preventDefault();
-                                                            e.stopPropagation();
-                                                            if (!isPinPending) togglePinSession(p.sessionId, true);
-                                                        }
-                                                    }}
-                                                    title="Unpin session"
-                                                    aria-label={`Unpin session ${p.sessionId.slice(0, 8)}`}
-                                                >
-                                                    <PinOff className="h-3.5 w-3.5" />
-                                                </div>
-                                            </button>
-                                        </div>
-                                    );
-                                })}
-                            </div>
-                        );
-                    })()}
-
-                    {/* ── Historical (ended) sessions — paginated ──────────── */}
-                    {historicalLoaded && (() => {
-                        const liveIds = new Set(liveSessions.map((s) => s.sessionId));
-                        const endedHistorical = historicalSessions.filter(
-                            (h) => !liveIds.has(h.sessionId) && !pinnedSessionIds.has(h.sessionId),
-                        );
-                        if (endedHistorical.length === 0 && !historicalNextCursor) return null;
-                        return (
-                            <div className="mt-3 border-t border-sidebar-border pt-2">
-                                <div className="flex items-center gap-1.5 px-1.5 py-1 min-w-0">
-                                    <FolderOpen className="h-3 w-3 text-sidebar-foreground/35 flex-shrink-0" />
-                                    <span className="text-[0.65rem] font-medium text-sidebar-foreground/45 truncate flex-1">
-                                        History
-                                    </span>
-                                </div>
-                                {endedHistorical.map((h) => {
-                                    const isActiveSession = !showRunners && activeSessionId === h.sessionId;
-                                    const timeLabel = isToday(h.startedAt)
-                                        ? formatTime(h.lastActiveAt)
-                                        : formatRelativeDate(h.startedAt);
-
-                                    return (
-                                        <button
-                                            key={h.sessionId}
-                                            type="button"
-                                            onClick={() => onOpenSession(h.sessionId)}
-                                            title={`View session ${h.sessionId}`}
-                                            className={cn(
-                                                "flex items-center gap-2.5 w-full min-w-0 px-2.5 py-3 md:py-2.5 text-left rounded-md",
-                                                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
-                                                "transition-colors",
-                                                isActiveSession
-                                                    ? "bg-sidebar-accent text-sidebar-accent-foreground"
-                                                    : "bg-sidebar text-sidebar-foreground/60 hover:bg-sidebar-accent/50",
-                                            )}
-                                        >
-                                            <div className="relative flex-shrink-0 flex items-center justify-center w-7 h-7 rounded-md bg-sidebar-accent/30">
-                                                <FolderOpen className="size-4 text-sidebar-foreground/40" />
-                                            </div>
-                                            <div className="flex-1 min-w-0">
-                                                <div className="flex items-baseline justify-between gap-1 min-w-0">
-                                                    <span className="truncate text-[0.8rem] font-medium leading-tight opacity-70">
-                                                        {`Session ${h.sessionId.slice(0, 8)}…`}
-                                                    </span>
-                                                    <span className="text-[0.65rem] text-sidebar-foreground/35 flex-shrink-0">
-                                                        {timeLabel}
-                                                    </span>
-                                                </div>
-                                                <div className="flex items-center gap-1 mt-0.5 min-w-0">
-                                                    <span className="text-[0.65rem] text-sidebar-foreground/30 truncate" title={h.cwd}>
-                                                        {formatPathTail(h.cwd, 2)}
-                                                    </span>
-                                                    {(h.runnerName || h.runnerId) && (
-                                                        <span className="text-[0.6rem] text-sidebar-foreground/25 truncate max-w-[6rem]" title={h.runnerName ?? `Runner ${h.runnerId}`}>
-                                                            · {h.runnerName || `Runner ${h.runnerId?.slice(0, 8)}…`}
-                                                        </span>
-                                                    )}
-                                                    <span className="text-[0.6rem] text-sidebar-foreground/25">· ended</span>
-                                                </div>
-                                            </div>
-                                        </button>
-                                    );
-                                })}
-                                {/* Load more button */}
-                                {historicalNextCursor && (
-                                    <button
-                                        type="button"
-                                        onClick={() => fetchHistoricalSessions(historicalNextCursor)}
-                                        disabled={historicalLoading}
-                                        className="w-full px-2.5 py-2 mt-1 text-[0.7rem] font-medium text-sidebar-foreground/50 hover:text-sidebar-foreground/70 hover:bg-sidebar-accent/40 rounded-md transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-                                    >
-                                        {historicalLoading ? "Loading…" : "Load more sessions"}
-                                    </button>
-                                )}
-                            </div>
-                        );
-                    })()}
                 </div>}
             </div>
         </aside>

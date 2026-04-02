@@ -12,6 +12,7 @@ import { ApiKeyManager } from "@/components/ApiKeyManager";
 import { RunnerTokenManager } from "@/components/RunnerTokenManager";
 import { RunnerManager } from "@/components/RunnerManager";
 import { NewSessionWizardDialog } from "@/components/NewSessionWizardDialog";
+import { HistoryCommandPalette } from "@/components/HistoryCommandPalette";
 import { authClient, useSession, type BetterAuthSession } from "@/lib/auth-client";
 import { useRunnersFeed } from "@/lib/useRunnersFeed";
 import { io, type Socket } from "socket.io-client";
@@ -385,6 +386,7 @@ export function App() {
   const [showApiKeys, setShowApiKeys] = React.useState(false);
   const [apiKeyVersion, setApiKeyVersion] = React.useState(0);
   const [showRunners, setShowRunners] = React.useState(false);
+  const [historyOpen, setHistoryOpen] = React.useState(false);
   const [selectedRunnerId, setSelectedRunnerId] = React.useState<string | null>(null);
   const [runnersForSidebar, setRunnersForSidebar] = React.useState<Array<{
     runnerId: string;
@@ -3502,6 +3504,13 @@ export function App() {
         return;
       }
 
+      // Cmd/Ctrl + Shift + H — Toggle session history palette
+      if (meta && e.shiftKey && !e.altKey && e.key.toLowerCase() === "h") {
+        e.preventDefault();
+        setHistoryOpen((v) => !v);
+        return;
+      }
+
       // Cmd/Ctrl + . — Abort the active agent
       if (meta && !e.shiftKey && !e.altKey && e.key === ".") {
         e.preventDefault();
@@ -4266,6 +4275,7 @@ export function App() {
         onShowShortcuts={handleShowShortcuts}
         onChangePassword={handleChangePassword}
         onRefreshUsage={refreshUsage}
+        onShowHistory={() => setHistoryOpen(true)}
       />
 
       {/* ── Mobile header (memoized — skips re-render on same-runner session switch) ── */}
@@ -4294,6 +4304,7 @@ export function App() {
         onNewSession={handleNewSession}
         onSessionSwitcherOpenChange={handleSessionSwitcherOpenChange}
         needsResponseCount={sessionsAwaitingInput.size}
+        onShowHistory={() => setHistoryOpen(true)}
       />
       {/* Spacer that reserves the exact height of the fixed mobile header */}
       <div className="md:hidden flex-shrink-0" style={{ height: "calc(3.25rem + env(safe-area-inset-top))" }} aria-hidden="true" />
@@ -4807,6 +4818,25 @@ export function App() {
             </div>
           )}
         </div>
+        <HistoryCommandPalette
+          open={historyOpen}
+          onOpenChange={setHistoryOpen}
+          sessions={resumeSessions}
+          loading={resumeSessionsLoading}
+          onRefresh={requestResumeSessions}
+          onOpenSession={(id) => { handleOpenSession(id); setHistoryOpen(false); }}
+          onResumeSession={(sessionId) => {
+            const session = resumeSessions.find((s) => s.id === sessionId);
+            if (!session) return;
+            sendRemoteExec({
+              type: "exec",
+              id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+              command: "resume_session",
+              sessionPath: session.path,
+            });
+          }}
+        />
+
         <NewSessionWizardDialog
           open={newSessionOpen}
           onOpenChange={(open) => { if (!spawningSession) setNewSessionOpen(open); }}
