@@ -257,14 +257,15 @@ export class GitService implements ServiceHandler {
         this.emit(type, { ok: false, message }, requestId, sessionId);
     }
 
-    private beginRepoMutation(
+    private async beginRepoMutation(
         cwd: string,
         type: string,
         mutationName: string,
         requestId?: string,
         sessionId?: string,
-    ): string | null {
-        const activeMutation = this._activeRepoMutations.get(cwd);
+    ): Promise<{ key: string; token: string } | null> {
+        const key = await this.resolveRepoRoot(cwd);
+        const activeMutation = this._activeRepoMutations.get(key);
         if (activeMutation) {
             this.emit(type, {
                 ok: false,
@@ -275,14 +276,14 @@ export class GitService implements ServiceHandler {
         }
 
         const token = `${mutationName}:${requestId ?? `${Date.now()}`}`;
-        this._activeRepoMutations.set(cwd, token);
-        return token;
+        this._activeRepoMutations.set(key, token);
+        return { key, token };
     }
 
-    private endRepoMutation(cwd: string, token: string | null): void {
-        if (!token) return;
-        if (this._activeRepoMutations.get(cwd) === token) {
-            this._activeRepoMutations.delete(cwd);
+    private endRepoMutation(mutation: { key: string; token: string } | null): void {
+        if (!mutation) return;
+        if (this._activeRepoMutations.get(mutation.key) === mutation.token) {
+            this._activeRepoMutations.delete(mutation.key);
         }
     }
 
@@ -882,8 +883,8 @@ export class GitService implements ServiceHandler {
         // clicked (local vs remote). This avoids name heuristics that misclassify
         // local branches like "feature/foo" when a remote named "feature" exists.
         const isRemote = payload.isRemote === true;
-        const mutationToken = this.beginRepoMutation(cwd, "git_checkout_result", "checkout", requestId, sessionId);
-        if (!mutationToken) return;
+        const mutation = await this.beginRepoMutation(cwd, "git_checkout_result", "checkout", requestId, sessionId);
+        if (!mutation) return;
 
         try {
             let targetBranch = branch;
@@ -919,7 +920,7 @@ export class GitService implements ServiceHandler {
         } catch (err) {
             this.emitError("git_checkout_result", err instanceof Error ? err.message : String(err), requestId, sessionId);
         } finally {
-            this.endRepoMutation(cwd, mutationToken);
+            this.endRepoMutation(mutation);
         }
     }
 
@@ -951,8 +952,8 @@ export class GitService implements ServiceHandler {
             }
         }
 
-        const mutationToken = this.beginRepoMutation(cwd, "git_stage_result", "stage", requestId, sessionId);
-        if (!mutationToken) return;
+        const mutation = await this.beginRepoMutation(cwd, "git_stage_result", "stage", requestId, sessionId);
+        if (!mutation) return;
 
         try {
             // Resolve repo root — paths from git status are repo-root-relative,
@@ -968,7 +969,7 @@ export class GitService implements ServiceHandler {
         } catch (err) {
             this.emitError("git_stage_result", err instanceof Error ? err.message : String(err), requestId, sessionId);
         } finally {
-            this.endRepoMutation(cwd, mutationToken);
+            this.endRepoMutation(mutation);
         }
     }
 
@@ -999,8 +1000,8 @@ export class GitService implements ServiceHandler {
             }
         }
 
-        const mutationToken = this.beginRepoMutation(cwd, "git_unstage_result", "unstage", requestId, sessionId);
-        if (!mutationToken) return;
+        const mutation = await this.beginRepoMutation(cwd, "git_unstage_result", "unstage", requestId, sessionId);
+        if (!mutation) return;
 
         try {
             // Resolve repo root — run from there so repo-root-relative paths work.
@@ -1019,7 +1020,7 @@ export class GitService implements ServiceHandler {
         } catch (err) {
             this.emitError("git_unstage_result", err instanceof Error ? err.message : String(err), requestId, sessionId);
         } finally {
-            this.endRepoMutation(cwd, mutationToken);
+            this.endRepoMutation(mutation);
         }
     }
 
@@ -1039,8 +1040,8 @@ export class GitService implements ServiceHandler {
             return;
         }
 
-        const mutationToken = this.beginRepoMutation(cwd, "git_commit_result", "commit", requestId, sessionId);
-        if (!mutationToken) return;
+        const mutation = await this.beginRepoMutation(cwd, "git_commit_result", "commit", requestId, sessionId);
+        if (!mutation) return;
 
         try {
             const { stdout } = await this._execGit(["commit", "-m", message],
@@ -1058,7 +1059,7 @@ export class GitService implements ServiceHandler {
         } catch (err) {
             this.emitError("git_commit_result", err instanceof Error ? err.message : String(err), requestId, sessionId);
         } finally {
-            this.endRepoMutation(cwd, mutationToken);
+            this.endRepoMutation(mutation);
         }
     }
 
@@ -1286,8 +1287,8 @@ export class GitService implements ServiceHandler {
         const cwd = this.validateCwd(payload.cwd, "git_pull_result", requestId, sessionId);
         if (!cwd) return;
         const rebase = payload.rebase !== false;
-        const mutationToken = this.beginRepoMutation(cwd, "git_pull_result", "pull", requestId, sessionId);
-        if (!mutationToken) return;
+        const mutation = await this.beginRepoMutation(cwd, "git_pull_result", "pull", requestId, sessionId);
+        if (!mutation) return;
 
         try {
             const upstream = await this.resolveUpstream(cwd);
@@ -1342,7 +1343,7 @@ export class GitService implements ServiceHandler {
                 output: message,
             }, requestId, sessionId);
         } finally {
-            this.endRepoMutation(cwd, mutationToken);
+            this.endRepoMutation(mutation);
         }
     }
 
@@ -1365,8 +1366,8 @@ export class GitService implements ServiceHandler {
             return;
         }
 
-        const mutationToken = this.beginRepoMutation(cwd, "git_set_upstream_result", "set-upstream", requestId, sessionId);
-        if (!mutationToken) return;
+        const mutation = await this.beginRepoMutation(cwd, "git_set_upstream_result", "set-upstream", requestId, sessionId);
+        if (!mutation) return;
 
         try {
             const { stdout } = await this._execGit(["rev-parse", "--abbrev-ref", "HEAD"], { cwd, timeout: 5000 });
@@ -1391,7 +1392,7 @@ export class GitService implements ServiceHandler {
         } catch (err) {
             this.emitError("git_set_upstream_result", err instanceof Error ? err.message : String(err), requestId, sessionId);
         } finally {
-            this.endRepoMutation(cwd, mutationToken);
+            this.endRepoMutation(mutation);
         }
     }
 
@@ -1411,8 +1412,8 @@ export class GitService implements ServiceHandler {
             return;
         }
 
-        const mutationToken = this.beginRepoMutation(cwd, "git_merge_result", "merge", requestId, sessionId);
-        if (!mutationToken) return;
+        const mutation = await this.beginRepoMutation(cwd, "git_merge_result", "merge", requestId, sessionId);
+        if (!mutation) return;
 
         try {
             // Prevent merging current branch into itself
@@ -1442,7 +1443,7 @@ export class GitService implements ServiceHandler {
                 output: message,
             }, requestId, sessionId);
         } finally {
-            this.endRepoMutation(cwd, mutationToken);
+            this.endRepoMutation(mutation);
         }
     }
 
@@ -1457,8 +1458,8 @@ export class GitService implements ServiceHandler {
         if (!cwd) return;
 
         const setUpstream = payload.setUpstream === true;
-        const mutationToken = this.beginRepoMutation(cwd, "git_push_result", "push", requestId, sessionId);
-        if (!mutationToken) return;
+        const mutation = await this.beginRepoMutation(cwd, "git_push_result", "push", requestId, sessionId);
+        if (!mutation) return;
 
         try {
             // Determine current branch for --set-upstream
@@ -1511,7 +1512,7 @@ export class GitService implements ServiceHandler {
                 noUpstream,
             }, requestId, sessionId);
         } finally {
-            this.endRepoMutation(cwd, mutationToken);
+            this.endRepoMutation(mutation);
         }
     }
 }

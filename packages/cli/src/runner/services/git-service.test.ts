@@ -905,7 +905,7 @@ describe("GitService pull/merge", () => {
         expect(result.payload).toMatchObject({ ok: false, reason: "conflict" });
     });
 
-    test("rejects overlapping repo mutations with a busy error", async () => {
+    test("rejects overlapping repo mutations with a busy error even across different cwd values in the same repo", async () => {
         let checkoutStarted = false;
         let releaseCheckout: () => void = () => {
             throw new Error("Expected checkout release function");
@@ -915,7 +915,7 @@ describe("GitService pull/merge", () => {
         });
 
         const service = new GitService({
-            execGit: async (args) => {
+            execGit: async (args, options) => {
                 const cmd = args[0];
                 if (cmd === "checkout") {
                     checkoutStarted = true;
@@ -923,7 +923,8 @@ describe("GitService pull/merge", () => {
                     return { stdout: "", stderr: "" };
                 }
                 if (cmd === "rev-parse" && args[1] === "--abbrev-ref") return { stdout: "main\n", stderr: "" };
-                if (cmd === "rev-parse") return { stdout: "/tmp/pizzapi-test\n", stderr: "" };
+                if (cmd === "rev-parse" && args[1] === "--show-toplevel") return { stdout: "/tmp/pizzapi-test\n", stderr: "" };
+                if (cmd === "rev-parse") return { stdout: `${options.cwd}\n`, stderr: "" };
                 if (cmd === "status") return { stdout: "", stderr: "" };
                 if (cmd === "diff") return { stdout: "", stderr: "" };
                 if (cmd === "rev-list") return { stdout: "0 0\n", stderr: "" };
@@ -942,7 +943,7 @@ describe("GitService pull/merge", () => {
             serviceId: "git",
             type: "git_checkout",
             requestId: "checkout-busy-1",
-            payload: { cwd: "/tmp/pizzapi-test", branch: "main", isRemote: false },
+            payload: { cwd: "/tmp/pizzapi-test/packages/ui", branch: "main", isRemote: false },
         });
 
         await waitForCondition(() => checkoutStarted);
