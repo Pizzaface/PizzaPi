@@ -219,9 +219,14 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
         // Prefer "followUp" delivery if any trigger requested it; otherwise "steer".
         const deliverAs = batch.some((b) => b.deliverAs === "followUp") ? "followUp" as const : "steer" as const;
         const rendered = renderTriggerBatch(batch.map((b) => b.trigger));
-        void waitForWorkerStartupComplete().then(() => {
-            handlers.sendUserMessage(rendered, { deliverAs });
-        });
+        void (async () => {
+            try {
+                await waitForWorkerStartupComplete();
+                handlers.sendUserMessage(rendered, { deliverAs });
+            } catch (err) {
+                log.error(`pizzapi: failed to deliver trigger batch: ${err instanceof Error ? err.message : String(err)}`);
+            }
+        })();
     };
 
     // ── Backoff / reconnection logging (Manager-level events) ─────────────

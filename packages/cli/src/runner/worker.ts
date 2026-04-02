@@ -343,6 +343,7 @@ async function main(): Promise<void> {
     // work (notably MCP initialization) has completed.
     armWorkerStartupGate();
     bootTimer.start("[boot] bind-extensions");
+    try {
     await session.bindExtensions({
         commandContextActions: {
             waitForIdle: () => session.agent.waitForIdle(),
@@ -384,7 +385,12 @@ async function main(): Promise<void> {
             forwardCliError(err.error, err.extensionPath);
         },
     });
-    markWorkerStartupComplete();
+    } finally {
+        // Always release the gate — even if bindExtensions() throws — so that
+        // any callers already waiting on waitForWorkerStartupComplete() are not
+        // stranded forever. The worker will crash/exit on throw anyway.
+        markWorkerStartupComplete();
+    }
     bootTimer.end("[boot] bind-extensions");
 
     bootTimer.end("[boot] total");

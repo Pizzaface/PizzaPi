@@ -9,8 +9,16 @@ let readyPromise: Promise<void> = Promise.resolve();
  * While armed, inbound relay-delivered turns (session triggers, remote input)
  * should wait until markWorkerStartupComplete() is called. Sessions that never
  * arm the gate (normal CLI sessions) remain ungated.
+ *
+ * Must only be called once per worker process — calling twice before the gate
+ * is released would orphan any callers already awaiting the old promise.
  */
 export function armWorkerStartupGate(): void {
+    if (armed && !ready) {
+        throw new Error(
+            "Worker startup gate already armed — armWorkerStartupGate() must not be called twice before markWorkerStartupComplete()",
+        );
+    }
     armed = true;
     ready = false;
     readyPromise = new Promise<void>((resolve) => {
