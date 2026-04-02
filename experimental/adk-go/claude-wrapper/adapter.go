@@ -14,6 +14,7 @@ type Adapter struct {
 	currentMessageID  string
 	model             AdapterModel
 	cwd               string
+	initialized       bool             // true after first system event
 	contentBlocks     []map[string]any
 	messages          []map[string]any // accumulated conversation messages
 	pendingUserPrompt string           // user prompt to add when system event arrives
@@ -45,22 +46,11 @@ func NewAdapter() *Adapter {
 // message list. For the initial prompt, this is called before Start and
 // the message is appended when the system event arrives. For follow-up
 // messages, the message is appended immediately.
+// SetUserPrompt records a user prompt. It will be added to the message
+// list when the next system event arrives (Claude emits a system event
+// at the start of every turn, including follow-ups).
 func (a *Adapter) SetUserPrompt(prompt string) {
-	if a.cwd == "" {
-		// System event hasn't arrived yet — defer
-		a.pendingUserPrompt = prompt
-	} else {
-		// Session is already running — append immediately
-		a.seq++
-		a.messages = append(a.messages, map[string]any{
-			"role": "user",
-			"content": []any{
-				map[string]any{"type": "text", "text": prompt},
-			},
-			"messageId": fmt.Sprintf("user_%02d", a.seq),
-			"timestamp": nowMillis(),
-		})
-	}
+	a.pendingUserPrompt = prompt
 }
 
 func (a *Adapter) HandleEvent(ev ClaudeEvent) []RelayEvent {
@@ -68,20 +58,22 @@ func (a *Adapter) HandleEvent(ev ClaudeEvent) []RelayEvent {
 	case *SystemEvent:
 		a.model = AdapterModel{Provider: "anthropic", ID: e.Model}
 		a.cwd = e.Cwd
+		a.initialized = true
 		// If there's a pending user prompt, add it to the message list now
 		if a.pendingUserPrompt != "" {
+			a.seq++
 			a.messages = append(a.messages, map[string]any{
 				"role": "user",
 				"content": []any{
 					map[string]any{"type": "text", "text": a.pendingUserPrompt},
 				},
-				"messageId": fmt.Sprintf("user_%02d", a.seq+1),
+				"messageId": fmt.Sprintf("user_%02d", a.seq),
 				"timestamp": nowMillis(),
 			})
 			a.pendingUserPrompt = ""
 		}
 		return []RelayEvent{
-			// Heartbeat to signal the session is alive
+			// Heartbeat to signal the session is active
 			{
 				"type":         "heartbeat",
 				"active":       true,
@@ -91,14 +83,13 @@ func (a *Adapter) HandleEvent(ev ClaudeEvent) []RelayEvent {
 				"sessionName":  nil,
 				"cwd":          e.Cwd,
 			},
-			// session_active snapshot so the UI unblocks message rendering.
-			// Without this, the UI waits for session_active/agent_end before
-			// displaying any message_update events.
-			// The relay event pipeline expects { type: "session_active", state: { ... } }.
+			// session_active with accumulated messages. On first init this is
+			// empty (unblocks the UI's awaitingSnapshot guard). On follow-up
+			// turns this preserves the conversation history.
 			{
 				"type": "session_active",
 				"state": map[string]any{
-					"messages": []any{},
+					"messages": cloneMessages(a.messages),
 					"model":    a.modelMap(),
 					"cwd":      e.Cwd,
 				},
