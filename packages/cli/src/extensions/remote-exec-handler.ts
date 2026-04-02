@@ -55,6 +55,7 @@ function toResumeSessionSummary(session: SessionInfo) {
     return {
         id: session.id,
         path: session.path,
+        cwd: session.cwd || null,
         name: session.name ?? null,
         modified: session.modified.toISOString(),
         firstMessage: session.firstMessage,

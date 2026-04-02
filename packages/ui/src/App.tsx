@@ -1898,6 +1898,7 @@ export function App() {
           normalized.push({
             id: entry.id,
             path: entry.path,
+            cwd: typeof entry.cwd === "string" ? entry.cwd : null,
             name: typeof entry.name === "string" ? entry.name : null,
             modified: entry.modified,
             firstMessage: typeof entry.firstMessage === "string" ? entry.firstMessage : undefined,
@@ -4851,15 +4852,49 @@ export function App() {
           sessions={resumeSessions}
           loading={resumeSessionsLoading}
           onRefresh={requestResumeSessions}
-          onResumeSession={(sessionId) => {
+          onResumeSession={async (sessionId) => {
             const session = resumeSessions.find((s) => s.id === sessionId);
             if (!session) return;
-            sendRemoteExec({
-              type: "exec",
-              id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
-              command: "resume_session",
-              sessionPath: session.path,
-            });
+            const runnerId = activeSessionInfo?.runnerId;
+            if (!runnerId) {
+              setViewerStatus("No active runner");
+              return;
+            }
+            setHistoryOpen(false);
+            setViewerStatus("Resuming session…");
+            try {
+              const payload: any = {
+                runnerId,
+                resumePath: session.path,
+                ...(session.cwd ? { cwd: session.cwd } : {}),
+              };
+              const res = await fetch("/api/runners/spawn", {
+                method: "POST",
+                credentials: "include",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify(payload),
+              });
+              const body = await res.json().catch(() => null) as { error?: string; sessionId?: string } | null;
+              if (!res.ok) {
+                setViewerStatus(body?.error ?? "Failed to resume session");
+                return;
+              }
+              const newSessionId = typeof body?.sessionId === "string" ? body.sessionId : null;
+              if (!newSessionId) {
+                setViewerStatus("Resume failed: missing sessionId");
+                return;
+              }
+              const live = await waitForSessionToGoLive(newSessionId, 30_000);
+              if (!live) {
+                setViewerStatus("Session is starting…");
+                return;
+              }
+              handleOpenSession(newSessionId);
+              setViewerStatus("Connecting…");
+            } catch (err) {
+              setViewerStatus("Failed to resume session");
+              console.error("Resume session error:", err);
+            }
           }}
           nextCursor={resumeSessionsNextCursor}
           onLoadMore={() => { if (resumeSessionsNextCursor) requestResumeSessions(resumeSessionsNextCursor); }}

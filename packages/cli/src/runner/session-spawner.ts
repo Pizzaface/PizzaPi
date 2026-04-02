@@ -65,6 +65,7 @@ export function spawnSession(
         hiddenModels?: string[];
         agent?: { name: string; systemPrompt?: string; tools?: string; disallowedTools?: string };
         parentSessionId?: string;
+        resumePath?: string;
     },
 ): void {
     logInfo(`spawning headless worker for session ${sessionId}…`);
@@ -156,6 +157,7 @@ export function spawnSession(
         ...(options?.agent?.systemPrompt ? { PIZZAPI_WORKER_AGENT_SYSTEM_PROMPT: options.agent.systemPrompt } : {}),
         ...(options?.agent?.tools ? { PIZZAPI_WORKER_AGENT_TOOLS: options.agent.tools } : {}),
         ...(options?.agent?.disallowedTools ? { PIZZAPI_WORKER_AGENT_DISALLOWED_TOOLS: options.agent.disallowedTools } : {}),
+        ...(options?.resumePath ? { PIZZAPI_WORKER_RESUME_PATH: options.resumePath } : {}),
     };
 
     const child = spawn(process.execPath, workerArgs, {

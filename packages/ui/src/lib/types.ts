@@ -36,6 +36,7 @@ export interface ConfiguredModelInfo {
 export interface ResumeSessionOption {
   id: string;
   path: string;
+  cwd: string | null;
   name: string | null;
   modified: string;
   firstMessage?: string;

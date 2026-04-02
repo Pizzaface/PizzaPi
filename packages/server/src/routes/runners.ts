@@ -61,6 +61,7 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
         const requestedRunnerId = typeof body.runnerId === "string" ? body.runnerId : undefined;
         const requestedCwd = typeof body.cwd === "string" ? body.cwd : undefined;
         const requestedPrompt = typeof body.prompt === "string" ? body.prompt : undefined;
+        const requestedResumePath = typeof body.resumePath === "string" ? body.resumePath : undefined;
 
         // Normalize requested model fields. Whitespace is trimmed to match the
         // worker-side normalization in initial-prompt.ts (env vars are .trim()'d
@@ -167,6 +168,7 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
                 ...(hiddenModels.length > 0 ? { hiddenModels } : {}),
                 ...(requestedAgent ? { agent: requestedAgent } : {}),
                 ...(validatedParentSessionId ? { parentSessionId: validatedParentSessionId } : {}),
+                ...(requestedResumePath ? { resumePath: requestedResumePath } : {}),
             });
         } catch {
             return Response.json({ error: "Failed to send spawn request to runner" }, { status: 502 });
