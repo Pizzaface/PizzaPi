@@ -346,3 +346,183 @@ to detect overflow and implement its own compaction via `--resume` with a
 compacted conversation.
 
 **Action:** Test with conversations approaching context limits.
+
+---
+
+## Go Event Type Catalog
+
+These are design-level type sketches — illustrative Go structs defining the
+types the Phase 0 prototype will implement.  They are intentionally narrow,
+covering only fields PizzaPi needs to relay and render sessions.
+
+The Claude CLI `--output-format stream-json` emits NDJSON (newline-delimited
+JSON).  Each line is a JSON object with a `type` discriminator field.
+
+### First-Pass Decode
+
+```go
+// RawEvent is the first-pass decode of any NDJSON line.
+// Two-phase parsing: decode "type" to route, then decode into the specific struct.
+type RawEvent struct {
+    Type string          `json:"type"`
+    Raw  json.RawMessage `json:"-"` // preserved for unknown event fallback
+}
+```
+
+### Session Events
+
+```go
+// SystemEvent — session initialization metadata.
+// Emitted once at the start of a session.
+type SystemEvent struct {
+    Type      string   `json:"type"` // "system"
+    SessionID string   `json:"session_id"`
+    Tools     []string `json:"tools"`
+    Cwd       string   `json:"cwd"`
+    Model     string   `json:"model"`
+}
+
+// AssistantMessage — complete assembled assistant turn.
+// Emitted after all streaming deltas for a turn have been received.
+type AssistantMessage struct {
+    Type    string          `json:"type"` // "assistant"
+    Message json.RawMessage `json:"message"` // full Anthropic message object
+}
+
+// ResultEvent — final session summary, emitted when the session ends.
+type ResultEvent struct {
+    Type      string  `json:"type"` // "result"
+    SessionID string  `json:"session_id"`
+    Cost      float64 `json:"cost_usd"`
+    Duration  float64 `json:"duration_secs"`
+    Usage     struct {
+        InputTokens  int `json:"input_tokens"`
+        OutputTokens int `json:"output_tokens"`
+    } `json:"usage"`
+}
+```
+
+### Anthropic Streaming Events
+
+These are wrapped inside `StreamEvent` — the outer NDJSON line has
+`"type": "stream_event"` and an inner `"event"` object with Anthropic's
+streaming API event.
+
+```go
+// StreamEvent wraps Anthropic streaming API events.
+type StreamEvent struct {
+    Type  string          `json:"type"` // "stream_event"
+    Event json.RawMessage `json:"event"`
+}
+
+// --- Anthropic streaming subtypes (inner event shapes) ---
+
+type MessageStart struct {
+    Type    string `json:"type"` // "message_start"
+    Message struct {
+        ID    string `json:"id"`
+        Role  string `json:"role"`
+        Model string `json:"model"`
+        Usage struct {
+            InputTokens  int `json:"input_tokens"`
+            OutputTokens int `json:"output_tokens"`
+        } `json:"usage"`
+    } `json:"message"`
+}
+
+type ContentBlockStart struct {
+    Type         string `json:"type"` // "content_block_start"
+    Index        int    `json:"index"`
+    ContentBlock struct {
+        Type string `json:"type"` // "text" or "tool_use"
+        Text string `json:"text,omitempty"`
+        ID   string `json:"id,omitempty"`
+        Name string `json:"name,omitempty"`
+    } `json:"content_block"`
+}
+
+type ContentBlockDelta struct {
+    Type  string `json:"type"` // "content_block_delta"
+    Index int    `json:"index"`
+    Delta struct {
+        Type        string `json:"type"` // "text_delta" or "input_json_delta"
+        Text        string `json:"text,omitempty"`
+        PartialJSON string `json:"partial_json,omitempty"`
+    } `json:"delta"`
+}
+
+type ContentBlockStop struct {
+    Type  string `json:"type"` // "content_block_stop"
+    Index int    `json:"index"`
+}
+
+type MessageDelta struct {
+    Type  string `json:"type"` // "message_delta"
+    Delta struct {
+        StopReason string `json:"stop_reason"`
+    } `json:"delta"`
+    Usage struct {
+        OutputTokens int `json:"output_tokens"`
+    } `json:"usage"`
+}
+```
+
+### Tool Events
+
+```go
+// ToolUseEvent — emitted when the assistant invokes a tool.
+// Note: In the streaming protocol, tool calls also appear as
+// ContentBlockStart (type=tool_use) + ContentBlockDelta (input_json_delta).
+// This top-level event may be a post-hoc summary.
+type ToolUseEvent struct {
+    Type  string          `json:"type"` // "tool_use"
+    ID    string          `json:"id"`
+    Name  string          `json:"name"`
+    Input json.RawMessage `json:"input"`
+}
+
+// ToolResultEvent — emitted after a tool completes execution.
+type ToolResultEvent struct {
+    Type      string          `json:"type"` // "tool_result"
+    ToolUseID string          `json:"tool_use_id"`
+    Content   json.RawMessage `json:"content"`
+    IsError   bool            `json:"is_error,omitempty"`
+}
+```
+
+### Fallback / Error Types
+
+```go
+// UnknownEvent — fallback for unrecognized event types.
+// The parser MUST forward these rather than silently dropping them.
+type UnknownEvent struct {
+    Type string          `json:"type"`
+    Raw  json.RawMessage `json:"-"`
+}
+
+// ParseError — structured error for malformed NDJSON lines.
+// Malformed lines MUST NOT crash the parser or close the event channel.
+type ParseError struct {
+    Line    string `json:"line"`
+    Offset  int    `json:"offset"`
+    Message string `json:"message"`
+}
+```
+
+---
+
+## Validation Questions
+
+These are questions the Phase 0 prototype must answer empirically.  Each maps
+to a concrete test the prototype should run against a live Claude CLI.
+
+1. Does `claude --output-format stream-json` emit stable event discriminators across versions?
+2. Can we distinguish partial vs final assistant output reliably?
+3. Can tool calls be intercepted/customized, or only observed?
+4. Does `--resume <session-id>` preserve enough session identity for PizzaPi?
+5. What appears on stdout vs stderr during failures (auth errors, network errors, context overflow)?
+6. Does the `system` event always include the full tools list?
+7. Are `assistant` and `result` events always emitted, or only under certain flags?
+8. Does `--include-partial-messages` affect the event types or just add more deltas?
+9. Can `--input-format stream-json` on stdin send follow-up prompts mid-session?
+10. What is the exact process exit code on success vs failure vs context overflow?
