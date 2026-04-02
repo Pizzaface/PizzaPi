@@ -41,10 +41,26 @@ func NewAdapter() *Adapter {
 	}
 }
 
-// SetUserPrompt records the user's initial prompt so it appears in the
-// accumulated message list when the system event arrives.
+// SetUserPrompt records a user prompt so it appears in the accumulated
+// message list. For the initial prompt, this is called before Start and
+// the message is appended when the system event arrives. For follow-up
+// messages, the message is appended immediately.
 func (a *Adapter) SetUserPrompt(prompt string) {
-	a.pendingUserPrompt = prompt
+	if a.cwd == "" {
+		// System event hasn't arrived yet — defer
+		a.pendingUserPrompt = prompt
+	} else {
+		// Session is already running — append immediately
+		a.seq++
+		a.messages = append(a.messages, map[string]any{
+			"role": "user",
+			"content": []any{
+				map[string]any{"type": "text", "text": prompt},
+			},
+			"messageId": fmt.Sprintf("user_%02d", a.seq),
+			"timestamp": nowMillis(),
+		})
+	}
 }
 
 func (a *Adapter) HandleEvent(ev ClaudeEvent) []RelayEvent {
@@ -323,6 +339,11 @@ func (a *Adapter) messageUpdate(includeTimestamp bool) RelayEvent {
 
 func (a *Adapter) modelMap() map[string]any {
 	return map[string]any{"provider": a.model.Provider, "id": a.model.ID}
+}
+
+// ModelMap returns the current model as a map (exported for callers).
+func (a *Adapter) ModelMap() map[string]any {
+	return a.modelMap()
 }
 
 func cloneMessages(msgs []map[string]any) []any {
