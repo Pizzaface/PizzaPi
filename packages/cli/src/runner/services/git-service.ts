@@ -69,6 +69,25 @@ type RepoWatchState = {
     needsRefresh: boolean;
 };
 
+type GitUpstreamFailureReason = "detachedHead" | "missingUpstream" | "ambiguousUpstream";
+
+type GitUpstreamResolution =
+    | {
+        ok: true;
+        localBranch: string;
+        remote: string;
+        mergeBranch: string;
+        trackingRef: string;
+    }
+    | {
+        ok: false;
+        reason: GitUpstreamFailureReason;
+        message: string;
+        localBranch?: string;
+        remote?: string;
+        mergeBranches?: string[];
+    };
+
 // ── Validation helpers ──────────────────────────────────────────────────────
 
 /** Validate that a branch name doesn't contain shell-dangerous characters. */
@@ -82,6 +101,14 @@ function isValidBranchName(name: string): boolean {
     if (name.includes("..")) return false;
     if (name.includes("@{")) return false;
     if (name.endsWith(".lock") || name.endsWith(".") || name.endsWith("/") || name.startsWith("/")) return false;
+    return true;
+}
+
+/** Validate remote names used in git commands/config. */
+function isValidRemoteName(name: string): boolean {
+    if (!name || name.length > 256) return false;
+    if (name.startsWith("-")) return false;
+    if (/[^A-Za-z0-9._/-]/.test(name)) return false;
     return true;
 }
 
@@ -180,6 +207,9 @@ export class GitService implements ServiceHandler {
                     break;
                 case "git_merge":
                     void this.handleMerge(payload, requestId, sessionId);
+                    break;
+                case "git_set_upstream":
+                    void this.handleSetUpstream(payload, requestId, sessionId);
                     break;
                 case "git_worktrees":
                     void this.handleWorktrees(payload, requestId, sessionId);
@@ -1107,6 +1137,95 @@ export class GitService implements ServiceHandler {
         }
     }
 
+    // ── upstream resolution / sync helpers ──────────────────────────────
+
+    private async readGitConfigValues(cwd: string, key: string): Promise<string[]> {
+        try {
+            const { stdout } = await this._execGit(["config", "--get-all", key], { cwd, timeout: 5000 });
+            return stdout
+                .split("\n")
+                .map((value) => value.trim())
+                .filter(Boolean);
+        } catch {
+            return [];
+        }
+    }
+
+    private async resolveUpstream(cwd: string): Promise<GitUpstreamResolution> {
+        let localBranch = "";
+        try {
+            const { stdout } = await this._execGit(["rev-parse", "--abbrev-ref", "HEAD"], { cwd, timeout: 5000 });
+            localBranch = stdout.trim();
+        } catch (err) {
+            return {
+                ok: false,
+                reason: "detachedHead",
+                message: err instanceof Error ? err.message : String(err),
+            };
+        }
+
+        if (!localBranch || localBranch === "HEAD") {
+            return {
+                ok: false,
+                reason: "detachedHead",
+                message: "Cannot sync a detached HEAD. Check out a branch first.",
+            };
+        }
+
+        const [remotes, mergeRefs] = await Promise.all([
+            this.readGitConfigValues(cwd, `branch.${localBranch}.remote`),
+            this.readGitConfigValues(cwd, `branch.${localBranch}.merge`),
+        ]);
+
+        if (remotes.length > 1 || mergeRefs.length > 1) {
+            return {
+                ok: false,
+                reason: "ambiguousUpstream",
+                message: `Branch ${localBranch} has multiple upstream targets configured. Repair its upstream before pulling.`,
+                localBranch,
+                remote: remotes[0],
+                mergeBranches: mergeRefs,
+            };
+        }
+
+        const remote = remotes[0] ?? "";
+        const mergeRef = mergeRefs[0] ?? "";
+        const mergeBranch = mergeRef.startsWith("refs/heads/") ? mergeRef.slice(11) : mergeRef;
+
+        if (!remote || !mergeBranch) {
+            return {
+                ok: false,
+                reason: "missingUpstream",
+                message: `Branch ${localBranch} does not have exactly one upstream configured. Set its tracking branch first.`,
+                localBranch,
+                remote: remote || undefined,
+            };
+        }
+
+        return {
+            ok: true,
+            localBranch,
+            remote,
+            mergeBranch,
+            trackingRef: `${remote}/${mergeBranch}`,
+        };
+    }
+
+    private classifySyncFailure(message: string): { reason?: "conflict"; message: string } {
+        if (
+            message.includes("CONFLICT")
+            || message.includes("Resolve all conflicts manually")
+            || message.includes("could not apply")
+            || message.includes("Not possible to fast-forward")
+        ) {
+            return {
+                reason: "conflict",
+                message: "Sync stopped because of conflicts. Resolve them in git, then try again.",
+            };
+        }
+        return { message };
+    }
+
     // ── git pull ────────────────────────────────────────────────────────
 
     private async handlePull(
@@ -1119,76 +1238,34 @@ export class GitService implements ServiceHandler {
         const rebase = payload.rebase !== false;
 
         try {
-            // Avoid "Cannot rebase onto multiple branches" by splitting into
-            // explicit fetch + rebase/merge steps instead of using `git pull`.
-            // `git pull --rebase` parses FETCH_HEAD internally and fails when
-            // multiple entries are marked for merge — even with an explicit
-            // remote and branch. Using `git fetch` then `git rebase <ref>`
-            // sidesteps FETCH_HEAD entirely.
-
-            // 1. Resolve the upstream remote and branch.
-            let remote: string | null = null;
-            let mergeBranch: string | null = null;
-            let localBranch: string | null = null;
-            try {
-                const { stdout: branchName } = await this._execGit(
-                    ["rev-parse", "--abbrev-ref", "HEAD"], { cwd, timeout: 5000 },
-                );
-                localBranch = branchName.trim() || null;
-                if (localBranch && localBranch !== "HEAD") {
-                    try {
-                        const { stdout } = await this._execGit(
-                            ["config", "--get", `branch.${localBranch}.remote`], { cwd, timeout: 5000 },
-                        );
-                        if (stdout.trim()) remote = stdout.trim();
-                    } catch { /* no tracking remote configured */ }
-
-                    try {
-                        const { stdout } = await this._execGit(
-                            ["config", "--get", `branch.${localBranch}.merge`], { cwd, timeout: 5000 },
-                        );
-                        const ref = stdout.trim();
-                        if (ref) {
-                            mergeBranch = ref.startsWith("refs/heads/") ? ref.slice(11) : ref;
-                        }
-                    } catch { /* no merge ref configured */ }
-                }
-            } catch { /* detached HEAD */ }
-
-            // Fall back to first listed remote.
-            if (!remote) {
-                try {
-                    const { stdout } = await this._execGit(["remote"], { cwd, timeout: 5000 });
-                    const firstRemote = stdout.trim().split("\n")[0]?.trim();
-                    if (firstRemote) remote = firstRemote;
-                } catch { /* no remotes */ }
+            const upstream = await this.resolveUpstream(cwd);
+            if (!upstream.ok) {
+                this.emit("git_pull_result", {
+                    ok: false,
+                    reason: upstream.reason,
+                    message: upstream.message,
+                    branch: upstream.localBranch,
+                    remote: upstream.remote,
+                    mergeBranches: upstream.mergeBranches,
+                }, requestId, sessionId);
+                return;
             }
 
-            // If no merge branch is configured, assume the remote branch
-            // has the same name as the local branch (common convention).
-            if (!mergeBranch && localBranch && localBranch !== "HEAD") {
-                mergeBranch = localBranch;
-            }
+            const fetchResult = await this._execGit(
+                ["fetch", upstream.remote, upstream.mergeBranch],
+                { cwd, timeout: 60000 },
+            );
 
-            // 2. Fetch from remote.
-            const fetchArgs = ["fetch"];
-            if (remote) {
-                fetchArgs.push(remote);
-                if (mergeBranch) fetchArgs.push(mergeBranch);
-            }
-            const fetchResult = await this._execGit(fetchArgs, { cwd, timeout: 60000 });
-
-            // 3. Rebase or merge onto the explicit remote-tracking ref.
-            //    Using <remote>/<branch> avoids FETCH_HEAD ambiguity entirely.
-            const targetRef = remote && mergeBranch ? `${remote}/${mergeBranch}` : "FETCH_HEAD";
             const integrateArgs = rebase
-                ? ["rebase", targetRef]
-                : ["merge", "--ff-only", targetRef];
+                ? ["rebase", upstream.trackingRef]
+                : ["merge", "--ff-only", upstream.trackingRef];
             const integrateResult = await this._execGit(integrateArgs, { cwd, timeout: 60000 });
 
             const output = [
-                fetchResult.stdout, fetchResult.stderr,
-                integrateResult.stdout, integrateResult.stderr,
+                fetchResult.stdout,
+                fetchResult.stderr,
+                integrateResult.stdout,
+                integrateResult.stderr,
             ].join("\n").trim();
 
             await this.invalidateStatusCacheFamily(cwd);
@@ -1196,9 +1273,66 @@ export class GitService implements ServiceHandler {
             this.emit("git_pull_result", {
                 ok: true,
                 output,
+                branch: upstream.localBranch,
+                remote: upstream.remote,
+                upstream: upstream.trackingRef,
             }, requestId, sessionId);
         } catch (err) {
-            this.emitError("git_pull_result", err instanceof Error ? err.message : String(err), requestId, sessionId);
+            const message = err instanceof Error ? err.message : String(err);
+            const classified = this.classifySyncFailure(message);
+            if (classified.reason === "conflict") {
+                await this.invalidateStatusCacheFamily(cwd);
+            }
+            this.emit("git_pull_result", {
+                ok: false,
+                reason: classified.reason,
+                message: classified.message,
+                output: message,
+            }, requestId, sessionId);
+        }
+    }
+
+    private async handleSetUpstream(
+        payload: Record<string, unknown>,
+        requestId?: string,
+        sessionId?: string,
+    ): Promise<void> {
+        const cwd = this.validateCwd(payload.cwd, "git_set_upstream_result", requestId, sessionId);
+        if (!cwd) return;
+
+        const remote = typeof payload.remote === "string" ? payload.remote.trim() : "";
+        const branch = typeof payload.branch === "string" ? payload.branch.trim() : "";
+        if (!isValidRemoteName(remote)) {
+            this.emitError("git_set_upstream_result", "Invalid remote name", requestId, sessionId);
+            return;
+        }
+        if (!isValidBranchName(branch)) {
+            this.emitError("git_set_upstream_result", "Invalid branch name", requestId, sessionId);
+            return;
+        }
+
+        try {
+            const { stdout } = await this._execGit(["rev-parse", "--abbrev-ref", "HEAD"], { cwd, timeout: 5000 });
+            const localBranch = stdout.trim();
+            if (!localBranch || localBranch === "HEAD") {
+                this.emit("git_set_upstream_result", {
+                    ok: false,
+                    reason: "detachedHead",
+                    message: "Cannot set upstream while HEAD is detached.",
+                }, requestId, sessionId);
+                return;
+            }
+
+            await this._execGit(["branch", `--set-upstream-to=${remote}/${branch}`, localBranch], { cwd, timeout: 15000 });
+            await this.invalidateStatusCacheFamily(cwd);
+            this.emit("git_set_upstream_result", {
+                ok: true,
+                summary: `Branch ${localBranch} now tracks ${remote}/${branch}`,
+                branch: localBranch,
+                upstream: `${remote}/${branch}`,
+            }, requestId, sessionId);
+        } catch (err) {
+            this.emitError("git_set_upstream_result", err instanceof Error ? err.message : String(err), requestId, sessionId);
         }
     }
 
@@ -1234,7 +1368,17 @@ export class GitService implements ServiceHandler {
             await this.invalidateStatusCacheFamily(cwd);
             this.emit("git_merge_result", { ok: true, output }, requestId, sessionId);
         } catch (err) {
-            this.emitError("git_merge_result", err instanceof Error ? err.message : String(err), requestId, sessionId);
+            const message = err instanceof Error ? err.message : String(err);
+            const classified = this.classifySyncFailure(message);
+            if (classified.reason === "conflict") {
+                await this.invalidateStatusCacheFamily(cwd);
+            }
+            this.emit("git_merge_result", {
+                ok: false,
+                reason: classified.reason,
+                message: classified.message,
+                output: message,
+            }, requestId, sessionId);
         }
     }
 

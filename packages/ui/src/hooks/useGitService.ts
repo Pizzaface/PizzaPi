@@ -95,6 +95,7 @@ export interface UseGitServiceReturn {
     commit: (message: string) => void;
     push: (setUpstream?: boolean) => void;
     pull: (rebase?: boolean) => void;
+    setUpstream: (remote: string, branch: string) => void;
     merge: (branch: string) => void;
     clearOperationResult: () => void;
 }
@@ -380,13 +381,18 @@ export function useGitService(cwd: string): UseGitServiceReturn {
                 case "git_commit_result":
                 case "git_push_result":
                 case "git_pull_result":
-                case "git_merge_result": {
+                case "git_merge_result":
+                case "git_set_upstream_result": {
                     if (!isRequestCurrentGeneration(requestId)) break;
                     setOperationInProgress(null);
                     setLastOperationResult(payload as GitOperationResult);
-                    // Auto-refresh status after successful mutating operations.
-                    // Debounced/coalesced to avoid hammering git status during rapid updates.
-                    if (payload.ok) {
+                    // Auto-refresh after successful mutating operations, and
+                    // after pull/merge conflicts because rebase/merge may have
+                    // changed the worktree/index even though the operation failed.
+                    if (
+                        payload.ok
+                        || ((type === "git_pull_result" || type === "git_merge_result") && payload.reason === "conflict")
+                    ) {
                         postMutationRefreshSchedulerRef.current.schedule();
                     }
                     break;
@@ -572,6 +578,15 @@ export function useGitService(cwd: string): UseGitServiceReturn {
         send("git_pull", { cwd, rebase }, requestId);
     }, [available, send, cwd, makeRequestId, registerRequestGeneration]);
 
+    const setUpstream = useCallback((remote: string, branch: string) => {
+        if (!available || !remote || !branch) return;
+        const requestId = makeRequestId();
+        registerRequestGeneration(requestId);
+        setOperationInProgress("set-upstream");
+        setLastOperationResult(null);
+        send("git_set_upstream", { cwd, remote, branch }, requestId);
+    }, [available, send, cwd, makeRequestId, registerRequestGeneration]);
+
     const merge = useCallback((branch: string) => {
         if (!available || !branch) return;
         const requestId = makeRequestId();
@@ -652,6 +667,7 @@ export function useGitService(cwd: string): UseGitServiceReturn {
         commit,
         push,
         pull,
+        setUpstream,
         merge,
         clearOperationResult,
     };
