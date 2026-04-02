@@ -194,12 +194,17 @@ export async function createMcpClientsFromConfig(config: PizzaPiConfig & McpConf
       );
     } else if (s.transport === "streamable") {
       if (!isMcpDomainAllowed(s.url, s.name)) continue;
+      // Per-server clientId/clientSecret are a pair: if per-server clientId is set,
+      // use its paired secret (even if undefined) — don't leak the global secret
+      // to a server with a different client identity.
+      const sClientId = s.oauthClientId ?? oauthClientId;
+      const sClientSecret = s.oauthClientId !== undefined ? s.oauthClientSecret : oauthClientSecret;
       const provider = new PizzaPiOAuthProvider({
         serverUrl: s.url,
         serverName: s.name,
         clientName: s.oauthClientName || oauthClientName,
-        clientId: s.oauthClientId || oauthClientId,
-        clientSecret: s.oauthClientSecret || oauthClientSecret,
+        clientId: sClientId,
+        clientSecret: sClientSecret,
         callbackPort: s.oauthCallbackPort ?? oauthCallbackPort,
         deferRelayWaitTimeoutUntilAnchor: deferOAuthRelayWaitTimeoutUntilAnchor,
       });
@@ -253,12 +258,15 @@ export async function createMcpClientsFromConfig(config: PizzaPiConfig & McpConf
         (d.type === "http" && d.transport === undefined);
 
       if (useStreamable) {
+        // Per-server clientId/clientSecret are a pair (see comment above)
+        const dClientId = d.oauthClientId ?? oauthClientId;
+        const dClientSecret = d.oauthClientId !== undefined ? d.oauthClientSecret : oauthClientSecret;
         const provider = new PizzaPiOAuthProvider({
           serverUrl: d.url,
           serverName: name,
           clientName: d.oauthClientName || oauthClientName,
-          clientId: d.oauthClientId || oauthClientId,
-          clientSecret: d.oauthClientSecret || oauthClientSecret,
+          clientId: dClientId,
+          clientSecret: dClientSecret,
           callbackPort: d.oauthCallbackPort ?? oauthCallbackPort,
           deferRelayWaitTimeoutUntilAnchor: deferOAuthRelayWaitTimeoutUntilAnchor,
         });

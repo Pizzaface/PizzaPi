@@ -95,6 +95,10 @@ export const handleMcpOAuthRoute: RouteHandler = async (req, url) => {
         sessionId,
         nonce,
         code,
+        // Forward the raw state parameter so the runner can validate it
+        // against its _pendingState (CSRF protection). Also include
+        // oauthState for backward compatibility with older runners.
+        state: stateRaw,
         oauthState: state.oauthState,
     });
 

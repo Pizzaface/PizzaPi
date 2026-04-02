@@ -55,6 +55,8 @@ interface PersistedAuth {
   clientInfo?: OAuthClientInformationMixed;
   tokens?: OAuthTokens;
   codeVerifier?: string;
+  /** Tracks the last static client ID used, so we can detect config changes. */
+  staticClientId?: string;
 }
 
 function loadPersistedAuth(serverUrl: string): PersistedAuth {
@@ -335,6 +337,23 @@ export class PizzaPiOAuthProvider implements OAuthClientProvider {
     this._deferRelayWaitTimeoutUntilAnchor = opts.deferRelayWaitTimeoutUntilAnchor === true;
     this._relayWaitAnchorReady = !this._deferRelayWaitTimeoutUntilAnchor;
     this._persisted = loadPersistedAuth(this._serverUrl);
+
+    // If a static client ID is configured and differs from the last-used one,
+    // the user changed their OAuth client config — invalidate stale tokens and
+    // verifier so we don't reuse credentials issued to the old client.
+    if (this._staticClientId) {
+      const lastStaticId = this._persisted.staticClientId;
+      if (lastStaticId && lastStaticId !== this._staticClientId) {
+        delete this._persisted.tokens;
+        delete this._persisted.codeVerifier;
+        savePersistedAuth(this._serverUrl, this._persisted);
+      }
+      // Always track the current static client ID
+      if (this._persisted.staticClientId !== this._staticClientId) {
+        this._persisted.staticClientId = this._staticClientId;
+        savePersistedAuth(this._serverUrl, this._persisted);
+      }
+    }
   }
 
   /** Relay context — set by the remote extension when relay is connected. */
