@@ -1,9 +1,8 @@
 import { createAgentSession, DefaultResourceLoader, AuthStorage } from "@mariozechner/pi-coding-agent";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { homedir } from "node:os";
 import { buildSystemPrompt, defaultAgentDir, expandHome, loadConfig, resolveSandboxConfig, validateSandboxOverride, applyProviderSettingsEnv } from "../config.js";
-import { buildWorkerSkillPaths } from "../skills.js";
+import { buildSkillPaths, buildPromptTemplatePaths, createAgentsFilesOverride } from "../skills.js";
 import { getPluginSkillPaths } from "../extensions/claude-plugins.js";
 import { initSandbox, cleanupSandbox, isSandboxActive } from "@pizzapi/tools";
 import { createBootTimer } from "./boot-timing.js";
@@ -147,21 +146,7 @@ async function createAuthStorageWithRetry(authPath: string, maxAttempts = 5): Pr
     return AuthStorage.create(authPath);
 }
 
-/**
- * Build additional prompt template paths for the headless worker.
- *
- * ~/.pizzapi/prompts/ is already discovered via agentDir, so we only need
- * the project-local .pizzapi/prompts/ plus Claude-style commands/ directories
- * (both global and project-local) which map to pi prompt templates.
- */
-function buildPromptPaths(cwd: string): string[] {
-    return [
-        join(cwd, ".pizzapi", "prompts"),
-        join(homedir(), ".pizzapi", "commands"),
-        join(cwd, ".pizzapi", "commands"),
-        join(cwd, ".agents", "commands"),
-    ];
-}
+// buildPromptPaths moved to ../skills.ts as buildPromptTemplatePaths
 import { forwardCliError } from "../extensions/remote.js";
 import { buildPizzaPiExtensionFactories } from "../extensions/factories.js";
 import { armWorkerStartupGate, markWorkerStartupComplete } from "../extensions/worker-startup-gate.js";
@@ -249,21 +234,9 @@ async function main(): Promise<void> {
     const agentSystemPrompt = process.env.PIZZAPI_WORKER_AGENT_SYSTEM_PROMPT?.trim() || undefined;
     // Don't clear — agent config should persist across restarts (exit code 43).
 
-    // Load .agents/*.md files from cwd (same behavior as CLI)
-    const dotAgentsDir = join(cwd, ".agents");
-    const agentFiles: Array<{ path: string; content: string }> = [];
-    if (existsSync(dotAgentsDir)) {
-        for (const file of readdirSync(dotAgentsDir)) {
-            if (file.endsWith(".md")) {
-                const filePath = join(dotAgentsDir, file);
-                try {
-                    agentFiles.push({ path: filePath, content: readFileSync(filePath, "utf-8") });
-                } catch (err) {
-                    logWarn(`skipping unreadable agent file ${filePath}: ${err instanceof Error ? err.message : String(err)}`);
-                }
-            }
-        }
-    }
+    // Build shared agentsFilesOverride (loads AGENTS.md + .agents/*.md from cwd,
+    // deduplicating against what DefaultResourceLoader already discovers).
+    const agentsFilesOverride = createAgentsFilesOverride(cwd);
 
     bootTimer.start("[boot] resource-loader");
     const loader = new DefaultResourceLoader({
@@ -278,19 +251,15 @@ async function main(): Promise<void> {
             skipRelay: process.env.PIZZAPI_NO_RELAY === "1",
         }),
         additionalSkillPaths: [
-            ...buildWorkerSkillPaths(cwd, config.skills),
+            ...buildSkillPaths(cwd, config.skills),
             ...(skipPlugins ? [] : getPluginSkillPaths(cwd)),
         ],
-        additionalPromptTemplatePaths: buildPromptPaths(cwd),
+        additionalPromptTemplatePaths: buildPromptTemplatePaths(cwd),
         ...(config.systemPrompt !== undefined && {
             systemPromptOverride: () => config.systemPrompt,
         }),
         appendSystemPrompt: [buildSystemPrompt({ cwd, isRunner: true }), config.appendSystemPrompt, agentSystemPrompt].filter(Boolean).join("\n\n"),
-        ...(agentFiles.length > 0 && {
-            agentsFilesOverride: (base) => ({
-                agentsFiles: [...base.agentsFiles, ...agentFiles],
-            }),
-        }),
+        ...(agentsFilesOverride && { agentsFilesOverride }),
     });
     await loader.reload();
     bootTimer.end("[boot] resource-loader");

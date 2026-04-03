@@ -10,8 +10,12 @@ import {
     writeSkill,
     deleteSkill,
     builtinSkillsDir,
+    buildSkillPaths,
+    buildPromptTemplatePaths,
     buildInteractiveSkillPaths,
     buildWorkerSkillPaths,
+    loadProjectAgentFiles,
+    createAgentsFilesOverride,
 } from "./skills.js";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -412,78 +416,180 @@ describe("deleteSkill", () => {
     });
 });
 
-// ── buildInteractiveSkillPaths ────────────────────────────────────────────────
+// ── buildSkillPaths (unified) ─────────────────────────────────────────────────
 
-describe("buildInteractiveSkillPaths", () => {
-    test("includes global and project-local .pizzapi/skills dirs", () => {
-        const paths = buildInteractiveSkillPaths("/projects/my-app");
+describe("buildSkillPaths", () => {
+    test("includes all expected default paths", () => {
         const home = require("os").homedir();
+        const paths = buildSkillPaths("/projects/my-app");
+        // Global paths
         expect(paths).toContain(join(home, ".pizzapi", "skills"));
-        expect(paths).toContain(join("/projects/my-app", ".pizzapi", "skills"));
-    });
-
-    test("appends config skill paths", () => {
-        const paths = buildInteractiveSkillPaths("/projects/my-app", [
-            "/extra/skills",
-            "~/my-skills",
-        ]);
-        expect(paths).toContain("/extra/skills");
-        // ~ should be expanded
-        const home = require("os").homedir();
-        expect(paths).toContain(join(home, "my-skills"));
-    });
-
-    test("filters out empty and whitespace-only config entries", () => {
-        const paths = buildInteractiveSkillPaths("/tmp", ["", "  ", "/valid"]);
-        // Should have 3 default paths (builtin + global + project) + 1 valid config path
-        expect(paths).toHaveLength(4);
-        expect(paths[3]).toBe("/valid");
-    });
-
-    test("handles undefined configSkills", () => {
-        const paths = buildInteractiveSkillPaths("/tmp");
-        expect(paths).toHaveLength(3);
-    });
-
-    test("handles empty configSkills array", () => {
-        const paths = buildInteractiveSkillPaths("/tmp", []);
-        expect(paths).toHaveLength(3);
-    });
-});
-
-// ── buildWorkerSkillPaths ─────────────────────────────────────────────────────
-
-describe("buildWorkerSkillPaths", () => {
-    test("includes expected default paths", () => {
-        const home = require("os").homedir();
-        const paths = buildWorkerSkillPaths("/projects/my-app");
-        expect(paths).toContain(join("/projects/my-app", ".pizzapi", "skills"));
         expect(paths).toContain(join(home, ".pizzapi", "agents"));
+        // Project-local paths
+        expect(paths).toContain(join("/projects/my-app", ".pizzapi", "skills"));
         expect(paths).toContain(join("/projects/my-app", ".pizzapi", "agents"));
         expect(paths).toContain(join("/projects/my-app", ".agents", "skills"));
         expect(paths).toContain(join("/projects/my-app", ".agents", "agents"));
     });
 
-    test("does NOT include global ~/.pizzapi/skills (discovered via agentDir)", () => {
-        const home = require("os").homedir();
-        const paths = buildWorkerSkillPaths("/projects/my-app");
-        expect(paths).not.toContain(join(home, ".pizzapi", "skills"));
+    test("includes builtin skills dir", () => {
+        const paths = buildSkillPaths("/tmp");
+        expect(paths[0]).toBe(builtinSkillsDir());
     });
 
     test("appends config skill paths", () => {
-        const paths = buildWorkerSkillPaths("/tmp", ["/custom/path"]);
-        expect(paths).toContain("/custom/path");
+        const paths = buildSkillPaths("/projects/my-app", [
+            "/extra/skills",
+            "~/my-skills",
+        ]);
+        expect(paths).toContain("/extra/skills");
+        const home = require("os").homedir();
+        expect(paths).toContain(join(home, "my-skills"));
     });
 
-    test("expands tilde in config paths", () => {
-        const home = require("os").homedir();
-        const paths = buildWorkerSkillPaths("/tmp", ["~/custom"]);
-        expect(paths).toContain(join(home, "custom"));
+    test("filters out empty and whitespace-only config entries", () => {
+        const paths = buildSkillPaths("/tmp", ["", "  ", "/valid"]);
+        // 7 default paths + 1 valid config path
+        expect(paths).toHaveLength(8);
+        expect(paths).toContain("/valid");
     });
 
     test("handles undefined configSkills", () => {
-        const paths = buildWorkerSkillPaths("/tmp");
-        expect(paths).toHaveLength(6); // 6 default paths (builtin + 5 existing)
+        const paths = buildSkillPaths("/tmp");
+        expect(paths).toHaveLength(7); // builtin + 6 directory paths
+    });
+
+    test("handles empty configSkills array", () => {
+        const paths = buildSkillPaths("/tmp", []);
+        expect(paths).toHaveLength(7);
+    });
+});
+
+// ── buildPromptTemplatePaths ──────────────────────────────────────────────────
+
+describe("buildPromptTemplatePaths", () => {
+    test("includes all expected paths", () => {
+        const home = require("os").homedir();
+        const paths = buildPromptTemplatePaths("/projects/my-app");
+        expect(paths).toContain(join("/projects/my-app", ".pizzapi", "prompts"));
+        expect(paths).toContain(join(home, ".pizzapi", "commands"));
+        expect(paths).toContain(join("/projects/my-app", ".pizzapi", "commands"));
+        expect(paths).toContain(join("/projects/my-app", ".agents", "commands"));
+    });
+
+    test("returns exactly 4 paths", () => {
+        const paths = buildPromptTemplatePaths("/tmp");
+        expect(paths).toHaveLength(4);
+    });
+});
+
+// ── Deprecated wrapper parity ─────────────────────────────────────────────────
+
+describe("deprecated buildInteractiveSkillPaths / buildWorkerSkillPaths", () => {
+    test("buildInteractiveSkillPaths delegates to buildSkillPaths", () => {
+        const unified = buildSkillPaths("/tmp", ["/extra"]);
+        const interactive = buildInteractiveSkillPaths("/tmp", ["/extra"]);
+        expect(interactive).toEqual(unified);
+    });
+
+    test("buildWorkerSkillPaths delegates to buildSkillPaths", () => {
+        const unified = buildSkillPaths("/tmp", ["/extra"]);
+        const worker = buildWorkerSkillPaths("/tmp", ["/extra"]);
+        expect(worker).toEqual(unified);
+    });
+});
+
+// ── loadProjectAgentFiles ─────────────────────────────────────────────────────
+
+describe("loadProjectAgentFiles", () => {
+    let dir: string;
+
+    beforeEach(() => {
+        dir = makeTmpDir();
+    });
+
+    afterEach(() => {
+        rmSync(dir, { recursive: true, force: true });
+    });
+
+    test("loads AGENTS.md from cwd", () => {
+        writeFileSync(join(dir, "AGENTS.md"), "# Project Agents", "utf-8");
+        const files = loadProjectAgentFiles(dir);
+        expect(files).toHaveLength(1);
+        expect(files[0].path).toBe(join(dir, "AGENTS.md"));
+        expect(files[0].content).toBe("# Project Agents");
+    });
+
+    test("loads .agents/*.md from cwd", () => {
+        mkdirSync(join(dir, ".agents"), { recursive: true });
+        writeFileSync(join(dir, ".agents", "custom.md"), "# Custom", "utf-8");
+        writeFileSync(join(dir, ".agents", "another.md"), "# Another", "utf-8");
+        writeFileSync(join(dir, ".agents", "readme.txt"), "ignore", "utf-8");
+        const files = loadProjectAgentFiles(dir);
+        expect(files).toHaveLength(2);
+        const names = files.map(f => f.path).sort();
+        expect(names).toContain(join(dir, ".agents", "another.md"));
+        expect(names).toContain(join(dir, ".agents", "custom.md"));
+    });
+
+    test("loads both AGENTS.md and .agents/*.md", () => {
+        writeFileSync(join(dir, "AGENTS.md"), "# Main", "utf-8");
+        mkdirSync(join(dir, ".agents"), { recursive: true });
+        writeFileSync(join(dir, ".agents", "extra.md"), "# Extra", "utf-8");
+        const files = loadProjectAgentFiles(dir);
+        expect(files).toHaveLength(2);
+    });
+
+    test("returns empty array when nothing exists", () => {
+        const files = loadProjectAgentFiles(dir);
+        expect(files).toEqual([]);
+    });
+});
+
+// ── createAgentsFilesOverride ─────────────────────────────────────────────────
+
+describe("createAgentsFilesOverride", () => {
+    let dir: string;
+
+    beforeEach(() => {
+        dir = makeTmpDir();
+    });
+
+    afterEach(() => {
+        rmSync(dir, { recursive: true, force: true });
+    });
+
+    test("returns null when no additional files exist", () => {
+        const override = createAgentsFilesOverride(dir);
+        expect(override).toBeNull();
+    });
+
+    test("returns override function when files exist", () => {
+        writeFileSync(join(dir, "AGENTS.md"), "# Agents", "utf-8");
+        const override = createAgentsFilesOverride(dir);
+        expect(override).toBeInstanceOf(Function);
+    });
+
+    test("deduplicates by path against base files", () => {
+        writeFileSync(join(dir, "AGENTS.md"), "# Agents", "utf-8");
+        const override = createAgentsFilesOverride(dir)!;
+        const base = {
+            agentsFiles: [{ path: join(dir, "AGENTS.md"), content: "# Agents (base)" }],
+        };
+        const result = override(base);
+        // AGENTS.md was already in base — should NOT be duplicated
+        expect(result.agentsFiles).toHaveLength(1);
+        expect(result.agentsFiles[0].content).toBe("# Agents (base)");
+    });
+
+    test("adds new files not in base", () => {
+        mkdirSync(join(dir, ".agents"), { recursive: true });
+        writeFileSync(join(dir, ".agents", "extra.md"), "# Extra", "utf-8");
+        const override = createAgentsFilesOverride(dir)!;
+        const base = { agentsFiles: [{ path: "/other/AGENTS.md", content: "# Other" }] };
+        const result = override(base);
+        expect(result.agentsFiles).toHaveLength(2);
+        expect(result.agentsFiles[1].path).toBe(join(dir, ".agents", "extra.md"));
     });
 });
 
