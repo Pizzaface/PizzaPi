@@ -13,8 +13,16 @@ import { expandHome } from "./config.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
+/** Detect compiled Bun binary (assets live next to process.execPath, not import.meta.url). */
+const isCompiledBinary = import.meta.url.includes("$bunfs") || import.meta.url.includes("~BUN") || import.meta.url.includes("%7EBUN");
+
 /** Built-in skills shipped with the CLI package. */
 export function builtinSkillsDir(): string {
+    if (isCompiledBinary) {
+        // In a compiled binary, .md assets are copied next to the executable
+        // (not embedded in the virtual $bunfs filesystem).
+        return join(dirname(process.execPath), "skills");
+    }
     return join(__dirname, "skills");
 }
 
