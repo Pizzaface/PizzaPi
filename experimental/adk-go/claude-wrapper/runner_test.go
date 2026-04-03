@@ -66,6 +66,51 @@ func TestRunnerWorkDir(t *testing.T) {
 	}
 }
 
+// TestBuildInteractiveArgsWithResume verifies that BuildInteractiveArgs
+// includes --resume when ResumeSessionID is set. This covers the path
+// where new_session includes a resumeId and the provider uses interactive mode.
+func TestBuildInteractiveArgsWithResume(t *testing.T) {
+	r := NewRunner(RunnerConfig{
+		ResumeSessionID: "claude-sess-resume-abc",
+		Model:           "claude-sonnet-4-20250514",
+	})
+
+	args := r.BuildInteractiveArgs()
+	expected := []string{
+		"--output-format", "stream-json",
+		"--input-format", "stream-json",
+		"--verbose",
+		"--include-partial-messages",
+		"--model", "claude-sonnet-4-20250514",
+		"--resume", "claude-sess-resume-abc",
+	}
+
+	if !reflect.DeepEqual(args, expected) {
+		t.Fatalf("unexpected interactive args with resume:\n got: %v\nwant: %v", args, expected)
+	}
+}
+
+// TestBuildInteractiveArgsBasic verifies BuildInteractiveArgs with no optional fields.
+func TestBuildInteractiveArgsBasic(t *testing.T) {
+	r := NewRunner(RunnerConfig{})
+	args := r.BuildInteractiveArgs()
+	expected := []string{
+		"--output-format", "stream-json",
+		"--input-format", "stream-json",
+		"--verbose",
+		"--include-partial-messages",
+	}
+	if !reflect.DeepEqual(args, expected) {
+		t.Fatalf("unexpected basic interactive args:\n got: %v\nwant: %v", args, expected)
+	}
+	// Ensure --resume is NOT present when ResumeSessionID is empty
+	for _, arg := range args {
+		if arg == "--resume" {
+			t.Fatalf("--resume should not be present when ResumeSessionID is empty")
+		}
+	}
+}
+
 func TestRunnerStartWithEcho(t *testing.T) {
 	r := NewRunner(RunnerConfig{ClaudePath: "echo", ExtraFlags: []string{}})
 	if r.config.ClaudePath != "echo" {

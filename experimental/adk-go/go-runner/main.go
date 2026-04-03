@@ -36,6 +36,7 @@ type session struct {
 	relaySession *RelaySession // per-session /relay connection
 	cancel       context.CancelFunc
 	killed       bool
+	adopted      bool // true if this session was adopted from relay on reconnect (no subprocess)
 	mu           sync.Mutex
 }
 
@@ -158,21 +159,90 @@ func (r *GoRunner) handleRunnerRegistered(data json.RawMessage) {
 	r.runnerID = payload.RunnerID
 	r.logger.Printf("registered as %s", r.runnerID)
 
-	if len(payload.ExistingSessions) > 0 {
-		r.logger.Printf("found %d existing sessions (adoption not implemented in Phase 0)", len(payload.ExistingSessions))
+	// Adopt sessions that the relay knows about but we don't have locally.
+	// These are placeholder entries with no subprocess — they represent sessions
+	// that were running before a disconnect/restart.
+	for _, es := range payload.ExistingSessions {
+		sessionID := es.SessionID
+		if _, exists := r.sessions.Load(sessionID); exists {
+			// Already tracked locally — alive, no action needed.
+			r.logger.Printf("session %s already tracked locally, skipping adoption", sessionID[:min(8, len(sessionID))])
+			continue
+		}
+
+		// Create an adopted (placeholder) session entry with no subprocess.
+		adopted := &session{
+			sessionID: sessionID,
+			adopted:   true,
+		}
+		r.sessions.Store(sessionID, adopted)
+		r.logger.Printf("adopted session %s (no subprocess)", sessionID[:min(8, len(sessionID))])
+
+		// Emit an inactive heartbeat so the UI knows this session exists but isn't running.
+		r.client.Emit("runner_session_event", map[string]any{
+			"sessionId": sessionID,
+			"event": map[string]any{
+				"type":         "heartbeat",
+				"active":       false,
+				"isCompacting": false,
+				"ts":           time.Now().UnixMilli(),
+			},
+		})
+
+		// Connect a relay session for the adopted session to observe user input.
+		// The adopted session has no subprocess, so any input is logged as a warning.
+		go r.runAdoptedSession(adopted, es.Cwd)
 	}
+
+	if len(payload.ExistingSessions) > 0 {
+		r.logger.Printf("adopted %d existing sessions from relay", len(payload.ExistingSessions))
+	}
+}
+
+// runAdoptedSession connects an adopted (no-subprocess) session to the relay
+// so that user input is properly received and logged as a warning.
+// The session has no subprocess, so input cannot be forwarded.
+func (r *GoRunner) runAdoptedSession(sess *session, cwd string) {
+	sessionID := sess.sessionID
+	shortID := sessionID[:min(8, len(sessionID))]
+
+	relaySess := NewRelaySession(r.relayURL, r.apiKey, sessionID, cwd, r.logger)
+
+	// Log a warning when input arrives — no subprocess to forward to.
+	relaySess.onInput = func(text string) {
+		r.logger.Printf("session %s: received input for adopted session (no subprocess, cannot forward): %s",
+			shortID, text[:min(len(text), 80)])
+	}
+
+	if err := relaySess.Connect(r.relayURL, r.apiKey, cwd); err != nil {
+		r.logger.Printf("adopted session %s relay registration failed: %v", shortID, err)
+		return
+	}
+
+	sess.mu.Lock()
+	sess.relaySession = relaySess
+	sess.mu.Unlock()
+
+	r.logger.Printf("adopted session %s relay connected (monitoring for input)", shortID)
+
+	// Wait until the session is killed or the relay disconnects.
+	<-relaySess.Done()
+	r.logger.Printf("adopted session %s relay disconnected", shortID)
 }
 
 func (r *GoRunner) handleNewSession(data json.RawMessage) {
 	var payload struct {
-		SessionID       string `json:"sessionId"`
-		Cwd             string `json:"cwd"`
-		Prompt          string `json:"prompt"`
-		Model           *struct {
+		SessionID string `json:"sessionId"`
+		Cwd       string `json:"cwd"`
+		Prompt    string `json:"prompt"`
+		Model     *struct {
 			Provider string `json:"provider"`
 			ID       string `json:"id"`
 		} `json:"model"`
 		ParentSessionID string `json:"parentSessionId"`
+		// Resume fields — if set, the provider resumes an existing Claude session.
+		ResumeID   string `json:"resumeId"`
+		ResumePath string `json:"resumePath"`
 	}
 	if err := json.Unmarshal(data, &payload); err != nil {
 		r.logger.Printf("parse new_session: %v", err)
@@ -180,7 +250,7 @@ func (r *GoRunner) handleNewSession(data json.RawMessage) {
 	}
 
 	sessionID := payload.SessionID
-	r.logger.Printf("new_session: id=%s cwd=%s", sessionID, payload.Cwd)
+	r.logger.Printf("new_session: id=%s cwd=%s resumeId=%s", sessionID, payload.Cwd, payload.ResumeID)
 
 	// Check for duplicate
 	if _, loaded := r.sessions.Load(sessionID); loaded {
@@ -188,9 +258,12 @@ func (r *GoRunner) handleNewSession(data json.RawMessage) {
 		return
 	}
 
-	// Determine the initial prompt
+	// Determine the initial prompt.
+	// When resuming, an empty prompt is valid — the provider will continue
+	// the existing conversation without injecting a new message.
 	prompt := payload.Prompt
-	if prompt == "" {
+	if prompt == "" && payload.ResumeID == "" && payload.ResumePath == "" {
+		// Not resuming and no prompt — supply a default greeting.
 		prompt = "Hello! I'm ready to help."
 	}
 
@@ -215,11 +288,13 @@ func (r *GoRunner) handleNewSession(data json.RawMessage) {
 
 	// Spawn the provider session
 	go r.runSession(ctx, sess, ProviderContext{
-		Prompt: prompt,
-		Cwd:    payload.Cwd,
-		Model:  model,
+		Prompt:     prompt,
+		Cwd:        payload.Cwd,
+		Model:      model,
+		ResumeID:   payload.ResumeID,
+		ResumePath: payload.ResumePath,
 		OnStderr: func(line string) {
-			r.logger.Printf("[session:%s:stderr] %s", sessionID[:8], line)
+			r.logger.Printf("[session:%s:stderr] %s", sessionID[:min(8, len(sessionID))], line)
 		},
 	})
 }
@@ -385,32 +460,68 @@ func (r *GoRunner) handleKillSession(data json.RawMessage) {
 		return
 	}
 
-	r.logger.Printf("kill_session: %s", payload.SessionID[:8])
+	sessionID := payload.SessionID
+	r.logger.Printf("kill_session: %s", sessionID[:min(8, len(sessionID))])
 
-	val, ok := r.sessions.Load(payload.SessionID)
+	val, ok := r.sessions.Load(sessionID)
 	if !ok {
-		r.logger.Printf("session %s not found for kill", payload.SessionID[:8])
+		r.logger.Printf("session %s not found for kill", sessionID[:min(8, len(sessionID))])
 		return
 	}
 
 	sess := val.(*session)
+
+	// Adopted sessions have no subprocess — just clean up the placeholder entry.
+	sess.mu.Lock()
+	isAdopted := sess.adopted
+	sess.mu.Unlock()
+
+	if isAdopted {
+		r.logger.Printf("kill_session: session %s is adopted (no subprocess), removing placeholder", sessionID[:min(8, len(sessionID))])
+		// Close any relay connection for this adopted session.
+		sess.mu.Lock()
+		rs := sess.relaySession
+		sess.mu.Unlock()
+		if rs != nil {
+			rs.Close()
+		}
+		r.sessions.Delete(sessionID)
+		r.client.Emit("session_killed", map[string]any{
+			"sessionId": sessionID,
+		})
+		return
+	}
+
 	r.killSession(sess)
 }
 
 func (r *GoRunner) killSession(sess *session) {
 	sess.mu.Lock()
+	isAdopted := sess.adopted
 	sess.killed = true
+	rs := sess.relaySession
 	sess.mu.Unlock()
+
+	// Adopted sessions have no subprocess — just close the relay connection.
+	if isAdopted {
+		if rs != nil {
+			rs.Close()
+		}
+		r.sessions.Delete(sess.sessionID)
+		return
+	}
 
 	// Stop the provider (sends SIGTERM for subprocess providers)
 	sess.provider.Stop()
-	sess.cancel()
+	if sess.cancel != nil {
+		sess.cancel()
+	}
 
 	// Wait for provider exit with timeout
 	select {
 	case <-sess.provider.Done():
 	case <-time.After(10 * time.Second):
-		r.logger.Printf("session %s did not exit after stop, force killed", sess.sessionID[:8])
+		r.logger.Printf("session %s did not exit after stop, force killed", sess.sessionID[:min(8, len(sess.sessionID))])
 	}
 }
 

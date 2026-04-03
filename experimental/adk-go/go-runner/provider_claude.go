@@ -48,11 +48,18 @@ func (p *ClaudeCLIProvider) Start(pctx ProviderContext) (<-chan RelayEvent, erro
 	if pctx.Model != "" {
 		cfg.Model = pctx.Model
 	}
+	if pctx.ResumeID != "" {
+		cfg.ResumeSessionID = pctx.ResumeID
+	} else if pctx.ResumePath != "" {
+		cfg.ResumeSessionID = pctx.ResumePath
+	}
 
 	p.runner = claudewrapper.NewRunner(cfg)
 
-	// Record the initial user prompt for message accumulation
-	p.adapter.SetUserPrompt(pctx.Prompt)
+	// Record the initial user prompt for message accumulation (may be empty on resume)
+	if pctx.Prompt != "" {
+		p.adapter.SetUserPrompt(pctx.Prompt)
+	}
 
 	ctx := context.Background()
 	// If we need cancellation, the caller uses Stop()
