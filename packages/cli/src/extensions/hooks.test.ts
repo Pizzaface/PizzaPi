@@ -158,6 +158,7 @@ describe("parseHookOutput", () => {
             additionalContext: "Did you mean bun?",
             permissionDecision: undefined,
             decision: undefined,
+            updatedInput: undefined,
         });
     });
 
@@ -173,6 +174,7 @@ describe("parseHookOutput", () => {
             additionalContext: "Are you using bun?",
             permissionDecision: "allow",
             decision: undefined,
+            updatedInput: undefined,
         });
     });
 
@@ -198,6 +200,33 @@ describe("parseHookOutput", () => {
         }));
         expect(result?.decision).toBe("block");
         expect(result?.additionalContext).toBe("Check the error");
+    });
+
+    test("parses updatedInput from flat format", () => {
+        const result = parseHookOutput(JSON.stringify({
+            updatedInput: { command: "rtk ls -la" },
+        }));
+        expect(result?.updatedInput).toEqual({ command: "rtk ls -la" });
+    });
+
+    test("parses updatedInput from nested hookSpecificOutput (RTK hook format)", () => {
+        const result = parseHookOutput(JSON.stringify({
+            hookSpecificOutput: {
+                hookEventName: "PreToolUse",
+                permissionDecision: "allow",
+                permissionDecisionReason: "RTK auto-rewrite",
+                updatedInput: { command: "rtk cat README.md" },
+            },
+        }));
+        expect(result?.updatedInput).toEqual({ command: "rtk cat README.md" });
+        expect(result?.permissionDecision).toBe("allow");
+    });
+
+    test("updatedInput is undefined when not present in output", () => {
+        const result = parseHookOutput(JSON.stringify({
+            additionalContext: "some context",
+        }));
+        expect(result?.updatedInput).toBeUndefined();
     });
 });
 
@@ -1227,6 +1256,108 @@ describe("parseHookOutput — new fields", () => {
         }));
         expect(result?.text).toBe("transformed text");
         expect(result?.action).toBe("transform");
+    });
+
+    test("parses updatedInput from RTK hook exact output format", () => {
+        // Exact JSON shape emitted by rtk-rewrite.sh for a successful rewrite
+        const result = parseHookOutput(JSON.stringify({
+            hookSpecificOutput: {
+                hookEventName: "PreToolUse",
+                permissionDecision: "allow",
+                permissionDecisionReason: "RTK auto-rewrite",
+                updatedInput: { command: "rtk tree --gitignore ." },
+            },
+        }));
+        expect(result?.updatedInput).toEqual({ command: "rtk tree --gitignore ." });
+        expect(result?.permissionDecision).toBe("allow");
+    });
+
+    test("parses updatedInput from RTK hook ask-mode output format", () => {
+        // RTK exit code 3 (ask): updatedInput present but no permissionDecision
+        const result = parseHookOutput(JSON.stringify({
+            hookSpecificOutput: {
+                hookEventName: "PreToolUse",
+                updatedInput: { command: "rtk find . -name '*.ts'" },
+            },
+        }));
+        expect(result?.updatedInput).toEqual({ command: "rtk find . -name '*.ts'" });
+        expect(result?.permissionDecision).toBeUndefined();
+    });
+});
+
+// ---------------------------------------------------------------------------
+// updatedInput mutation — verifies the key logic used by the PreToolUse handler
+// ---------------------------------------------------------------------------
+
+describe("updatedInput mutation", () => {
+    test("applying updatedInput mutates a mutable input object", () => {
+        // Simulates what extension.ts does: parse hook output, then mutate event.input
+        const hookStdout = JSON.stringify({
+            hookSpecificOutput: {
+                hookEventName: "PreToolUse",
+                permissionDecision: "allow",
+                updatedInput: { command: "rtk ls -la" },
+            },
+        });
+
+        const output = parseHookOutput(hookStdout);
+        expect(output?.updatedInput).toBeDefined();
+
+        // Simulate event.input as a mutable object
+        const eventInput: Record<string, unknown> = { command: "ls -la" };
+        if (output?.updatedInput) {
+            for (const [key, value] of Object.entries(output.updatedInput)) {
+                eventInput[key] = value;
+            }
+        }
+        expect(eventInput.command).toBe("rtk ls -la");
+    });
+
+    test("updatedInput preserves keys not in the update", () => {
+        const output = parseHookOutput(JSON.stringify({
+            updatedInput: { command: "rtk cat file.txt" },
+        }));
+
+        const eventInput: Record<string, unknown> = { command: "cat file.txt", timeout: 30 };
+        if (output?.updatedInput) {
+            for (const [key, value] of Object.entries(output.updatedInput)) {
+                eventInput[key] = value;
+            }
+        }
+        expect(eventInput.command).toBe("rtk cat file.txt");
+        expect(eventInput.timeout).toBe(30); // preserved
+    });
+
+    test("updatedInput is a no-op when not present in hook output", () => {
+        const output = parseHookOutput(JSON.stringify({
+            additionalContext: "just context, no rewrite",
+        }));
+
+        const eventInput: Record<string, unknown> = { command: "ls" };
+        if (output?.updatedInput) {
+            for (const [key, value] of Object.entries(output.updatedInput)) {
+                eventInput[key] = value;
+            }
+        }
+        expect(eventInput.command).toBe("ls"); // unchanged
+    });
+
+    test("mock spawn with updatedInput produces correct parsed output", async () => {
+        const rtkOutput = JSON.stringify({
+            hookSpecificOutput: {
+                hookEventName: "PreToolUse",
+                permissionDecision: "allow",
+                permissionDecisionReason: "RTK auto-rewrite",
+                updatedInput: { command: "rtk ls -la" },
+            },
+        });
+        const spawn = createMockSpawn({ exitCode: 0, stdout: rtkOutput });
+        const result = await runHook({ command: "rtk-rewrite.sh" }, "{}", "/cwd", spawn);
+        expect(result.exitCode).toBe(0);
+
+        const output = parseHookOutput(result.stdout);
+        expect(output?.updatedInput).toEqual({ command: "rtk ls -la" });
+        expect(output?.permissionDecision).toBe("allow");
     });
 });
 

@@ -183,6 +183,8 @@ export function parseHookOutput(stdout: string): HookOutput | null {
             additionalContext: specific.additionalContext,
             permissionDecision: specific.permissionDecision,
             decision: specific.decision ?? parsed.decision,
+            // PreToolUse rewrite fields
+            updatedInput: specific.updatedInput,
             // Input hook fields
             text: specific.text,
             action: specific.action,
