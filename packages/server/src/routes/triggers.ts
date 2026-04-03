@@ -702,8 +702,8 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
         let removed = 0;
 
         if (mode === "subscriptionId" && subscriptionId) {
-            const ok = await unsubscribeSessionSubscription(sessionId, subscriptionId);
-            removed = ok ? 1 : 0;
+            await unsubscribeSessionSubscription(sessionId, subscriptionId);
+            removed = 1;
         } else {
             const result = await unsubscribeSessionFromTrigger(sessionId, triggerType);
             removed = result.removed;
