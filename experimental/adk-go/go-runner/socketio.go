@@ -33,6 +33,9 @@ type pendingEmit struct {
 }
 
 // SIOClient is a minimal Socket.IO v4 client for the PizzaPi relay /runner namespace.
+//
+// Connect() must be called exactly once. The client is not designed to be reused after
+// Close() or after reconnect exhaustion.
 type SIOClient struct {
 	url       string
 	namespace string
@@ -44,6 +47,7 @@ type SIOClient struct {
 	handlers   map[string][]func(json.RawMessage)
 	handlersMu sync.RWMutex
 
+	// pingInterval and pingTimeout are set during dial() under connMu.
 	pingInterval time.Duration
 	pingTimeout  time.Duration
 
@@ -53,12 +57,17 @@ type SIOClient struct {
 	// doneOnce ensures done is closed exactly once.
 	doneOnce sync.Once
 
-	lastPing chan struct{} // signaled each time server sends EIO ping
+	// pingCancel is the cancel channel for the currently-running pingLoop.
+	// It is replaced (under connMu) each time a new connection is established.
+	// Closing it signals the old pingLoop to exit before a new one is started.
+	pingCancel chan struct{}
+
+	// lastPing is signaled each time the server sends an EIO ping.
+	// It is replaced (under connMu) each time a new connection is established.
+	lastPing chan struct{}
 
 	// closedIntentionally is set by Close() to suppress reconnection.
 	closedIntentionally atomic.Bool
-	// closed tracks whether the transport has disconnected (may be transient).
-	closed atomic.Bool
 
 	logger *log.Logger
 
@@ -176,17 +185,27 @@ func (c *SIOClient) emitDirect(event string, data any) error {
 // Connect establishes the WebSocket connection and performs the Engine.IO + Socket.IO handshake.
 func (c *SIOClient) Connect() error {
 	c.done = make(chan struct{})
-	c.lastPing = make(chan struct{}, 1)
-	c.closed.Store(false)
 	c.closedIntentionally.Store(false)
+
+	// Allocate per-connection channels before dial so pingLoop can use them.
+	c.connMu.Lock()
+	c.pingCancel = make(chan struct{})
+	c.lastPing = make(chan struct{}, 1)
+	c.connMu.Unlock()
 
 	if err := c.dial(); err != nil {
 		return err
 	}
 
 	// Start the read loop and ping loop.
+	// Snapshot per-connection channels under the lock so pingLoop sees a consistent pair.
+	c.connMu.Lock()
+	pingCancel := c.pingCancel
+	lastPing := c.lastPing
+	c.connMu.Unlock()
+
 	go c.readLoop()
-	go c.pingLoop()
+	go c.pingLoop(pingCancel, lastPing)
 
 	if c.onConnect != nil {
 		c.onConnect()
@@ -196,6 +215,8 @@ func (c *SIOClient) Connect() error {
 }
 
 // dial performs the Engine.IO + Socket.IO handshake and stores the new connection.
+// Callers must hold no locks; dial acquires connMu to update c.conn, c.pingInterval,
+// and c.pingTimeout atomically.
 func (c *SIOClient) dial() error {
 	wsURL, err := c.buildWSURL()
 	if err != nil {
@@ -235,9 +256,9 @@ func (c *SIOClient) dial() error {
 		return fmt.Errorf("parse open payload: %w", err)
 	}
 
-	c.pingInterval = time.Duration(openPayload.PingInterval) * time.Millisecond
-	c.pingTimeout = time.Duration(openPayload.PingTimeout) * time.Millisecond
-	c.logger.Printf("[sio] Engine.IO open: sid=%s pingInterval=%v pingTimeout=%v", openPayload.SID, c.pingInterval, c.pingTimeout)
+	pingInterval := time.Duration(openPayload.PingInterval) * time.Millisecond
+	pingTimeout := time.Duration(openPayload.PingTimeout) * time.Millisecond
+	c.logger.Printf("[sio] Engine.IO open: sid=%s pingInterval=%v pingTimeout=%v", openPayload.SID, pingInterval, pingTimeout)
 
 	// Send Socket.IO CONNECT packet for the namespace (type 40)
 	connectPayload := ""
@@ -290,8 +311,11 @@ func (c *SIOClient) dial() error {
 
 	c.logger.Printf("[sio] Socket.IO connected to namespace %s", c.namespace)
 
+	// Update conn, pingInterval, and pingTimeout atomically under connMu.
 	c.connMu.Lock()
 	c.conn = conn
+	c.pingInterval = pingInterval
+	c.pingTimeout = pingTimeout
 	c.connMu.Unlock()
 
 	return nil
@@ -300,10 +324,14 @@ func (c *SIOClient) dial() error {
 // Close disconnects the client intentionally — does NOT trigger reconnection.
 func (c *SIOClient) Close() {
 	if c.closedIntentionally.CompareAndSwap(false, true) {
-		c.closed.Store(true)
 		c.connMu.Lock()
 		if c.conn != nil {
 			c.conn.Close()
+		}
+		// Signal the pingLoop to exit immediately.
+		if c.pingCancel != nil {
+			close(c.pingCancel)
+			c.pingCancel = nil
 		}
 		c.connMu.Unlock()
 		// Close done channel exactly once.
@@ -346,7 +374,17 @@ func (c *SIOClient) buildWSURL() (string, error) {
 
 func (c *SIOClient) readLoop() {
 	for {
-		_, msg, err := c.conn.ReadMessage()
+		// Snapshot the conn pointer under connMu to avoid a race with Close() /
+		// startReconnect() replacing c.conn while we are in ReadMessage().
+		c.connMu.Lock()
+		conn := c.conn
+		c.connMu.Unlock()
+
+		if conn == nil {
+			return
+		}
+
+		_, msg, err := conn.ReadMessage()
 		if err != nil {
 			if c.closedIntentionally.Load() {
 				// Intentional close — no reconnect.
@@ -390,7 +428,16 @@ func (c *SIOClient) startReconnect() bool {
 
 		attempt++
 		if c.maxReconnectAttempts > 0 && attempt > c.maxReconnectAttempts {
-			c.logger.Printf("[sio] reconnect exhausted after %d attempts", attempt-1)
+			// Log the number of buffered emits that will be lost.
+			c.emitBufMu.Lock()
+			dropped := len(c.emitBuf)
+			c.emitBuf = nil
+			c.emitBufMu.Unlock()
+			if dropped > 0 {
+				c.logger.Printf("[sio] reconnect exhausted after %d attempts — dropping %d buffered emit(s)", attempt, dropped)
+			} else {
+				c.logger.Printf("[sio] reconnect exhausted after %d attempts", attempt)
+			}
 			return false
 		}
 
@@ -398,24 +445,31 @@ func (c *SIOClient) startReconnect() bool {
 		jitter := time.Duration(float64(delay) * (0.75 + rand.Float64()*0.5))
 		c.logger.Printf("[sio] reconnect attempt %d in %v", attempt, jitter)
 
+		// Wait for the jitter delay, but exit early if Close() is called (P2 fix).
 		select {
 		case <-time.After(jitter):
+		case <-c.done:
+			return false
 		}
 
 		if c.closedIntentionally.Load() {
 			return false
 		}
 
-		// Close the old connection before dialing.
+		// Signal the old pingLoop to exit before we replace the connection.
+		// Then close the old connection and allocate fresh per-connection channels.
 		c.connMu.Lock()
+		if c.pingCancel != nil {
+			close(c.pingCancel)
+		}
 		if c.conn != nil {
 			c.conn.Close()
 			c.conn = nil
 		}
-		c.connMu.Unlock()
-
-		// Reset lastPing channel for the new connection.
+		// Allocate fresh channels for the new connection.
+		c.pingCancel = make(chan struct{})
 		c.lastPing = make(chan struct{}, 1)
+		c.connMu.Unlock()
 
 		if err := c.dial(); err != nil {
 			c.logger.Printf("[sio] reconnect attempt %d failed: %v", attempt, err)
@@ -429,8 +483,16 @@ func (c *SIOClient) startReconnect() bool {
 
 		c.logger.Printf("[sio] reconnected successfully on attempt %d", attempt)
 
-		// Restart ping loop for the new connection.
-		go c.pingLoop()
+		// Snapshot per-connection channels under connMu so the new pingLoop
+		// sees a consistent pair of channels.
+		c.connMu.Lock()
+		pingCancel := c.pingCancel
+		lastPing := c.lastPing
+		c.connMu.Unlock()
+
+		// Start a new pingLoop with the fresh channels.
+		// The old pingLoop has already received the close signal via the old pingCancel.
+		go c.pingLoop(pingCancel, lastPing)
 
 		// Fire OnConnect callback (triggers re-registration).
 		if c.onConnect != nil {
@@ -474,12 +536,13 @@ func (c *SIOClient) handleMessage(msg string) {
 		if c.conn != nil {
 			c.conn.WriteMessage(websocket.TextMessage, []byte("3")) // pong
 		}
-		c.connMu.Unlock()
-		// Signal the ping monitor
+		// Signal the ping monitor under the same lock so lastPing is always
+		// read/written with connMu held (consistent with startReconnect replacing it).
 		select {
 		case c.lastPing <- struct{}{}:
 		default:
 		}
+		c.connMu.Unlock()
 	case '3': // pong (unexpected in EIO4 client mode, but handle gracefully)
 		// ok
 	case '4': // message (Socket.IO)
@@ -563,25 +626,38 @@ func (c *SIOClient) handleEvent(msg string) {
 	}
 }
 
-func (c *SIOClient) pingLoop() {
+// pingLoop monitors for ping timeout on a single connection lifetime.
+// pingCancel is closed when this pingLoop should exit (connection replaced or client closed).
+// lastPing is signaled each time the server sends an EIO ping.
+func (c *SIOClient) pingLoop(pingCancel <-chan struct{}, lastPing <-chan struct{}) {
 	// In Engine.IO v4 (EIO=4), the SERVER sends pings ("2") and the CLIENT
 	// responds with pongs ("3"). The client does NOT initiate pings.
 	//
 	// This loop monitors for ping timeout: if the server doesn't send a ping
 	// within (pingInterval + pingTimeout), we assume the connection is dead.
-	timeout := c.pingInterval + c.pingTimeout
-	if timeout == 0 {
-		timeout = 85 * time.Second // default: 25s interval + 60s timeout
+
+	// Read pingInterval and pingTimeout under connMu to avoid a race with dial().
+	c.connMu.Lock()
+	interval := c.pingInterval
+	timeout := c.pingTimeout
+	c.connMu.Unlock()
+
+	pingTimeout := interval + timeout
+	if pingTimeout == 0 {
+		pingTimeout = 85 * time.Second // default: 25s interval + 60s timeout
 	}
 
-	timer := time.NewTimer(timeout)
+	timer := time.NewTimer(pingTimeout)
 	defer timer.Stop()
 
 	for {
 		select {
+		case <-pingCancel:
+			// Connection replaced or client closed — exit cleanly.
+			return
 		case <-c.done:
 			return
-		case <-c.lastPing:
+		case <-lastPing:
 			// Server sent a ping — reset the timer
 			if !timer.Stop() {
 				select {
@@ -589,13 +665,13 @@ func (c *SIOClient) pingLoop() {
 				default:
 				}
 			}
-			timer.Reset(timeout)
+			timer.Reset(pingTimeout)
 		case <-timer.C:
 			if c.closedIntentionally.Load() {
 				return
 			}
 			if c.logger != nil {
-				c.logger.Printf("[sio] ping timeout — no server ping in %v", timeout)
+				c.logger.Printf("[sio] ping timeout — no server ping in %v", pingTimeout)
 			}
 			// Close the connection — readLoop will handle reconnection.
 			c.connMu.Lock()
