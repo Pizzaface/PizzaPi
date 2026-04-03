@@ -3,6 +3,7 @@ package claudewrapper
 import (
 	"encoding/json"
 	"fmt"
+	"sync"
 	"time"
 )
 
@@ -11,6 +12,7 @@ type RelayEvent map[string]any
 
 // Adapter accumulates streaming state and converts Claude events to relay events.
 type Adapter struct {
+	mu                sync.Mutex // protects all mutable state
 	currentMessageID  string
 	model             AdapterModel
 	cwd               string
@@ -50,10 +52,14 @@ func NewAdapter() *Adapter {
 // list when the next system event arrives (Claude emits a system event
 // at the start of every turn, including follow-ups).
 func (a *Adapter) SetUserPrompt(prompt string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	a.pendingUserPrompt = prompt
 }
 
 func (a *Adapter) HandleEvent(ev ClaudeEvent) []RelayEvent {
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	switch e := ev.(type) {
 	case *SystemEvent:
 		a.model = AdapterModel{Provider: "anthropic", ID: e.Model}
