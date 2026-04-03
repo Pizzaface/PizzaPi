@@ -42,12 +42,20 @@ type Provider interface {
 // ProviderContext carries the configuration a provider needs to start a session.
 type ProviderContext struct {
 	// Prompt is the initial user message.
+	// May be empty when resuming an existing session.
 	Prompt string
 	// Cwd is the working directory for the session.
 	Cwd string
 	// Model is the requested model ID (e.g. "claude-sonnet-4-20250514").
 	// Provider implementations map this to their native model identifiers.
 	Model string
+	// ResumeID is the Claude session ID to resume (passed as --resume <id>).
+	// When set, the provider resumes an existing conversation.
+	// Prompt may be empty when ResumeID is set.
+	ResumeID string
+	// ResumePath is a path to a session file to resume from.
+	// Used as a fallback if ResumeID is not available.
+	ResumePath string
 	// OnStderr is called with each line of stderr output (for logging).
 	OnStderr func(string)
 }
