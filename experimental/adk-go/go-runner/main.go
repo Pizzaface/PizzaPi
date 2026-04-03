@@ -568,6 +568,15 @@ func (r *GoRunner) handleSessionEnded(data json.RawMessage) {
 		return
 	}
 	r.logger.Printf("session_ended from relay: %s", payload.SessionID[:min(8, len(payload.SessionID))])
+
+	// Cancel adopted session goroutines before deleting — otherwise the
+	// goroutine blocks forever on ctx.Done() / relaySess.Done().
+	if val, ok := r.sessions.Load(payload.SessionID); ok {
+		sess := val.(*session)
+		if sess.adopted && sess.cancel != nil {
+			sess.cancel()
+		}
+	}
 	r.sessions.Delete(payload.SessionID)
 }
 
