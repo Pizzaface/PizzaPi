@@ -16,13 +16,15 @@ import (
 // independently to the relay. The Go runner emulates this by creating a
 // lightweight SIO connection per session on /relay.
 type RelaySession struct {
-	sessionID string
-	token     string // auth token returned by relay registration
-	client    *SIOClient
-	logger    *log.Logger
-	onInput   func(text string) // callback when user sends input from web UI
-	done      chan struct{}
-	closeOnce sync.Once
+	sessionID   string
+	token       string // auth token returned by relay registration
+	client      *SIOClient
+	logger      *log.Logger
+	onInput     func(text string)          // callback when user sends input from web UI
+	onSteer     func(text string)          // callback for steer (interrupt) messages
+	onFollowUp  func(text string)          // callback for follow-up (post-turn) messages
+	done        chan struct{}
+	closeOnce   sync.Once
 }
 
 // NewRelaySession creates and connects a relay session.
@@ -95,6 +97,36 @@ func (rs *RelaySession) Connect(relayURL, apiKey, cwd string) error {
 		rs.logger.Printf("session %s: received user input: %s", rs.sessionID[:8], payload.Text[:min(len(payload.Text), 80)])
 		if rs.onInput != nil {
 			rs.onInput(payload.Text)
+		}
+	})
+
+	// Handle steer (mid-turn interrupt) messages from the relay
+	rs.client.On("steer", func(data json.RawMessage) {
+		var payload struct {
+			Text string `json:"text"`
+		}
+		if err := json.Unmarshal(data, &payload); err != nil {
+			rs.logger.Printf("session %s: failed to parse steer: %v", rs.sessionID[:8], err)
+			return
+		}
+		rs.logger.Printf("session %s: received steer: %s", rs.sessionID[:8], payload.Text[:min(len(payload.Text), 80)])
+		if rs.onSteer != nil {
+			rs.onSteer(payload.Text)
+		}
+	})
+
+	// Handle follow-up (post-turn queued) messages from the relay
+	rs.client.On("follow_up", func(data json.RawMessage) {
+		var payload struct {
+			Text string `json:"text"`
+		}
+		if err := json.Unmarshal(data, &payload); err != nil {
+			rs.logger.Printf("session %s: failed to parse follow_up: %v", rs.sessionID[:8], err)
+			return
+		}
+		rs.logger.Printf("session %s: received follow_up: %s", rs.sessionID[:8], payload.Text[:min(len(payload.Text), 80)])
+		if rs.onFollowUp != nil {
+			rs.onFollowUp(payload.Text)
 		}
 	})
 

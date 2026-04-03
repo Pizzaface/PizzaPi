@@ -257,6 +257,22 @@ func (r *GoRunner) runSession(ctx context.Context, sess *session, pctx ProviderC
 		}
 	}
 
+	// Wire up steer messages from relay → provider queue (interrupt priority)
+	relaySess.onSteer = func(text string) {
+		r.logger.Printf("session %s: received steer message", sessionID[:8])
+		if err := sess.provider.QueueMessage(QueuedMessage{Text: text, Priority: Steer}); err != nil {
+			r.logger.Printf("session %s: steer queue error: %v", sessionID[:8], err)
+		}
+	}
+
+	// Wire up follow-up messages from relay → provider queue (post-turn priority)
+	relaySess.onFollowUp = func(text string) {
+		r.logger.Printf("session %s: received follow-up message", sessionID[:8])
+		if err := sess.provider.QueueMessage(QueuedMessage{Text: text, Priority: FollowUp}); err != nil {
+			r.logger.Printf("session %s: follow-up queue error: %v", sessionID[:8], err)
+		}
+	}
+
 	if err := relaySess.Connect(r.relayURL, r.apiKey, cwd); err != nil {
 		r.logger.Printf("session %s relay registration failed: %v", sessionID[:8], err)
 		r.client.Emit("session_error", map[string]any{
