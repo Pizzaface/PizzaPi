@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach, beforeAll, mock } from "bun:test";
+import { afterAll, describe, it, expect, afterEach, beforeAll, mock } from "bun:test";
 import { Database } from "bun:sqlite";
 import { Kysely } from "kysely";
 import { BunSqliteDialect } from "kysely-bun-sqlite";
@@ -22,6 +22,10 @@ const paginationStorePromise = (async () => {
     // Dynamic import so the mock is active
     return await import("./store.js");
 })();
+
+// Restore module mocks after this file so the auth.js mock doesn't bleed
+// into other test files sharing the same Bun worker process.
+afterAll(() => mock.restore());
 
 describe("store.ts", () => {
     describe("getEphemeralSweepIntervalMs", () => {

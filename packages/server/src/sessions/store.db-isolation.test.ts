@@ -22,6 +22,10 @@ const testDb = createTestDatabase(dbPath);
 const TEST_USER_ID = "test-user-pin";
 const TEST_USER = "test-user-runner-assoc";
 
+function currentIso(): string {
+    return new Date().toISOString();
+}
+
 async function insertSession(opts: {
     sessionId: string;
     userId?: string;
@@ -29,7 +33,7 @@ async function insertSession(opts: {
     expiresAt?: string | null;
     isPinned?: number;
 }) {
-    const now = new Date().toISOString();
+    const now = currentIso();
     await getKysely()
         .insertInto("relay_session")
         .values({
@@ -180,7 +184,7 @@ describe("listPersistedRelaySessionsForUser", () => {
             userId: TEST_USER,
             cwd: "/project",
             shareUrl: "http://test/s-ra-4",
-            startedAt: new Date().toISOString(),
+            startedAt: currentIso(),
             isEphemeral: false,
             runnerId: "runner-list",
             runnerName: "List Runner",
@@ -226,7 +230,7 @@ describe("listPinnedRelaySessionsForUser", () => {
             userId: TEST_USER,
             cwd: "/project",
             shareUrl: "http://test/s-ra-5",
-            startedAt: new Date().toISOString(),
+            startedAt: currentIso(),
             isEphemeral: false,
             runnerId: "runner-pin",
             runnerName: "Pinned Runner",
@@ -248,7 +252,7 @@ describe("listPinnedRelaySessionsForUser", () => {
             userId: TEST_USER,
             cwd: "/project",
             shareUrl: "http://test/s-ra-6",
-            startedAt: new Date().toISOString(),
+            startedAt: currentIso(),
             isEphemeral: false,
             runnerId: "runner-restart",
             runnerName: "Restarting Runner",
@@ -258,7 +262,7 @@ describe("listPinnedRelaySessionsForUser", () => {
 
         await getKysely()
             .updateTable("relay_session")
-            .set({ endedAt: new Date().toISOString() })
+            .set({ endedAt: currentIso() })
             .where("id", "=", "s-ra-6")
             .execute();
 
@@ -344,7 +348,7 @@ describe("runner association persistence", () => {
             userId: TEST_USER,
             cwd: "/project",
             shareUrl: "http://test/s-ra-1",
-            startedAt: new Date().toISOString(),
+            startedAt: currentIso(),
             isEphemeral: false,
             runnerId: "runner-abc",
             runnerName: "My Runner",
@@ -366,7 +370,7 @@ describe("runner association persistence", () => {
             userId: TEST_USER,
             cwd: "/project",
             shareUrl: "http://test/s-ra-2",
-            startedAt: new Date().toISOString(),
+            startedAt: currentIso(),
             isEphemeral: false,
         });
 
@@ -386,7 +390,7 @@ describe("runner association persistence", () => {
             userId: TEST_USER,
             cwd: "/project",
             shareUrl: "http://test/s-ra-3",
-            startedAt: new Date().toISOString(),
+            startedAt: currentIso(),
             isEphemeral: false,
         });
 
@@ -415,7 +419,7 @@ describe("runner association persistence", () => {
                 userId: TEST_USER,
                 cwd: "/project",
                 shareUrl: "http://test/s-ra-race",
-                startedAt: new Date().toISOString(),
+                startedAt: currentIso(),
                 isEphemeral: false,
             });
         })();
@@ -441,7 +445,7 @@ describe("runner association persistence", () => {
             userId: TEST_USER,
             cwd: "/project",
             shareUrl: "http://test/s-ra-reconn",
-            startedAt: new Date().toISOString(),
+            startedAt: currentIso(),
             isEphemeral: false,
         });
 
@@ -457,7 +461,7 @@ describe("runner association persistence", () => {
             userId: TEST_USER,
             cwd: "/project",
             shareUrl: "http://test/s-ra-reconn",
-            startedAt: new Date().toISOString(),
+            startedAt: currentIso(),
             isEphemeral: false,
             runnerId: "runner-reconn",
             runnerName: "Reconnected Runner",
@@ -478,7 +482,7 @@ describe("runner association persistence", () => {
             userId: TEST_USER,
             cwd: "/project",
             shareUrl: "http://test/s-ra-null-guard",
-            startedAt: new Date().toISOString(),
+            startedAt: currentIso(),
             isEphemeral: false,
             runnerId: "runner-original",
             runnerName: "Original Runner",
@@ -489,7 +493,7 @@ describe("runner association persistence", () => {
             userId: TEST_USER,
             cwd: "/project",
             shareUrl: "http://test/s-ra-null-guard",
-            startedAt: new Date().toISOString(),
+            startedAt: currentIso(),
             isEphemeral: false,
         });
 
@@ -509,7 +513,7 @@ describe("runner association persistence", () => {
             userId: TEST_USER,
             cwd: "/project",
             shareUrl: "http://test/s-ra-uid",
-            startedAt: new Date().toISOString(),
+            startedAt: currentIso(),
             isEphemeral: false,
         });
 

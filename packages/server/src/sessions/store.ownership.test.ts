@@ -5,7 +5,7 @@
  * Uses mock.module to replace ../auth.js so getKysely() returns an in-memory
  * SQLite instance owned by this file.
  */
-import { describe, it, expect, beforeAll, afterEach, mock } from "bun:test";
+import { afterAll, describe, it, expect, beforeAll, afterEach, mock } from "bun:test";
 import { Database } from "bun:sqlite";
 import { Kysely } from "kysely";
 import { BunSqliteDialect } from "kysely-bun-sqlite";
@@ -20,6 +20,10 @@ mock.module("../auth.js", () => ({
     createTestDatabase: () => memDb,
     _setKyselyForTest: () => {},
 }));
+
+// Restore module mocks after this file so the auth.js mock doesn't bleed
+// into other test files sharing the same Bun worker process.
+afterAll(() => mock.restore());
 
 import {
     ensureRelaySessionTables,
