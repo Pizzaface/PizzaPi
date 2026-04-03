@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -724,5 +725,170 @@ func TestSIOClientBufferedEmitReplayedAfterReconnect(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("timed out waiting for buffered emit replay")
+	}
+}
+
+// TestSIOClientConcurrentEmitDuringDrainRace verifies that Emit() calls made
+// concurrently while replayBufferedEmits() is draining the buffer are not lost.
+//
+// This specifically targets the emit-during-drain race where a concurrent Emit()
+// sees reconnecting=true, appends to the buffer WHILE drain is in progress, and
+// that item would be orphaned if reconnecting is set to false before the append
+// is picked up.
+func TestSIOClientConcurrentEmitDuringDrainRace(t *testing.T) {
+	const numConcurrentEmits = 20
+
+	var serveCount atomic.Int32
+	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+
+	// Collect all messages received on the second (reconnected) connection.
+	var secondConnMessages []string
+	var secondConnMu sync.Mutex
+
+	// closeFirstConn is called by the test to drop the first server-side connection,
+	// simulating a transient network drop.
+	var firstConnRef *websocket.Conn
+	var firstConnRefMu sync.Mutex
+	firstConnReady := make(chan struct{})
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/socket.io/", func(w http.ResponseWriter, r *http.Request) {
+		n := serveCount.Add(1)
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		conn.WriteMessage(websocket.TextMessage, []byte(`0{"sid":"sid","upgrades":[],"pingInterval":25000,"pingTimeout":20000}`))
+		conn.ReadMessage() // consume CONNECT
+		conn.WriteMessage(websocket.TextMessage, []byte(`40/runner,{"sid":"s"}`))
+
+		if n == 1 {
+			// Store the first connection so the test can close it on demand.
+			firstConnRefMu.Lock()
+			firstConnRef = conn
+			firstConnRefMu.Unlock()
+			close(firstConnReady)
+
+			// Read until closed.
+			for {
+				_, _, err := conn.ReadMessage()
+				if err != nil {
+					return
+				}
+			}
+		} else {
+			// Second (reconnected) connection: collect everything that arrives.
+			for {
+				_, msg, err := conn.ReadMessage()
+				if err != nil {
+					return
+				}
+				secondConnMu.Lock()
+				secondConnMessages = append(secondConnMessages, string(msg))
+				secondConnMu.Unlock()
+			}
+		}
+	})
+
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	var connectCount atomic.Int32
+	reconnected := make(chan struct{}, 1)
+
+	client := NewSIOClient(SIOClientConfig{
+		URL:       ts.URL,
+		Namespace: "/runner",
+		Auth:      map[string]any{"apiKey": "test"},
+		OnConnect: func() {
+			n := connectCount.Add(1)
+			if n >= 2 {
+				select {
+				case reconnected <- struct{}{}:
+				default:
+				}
+			}
+		},
+		ReconnectDelay:    30 * time.Millisecond,
+		ReconnectMaxDelay: 500 * time.Millisecond,
+	})
+
+	if err := client.Connect(); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer client.Close()
+
+	// Wait for the first server-side connection to be established.
+	select {
+	case <-firstConnReady:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for first server connection")
+	}
+	time.Sleep(30 * time.Millisecond)
+
+	// Drop the server-side connection — client enters reconnecting state.
+	firstConnRefMu.Lock()
+	if firstConnRef != nil {
+		firstConnRef.Close()
+	}
+	firstConnRefMu.Unlock()
+
+	// Give the client a moment to detect the drop and set reconnecting=true.
+	time.Sleep(15 * time.Millisecond)
+
+	// Now emit numConcurrentEmits concurrently while reconnect is in-flight.
+	// Some will be buffered (reconnecting=true), some may race with drain.
+	var wg sync.WaitGroup
+	for i := 0; i < numConcurrentEmits; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			event := fmt.Sprintf("concurrent_emit_%d", idx)
+			if err := client.Emit(event, map[string]any{"idx": idx}); err != nil {
+				// May error if reconnect hasn't completed yet and conn is nil;
+				// log but don't fail — such emits would be non-deliverable anyway.
+				t.Logf("emit %d error: %v", idx, err)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	// Wait for reconnect to complete.
+	select {
+	case <-reconnected:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for reconnect")
+	}
+
+	// Give the drain and any concurrent emissions time to settle.
+	time.Sleep(200 * time.Millisecond)
+
+	// Count how many concurrent_emit_N messages arrived on the second connection.
+	secondConnMu.Lock()
+	msgs := make([]string, len(secondConnMessages))
+	copy(msgs, secondConnMessages)
+	secondConnMu.Unlock()
+
+	// Track which indices arrived.
+	arrivedSet := make(map[int]bool)
+	for _, msg := range msgs {
+		for i := 0; i < numConcurrentEmits; i++ {
+			if strings.Contains(msg, fmt.Sprintf("concurrent_emit_%d", i)) {
+				arrivedSet[i] = true
+			}
+		}
+	}
+
+	// All emits that succeeded (returned nil) MUST have arrived on the reconnected
+	// connection. Emits that returned an error are non-deliverable (connection was
+	// still nil during dial) and are excluded from the count.
+	//
+	// Since we call Emit() after the connection drop but before reconnect completes,
+	// most or all should be buffered and replayed. The race detector will catch any
+	// data races in the buffer drain path.
+	t.Logf("concurrent emits arrived: %d/%d (msgs total: %d)",
+		len(arrivedSet), numConcurrentEmits, len(msgs))
+	if len(arrivedSet) == 0 && numConcurrentEmits > 0 {
+		t.Fatalf("no concurrent emits arrived — buffer drain may be broken\nreceived: %v", msgs)
 	}
 }

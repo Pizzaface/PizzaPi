@@ -415,6 +415,11 @@ func (c *SIOClient) readLoop() {
 // Returns true if reconnection succeeded, false if exhausted or intentional close.
 func (c *SIOClient) startReconnect() bool {
 	c.reconnecting.Store(true)
+	// The reconnecting flag is normally cleared by replayBufferedEmits() on the
+	// success path (while holding emitBufMu, when the buffer is fully drained).
+	// The defer below handles all failure paths (exhausted, closed, etc.) where
+	// replayBufferedEmits() is never called. On the success path, replayBufferedEmits()
+	// sets reconnecting=false first, and this defer fires afterward as a no-op.
 	defer c.reconnecting.Store(false)
 
 	delay := c.reconnectDelay
@@ -471,6 +476,12 @@ func (c *SIOClient) startReconnect() bool {
 		c.lastPing = make(chan struct{}, 1)
 		c.connMu.Unlock()
 
+		// P2: Guard — avoid a useless network round-trip if Close() was called
+		// during the backoff window.
+		if c.closedIntentionally.Load() {
+			return false
+		}
+
 		if err := c.dial(); err != nil {
 			c.logger.Printf("[sio] reconnect attempt %d failed: %v", attempt, err)
 			// Exponential backoff with cap.
@@ -481,14 +492,23 @@ func (c *SIOClient) startReconnect() bool {
 			continue
 		}
 
-		c.logger.Printf("[sio] reconnected successfully on attempt %d", attempt)
-
-		// Snapshot per-connection channels under connMu so the new pingLoop
-		// sees a consistent pair of channels.
+		// P1 fix (connection leak): After dial() succeeds, check under connMu whether
+		// Close() raced with us. Close() may have found c.conn==nil and skipped closing
+		// it. If so, we must close the freshly-dialled connection ourselves.
 		c.connMu.Lock()
+		if c.closedIntentionally.Load() {
+			if c.conn != nil {
+				c.conn.Close()
+				c.conn = nil
+			}
+			c.connMu.Unlock()
+			return false
+		}
 		pingCancel := c.pingCancel
 		lastPing := c.lastPing
 		c.connMu.Unlock()
+
+		c.logger.Printf("[sio] reconnected successfully on attempt %d", attempt)
 
 		// Start a new pingLoop with the fresh channels.
 		// The old pingLoop has already received the close signal via the old pingCancel.
@@ -499,7 +519,8 @@ func (c *SIOClient) startReconnect() bool {
 			c.onConnect()
 		}
 
-		// Replay buffered emits.
+		// Replay buffered emits. This also clears the reconnecting flag atomically
+		// once the buffer is fully drained (preventing the emit-during-drain race).
 		c.replayBufferedEmits()
 
 		return true
@@ -507,16 +528,42 @@ func (c *SIOClient) startReconnect() bool {
 }
 
 // replayBufferedEmits drains the emit buffer and sends all pending events.
+//
+// It uses a loop-drain approach to handle concurrent Emit() calls that may
+// append to the buffer while we are draining. It sets reconnecting=false while
+// holding emitBufMu and only when the buffer is truly empty, which prevents
+// the following race:
+//
+//	1. We drain the buffer and release the lock.
+//	2. A concurrent Emit() sees reconnecting=true and appends to the (now empty) buffer.
+//	3. We set reconnecting=false — the newly appended item is orphaned.
+//
+// By setting reconnecting=false while holding emitBufMu (with an empty buffer),
+// any concurrent Emit() either:
+//   - Appends before we clear the flag → we pick it up in the next loop iteration.
+//   - Appends after we clear the flag → reconnecting is already false, so Emit()
+//     takes the emitDirect() path directly (the atomic Load happens before the lock).
 func (c *SIOClient) replayBufferedEmits() {
-	c.emitBufMu.Lock()
-	buf := c.emitBuf
-	c.emitBuf = nil
-	c.emitBufMu.Unlock()
+	for {
+		c.emitBufMu.Lock()
+		if len(c.emitBuf) == 0 {
+			// Buffer is fully drained. Clear the reconnecting flag while holding the
+			// buffer lock so no new items can be appended to the buffer between the
+			// empty-check and the flag clear. After this point, Emit() takes the
+			// direct path.
+			c.reconnecting.Store(false)
+			c.emitBufMu.Unlock()
+			return
+		}
+		batch := c.emitBuf
+		c.emitBuf = nil
+		c.emitBufMu.Unlock()
 
-	for _, e := range buf {
-		c.logger.Printf("[sio] replaying buffered emit %q", e.event)
-		if err := c.emitDirect(e.event, e.data); err != nil {
-			c.logger.Printf("[sio] failed to replay emit %q: %v", e.event, err)
+		for _, e := range batch {
+			c.logger.Printf("[sio] replaying buffered emit %q", e.event)
+			if err := c.emitDirect(e.event, e.data); err != nil {
+				c.logger.Printf("[sio] failed to replay emit %q: %v", e.event, err)
+			}
 		}
 	}
 }
