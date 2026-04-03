@@ -1,5 +1,22 @@
 package main
 
+// MessagePriority determines when a queued message is delivered.
+type MessagePriority int
+
+const (
+	// FollowUp delivers the message after the current turn completes.
+	FollowUp MessagePriority = iota
+	// Steer interrupts the current turn and delivers the message immediately.
+	// In Phase 0, Steer degrades to FollowUp (true SIGINT interruption is Phase 1).
+	Steer
+)
+
+// QueuedMessage is a message waiting for delivery.
+type QueuedMessage struct {
+	Text     string
+	Priority MessagePriority
+}
+
 // Provider drives an LLM session. Implementations handle process lifecycle,
 // protocol translation, and event format conversion internally.
 //
@@ -25,9 +42,14 @@ type Provider interface {
 	// For API providers, this sends a new request with conversation history.
 	SendMessage(text string) error
 
-	// SetActiveHeartbeat emits an active=true heartbeat through the relay.
-	// Called by the runner when user input arrives (before SendMessage).
-	// Providers can also emit heartbeats internally through the event channel.
+	// QueueMessage enqueues a message for delivery according to its priority.
+	// FollowUp messages are delivered after the current turn completes.
+	// Steer messages interrupt the current turn (Phase 0: degrades to FollowUp).
+	QueueMessage(msg QueuedMessage) error
+
+	// IsActive reports whether the provider is currently processing a turn
+	// (i.e. between a SystemEvent and a ResultEvent).
+	IsActive() bool
 
 	// Done returns a channel that closes when the provider session exits.
 	Done() <-chan struct{}

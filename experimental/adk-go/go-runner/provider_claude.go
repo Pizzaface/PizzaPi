@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"sync"
+	"sync/atomic"
 
 	claudewrapper "github.com/pizzaface/pizzapi/experimental/adk-go/claude-wrapper"
 )
@@ -24,15 +25,22 @@ type ClaudeCLIProvider struct {
 	events chan RelayEvent // relay events produced by this provider
 	done   chan struct{}
 	mu     sync.Mutex
+
+	// Message queue fields
+	followUpQueue chan string    // buffered channel for follow-up messages
+	steerCh       chan string    // channel for steer messages (capacity 1 — only latest matters)
+	active        atomic.Bool   // true while processing a turn (SystemEvent → ResultEvent)
 }
 
 // NewClaudeCLIProvider creates a new Claude CLI provider.
 func NewClaudeCLIProvider(logger *log.Logger) *ClaudeCLIProvider {
 	return &ClaudeCLIProvider{
-		adapter: claudewrapper.NewAdapter(),
-		logger:  logger,
-		events:  make(chan RelayEvent, 128),
-		done:    make(chan struct{}),
+		adapter:       claudewrapper.NewAdapter(),
+		logger:        logger,
+		events:        make(chan RelayEvent, 128),
+		done:          make(chan struct{}),
+		followUpQueue: make(chan string, 64),
+		steerCh:       make(chan string, 1),
 	}
 }
 
@@ -73,15 +81,47 @@ func (p *ClaudeCLIProvider) Start(pctx ProviderContext) (<-chan RelayEvent, erro
 
 // bridge reads from the claude-wrapper event channel, converts each event
 // to zero or more RelayEvents via the adapter, and sends them on p.events.
+// It also:
+//   - Sets active=true when a SystemEvent arrives (turn started)
+//   - Sets active=false when a ResultEvent arrives (turn ended)
+//   - After each ResultEvent, drains one follow-up from followUpQueue and
+//     sends it via SendMessage to automatically start the next turn
 func (p *ClaudeCLIProvider) bridge(rawEvents <-chan claudewrapper.ClaudeEvent) {
 	defer close(p.events)
 	defer close(p.done)
 
 	for ev := range rawEvents {
+		// Track turn state
+		switch ev.(type) {
+		case *claudewrapper.SystemEvent:
+			p.active.Store(true)
+		case *claudewrapper.ResultEvent:
+			p.active.Store(false)
+		}
+
 		relayEvents := p.adapter.HandleEvent(ev)
 		for _, re := range relayEvents {
 			p.events <- re
 		}
+
+		// After ResultEvent: drain one follow-up message to start next turn
+		if _, ok := ev.(*claudewrapper.ResultEvent); ok {
+			p.drainFollowUp()
+		}
+	}
+}
+
+// drainFollowUp checks followUpQueue (non-blocking) and delivers the next
+// message if one is available. Called after each ResultEvent.
+func (p *ClaudeCLIProvider) drainFollowUp() {
+	select {
+	case text := <-p.followUpQueue:
+		p.logger.Printf("follow-up drain: sending queued message")
+		if err := p.SendMessage(text); err != nil {
+			p.logger.Printf("follow-up drain: send error: %v", err)
+		}
+	default:
+		// Queue is empty — nothing to drain
 	}
 }
 
@@ -111,6 +151,67 @@ func (p *ClaudeCLIProvider) SendMessage(text string) error {
 		return fmt.Errorf("provider not started")
 	}
 	return p.runner.WriteStdin(msgBytes)
+}
+
+// QueueMessage enqueues a message for delivery according to its priority.
+//
+// FollowUp messages are placed on followUpQueue and delivered after the
+// current turn completes (auto-drained in bridge after each ResultEvent).
+//
+// Steer messages are intended to interrupt the current turn. In Phase 0,
+// steer degrades to follow-up: the message is placed on steerCh (capacity 1,
+// so only the latest steer is retained) and will be drained on next idle.
+// True mid-turn SIGINT interruption is Phase 1.
+func (p *ClaudeCLIProvider) QueueMessage(msg QueuedMessage) error {
+	switch msg.Priority {
+	case Steer:
+		if !p.active.Load() {
+			// Not active — deliver immediately
+			p.logger.Printf("steer (idle): delivering immediately")
+			return p.SendMessage(msg.Text)
+		}
+		// Active — Phase 0: degrade to follow-up via steerCh (keep only latest)
+		p.logger.Printf("steer (active, Phase 0): degrading to follow-up")
+		// Drain any existing steer so we can insert the new (latest) one
+		select {
+		case <-p.steerCh:
+		default:
+		}
+		// Insert onto steerCh. Also push to followUpQueue so bridge can drain it.
+		select {
+		case p.steerCh <- msg.Text:
+		default:
+		}
+		select {
+		case p.followUpQueue <- msg.Text:
+		default:
+			p.logger.Printf("steer degrade: followUpQueue full, message dropped")
+		}
+		return nil
+
+	case FollowUp:
+		if !p.active.Load() {
+			// Not active — deliver immediately
+			p.logger.Printf("follow-up (idle): delivering immediately")
+			return p.SendMessage(msg.Text)
+		}
+		// Active — enqueue for post-result delivery
+		select {
+		case p.followUpQueue <- msg.Text:
+			p.logger.Printf("follow-up (active): queued (depth=%d)", len(p.followUpQueue))
+		default:
+			return fmt.Errorf("follow-up queue full")
+		}
+		return nil
+
+	default:
+		return fmt.Errorf("unknown message priority: %d", msg.Priority)
+	}
+}
+
+// IsActive reports whether the provider is currently processing a turn.
+func (p *ClaudeCLIProvider) IsActive() bool {
+	return p.active.Load()
 }
 
 // Done returns a channel that closes when the claude process exits.
