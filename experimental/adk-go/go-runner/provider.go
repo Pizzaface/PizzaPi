@@ -54,7 +54,10 @@ type ProviderContext struct {
 	// Prompt may be empty when ResumeID is set.
 	ResumeID string
 	// ResumePath is a path to a session file to resume from.
-	// Used as a fallback if ResumeID is not available.
+	// NOTE: Not supported by the Go runner. The Claude CLI --resume flag
+	// takes a session ID (see ResumeID), not a file path. ResumePath uses
+	// pi's switchSession API, which is not available in the Go runner.
+	// Providers must ignore this field rather than forwarding it to --resume.
 	ResumePath string
 	// OnStderr is called with each line of stderr output (for logging).
 	OnStderr func(string)
