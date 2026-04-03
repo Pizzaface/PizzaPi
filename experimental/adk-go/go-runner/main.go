@@ -207,8 +207,11 @@ func (r *GoRunner) handleRunnerRegistered(data json.RawMessage) {
 // so that user input is properly received and logged as a warning.
 // The session has no subprocess, so input cannot be forwarded.
 //
-// ctx is cancelled by killSession to interrupt a blocking Connect() call or
-// to stop the goroutine while it is waiting on the relay connection.
+// ctx is cancelled by killSession to stop the goroutine. Note that Connect()
+// does not accept a context and blocks for up to 10 seconds on its own
+// internal timeout — cancelling ctx does NOT interrupt a blocked Connect()
+// call mid-flight. The check on ctx.Done() after Connect() returns handles
+// the case where a kill arrived during that blocking window.
 func (r *GoRunner) runAdoptedSession(ctx context.Context, sess *session, cwd string) {
 	sessionID := sess.sessionID
 	shortID := sessionID[:min(8, len(sessionID))]
@@ -530,6 +533,8 @@ func (r *GoRunner) killSession(sess *session) {
 	sess.mu.Unlock()
 
 	// Adopted sessions have no subprocess — cancel the goroutine and let it clean up.
+	// Note: if the goroutine is mid-Connect(), the cancel won't unblock it immediately;
+	// the goroutine will exit within the Connect() timeout (~10s).
 	if isAdopted {
 		if sess.cancel != nil {
 			sess.cancel()
@@ -543,7 +548,10 @@ func (r *GoRunner) killSession(sess *session) {
 		sess.cancel()
 	}
 
-	// Wait for provider exit with timeout
+	// Wait for provider exit with timeout.
+	// NOTE: there is no done channel sync on the adopted-session goroutine here;
+	// if an adopted session's goroutine is blocked inside Connect(), it will wind
+	// down on its own within ~10 seconds (the Connect() internal timeout).
 	select {
 	case <-sess.provider.Done():
 	case <-time.After(10 * time.Second):
