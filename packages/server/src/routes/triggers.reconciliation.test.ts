@@ -51,17 +51,18 @@ mock.module("../middleware.js", () => ({
 }));
 
 // ── Mock trigger stores ──────────────────────────────────────────────────────
-const mockSubscribeSessionToTrigger = mock(() => Promise.resolve());
-const mockUnsubscribeSessionFromTrigger = mock(() => Promise.resolve());
+const mockSubscribeSessionToTrigger = mock(() => Promise.resolve("sub-default"));
+const mockUnsubscribeSessionFromTrigger = mock(() => Promise.resolve({ removed: 1, triggerType: "time:timer_fired" }));
 const mockListSessionSubscriptions = mock(() => Promise.resolve([] as any[]));
 const mockGetSubscribersForTrigger = mock(() => Promise.resolve([] as string[]));
 const mockGetSubscriptionParams = mock(() => Promise.resolve(undefined as any));
 const mockGetSubscriptionFilters = mock(() => Promise.resolve(undefined as any));
-const mockUpdateSessionSubscription = mock(() => Promise.resolve({ updated: true, runnerId: "runner-A" } as any));
+const mockUpdateSessionSubscription = mock(() => Promise.resolve({ updated: true, runnerId: "runner-A", subscriptionId: "sub-default", triggerType: "time:cron" } as any));
 
 mock.module("../sessions/trigger-subscription-store.js", () => ({
     subscribeSessionToTrigger: mockSubscribeSessionToTrigger,
     unsubscribeSessionFromTrigger: mockUnsubscribeSessionFromTrigger,
+    unsubscribeSessionSubscription: mock(() => Promise.resolve()),
     listSessionSubscriptions: mockListSessionSubscriptions,
     getSubscribersForTrigger: mockGetSubscribersForTrigger,
     getSubscriptionParams: mockGetSubscriptionParams,
@@ -142,21 +143,24 @@ describe("trigger subscription reconciliation — delta emission", () => {
             mockGetSharedSession.mockReturnValue(
                 Promise.resolve({ ...SESSION_WITH_RUNNER } as any),
             );
+            mockUnsubscribeSessionFromTrigger.mockReturnValue(
+                Promise.resolve({ removed: 1, triggerType: "time:timer_fired" }),
+            );
 
             const [req, url] = makeReq(
                 "DELETE",
-                "/api/sessions/sess-1/trigger-subscriptions/time:timer_fired",
+                "/api/sessions/sess-1/trigger-subscriptions/time:timer_fired?subscriptionId=sub-123",
             );
             const res = await handleTriggersRoute(req, url);
             expect(res!.status).toBe(200);
 
-            // emitTriggerSubscriptionDelta must have been called once
             expect(mockEmitDelta).toHaveBeenCalledTimes(1);
 
             const [runnerId, delta] = mockEmitDelta.mock.calls[0] as [string, any];
             expect(runnerId).toBe("runner-A");
             expect(delta.action).toBe("unsubscribe");
             expect(delta.subscription.sessionId).toBe("sess-1");
+            expect(delta.subscription.subscriptionId).toBe("sub-123");
             expect(delta.subscription.triggerType).toBe("time:timer_fired");
             expect(delta.subscription.runnerId).toBe("runner-A");
         });
@@ -202,6 +206,7 @@ describe("trigger subscription reconciliation — delta emission", () => {
             mockGetSharedSession.mockReturnValue(
                 Promise.resolve({ ...SESSION_WITH_RUNNER } as any),
             );
+            mockSubscribeSessionToTrigger.mockReturnValue(Promise.resolve("sub-abc"));
 
             // godmother:idea_moved has no required params — subscribe with bare triggerType
             const [req, url] = makeReq(
@@ -217,6 +222,7 @@ describe("trigger subscription reconciliation — delta emission", () => {
             expect(runnerId).toBe("runner-A");
             expect(delta.action).toBe("subscribe");
             expect(delta.subscription.sessionId).toBe("sess-1");
+            expect(delta.subscription.subscriptionId).toBe("sub-abc");
             expect(delta.subscription.triggerType).toBe("godmother:idea_moved");
             expect(delta.subscription.runnerId).toBe("runner-A");
             // No params in the delta when none were supplied
@@ -227,6 +233,7 @@ describe("trigger subscription reconciliation — delta emission", () => {
             mockGetSharedSession.mockReturnValue(
                 Promise.resolve({ ...SESSION_WITH_RUNNER } as any),
             );
+            mockSubscribeSessionToTrigger.mockReturnValue(Promise.resolve("sub-with-params"));
 
             const [req, url] = makeReq(
                 "POST",
@@ -239,6 +246,7 @@ describe("trigger subscription reconciliation — delta emission", () => {
             expect(mockEmitDelta).toHaveBeenCalledTimes(1);
             const [, delta] = mockEmitDelta.mock.calls[0] as [string, any];
             expect(delta.action).toBe("subscribe");
+            expect(delta.subscription.subscriptionId).toBe("sub-with-params");
             expect(delta.subscription.params?.duration).toBe("10m");
         });
 
@@ -246,6 +254,7 @@ describe("trigger subscription reconciliation — delta emission", () => {
             mockGetSharedSession.mockReturnValue(
                 Promise.resolve({ ...SESSION_WITH_RUNNER } as any),
             );
+            mockSubscribeSessionToTrigger.mockReturnValue(Promise.resolve("sub-with-filters"));
 
             const [req, url] = makeReq(
                 "POST",
@@ -261,6 +270,7 @@ describe("trigger subscription reconciliation — delta emission", () => {
 
             const [, delta] = mockEmitDelta.mock.calls[0] as [string, any];
             expect(delta.action).toBe("subscribe");
+            expect(delta.subscription.subscriptionId).toBe("sub-with-filters");
             expect(delta.subscription.filters?.[0].field).toBe("status");
             expect(delta.subscription.filterMode).toBe("and");
         });
@@ -290,14 +300,13 @@ describe("trigger subscription reconciliation — delta emission", () => {
             mockGetSharedSession.mockReturnValue(
                 Promise.resolve({ ...SESSION_WITH_RUNNER } as any),
             );
-            // updateSessionSubscription returns updated=true
             mockUpdateSessionSubscription.mockReturnValue(
-                Promise.resolve({ updated: true, runnerId: "runner-A" }),
+                Promise.resolve({ updated: true, runnerId: "runner-A", subscriptionId: "sub-update", triggerType: "time:cron" }),
             );
 
             const [req, url] = makeReq(
                 "PUT",
-                "/api/sessions/sess-1/trigger-subscriptions/time:cron",
+                "/api/sessions/sess-1/trigger-subscriptions/sub-update",
                 { params: { cron: "0 * * * *" } },
             );
             const res = await handleTriggersRoute(req, url);
@@ -308,6 +317,7 @@ describe("trigger subscription reconciliation — delta emission", () => {
             expect(runnerId).toBe("runner-A");
             expect(delta.action).toBe("update");
             expect(delta.subscription.sessionId).toBe("sess-1");
+            expect(delta.subscription.subscriptionId).toBe("sub-update");
             expect(delta.subscription.triggerType).toBe("time:cron");
         });
 

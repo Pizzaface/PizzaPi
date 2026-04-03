@@ -55,6 +55,7 @@ import {
 import {
     subscribeSessionToTrigger,
     unsubscribeSessionFromTrigger,
+    unsubscribeSessionSubscription,
     listSessionSubscriptions,
     getSubscribersForTrigger,
     getSubscriptionParams,
@@ -70,6 +71,21 @@ import {
     updateRunnerTriggerListener,
 } from "../sessions/runner-trigger-listener-store.js";
 import { waitForSpawnAck } from "../ws/runner-control.js";
+
+interface SubscriptionFilterRecord {
+    subscriptionId?: string;
+    filters?: SubscriptionFilter[];
+    filterMode?: SubscriptionFilterMode;
+}
+
+interface ListenerLookupResult {
+    listenerId?: string;
+    triggerType: string;
+    prompt?: string;
+    cwd?: string;
+    model?: { provider: string; id: string };
+    params?: Record<string, unknown>;
+}
 
 const log = createLogger("triggers-api");
 
@@ -145,6 +161,24 @@ function legacyParamsToFilters(params: Record<string, unknown>): SubscriptionFil
         });
     }
     return filters;
+}
+
+function normalizeFilterRecords(filterData: unknown): SubscriptionFilterRecord[] | undefined {
+    if (filterData === undefined) return undefined;
+    if (Array.isArray(filterData)) return filterData as SubscriptionFilterRecord[];
+    if (filterData && typeof filterData === "object") return [filterData as SubscriptionFilterRecord];
+    return undefined;
+}
+
+function filterRecordMatchesPayload(payload: Record<string, unknown>, record: SubscriptionFilterRecord): boolean {
+    if (record.filters && record.filters.length > 0) {
+        return payloadMatchesFilters(payload, record.filters, record.filterMode ?? "and");
+    }
+    return true;
+}
+
+function isLikelyId(value: string): boolean {
+    return !value.includes(":");
 }
 
 /** Poll for a session socket to appear after spawn (same pattern as webhooks). */
@@ -605,7 +639,7 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
             subFilterMode = body.filterMode;
         }
 
-        await subscribeSessionToTrigger(sessionId, session.runnerId, triggerType, undefined, subParams, subFilters, subFilterMode);
+        const subscriptionId = await subscribeSessionToTrigger(sessionId, session.runnerId, triggerType, undefined, subParams, subFilters, subFilterMode);
         const logParts: string[] = [];
         if (subParams) logParts.push(`params=${JSON.stringify(subParams)}`);
         if (subFilters) logParts.push(`filters=${JSON.stringify(subFilters)} mode=${subFilterMode ?? "and"}`);
@@ -621,6 +655,7 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
             void emitTriggerSubscriptionDelta(session.runnerId, {
                 action: "subscribe",
                 subscription: {
+                    subscriptionId,
                     sessionId,
                     triggerType,
                     runnerId: session.runnerId,
@@ -633,6 +668,7 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
 
         return Response.json({
             ok: true,
+            subscriptionId,
             triggerType,
             runnerId: session.runnerId,
             ...(subParams ? { params: subParams } : {}),
@@ -648,23 +684,34 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
         if (identity instanceof Response) return identity;
 
         const sessionId = decodeURIComponent(subsDeleteMatch[1]);
-        const triggerType = decodeURIComponent(subsDeleteMatch[2]);
+        const target = decodeURIComponent(subsDeleteMatch[2]);
+        const subscriptionIdParam = url.searchParams.get("subscriptionId")?.trim() || undefined;
 
         const session = await getSharedSession(sessionId);
         if (!session || session.userId !== identity.userId) {
             return Response.json({ error: "Session not found" }, { status: 404 });
         }
 
-        await unsubscribeSessionFromTrigger(sessionId, triggerType);
-        log.info(`Session ${sessionId} unsubscribed from trigger type '${triggerType}'`);
+        const triggerType = target;
+        const subscriptionId = subscriptionIdParam || (isLikelyId(target) ? target : undefined);
+        let removed = 0;
+
+        if (subscriptionIdParam) {
+            await unsubscribeSessionSubscription(sessionId, subscriptionIdParam);
+            removed = 1;
+        } else {
+            const result = await unsubscribeSessionFromTrigger(sessionId, target);
+            removed = result.removed;
+        }
+
+        log.info(`Session ${sessionId} unsubscribed from trigger target '${subscriptionIdParam ?? target}'`);
         broadcastToSessionViewers(sessionId, "trigger_subscriptions_changed", { triggerType, action: "unsubscribe" });
 
-        // Notify the runner via typed delta so it can clean up runtime state
-        // (e.g. cancel timers). Uses cluster-safe emitTriggerSubscriptionDelta.
         if (session.runnerId) {
             void emitTriggerSubscriptionDelta(session.runnerId, {
                 action: "unsubscribe",
                 subscription: {
+                    subscriptionId: subscriptionId ?? `legacy:all:${triggerType}`,
                     sessionId,
                     triggerType,
                     runnerId: session.runnerId,
@@ -672,7 +719,7 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
             });
         }
 
-        return Response.json({ ok: true, triggerType });
+        return Response.json({ ok: true, ...(subscriptionId ? { subscriptionId } : {}), triggerType, removed });
     }
 
     // ── PUT /api/sessions/:id/trigger-subscriptions/:triggerType ──────
@@ -683,7 +730,8 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
         if (identity instanceof Response) return identity;
 
         const sessionId = decodeURIComponent(subsDeleteMatch[1]);
-        const triggerType = decodeURIComponent(subsDeleteMatch[2]);
+        const target = decodeURIComponent(subsDeleteMatch[2]);
+        const subscriptionIdParam = url.searchParams.get("subscriptionId")?.trim() || undefined;
 
         const session = await getSharedSession(sessionId);
         if (!session || session.userId !== identity.userId) {
@@ -701,7 +749,7 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
         let subParams: SubscriptionParams | undefined;
         if (session.runnerId) {
             const services = await getRunnerServices(session.runnerId);
-            const triggerDef = services?.triggerDefs?.find((d) => d.type === triggerType);
+            const triggerDef = services?.triggerDefs?.find((d) => d.type === target);
 
             if (body.params && typeof body.params === "object" && !Array.isArray(body.params)) {
                 const paramDefs = triggerDef?.params ?? [];
@@ -767,7 +815,7 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
         let subFilterMode: SubscriptionFilterMode | undefined;
         if (Array.isArray(body.filters) && body.filters.length > 0) {
             const services = session.runnerId ? await getRunnerServices(session.runnerId) : null;
-            const triggerDef = services?.triggerDefs?.find((d) => d.type === triggerType);
+            const triggerDef = services?.triggerDefs?.find((d) => d.type === target);
             const schemaProps = (triggerDef?.schema as any)?.properties ?? {};
             const validatedFilters: SubscriptionFilter[] = [];
             const filterErrors: string[] = [];
@@ -794,20 +842,22 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
         }
         if (body.filterMode === "or" || body.filterMode === "and") subFilterMode = body.filterMode;
 
-        const result = await updateSessionSubscription(sessionId, triggerType, {
+        const result = await updateSessionSubscription(sessionId, subscriptionIdParam ?? target, {
             params: subParams,
             filters: subFilters,
             filterMode: subFilterMode,
         });
 
         if (!result.updated) {
-            return Response.json({ error: `Session is not subscribed to '${triggerType}'` }, { status: 404 });
+            return Response.json({ error: `Session is not subscribed to '${target}'` }, { status: 404 });
         }
 
         const logParts: string[] = [];
         if (subParams) logParts.push(`params=${JSON.stringify(subParams)}`);
         if (subFilters) logParts.push(`filters=${JSON.stringify(subFilters)} mode=${subFilterMode ?? "and"}`);
-        log.info(`Session ${sessionId} updated subscription for '${triggerType}'${logParts.length > 0 ? ` with ${logParts.join(", ")}` : ""}`);
+        const triggerType = result.triggerType ?? target;
+        const subscriptionId = result.subscriptionId ?? subscriptionIdParam ?? (isLikelyId(target) ? target : undefined);
+        log.info(`Session ${sessionId} updated subscription for '${target}'${logParts.length > 0 ? ` with ${logParts.join(", ")}` : ""}`);
         broadcastToSessionViewers(sessionId, "trigger_subscriptions_changed", { triggerType, action: "update" });
 
         // Notify the runner via typed delta.
@@ -818,6 +868,7 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
             void emitTriggerSubscriptionDelta(session.runnerId, {
                 action: "update",
                 subscription: {
+                    subscriptionId: subscriptionId ?? `legacy:all:${triggerType}`,
                     sessionId,
                     triggerType,
                     runnerId: session.runnerId,
@@ -830,6 +881,7 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
 
         return Response.json({
             ok: true,
+            ...(subscriptionId ? { subscriptionId } : {}),
             triggerType,
             runnerId: result.runnerId,
             ...(subParams ? { params: subParams } : {}),
@@ -906,15 +958,11 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
             // Filter by subscription filters (based on output schema fields).
             // New subscriptions always have a filterData result (even with filters=[]).
             // Legacy subscriptions return undefined and fall back to param matching.
-            const filterData = await getSubscriptionFilters(targetSessionId, body.type);
+            const filterData = normalizeFilterRecords(await getSubscriptionFilters(targetSessionId, body.type));
             if (filterData) {
-                // New-format subscription — use filters (empty filters = deliver all)
-                if (filterData.filters && filterData.filters.length > 0) {
-                    if (!payloadMatchesFilters(body.payload, filterData.filters, filterData.filterMode)) continue;
-                }
-                // else: new subscription with no filters — deliver everything
+                const matchedAny = filterData.length === 0 || filterData.some((record) => filterRecordMatchesPayload(body.payload, record));
+                if (!matchedAny) continue;
             } else {
-                // Legacy compat: old subscriptions stored params as filters
                 const subParams = await getSubscriptionParams(targetSessionId, body.type);
                 if (subParams) {
                     const legacyFilters = legacyParamsToFilters(subParams);
@@ -963,18 +1011,17 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
         let spawned = 0;
         const listenerTypes = await getRunnerListenerTypes(runnerId);
         if (listenerTypes.includes(body.type)) {
-            const listener = await getRunnerTriggerListener(runnerId, body.type);
-            if (listener) {
-                // Filter by listener params before spawning (AND — every filter must match).
+            const listenerLookup = await getRunnerTriggerListener(runnerId, body.type) as ListenerLookupResult | ListenerLookupResult[] | null;
+            const listeners = Array.isArray(listenerLookup) ? listenerLookup : listenerLookup ? [listenerLookup] : [];
+            const matchingListener = listeners.find((listener) => {
                 if (listener.params && Object.keys(listener.params).length > 0) {
                     const listenerFilters = legacyParamsToFilters(listener.params);
-                    if (!payloadMatchesFilters(body.payload, listenerFilters, "and")) {
-                        log.info(`Auto-spawn listener for ${body.type} skipped — filters did not match payload`);
-                        // Fall through to return (don't spawn)
-                        log.info(`Broadcast trigger ${triggerId} (type=${body.type}) to ${delivered}/${subscriberIds.length} subscribers + 0 spawned on runner ${runnerId}`);
-                        return Response.json({ ok: true, delivered, spawned: 0, triggerId });
-                    }
+                    return payloadMatchesFilters(body.payload, listenerFilters, "and");
                 }
+                return true;
+            });
+            if (matchingListener) {
+                const listener = matchingListener;
                 const runnerSocket = getLocalRunnerSocket(runnerId);
                 if (runnerSocket) {
                     const spawnedSessionId = randomUUID();
