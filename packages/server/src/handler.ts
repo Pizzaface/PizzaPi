@@ -183,9 +183,12 @@ export function withSecurityHeaders(res: Response): Response {
         // would block. The iframe sandbox attribute provides defence-in-depth.
     } else {
         headers.set("X-Frame-Options", "DENY");
+        // The sha256 hash whitelists the inline FOUC-prevention <script> in
+        // packages/ui/index.html.  If that script changes, regenerate the hash:
+        //   python3 -c "import re,hashlib,base64;html=open('packages/ui/index.html').read();m=re.search(r'<script>(.*?)</script>',html,re.DOTALL);print('sha256-'+base64.b64encode(hashlib.sha256(m.group(1).encode()).digest()).decode())"
         headers.set(
             "Content-Security-Policy",
-            "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' ws: wss: blob:; font-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self'",
+            "default-src 'self'; script-src 'self' 'wasm-unsafe-eval' 'sha256-4gSUsZcLv5hWmJpSRF6gl939rcZJHXery+eyOKMEgaQ='; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' ws: wss: blob:; font-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self'",
         );
     }
 
