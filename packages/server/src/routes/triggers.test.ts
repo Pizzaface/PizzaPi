@@ -32,11 +32,18 @@ mock.module("../ws/sio-registry.js", () => ({
 
 const mockGetRunnerListenerTypes = mock((_runnerId: string) => Promise.resolve([] as string[]));
 const mockGetRunnerTriggerListener = mock((_runnerId: string, _triggerType: string) => Promise.resolve(null as any));
+const mockListRunnerTriggerListeners = mock((_runnerId: string) => Promise.resolve([] as any[]));
+const mockAddRunnerTriggerListener = mock((_runnerId: string, _triggerType: string, _config: any) => Promise.resolve("listener-default"));
+const mockRemoveRunnerTriggerListener = mock((_runnerId: string, _target: string) => Promise.resolve({ removed: 1, triggerType: _target }));
+const mockUpdateRunnerTriggerListener = mock((_runnerId: string, _target: string, _updates: any) => Promise.resolve({ updated: false } as any));
 
 mock.module("../sessions/runner-trigger-listener-store.js", () => ({
     getRunnerListenerTypes: mockGetRunnerListenerTypes,
     getRunnerTriggerListener: mockGetRunnerTriggerListener,
-    updateRunnerTriggerListener: mock(() => Promise.resolve(false)),
+    listRunnerTriggerListeners: mockListRunnerTriggerListeners,
+    addRunnerTriggerListener: mockAddRunnerTriggerListener,
+    removeRunnerTriggerListener: mockRemoveRunnerTriggerListener,
+    updateRunnerTriggerListener: mockUpdateRunnerTriggerListener,
 }));
 
 mock.module("../ws/runner-control.js", () => ({
@@ -66,13 +73,13 @@ mock.module("../sessions/trigger-store.js", () => ({
 }));
 
 // ── Mock trigger subscription store ─────────────────────────────────────
-const mockSubscribeSessionToTrigger = mock((_sid: string, _rid: string, _type: string, _ttl?: number, _params?: any) => Promise.resolve());
-const mockUnsubscribeSessionFromTrigger = mock((_sid: string, _type: string) => Promise.resolve());
+const mockSubscribeSessionToTrigger = mock((_sid: string, _rid: string, _type: string, _ttl?: number, _params?: any) => Promise.resolve("sub-default"));
+const mockUnsubscribeSessionFromTrigger = mock((_sid: string, _target: string) => Promise.resolve({ removed: 1, triggerType: _target }));
 const mockListSessionSubscriptions = mock((_sid: string) => Promise.resolve([] as any[]));
 const mockGetSubscribersForTrigger = mock((_rid: string, _type: string) => Promise.resolve([] as string[]));
 const mockGetSubscriptionParams = mock((_sid: string, _type: string) => Promise.resolve(undefined as any));
 const mockGetSubscriptionFilters = mock((_sid: string, _type: string) => Promise.resolve(undefined as any));
-const mockUpdateSessionSubscription = mock((_sid: string, _type: string, _updates: any) => Promise.resolve({ updated: false } as any));
+const mockUpdateSessionSubscription = mock((_sid: string, _target: string, _updates: any) => Promise.resolve({ updated: false } as any));
 const mockClearSessionSubscriptions = mock((_sid: string) => Promise.resolve());
 const mockGetSubscriptionsForRunnerSessions = mock((_runnerId: string, _sessionIds: string[]) => Promise.resolve([] as any[]));
 mock.module("../sessions/trigger-subscription-store.js", () => ({
@@ -563,14 +570,17 @@ describe("GET /api/sessions/:id/trigger-subscriptions", () => {
             Promise.resolve({ userId: "user-1", sessionId: "sess-1", runnerId: "runner-A" } as any),
         );
         mockListSessionSubscriptions.mockReturnValue(Promise.resolve([
-            { triggerType: "godmother:idea_moved", runnerId: "runner-A" },
+            { subscriptionId: "sub-1", triggerType: "godmother:idea_moved", runnerId: "runner-A" },
+            { subscriptionId: "sub-2", triggerType: "godmother:idea_moved", runnerId: "runner-A" },
         ]));
 
         const [req, url] = makeReq("GET", "/api/sessions/sess-1/trigger-subscriptions");
         const res = await handleTriggersRoute(req, url);
         expect(res!.status).toBe(200);
         const body = await res!.json();
-        expect(body.subscriptions).toHaveLength(1);
+        expect(body.subscriptions).toHaveLength(2);
+        expect(body.subscriptions[0].subscriptionId).toBe("sub-1");
+        expect(body.subscriptions[1].subscriptionId).toBe("sub-2");
         expect(body.subscriptions[0].triggerType).toBe("godmother:idea_moved");
     });
 
@@ -595,7 +605,7 @@ describe("POST /api/sessions/:id/trigger-subscriptions", () => {
         );
     });
 
-    test("subscribes to a declared trigger type", async () => {
+    test("subscribes to a declared trigger type and returns subscriptionId", async () => {
         mockGetSharedSession.mockReturnValue(
             Promise.resolve({ userId: "user-1", sessionId: "sess-1", runnerId: "runner-A" } as any),
         );
@@ -603,6 +613,7 @@ describe("POST /api/sessions/:id/trigger-subscriptions", () => {
             serviceIds: ["godmother"],
             triggerDefs: [{ type: "godmother:idea_moved", label: "Idea Moved" }],
         }));
+        mockSubscribeSessionToTrigger.mockReturnValue(Promise.resolve("sub-123"));
 
         const [req, url] = makeReq("POST", "/api/sessions/sess-1/trigger-subscriptions", {
             triggerType: "godmother:idea_moved",
@@ -611,6 +622,7 @@ describe("POST /api/sessions/:id/trigger-subscriptions", () => {
         expect(res!.status).toBe(200);
         const body = await res!.json();
         expect(body.ok).toBe(true);
+        expect(body.subscriptionId).toBe("sub-123");
         expect(body.triggerType).toBe("godmother:idea_moved");
         expect(mockSubscribeSessionToTrigger).toHaveBeenCalledTimes(1);
     });
@@ -637,7 +649,6 @@ describe("POST /api/sessions/:id/trigger-subscriptions", () => {
         mockGetSharedSession.mockReturnValue(
             Promise.resolve({ userId: "user-1", sessionId: "sess-1", runnerId: "runner-A" } as any),
         );
-        // Runner exists but hasn't re-announced → getRunnerServices returns null
         mockGetRunnerServices.mockReturnValue(Promise.resolve(null));
 
         const [req, url] = makeReq("POST", "/api/sessions/sess-1/trigger-subscriptions", {
@@ -684,7 +695,7 @@ describe("POST /api/sessions/:id/trigger-subscriptions", () => {
     });
 });
 
-describe("DELETE /api/sessions/:id/trigger-subscriptions/:triggerType", () => {
+describe("DELETE /api/sessions/:id/trigger-subscriptions/:target", () => {
     beforeEach(() => {
         mockGetSharedSession.mockReset();
         mockUnsubscribeSessionFromTrigger.mockReset();
@@ -693,18 +704,35 @@ describe("DELETE /api/sessions/:id/trigger-subscriptions/:triggerType", () => {
         );
     });
 
-    test("unsubscribes from a trigger type", async () => {
+    test("unsubscribes from a specific subscription id when provided", async () => {
         mockGetSharedSession.mockReturnValue(
             Promise.resolve({ userId: "user-1", sessionId: "sess-1", runnerId: "runner-A" } as any),
         );
+        mockUnsubscribeSessionFromTrigger.mockReturnValue(Promise.resolve({ removed: 1, triggerType: "godmother:idea_moved" }));
 
-        const [req, url] = makeReq("DELETE", "/api/sessions/sess-1/trigger-subscriptions/godmother:idea_moved");
+        const [req, url] = makeReq("DELETE", "/api/sessions/sess-1/trigger-subscriptions/sub-123");
         const res = await handleTriggersRoute(req, url);
         expect(res!.status).toBe(200);
         const body = await res!.json();
         expect(body.ok).toBe(true);
+        expect(body.subscriptionId).toBe("sub-123");
         expect(body.triggerType).toBe("godmother:idea_moved");
-        expect(mockUnsubscribeSessionFromTrigger).toHaveBeenCalledTimes(1);
+        expect(mockUnsubscribeSessionFromTrigger).toHaveBeenCalledWith("sess-1", "sub-123");
+    });
+
+    test("supports legacy triggerType delete-all semantics", async () => {
+        mockGetSharedSession.mockReturnValue(
+            Promise.resolve({ userId: "user-1", sessionId: "sess-1", runnerId: "runner-A" } as any),
+        );
+        mockUnsubscribeSessionFromTrigger.mockReturnValue(Promise.resolve({ removed: 2, triggerType: "svc:event" }));
+
+        const [req, url] = makeReq("DELETE", "/api/sessions/sess-1/trigger-subscriptions/svc:event");
+        const res = await handleTriggersRoute(req, url);
+        expect(res!.status).toBe(200);
+        const body = await res!.json();
+        expect(body.ok).toBe(true);
+        expect(body.triggerType).toBe("svc:event");
+        expect(body.removed).toBe(2);
     });
 
     test("returns 404 for wrong user", async () => {
@@ -947,16 +975,12 @@ describe("POST /api/runners/:runnerId/trigger-broadcast — filter-based deliver
         mockGetSharedSession.mockImplementation((id: string) =>
             Promise.resolve({ userId: "user-1", sessionId: id } as any),
         );
-        // sess-status: filter on status=shipped -> matches
-        // sess-project: filter on project=PizzaPi -> matches
-        // sess-both: filter on status=shipped AND project=Other -> does NOT match (AND)
-        // sess-none: no filters -> matches all
         mockGetSubscriptionFilters.mockImplementation((sid: string, _type: string) => {
-            if (sid === "sess-status") return Promise.resolve({ filters: [{ field: "status", value: "shipped" }] });
-            if (sid === "sess-project") return Promise.resolve({ filters: [{ field: "project", value: "PizzaPi" }] });
-            if (sid === "sess-both") return Promise.resolve({ filters: [{ field: "status", value: "shipped" }, { field: "project", value: "Other" }], filterMode: "and" });
-            if (sid === "sess-none") return Promise.resolve(undefined);
-            return Promise.resolve(undefined);
+            if (sid === "sess-status") return Promise.resolve([{ subscriptionId: "sub-status", filters: [{ field: "status", value: "shipped" }] }]);
+            if (sid === "sess-project") return Promise.resolve([{ subscriptionId: "sub-project", filters: [{ field: "project", value: "PizzaPi" }] }]);
+            if (sid === "sess-both") return Promise.resolve([{ subscriptionId: "sub-both", filters: [{ field: "status", value: "shipped" }, { field: "project", value: "Other" }], filterMode: "and" }]);
+            if (sid === "sess-none") return Promise.resolve([]);
+            return Promise.resolve([]);
         });
         const emitMock = mock(() => {});
         mockGetLocalTuiSocket.mockReturnValue({ connected: true, emit: emitMock });
@@ -968,7 +992,6 @@ describe("POST /api/runners/:runnerId/trigger-broadcast — filter-based deliver
         );
         const res = await handleTriggersRoute(req, url);
         const body = await res!.json();
-        // sess-status matches, sess-project matches, sess-none matches (no filters), sess-both does NOT (project != Other)
         expect(body.delivered).toBe(3);
     });
 
@@ -979,18 +1002,18 @@ describe("POST /api/runners/:runnerId/trigger-broadcast — filter-based deliver
         mockGetSharedSession.mockImplementation((id: string) =>
             Promise.resolve({ userId: "user-1", sessionId: id } as any),
         );
-        // sess-or-match: status=shipped OR project=Other -> matches (status=shipped matches)
-        // sess-or-miss: status=pending OR project=Other -> does NOT match
         mockGetSubscriptionFilters.mockImplementation((sid: string, _type: string) => {
-            if (sid === "sess-or-match") return Promise.resolve({
+            if (sid === "sess-or-match") return Promise.resolve([{
+                subscriptionId: "sub-or-match",
                 filters: [{ field: "status", value: "shipped" }, { field: "project", value: "Other" }],
                 filterMode: "or",
-            });
-            if (sid === "sess-or-miss") return Promise.resolve({
+            }]);
+            if (sid === "sess-or-miss") return Promise.resolve([{
+                subscriptionId: "sub-or-miss",
                 filters: [{ field: "status", value: "pending" }, { field: "project", value: "Other" }],
                 filterMode: "or",
-            });
-            return Promise.resolve(undefined);
+            }]);
+            return Promise.resolve([]);
         });
         const emitMock = mock(() => {});
         mockGetLocalTuiSocket.mockReturnValue({ connected: true, emit: emitMock });
@@ -1013,9 +1036,10 @@ describe("POST /api/runners/:runnerId/trigger-broadcast — filter-based deliver
             Promise.resolve({ userId: "user-1", sessionId: id } as any),
         );
         mockGetSubscriptionFilters.mockImplementation((_sid: string, _type: string) => {
-            return Promise.resolve({
+            return Promise.resolve([{
+                subscriptionId: "sub-contains",
                 filters: [{ field: "message", value: "hello", op: "contains" }],
-            });
+            }]);
         });
         const emitMock = mock(() => {});
         mockGetLocalTuiSocket.mockReturnValue({ connected: true, emit: emitMock });
@@ -1076,9 +1100,10 @@ describe("POST /api/runners/:runnerId/trigger-broadcast — filter-based deliver
             Promise.resolve({ userId: "user-1", sessionId: id } as any),
         );
         mockGetSubscriptionFilters.mockImplementation((_sid: string, _type: string) => {
-            return Promise.resolve({
+            return Promise.resolve([{
+                subscriptionId: "sub-array",
                 filters: [{ field: "status", value: ["shipped", "review"] }],
-            });
+            }]);
         });
         const emitMock = mock(() => {});
         mockGetLocalTuiSocket.mockReturnValue({ connected: true, emit: emitMock });
@@ -1211,6 +1236,64 @@ describe("PUT /api/sessions/:id/trigger-subscriptions/:triggerType", () => {
         expect(mockBroadcastToSessionViewers).toHaveBeenCalledWith(
             "session-1", "trigger_subscriptions_changed", { triggerType: "svc:event", action: "update" },
         );
+    });
+});
+
+describe("POST /api/runners/:runnerId/trigger-broadcast — filter-based delivery", () => {
+    beforeEach(() => {
+        mockGetSharedSession.mockReset();
+        mockGetLocalTuiSocket.mockReset();
+        mockEmitToRelaySessionVerified.mockReset();
+        mockGetSubscriptionParams.mockReset();
+        mockGetSubscriptionParams.mockReturnValue(Promise.resolve(undefined));
+        mockGetSubscriptionFilters.mockReset();
+        mockGetSubscriptionFilters.mockReturnValue(Promise.resolve(undefined));
+    });
+
+    test("delivers once when one of multiple same-type subscriptions matches", async () => {
+        mockGetSubscribersForTrigger.mockReturnValue(Promise.resolve(["sess-1"]));
+        mockGetSharedSession.mockImplementation((id: string) =>
+            Promise.resolve({ userId: "user-1", sessionId: id } as any),
+        );
+        mockGetSubscriptionFilters.mockImplementation((_sid: string, _type: string) => Promise.resolve([
+            { subscriptionId: "sub-nope", filters: [{ field: "status", value: "pending" }] },
+            { subscriptionId: "sub-hit", filters: [{ field: "status", value: "shipped" }] },
+        ]));
+        const emitMock = mock(() => {});
+        mockGetLocalTuiSocket.mockReturnValue({ connected: true, emit: emitMock });
+
+        const [req, url] = makeReq(
+            "POST", "/api/runners/runner-A/trigger-broadcast",
+            { type: "svc:event", payload: { status: "shipped" }, source: "test" },
+            { "x-api-key": "test-key" },
+        );
+        const res = await handleTriggersRoute(req, url);
+        const body = await res!.json();
+        expect(body.delivered).toBe(1);
+        expect(emitMock).toHaveBeenCalledTimes(1);
+    });
+
+    test("does not duplicate delivery when multiple same-type subscriptions match", async () => {
+        mockGetSubscribersForTrigger.mockReturnValue(Promise.resolve(["sess-1"]));
+        mockGetSharedSession.mockImplementation((id: string) =>
+            Promise.resolve({ userId: "user-1", sessionId: id } as any),
+        );
+        mockGetSubscriptionFilters.mockImplementation((_sid: string, _type: string) => Promise.resolve([
+            { subscriptionId: "sub-hit-1", filters: [{ field: "status", value: "shipped" }] },
+            { subscriptionId: "sub-hit-2", filters: [{ field: "project", value: "PizzaPi" }] },
+        ]));
+        const emitMock = mock(() => {});
+        mockGetLocalTuiSocket.mockReturnValue({ connected: true, emit: emitMock });
+
+        const [req, url] = makeReq(
+            "POST", "/api/runners/runner-A/trigger-broadcast",
+            { type: "svc:event", payload: { status: "shipped", project: "PizzaPi" }, source: "test" },
+            { "x-api-key": "test-key" },
+        );
+        const res = await handleTriggersRoute(req, url);
+        const body = await res!.json();
+        expect(body.delivered).toBe(1);
+        expect(emitMock).toHaveBeenCalledTimes(1);
     });
 });
 

@@ -303,6 +303,7 @@ export interface TriggerDef {
 }
 
 export interface TriggerSubscription {
+    subscriptionId?: string;
     triggerType: string;
     runnerId: string;
 }
@@ -311,6 +312,7 @@ export type SigilDef = ServiceSigilDef;
 
 export interface SubscriptionResult {
     ok: boolean;
+    subscriptionId?: string;
     triggerType?: string;
     runnerId?: string;
     error?: string;
@@ -412,9 +414,9 @@ export async function subscribeTrigger(
                 ...(filterMode ? { filterMode } : {}),
             }),
         });
-        const data = await response.json() as { ok?: boolean; triggerType?: string; runnerId?: string; params?: Record<string, unknown>; error?: string };
+        const data = await response.json() as { ok?: boolean; subscriptionId?: string; triggerType?: string; runnerId?: string; params?: Record<string, unknown>; error?: string };
         if (response.ok && data.ok) {
-            return { ok: true, triggerType: data.triggerType, runnerId: data.runnerId };
+            return { ok: true, subscriptionId: data.subscriptionId, triggerType: data.triggerType, runnerId: data.runnerId };
         }
         return { ok: false, error: data.error ?? `HTTP ${response.status}` };
     } catch (err) {
@@ -427,7 +429,10 @@ export async function subscribeTrigger(
  */
 export async function updateTriggerSubscription(
     sessionId: string,
-    triggerType: string,
+    target: {
+        subscriptionId?: string;
+        triggerType?: string;
+    },
     updates: {
         params?: Record<string, string | number | boolean | Array<string | number | boolean>>;
         filters?: Array<{ field: string; value: string | number | boolean | Array<string | number | boolean>; op?: "eq" | "contains" }>;
@@ -444,7 +449,11 @@ export async function updateTriggerSubscription(
     }
 
     try {
-        const url = `${baseUrl}/api/sessions/${encodeURIComponent(sessionId)}/trigger-subscriptions/${encodeURIComponent(triggerType)}`;
+        const triggerType = target.triggerType ?? "";
+        const basePath = `${baseUrl}/api/sessions/${encodeURIComponent(sessionId)}/trigger-subscriptions`;
+        const url = target.subscriptionId
+            ? `${basePath}/${encodeURIComponent(triggerType || "_")}?subscriptionId=${encodeURIComponent(target.subscriptionId)}`
+            : `${basePath}/${encodeURIComponent(triggerType)}`;
         const response = await d.fetch(url, {
             method: "PUT",
             headers: { "Content-Type": "application/json", "x-api-key": apiKey },
@@ -454,9 +463,9 @@ export async function updateTriggerSubscription(
                 ...(updates.filterMode ? { filterMode: updates.filterMode } : {}),
             }),
         });
-        const data = await response.json() as { ok?: boolean; triggerType?: string; runnerId?: string; error?: string };
+        const data = await response.json() as { ok?: boolean; subscriptionId?: string; triggerType?: string; runnerId?: string; error?: string };
         if (response.ok && data.ok) {
-            return { ok: true, triggerType: data.triggerType, runnerId: data.runnerId };
+            return { ok: true, subscriptionId: data.subscriptionId, triggerType: data.triggerType, runnerId: data.runnerId };
         }
         return { ok: false, error: data.error ?? `HTTP ${response.status}` };
     } catch (err) {
@@ -496,7 +505,10 @@ export async function listTriggerSubscriptions(
  */
 export async function unsubscribeTrigger(
     sessionId: string,
-    triggerType: string,
+    target: {
+        subscriptionId?: string;
+        triggerType?: string;
+    },
     deps: Partial<TriggerClientDeps> = {},
 ): Promise<SubscriptionResult> {
     const d: TriggerClientDeps = { ...defaultDeps, ...deps };
@@ -508,14 +520,18 @@ export async function unsubscribeTrigger(
     }
 
     try {
-        const url = `${baseUrl}/api/sessions/${encodeURIComponent(sessionId)}/trigger-subscriptions/${encodeURIComponent(triggerType)}`;
+        const triggerType = target.triggerType ?? "";
+        const basePath = `${baseUrl}/api/sessions/${encodeURIComponent(sessionId)}/trigger-subscriptions`;
+        const url = target.subscriptionId
+            ? `${basePath}/${encodeURIComponent(triggerType || "_")}?subscriptionId=${encodeURIComponent(target.subscriptionId)}`
+            : `${basePath}/${encodeURIComponent(triggerType)}`;
         const response = await d.fetch(url, {
             method: "DELETE",
             headers: { "x-api-key": apiKey },
         });
-        const data = await response.json() as { ok?: boolean; triggerType?: string; error?: string };
+        const data = await response.json() as { ok?: boolean; subscriptionId?: string; triggerType?: string; error?: string };
         if (response.ok && data.ok) {
-            return { ok: true, triggerType: data.triggerType };
+            return { ok: true, subscriptionId: data.subscriptionId, triggerType: data.triggerType };
         }
         return { ok: false, error: data.error ?? `HTTP ${response.status}` };
     } catch (err) {

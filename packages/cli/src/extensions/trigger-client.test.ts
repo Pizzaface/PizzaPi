@@ -642,11 +642,12 @@ describe("subscribeTrigger", () => {
         const deps = subsDeps(async () => ({
             ok: true,
             status: 200,
-            json: async () => ({ ok: true, triggerType: "godmother:idea_moved", runnerId: "runner-A" }),
+            json: async () => ({ ok: true, subscriptionId: "sub-1", triggerType: "godmother:idea_moved", runnerId: "runner-A" }),
         } as Response));
 
         const result = await subscribeTrigger("session-1", "godmother:idea_moved", deps);
         expect(result.ok).toBe(true);
+        expect(result.subscriptionId).toBe("sub-1");
         expect(result.triggerType).toBe("godmother:idea_moved");
         expect(result.runnerId).toBe("runner-A");
     });
@@ -696,15 +697,19 @@ describe("listTriggerSubscriptions", () => {
             status: 200,
             json: async () => ({
                 subscriptions: [
-                    { triggerType: "godmother:idea_moved", runnerId: "runner-A" },
+                    { subscriptionId: "sub-1", triggerType: "godmother:idea_moved", runnerId: "runner-A" },
+                    { subscriptionId: "sub-2", triggerType: "godmother:idea_moved", runnerId: "runner-A" },
                 ],
             }),
         } as Response));
 
         const subs = await listTriggerSubscriptions("session-1", deps);
-        expect(subs).toHaveLength(1);
+        expect(subs).toHaveLength(2);
+        expect(subs[0].subscriptionId).toBe("sub-1");
         expect(subs[0].triggerType).toBe("godmother:idea_moved");
         expect(subs[0].runnerId).toBe("runner-A");
+        expect(subs[1].subscriptionId).toBe("sub-2");
+        expect(subs[1].triggerType).toBe("godmother:idea_moved");
     });
 
     test("returns empty array when not ok", async () => {
@@ -715,27 +720,41 @@ describe("listTriggerSubscriptions", () => {
 });
 
 describe("unsubscribeTrigger", () => {
-    test("unsubscribes successfully", async () => {
+    test("unsubscribes successfully by subscription id", async () => {
         const deps = subsDeps(async () => ({
             ok: true,
             status: 200,
-            json: async () => ({ ok: true, triggerType: "godmother:idea_moved" }),
+            json: async () => ({ ok: true, subscriptionId: "sub-1", triggerType: "godmother:idea_moved" }),
         } as Response));
 
-        const result = await unsubscribeTrigger("session-1", "godmother:idea_moved", deps);
+        const result = await unsubscribeTrigger("session-1", { subscriptionId: "sub-1" }, deps);
         expect(result.ok).toBe(true);
+        expect(result.subscriptionId).toBe("sub-1");
         expect(result.triggerType).toBe("godmother:idea_moved");
     });
 
-    test("sends DELETE to correct URL with encoded trigger type", async () => {
+    test("sends DELETE to correct URL with subscription id query", async () => {
+        const captured: Array<{ url: string; method: string }> = [];
+        const deps = subsDeps(async (url, init) => {
+            captured.push({ url, method: init?.method ?? "GET" });
+            return { ok: true, status: 200, json: async () => ({ ok: true, subscriptionId: "sub-1", triggerType: "godmother:idea_moved" }) } as Response;
+        });
+
+        await unsubscribeTrigger("session-1", { triggerType: "godmother:idea_moved", subscriptionId: "sub-1" }, deps);
+        expect(captured[0].method).toBe("DELETE");
+        expect(captured[0].url).toBe(
+            "http://localhost:7492/api/sessions/session-1/trigger-subscriptions/godmother%3Aidea_moved?subscriptionId=sub-1",
+        );
+    });
+
+    test("preserves legacy trigger-type-only unsubscribe behavior", async () => {
         const captured: Array<{ url: string; method: string }> = [];
         const deps = subsDeps(async (url, init) => {
             captured.push({ url, method: init?.method ?? "GET" });
             return { ok: true, status: 200, json: async () => ({ ok: true, triggerType: "godmother:idea_moved" }) } as Response;
         });
 
-        await unsubscribeTrigger("session-1", "godmother:idea_moved", deps);
-        expect(captured[0].method).toBe("DELETE");
+        await unsubscribeTrigger("session-1", { triggerType: "godmother:idea_moved" }, deps);
         expect(captured[0].url).toBe(
             "http://localhost:7492/api/sessions/session-1/trigger-subscriptions/godmother%3Aidea_moved",
         );
@@ -748,7 +767,7 @@ describe("unsubscribeTrigger", () => {
             json: async () => ({ error: "Session not found" }),
         } as Response));
 
-        const result = await unsubscribeTrigger("session-1", "svc:event", deps);
+        const result = await unsubscribeTrigger("session-1", { triggerType: "svc:event" }, deps);
         expect(result.ok).toBe(false);
     });
 });

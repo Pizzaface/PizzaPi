@@ -136,6 +136,45 @@ describe("runner trigger listener store", () => {
         expect(dbRow).toBeUndefined();
     });
 
+    test("supports multiple listeners for the same trigger type with distinct listener ids", async () => {
+        const first = await addRunnerTriggerListener("runner-1", "svc:event", { prompt: "first" });
+        const second = await addRunnerTriggerListener("runner-1", "svc:event", { prompt: "second", cwd: "/workspace" });
+
+        const listeners = await listRunnerTriggerListeners("runner-1");
+        expect(listeners.filter((listener) => listener.triggerType === "svc:event")).toHaveLength(2);
+        expect(new Set(listeners.map((listener) => listener.listenerId)).size).toBe(2);
+        expect(first).toBeString();
+        expect(second).toBeString();
+    });
+
+    test("updates and removes a listener by listenerId without affecting siblings", async () => {
+        const first = await addRunnerTriggerListener("runner-1", "svc:event", { prompt: "first" });
+        const second = await addRunnerTriggerListener("runner-1", "svc:event", { prompt: "second" });
+
+        const updated = await updateRunnerTriggerListener("runner-1", first, { cwd: "/tmp/first" });
+        expect(updated).toBe(true);
+
+        let listeners = await listRunnerTriggerListeners("runner-1");
+        expect(listeners.find((listener) => listener.listenerId === first)).toMatchObject({ cwd: "/tmp/first", prompt: "first" });
+        expect(listeners.find((listener) => listener.listenerId === second)).toMatchObject({ prompt: "second" });
+
+        const removed = await removeRunnerTriggerListener("runner-1", first);
+        expect(removed).toBe(true);
+
+        listeners = await listRunnerTriggerListeners("runner-1");
+        expect(listeners).toHaveLength(1);
+        expect(listeners[0].listenerId).toBe(second);
+    });
+
+    test("legacy remove by triggerType removes all listeners for that type", async () => {
+        await addRunnerTriggerListener("runner-1", "svc:event", { prompt: "first" });
+        await addRunnerTriggerListener("runner-1", "svc:event", { prompt: "second" });
+
+        const removed = await removeRunnerTriggerListener("runner-1", "svc:event");
+        expect(removed).toBe(true);
+        expect(await listRunnerTriggerListeners("runner-1")).toEqual([]);
+    });
+
     test("backfills legacy Redis-only listeners into SQLite on read", async () => {
         const legacyListener = {
             triggerType: "svc:legacy",
@@ -147,6 +186,7 @@ describe("runner trigger listener store", () => {
         const listeners = await listRunnerTriggerListeners("runner-1");
         expect(listeners).toHaveLength(1);
         expect(listeners[0]).toMatchObject(legacyListener);
+        expect(listeners[0].listenerId).toBeString();
 
         const dbRow = await getKysely()
             .selectFrom("runner_trigger_listener")
