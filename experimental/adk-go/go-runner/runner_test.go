@@ -307,13 +307,24 @@ func TestNewSessionWithResumeID(t *testing.T) {
 	// but the r.sessions entry confirms handleNewSession ran without error.
 	_, exists := runner.sessions.Load(resumeSessionID)
 	if !exists {
-		// Session may have already exited (session_error → delete). That is
-		// still a valid outcome — the important thing is no panic occurred.
-		t.Log("session already cleaned up (expected if claude not installed and error path ran)")
+		// The session was processed but may have already been cleaned up if
+		// the claude binary isn't installed (session_error path deletes it).
+		// Check whether we received a session event — if we did, the runner
+		// definitely ran handleNewSession and the test passes. If we got
+		// neither a session event nor an r.sessions entry, the event was
+		// silently dropped and the test should fail.
+		select {
+		case <-sessionCreated:
+			// session_ready or session_error was emitted — runner processed the event correctly
+		default:
+			// No session event and no sessions entry — the new_session event was
+			// dropped or failed to parse (e.g. resumeId silently ignored).
+			t.Fatalf("session %s was neither found in r.sessions nor emitted a session event — new_session with resumeId may not have been processed", resumeSessionID)
+		}
 	}
 }
 
-// TestKillBeforeConnectRace verifies that cancelling an adopted session via
+// TestKillAdoptedSessionCleanup verifies that cancelling an adopted session via
 // kill_session before relay Connect() succeeds does not leak the goroutine
 // and correctly removes the session from r.sessions.
 //
@@ -321,7 +332,7 @@ func TestNewSessionWithResumeID(t *testing.T) {
 // quickly with an error (connection refused). The cancel fires before
 // Connect() is called, simulating a kill that races with a fast-failing
 // connect. The defer in runAdoptedSession must still clean up r.sessions.
-func TestKillBeforeConnectRace(t *testing.T) {
+func TestKillAdoptedSessionCleanup(t *testing.T) {
 	// Use a URL that immediately refuses connections (no server listening).
 	const unreachableURL = "http://127.0.0.1:1" // port 1 is reserved, always refused
 
@@ -405,6 +416,12 @@ func TestAdoptedSessionRelayDisconnectCleanup(t *testing.T) {
 // TestNewSessionResumePromptLogic verifies the prompt default-injection logic:
 // - With resumeId set and empty prompt → prompt stays empty
 // - Without resumeId and empty prompt → prompt gets default greeting
+//
+// NOTE: This test contains a copy of the prompt-resolution logic from
+// handleNewSession (main.go). If that logic changes, this test must be
+// updated to match. The duplication is intentional — the real code path
+// is exercised by TestNewSessionWithResumeID via the fake server; this
+// unit test validates the conditional logic in isolation.
 func TestNewSessionResumePromptLogic(t *testing.T) {
 	tests := []struct {
 		name           string
