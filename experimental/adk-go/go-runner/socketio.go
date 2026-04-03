@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math/rand"
 	"net/url"
 	"strings"
 	"sync"
@@ -24,6 +25,12 @@ import (
 
 	"github.com/gorilla/websocket"
 )
+
+// pendingEmit holds a buffered Emit call to be replayed after reconnection.
+type pendingEmit struct {
+	event string
+	data  any
+}
 
 // SIOClient is a minimal Socket.IO v4 client for the PizzaPi relay /runner namespace.
 type SIOClient struct {
@@ -40,13 +47,35 @@ type SIOClient struct {
 	pingInterval time.Duration
 	pingTimeout  time.Duration
 
-	done     chan struct{}
+	// done is closed when the client is fully disconnected (either intentional Close()
+	// or reconnection exhausted). It is never closed mid-reconnect.
+	done chan struct{}
+	// doneOnce ensures done is closed exactly once.
+	doneOnce sync.Once
+
 	lastPing chan struct{} // signaled each time server sends EIO ping
-	closed   atomic.Bool
-	logger   *log.Logger
+
+	// closedIntentionally is set by Close() to suppress reconnection.
+	closedIntentionally atomic.Bool
+	// closed tracks whether the transport has disconnected (may be transient).
+	closed atomic.Bool
+
+	logger *log.Logger
 
 	onConnect    func()
 	onDisconnect func(reason string)
+
+	// Reconnection config.
+	reconnectDelay       time.Duration
+	reconnectMaxDelay    time.Duration
+	maxReconnectAttempts int
+
+	// reconnecting is true while a reconnect loop is in progress.
+	reconnecting atomic.Bool
+
+	// emitBuf buffers Emit() calls during reconnection; replayed after reconnect.
+	emitBuf   []pendingEmit
+	emitBufMu sync.Mutex
 }
 
 // SIOClientConfig configures a new SIOClient.
@@ -62,6 +91,13 @@ type SIOClientConfig struct {
 
 	OnConnect    func()
 	OnDisconnect func(reason string)
+
+	// ReconnectDelay is the initial backoff duration (default 1s).
+	ReconnectDelay time.Duration
+	// ReconnectMaxDelay is the maximum backoff duration (default 30s).
+	ReconnectMaxDelay time.Duration
+	// MaxReconnectAttempts is the max number of reconnect attempts (0 = unlimited).
+	MaxReconnectAttempts int
 }
 
 // NewSIOClient creates a new Socket.IO client. Call Connect() to establish the connection.
@@ -72,14 +108,23 @@ func NewSIOClient(cfg SIOClientConfig) *SIOClient {
 	if cfg.Namespace == "" {
 		cfg.Namespace = "/"
 	}
+	if cfg.ReconnectDelay == 0 {
+		cfg.ReconnectDelay = 1 * time.Second
+	}
+	if cfg.ReconnectMaxDelay == 0 {
+		cfg.ReconnectMaxDelay = 30 * time.Second
+	}
 	return &SIOClient{
-		url:          cfg.URL,
-		namespace:    cfg.Namespace,
-		auth:         cfg.Auth,
-		handlers:     make(map[string][]func(json.RawMessage)),
-		logger:       cfg.Logger,
-		onConnect:    cfg.OnConnect,
-		onDisconnect: cfg.OnDisconnect,
+		url:                  cfg.URL,
+		namespace:            cfg.Namespace,
+		auth:                 cfg.Auth,
+		handlers:             make(map[string][]func(json.RawMessage)),
+		logger:               cfg.Logger,
+		onConnect:            cfg.OnConnect,
+		onDisconnect:         cfg.OnDisconnect,
+		reconnectDelay:       cfg.ReconnectDelay,
+		reconnectMaxDelay:    cfg.ReconnectMaxDelay,
+		maxReconnectAttempts: cfg.MaxReconnectAttempts,
 	}
 }
 
@@ -91,7 +136,22 @@ func (c *SIOClient) On(event string, handler func(json.RawMessage)) {
 }
 
 // Emit sends a Socket.IO event to the server.
+// If the client is currently reconnecting, the emit is buffered and replayed after reconnect.
 func (c *SIOClient) Emit(event string, data any) error {
+	// If we're reconnecting, buffer the emit.
+	if c.reconnecting.Load() {
+		c.emitBufMu.Lock()
+		c.emitBuf = append(c.emitBuf, pendingEmit{event: event, data: data})
+		c.emitBufMu.Unlock()
+		c.logger.Printf("[sio] buffered emit %q during reconnection", event)
+		return nil
+	}
+
+	return c.emitDirect(event, data)
+}
+
+// emitDirect sends a Socket.IO event without buffering.
+func (c *SIOClient) emitDirect(event string, data any) error {
 	payload, err := json.Marshal(data)
 	if err != nil {
 		return fmt.Errorf("marshal data: %w", err)
@@ -115,7 +175,28 @@ func (c *SIOClient) Emit(event string, data any) error {
 
 // Connect establishes the WebSocket connection and performs the Engine.IO + Socket.IO handshake.
 func (c *SIOClient) Connect() error {
-	// Build the WebSocket URL from the HTTP URL
+	c.done = make(chan struct{})
+	c.lastPing = make(chan struct{}, 1)
+	c.closed.Store(false)
+	c.closedIntentionally.Store(false)
+
+	if err := c.dial(); err != nil {
+		return err
+	}
+
+	// Start the read loop and ping loop.
+	go c.readLoop()
+	go c.pingLoop()
+
+	if c.onConnect != nil {
+		c.onConnect()
+	}
+
+	return nil
+}
+
+// dial performs the Engine.IO + Socket.IO handshake and stores the new connection.
+func (c *SIOClient) dial() error {
 	wsURL, err := c.buildWSURL()
 	if err != nil {
 		return fmt.Errorf("build WS URL: %w", err)
@@ -130,13 +211,6 @@ func (c *SIOClient) Connect() error {
 	if err != nil {
 		return fmt.Errorf("websocket dial: %w", err)
 	}
-
-	c.connMu.Lock()
-	c.conn = conn
-	c.connMu.Unlock()
-
-	c.done = make(chan struct{})
-	c.lastPing = make(chan struct{}, 1)
 
 	// Read the Engine.IO open packet (type 0)
 	_, msg, err := conn.ReadMessage()
@@ -216,30 +290,29 @@ func (c *SIOClient) Connect() error {
 
 	c.logger.Printf("[sio] Socket.IO connected to namespace %s", c.namespace)
 
-	// Start the read loop and ping loop
-	go c.readLoop()
-	go c.pingLoop()
-
-	if c.onConnect != nil {
-		c.onConnect()
-	}
+	c.connMu.Lock()
+	c.conn = conn
+	c.connMu.Unlock()
 
 	return nil
 }
 
-// Close disconnects the client.
+// Close disconnects the client intentionally — does NOT trigger reconnection.
 func (c *SIOClient) Close() {
-	if c.closed.CompareAndSwap(false, true) {
-		close(c.done)
+	if c.closedIntentionally.CompareAndSwap(false, true) {
+		c.closed.Store(true)
 		c.connMu.Lock()
 		if c.conn != nil {
 			c.conn.Close()
 		}
 		c.connMu.Unlock()
+		// Close done channel exactly once.
+		c.doneOnce.Do(func() { close(c.done) })
 	}
 }
 
-// Done returns a channel that closes when the client is disconnected.
+// Done returns a channel that closes when the client is fully disconnected
+// (either via Close() or when all reconnect attempts are exhausted).
 func (c *SIOClient) Done() <-chan struct{} {
 	return c.done
 }
@@ -272,26 +345,117 @@ func (c *SIOClient) buildWSURL() (string, error) {
 }
 
 func (c *SIOClient) readLoop() {
-	defer func() {
-		if !c.closed.Load() {
-			c.closed.Store(true)
-			close(c.done)
-		}
-		if c.onDisconnect != nil {
-			c.onDisconnect("transport close")
-		}
-	}()
-
 	for {
 		_, msg, err := c.conn.ReadMessage()
 		if err != nil {
-			if !c.closed.Load() {
-				c.logger.Printf("[sio] read error: %v", err)
+			if c.closedIntentionally.Load() {
+				// Intentional close — no reconnect.
+				if c.onDisconnect != nil {
+					c.onDisconnect("io client disconnect")
+				}
+				return
 			}
+			c.logger.Printf("[sio] read error: %v", err)
+			if c.onDisconnect != nil {
+				c.onDisconnect("transport close")
+			}
+			// Attempt to reconnect.
+			if c.startReconnect() {
+				// Reconnected successfully — continue reading on the new connection.
+				continue
+			}
+			// Reconnection exhausted — signal done.
+			c.doneOnce.Do(func() { close(c.done) })
 			return
 		}
 
 		c.handleMessage(string(msg))
+	}
+}
+
+// startReconnect attempts to reconnect with exponential backoff.
+// Returns true if reconnection succeeded, false if exhausted or intentional close.
+func (c *SIOClient) startReconnect() bool {
+	c.reconnecting.Store(true)
+	defer c.reconnecting.Store(false)
+
+	delay := c.reconnectDelay
+	attempt := 0
+
+	for {
+		if c.closedIntentionally.Load() {
+			c.logger.Printf("[sio] reconnect cancelled — client closed intentionally")
+			return false
+		}
+
+		attempt++
+		if c.maxReconnectAttempts > 0 && attempt > c.maxReconnectAttempts {
+			c.logger.Printf("[sio] reconnect exhausted after %d attempts", attempt-1)
+			return false
+		}
+
+		// Apply ±25% jitter to the delay.
+		jitter := time.Duration(float64(delay) * (0.75 + rand.Float64()*0.5))
+		c.logger.Printf("[sio] reconnect attempt %d in %v", attempt, jitter)
+
+		select {
+		case <-time.After(jitter):
+		}
+
+		if c.closedIntentionally.Load() {
+			return false
+		}
+
+		// Close the old connection before dialing.
+		c.connMu.Lock()
+		if c.conn != nil {
+			c.conn.Close()
+			c.conn = nil
+		}
+		c.connMu.Unlock()
+
+		// Reset lastPing channel for the new connection.
+		c.lastPing = make(chan struct{}, 1)
+
+		if err := c.dial(); err != nil {
+			c.logger.Printf("[sio] reconnect attempt %d failed: %v", attempt, err)
+			// Exponential backoff with cap.
+			delay *= 2
+			if delay > c.reconnectMaxDelay {
+				delay = c.reconnectMaxDelay
+			}
+			continue
+		}
+
+		c.logger.Printf("[sio] reconnected successfully on attempt %d", attempt)
+
+		// Restart ping loop for the new connection.
+		go c.pingLoop()
+
+		// Fire OnConnect callback (triggers re-registration).
+		if c.onConnect != nil {
+			c.onConnect()
+		}
+
+		// Replay buffered emits.
+		c.replayBufferedEmits()
+
+		return true
+	}
+}
+
+// replayBufferedEmits drains the emit buffer and sends all pending events.
+func (c *SIOClient) replayBufferedEmits() {
+	c.emitBufMu.Lock()
+	buf := c.emitBuf
+	c.emitBuf = nil
+	c.emitBufMu.Unlock()
+
+	for _, e := range buf {
+		c.logger.Printf("[sio] replaying buffered emit %q", e.event)
+		if err := c.emitDirect(e.event, e.data); err != nil {
+			c.logger.Printf("[sio] failed to replay emit %q: %v", e.event, err)
+		}
 	}
 }
 
@@ -427,10 +591,18 @@ func (c *SIOClient) pingLoop() {
 			}
 			timer.Reset(timeout)
 		case <-timer.C:
+			if c.closedIntentionally.Load() {
+				return
+			}
 			if c.logger != nil {
 				c.logger.Printf("[sio] ping timeout — no server ping in %v", timeout)
 			}
-			c.Close()
+			// Close the connection — readLoop will handle reconnection.
+			c.connMu.Lock()
+			if c.conn != nil {
+				c.conn.Close()
+			}
+			c.connMu.Unlock()
 			return
 		}
 	}
