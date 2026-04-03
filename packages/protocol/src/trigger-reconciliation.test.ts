@@ -15,10 +15,12 @@ import type {
 describe("TriggerSubscriptionEntry", () => {
     test("accepts a minimal entry with only required fields", () => {
         const entry: TriggerSubscriptionEntry = {
+            subscriptionId: "sub-1",
             sessionId: "session-1",
             triggerType: "time:timer_fired",
             runnerId: "runner-abc",
         };
+        expect(entry.subscriptionId).toBe("sub-1");
         expect(entry.sessionId).toBe("session-1");
         expect(entry.triggerType).toBe("time:timer_fired");
         expect(entry.runnerId).toBe("runner-abc");
@@ -26,6 +28,7 @@ describe("TriggerSubscriptionEntry", () => {
 
     test("accepts a full entry with all optional fields", () => {
         const entry: TriggerSubscriptionEntry = {
+            subscriptionId: "sub-2",
             sessionId: "session-2",
             triggerType: "github:pr_opened",
             runnerId: "runner-abc",
@@ -44,6 +47,7 @@ describe("TriggerSubscriptionEntry", () => {
 
     test("params can contain array values", () => {
         const entry: TriggerSubscriptionEntry = {
+            subscriptionId: "sub-3",
             sessionId: "s",
             triggerType: "t",
             runnerId: "r",
@@ -54,6 +58,7 @@ describe("TriggerSubscriptionEntry", () => {
 
     test("filterMode can be 'or'", () => {
         const entry: TriggerSubscriptionEntry = {
+            subscriptionId: "sub-4",
             sessionId: "s",
             triggerType: "t",
             runnerId: "r",
@@ -77,8 +82,8 @@ describe("TriggerSubscriptionsSnapshot", () => {
         const snapshot: TriggerSubscriptionsSnapshot = {
             revision: 5,
             subscriptions: [
-                { sessionId: "s1", triggerType: "time:cron", runnerId: "r1" },
-                { sessionId: "s2", triggerType: "time:at", runnerId: "r1", params: { at: "2026-01-01T00:00Z" } },
+                { subscriptionId: "sub-a", sessionId: "s1", triggerType: "time:cron", runnerId: "r1" },
+                { subscriptionId: "sub-b", sessionId: "s2", triggerType: "time:at", runnerId: "r1", params: { at: "2026-01-01T00:00Z" } },
             ],
         };
         expect(snapshot.subscriptions).toHaveLength(2);
@@ -93,6 +98,7 @@ describe("TriggerSubscriptionDelta", () => {
             revision: 2,
             action: "subscribe",
             subscription: {
+                subscriptionId: "sub-delta-1",
                 sessionId: "s1",
                 triggerType: "time:timer_fired",
                 runnerId: "r1",
@@ -109,6 +115,7 @@ describe("TriggerSubscriptionDelta", () => {
             revision: 3,
             action: "update",
             subscription: {
+                subscriptionId: "sub-delta-2",
                 sessionId: "s1",
                 triggerType: "github:pr_comment",
                 runnerId: "r1",
@@ -120,19 +127,61 @@ describe("TriggerSubscriptionDelta", () => {
         expect(delta.subscription.filters?.[0].field).toBe("repo");
     });
 
-    test("unsubscribe delta only requires sessionId and triggerType", () => {
+    test("unsubscribe delta can target a specific subscription by subscriptionId", () => {
         const delta: TriggerSubscriptionDelta = {
             revision: 4,
             action: "unsubscribe",
             subscription: {
+                subscriptionId: "sub-delta-3",
                 sessionId: "s1",
                 triggerType: "time:timer_fired",
                 runnerId: "r1",
             },
         };
         expect(delta.action).toBe("unsubscribe");
+        expect(delta.subscription.subscriptionId).toBe("sub-delta-3");
         expect(delta.subscription.params).toBeUndefined();
         expect(delta.subscription.filters).toBeUndefined();
+    });
+
+    test("unsubscribe delta can still represent legacy bulk unsubscribe by trigger type", () => {
+        const delta: TriggerSubscriptionDelta = {
+            revision: 5,
+            action: "unsubscribe",
+            subscription: {
+                subscriptionId: "legacy:all",
+                sessionId: "s1",
+                triggerType: "time:timer_fired",
+                runnerId: "r1",
+            },
+        };
+        expect(delta.subscription.subscriptionId).toBe("legacy:all");
+        expect(delta.subscription.triggerType).toBe("time:timer_fired");
+    });
+
+    test("supports multiple subscriptions for the same session and trigger type when ids differ", () => {
+        const snapshot: TriggerSubscriptionsSnapshot = {
+            revision: 6,
+            subscriptions: [
+                {
+                    subscriptionId: "sub-1",
+                    sessionId: "session-1",
+                    triggerType: "time:timer_fired",
+                    runnerId: "runner-1",
+                    params: { duration: "5m" },
+                },
+                {
+                    subscriptionId: "sub-2",
+                    sessionId: "session-1",
+                    triggerType: "time:timer_fired",
+                    runnerId: "runner-1",
+                    params: { duration: "10m" },
+                },
+            ],
+        };
+        expect(snapshot.subscriptions).toHaveLength(2);
+        expect(new Set(snapshot.subscriptions.map((entry) => entry.subscriptionId)).size).toBe(2);
+        expect(snapshot.subscriptions.map((entry) => entry.params?.duration)).toEqual(["5m", "10m"]);
     });
 });
 
@@ -170,7 +219,7 @@ describe("type exports from @pizzapi/protocol index", () => {
         // TypeScript type-only imports can't be introspected at runtime,
         // but we can verify that the shapes constructed above compile and hold
         // the expected field values — this confirms the types exist and are correct.
-        const entry: TriggerSubscriptionEntry = { sessionId: "x", triggerType: "t", runnerId: "r" };
+        const entry: TriggerSubscriptionEntry = { subscriptionId: "sub-export", sessionId: "x", triggerType: "t", runnerId: "r" };
         const snapshot: TriggerSubscriptionsSnapshot = { revision: 0, subscriptions: [entry] };
         const delta: TriggerSubscriptionDelta = { revision: 1, action: "subscribe", subscription: entry };
         const applied: TriggerSubscriptionsApplied = { revision: 1, applied: 1 };

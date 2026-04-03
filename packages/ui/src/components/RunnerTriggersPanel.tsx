@@ -16,8 +16,9 @@ import {
   ChevronRight,
   Loader2,
   BookOpen,
-  BellRing,
-  BellOff,
+  Plus,
+  Trash2,
+  Zap,
   FolderOpen,
   Pencil,
 } from "lucide-react";
@@ -38,6 +39,12 @@ function servicePrefix(type: string): string {
 function eventName(type: string): string {
   const idx = type.indexOf(":");
   return idx > 0 ? type.slice(idx + 1) : type;
+}
+
+function truncateCompactId(id?: string, fallback?: string, maxLen = 18): string {
+  if (!id) return fallback ?? "listener";
+  if (id.length <= maxLen) return id;
+  return id.slice(0, maxLen) + "…";
 }
 
 // ── Service Group ──────────────────────────────────────────────────────────
@@ -334,16 +341,16 @@ function CollapsibleParams({ params }: { params: ServiceTriggerParamDef[] }) {
 
 interface TriggerItemProps {
   def: ServiceTriggerDef;
-  isListening: boolean;
+  listeners: ListenerInfo[];
   isPending: boolean;
-  listener?: ListenerInfo;
+  pendingTypes: Set<string>;
   paramFormOpen: boolean;
   editMode: boolean;
   paramValues: Record<string, string | string[]>;
   paramError: string | null;
   sessionConfig: SessionConfig;
-  onToggle: (def: ServiceTriggerDef, isListening: boolean) => void;
-  onEdit: (def: ServiceTriggerDef) => void;
+  onToggle: (def: ServiceTriggerDef, isListening: boolean, listenerId?: string) => void;
+  onEdit: (def: ServiceTriggerDef, listener?: ListenerInfo) => void;
   onParamValuesChange: (values: Record<string, string | string[]>) => void;
   onSessionConfigChange: (config: SessionConfig) => void;
   onParamSubmit: (def: ServiceTriggerDef) => void;
@@ -353,28 +360,27 @@ interface TriggerItemProps {
 }
 
 function TriggerItem({
-  def, isListening, isPending, listener,
+  def, listeners, isPending, pendingTypes,
   paramFormOpen, editMode, paramValues, paramError, sessionConfig,
   onToggle, onEdit, onParamValuesChange, onSessionConfigChange, onParamSubmit, onParamCancel,
   models, recentFolders,
 }: TriggerItemProps) {
   const hasParams = def.params && def.params.length > 0;
+  const isListening = listeners.length > 0;
 
   return (
     <div className="px-3 py-2.5">
+      {/* Header: label as primary, type as secondary */}
       <div className="flex items-start gap-2">
+        <Zap className={cn("size-3.5 mt-0.5 shrink-0", isListening ? "text-emerald-400" : "text-muted-foreground/40")} />
         <div className="flex-1 min-w-0">
-          {/* Type + label + badges */}
           <div className="flex items-center gap-1.5 flex-wrap">
-            <span className="text-xs font-mono text-foreground">
-              {eventName(def.type)}
-            </span>
-            <Badge variant="outline" className="px-1.5 py-0 text-[10px] h-4 shrink-0">
+            <span className="text-xs font-medium text-foreground">
               {def.label}
-            </Badge>
+            </span>
             {isListening && (
               <Badge variant="outline" className="px-1.5 py-0 text-[10px] h-4 border-emerald-500/40 text-emerald-400 shrink-0">
-                auto-spawn
+                {listeners.length} active
               </Badge>
             )}
             {hasParams && !isListening && (
@@ -383,88 +389,109 @@ function TriggerItem({
               </Badge>
             )}
           </div>
-
-          {/* Description */}
+          <span className="text-[10px] font-mono text-muted-foreground/50 block">
+            {def.type}
+          </span>
           {def.description && (
             <p className="text-[11px] text-muted-foreground/70 mt-0.5 leading-snug">
               {def.description}
             </p>
           )}
-
-          {/* Current listener config (when subscribed) */}
-          {isListening && listener && (
-            <div className="mt-1 flex items-center gap-1 flex-wrap">
-              {listener.cwd && (
-                <Badge variant="outline" className="px-1 py-0 text-[9px] h-3.5 border-blue-500/20 text-blue-400/60">
-                  cwd={listener.cwd}
-                </Badge>
-              )}
-              {listener.model && (
-                <Badge variant="outline" className="px-1 py-0 text-[9px] h-3.5 border-blue-500/20 text-blue-400/60">
-                  model={listener.model.provider}/{listener.model.id}
-                </Badge>
-              )}
-              {listener.prompt && (
-                <Badge variant="outline" className="px-1 py-0 text-[9px] h-3.5 border-blue-500/20 text-blue-400/60">
-                  prompt={listener.prompt.length > 30 ? listener.prompt.slice(0, 30) + "\u2026" : listener.prompt}
-                </Badge>
-              )}
-              {listener.params && Object.entries(listener.params).map(([k, v]) => (
-                <Badge key={k} variant="outline" className="px-1 py-0 text-[9px] h-3.5 border-emerald-500/20 text-emerald-400/60">
-                  {k}={Array.isArray(v) ? v.map(String).join(", ") : String(v)}
-                </Badge>
-              ))}
-            </div>
-          )}
-
-          {/* Collapsible param definitions (when not subscribed and form not open) */}
-          {hasParams && !isListening && !paramFormOpen && (
-            <CollapsibleParams params={def.params!} />
-          )}
         </div>
 
-        {/* Toggle + edit buttons */}
-        <div className="flex items-center gap-0.5 shrink-0">
-          {/* Edit button — only when listening */}
-          {isListening && (
-            <button
-              type="button"
-              onClick={() => onEdit(def)}
-              disabled={isPending}
-              className={cn(
-                "p-1.5 rounded transition-colors text-muted-foreground/50 hover:text-blue-400 hover:bg-blue-500/10",
-                isPending && "opacity-50 cursor-not-allowed",
-              )}
-              title="Edit listener config"
-              aria-label={`Edit listener for ${def.type}`}
-            >
-              <Pencil className="size-4" />
-            </button>
+        {/* Add button */}
+        <button
+          type="button"
+          onClick={() => onToggle(def, false)}
+          disabled={isPending}
+          className={cn(
+            "inline-flex items-center gap-1 shrink-0 px-2 py-1 rounded text-[11px] font-medium transition-colors",
+            "text-muted-foreground hover:text-emerald-400 hover:bg-emerald-500/10 border border-transparent hover:border-emerald-500/20",
+            isPending && "opacity-50 cursor-not-allowed",
           )}
-          <button
-            type="button"
-            onClick={() => onToggle(def, isListening)}
-            disabled={isPending}
-            className={cn(
-              "p-1.5 rounded transition-colors",
-              isListening
-                ? "text-emerald-400 hover:text-red-400 hover:bg-red-500/10"
-                : "text-muted-foreground/50 hover:text-emerald-400 hover:bg-emerald-500/10",
-              isPending && "opacity-50 cursor-not-allowed",
-            )}
-            title={isListening ? "Remove auto-spawn listener" : "Add auto-spawn listener — spawns a new session when this trigger fires"}
-            aria-label={isListening ? `Remove listener for ${def.type}` : `Add listener for ${def.type}`}
-          >
-            {isPending ? (
-              <Loader2 className="size-4 animate-spin" />
-            ) : isListening ? (
-              <BellOff className="size-4" />
-            ) : (
-              <BellRing className="size-4" />
-            )}
-          </button>
-        </div>
+          title={isListening ? "Add another auto-spawn listener" : "Add auto-spawn listener \u2014 spawns a new session when this trigger fires"}
+          aria-label={isListening ? `Add another listener for ${def.type}` : `Add listener for ${def.type}`}
+        >
+          {isPending ? (
+            <Loader2 className="size-3.5 animate-spin" />
+          ) : (
+            <Plus className="size-3.5" />
+          )}
+          Add
+        </button>
       </div>
+
+      {/* Existing listeners */}
+      {isListening && (
+        <div className="mt-2 ml-[22px] space-y-1.5">
+          {listeners.map((listener, index) => {
+            const listenerKey = listener.listenerId ?? `${def.type}-${index}`;
+            const isPendingListener = pendingTypes.has(listener.listenerId ?? "") || isPending;
+            const details: string[] = [];
+            if (listener.cwd) details.push(listener.cwd);
+            if (listener.model) details.push(`${listener.model.provider}/${listener.model.id}`);
+            if (listener.params) {
+              for (const [k, v] of Object.entries(listener.params)) {
+                details.push(`${k}=${Array.isArray(v) ? v.map(String).join(", ") : String(v)}`);
+              }
+            }
+            return (
+              <div key={listenerKey} className="rounded-md border border-border/40 bg-muted/20 px-2.5 py-1.5">
+                <div className="flex items-center gap-2">
+                  <div className="flex-1 min-w-0">
+                    {listener.prompt && (
+                      <p className="text-[11px] text-foreground/80 truncate" title={listener.prompt}>
+                        {listener.prompt.length > 60 ? listener.prompt.slice(0, 60) + "\u2026" : listener.prompt}
+                      </p>
+                    )}
+                    {details.length > 0 && (
+                      <p className="text-[10px] font-mono text-muted-foreground/50 truncate">
+                        {details.join(" \u00B7 ")}
+                      </p>
+                    )}
+                    {!listener.prompt && details.length === 0 && (
+                      <p className="text-[10px] text-muted-foreground/40 italic">No config</p>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-0.5 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => onEdit(def, listener)}
+                      disabled={isPendingListener}
+                      className={cn(
+                        "p-1 rounded transition-colors text-muted-foreground/40 hover:text-blue-400 hover:bg-blue-500/10",
+                        isPendingListener && "opacity-50 cursor-not-allowed",
+                      )}
+                      title="Edit listener"
+                      aria-label={`Edit listener ${listener.listenerId ?? index + 1} for ${def.type}`}
+                    >
+                      <Pencil className="size-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => onToggle(def, true, listener.listenerId)}
+                      disabled={isPendingListener}
+                      className={cn(
+                        "p-1 rounded transition-colors text-muted-foreground/40 hover:text-red-400 hover:bg-red-500/10",
+                        isPendingListener && "opacity-50 cursor-not-allowed",
+                      )}
+                      title="Remove listener"
+                      aria-label={`Delete listener ${listener.listenerId ?? index + 1} for ${def.type}`}
+                    >
+                      {isPendingListener ? <Loader2 className="size-3.5 animate-spin" /> : <Trash2 className="size-3.5" />}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Collapsible param definitions (when not subscribed and form not open) */}
+      {hasParams && !isListening && !paramFormOpen && (
+        <CollapsibleParams params={def.params!} />
+      )}
 
       {/* Inline config form */}
       {paramFormOpen && (
@@ -492,15 +519,15 @@ function TriggerItem({
 interface ServiceAccordionProps {
   group: ServiceGroup;
   listenedTypes: Set<string>;
-  listenerMap: Map<string, ListenerInfo>;
+  listenersByType: Map<string, ListenerInfo[]>;
   pendingTypes: Set<string>;
   paramFormOpen: string | null;
   editMode: boolean;
   paramValues: Record<string, Record<string, string | string[]>>;
   paramError: string | null;
   sessionConfigs: Record<string, SessionConfig>;
-  onToggle: (def: ServiceTriggerDef, isListening: boolean) => void;
-  onEdit: (def: ServiceTriggerDef) => void;
+  onToggle: (def: ServiceTriggerDef, isListening: boolean, listenerId?: string) => void;
+  onEdit: (def: ServiceTriggerDef, listener?: ListenerInfo) => void;
   onParamValuesChange: (triggerType: string, values: Record<string, string | string[]>) => void;
   onSessionConfigChange: (triggerType: string, config: SessionConfig) => void;
   onParamSubmit: (def: ServiceTriggerDef) => void;
@@ -510,7 +537,7 @@ interface ServiceAccordionProps {
 }
 
 function ServiceAccordion({
-  group, listenedTypes, listenerMap, pendingTypes,
+  group, listenedTypes, listenersByType, pendingTypes,
   paramFormOpen, editMode, paramValues, paramError, sessionConfigs,
   onToggle, onEdit, onParamValuesChange, onSessionConfigChange, onParamSubmit, onParamCancel,
   models, recentFolders,
@@ -551,9 +578,9 @@ function ServiceAccordion({
             <TriggerItem
               key={def.type}
               def={def}
-              isListening={listenedTypes.has(def.type)}
+              listeners={listenersByType.get(def.type) ?? []}
               isPending={pendingTypes.has(def.type)}
-              listener={listenerMap.get(def.type)}
+              pendingTypes={pendingTypes}
               paramFormOpen={paramFormOpen === def.type}
               editMode={editMode && paramFormOpen === def.type}
               paramValues={paramValues[def.type] ?? {}}
@@ -583,6 +610,7 @@ export interface RunnerTriggersPanelProps {
 }
 
 interface ListenerInfo {
+  listenerId?: string;
   triggerType: string;
   prompt?: string;
   cwd?: string;
@@ -607,6 +635,7 @@ export function RunnerTriggersPanel({ runnerId, triggerDefs: propDefs }: RunnerT
 
   // Param form state
   const [paramFormOpen, setParamFormOpen] = React.useState<string | null>(null);
+  const [editingListenerId, setEditingListenerId] = React.useState<string | null>(null);
   const [editMode, setEditMode] = React.useState(false);
   const [paramValues, setParamValues] = React.useState<Record<string, Record<string, string | string[]>>>({});
   const [paramError, setParamError] = React.useState<string | null>(null);
@@ -670,9 +699,13 @@ export function RunnerTriggersPanel({ runnerId, triggerDefs: propDefs }: RunnerT
   const triggerDefs = (propDefs && propDefs.length > 0) ? propDefs : fetchedDefs;
   const serviceGroups = React.useMemo(() => groupByService(triggerDefs), [triggerDefs]);
   const listenedTypes = React.useMemo(() => new Set(listeners.map((l) => l.triggerType)), [listeners]);
-  const listenerMap = React.useMemo(() => {
-    const map = new Map<string, ListenerInfo>();
-    for (const l of listeners) map.set(l.triggerType, l);
+  const listenersByType = React.useMemo(() => {
+    const map = new Map<string, ListenerInfo[]>();
+    for (const listener of listeners) {
+      const existing = map.get(listener.triggerType);
+      if (existing) existing.push(listener);
+      else map.set(listener.triggerType, [listener]);
+    }
     return map;
   }, [listeners]);
 
@@ -684,10 +717,10 @@ export function RunnerTriggersPanel({ runnerId, triggerDefs: propDefs }: RunnerT
   }, [triggerDefs]);
 
   /** Open the config form pre-populated with current listener config for editing. */
-  const handleEdit = React.useCallback((def: ServiceTriggerDef) => {
-    const listener = listenerMap.get(def.type);
+  const handleEdit = React.useCallback((def: ServiceTriggerDef, listener?: ListenerInfo) => {
     setParamFormOpen(def.type);
     setEditMode(true);
+    setEditingListenerId(listener?.listenerId ?? null);
     setParamError(null);
 
     // Pre-populate param values from current listener
@@ -717,29 +750,31 @@ export function RunnerTriggersPanel({ runnerId, triggerDefs: propDefs }: RunnerT
         modelId: listener?.model?.id ?? "",
       },
     }));
-  }, [listenerMap]);
+  }, []);
 
-  const handleToggle = React.useCallback((def: ServiceTriggerDef, isListening: boolean) => {
+  const handleToggle = React.useCallback((def: ServiceTriggerDef, isListening: boolean, listenerId?: string) => {
     if (isListening) {
       // Unsubscribe directly
-      setPendingTypes((prev) => new Set([...prev, def.type]));
+      setPendingTypes((prev) => new Set([...prev, listenerId ?? def.type]));
       void (async () => {
         try {
+          const target = listenerId ?? def.type;
           const res = await fetch(
-            `/api/runners/${encodeURIComponent(runnerId)}/trigger-listeners/${encodeURIComponent(def.type)}`,
+            `/api/runners/${encodeURIComponent(runnerId)}/trigger-listeners/${encodeURIComponent(target)}`,
             { method: "DELETE", credentials: "include" },
           );
           if (res.ok) {
-            setListeners((prev) => prev.filter((l) => l.triggerType !== def.type));
+            setListeners((prev) => prev.filter((l) => (listenerId ? l.listenerId !== listenerId : l.triggerType !== def.type)));
           }
         } catch { /* best-effort */ } finally {
-          setPendingTypes((prev) => { const n = new Set(prev); n.delete(def.type); return n; });
+          setPendingTypes((prev) => { const n = new Set(prev); n.delete(listenerId ?? def.type); return n; });
         }
       })();
     } else {
       // Always open the config form so user can set cwd/prompt/model
       setParamFormOpen(def.type);
       setEditMode(false);
+      setEditingListenerId(null);
       setParamError(null);
       const defaults: Record<string, string | string[]> = {};
       if (def.params) {
@@ -801,13 +836,14 @@ export function RunnerTriggersPanel({ runnerId, triggerDefs: propDefs }: RunnerT
       ? { provider: sc.modelProvider.trim(), id: sc.modelId.trim() }
       : undefined;
 
-    setPendingTypes((prev) => new Set([...prev, def.type]));
+    const pendingKey = editingListenerId ?? def.type;
+    setPendingTypes((prev) => new Set([...prev, pendingKey]));
     setParamError(null);
     void (async () => {
       try {
         // Use PUT when editing an existing listener, POST when creating new
         const url = editMode
-          ? `/api/runners/${encodeURIComponent(runnerId)}/trigger-listeners/${encodeURIComponent(def.type)}`
+          ? `/api/runners/${encodeURIComponent(runnerId)}/trigger-listeners/${encodeURIComponent(editingListenerId ?? def.type)}`
           : `/api/runners/${encodeURIComponent(runnerId)}/trigger-listeners`;
         const method = editMode ? "PUT" : "POST";
         const res = await fetch(url, {
@@ -828,22 +864,33 @@ export function RunnerTriggersPanel({ runnerId, triggerDefs: propDefs }: RunnerT
           setParamError(data.error ?? `HTTP ${res.status}`);
           return;
         }
+        const data = await res.json().catch(() => ({})) as { listenerId?: string };
         setParamFormOpen(null);
         setEditMode(false);
-        setListeners((prev) => [
-          ...prev.filter(l => l.triggerType !== def.type),
-          {
+        setEditingListenerId(null);
+            setListeners((prev) => {
+          const existing = editingListenerId
+            ? prev.find((listener) => listener.listenerId === editingListenerId)
+            : undefined;
+          const nextListener: ListenerInfo = {
+            listenerId: data.listenerId ?? editingListenerId ?? undefined,
             triggerType: def.type,
             params: Object.keys(params).length > 0 ? params : undefined,
-            cwd, prompt, model,
-            createdAt: new Date().toISOString(),
-          },
-        ]);
+            cwd,
+            prompt,
+            model,
+            createdAt: existing?.createdAt ?? new Date().toISOString(),
+          };
+          if (editingListenerId) {
+            return prev.map((listener) => listener.listenerId === editingListenerId ? nextListener : listener);
+          }
+          return [...prev, nextListener];
+        });
       } catch { /* best-effort */ } finally {
-        setPendingTypes((prev) => { const n = new Set(prev); n.delete(def.type); return n; });
+        setPendingTypes((prev) => { const n = new Set(prev); n.delete(pendingKey); return n; });
       }
     })();
-  }, [runnerId, paramValues, sessionConfigs]);
+  }, [runnerId, paramValues, sessionConfigs, editMode, editingListenerId]);
 
   if (loading) {
     return (
@@ -883,7 +930,7 @@ export function RunnerTriggersPanel({ runnerId, triggerDefs: propDefs }: RunnerT
           key={group.service}
           group={group}
           listenedTypes={listenedTypes}
-          listenerMap={listenerMap}
+          listenersByType={listenersByType}
           pendingTypes={pendingTypes}
           paramFormOpen={paramFormOpen}
           editMode={editMode}
@@ -895,7 +942,7 @@ export function RunnerTriggersPanel({ runnerId, triggerDefs: propDefs }: RunnerT
           onParamValuesChange={(type, vals) => setParamValues((prev) => ({ ...prev, [type]: vals }))}
           onSessionConfigChange={(type, config) => setSessionConfigs((prev) => ({ ...prev, [type]: config }))}
           onParamSubmit={handleParamSubmit}
-          onParamCancel={() => { setParamFormOpen(null); setEditMode(false); setParamError(null); }}
+          onParamCancel={() => { setParamFormOpen(null); setEditMode(false); setEditingListenerId(null); setParamError(null); }}
           models={models}
           recentFolders={recentFolders}
         />

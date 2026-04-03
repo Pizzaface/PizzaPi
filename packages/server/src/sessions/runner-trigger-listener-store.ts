@@ -43,23 +43,15 @@ export function _resetRedisForTesting(): void {
 
 const LISTENERS_KEY = (runnerId: string) =>
     `pizzapi:runner-trigger-listeners:${runnerId}`;
-const LISTENER_ROW_ID = (runnerId: string, triggerType: string) =>
-    JSON.stringify([runnerId, triggerType]);
 const LISTENER_TABLE = "runner_trigger_listener" as const;
 
-// ── Types ─────────────────────────────────────────────────────────────────
-
 export interface RunnerTriggerListener {
+    listenerId: string;
     triggerType: string;
-    /** Optional prompt to seed the spawned session with. */
     prompt?: string;
-    /** Optional working directory for the spawned session. */
     cwd?: string;
-    /** Optional model override for the spawned session. */
     model?: { provider: string; id: string };
-    /** Subscription params — filter which events trigger a spawn. */
     params?: Record<string, string | number | boolean | Array<string | number | boolean>>;
-    /** When this listener was created. */
     createdAt: string;
 }
 
@@ -71,13 +63,22 @@ interface ListenerRow {
     updatedAt: string;
 }
 
+function generateListenerId(runnerId: string, triggerType: string): string {
+    return `listener:${runnerId}:${triggerType}:${Date.now()}:${Math.random().toString(36).slice(2, 10)}`;
+}
+
 function parseListenerJson(json: string): RunnerTriggerListener | null {
     try {
         const parsed = JSON.parse(json) as unknown;
         if (!parsed || typeof parsed !== "object") return null;
         const listener = parsed as Partial<RunnerTriggerListener>;
         if (typeof listener.triggerType !== "string" || typeof listener.createdAt !== "string") return null;
-        return listener as RunnerTriggerListener;
+        return {
+            ...listener,
+            listenerId: typeof listener.listenerId === "string"
+                ? listener.listenerId
+                : generateListenerId("legacy", listener.triggerType),
+        } as RunnerTriggerListener;
     } catch {
         return null;
     }
@@ -85,7 +86,7 @@ function parseListenerJson(json: string): RunnerTriggerListener | null {
 
 function toListenerRow(runnerId: string, listener: RunnerTriggerListener): ListenerRow {
     return {
-        id: LISTENER_ROW_ID(runnerId, listener.triggerType),
+        id: listener.listenerId,
         runnerId,
         triggerType: listener.triggerType,
         listenerJson: JSON.stringify(listener),
@@ -107,19 +108,32 @@ async function upsertListenerRow(runnerId: string, listener: RunnerTriggerListen
         .execute();
 }
 
-async function deleteListenerRow(runnerId: string, triggerType: string): Promise<number> {
+async function deleteListenerRowById(listenerId: string): Promise<number> {
     const result = await getKysely()
         .deleteFrom(LISTENER_TABLE)
-        .where("id", "=", LISTENER_ROW_ID(runnerId, triggerType))
+        .where("id", "=", listenerId)
         .executeTakeFirst();
     return Number(result.numDeletedRows ?? 0n);
 }
 
-async function getListenerRow(runnerId: string, triggerType: string): Promise<RunnerTriggerListener | null> {
+async function deleteListenerRowsByTriggerType(runnerId: string, triggerType: string): Promise<number> {
+    const result = await getKysely()
+        .deleteFrom(LISTENER_TABLE)
+        .where("runnerId", "=", runnerId)
+        .where("triggerType", "=", triggerType)
+        .executeTakeFirst();
+    return Number(result.numDeletedRows ?? 0n);
+}
+
+async function getListenerRow(runnerId: string, listenerIdOrTriggerType: string): Promise<RunnerTriggerListener | null> {
     const row = await getKysely()
         .selectFrom(LISTENER_TABLE)
         .select(["listenerJson"])
-        .where("id", "=", LISTENER_ROW_ID(runnerId, triggerType))
+        .where((eb) => eb.or([
+            eb("id", "=", listenerIdOrTriggerType),
+            eb.and([eb("runnerId", "=", runnerId), eb("triggerType", "=", listenerIdOrTriggerType)]),
+        ]))
+        .orderBy("updatedAt", "desc")
         .executeTakeFirst();
     if (!row) return null;
     return parseListenerJson(row.listenerJson);
@@ -138,12 +152,20 @@ async function listListenerRows(runnerId: string): Promise<RunnerTriggerListener
         .filter((listener): listener is RunnerTriggerListener => listener !== null);
 }
 
-async function readRedisListener(runnerId: string, triggerType: string): Promise<RunnerTriggerListener | null> {
+async function readRedisListener(runnerId: string, listenerIdOrTriggerType: string): Promise<RunnerTriggerListener | null> {
     const redis = await getClient();
     if (!redis) return null;
-    const json = await redis.hGet(LISTENERS_KEY(runnerId), triggerType);
-    if (!json) return null;
-    return parseListenerJson(json);
+    const direct = await redis.hGet(LISTENERS_KEY(runnerId), listenerIdOrTriggerType);
+    if (direct) return parseListenerJson(direct);
+    const all = await redis.hGetAll(LISTENERS_KEY(runnerId));
+    for (const json of Object.values(all)) {
+        const parsed = parseListenerJson(json);
+        if (!parsed) continue;
+        if (parsed.listenerId === listenerIdOrTriggerType || parsed.triggerType === listenerIdOrTriggerType) {
+            return parsed;
+        }
+    }
+    return null;
 }
 
 async function listRedisListeners(runnerId: string): Promise<RunnerTriggerListener[]> {
@@ -161,51 +183,61 @@ async function listRedisListeners(runnerId: string): Promise<RunnerTriggerListen
 async function persistRedisListener(runnerId: string, listener: RunnerTriggerListener): Promise<void> {
     const redis = await getClient();
     if (!redis) return;
-    await redis.hSet(LISTENERS_KEY(runnerId), listener.triggerType, JSON.stringify(listener));
+    await redis.hSet(LISTENERS_KEY(runnerId), listener.listenerId, JSON.stringify(listener));
 }
 
-async function removeRedisListener(runnerId: string, triggerType: string): Promise<number> {
+async function removeRedisListener(runnerId: string, listenerIdOrTriggerType: string): Promise<number> {
     const redis = await getClient();
     if (!redis) return 0;
-    return redis.hDel(LISTENERS_KEY(runnerId), triggerType);
+    const directRemoved = await redis.hDel(LISTENERS_KEY(runnerId), listenerIdOrTriggerType);
+    if (directRemoved > 0) return directRemoved;
+
+    const entries = await redis.hGetAll(LISTENERS_KEY(runnerId));
+    let removed = 0;
+    for (const [field, json] of Object.entries(entries)) {
+        const parsed = parseListenerJson(json);
+        if (!parsed) continue;
+        if (parsed.triggerType === listenerIdOrTriggerType) {
+            removed += await redis.hDel(LISTENERS_KEY(runnerId), field);
+        }
+    }
+    return removed;
 }
 
 function mergeListeners(primary: RunnerTriggerListener[], secondary: RunnerTriggerListener[]): RunnerTriggerListener[] {
-    const byType = new Map<string, RunnerTriggerListener>();
+    const byId = new Map<string, RunnerTriggerListener>();
     for (const listener of primary) {
-        byType.set(listener.triggerType, listener);
+        byId.set(listener.listenerId, listener);
     }
     for (const listener of secondary) {
-        if (!byType.has(listener.triggerType)) {
-            byType.set(listener.triggerType, listener);
+        if (!byId.has(listener.listenerId)) {
+            byId.set(listener.listenerId, listener);
         }
     }
-    return Array.from(byType.values()).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    return Array.from(byId.values()).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 
-async function loadListener(runnerId: string, triggerType: string): Promise<RunnerTriggerListener | null> {
-    const fromDb = await getListenerRow(runnerId, triggerType);
+async function loadListener(runnerId: string, listenerIdOrTriggerType: string): Promise<RunnerTriggerListener | null> {
+    const fromDb = await getListenerRow(runnerId, listenerIdOrTriggerType);
     if (fromDb) return fromDb;
 
-    const fromRedis = await readRedisListener(runnerId, triggerType);
+    const fromRedis = await readRedisListener(runnerId, listenerIdOrTriggerType);
     if (!fromRedis) return null;
 
-    // Backfill the durable store from legacy / cache-only data.
     await upsertListenerRow(runnerId, fromRedis).catch((err) => {
         log.warn("Failed to backfill runner trigger listener into SQLite:", err);
     });
     return fromRedis;
 }
 
-// ── Public API ────────────────────────────────────────────────────────────
-
-/** Add or update a listener for a trigger type on a runner. */
 export async function addRunnerTriggerListener(
     runnerId: string,
     triggerType: string,
     opts?: { prompt?: string; cwd?: string; model?: { provider: string; id: string }; params?: Record<string, unknown> },
-): Promise<void> {
+): Promise<string> {
+    const listenerId = generateListenerId(runnerId, triggerType);
     const listener = {
+        listenerId,
         triggerType,
         prompt: opts?.prompt,
         cwd: opts?.cwd,
@@ -214,32 +246,31 @@ export async function addRunnerTriggerListener(
         createdAt: new Date().toISOString(),
     } satisfies RunnerTriggerListener;
 
-    const existing = await loadListener(runnerId, triggerType);
-    const persisted = existing
-        ? { ...listener, createdAt: existing.createdAt }
-        : listener;
-
     try {
-        await upsertListenerRow(runnerId, persisted);
-        await persistRedisListener(runnerId, persisted);
+        await upsertListenerRow(runnerId, listener);
+        await persistRedisListener(runnerId, listener);
         log.info(`Added runner trigger listener: ${runnerId} → ${triggerType}`);
+        return listenerId;
     } catch (err) {
         log.warn("Failed to add runner trigger listener:", err);
+        return "";
     }
 }
 
-/** Remove a listener for a trigger type on a runner. */
 export async function removeRunnerTriggerListener(
     runnerId: string,
-    triggerType: string,
+    listenerIdOrTriggerType: string,
 ): Promise<boolean> {
     let removed = false;
     try {
-        removed = (await deleteListenerRow(runnerId, triggerType)) > 0;
-        const redisRemoved = await removeRedisListener(runnerId, triggerType);
+        removed = (await deleteListenerRowById(listenerIdOrTriggerType)) > 0;
+        if (!removed) {
+            removed = (await deleteListenerRowsByTriggerType(runnerId, listenerIdOrTriggerType)) > 0;
+        }
+        const redisRemoved = await removeRedisListener(runnerId, listenerIdOrTriggerType);
         removed = removed || redisRemoved > 0;
         if (removed) {
-            log.info(`Removed runner trigger listener: ${runnerId} → ${triggerType}`);
+            log.info(`Removed runner trigger listener: ${runnerId} → ${listenerIdOrTriggerType}`);
         }
     } catch (err) {
         log.warn("Failed to remove runner trigger listener:", err);
@@ -247,7 +278,6 @@ export async function removeRunnerTriggerListener(
     return removed;
 }
 
-/** List all listeners for a runner. */
 export async function listRunnerTriggerListeners(
     runnerId: string,
 ): Promise<RunnerTriggerListener[]> {
@@ -258,12 +288,10 @@ export async function listRunnerTriggerListeners(
         ]);
         const merged = mergeListeners(dbListeners, redisListeners);
 
-        // Backfill any Redis-only listeners so the durable store becomes the
-        // source of truth after the first read on an upgraded server.
-        const dbTypes = new Set(dbListeners.map((l) => l.triggerType));
+        const dbIds = new Set(dbListeners.map((l) => l.listenerId));
         await Promise.all(
             redisListeners
-                .filter((listener) => !dbTypes.has(listener.triggerType))
+                .filter((listener) => !dbIds.has(listener.listenerId))
                 .map((listener) => upsertListenerRow(runnerId, listener).catch((err) => {
                     log.warn("Failed to backfill runner trigger listener into SQLite:", err);
                 })),
@@ -276,14 +304,13 @@ export async function listRunnerTriggerListeners(
     }
 }
 
-/** Update an existing listener's config. Returns false if the listener doesn't exist. */
 export async function updateRunnerTriggerListener(
     runnerId: string,
-    triggerType: string,
+    listenerIdOrTriggerType: string,
     updates: { prompt?: string; cwd?: string; model?: { provider: string; id: string }; params?: Record<string, unknown> },
 ): Promise<boolean> {
     try {
-        const existing = await loadListener(runnerId, triggerType);
+        const existing = await loadListener(runnerId, listenerIdOrTriggerType);
         if (!existing) return false;
 
         const updated: RunnerTriggerListener = {
@@ -295,7 +322,7 @@ export async function updateRunnerTriggerListener(
         };
         await upsertListenerRow(runnerId, updated);
         await persistRedisListener(runnerId, updated);
-        log.info(`Updated runner trigger listener: ${runnerId} → ${triggerType}`);
+        log.info(`Updated runner trigger listener: ${runnerId} → ${listenerIdOrTriggerType}`);
         return true;
     } catch (err) {
         log.warn("Failed to update runner trigger listener:", err);
@@ -303,13 +330,12 @@ export async function updateRunnerTriggerListener(
     }
 }
 
-/** Get a specific listener for a runner + trigger type. */
 export async function getRunnerTriggerListener(
     runnerId: string,
-    triggerType: string,
+    listenerIdOrTriggerType: string,
 ): Promise<RunnerTriggerListener | null> {
     try {
-        const listener = await loadListener(runnerId, triggerType);
+        const listener = await loadListener(runnerId, listenerIdOrTriggerType);
         if (listener) return listener;
         return null;
     } catch (err) {
@@ -318,20 +344,18 @@ export async function getRunnerTriggerListener(
     }
 }
 
-/** Get all trigger types that have listeners on a runner. */
 export async function getRunnerListenerTypes(
     runnerId: string,
 ): Promise<string[]> {
     try {
         const listeners = await listRunnerTriggerListeners(runnerId);
-        return listeners.map((listener) => listener.triggerType);
+        return Array.from(new Set(listeners.map((listener) => listener.triggerType)));
     } catch (err) {
         log.warn("Failed to list runner trigger listener types:", err);
         return [];
     }
 }
 
-/** Ensure the durable listener table exists. */
 export async function ensureRunnerTriggerListenersTable(): Promise<void> {
     await getKysely().schema
         .createTable(LISTENER_TABLE)

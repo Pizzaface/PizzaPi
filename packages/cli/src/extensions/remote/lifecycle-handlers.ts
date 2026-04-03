@@ -203,7 +203,7 @@ export function registerLifecycleHandlers(deps: LifecycleHandlersDeps): void {
                         if (subs.length === 0) return;
                         log.info(`pizzapi: unsubscribing from ${subs.length} trigger subscription(s) on /new`);
                         const results = await Promise.allSettled(
-                            subs.map((s) => unsubscribeTrigger(sid, s.triggerType)),
+                            subs.map((s) => unsubscribeTrigger(sid, { subscriptionId: s.subscriptionId, triggerType: s.triggerType })),
                         );
                         const failedSubs = results.filter(
                             (r) => r.status === "rejected" || (r.status === "fulfilled" && !r.value.ok),

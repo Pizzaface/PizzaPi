@@ -11,6 +11,8 @@ import {
     getSubscribersForTrigger,
     getSubscriptionParams,
     clearSessionSubscriptions,
+    getSubscriptionsForSessionTrigger,
+    unsubscribeSessionSubscription,
     _injectRedisForTesting,
     _resetRedisForTesting,
 } from "./trigger-subscription-store";
@@ -69,6 +71,10 @@ const mockRedisClient = {
                 ops.push(() => mockRedisClient.hSet(key, field, value));
                 return pipeline;
             },
+            hDel: (key: string, field: string) => {
+                ops.push(() => mockRedisClient.hDel(key, field));
+                return pipeline;
+            },
             sAdd: (key: string, member: string) => {
                 ops.push(() => mockRedisClient.sAdd(key, member));
                 return pipeline;
@@ -102,7 +108,7 @@ function resetState() {
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
-describe.todo("subscribeSessionToTrigger", () => {
+describe("subscribeSessionToTrigger", () => {
     beforeEach(resetState);
 
     test("adds triggerType → runnerId to session hash", async () => {
@@ -141,26 +147,23 @@ describe.todo("subscribeSessionToTrigger", () => {
         expect(types).toEqual(["svc:event-a", "svc:event-b"]);
     });
 
-    test("rebinding to a different runner removes stale reverse-index from old runner", async () => {
+    test("same triggerType can be subscribed on different runners independently", async () => {
         await subscribeSessionToTrigger("session-1", "runner-A", "svc:event");
-        let subsA = await getSubscribersForTrigger("runner-A", "svc:event");
-        expect(subsA).toContain("session-1");
-
         await subscribeSessionToTrigger("session-1", "runner-B", "svc:event");
 
-        subsA = await getSubscribersForTrigger("runner-A", "svc:event");
-        expect(subsA).not.toContain("session-1");
+        const subsA = await getSubscribersForTrigger("runner-A", "svc:event");
+        expect(subsA).toContain("session-1");
 
         const subsB = await getSubscribersForTrigger("runner-B", "svc:event");
         expect(subsB).toContain("session-1");
 
         const subs = await listSessionSubscriptions("session-1");
-        const match = subs.find((s) => s.triggerType === "svc:event");
-        expect(match?.runnerId).toBe("runner-B");
+        expect(subs.filter((s) => s.triggerType === "svc:event")).toHaveLength(2);
+        expect(new Set(subs.filter((s) => s.triggerType === "svc:event").map((s) => s.runnerId))).toEqual(new Set(["runner-A", "runner-B"]));
     });
 });
 
-describe.todo("unsubscribeSessionFromTrigger", () => {
+describe("unsubscribeSessionFromTrigger", () => {
     beforeEach(resetState);
 
     test("removes triggerType from session hash", async () => {
@@ -181,13 +184,78 @@ describe.todo("unsubscribeSessionFromTrigger", () => {
 
     test("is a no-op for a type the session isn't subscribed to", async () => {
         await subscribeSessionToTrigger("session-1", "runner-A", "svc:event");
-        await expect(unsubscribeSessionFromTrigger("session-1", "svc:other")).resolves.toBeUndefined();
+        await expect(unsubscribeSessionFromTrigger("session-1", "svc:other")).resolves.toEqual({ removed: 0, triggerType: "svc:other" });
         const subs = await listSessionSubscriptions("session-1");
         expect(subs).toHaveLength(1);
     });
 });
 
-describe.todo("listSessionSubscriptions", () => {
+describe("multi-subscription support", () => {
+    beforeEach(resetState);
+
+    test("subscribing twice to the same triggerType stores two distinct records with ids", async () => {
+        await subscribeSessionToTrigger("session-1", "runner-A", "svc:event", undefined, { first: true });
+        await subscribeSessionToTrigger("session-1", "runner-A", "svc:event", undefined, { second: true });
+
+        const subs = await listSessionSubscriptions("session-1");
+        expect(subs.filter((sub) => sub.triggerType === "svc:event")).toHaveLength(2);
+        expect(new Set(subs.map((sub) => sub.subscriptionId)).size).toBe(2);
+    });
+
+    test("lookup by session + triggerType returns all matching subscriptions", async () => {
+        await subscribeSessionToTrigger("session-1", "runner-A", "svc:event", undefined, { name: "one" });
+        await subscribeSessionToTrigger("session-1", "runner-A", "svc:event", undefined, { name: "two" });
+
+        const subs = await getSubscriptionsForSessionTrigger("session-1", "svc:event");
+        expect(subs).toHaveLength(2);
+        expect(subs.map((sub) => sub.params?.name).sort()).toEqual(["one", "two"]);
+    });
+
+    test("unsubscribe by subscriptionId removes only the targeted record", async () => {
+        await subscribeSessionToTrigger("session-1", "runner-A", "svc:event", undefined, { name: "one" });
+        await subscribeSessionToTrigger("session-1", "runner-A", "svc:event", undefined, { name: "two" });
+        const subs = await getSubscriptionsForSessionTrigger("session-1", "svc:event");
+
+        await unsubscribeSessionSubscription("session-1", subs[0].subscriptionId);
+
+        const remaining = await getSubscriptionsForSessionTrigger("session-1", "svc:event");
+        expect(remaining).toHaveLength(1);
+        expect(remaining[0].subscriptionId).toBe(subs[1].subscriptionId);
+    });
+
+    test("legacy unsubscribe by triggerType removes all subscriptions for that type", async () => {
+        await subscribeSessionToTrigger("session-1", "runner-A", "svc:event", undefined, { name: "one" });
+        await subscribeSessionToTrigger("session-1", "runner-A", "svc:event", undefined, { name: "two" });
+
+        await unsubscribeSessionFromTrigger("session-1", "svc:event");
+
+        expect(await getSubscriptionsForSessionTrigger("session-1", "svc:event")).toEqual([]);
+    });
+
+    test("legacy hash data keyed by triggerType still parses and gains generated ids", async () => {
+        hashes.set("pizzapi:trigger-subs:session-legacy", new Map([
+            ["svc:legacy", JSON.stringify({ runnerId: "runner-A", params: { repo: "PizzaPi" } })],
+        ]));
+
+        const subs = await listSessionSubscriptions("session-legacy");
+        expect(subs).toHaveLength(1);
+        expect(subs[0]).toMatchObject({ triggerType: "svc:legacy", runnerId: "runner-A", params: { repo: "PizzaPi" } });
+        expect(subs[0].subscriptionId).toBeString();
+    });
+
+    test("delivery lookup returns all subscriptions for same type while reverse index stays session-based", async () => {
+        await subscribeSessionToTrigger("session-1", "runner-A", "svc:event", undefined, { name: "one" });
+        await subscribeSessionToTrigger("session-1", "runner-A", "svc:event", undefined, { name: "two" });
+
+        const subscribers = await getSubscribersForTrigger("runner-A", "svc:event");
+        expect(subscribers).toEqual(["session-1"]);
+
+        const subs = await getSubscriptionsForSessionTrigger("session-1", "svc:event");
+        expect(subs).toHaveLength(2);
+    });
+});
+
+describe("listSessionSubscriptions", () => {
     beforeEach(resetState);
 
     test("returns empty array when session has no subscriptions", async () => {
@@ -207,7 +275,7 @@ describe.todo("listSessionSubscriptions", () => {
     });
 });
 
-describe.todo("getSubscribersForTrigger", () => {
+describe("getSubscribersForTrigger", () => {
     beforeEach(resetState);
 
     test("returns empty array when no sessions subscribed", async () => {
@@ -226,7 +294,7 @@ describe.todo("getSubscribersForTrigger", () => {
     });
 });
 
-describe.todo("clearSessionSubscriptions", () => {
+describe("clearSessionSubscriptions", () => {
     beforeEach(resetState);
 
     test("removes all subscriptions for a session", async () => {
@@ -263,7 +331,7 @@ describe.todo("clearSessionSubscriptions", () => {
 
 // ── Subscription params ──────────────────────────────────────────────────────
 
-describe.todo("subscription params", () => {
+describe("subscription params", () => {
     beforeEach(resetState);
 
     test("subscribe with params stores them and lists them", async () => {
@@ -298,11 +366,11 @@ describe.todo("subscription params", () => {
         expect(subs[0].params).toBeUndefined();
     });
 
-    test("re-subscribing with different params replaces old params", async () => {
+    test("multiple subscriptions of same triggerType preserve the earliest params for legacy lookup", async () => {
         await subscribeSessionToTrigger("session-1", "runner-A", "github:pr_comment", undefined, { prNumber: 42 });
         await subscribeSessionToTrigger("session-1", "runner-A", "github:pr_comment", undefined, { prNumber: 99 });
         const params = await getSubscriptionParams("session-1", "github:pr_comment");
-        expect(params).toEqual({ prNumber: 99 });
+        expect(params).toEqual({ prNumber: 42 });
     });
 
     test("unsubscribe clears params", async () => {

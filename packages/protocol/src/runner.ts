@@ -12,13 +12,9 @@ import type { RunnerSkill, RunnerAgent, RunnerPlugin, RunnerHook, ServiceAnnounc
  * A single trigger subscription entry used in reconciliation snapshots/deltas.
  * Mirrors the data stored in Redis by trigger-subscription-store.ts.
  *
- * @note The reconciliation protocol currently assumes **at most one active
- * subscription per (sessionId, triggerType) pair**. Multiple subscriptions to
- * the same trigger type from the same session are not supported — the last
- * subscription wins. The dedup key `${sessionId}\0${triggerType}` used in
- * snapshot reconciliation enforces this at the protocol layer.
  */
 export interface TriggerSubscriptionEntry {
+  subscriptionId: string;
   sessionId: string;
   triggerType: string;
   runnerId: string;
@@ -50,13 +46,18 @@ export interface TriggerSubscriptionsSnapshot {
 /**
  * A single subscription change (add/update/remove).
  * Sent server → runner when a subscription changes at runtime.
+ *
+ * Unsubscribe actions should normally target a specific subscription via
+ * `subscription.subscriptionId`. Legacy bulk unsubscribe-by-triggerType can be
+ * represented with a sentinel subscriptionId while keeping `triggerType`
+ * populated for backward-compatible consumers.
  */
 export interface TriggerSubscriptionDelta {
   /** Monotonic revision number for ordering. */
   revision: number;
   /** The type of change. */
   action: "subscribe" | "update" | "unsubscribe";
-  /** The affected subscription entry. For unsubscribe, only sessionId + triggerType are required. */
+  /** The affected subscription entry. */
   subscription: TriggerSubscriptionEntry;
 }
 

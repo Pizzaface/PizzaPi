@@ -96,6 +96,15 @@ export function createHooksExtension(hooksConfig: HooksConfig | undefined, cwd: 
                             if (output?.permissionDecision === "deny") {
                                 return { block: true, reason: output.additionalContext || "Denied by hook" };
                             }
+                            // Apply updatedInput — mutate event.input in place
+                            // so the tool executes with the rewritten arguments
+                            // (e.g. RTK command rewrite: ls → rtk ls).
+                            if (output?.updatedInput) {
+                                const input = event.input as Record<string, unknown>;
+                                for (const [key, value] of Object.entries(output.updatedInput)) {
+                                    input[key] = value;
+                                }
+                            }
                             if (output?.additionalContext) {
                                 advisoryParts.push(output.additionalContext);
                             }

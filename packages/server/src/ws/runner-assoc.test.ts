@@ -9,7 +9,7 @@
 // We mock the Redis client at module level so no live Redis is needed.
 // ============================================================================
 
-import { describe, it, expect, beforeEach, mock } from "bun:test";
+import { afterEach, describe, it, expect, beforeEach, mock } from "bun:test";
 
 // ── Minimal Redis mock ──────────────────────────────────────────────────────
 
@@ -31,8 +31,38 @@ const mockRedis = {
         if (entry) entry.ttl = ttl;
     }),
     exists: mock(async (key: string) => (store.has(key) ? 1 : 0)),
+    multi: mock(() => {
+        const ops: Array<() => void> = [];
+        const chain = {
+            set: mock((key: string, value: string, opts?: { EX?: number }) => {
+                ops.push(() => {
+                    store.set(key, { value, ttl: opts?.EX ?? -1 });
+                });
+                return chain;
+            }),
+            del: mock((key: string) => {
+                ops.push(() => {
+                    store.delete(key);
+                });
+                return chain;
+            }),
+            expire: mock((key: string, ttl: number) => {
+                ops.push(() => {
+                    const entry = store.get(key);
+                    if (entry) entry.ttl = ttl;
+                });
+                return chain;
+            }),
+            exec: mock(async () => {
+                for (const op of ops) op();
+                return [];
+            }),
+        };
+        return chain;
+    }),
     on: mock(() => mockRedis),
     connect: mock(async () => {}),
+    quit: mock(async () => {}),
 };
 
 // Import the functions under test — no mock.module needed; we pass mockRedis
@@ -58,6 +88,11 @@ describe("runner association (sio-state)", () => {
         // Inject the mock Redis client directly (no mock.module needed).
         await initStateRedis(mockRedis as never);
     });
+
+    // NOTE: Do NOT call closeStateRedis() here — that nulls out the global
+    // sio-state Redis client, which breaks runners.broadcast.test.ts (and
+    // any other test file sharing the same Bun worker that runs after us).
+    // The beforeEach re-injection via initStateRedis(mockRedis) is sufficient.
 
     describe("setRunnerAssociation", () => {
         it("stores runnerId and runnerName as JSON with TTL", async () => {

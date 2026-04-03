@@ -84,11 +84,10 @@ type TriggerReconciliationLogger = {
  * in-memory state (timers, crons, etc.) is rebuilt from the server's source of
  * truth.
  *
- * @note This function assumes **at most one active subscription per
- * (sessionId, triggerType) pair**. The snapshot uses
- * `${sessionId}\0${triggerType}` as a dedup key, so if multiple entries exist
- * for the same pair, only the last one processed will take effect. This
- * constraint is enforced by the protocol layer — see `TriggerSubscriptionEntry`.
+ * @note Snapshot entries are forwarded individually and may contain multiple
+ * active subscriptions for the same `(sessionId, triggerType)` pair. Services
+ * must treat `subscriptionId` as the stable identity when they maintain
+ * runtime state so same-session same-type subscriptions can coexist.
  */
 export function reconcileSnapshotSubscriptions(
     registry: ServiceRegistry,
