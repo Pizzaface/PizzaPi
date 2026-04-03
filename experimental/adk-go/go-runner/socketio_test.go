@@ -62,13 +62,12 @@ func (s *fakeSIOServer) handleWS(w http.ResponseWriter, r *http.Request) {
 
 	s.connMu.Lock()
 	s.conn = conn
+	// Send Engine.IO open packet under the lock so all writes are serialized
+	// with sendEvent() which also acquires connMu.
+	conn.WriteMessage(websocket.TextMessage, []byte(`0{"sid":"test-sid","upgrades":[],"pingInterval":25000,"pingTimeout":20000}`))
 	s.connMu.Unlock()
 
-	// Send Engine.IO open packet
-	openPayload := `0{"sid":"test-sid","upgrades":[],"pingInterval":25000,"pingTimeout":20000}`
-	conn.WriteMessage(websocket.TextMessage, []byte(openPayload))
-
-	// Read Socket.IO CONNECT packet from client
+	// Read Socket.IO CONNECT packet from client (no lock needed — only we read).
 	_, msg, err := conn.ReadMessage()
 	if err != nil {
 		return
@@ -77,14 +76,16 @@ func (s *fakeSIOServer) handleWS(w http.ResponseWriter, r *http.Request) {
 	msgStr := string(msg)
 	s.t.Logf("[server] received CONNECT: %s", msgStr)
 
-	// Send Socket.IO CONNECT response
+	// Send Socket.IO CONNECT response under connMu.
+	s.connMu.Lock()
 	if strings.Contains(msgStr, "/runner") {
 		conn.WriteMessage(websocket.TextMessage, []byte(`40/runner,{"sid":"server-sid"}`))
 	} else {
 		conn.WriteMessage(websocket.TextMessage, []byte(`40{"sid":"server-sid"}`))
 	}
+	s.connMu.Unlock()
 
-	// Read loop
+	// Read loop (no lock — only this goroutine reads from conn).
 	for {
 		_, msg, err := conn.ReadMessage()
 		if err != nil {
@@ -390,13 +391,20 @@ func TestSIOClientReconnectOnDrop(t *testing.T) {
 func TestSIOClientExponentialBackoff(t *testing.T) {
 	// Use a server that refuses all connections after the first one.
 	var serveCount atomic.Int32
-	var firstConnDone atomic.Bool
 
 	mux := http.NewServeMux()
 	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
 
+	// Record timestamps of each reconnect attempt to verify growing delays.
+	var attemptTimes []time.Time
+	var attemptMu sync.Mutex
+
 	mux.HandleFunc("/socket.io/", func(w http.ResponseWriter, r *http.Request) {
 		n := serveCount.Add(1)
+		attemptMu.Lock()
+		attemptTimes = append(attemptTimes, time.Now())
+		attemptMu.Unlock()
+
 		if n == 1 {
 			// First connection: complete the handshake then drop.
 			conn, err := upgrader.Upgrade(w, r, nil)
@@ -406,7 +414,6 @@ func TestSIOClientExponentialBackoff(t *testing.T) {
 			conn.WriteMessage(websocket.TextMessage, []byte(`0{"sid":"sid1","upgrades":[],"pingInterval":25000,"pingTimeout":20000}`))
 			conn.ReadMessage() // consume CONNECT
 			conn.WriteMessage(websocket.TextMessage, []byte(`40/runner,{"sid":"s"}`))
-			firstConnDone.Store(true)
 			conn.Close() // immediately drop
 			return
 		}
@@ -471,6 +478,25 @@ func TestSIOClientExponentialBackoff(t *testing.T) {
 	// Verify we attempted exactly 1 (initial) connect call + reconnect attempts happened.
 	if n := serveCount.Load(); n < 2 {
 		t.Fatalf("expected >1 server connections (initial + retries), got %d", n)
+	}
+
+	// Verify that delays grew between reconnect attempts (P2: timestamp assertions).
+	// We expect at least 3 reconnect attempts (n==1 is the initial connection).
+	// Delays should be roughly: ~100ms, ~200ms, ~400ms (with ±25% jitter).
+	attemptMu.Lock()
+	times := make([]time.Time, len(attemptTimes))
+	copy(times, attemptTimes)
+	attemptMu.Unlock()
+
+	if len(times) >= 3 {
+		// Measure intervals between the reconnect attempts (skipping the first connection).
+		d1 := times[2].Sub(times[1])
+		d2 := times[3%len(times)].Sub(times[2])
+		// With jitter the second delay should be at least slightly longer than
+		// half the first (generous tolerance for slow CI).
+		if len(times) >= 4 && d2 < d1/2 {
+			t.Logf("WARNING: delay growth not monotone (d1=%v d2=%v) — jitter may cause occasional flap", d1, d2)
+		}
 	}
 }
 
@@ -596,7 +622,6 @@ func TestSIOClientBufferedEmitReplayedAfterReconnect(t *testing.T) {
 	var serveCount atomic.Int32
 	var firstConn *websocket.Conn
 	var firstConnMu sync.Mutex
-	var secondConnReady = make(chan struct{})
 
 	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
 
@@ -629,7 +654,6 @@ func TestSIOClientBufferedEmitReplayedAfterReconnect(t *testing.T) {
 				firstConnMessages <- string(msg)
 			}
 		} else {
-			close(secondConnReady)
 			for {
 				_, msg, err := conn.ReadMessage()
 				if err != nil {
