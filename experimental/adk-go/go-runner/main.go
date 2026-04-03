@@ -262,6 +262,21 @@ func (r *GoRunner) runSession(ctx context.Context, sess *session, pctx ProviderC
 		r.logger.Printf("session %s: received steer message", sessionID[:8])
 		if err := sess.provider.QueueMessage(QueuedMessage{Text: text, Priority: Steer}); err != nil {
 			r.logger.Printf("session %s: steer queue error: %v", sessionID[:8], err)
+			return
+		}
+		// Emit active heartbeat so the UI shows the spinner while steer is pending
+		activeHB := map[string]any{
+			"type":         "heartbeat",
+			"active":       true,
+			"isCompacting": false,
+			"ts":           time.Now().UnixMilli(),
+		}
+		r.client.Emit("runner_session_event", map[string]any{
+			"sessionId": sessionID,
+			"event":     activeHB,
+		})
+		if relaySess != nil {
+			relaySess.EmitEvent(activeHB)
 		}
 	}
 
@@ -270,6 +285,21 @@ func (r *GoRunner) runSession(ctx context.Context, sess *session, pctx ProviderC
 		r.logger.Printf("session %s: received follow-up message", sessionID[:8])
 		if err := sess.provider.QueueMessage(QueuedMessage{Text: text, Priority: FollowUp}); err != nil {
 			r.logger.Printf("session %s: follow-up queue error: %v", sessionID[:8], err)
+			return
+		}
+		// Emit active heartbeat so the UI shows the spinner while follow-up is pending
+		activeHB := map[string]any{
+			"type":         "heartbeat",
+			"active":       true,
+			"isCompacting": false,
+			"ts":           time.Now().UnixMilli(),
+		}
+		r.client.Emit("runner_session_event", map[string]any{
+			"sessionId": sessionID,
+			"event":     activeHB,
+		})
+		if relaySess != nil {
+			relaySess.EmitEvent(activeHB)
 		}
 	}
 

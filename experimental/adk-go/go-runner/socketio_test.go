@@ -52,6 +52,17 @@ func (s *fakeSIOServer) Close() {
 	s.server.Close()
 }
 
+// writeConn sends a text message on the server connection under connMu.
+// All writes to the websocket conn MUST go through this method to avoid
+// concurrent write races (gorilla/websocket does not allow concurrent writes).
+func (s *fakeSIOServer) writeConn(msg string) {
+	s.connMu.Lock()
+	defer s.connMu.Unlock()
+	if s.conn != nil {
+		s.conn.WriteMessage(websocket.TextMessage, []byte(msg)) //nolint:errcheck
+	}
+}
+
 func (s *fakeSIOServer) handleWS(w http.ResponseWriter, r *http.Request) {
 	conn, err := s.upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -65,7 +76,7 @@ func (s *fakeSIOServer) handleWS(w http.ResponseWriter, r *http.Request) {
 
 	// Send Engine.IO open packet
 	openPayload := `0{"sid":"test-sid","upgrades":[],"pingInterval":25000,"pingTimeout":20000}`
-	conn.WriteMessage(websocket.TextMessage, []byte(openPayload))
+	s.writeConn(openPayload)
 
 	// Read Socket.IO CONNECT packet from client
 	_, msg, err := conn.ReadMessage()
@@ -78,9 +89,9 @@ func (s *fakeSIOServer) handleWS(w http.ResponseWriter, r *http.Request) {
 
 	// Send Socket.IO CONNECT response
 	if strings.Contains(msgStr, "/runner") {
-		conn.WriteMessage(websocket.TextMessage, []byte(`40/runner,{"sid":"server-sid"}`))
+		s.writeConn(`40/runner,{"sid":"server-sid"}`)
 	} else {
-		conn.WriteMessage(websocket.TextMessage, []byte(`40{"sid":"server-sid"}`))
+		s.writeConn(`40{"sid":"server-sid"}`)
 	}
 
 	// Read loop
@@ -102,11 +113,7 @@ func (s *fakeSIOServer) handleWS(w http.ResponseWriter, r *http.Request) {
 func (s *fakeSIOServer) sendEvent(event string, data any) {
 	payload, _ := json.Marshal(data)
 	msg := `42/runner,["` + event + `",` + string(payload) + `]`
-	s.connMu.Lock()
-	defer s.connMu.Unlock()
-	if s.conn != nil {
-		s.conn.WriteMessage(websocket.TextMessage, []byte(msg))
-	}
+	s.writeConn(msg)
 }
 
 func (s *fakeSIOServer) getReceived() []string {
@@ -246,9 +253,7 @@ func TestSIOClientPingPong(t *testing.T) {
 	defer client.Close()
 
 	// Send a ping from the server, expect a pong
-	server.connMu.Lock()
-	server.conn.WriteMessage(websocket.TextMessage, []byte("2")) // Engine.IO ping
-	server.connMu.Unlock()
+	server.writeConn("2") // Engine.IO ping
 
 	time.Sleep(100 * time.Millisecond)
 

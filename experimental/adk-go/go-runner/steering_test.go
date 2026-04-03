@@ -99,7 +99,6 @@ func makeTestProvider() *ClaudeCLIProvider {
 		events:        make(chan RelayEvent, 128),
 		done:          make(chan struct{}),
 		followUpQueue: make(chan string, 64),
-		steerCh:       make(chan string, 1),
 	}
 }
 
@@ -198,7 +197,7 @@ func TestQueueMessageFollowUpWhileIdle(t *testing.T) {
 }
 
 // TestQueueMessageSteerWhileActive verifies that Steer during active turn
-// is degraded to follow-up in Phase 0.
+// stores the latest steer in latestSteer and does NOT add to followUpQueue.
 func TestQueueMessageSteerWhileActive(t *testing.T) {
 	p := makeTestProvider()
 	p.active.Store(true) // simulate active turn
@@ -208,24 +207,18 @@ func TestQueueMessageSteerWhileActive(t *testing.T) {
 		t.Fatalf("QueueMessage(Steer) returned error: %v", err)
 	}
 
-	// Phase 0 degradation: message should land in followUpQueue
-	select {
-	case msg := <-p.followUpQueue:
-		if msg != "steer-me" {
-			t.Fatalf("unexpected queued text: %q", msg)
-		}
-	default:
-		t.Fatal("steer degradation: expected message in followUpQueue, but it was empty")
+	// Phase 0 fix: steer goes to latestSteer, NOT followUpQueue
+	ptr := p.latestSteer.Load()
+	if ptr == nil {
+		t.Fatal("expected latestSteer to be set, but it is nil")
+	}
+	if *ptr != "steer-me" {
+		t.Fatalf("expected latestSteer='steer-me', got %q", *ptr)
 	}
 
-	// steerCh should also hold the latest steer
-	select {
-	case msg := <-p.steerCh:
-		if msg != "steer-me" {
-			t.Fatalf("unexpected steerCh text: %q", msg)
-		}
-	default:
-		t.Fatal("expected message in steerCh")
+	// followUpQueue must be empty — steer must NOT be added there
+	if len(p.followUpQueue) != 0 {
+		t.Fatalf("steer must not be added to followUpQueue; depth=%d", len(p.followUpQueue))
 	}
 }
 
@@ -238,7 +231,7 @@ func TestQueueMessageSteerWhileIdle(t *testing.T) {
 	// May return error (no runner), but the important thing is it tried SendMessage
 	_ = err
 
-	// followUpQueue and steerCh should be empty (took the idle direct-send path)
+	// followUpQueue and latestSteer should be nil/empty (took the idle direct-send path)
 	select {
 	case msg := <-p.followUpQueue:
 		t.Fatalf("idle steer should not queue, but got %q in followUpQueue", msg)
@@ -246,41 +239,34 @@ func TestQueueMessageSteerWhileIdle(t *testing.T) {
 		// Correct
 	}
 
-	select {
-	case msg := <-p.steerCh:
-		t.Fatalf("idle steer should not push to steerCh, but got %q", msg)
-	default:
-		// Correct
+	if p.latestSteer.Load() != nil {
+		t.Fatalf("idle steer should not set latestSteer")
 	}
 }
 
 // TestMultipleSteerKeepsLatest verifies that queuing multiple steers while
-// active only retains the latest one in steerCh (capacity 1).
+// active only retains the latest one (P1 fix: steer invariant).
 func TestMultipleSteerKeepsLatest(t *testing.T) {
 	p := makeTestProvider()
 	p.active.Store(true)
 
-	// Queue three steers — steerCh has capacity 1, so only latest should remain
+	// Queue three steers — only latest should be retained
 	p.QueueMessage(QueuedMessage{Text: "steer-1", Priority: Steer}) //nolint:errcheck
 	p.QueueMessage(QueuedMessage{Text: "steer-2", Priority: Steer}) //nolint:errcheck
 	p.QueueMessage(QueuedMessage{Text: "steer-3", Priority: Steer}) //nolint:errcheck
 
-	// Read the steerCh — should have the latest
-	select {
-	case msg := <-p.steerCh:
-		if msg != "steer-3" {
-			t.Fatalf("expected latest steer 'steer-3', got %q", msg)
-		}
-	default:
-		t.Fatal("expected a message in steerCh")
+	// latestSteer should hold only the last one
+	ptr := p.latestSteer.Load()
+	if ptr == nil {
+		t.Fatal("expected latestSteer to be set")
+	}
+	if *ptr != "steer-3" {
+		t.Fatalf("expected latest steer 'steer-3', got %q", *ptr)
 	}
 
-	// steerCh should now be empty
-	select {
-	case msg := <-p.steerCh:
-		t.Fatalf("steerCh should be empty after drain, but got %q", msg)
-	default:
-		// Correct
+	// followUpQueue must be empty — steers must NOT accumulate there
+	if len(p.followUpQueue) != 0 {
+		t.Fatalf("steers must not be added to followUpQueue; depth=%d", len(p.followUpQueue))
 	}
 }
 
@@ -426,14 +412,14 @@ func TestQueueMessageWithFollowUpPriorityQueuesCorrectly(t *testing.T) {
 }
 
 // TestQueueMessageWithSteerPriorityDeliversOrDegrades verifies the Steer
-// path: delivers immediately when idle, degrades to follow-up when active.
+// path: delivers immediately when idle, stores latestSteer when active.
 func TestQueueMessageWithSteerPriorityDeliversOrDegrades(t *testing.T) {
 	t.Run("idle: delivers immediately (SendMessage called)", func(t *testing.T) {
 		p := makeTestProvider()
 		p.active.Store(false)
 
 		// SendMessage will fail (no runner), but it must be attempted
-		// Verify nothing lands in followUpQueue or steerCh
+		// Verify nothing lands in followUpQueue or latestSteer
 		err := p.QueueMessage(QueuedMessage{Text: "steer-now", Priority: Steer})
 		// Error is expected (no runner), but is non-fatal
 		_ = err
@@ -441,12 +427,12 @@ func TestQueueMessageWithSteerPriorityDeliversOrDegrades(t *testing.T) {
 		if len(p.followUpQueue) != 0 {
 			t.Fatalf("idle steer: followUpQueue should be empty, got depth %d", len(p.followUpQueue))
 		}
-		if len(p.steerCh) != 0 {
-			t.Fatalf("idle steer: steerCh should be empty, got depth %d", len(p.steerCh))
+		if p.latestSteer.Load() != nil {
+			t.Fatalf("idle steer: latestSteer should be nil")
 		}
 	})
 
-	t.Run("active: degrades to follow-up queue", func(t *testing.T) {
+	t.Run("active: stores in latestSteer, not followUpQueue", func(t *testing.T) {
 		p := makeTestProvider()
 		p.active.Store(true)
 
@@ -455,13 +441,95 @@ func TestQueueMessageWithSteerPriorityDeliversOrDegrades(t *testing.T) {
 			t.Fatalf("QueueMessage(Steer, active) error: %v", err)
 		}
 
-		if len(p.followUpQueue) == 0 {
-			t.Fatal("active steer: expected message in followUpQueue")
+		if p.latestSteer.Load() == nil {
+			t.Fatal("active steer: expected latestSteer to be set")
 		}
-		if len(p.steerCh) == 0 {
-			t.Fatal("active steer: expected message in steerCh")
+		if len(p.followUpQueue) != 0 {
+			t.Fatalf("active steer: followUpQueue must be empty, got depth %d", len(p.followUpQueue))
 		}
 	})
+}
+
+// TestSteerDrainedBeforeFollowUp verifies that when both a steer and follow-up
+// messages are pending, the bridge drains the steer first (higher priority).
+func TestSteerDrainedBeforeFollowUp(t *testing.T) {
+	p := makeTestProvider()
+
+	// Pre-load both a steer and a follow-up
+	steerText := "urgent-steer"
+	p.latestSteer.Store(&steerText)
+	p.followUpQueue <- "queued-follow-up"
+
+	raw := make(chan claudewrapper.ClaudeEvent, 8)
+	go p.bridge(raw)
+
+	// Simulate a turn
+	raw <- &claudewrapper.SystemEvent{Subtype: "init"}
+	time.Sleep(10 * time.Millisecond)
+	raw <- &claudewrapper.ResultEvent{Subtype: "success"}
+	time.Sleep(30 * time.Millisecond)
+
+	// Steer should have been consumed (latestSteer cleared)
+	if p.latestSteer.Load() != nil {
+		t.Fatal("expected latestSteer to be cleared after drain")
+	}
+
+	// Follow-up should still be in the queue (steer was drained first, not both)
+	if len(p.followUpQueue) != 1 {
+		t.Fatalf("expected follow-up to remain in queue; depth=%d", len(p.followUpQueue))
+	}
+
+	close(raw)
+}
+
+// TestQueueFullBehavior verifies that when followUpQueue is full, QueueMessage
+// returns an error and does not silently drop the message.
+func TestQueueFullBehavior(t *testing.T) {
+	p := makeTestProvider()
+	p.active.Store(true)
+
+	// Fill the queue to capacity (64)
+	for i := 0; i < cap(p.followUpQueue); i++ {
+		if err := p.QueueMessage(QueuedMessage{Text: "msg", Priority: FollowUp}); err != nil {
+			t.Fatalf("unexpected error filling queue at index %d: %v", i, err)
+		}
+	}
+
+	// Next message should return an error (queue full)
+	err := p.QueueMessage(QueuedMessage{Text: "overflow", Priority: FollowUp})
+	if err == nil {
+		t.Fatal("expected error when follow-up queue is full, got nil")
+	}
+}
+
+// TestNoRaceSteerDuringTransition verifies that a steer arriving exactly when
+// the bridge is transitioning active→false is handled without races.
+// (This is a stress test — best run with -race flag.)
+func TestNoRaceSteerDuringTransition(t *testing.T) {
+	p := makeTestProvider()
+
+	raw := make(chan claudewrapper.ClaudeEvent, 8)
+	go p.bridge(raw)
+
+	// Fire many steers concurrently with a result event
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 100; i++ {
+			text := "steer"
+			p.latestSteer.Store(&text)
+			// also try QueueMessage (may race with stateMu)
+			_ = p.QueueMessage(QueuedMessage{Text: "steer", Priority: Steer})
+		}
+	}()
+
+	raw <- &claudewrapper.SystemEvent{Subtype: "init"}
+	time.Sleep(5 * time.Millisecond)
+	raw <- &claudewrapper.ResultEvent{Subtype: "success"}
+
+	<-done
+	time.Sleep(20 * time.Millisecond)
+	close(raw)
 }
 
 // ---- Interface compliance: mockProvider satisfies Provider ----
