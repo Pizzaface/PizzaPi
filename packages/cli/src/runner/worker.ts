@@ -164,6 +164,7 @@ function buildPromptPaths(cwd: string): string[] {
 }
 import { forwardCliError } from "../extensions/remote.js";
 import { buildPizzaPiExtensionFactories } from "../extensions/factories.js";
+import { armWorkerStartupGate, markWorkerStartupComplete } from "../extensions/worker-startup-gate.js";
 
 /**
  * Headless session worker.
@@ -337,7 +338,12 @@ async function main(): Promise<void> {
     bootTimer.end("[boot] create-session");
 
     // Bind extensions in headless mode (no UI context)
+    // Arm the startup gate before session_start handlers run so inbound relay
+    // triggers / remote input cannot start the first turn until all startup
+    // work (notably MCP initialization) has completed.
+    armWorkerStartupGate();
     bootTimer.start("[boot] bind-extensions");
+    try {
     await session.bindExtensions({
         commandContextActions: {
             waitForIdle: () => session.agent.waitForIdle(),
@@ -379,6 +385,12 @@ async function main(): Promise<void> {
             forwardCliError(err.error, err.extensionPath);
         },
     });
+    } finally {
+        // Always release the gate — even if bindExtensions() throws — so that
+        // any callers already waiting on waitForWorkerStartupComplete() are not
+        // stranded forever. The worker will crash/exit on throw anyway.
+        markWorkerStartupComplete();
+    }
     bootTimer.end("[boot] bind-extensions");
 
     bootTimer.end("[boot] total");
