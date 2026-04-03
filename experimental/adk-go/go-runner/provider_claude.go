@@ -50,9 +50,12 @@ func (p *ClaudeCLIProvider) Start(pctx ProviderContext) (<-chan RelayEvent, erro
 	}
 	if pctx.ResumeID != "" {
 		cfg.ResumeSessionID = pctx.ResumeID
-	} else if pctx.ResumePath != "" {
-		cfg.ResumeSessionID = pctx.ResumePath
 	}
+	// NOTE: ResumePath is not supported in the Go runner. The Claude CLI --resume
+	// flag takes a session ID, not a file path. ResumePath uses pi's switchSession
+	// API (a different mechanism not available here). Ignore it silently so that
+	// callers supplying only ResumePath receive a fresh session instead of having
+	// an incorrect ID forwarded to the CLI.
 
 	p.runner = claudewrapper.NewRunner(cfg)
 

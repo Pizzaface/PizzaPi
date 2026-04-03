@@ -34,7 +34,7 @@ type session struct {
 	sessionID    string
 	provider     Provider      // LLM backend (Claude CLI, API, etc.)
 	relaySession *RelaySession // per-session /relay connection
-	cancel       context.CancelFunc
+	cancel       context.CancelFunc // cancels the session goroutine (both adopted and normal)
 	killed       bool
 	adopted      bool // true if this session was adopted from relay on reconnect (no subprocess)
 	mu           sync.Mutex
@@ -171,9 +171,13 @@ func (r *GoRunner) handleRunnerRegistered(data json.RawMessage) {
 		}
 
 		// Create an adopted (placeholder) session entry with no subprocess.
+		// A cancel function is stored so killSession can cancel the goroutine
+		// even if it is still blocking inside relaySess.Connect().
+		ctx, cancel := context.WithCancel(context.Background())
 		adopted := &session{
 			sessionID: sessionID,
 			adopted:   true,
+			cancel:    cancel,
 		}
 		r.sessions.Store(sessionID, adopted)
 		r.logger.Printf("adopted session %s (no subprocess)", sessionID[:min(8, len(sessionID))])
@@ -191,7 +195,7 @@ func (r *GoRunner) handleRunnerRegistered(data json.RawMessage) {
 
 		// Connect a relay session for the adopted session to observe user input.
 		// The adopted session has no subprocess, so any input is logged as a warning.
-		go r.runAdoptedSession(adopted, es.Cwd)
+		go r.runAdoptedSession(ctx, adopted, es.Cwd)
 	}
 
 	if len(payload.ExistingSessions) > 0 {
@@ -202,9 +206,16 @@ func (r *GoRunner) handleRunnerRegistered(data json.RawMessage) {
 // runAdoptedSession connects an adopted (no-subprocess) session to the relay
 // so that user input is properly received and logged as a warning.
 // The session has no subprocess, so input cannot be forwarded.
-func (r *GoRunner) runAdoptedSession(sess *session, cwd string) {
+//
+// ctx is cancelled by killSession to interrupt a blocking Connect() call or
+// to stop the goroutine while it is waiting on the relay connection.
+func (r *GoRunner) runAdoptedSession(ctx context.Context, sess *session, cwd string) {
 	sessionID := sess.sessionID
 	shortID := sessionID[:min(8, len(sessionID))]
+
+	// Always remove the session from the map when this goroutine exits,
+	// regardless of whether exit was caused by kill or relay disconnect.
+	defer r.sessions.Delete(sessionID)
 
 	relaySess := NewRelaySession(r.relayURL, r.apiKey, sessionID, cwd, r.logger)
 
@@ -219,15 +230,31 @@ func (r *GoRunner) runAdoptedSession(sess *session, cwd string) {
 		return
 	}
 
+	// Check whether killSession cancelled us while Connect() was blocking.
+	select {
+	case <-ctx.Done():
+		relaySess.Close()
+		r.logger.Printf("adopted session %s cancelled after connect", shortID)
+		return
+	default:
+	}
+
 	sess.mu.Lock()
 	sess.relaySession = relaySess
 	sess.mu.Unlock()
 
 	r.logger.Printf("adopted session %s relay connected (monitoring for input)", shortID)
 
-	// Wait until the session is killed or the relay disconnects.
-	<-relaySess.Done()
-	r.logger.Printf("adopted session %s relay disconnected", shortID)
+	// Wait until the session is killed (ctx cancelled) or the relay disconnects.
+	// RelaySession.Done() only closes on explicit Close(); use ctx.Done() so a
+	// kill_session that arrives before or after Connect() always unblocks us.
+	select {
+	case <-ctx.Done():
+		relaySess.Close()
+		r.logger.Printf("adopted session %s killed", shortID)
+	case <-relaySess.Done():
+		r.logger.Printf("adopted session %s relay disconnected", shortID)
+	}
 }
 
 func (r *GoRunner) handleNewSession(data json.RawMessage) {
@@ -477,13 +504,14 @@ func (r *GoRunner) handleKillSession(data json.RawMessage) {
 	sess.mu.Unlock()
 
 	if isAdopted {
-		r.logger.Printf("kill_session: session %s is adopted (no subprocess), removing placeholder", sessionID[:min(8, len(sessionID))])
-		// Close any relay connection for this adopted session.
-		sess.mu.Lock()
-		rs := sess.relaySession
-		sess.mu.Unlock()
-		if rs != nil {
-			rs.Close()
+		r.logger.Printf("kill_session: session %s is adopted (no subprocess), cancelling", sessionID[:min(8, len(sessionID))])
+		// Cancel the adopted session goroutine. This unblocks runAdoptedSession
+		// whether it is still inside Connect() or waiting on relaySess.Done().
+		// The goroutine's defer will also call r.sessions.Delete; we delete here
+		// too so that sessions injected without a running goroutine (e.g. tests)
+		// are also cleaned up. sync.Map.Delete is idempotent — double-delete is safe.
+		if sess.cancel != nil {
+			sess.cancel()
 		}
 		r.sessions.Delete(sessionID)
 		r.client.Emit("session_killed", map[string]any{
@@ -499,15 +527,13 @@ func (r *GoRunner) killSession(sess *session) {
 	sess.mu.Lock()
 	isAdopted := sess.adopted
 	sess.killed = true
-	rs := sess.relaySession
 	sess.mu.Unlock()
 
-	// Adopted sessions have no subprocess — just close the relay connection.
+	// Adopted sessions have no subprocess — cancel the goroutine and let it clean up.
 	if isAdopted {
-		if rs != nil {
-			rs.Close()
+		if sess.cancel != nil {
+			sess.cancel()
 		}
-		r.sessions.Delete(sess.sessionID)
 		return
 	}
 
@@ -533,7 +559,7 @@ func (r *GoRunner) handleSessionEnded(data json.RawMessage) {
 		r.logger.Printf("parse session_ended: %v", err)
 		return
 	}
-	r.logger.Printf("session_ended from relay: %s", payload.SessionID[:8])
+	r.logger.Printf("session_ended from relay: %s", payload.SessionID[:min(8, len(payload.SessionID))])
 	r.sessions.Delete(payload.SessionID)
 }
 
