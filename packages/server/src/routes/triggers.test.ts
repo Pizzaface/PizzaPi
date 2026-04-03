@@ -28,26 +28,23 @@ mock.module("../ws/sio-registry.js", () => ({
     recordRunnerSession: mockRecordRunnerSession,
     getLocalRunnerSocket: mockGetLocalRunnerSocket,
     linkSessionToRunner: mockLinkSessionToRunner,
+    emitToRelaySession: mock((_id: string, _event: string, _data: any) => Promise.resolve(false)),
+    getTerminalEntry: mock((_id: string) => Promise.resolve(null as any)),
 }));
 
 const mockGetRunnerListenerTypes = mock((_runnerId: string) => Promise.resolve([] as string[]));
 const mockGetRunnerTriggerListener = mock((_runnerId: string, _triggerType: string) => Promise.resolve(null as any));
 const mockListRunnerTriggerListeners = mock((_runnerId: string) => Promise.resolve([] as any[]));
 const mockAddRunnerTriggerListener = mock((_runnerId: string, _triggerType: string, _config: any) => Promise.resolve("listener-default"));
-const mockRemoveRunnerTriggerListener = mock((_runnerId: string, _target: string) => Promise.resolve({ removed: 1, triggerType: _target }));
+const mockRemoveRunnerTriggerListener = mock((_runnerId: string, _target: string) => Promise.resolve(true));
 const mockUpdateRunnerTriggerListener = mock((_runnerId: string, _target: string, _updates: any) => Promise.resolve({ updated: false } as any));
-
-mock.module("../sessions/runner-trigger-listener-store.js", () => ({
-    getRunnerListenerTypes: mockGetRunnerListenerTypes,
-    getRunnerTriggerListener: mockGetRunnerTriggerListener,
-    listRunnerTriggerListeners: mockListRunnerTriggerListeners,
-    addRunnerTriggerListener: mockAddRunnerTriggerListener,
-    removeRunnerTriggerListener: mockRemoveRunnerTriggerListener,
-    updateRunnerTriggerListener: mockUpdateRunnerTriggerListener,
-}));
 
 mock.module("../ws/runner-control.js", () => ({
     waitForSpawnAck: mock(() => Promise.resolve({ ok: true })),
+}));
+
+mock.module("../ws/namespaces/runner.js", () => ({
+    emitTriggerSubscriptionDelta: mock(() => Promise.resolve()),
 }));
 
 // ── Mock middleware ──────────────────────────────────────────────────────
@@ -75,6 +72,7 @@ mock.module("../sessions/trigger-store.js", () => ({
 // ── Mock trigger subscription store ─────────────────────────────────────
 const mockSubscribeSessionToTrigger = mock((_sid: string, _rid: string, _type: string, _ttl?: number, _params?: any) => Promise.resolve("sub-default"));
 const mockUnsubscribeSessionFromTrigger = mock((_sid: string, _target: string) => Promise.resolve({ removed: 1, triggerType: _target }));
+const mockUnsubscribeSessionSubscription = mock((_sid: string, _subscriptionId: string) => Promise.resolve(true));
 const mockListSessionSubscriptions = mock((_sid: string) => Promise.resolve([] as any[]));
 const mockGetSubscribersForTrigger = mock((_rid: string, _type: string) => Promise.resolve([] as string[]));
 const mockGetSubscriptionParams = mock((_sid: string, _type: string) => Promise.resolve(undefined as any));
@@ -82,35 +80,74 @@ const mockGetSubscriptionFilters = mock((_sid: string, _type: string) => Promise
 const mockUpdateSessionSubscription = mock((_sid: string, _target: string, _updates: any) => Promise.resolve({ updated: false } as any));
 const mockClearSessionSubscriptions = mock((_sid: string) => Promise.resolve());
 const mockGetSubscriptionsForRunnerSessions = mock((_runnerId: string, _sessionIds: string[]) => Promise.resolve([] as any[]));
-mock.module("../sessions/trigger-subscription-store.js", () => ({
-    subscribeSessionToTrigger: mockSubscribeSessionToTrigger,
-    unsubscribeSessionFromTrigger: mockUnsubscribeSessionFromTrigger,
-    listSessionSubscriptions: mockListSessionSubscriptions,
-    getSubscribersForTrigger: mockGetSubscribersForTrigger,
-    getSubscriptionParams: mockGetSubscriptionParams,
-    getSubscriptionFilters: mockGetSubscriptionFilters,
-    updateSessionSubscription: mockUpdateSessionSubscription,
-    clearSessionSubscriptions: mockClearSessionSubscriptions,
-    getSubscriptionsForRunnerSessions: mockGetSubscriptionsForRunnerSessions,
-}));
 
-// ── Mock runners registry ────────────────────────────────────────────────
-// Use per-test spyOn setup instead of a file-global spy so mocked runner
-// helpers cannot leak into later test files running in the same Bun worker.
+// ── Mock runners registry + stores via spyOn to avoid cross-file poison ──
 import * as _runnersModule from "../ws/sio-registry/runners.js";
+import * as _triggerSubsModule from "../sessions/trigger-subscription-store.js";
+import * as _runnerListenersModule from "../sessions/runner-trigger-listener-store.js";
 let mockGetRunnerServices: ReturnType<typeof spyOn>;
 let mockGetRunnerData: ReturnType<typeof spyOn>;
+let spySubscribeSessionToTrigger: ReturnType<typeof spyOn>;
+let spyUnsubscribeSessionFromTrigger: ReturnType<typeof spyOn>;
+let spyUnsubscribeSessionSubscription: ReturnType<typeof spyOn>;
+let spyListSessionSubscriptions: ReturnType<typeof spyOn>;
+let spyGetSubscribersForTrigger: ReturnType<typeof spyOn>;
+let spyGetSubscriptionParams: ReturnType<typeof spyOn>;
+let spyGetSubscriptionFilters: ReturnType<typeof spyOn>;
+let spyUpdateSessionSubscription: ReturnType<typeof spyOn>;
+let spyClearSessionSubscriptions: ReturnType<typeof spyOn>;
+let spyGetSubscriptionsForRunnerSessions: ReturnType<typeof spyOn>;
+let spyGetRunnerListenerTypes: ReturnType<typeof spyOn>;
+let spyGetRunnerTriggerListener: ReturnType<typeof spyOn>;
+let spyListRunnerTriggerListeners: ReturnType<typeof spyOn>;
+let spyAddRunnerTriggerListener: ReturnType<typeof spyOn>;
+let spyRemoveRunnerTriggerListener: ReturnType<typeof spyOn>;
+let spyUpdateRunnerTriggerListener: ReturnType<typeof spyOn>;
 
 beforeEach(() => {
     mockGetRunnerServices = spyOn(_runnersModule, "getRunnerServices")
         .mockImplementation((_rid: string) => Promise.resolve(null as any));
     mockGetRunnerData = spyOn(_runnersModule, "getRunnerData")
         .mockImplementation((_rid: string) => Promise.resolve({ userId: "user-1", runnerId: "runner-A" } as any));
+
+    spySubscribeSessionToTrigger = spyOn(_triggerSubsModule, "subscribeSessionToTrigger").mockImplementation(mockSubscribeSessionToTrigger as any);
+    spyUnsubscribeSessionFromTrigger = spyOn(_triggerSubsModule, "unsubscribeSessionFromTrigger").mockImplementation(mockUnsubscribeSessionFromTrigger as any);
+    spyUnsubscribeSessionSubscription = spyOn(_triggerSubsModule, "unsubscribeSessionSubscription").mockImplementation(mockUnsubscribeSessionSubscription as any);
+    spyListSessionSubscriptions = spyOn(_triggerSubsModule, "listSessionSubscriptions").mockImplementation(mockListSessionSubscriptions as any);
+    spyGetSubscribersForTrigger = spyOn(_triggerSubsModule, "getSubscribersForTrigger").mockImplementation(mockGetSubscribersForTrigger as any);
+    spyGetSubscriptionParams = spyOn(_triggerSubsModule, "getSubscriptionParams").mockImplementation(mockGetSubscriptionParams as any);
+    spyGetSubscriptionFilters = spyOn(_triggerSubsModule, "getSubscriptionFilters").mockImplementation(mockGetSubscriptionFilters as any);
+    spyUpdateSessionSubscription = spyOn(_triggerSubsModule, "updateSessionSubscription").mockImplementation(mockUpdateSessionSubscription as any);
+    spyClearSessionSubscriptions = spyOn(_triggerSubsModule, "clearSessionSubscriptions").mockImplementation(mockClearSessionSubscriptions as any);
+    spyGetSubscriptionsForRunnerSessions = spyOn(_triggerSubsModule, "getSubscriptionsForRunnerSessions").mockImplementation(mockGetSubscriptionsForRunnerSessions as any);
+
+    spyGetRunnerListenerTypes = spyOn(_runnerListenersModule, "getRunnerListenerTypes").mockImplementation(mockGetRunnerListenerTypes as any);
+    spyGetRunnerTriggerListener = spyOn(_runnerListenersModule, "getRunnerTriggerListener").mockImplementation(mockGetRunnerTriggerListener as any);
+    spyListRunnerTriggerListeners = spyOn(_runnerListenersModule, "listRunnerTriggerListeners").mockImplementation(mockListRunnerTriggerListeners as any);
+    spyAddRunnerTriggerListener = spyOn(_runnerListenersModule, "addRunnerTriggerListener").mockImplementation(mockAddRunnerTriggerListener as any);
+    spyRemoveRunnerTriggerListener = spyOn(_runnerListenersModule, "removeRunnerTriggerListener").mockImplementation(mockRemoveRunnerTriggerListener as any);
+    spyUpdateRunnerTriggerListener = spyOn(_runnerListenersModule, "updateRunnerTriggerListener").mockImplementation(mockUpdateRunnerTriggerListener as any);
 });
 
 afterEach(() => {
     mockGetRunnerServices.mockRestore();
     mockGetRunnerData.mockRestore();
+    spySubscribeSessionToTrigger.mockRestore();
+    spyUnsubscribeSessionFromTrigger.mockRestore();
+    spyUnsubscribeSessionSubscription.mockRestore();
+    spyListSessionSubscriptions.mockRestore();
+    spyGetSubscribersForTrigger.mockRestore();
+    spyGetSubscriptionParams.mockRestore();
+    spyGetSubscriptionFilters.mockRestore();
+    spyUpdateSessionSubscription.mockRestore();
+    spyClearSessionSubscriptions.mockRestore();
+    spyGetSubscriptionsForRunnerSessions.mockRestore();
+    spyGetRunnerListenerTypes.mockRestore();
+    spyGetRunnerTriggerListener.mockRestore();
+    spyListRunnerTriggerListeners.mockRestore();
+    spyAddRunnerTriggerListener.mockRestore();
+    spyRemoveRunnerTriggerListener.mockRestore();
+    spyUpdateRunnerTriggerListener.mockRestore();
 });
 
 // ── Mock logger ──────────────────────────────────────────────────────────
@@ -699,6 +736,7 @@ describe("DELETE /api/sessions/:id/trigger-subscriptions/:target", () => {
     beforeEach(() => {
         mockGetSharedSession.mockReset();
         mockUnsubscribeSessionFromTrigger.mockReset();
+        mockUnsubscribeSessionSubscription.mockReset();
         mockRequireSession.mockReturnValue(
             Promise.resolve({ userId: "user-1", userName: "TestUser" }),
         );
@@ -708,16 +746,17 @@ describe("DELETE /api/sessions/:id/trigger-subscriptions/:target", () => {
         mockGetSharedSession.mockReturnValue(
             Promise.resolve({ userId: "user-1", sessionId: "sess-1", runnerId: "runner-A" } as any),
         );
-        mockUnsubscribeSessionFromTrigger.mockReturnValue(Promise.resolve({ removed: 1, triggerType: "godmother:idea_moved" }));
+        mockUnsubscribeSessionSubscription.mockReturnValue(Promise.resolve(true));
 
-        const [req, url] = makeReq("DELETE", "/api/sessions/sess-1/trigger-subscriptions/sub-123");
+        const [req, url] = makeReq("DELETE", "/api/sessions/sess-1/trigger-subscriptions/godmother:idea_moved?subscriptionId=sub-123");
         const res = await handleTriggersRoute(req, url);
         expect(res!.status).toBe(200);
         const body = await res!.json();
         expect(body.ok).toBe(true);
         expect(body.subscriptionId).toBe("sub-123");
         expect(body.triggerType).toBe("godmother:idea_moved");
-        expect(mockUnsubscribeSessionFromTrigger).toHaveBeenCalledWith("sess-1", "sub-123");
+        expect(mockUnsubscribeSessionSubscription).toHaveBeenCalledWith("sess-1", "sub-123");
+        expect(mockUnsubscribeSessionFromTrigger).not.toHaveBeenCalled();
     });
 
     test("supports legacy triggerType delete-all semantics", async () => {
@@ -733,6 +772,25 @@ describe("DELETE /api/sessions/:id/trigger-subscriptions/:target", () => {
         expect(body.ok).toBe(true);
         expect(body.triggerType).toBe("svc:event");
         expect(body.removed).toBe(2);
+        expect(mockUnsubscribeSessionFromTrigger).toHaveBeenCalledWith("sess-1", "svc:event");
+        expect(mockUnsubscribeSessionSubscription).not.toHaveBeenCalled();
+    });
+
+    test("treats colonless path targets as legacy trigger types unless subscriptionId query is present", async () => {
+        mockGetSharedSession.mockReturnValue(
+            Promise.resolve({ userId: "user-1", sessionId: "sess-1", runnerId: "runner-A" } as any),
+        );
+        mockUnsubscribeSessionFromTrigger.mockReturnValue(Promise.resolve({ removed: 1, triggerType: "button_clicked" }));
+
+        const [req, url] = makeReq("DELETE", "/api/sessions/sess-1/trigger-subscriptions/button_clicked");
+        const res = await handleTriggersRoute(req, url);
+        expect(res!.status).toBe(200);
+        const body = await res!.json();
+        expect(body.ok).toBe(true);
+        expect(body.triggerType).toBe("button_clicked");
+        expect(body.removed).toBe(1);
+        expect(mockUnsubscribeSessionFromTrigger).toHaveBeenCalledWith("sess-1", "button_clicked");
+        expect(mockUnsubscribeSessionSubscription).not.toHaveBeenCalled();
     });
 
     test("returns 404 for wrong user", async () => {

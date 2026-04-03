@@ -51,17 +51,6 @@ const mockGetSubscriptionFilters = mock(() => Promise.resolve(undefined as any))
 const mockUpdateSessionSubscription = mock(() => Promise.resolve({ updated: false } as any));
 const mockUnsubscribeSessionSubscription = mock(() => Promise.resolve());
 
-mock.module("../sessions/trigger-subscription-store.js", () => ({
-  subscribeSessionToTrigger: mockSubscribeSessionToTrigger,
-  unsubscribeSessionFromTrigger: mockUnsubscribeSessionFromTrigger,
-  unsubscribeSessionSubscription: mockUnsubscribeSessionSubscription,
-  listSessionSubscriptions: mockListSessionSubscriptions,
-  getSubscribersForTrigger: mockGetSubscribersForTrigger,
-  getSubscriptionParams: mockGetSubscriptionParams,
-  getSubscriptionFilters: mockGetSubscriptionFilters,
-  updateSessionSubscription: mockUpdateSessionSubscription,
-}));
-
 mock.module("../sessions/trigger-store.js", () => ({
   pushTriggerHistory: mock(() => Promise.resolve()),
   getTriggerHistory: mock(() => Promise.resolve([])),
@@ -79,14 +68,31 @@ mock.module("../ws/runner-control.js", () => ({
 }));
 
 import * as _runnersModule from "../ws/sio-registry/runners.js";
+import * as _triggerSubsModule from "../sessions/trigger-subscription-store.js";
 const mockGetRunnerServices = spyOn(_runnersModule, "getRunnerServices")
   .mockImplementation((_rid: string) => Promise.resolve({ serviceIds: [], triggerDefs: [{ type: "svc:event", label: "Event" }] } as any));
 const mockGetRunnerData = spyOn(_runnersModule, "getRunnerData")
   .mockImplementation(() => Promise.resolve({ userId: "user-1", runnerId: "runner-A" } as any));
+const spySubscribeSessionToTrigger = spyOn(_triggerSubsModule, "subscribeSessionToTrigger").mockImplementation(mockSubscribeSessionToTrigger as any);
+const spyUnsubscribeSessionFromTrigger = spyOn(_triggerSubsModule, "unsubscribeSessionFromTrigger").mockImplementation(mockUnsubscribeSessionFromTrigger as any);
+const spyUnsubscribeSessionSubscription = spyOn(_triggerSubsModule, "unsubscribeSessionSubscription").mockImplementation(mockUnsubscribeSessionSubscription as any);
+const spyListSessionSubscriptions = spyOn(_triggerSubsModule, "listSessionSubscriptions").mockImplementation(mockListSessionSubscriptions as any);
+const spyGetSubscribersForTrigger = spyOn(_triggerSubsModule, "getSubscribersForTrigger").mockImplementation(mockGetSubscribersForTrigger as any);
+const spyGetSubscriptionParams = spyOn(_triggerSubsModule, "getSubscriptionParams").mockImplementation(mockGetSubscriptionParams as any);
+const spyGetSubscriptionFilters = spyOn(_triggerSubsModule, "getSubscriptionFilters").mockImplementation(mockGetSubscriptionFilters as any);
+const spyUpdateSessionSubscription = spyOn(_triggerSubsModule, "updateSessionSubscription").mockImplementation(mockUpdateSessionSubscription as any);
 
 afterAll(() => {
   mockGetRunnerServices.mockRestore();
   mockGetRunnerData.mockRestore();
+  spySubscribeSessionToTrigger.mockRestore();
+  spyUnsubscribeSessionFromTrigger.mockRestore();
+  spyUnsubscribeSessionSubscription.mockRestore();
+  spyListSessionSubscriptions.mockRestore();
+  spyGetSubscribersForTrigger.mockRestore();
+  spyGetSubscriptionParams.mockRestore();
+  spyGetSubscriptionFilters.mockRestore();
+  spyUpdateSessionSubscription.mockRestore();
   mock.restore();
 });
 

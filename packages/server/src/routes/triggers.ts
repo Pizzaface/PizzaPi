@@ -177,8 +177,14 @@ function filterRecordMatchesPayload(payload: Record<string, unknown>, record: Su
     return true;
 }
 
-function isLikelyId(value: string): boolean {
-    return !value.includes(":");
+function inferUnsubscribeTarget(target: string, subscriptionIdParam?: string): { subscriptionId?: string; triggerType: string; mode: "subscriptionId" | "triggerType" } {
+    if (subscriptionIdParam) {
+        return { subscriptionId: subscriptionIdParam, triggerType: target, mode: "subscriptionId" };
+    }
+
+    // Path target is always treated as the legacy triggerType delete-all form.
+    // Targeted unsubscribe must use the explicit ?subscriptionId= query param.
+    return { triggerType: target, mode: "triggerType" };
 }
 
 /** Poll for a session socket to appear after spawn (same pattern as webhooks). */
@@ -692,19 +698,18 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
             return Response.json({ error: "Session not found" }, { status: 404 });
         }
 
-        const triggerType = target;
-        const subscriptionId = subscriptionIdParam || (isLikelyId(target) ? target : undefined);
+        const { triggerType, subscriptionId, mode } = inferUnsubscribeTarget(target, subscriptionIdParam);
         let removed = 0;
 
-        if (subscriptionIdParam) {
-            await unsubscribeSessionSubscription(sessionId, subscriptionIdParam);
-            removed = 1;
+        if (mode === "subscriptionId" && subscriptionId) {
+            const ok = await unsubscribeSessionSubscription(sessionId, subscriptionId);
+            removed = ok ? 1 : 0;
         } else {
-            const result = await unsubscribeSessionFromTrigger(sessionId, target);
+            const result = await unsubscribeSessionFromTrigger(sessionId, triggerType);
             removed = result.removed;
         }
 
-        log.info(`Session ${sessionId} unsubscribed from trigger target '${subscriptionIdParam ?? target}'`);
+        log.info(`Session ${sessionId} unsubscribed from trigger target '${subscriptionId ?? triggerType}'`);
         broadcastToSessionViewers(sessionId, "trigger_subscriptions_changed", { triggerType, action: "unsubscribe" });
 
         if (session.runnerId) {
@@ -856,7 +861,7 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
         if (subParams) logParts.push(`params=${JSON.stringify(subParams)}`);
         if (subFilters) logParts.push(`filters=${JSON.stringify(subFilters)} mode=${subFilterMode ?? "and"}`);
         const triggerType = result.triggerType ?? target;
-        const subscriptionId = result.subscriptionId ?? subscriptionIdParam ?? (isLikelyId(target) ? target : undefined);
+        const subscriptionId = result.subscriptionId ?? subscriptionIdParam;
         log.info(`Session ${sessionId} updated subscription for '${target}'${logParts.length > 0 ? ` with ${logParts.join(", ")}` : ""}`);
         broadcastToSessionViewers(sessionId, "trigger_subscriptions_changed", { triggerType, action: "update" });
 

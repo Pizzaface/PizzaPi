@@ -29,9 +29,6 @@ mock.module("../ws/sio-registry.js", () => ({
 }));
 
 const mockGetRunnerServices = mock((_runnerId: string) => Promise.resolve(null as any));
-mock.module("../ws/sio-registry/runners.js", () => ({
-    getRunnerServices: mockGetRunnerServices,
-}));
 
 const mockAddRunnerTriggerListener = mock((_runnerId: string, _triggerType: string, _config: any) => Promise.resolve("listener-default"));
 const mockRemoveRunnerTriggerListener = mock((_runnerId: string, _target: string) => Promise.resolve({ removed: 1, triggerType: _target }));
@@ -44,7 +41,7 @@ mock.module("../sessions/runner-trigger-listener-store.js", () => ({
     updateRunnerTriggerListener: mockUpdateRunnerTriggerListener,
 }));
 
-mock.module("../ws/sio-state/index.js", () => ({ getSession: mock(() => Promise.resolve(null)) }));
+const mockGetSession = mock(() => Promise.resolve(null));
 mock.module("../ws/namespaces/runner.js", () => ({
     sendSkillCommand: mock(() => Promise.resolve({ ok: true })),
     sendAgentCommand: mock(() => Promise.resolve({ ok: true })),
@@ -57,10 +54,10 @@ mock.module("../runner-recent-folders.js", () => ({
     recordRecentFolder: mock(() => Promise.resolve()),
 }));
 mock.module("../user-hidden-models.js", () => ({ getHiddenModels: mock(() => Promise.resolve([])) }));
-mock.module("../security.js", () => ({ cwdMatchesRoots: mock(() => true) }));
-mock.module("../validation.js", () => ({ isValidSkillName: mock(() => true) }));
-mock.module("./utils.js", () => ({ parseJsonArray: mock(() => []) }));
-mock.module("./model-guard.js", () => ({ isHiddenModel: mock(() => false) }));
+import * as _runnerRegistryModule from "../ws/sio-registry/runners.js";
+import * as _sioStateModule from "../ws/sio-state/index.js";
+const mockRunnerServicesSpy = spyOn(_runnerRegistryModule, "getRunnerServices").mockImplementation(mockGetRunnerServices as any);
+const mockGetSessionSpy = spyOn(_sioStateModule, "getSession").mockImplementation(mockGetSession as any);
 
 const { handleRunnersRoute } = await import("./runners.js");
 

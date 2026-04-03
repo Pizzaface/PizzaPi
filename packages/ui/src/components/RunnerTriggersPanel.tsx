@@ -16,8 +16,9 @@ import {
   ChevronRight,
   Loader2,
   BookOpen,
-  BellRing,
-  BellOff,
+  Plus,
+  Trash2,
+  Zap,
   FolderOpen,
   Pencil,
 } from "lucide-react";
@@ -38,6 +39,12 @@ function servicePrefix(type: string): string {
 function eventName(type: string): string {
   const idx = type.indexOf(":");
   return idx > 0 ? type.slice(idx + 1) : type;
+}
+
+function truncateCompactId(id?: string, fallback?: string, maxLen = 18): string {
+  if (!id) return fallback ?? "listener";
+  if (id.length <= maxLen) return id;
+  return id.slice(0, maxLen) + "…";
 }
 
 // ── Service Group ──────────────────────────────────────────────────────────
@@ -336,6 +343,7 @@ interface TriggerItemProps {
   def: ServiceTriggerDef;
   listeners: ListenerInfo[];
   isPending: boolean;
+  pendingTypes: Set<string>;
   paramFormOpen: boolean;
   editMode: boolean;
   paramValues: Record<string, string | string[]>;
@@ -352,7 +360,7 @@ interface TriggerItemProps {
 }
 
 function TriggerItem({
-  def, listeners, isPending,
+  def, listeners, isPending, pendingTypes,
   paramFormOpen, editMode, paramValues, paramError, sessionConfig,
   onToggle, onEdit, onParamValuesChange, onSessionConfigChange, onParamSubmit, onParamCancel,
   models, recentFolders,
@@ -362,19 +370,17 @@ function TriggerItem({
 
   return (
     <div className="px-3 py-2.5">
+      {/* Header: label as primary, type as secondary */}
       <div className="flex items-start gap-2">
+        <Zap className={cn("size-3.5 mt-0.5 shrink-0", isListening ? "text-emerald-400" : "text-muted-foreground/40")} />
         <div className="flex-1 min-w-0">
-          {/* Type + label + badges */}
           <div className="flex items-center gap-1.5 flex-wrap">
-            <span className="text-xs font-mono text-foreground">
-              {eventName(def.type)}
-            </span>
-            <Badge variant="outline" className="px-1.5 py-0 text-[10px] h-4 shrink-0">
+            <span className="text-xs font-medium text-foreground">
               {def.label}
-            </Badge>
+            </span>
             {isListening && (
               <Badge variant="outline" className="px-1.5 py-0 text-[10px] h-4 border-emerald-500/40 text-emerald-400 shrink-0">
-                auto-spawn
+                {listeners.length} active
               </Badge>
             )}
             {hasParams && !isListening && (
@@ -383,104 +389,109 @@ function TriggerItem({
               </Badge>
             )}
           </div>
-
-          {/* Description */}
+          <span className="text-[10px] font-mono text-muted-foreground/50 block">
+            {def.type}
+          </span>
           {def.description && (
             <p className="text-[11px] text-muted-foreground/70 mt-0.5 leading-snug">
               {def.description}
             </p>
           )}
-
-          {isListening && (
-            <div className="mt-1 space-y-1">
-              {listeners.map((listener, index) => {
-                const listenerKey = listener.listenerId ?? `${def.type}-${index}`;
-                return (
-                  <div key={listenerKey} className="flex items-center gap-1 flex-wrap rounded border border-emerald-500/15 bg-emerald-950/10 px-1.5 py-1">
-                    <Badge variant="outline" className="px-1 py-0 text-[9px] h-3.5 border-emerald-500/30 text-emerald-300/70">
-                      {listener.listenerId ?? `listener ${index + 1}`}
-                    </Badge>
-                    {listener.cwd && (
-                      <Badge variant="outline" className="px-1 py-0 text-[9px] h-3.5 border-blue-500/20 text-blue-400/60">
-                        cwd={listener.cwd}
-                      </Badge>
-                    )}
-                    {listener.model && (
-                      <Badge variant="outline" className="px-1 py-0 text-[9px] h-3.5 border-blue-500/20 text-blue-400/60">
-                        model={listener.model.provider}/{listener.model.id}
-                      </Badge>
-                    )}
-                    {listener.prompt && (
-                      <Badge variant="outline" className="px-1 py-0 text-[9px] h-3.5 border-blue-500/20 text-blue-400/60">
-                        prompt={listener.prompt.length > 30 ? listener.prompt.slice(0, 30) + "\u2026" : listener.prompt}
-                      </Badge>
-                    )}
-                    {listener.params && Object.entries(listener.params).map(([k, v]) => (
-                      <Badge key={k} variant="outline" className="px-1 py-0 text-[9px] h-3.5 border-emerald-500/20 text-emerald-400/60">
-                        {k}={Array.isArray(v) ? v.map(String).join(", ") : String(v)}
-                      </Badge>
-                    ))}
-                    <div className="ml-auto flex items-center gap-0.5 shrink-0">
-                      <button
-                        type="button"
-                        onClick={() => onEdit(def, listener)}
-                        disabled={isPending}
-                        className={cn(
-                          "p-1.5 rounded transition-colors text-muted-foreground/50 hover:text-blue-400 hover:bg-blue-500/10",
-                          isPending && "opacity-50 cursor-not-allowed",
-                        )}
-                        title="Edit listener config"
-                        aria-label={`Edit listener ${listener.listenerId ?? index + 1} for ${def.type}`}
-                      >
-                        <Pencil className="size-4" />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => onToggle(def, true, listener.listenerId)}
-                        disabled={isPending}
-                        className={cn(
-                          "p-1.5 rounded transition-colors text-emerald-400 hover:text-red-400 hover:bg-red-500/10",
-                          isPending && "opacity-50 cursor-not-allowed",
-                        )}
-                        title="Remove auto-spawn listener"
-                        aria-label={`Delete listener ${listener.listenerId ?? index + 1} for ${def.type}`}
-                      >
-                        {isPending ? <Loader2 className="size-4 animate-spin" /> : <BellOff className="size-4" />}
-                      </button>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-
-          {/* Collapsible param definitions (when not subscribed and form not open) */}
-          {hasParams && !isListening && !paramFormOpen && (
-            <CollapsibleParams params={def.params!} />
-          )}
         </div>
 
-        {/* Toggle + edit buttons */}
-        <div className="flex items-center gap-0.5 shrink-0">
-          <button
-            type="button"
-            onClick={() => onToggle(def, false)}
-            disabled={isPending}
-            className={cn(
-              "p-1.5 rounded transition-colors text-muted-foreground/50 hover:text-emerald-400 hover:bg-emerald-500/10",
-              isPending && "opacity-50 cursor-not-allowed",
-            )}
-            title={isListening ? "Add another auto-spawn listener" : "Add auto-spawn listener — spawns a new session when this trigger fires"}
-            aria-label={isListening ? `Add another listener for ${def.type}` : `Add listener for ${def.type}`}
-          >
-            {isPending ? (
-              <Loader2 className="size-4 animate-spin" />
-            ) : (
-              <BellRing className="size-4" />
-            )}
-          </button>
-        </div>
+        {/* Add button */}
+        <button
+          type="button"
+          onClick={() => onToggle(def, false)}
+          disabled={isPending}
+          className={cn(
+            "inline-flex items-center gap-1 shrink-0 px-2 py-1 rounded text-[11px] font-medium transition-colors",
+            "text-muted-foreground hover:text-emerald-400 hover:bg-emerald-500/10 border border-transparent hover:border-emerald-500/20",
+            isPending && "opacity-50 cursor-not-allowed",
+          )}
+          title={isListening ? "Add another auto-spawn listener" : "Add auto-spawn listener \u2014 spawns a new session when this trigger fires"}
+          aria-label={isListening ? `Add another listener for ${def.type}` : `Add listener for ${def.type}`}
+        >
+          {isPending ? (
+            <Loader2 className="size-3.5 animate-spin" />
+          ) : (
+            <Plus className="size-3.5" />
+          )}
+          Add
+        </button>
       </div>
+
+      {/* Existing listeners */}
+      {isListening && (
+        <div className="mt-2 ml-[22px] space-y-1.5">
+          {listeners.map((listener, index) => {
+            const listenerKey = listener.listenerId ?? `${def.type}-${index}`;
+            const isPendingListener = pendingTypes.has(listener.listenerId ?? "") || isPending;
+            const details: string[] = [];
+            if (listener.cwd) details.push(listener.cwd);
+            if (listener.model) details.push(`${listener.model.provider}/${listener.model.id}`);
+            if (listener.params) {
+              for (const [k, v] of Object.entries(listener.params)) {
+                details.push(`${k}=${Array.isArray(v) ? v.map(String).join(", ") : String(v)}`);
+              }
+            }
+            return (
+              <div key={listenerKey} className="rounded-md border border-border/40 bg-muted/20 px-2.5 py-1.5">
+                <div className="flex items-center gap-2">
+                  <div className="flex-1 min-w-0">
+                    {listener.prompt && (
+                      <p className="text-[11px] text-foreground/80 truncate" title={listener.prompt}>
+                        {listener.prompt.length > 60 ? listener.prompt.slice(0, 60) + "\u2026" : listener.prompt}
+                      </p>
+                    )}
+                    {details.length > 0 && (
+                      <p className="text-[10px] font-mono text-muted-foreground/50 truncate">
+                        {details.join(" \u00B7 ")}
+                      </p>
+                    )}
+                    {!listener.prompt && details.length === 0 && (
+                      <p className="text-[10px] text-muted-foreground/40 italic">No config</p>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-0.5 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => onEdit(def, listener)}
+                      disabled={isPendingListener}
+                      className={cn(
+                        "p-1 rounded transition-colors text-muted-foreground/40 hover:text-blue-400 hover:bg-blue-500/10",
+                        isPendingListener && "opacity-50 cursor-not-allowed",
+                      )}
+                      title="Edit listener"
+                      aria-label={`Edit listener ${listener.listenerId ?? index + 1} for ${def.type}`}
+                    >
+                      <Pencil className="size-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => onToggle(def, true, listener.listenerId)}
+                      disabled={isPendingListener}
+                      className={cn(
+                        "p-1 rounded transition-colors text-muted-foreground/40 hover:text-red-400 hover:bg-red-500/10",
+                        isPendingListener && "opacity-50 cursor-not-allowed",
+                      )}
+                      title="Remove listener"
+                      aria-label={`Delete listener ${listener.listenerId ?? index + 1} for ${def.type}`}
+                    >
+                      {isPendingListener ? <Loader2 className="size-3.5 animate-spin" /> : <Trash2 className="size-3.5" />}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Collapsible param definitions (when not subscribed and form not open) */}
+      {hasParams && !isListening && !paramFormOpen && (
+        <CollapsibleParams params={def.params!} />
+      )}
 
       {/* Inline config form */}
       {paramFormOpen && (
@@ -515,8 +526,8 @@ interface ServiceAccordionProps {
   paramValues: Record<string, Record<string, string | string[]>>;
   paramError: string | null;
   sessionConfigs: Record<string, SessionConfig>;
-  onToggle: (def: ServiceTriggerDef, isListening: boolean) => void;
-  onEdit: (def: ServiceTriggerDef) => void;
+  onToggle: (def: ServiceTriggerDef, isListening: boolean, listenerId?: string) => void;
+  onEdit: (def: ServiceTriggerDef, listener?: ListenerInfo) => void;
   onParamValuesChange: (triggerType: string, values: Record<string, string | string[]>) => void;
   onSessionConfigChange: (triggerType: string, config: SessionConfig) => void;
   onParamSubmit: (def: ServiceTriggerDef) => void;
@@ -569,6 +580,7 @@ function ServiceAccordion({
               def={def}
               listeners={listenersByType.get(def.type) ?? []}
               isPending={pendingTypes.has(def.type)}
+              pendingTypes={pendingTypes}
               paramFormOpen={paramFormOpen === def.type}
               editMode={editMode && paramFormOpen === def.type}
               paramValues={paramValues[def.type] ?? {}}
@@ -856,13 +868,18 @@ export function RunnerTriggersPanel({ runnerId, triggerDefs: propDefs }: RunnerT
         setParamFormOpen(null);
         setEditMode(false);
         setEditingListenerId(null);
-        setListeners((prev) => {
+            setListeners((prev) => {
+          const existing = editingListenerId
+            ? prev.find((listener) => listener.listenerId === editingListenerId)
+            : undefined;
           const nextListener: ListenerInfo = {
             listenerId: data.listenerId ?? editingListenerId ?? undefined,
             triggerType: def.type,
             params: Object.keys(params).length > 0 ? params : undefined,
-            cwd, prompt, model,
-            createdAt: new Date().toISOString(),
+            cwd,
+            prompt,
+            model,
+            createdAt: existing?.createdAt ?? new Date().toISOString(),
           };
           if (editingListenerId) {
             return prev.map((listener) => listener.listenerId === editingListenerId ? nextListener : listener);

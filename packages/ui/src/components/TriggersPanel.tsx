@@ -25,8 +25,10 @@ import {
   ArrowDownCircle,
   ArrowUpCircle,
   Zap,
+  Plus,
   BellRing,
-  BellOff,
+  Trash2,
+  Zap as ZapIcon,
   BookOpen,
   CheckCircle2,
   AlertCircle,
@@ -122,10 +124,15 @@ function sourceLabel(source: string): string {
   return source;
 }
 
-/** Truncate a session ID for display. */
+/** Truncate an identifier for compact display. */
 function truncateId(id: string, maxLen = 12): string {
   if (id.length <= maxLen) return id;
   return id.slice(0, maxLen) + "…";
+}
+
+function truncateSubscriptionLabel(id?: string, fallback?: string, maxLen = 18): string {
+  if (!id) return fallback ?? "subscription";
+  return truncateId(id, maxLen);
 }
 
 /** Derive the status of a linked session from its most recent trigger. */
@@ -1211,16 +1218,15 @@ function ServiceCatalogAccordion({
 
             return (
               <div key={def.type} className="px-3 py-2">
+                {/* Header: label as primary, type as secondary */}
                 <div className="flex items-start gap-2">
+                  <ZapIcon className={cn("size-3.5 mt-0.5 shrink-0", isSubscribed ? "text-emerald-400" : "text-muted-foreground/40")} />
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-1.5 flex-wrap">
-                      <span className="text-xs font-mono text-foreground truncate">{def.type}</span>
-                      <Badge variant="outline" className="px-1 py-0 text-[10px] h-4 shrink-0">
-                        {def.label}
-                      </Badge>
+                      <span className="text-xs font-medium text-foreground">{def.label}</span>
                       {isSubscribed && (
                         <Badge variant="outline" className="px-1 py-0 text-[10px] h-4 border-emerald-500/40 text-emerald-400 shrink-0">
-                          subscribed
+                          {triggerSubscriptions.length} active
                         </Badge>
                       )}
                       {hasParams && !isSubscribed && (
@@ -1229,100 +1235,105 @@ function ServiceCatalogAccordion({
                         </Badge>
                       )}
                     </div>
+                    <span className="text-[10px] font-mono text-muted-foreground/50 block">{def.type}</span>
                     {def.description && (
                       <p className="text-[10px] text-muted-foreground/70 mt-0.5 leading-snug">
                         {def.description}
                       </p>
                     )}
-                    {isSubscribed && (
-                      <div className="mt-1 space-y-1">
-                        {triggerSubscriptions.map((sub, index) => {
-                          const subKey = sub.subscriptionId ?? `${def.type}-${index}`;
-                          const isPendingSub = pending.has(subKey) || isPendingToggle;
-                          const subscriptionLabel = sub.subscriptionId ? `subscription ${sub.subscriptionId}` : `subscription ${index + 1}`;
-                          return (
-                            <div key={subKey} className="flex items-center gap-1 flex-wrap rounded border border-emerald-500/15 bg-emerald-950/10 px-1.5 py-1">
-                              <Badge variant="outline" className="px-1 py-0 text-[9px] h-3.5 border-emerald-500/30 text-emerald-300/70">
-                                {subscriptionLabel}
-                              </Badge>
-                              {sub.params && Object.keys(sub.params).length > 0 && Object.entries(sub.params).map(([k, v]) => (
-                                <Badge key={k} variant="outline" className="px-1 py-0 text-[9px] h-3.5 border-emerald-500/20 text-emerald-400/60">
-                                  {k}={Array.isArray(v) ? v.map(String).join(", ") : String(v)}
-                                </Badge>
-                              ))}
-                              {sub.filters && sub.filters.length > 0 && (
-                                <>
-                                  <Badge variant="outline" className="px-1 py-0 text-[9px] h-3.5 border-blue-500/20 text-blue-400/60">
-                                    {sub.filterMode === "or" ? "OR" : "AND"}
-                                  </Badge>
-                                  {sub.filters.map((f, i) => (
-                                    <Badge key={`${subKey}-${i}`} variant="outline" className="px-1 py-0 text-[9px] h-3.5 border-blue-500/20 text-blue-400/60">
-                                      {f.field}{f.op === "contains" ? "~" : "="}{Array.isArray(f.value) ? f.value.map(String).join("|") : String(f.value)}
-                                    </Badge>
-                                  ))}
-                                </>
-                              )}
-                              <div className="ml-auto flex items-center gap-0.5 shrink-0">
-                                {(hasParams || Object.keys((def.schema as any)?.properties ?? {}).length > 0) && (
-                                  <button
-                                    type="button"
-                                    onClick={() => onEdit(def, sub)}
-                                    disabled={isPendingSub}
-                                    className={cn(
-                                      "p-1 rounded transition-colors text-muted-foreground/50 hover:text-blue-400 hover:bg-blue-500/10",
-                                      isPendingSub && "opacity-50 cursor-not-allowed",
-                                    )}
-                                    title="Edit subscription"
-                                    aria-label={`Edit subscription ${sub.subscriptionId ?? index + 1} for ${def.type}`}
-                                  >
-                                    <Pencil className="size-3.5" />
-                                  </button>
-                                )}
-                                <button
-                                  type="button"
-                                  onClick={() => onToggle(def, true, sub.subscriptionId)}
-                                  disabled={isPendingSub}
-                                  className={cn(
-                                    "p-1 rounded transition-colors text-emerald-400 hover:text-red-400 hover:bg-red-500/10",
-                                    isPendingSub && "opacity-50 cursor-not-allowed",
-                                  )}
-                                  title="Delete subscription"
-                                  aria-label={`Delete subscription ${sub.subscriptionId ?? index + 1} for ${def.type}`}
-                                >
-                                  {isPendingSub ? <Loader2 className="size-3.5 animate-spin" /> : <BellOff className="size-3.5" />}
-                                </button>
-                              </div>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    )}
-                    {/* Collapsible param definitions when not subscribed */}
-                    {hasParams && !isSubscribed && !isParamFormVisible && def.params && (
-                      <CollapsibleParamDefs params={def.params} />
-                    )}
                   </div>
 
-                  <div className="flex items-center gap-0.5 shrink-0">
-                    <button
-                      type="button"
-                      onClick={() => onToggle(def, false)}
-                      disabled={isPendingToggle}
-                      className={cn(
-                        "p-1 rounded transition-colors text-muted-foreground/50 hover:text-emerald-400 hover:bg-emerald-500/10",
-                        isPendingToggle && "opacity-50 cursor-not-allowed",
-                      )}
-                      title={isSubscribed ? "Add another subscription" : "Subscribe"}
-                      aria-label={isSubscribed ? `Add another subscription for ${def.type}` : `Subscribe to ${def.type}`}
-                    >
-                      {isPendingToggle ? (
-                        <Loader2 className="size-3.5 animate-spin" />
-                      ) : (
-                        <BellRing className="size-3.5" />
-                      )}
-                    </button>
-                  </div>
+                  {/* Add button */}
+                  <button
+                    type="button"
+                    onClick={() => onToggle(def, false)}
+                    disabled={isPendingToggle}
+                    className={cn(
+                      "inline-flex items-center gap-1 shrink-0 px-2 py-1 rounded text-[11px] font-medium transition-colors",
+                      "text-muted-foreground hover:text-emerald-400 hover:bg-emerald-500/10 border border-transparent hover:border-emerald-500/20",
+                      isPendingToggle && "opacity-50 cursor-not-allowed",
+                    )}
+                    title={isSubscribed ? "Add another subscription" : "Subscribe"}
+                    aria-label={isSubscribed ? `Add another subscription for ${def.type}` : `Subscribe to ${def.type}`}
+                  >
+                    {isPendingToggle ? (
+                      <Loader2 className="size-3.5 animate-spin" />
+                    ) : (
+                      <Plus className="size-3.5" />
+                    )}
+                    Add
+                  </button>
                 </div>
+
+                {/* Existing subscriptions */}
+                {isSubscribed && (
+                  <div className="mt-2 ml-[22px] space-y-1.5">
+                    {triggerSubscriptions.map((sub, index) => {
+                      const subKey = sub.subscriptionId ?? `${def.type}-${index}`;
+                      const isPendingSub = pending.has(subKey) || isPendingToggle;
+                      const details: string[] = [];
+                      if (sub.params && Object.keys(sub.params).length > 0) {
+                        for (const [k, v] of Object.entries(sub.params)) {
+                          details.push(`${k}=${Array.isArray(v) ? v.map(String).join(", ") : String(v)}`);
+                        }
+                      }
+                      if (sub.filters && sub.filters.length > 0) {
+                        const mode = sub.filterMode === "or" ? "OR" : "AND";
+                        const filterStrs = sub.filters.map((f) => `${f.field}${f.op === "contains" ? "~" : "="}${Array.isArray(f.value) ? f.value.map(String).join("|") : String(f.value)}`);
+                        details.push(`${mode}(${filterStrs.join(", ")})`);
+                      }
+                      return (
+                        <div key={subKey} className="rounded-md border border-border/40 bg-muted/20 px-2.5 py-1.5">
+                          <div className="flex items-center gap-2">
+                            <div className="flex-1 min-w-0">
+                              {details.length > 0 ? (
+                                <p className="text-[10px] font-mono text-muted-foreground/50 truncate">
+                                  {details.join(" \u00B7 ")}
+                                </p>
+                              ) : (
+                                <p className="text-[10px] text-muted-foreground/40 italic">No filters</p>
+                              )}
+                            </div>
+                            <div className="flex items-center gap-0.5 shrink-0">
+                              {(hasParams || Object.keys((def.schema as any)?.properties ?? {}).length > 0) && (
+                                <button
+                                  type="button"
+                                  onClick={() => onEdit(def, sub)}
+                                  disabled={isPendingSub}
+                                  className={cn(
+                                    "p-1 rounded transition-colors text-muted-foreground/40 hover:text-blue-400 hover:bg-blue-500/10",
+                                    isPendingSub && "opacity-50 cursor-not-allowed",
+                                  )}
+                                  title="Edit subscription"
+                                  aria-label={`Edit subscription ${sub.subscriptionId ?? index + 1} for ${def.type}`}
+                                >
+                                  <Pencil className="size-3.5" />
+                                </button>
+                              )}
+                              <button
+                                type="button"
+                                onClick={() => onToggle(def, true, sub.subscriptionId)}
+                                disabled={isPendingSub}
+                                className={cn(
+                                  "p-1 rounded transition-colors text-muted-foreground/40 hover:text-red-400 hover:bg-red-500/10",
+                                  isPendingSub && "opacity-50 cursor-not-allowed",
+                                )}
+                                title="Remove subscription"
+                                aria-label={`Delete subscription ${sub.subscriptionId ?? index + 1} for ${def.type}`}
+                              >
+                                {isPendingSub ? <Loader2 className="size-3.5 animate-spin" /> : <Trash2 className="size-3.5" />}
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+                {/* Collapsible param definitions when not subscribed */}
+                {hasParams && !isSubscribed && !isParamFormVisible && def.params && (
+                  <CollapsibleParamDefs params={def.params} />
+                )}
 
                 {/* Inline param form */}
                 {isParamFormVisible && (hasParams || Object.keys((def.schema as any)?.properties ?? {}).length > 0) && (
@@ -1567,7 +1578,7 @@ function ActiveSubscriptionsSection({ subscriptions }: { subscriptions: TriggerS
             <span className="text-xs font-mono text-foreground truncate flex-1">{sub.triggerType}</span>
             {sub.subscriptionId && (
               <Badge variant="outline" className="px-1 py-0 text-[9px] h-3.5 border-emerald-500/20 text-emerald-400/60">
-                {sub.subscriptionId}
+                {truncateSubscriptionLabel(sub.subscriptionId, undefined, 18)}
               </Badge>
             )}
             {(countsByType.get(sub.triggerType) ?? 0) > 1 && !sub.subscriptionId && (

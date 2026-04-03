@@ -466,7 +466,7 @@ describe("TriggersPanel — trigger catalog", () => {
 
     expect(container.textContent).toContain("godmother:idea_moved");
     expect(container.textContent).toContain("Idea Status Changed");
-    expect(container.textContent).toContain("godmother:idea_created");
+    expect(container.textContent).toContain("Idea Created");
     expect(container.textContent).toContain("Fires when an idea moves");
   });
 
@@ -518,7 +518,7 @@ describe("TriggersPanel — trigger catalog", () => {
     const accordionBtn = Array.from(container.getElementsByTagName("button")).find((b) => b.textContent?.includes("svc"));
     await act(async () => { fireEvent.click(accordionBtn!); });
 
-    expect(container.textContent).toContain("subscribed");
+    expect(container.textContent).toContain("1 active");
     const buttons = Array.from(container.getElementsByTagName("button"));
     const unsubBtn = buttons.find((b) => b.getAttribute("aria-label")?.startsWith("Delete subscription sub-1"));
     expect(unsubBtn).toBeDefined();
@@ -594,7 +594,7 @@ describe("TriggersPanel — trigger catalog", () => {
     const accordionBtn = Array.from(container.getElementsByTagName("button")).find((b) => b.textContent?.includes("svc"));
     await act(async () => { fireEvent.click(accordionBtn!); });
 
-    expect(container.textContent).toContain("Active Subscriptions (2)");
+    expect(container.textContent).toContain("2 active");
     expect(container.textContent).toContain("branch=main");
     expect(container.textContent).toContain("branch=dev");
 
@@ -602,6 +602,72 @@ describe("TriggersPanel — trigger catalog", () => {
     expect(buttons.find((b) => b.getAttribute("aria-label") === "Edit subscription sub-1 for svc:event")).toBeDefined();
     expect(buttons.find((b) => b.getAttribute("aria-label") === "Delete subscription sub-2 for svc:event")).toBeDefined();
     expect(buttons.find((b) => b.getAttribute("aria-label") === "Add another subscription for svc:event")).toBeDefined();
+  });
+
+  test("keeps sibling subscription actions available while one unsubscribe is pending", async () => {
+    fetchState.urlOverrides = {
+      "trigger-subscriptions": {
+        ok: true,
+        body: {
+          subscriptions: [
+            { subscriptionId: "sub-1", triggerType: "svc:event", runnerId: "runner-A", params: { branch: "main" } },
+            { subscriptionId: "sub-2", triggerType: "svc:event", runnerId: "runner-A", params: { branch: "dev" } },
+          ],
+        },
+      },
+    };
+
+    let deleteResolve!: (value: Response) => void;
+    fetchSpy.mockImplementation((url: string, opts?: RequestInit) => {
+      if (url.includes("trigger-subscriptions/svc%3Aevent") && (opts?.method ?? "GET") === "DELETE" && url.includes("subscriptionId=sub-1")) {
+        return new Promise<Response>((resolve) => {
+          deleteResolve = resolve;
+        });
+      }
+      if (fetchState.urlOverrides) {
+        for (const [key, override] of Object.entries(fetchState.urlOverrides)) {
+          if (url.includes(key)) {
+            return Promise.resolve({
+              ok: override.ok,
+              status: override.status ?? (override.ok ? 200 : 500),
+              json: async () => override.body,
+            } as Response);
+          }
+        }
+      }
+      const { ok, status, body } = fetchState.response;
+      return Promise.resolve({
+        ok,
+        status: status ?? (ok ? 200 : 500),
+        json: async () => body,
+      } as Response);
+    });
+
+    const triggerDefs = [{ type: "svc:event", label: "Service Event" }];
+
+    let container!: HTMLElement;
+    await act(async () => {
+      ({ container } = render(<TriggersPanel sessionId="sess-abc" triggerDefs={triggerDefs} />));
+    });
+
+    const accordionBtn = Array.from(container.getElementsByTagName("button")).find((b) => b.textContent?.includes("svc"));
+    await act(async () => { fireEvent.click(accordionBtn!); });
+
+    const deleteBtn = Array.from(container.getElementsByTagName("button")).find((b) => b.getAttribute("aria-label") === "Delete subscription sub-1 for svc:event");
+    expect(deleteBtn).toBeDefined();
+
+    await act(async () => {
+      fireEvent.click(deleteBtn!);
+    });
+
+    const siblingDeleteBtn = Array.from(container.getElementsByTagName("button")).find((b) => b.getAttribute("aria-label") === "Delete subscription sub-2 for svc:event");
+    const addAnotherBtn = Array.from(container.getElementsByTagName("button")).find((b) => b.getAttribute("aria-label") === "Add another subscription for svc:event");
+    expect(siblingDeleteBtn?.hasAttribute("disabled")).toBe(false);
+    expect(addAnotherBtn?.hasAttribute("disabled")).toBe(false);
+
+    await act(async () => {
+      deleteResolve({ ok: true, status: 200, json: async () => ({ ok: true, removed: 1, triggerType: "svc:event", subscriptionId: "sub-1" }) } as Response);
+    });
   });
 
   test("service accordion can be expanded and collapsed", async () => {
