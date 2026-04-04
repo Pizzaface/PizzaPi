@@ -3,7 +3,7 @@
 // It connects to the PizzaPi relay server via Socket.IO, registers as a
 // runner, and spawns claude CLI subprocesses in response to new_session
 // events. Claude CLI events are converted to PizzaPi relay events via the
-// adapter from the claude-wrapper package and forwarded to the relay.
+// adapter from the providers/claudecli package and forwarded to the relay.
 //
 // This is the Phase 0 prototype: one session at a time, no compaction,
 // no triggers, no services, no hooks, no MCP, no PTY.
@@ -16,14 +16,11 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"log"
 	"os"
-	"os/signal"
 	"runtime"
 	"sync"
-	"syscall"
 	"time"
 )
 
@@ -35,6 +32,7 @@ type session struct {
 	provider     Provider      // LLM backend (Claude CLI, API, etc.)
 	relaySession *RelaySession // per-session /relay connection
 	cancel       context.CancelFunc
+	cleanup      func()
 	killed       bool
 	mu           sync.Mutex
 }
@@ -45,21 +43,31 @@ type GoRunner struct {
 	apiKey     string
 	runnerID   string
 	runnerName string
+	homeDir    string
+	workDir    string
+	tempDir    string
 
-	client   *SIOClient
-	sessions sync.Map // sessionID → *session
-	logger   *log.Logger
-	stop     context.CancelFunc // signals Run() to exit
+	providerFactory func(*log.Logger) Provider
+	client          *SIOClient
+	sessions        sync.Map // sessionID → *session
+	logger          *log.Logger
+	stop            context.CancelFunc // signals Run() to exit
 }
 
 // NewGoRunner creates a new runner daemon.
 func NewGoRunner(relayURL, apiKey, runnerID, runnerName string) *GoRunner {
+	homeDir, _ := os.UserHomeDir()
+	workDir, _ := os.Getwd()
 	return &GoRunner{
-		relayURL:   relayURL,
-		apiKey:     apiKey,
-		runnerID:   runnerID,
-		runnerName: runnerName,
-		logger:     log.New(os.Stderr, "[go-runner] ", log.LstdFlags|log.Lmsgprefix),
+		relayURL:        relayURL,
+		apiKey:          apiKey,
+		runnerID:        runnerID,
+		runnerName:      runnerName,
+		homeDir:         homeDir,
+		workDir:         normalizeRunnerCwd(workDir),
+		tempDir:         os.TempDir(),
+		providerFactory: func(logger *log.Logger) Provider { return NewClaudeCLIProvider(logger) },
+		logger:          log.New(os.Stderr, "[go-runner] ", log.LstdFlags|log.Lmsgprefix),
 	}
 }
 
@@ -129,14 +137,31 @@ func (r *GoRunner) emitRegister() {
 		name = hostname
 	}
 
+	meta, err := discoverRegistrationMetadata(r.workDir, r.homeDir)
+	if err != nil {
+		r.logger.Printf("discover registration metadata: %v", err)
+		meta = registrationMetadata{Roots: []string{r.workDir}}
+	}
+	skills, agents := marshalRegistrationLists(meta.Skills, meta.Agents)
+
+	// Load hooks from PizzaPi config for inclusion in the registration payload.
+	// Failures are non-fatal — the runner still registers without hook metadata.
+	hooksList := marshalHooks(nil)
+	cfg, cfgErr := loadRunnerConfig(r.workDir, r.homeDir)
+	if cfgErr != nil {
+		r.logger.Printf("load runner config: %v", cfgErr)
+	} else {
+		hooksList = marshalHooks(cfg.Hooks)
+	}
+
 	r.client.Emit("register_runner", map[string]any{
 		"runnerId": r.runnerID,
 		"name":     name,
-		"roots":    []string{},
-		"skills":   []any{},
-		"agents":   []any{},
+		"roots":    stableRoots(meta.Roots),
+		"skills":   skills,
+		"agents":   agents,
 		"plugins":  []any{},
-		"hooks":    []any{},
+		"hooks":    hooksList,
 		"version":  version,
 		"platform": runtime.GOOS,
 	})
@@ -165,10 +190,10 @@ func (r *GoRunner) handleRunnerRegistered(data json.RawMessage) {
 
 func (r *GoRunner) handleNewSession(data json.RawMessage) {
 	var payload struct {
-		SessionID       string `json:"sessionId"`
-		Cwd             string `json:"cwd"`
-		Prompt          string `json:"prompt"`
-		Model           *struct {
+		SessionID string `json:"sessionId"`
+		Cwd       string `json:"cwd"`
+		Prompt    string `json:"prompt"`
+		Model     *struct {
 			Provider string `json:"provider"`
 			ID       string `json:"id"`
 		} `json:"model"`
@@ -200,9 +225,19 @@ func (r *GoRunner) handleNewSession(data json.RawMessage) {
 		model = payload.Model.ID
 	}
 
+	bootstrap, err := buildSessionBootstrap(payload.Cwd, r.homeDir, r.tempDir)
+	if err != nil {
+		r.logger.Printf("session %s bootstrap error: %v", sessionID[:8], err)
+		r.client.Emit("session_error", map[string]any{
+			"sessionId": sessionID,
+			"message":   fmt.Sprintf("session bootstrap failed: %v", err),
+		})
+		return
+	}
+
 	// Create provider — currently always Claude CLI.
 	// Future: select provider based on model prefix, config, etc.
-	provider := NewClaudeCLIProvider(r.logger)
+	provider := r.providerFactory(r.logger)
 
 	// Create and track the session
 	ctx, cancel := context.WithCancel(context.Background())
@@ -210,14 +245,17 @@ func (r *GoRunner) handleNewSession(data json.RawMessage) {
 		sessionID: sessionID,
 		provider:  provider,
 		cancel:    cancel,
+		cleanup:   bootstrap.Cleanup,
 	}
 	r.sessions.Store(sessionID, sess)
 
 	// Spawn the provider session
 	go r.runSession(ctx, sess, ProviderContext{
-		Prompt: prompt,
-		Cwd:    payload.Cwd,
-		Model:  model,
+		Prompt:        prompt,
+		Cwd:           payload.Cwd,
+		Model:         model,
+		SystemPrompt:  bootstrap.SystemPrompt,
+		MCPConfigPath: bootstrap.MCPConfigPath,
 		OnStderr: func(line string) {
 			r.logger.Printf("[session:%s:stderr] %s", sessionID[:8], line)
 		},
@@ -233,7 +271,7 @@ func (r *GoRunner) runSession(ctx context.Context, sess *session, pctx ProviderC
 	relaySess := NewRelaySession(r.relayURL, r.apiKey, sessionID, cwd, r.logger)
 
 	// Wire up user input from web UI → provider
-	relaySess.onInput = func(text string) {
+	relaySess.SetInputHandler(func(text string) {
 		r.logger.Printf("session %s: sending user input to provider", sessionID[:8])
 
 		if err := sess.provider.SendMessage(text); err != nil {
@@ -255,7 +293,7 @@ func (r *GoRunner) runSession(ctx context.Context, sess *session, pctx ProviderC
 		if relaySess != nil {
 			relaySess.EmitEvent(activeHB)
 		}
-	}
+	})
 
 	if err := relaySess.Connect(r.relayURL, r.apiKey, cwd); err != nil {
 		r.logger.Printf("session %s relay registration failed: %v", sessionID[:8], err)
@@ -344,6 +382,9 @@ func (r *GoRunner) handleSessionExit(sess *session) {
 	// Close the relay session connection
 	if sess.relaySession != nil {
 		sess.relaySession.Close()
+	}
+	if sess.cleanup != nil {
+		sess.cleanup()
 	}
 
 	// Wait for provider to fully exit
@@ -474,53 +515,4 @@ func (r *GoRunner) handleError(data json.RawMessage) {
 		return
 	}
 	r.logger.Printf("relay error: %s", payload.Message)
-}
-
-func main() {
-	relayURL := flag.String("relay-url", "", "PizzaPi relay URL (default: PIZZAPI_RELAY_URL or http://localhost:7492)")
-	runnerName := flag.String("runner-name", "", "Runner display name (default: hostname)")
-	runnerID := flag.String("runner-id", "", "Runner ID (default: go-runner-<hostname>)")
-	flag.Parse()
-
-	// Resolve relay URL
-	url := *relayURL
-	if url == "" {
-		url = os.Getenv("PIZZAPI_RELAY_URL")
-	}
-	if url == "" {
-		url = "http://localhost:7492"
-	}
-	// Normalize ws:// to http:// for our client
-	if len(url) > 5 && url[:5] == "ws://" {
-		url = "http://" + url[5:]
-	} else if len(url) > 6 && url[:6] == "wss://" {
-		url = "https://" + url[6:]
-	}
-
-	// Resolve API key
-	apiKey := os.Getenv("PIZZAPI_API_KEY")
-	if apiKey == "" {
-		apiKey = os.Getenv("PIZZAPI_API_TOKEN")
-	}
-	if apiKey == "" {
-		fmt.Fprintln(os.Stderr, "error: PIZZAPI_API_KEY environment variable is required")
-		os.Exit(1)
-	}
-
-	// Resolve runner ID
-	id := *runnerID
-	if id == "" {
-		hostname, _ := os.Hostname()
-		id = "go-runner-" + hostname
-	}
-
-	runner := NewGoRunner(url, apiKey, id, *runnerName)
-
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
-
-	if err := runner.Run(ctx); err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
-	}
 }

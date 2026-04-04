@@ -10,7 +10,7 @@
 //
 // Example event: 42/runner,["event_name",{...}]
 
-package main
+package relay
 
 import (
 	"encoding/json"
