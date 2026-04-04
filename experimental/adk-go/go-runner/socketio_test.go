@@ -265,6 +265,58 @@ func TestSIOClientPingPong(t *testing.T) {
 	}
 }
 
+// TestSIOClientCloseReadLoopRace exercises the race window between Close() and
+// readLoop's defer path. Both paths must use CompareAndSwap so only one closes
+// the done channel. Run with -race to detect the data race.
+func TestSIOClientCloseReadLoopRace(t *testing.T) {
+	for i := 0; i < 20; i++ {
+		server := newFakeSIOServer(t)
+
+		client := NewSIOClient(SIOClientConfig{
+			URL:       server.URL(),
+			Namespace: "/runner",
+			Auth:      map[string]any{"apiKey": "test"},
+		})
+
+		if err := client.Connect(); err != nil {
+			server.Close()
+			t.Fatalf("iteration %d: connect error: %v", i, err)
+		}
+
+		// Fire Close() and server-side disconnect simultaneously to race the
+		// readLoop defer path against the explicit Close() call.
+		var wg sync.WaitGroup
+		wg.Add(2)
+
+		go func() {
+			defer wg.Done()
+			client.Close()
+		}()
+
+		go func() {
+			defer wg.Done()
+			// Close the server connection to force readLoop to exit
+			server.connMu.Lock()
+			if server.conn != nil {
+				server.conn.Close()
+			}
+			server.connMu.Unlock()
+		}()
+
+		wg.Wait()
+
+		// Wait for the client to fully settle — done channel must be closed exactly once.
+		select {
+		case <-client.Done():
+			// OK
+		case <-time.After(2 * time.Second):
+			t.Fatalf("iteration %d: timed out waiting for client done", i)
+		}
+
+		server.Close()
+	}
+}
+
 func TestSIOClientDisconnect(t *testing.T) {
 	server := newFakeSIOServer(t)
 	defer server.Close()
