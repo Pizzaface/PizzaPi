@@ -22,6 +22,15 @@ type ReadOpts struct {
 	// Limit is the maximum number of lines to return.
 	// Zero means no limit (subject to built-in truncation limits).
 	Limit int
+	// CWD is the working directory used to resolve relative paths.
+	// Ignored when path is absolute. Required if path is relative and
+	// AllowedRoots is non-empty.
+	CWD string
+	// AllowedRoots restricts which directories may be read from.
+	// When non-empty, the resolved canonical path must fall within at least
+	// one of these directories; otherwise ReadFile returns an error.
+	// If empty, no path confinement is applied (backward compatible).
+	AllowedRoots []string
 }
 
 // ReadResult holds the result of a ReadFile call.
@@ -50,7 +59,24 @@ var imageExts = map[string]string{
 // For image files (.jpg, .jpeg, .png, .gif, .webp), the content is returned
 // as a base64-encoded string with IsImage set to true.
 // Text output is truncated at 2000 lines or 50KB, whichever comes first.
+//
+// When opts.AllowedRoots is non-empty, path is resolved to a canonical
+// absolute path (symlinks expanded) and validated to fall within one of the
+// allowed roots. Paths that escape the roots or dereference symlinks outside
+// them are rejected. When AllowedRoots is empty, no confinement is applied
+// (backward compatible with callers that do not set it).
 func ReadFile(path string, opts ReadOpts) (ReadResult, error) {
+	if len(opts.AllowedRoots) > 0 {
+		resolved, err := ResolvePath(path, opts.CWD)
+		if err != nil {
+			return ReadResult{}, err
+		}
+		if err := ValidatePathWithinRoots(resolved, opts.AllowedRoots); err != nil {
+			return ReadResult{}, err
+		}
+		path = resolved
+	}
+
 	ext := strings.ToLower(filepath.Ext(path))
 	if mimeType, ok := imageExts[ext]; ok {
 		return readImage(path, mimeType)
