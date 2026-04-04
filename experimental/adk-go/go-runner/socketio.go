@@ -273,8 +273,7 @@ func (c *SIOClient) buildWSURL() (string, error) {
 
 func (c *SIOClient) readLoop() {
 	defer func() {
-		if !c.closed.Load() {
-			c.closed.Store(true)
+		if c.closed.CompareAndSwap(false, true) {
 			close(c.done)
 		}
 		if c.onDisconnect != nil {
