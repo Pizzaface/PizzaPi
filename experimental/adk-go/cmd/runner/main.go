@@ -279,7 +279,7 @@ func (r *GoRunner) runSession(ctx context.Context, sess *session, pctx ProviderC
 	sc.TrackUserMessage(pctx.Prompt)
 
 	// Wire up user input from web UI → provider
-	relaySess.onInput = func(text string) {
+	relaySess.OnInput = func(text string) {
 		r.logger.Printf("session %s: received user input from web UI", shortID(sessionID))
 
 		// Track the message for compaction token estimation.

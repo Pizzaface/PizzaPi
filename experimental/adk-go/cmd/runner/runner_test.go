@@ -7,15 +7,17 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/Pizzaface/PizzaPi/experimental/adk-go/internal/relay"
 )
 
 // TestGoRunnerRegistration verifies the runner connects and registers with the relay.
 func TestGoRunnerRegistration(t *testing.T) {
-	server := newFakeSIOServer(t)
+	server := relay.NewFakeSIOServer(t)
 	defer server.Close()
 
 	registered := make(chan struct{}, 1)
-	server.onMessage = func(msg string) {
+	server.OnMessage = func(msg string) {
 		if strings.Contains(msg, "register_runner") {
 			select {
 			case registered <- struct{}{}:
@@ -35,7 +37,7 @@ func TestGoRunnerRegistration(t *testing.T) {
 
 	select {
 	case <-registered:
-		received := server.getReceived()
+		received := server.GetReceived()
 		found := false
 		for _, msg := range received {
 			if strings.Contains(msg, "register_runner") &&
@@ -55,14 +57,14 @@ func TestGoRunnerRegistration(t *testing.T) {
 
 // TestGoRunnerHandlesNewSession verifies the runner responds to new_session events.
 func TestGoRunnerHandlesNewSession(t *testing.T) {
-	server := newFakeSIOServer(t)
+	server := relay.NewFakeSIOServer(t)
 	defer server.Close()
 
 	var events []string
 	var eventsMu sync.Mutex
 	sessionEvent := make(chan struct{}, 1)
 
-	server.onMessage = func(msg string) {
+	server.OnMessage = func(msg string) {
 		eventsMu.Lock()
 		events = append(events, msg)
 		eventsMu.Unlock()
@@ -87,14 +89,14 @@ func TestGoRunnerHandlesNewSession(t *testing.T) {
 	time.Sleep(300 * time.Millisecond)
 
 	// Trigger registration ack from server
-	server.sendEvent("runner_registered", map[string]any{
+	server.SendEvent("/runner", "runner_registered", map[string]any{
 		"runnerId": "test-runner-id",
 	})
 	time.Sleep(100 * time.Millisecond)
 
 	// Send new_session — will fail because 'claude' binary isn't available in test,
 	// but the runner should process it and emit session_error
-	server.sendEvent("new_session", map[string]any{
+	server.SendEvent("/runner", "new_session", map[string]any{
 		"sessionId": "test-sess-001",
 		"cwd":       t.TempDir(),
 		"prompt":    "hello",
@@ -117,14 +119,13 @@ func TestGoRunnerHandlesNewSession(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		// Claude binary not installed — this is expected in CI.
-		// The test validates the runner processed the new_session message without panic.
 		t.Log("timed out waiting for session event — expected if claude is not installed")
 	}
 }
 
 // TestGoRunnerKillNonexistent verifies kill_session for non-existent sessions doesn't panic.
 func TestGoRunnerKillNonexistent(t *testing.T) {
-	server := newFakeSIOServer(t)
+	server := relay.NewFakeSIOServer(t)
 	defer server.Close()
 
 	runner := NewGoRunner(server.URL(), "test-api-key", "test-runner-id", "test-runner")
@@ -138,14 +139,12 @@ func TestGoRunnerKillNonexistent(t *testing.T) {
 
 	time.Sleep(200 * time.Millisecond)
 
-	server.sendEvent("runner_registered", map[string]any{"runnerId": "test-runner-id"})
+	server.SendEvent("/runner", "runner_registered", map[string]any{"runnerId": "test-runner-id"})
 	time.Sleep(100 * time.Millisecond)
 
 	// Kill a non-existent session — should not panic
-	server.sendEvent("kill_session", map[string]any{"sessionId": "nonexistent-session"})
+	server.SendEvent("/runner", "kill_session", map[string]any{"sessionId": "nonexistent-session"})
 	time.Sleep(100 * time.Millisecond)
-
-	// If we get here without panic, the test passes
 }
 
 // TestEventPayloadSerialization verifies relay event payloads serialize correctly.
@@ -218,7 +217,7 @@ func TestEventPayloadSerialization(t *testing.T) {
 
 // TestGoRunnerSessionEnded verifies session_ended cleanup.
 func TestGoRunnerSessionEnded(t *testing.T) {
-	server := newFakeSIOServer(t)
+	server := relay.NewFakeSIOServer(t)
 	defer server.Close()
 
 	runner := NewGoRunner(server.URL(), "test-api-key", "test-runner-id", "test-runner")
@@ -233,21 +232,21 @@ func TestGoRunnerSessionEnded(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 
 	// Send session_ended for a non-tracked session — should not panic
-	server.sendEvent("session_ended", map[string]any{"sessionId": "phantom-session"})
+	server.SendEvent("/runner", "session_ended", map[string]any{"sessionId": "phantom-session"})
 	time.Sleep(100 * time.Millisecond)
 }
 
-// TestShortID verifies that shortID never panics and returns correct truncations.
-func TestShortID(t *testing.T) {
+// TestShortIDAlias verifies the shortID wrapper works.
+func TestShortIDAlias(t *testing.T) {
 	tests := []struct {
 		input string
 		want  string
 	}{
 		{"", ""},
 		{"abc", "abc"},
-		{"abcdefgh", "abcdefgh"},           // exactly 8 — returned as-is
-		{"abcdefghi", "abcdefgh"},          // 9 chars — truncated
-		{"abc-def-ghi-jkl", "abc-def-"},   // long ID — first 8
+		{"abcdefgh", "abcdefgh"},
+		{"abcdefghi", "abcdefgh"},
+		{"abc-def-ghi-jkl", "abc-def-"},
 	}
 	for _, tt := range tests {
 		got := shortID(tt.input)

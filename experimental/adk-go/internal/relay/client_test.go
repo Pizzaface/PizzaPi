@@ -1,4 +1,4 @@
-package main
+package relay
 
 import (
 	"encoding/json"
@@ -6,19 +6,14 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/Pizzaface/PizzaPi/experimental/adk-go/internal/relay"
 )
 
-// Tests here verify the SIOClient type alias works correctly by exercising
-// the relay.Client through the cmd/runner alias layer.
-
-func TestSIOClientConnect(t *testing.T) {
-	server := relay.NewFakeSIOServer(t)
+func TestClientConnect(t *testing.T) {
+	server := NewFakeSIOServer(t)
 	defer server.Close()
 
 	connected := make(chan struct{})
-	client := NewSIOClient(SIOClientConfig{
+	client := NewClient(ClientConfig{
 		URL:       server.URL(),
 		Namespace: "/runner",
 		Auth: map[string]any{
@@ -44,11 +39,11 @@ func TestSIOClientConnect(t *testing.T) {
 	}
 }
 
-func TestSIOClientEmit(t *testing.T) {
-	server := relay.NewFakeSIOServer(t)
+func TestClientEmit(t *testing.T) {
+	server := NewFakeSIOServer(t)
 	defer server.Close()
 
-	client := NewSIOClient(SIOClientConfig{
+	client := NewClient(ClientConfig{
 		URL:       server.URL(),
 		Namespace: "/runner",
 		Auth:      map[string]any{"apiKey": "test"},
@@ -84,12 +79,12 @@ func TestSIOClientEmit(t *testing.T) {
 	}
 }
 
-func TestSIOClientReceiveEvent(t *testing.T) {
-	server := relay.NewFakeSIOServer(t)
+func TestClientReceiveEvent(t *testing.T) {
+	server := NewFakeSIOServer(t)
 	defer server.Close()
 
 	received := make(chan json.RawMessage, 1)
-	client := NewSIOClient(SIOClientConfig{
+	client := NewClient(ClientConfig{
 		URL:       server.URL(),
 		Namespace: "/runner",
 		Auth:      map[string]any{"apiKey": "test"},
@@ -126,11 +121,11 @@ func TestSIOClientReceiveEvent(t *testing.T) {
 	}
 }
 
-func TestSIOClientPingPong(t *testing.T) {
-	server := relay.NewFakeSIOServer(t)
+func TestClientPingPong(t *testing.T) {
+	server := NewFakeSIOServer(t)
 	defer server.Close()
 
-	client := NewSIOClient(SIOClientConfig{
+	client := NewClient(ClientConfig{
 		URL:       server.URL(),
 		Namespace: "/runner",
 		Auth:      map[string]any{"apiKey": "test"},
@@ -161,13 +156,13 @@ func TestSIOClientPingPong(t *testing.T) {
 	}
 }
 
-// TestSIOClientCloseReadLoopRace exercises the race window between Close() and
+// TestClientCloseReadLoopRace exercises the race window between Close() and
 // readLoop's defer path.
-func TestSIOClientCloseReadLoopRace(t *testing.T) {
+func TestClientCloseReadLoopRace(t *testing.T) {
 	for i := 0; i < 20; i++ {
-		server := relay.NewFakeSIOServer(t)
+		server := NewFakeSIOServer(t)
 
-		client := NewSIOClient(SIOClientConfig{
+		client := NewClient(ClientConfig{
 			URL:       server.URL(),
 			Namespace: "/runner",
 			Auth:      map[string]any{"apiKey": "test"},
@@ -203,12 +198,12 @@ func TestSIOClientCloseReadLoopRace(t *testing.T) {
 	}
 }
 
-func TestSIOClientDisconnect(t *testing.T) {
-	server := relay.NewFakeSIOServer(t)
+func TestClientDisconnect(t *testing.T) {
+	server := NewFakeSIOServer(t)
 	defer server.Close()
 
 	disconnected := make(chan string, 1)
-	client := NewSIOClient(SIOClientConfig{
+	client := NewClient(ClientConfig{
 		URL:       server.URL(),
 		Namespace: "/runner",
 		Auth:      map[string]any{"apiKey": "test"},
@@ -227,5 +222,24 @@ func TestSIOClientDisconnect(t *testing.T) {
 	case <-disconnected:
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for disconnect")
+	}
+}
+
+func TestShortID(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"", ""},
+		{"abc", "abc"},
+		{"abcdefgh", "abcdefgh"},
+		{"abcdefghi", "abcdefgh"},
+		{"abc-def-ghi-jkl", "abc-def-"},
+	}
+	for _, tt := range tests {
+		got := ShortID(tt.input)
+		if got != tt.want {
+			t.Errorf("ShortID(%q) = %q, want %q", tt.input, got, tt.want)
+		}
 	}
 }
