@@ -236,3 +236,23 @@ func TestGoRunnerSessionEnded(t *testing.T) {
 	server.sendEvent("session_ended", map[string]any{"sessionId": "phantom-session"})
 	time.Sleep(100 * time.Millisecond)
 }
+
+// TestShortID verifies that shortID never panics and returns correct truncations.
+func TestShortID(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"", ""},
+		{"abc", "abc"},
+		{"abcdefgh", "abcdefgh"},           // exactly 8 — returned as-is
+		{"abcdefghi", "abcdefgh"},          // 9 chars — truncated
+		{"abc-def-ghi-jkl", "abc-def-"},   // long ID — first 8
+	}
+	for _, tt := range tests {
+		got := shortID(tt.input)
+		if got != tt.want {
+			t.Errorf("shortID(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
