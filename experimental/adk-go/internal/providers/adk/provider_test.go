@@ -1,14 +1,21 @@
 package adk
 
 import (
+	"strings"
 	"testing"
+
+	"github.com/Pizzaface/PizzaPi/experimental/adk-go/internal/auth"
 )
 
 func TestProvider_StartFailsWithoutAPIKey(t *testing.T) {
-	// Inject empty env var resolver
+	// Inject empty env var resolver and empty auth storage
 	origResolve := resolveEnvVar
 	resolveEnvVar = func(name string) string { return "" }
 	defer func() { resolveEnvVar = origResolve }()
+
+	origFactory := authStorageFactory
+	authStorageFactory = func() *auth.Storage { return auth.InMemoryStorage() }
+	defer func() { authStorageFactory = origFactory }()
 
 	p := NewProvider(GeminiBackend(), nil)
 
@@ -19,7 +26,7 @@ func TestProvider_StartFailsWithoutAPIKey(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when API key not set")
 	}
-	if err.Error() != "GOOGLE_API_KEY not set — required for gemini provider" {
+	if !strings.Contains(err.Error(), "no credentials for gemini") {
 		t.Errorf("unexpected error: %v", err)
 	}
 }
