@@ -104,6 +104,9 @@ func update(a App, msg tea.Msg) (tea.Model, tea.Cmd) {
 		s.Connected = false
 		s.Active = false
 		s.IsStreaming = false
+		s.StreamingMessageID = ""
+		s.ThinkingStart = time.Time{}
+		clear(s.ActiveTools)
 
 	case RelayErrorMsg:
 		s.Messages = append(s.Messages, DisplayMessage{
@@ -129,6 +132,8 @@ func update(a App, msg tea.Msg) (tea.Model, tea.Cmd) {
 		if wasActive && !msg.Active {
 			s.IsStreaming = false
 			s.StreamingMessageID = ""
+			s.ThinkingStart = time.Time{}
+			clear(s.ActiveTools)
 		}
 
 	case SessionActiveMsg:

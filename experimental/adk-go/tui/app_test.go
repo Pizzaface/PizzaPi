@@ -2,8 +2,10 @@ package tui
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -124,6 +126,9 @@ func TestRelayDisconnectedMsg(t *testing.T) {
 	app.state.Connected = true
 	app.state.Active = true
 	app.state.IsStreaming = true
+	app.state.StreamingMessageID = "msg_1"
+	app.state.ThinkingStart = mustTime(t)
+	app.state.ActiveTools["tool_1"] = "bash"
 
 	next, _ := app.Update(RelayDisconnectedMsg{Reason: "test"})
 	app = next.(App)
@@ -135,6 +140,15 @@ func TestRelayDisconnectedMsg(t *testing.T) {
 	}
 	if app.state.IsStreaming {
 		t.Error("expected IsStreaming false")
+	}
+	if app.state.StreamingMessageID != "" {
+		t.Error("expected StreamingMessageID cleared")
+	}
+	if !app.state.ThinkingStart.IsZero() {
+		t.Error("expected ThinkingStart cleared")
+	}
+	if len(app.state.ActiveTools) != 0 {
+		t.Error("expected ActiveTools cleared")
 	}
 }
 
@@ -169,6 +183,31 @@ func TestHeartbeatMsg(t *testing.T) {
 }
 
 // TestMessageUpdateMsg adds/updates messages.
+func TestHeartbeatIdleClearsTransientState(t *testing.T) {
+	app := New(nil)
+	app.state.Active = true
+	app.state.IsStreaming = true
+	app.state.StreamingMessageID = "msg_live"
+	app.state.ThinkingStart = mustTime(t)
+	app.state.ActiveTools["tool_live"] = "read"
+
+	next, _ := app.Update(HeartbeatMsg{Active: false})
+	app = next.(App)
+
+	if app.state.IsStreaming {
+		t.Fatal("expected IsStreaming false")
+	}
+	if app.state.StreamingMessageID != "" {
+		t.Fatal("expected StreamingMessageID cleared")
+	}
+	if !app.state.ThinkingStart.IsZero() {
+		t.Fatal("expected ThinkingStart cleared")
+	}
+	if len(app.state.ActiveTools) != 0 {
+		t.Fatal("expected ActiveTools cleared")
+	}
+}
+
 func TestMessageUpdateMsg(t *testing.T) {
 	app := New(nil)
 
@@ -1017,6 +1056,149 @@ func TestRelayFinalMessageUpdateEndToEnd_NoDuplicateAndContentParsed(t *testing.
 	}
 }
 
+func TestReconnectResumeFromSnapshotClearsTransientStateAndPreservesSnapshot(t *testing.T) {
+	app := New(nil)
+
+	// Simulate mid-stream disconnect with stale transient state.
+	app.state.Messages = []DisplayMessage{
+		{Role: "user", Text: "prompt"},
+		{ID: "msg_live", Role: "assistant", Text: "partial"},
+	}
+	app.state.Active = true
+	app.state.IsStreaming = true
+	app.state.StreamingMessageID = "msg_live"
+	app.state.ThinkingStart = mustTime(t)
+	app.state.ActiveTools["tool_1"] = "read"
+
+	next, _ := app.Update(RelayDisconnectedMsg{Reason: "network blip"})
+	app = next.(App)
+
+	// Reconnect and receive a fresh snapshot + idle heartbeat.
+	sa := SessionActiveMsg{}
+	sa.State.Cwd = "/repo"
+	sa.State.Messages = []json.RawMessage{
+		mustJSONBytes(t, map[string]any{
+			"role":      "user",
+			"messageId": "user_01",
+			"content":   []any{map[string]any{"type": "text", "text": "prompt"}},
+		}),
+		mustJSONBytes(t, map[string]any{
+			"role":    "assistant",
+			"id":      "msg_live",
+			"content": []any{map[string]any{"type": "text", "text": "complete"}},
+		}),
+	}
+	next, _ = app.Update(sa)
+	app = next.(App)
+	next, _ = app.Update(HeartbeatMsg{Active: false, Cwd: "/repo"})
+	app = next.(App)
+
+	if len(app.state.Messages) != 2 {
+		t.Fatalf("expected 2 snapshot messages after resume, got %d", len(app.state.Messages))
+	}
+	if app.state.Messages[1].Text != "complete" {
+		t.Fatalf("expected resumed assistant text 'complete', got %q", app.state.Messages[1].Text)
+	}
+	if len(app.state.ActiveTools) != 0 {
+		t.Fatal("expected stale tools cleared after reconnect resume")
+	}
+	if app.state.IsStreaming {
+		t.Fatal("expected streaming false after resume heartbeat")
+	}
+}
+
+func TestHighVolumeStreamingDeltasSingleMessageNoDupes(t *testing.T) {
+	app := New(nil)
+	next, _ := app.Update(MessageStartMsg{MessageID: "msg_stress", Role: "assistant"})
+	app = next.(App)
+
+	finalText := ""
+	for i := 0; i < 250; i++ {
+		finalText += fmt.Sprintf("chunk-%03d ", i)
+		payload := mustJSONBytes(t, map[string]any{
+			"type": "message_update",
+			"assistantMessageEvent": map[string]any{
+				"type":  "text_delta",
+				"delta": fmt.Sprintf("chunk-%03d ", i),
+				"partial": map[string]any{
+					"id":      "msg_stress",
+					"role":    "assistant",
+					"content": []any{map[string]any{"type": "text", "text": finalText}},
+				},
+			},
+		})
+		msg := parseRelayJSON(payload)
+		next, _ = app.Update(msg)
+		app = next.(App)
+	}
+
+	final := mustJSONBytes(t, map[string]any{
+		"type": "message_end",
+		"message": map[string]any{
+			"id":      "msg_stress",
+			"role":    "assistant",
+			"content": []any{map[string]any{"type": "text", "text": finalText}},
+		},
+	})
+	msg := parseRelayJSON(final)
+	next, _ = app.Update(msg)
+	app = next.(App)
+
+	if len(app.state.Messages) != 1 {
+		t.Fatalf("expected one stress-streamed message, got %d", len(app.state.Messages))
+	}
+	if app.state.Messages[0].Text != finalText {
+		t.Fatalf("final streamed text mismatch: got len=%d want len=%d", len(app.state.Messages[0].Text), len(finalText))
+	}
+	if app.state.IsStreaming {
+		t.Fatal("expected streaming cleared after final message")
+	}
+}
+
+func TestHighVolumeInterleavedStreamingAndToolsOrdering(t *testing.T) {
+	app := New(nil)
+	next, _ := app.Update(MessageStartMsg{MessageID: "msg_mix", Role: "assistant"})
+	app = next.(App)
+
+	for i := 0; i < 40; i++ {
+		text := fmt.Sprintf("step-%02d", i)
+		blocks := []json.RawMessage{mustJSONBytes(t, map[string]any{"type": "text", "text": text})}
+		next, _ = app.Update(StreamingDeltaMsg{MessageID: "msg_mix", Role: "assistant", Content: blocks, DeltaType: "text_delta"})
+		app = next.(App)
+
+		toolID := fmt.Sprintf("tool_%02d", i)
+		next, _ = app.Update(ToolExecutionStartMsg{ToolCallID: toolID, ToolName: "read"})
+		app = next.(App)
+		next, _ = app.Update(ToolResultMsg{ToolCallID: toolID, ToolName: "read", Content: fmt.Sprintf("result-%02d", i), Timestamp: int64(i + 1)})
+		app = next.(App)
+		next, _ = app.Update(ToolExecutionEndMsg{ToolCallID: toolID, ToolName: "read"})
+		app = next.(App)
+	}
+
+	finalBlocks := []json.RawMessage{mustJSONBytes(t, map[string]any{"type": "text", "text": "done"})}
+	next, _ = app.Update(MessageUpdateMsg{MessageID: "msg_mix", Role: "assistant", Content: finalBlocks, Timestamp: 999})
+	app = next.(App)
+
+	if got := app.state.Messages[0].ID; got != "msg_mix" {
+		t.Fatalf("expected assistant placeholder first, got %q", got)
+	}
+	toolCount := 0
+	for _, m := range app.state.Messages {
+		if m.Role == "tool_result" {
+			toolCount++
+		}
+	}
+	if toolCount != 40 {
+		t.Fatalf("expected 40 tool results, got %d", toolCount)
+	}
+	if len(app.state.ActiveTools) != 0 {
+		t.Fatal("expected no active tools after all end events")
+	}
+	if app.state.Messages[0].Text != "done" {
+		t.Fatalf("expected assistant message finalized to done, got %q", app.state.Messages[0].Text)
+	}
+}
+
 func mustJSONBytes(t *testing.T, v any) json.RawMessage {
 	t.Helper()
 	b, err := json.Marshal(v)
@@ -1024,4 +1206,9 @@ func mustJSONBytes(t *testing.T, v any) json.RawMessage {
 		t.Fatal(err)
 	}
 	return b
+}
+
+func mustTime(t *testing.T) time.Time {
+	t.Helper()
+	return time.Unix(123, 0)
 }
