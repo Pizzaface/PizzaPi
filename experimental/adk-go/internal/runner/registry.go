@@ -5,6 +5,8 @@ import (
 	"log"
 	"sort"
 	"sync"
+
+	adkprovider "github.com/Pizzaface/PizzaPi/experimental/adk-go/internal/providers/adk"
 )
 
 // Registry holds registered provider factories, keyed by name.
@@ -55,8 +57,19 @@ func (r *Registry) Names() []string {
 // DefaultRegistry is the global provider registry with built-in providers.
 var DefaultRegistry = func() *Registry {
 	r := NewRegistry()
+
+	// Claude via CLI subprocess (default)
 	r.Register("claude-cli", func() Provider {
 		return NewClaudeCLIProvider(log.Default())
 	})
+
+	// ADK-backed providers — one per model backend
+	for _, backend := range adkprovider.AllBackends() {
+		backend := backend // capture loop var
+		r.Register(backend.Name, func() Provider {
+			return NewADKProviderAdapter(backend)
+		})
+	}
+
 	return r
 }()
