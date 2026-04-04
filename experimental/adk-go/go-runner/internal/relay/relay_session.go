@@ -1,4 +1,4 @@
-package main
+package relay
 
 import (
 	"encoding/json"
@@ -23,6 +23,10 @@ type RelaySession struct {
 	onInput   func(text string) // callback when user sends input from web UI
 	done      chan struct{}
 	closeOnce sync.Once
+}
+
+func (rs *RelaySession) SetInputHandler(handler func(text string)) {
+	rs.onInput = handler
 }
 
 // NewRelaySession creates and connects a relay session.
