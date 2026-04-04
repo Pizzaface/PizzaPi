@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"github.com/Pizzaface/PizzaPi/experimental/adk-go/internal/pathutil"
 )
 
 const (
@@ -67,11 +68,11 @@ var imageExts = map[string]string{
 // (backward compatible with callers that do not set it).
 func ReadFile(path string, opts ReadOpts) (ReadResult, error) {
 	if len(opts.AllowedRoots) > 0 {
-		resolved, err := ResolvePath(path, opts.CWD)
+		resolved, err := pathutil.ResolvePath(path, opts.CWD)
 		if err != nil {
 			return ReadResult{}, err
 		}
-		if err := ValidatePathWithinRoots(resolved, opts.AllowedRoots); err != nil {
+		if err := pathutil.ValidatePathWithinRoots(resolved, opts.AllowedRoots); err != nil {
 			return ReadResult{}, err
 		}
 		path = resolved

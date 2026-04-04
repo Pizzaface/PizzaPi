@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pizzaface/pizzapi/experimental/adk-go/runtime/sessions"
+	"github.com/Pizzaface/PizzaPi/experimental/adk-go/internal/sessions"
 )
 
 // newStore creates a JSONLStore backed by a temporary directory that is cleaned

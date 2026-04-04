@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"github.com/Pizzaface/PizzaPi/experimental/adk-go/internal/pathutil"
 	"path/filepath"
 	"strings"
 )
@@ -54,11 +55,11 @@ func EditFileMulti(path string, edits []SingleEdit, opts EditOpts) (string, erro
 	resolvedPath := path
 	if len(opts.AllowedRoots) > 0 {
 		var err error
-		resolvedPath, err = ResolvePath(path, opts.CWD)
+		resolvedPath, err = pathutil.ResolvePath(path, opts.CWD)
 		if err != nil {
 			return "", err
 		}
-		if err := ValidatePathWithinRoots(resolvedPath, opts.AllowedRoots); err != nil {
+		if err := pathutil.ValidatePathWithinRoots(resolvedPath, opts.AllowedRoots); err != nil {
 			return "", err
 		}
 	} else if !filepath.IsAbs(path) && opts.CWD != "" {

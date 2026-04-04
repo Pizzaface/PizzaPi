@@ -7,7 +7,7 @@ import (
 	"log"
 	"sync"
 
-	claudewrapper "github.com/pizzaface/pizzapi/experimental/adk-go/claude-wrapper"
+	claudecli "github.com/Pizzaface/PizzaPi/experimental/adk-go/internal/claudecli"
 )
 
 // ClaudeCLIProvider implements Provider by spawning a Claude Code CLI
@@ -17,8 +17,8 @@ import (
 // (NDJSON → RelayEvent translation). The go-runner never touches these
 // directly — it only sees the Provider interface.
 type ClaudeCLIProvider struct {
-	runner  *claudewrapper.Runner
-	adapter *claudewrapper.Adapter
+	runner  *claudecli.Runner
+	adapter *claudecli.Adapter
 	logger  *log.Logger
 
 	events chan RelayEvent // relay events produced by this provider
@@ -29,7 +29,7 @@ type ClaudeCLIProvider struct {
 // NewClaudeCLIProvider creates a new Claude CLI provider.
 func NewClaudeCLIProvider(logger *log.Logger) *ClaudeCLIProvider {
 	return &ClaudeCLIProvider{
-		adapter: claudewrapper.NewAdapter(),
+		adapter: claudecli.NewAdapter(),
 		logger:  logger,
 		events:  make(chan RelayEvent, 128),
 		done:    make(chan struct{}),
@@ -39,7 +39,7 @@ func NewClaudeCLIProvider(logger *log.Logger) *ClaudeCLIProvider {
 // Start launches the claude subprocess in interactive mode and begins
 // converting NDJSON events to RelayEvents on the returned channel.
 func (p *ClaudeCLIProvider) Start(pctx ProviderContext) (<-chan RelayEvent, error) {
-	cfg := claudewrapper.RunnerConfig{
+	cfg := claudecli.RunnerConfig{
 		OnStderr: pctx.OnStderr,
 	}
 	if pctx.Cwd != "" {
@@ -49,7 +49,7 @@ func (p *ClaudeCLIProvider) Start(pctx ProviderContext) (<-chan RelayEvent, erro
 		cfg.Model = pctx.Model
 	}
 
-	p.runner = claudewrapper.NewRunner(cfg)
+	p.runner = claudecli.NewRunner(cfg)
 
 	// Record the initial user prompt for message accumulation
 	p.adapter.SetUserPrompt(pctx.Prompt)
@@ -73,7 +73,7 @@ func (p *ClaudeCLIProvider) Start(pctx ProviderContext) (<-chan RelayEvent, erro
 
 // bridge reads from the claude-wrapper event channel, converts each event
 // to zero or more RelayEvents via the adapter, and sends them on p.events.
-func (p *ClaudeCLIProvider) bridge(rawEvents <-chan claudewrapper.ClaudeEvent) {
+func (p *ClaudeCLIProvider) bridge(rawEvents <-chan claudecli.ClaudeEvent) {
 	defer close(p.events)
 	defer close(p.done)
 

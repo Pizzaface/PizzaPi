@@ -2,6 +2,7 @@ package tools
 
 import (
 	"os"
+	"github.com/Pizzaface/PizzaPi/experimental/adk-go/internal/pathutil"
 	"path/filepath"
 )
 
@@ -28,11 +29,11 @@ type WriteOpts struct {
 // omitted), no confinement is applied (backward compatible).
 func WriteFile(path string, content string, opts ...WriteOpts) error {
 	if len(opts) > 0 && len(opts[0].AllowedRoots) > 0 {
-		resolved, err := resolvePathForWrite(path, opts[0].CWD)
+		resolved, err := pathutil.ResolvePathForWrite(path, opts[0].CWD)
 		if err != nil {
 			return err
 		}
-		if err := ValidatePathWithinRoots(resolved, opts[0].AllowedRoots); err != nil {
+		if err := pathutil.ValidatePathWithinRoots(resolved, opts[0].AllowedRoots); err != nil {
 			return err
 		}
 		path = resolved

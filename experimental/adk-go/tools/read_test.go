@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/pizzaface/pizzapi/experimental/adk-go/runtime/tools"
+	"github.com/Pizzaface/PizzaPi/experimental/adk-go/tools"
 )
 
 func TestReadFile_Basic(t *testing.T) {

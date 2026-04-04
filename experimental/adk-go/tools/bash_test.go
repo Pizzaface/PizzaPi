@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pizzaface/pizzapi/experimental/adk-go/runtime/tools"
+	"github.com/Pizzaface/PizzaPi/experimental/adk-go/tools"
 )
 
 func TestRunBash_SimpleCommand(t *testing.T) {

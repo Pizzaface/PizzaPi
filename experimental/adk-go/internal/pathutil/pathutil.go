@@ -1,4 +1,4 @@
-package tools
+package pathutil
 
 import (
 	"fmt"
@@ -34,7 +34,7 @@ func ResolvePath(path, cwd string) (string, error) {
 // reconstructs the full resolved path by appending the non-existent suffix
 // components. This prevents a catch-22 where confinement check fires before the
 // file can be created.
-func resolvePathForWrite(path, cwd string) (string, error) {
+func ResolvePathForWrite(path, cwd string) (string, error) {
 	if !filepath.IsAbs(path) {
 		if cwd == "" {
 			return "", fmt.Errorf("relative path %q requires a non-empty cwd", path)
