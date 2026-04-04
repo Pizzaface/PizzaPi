@@ -7,7 +7,7 @@ import (
 	"log"
 	"sync"
 
-	claudecli "github.com/Pizzaface/PizzaPi/experimental/adk-go/internal/claudecli"
+	claudecli "github.com/Pizzaface/PizzaPi/experimental/adk-go/internal/providers/claudecli"
 )
 
 // ClaudeCLIProvider implements Provider by spawning a Claude Code CLI
