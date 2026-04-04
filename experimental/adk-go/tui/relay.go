@@ -47,18 +47,12 @@ func connectToRelay(relayURL, apiKey, sessionID string) tea.Cmd {
 		// Store client for input sending
 		setRelayClient(client)
 
-		// Set up event handlers that produce tea.Msg via a channel
-		msgCh := make(chan tea.Msg, 64)
+		// Set up event handlers that produce tea.Msg via a channel.
+		// Use a generous buffer and block instead of dropping ordering-critical events.
+		msgCh := make(chan tea.Msg, 1024)
 
 		client.On("event", func(data json.RawMessage) {
-			msg := parseRelayJSON(data)
-			if msg != nil {
-				select {
-				case msgCh <- msg:
-				default:
-					// Channel full, drop event
-				}
-			}
+			enqueueRelayMsg(msgCh, parseRelayJSON(data))
 		})
 
 		// Handle session state from the relay (events arrive wrapped in a session event)
@@ -68,13 +62,7 @@ func connectToRelay(relayURL, apiKey, sessionID string) tea.Cmd {
 				Event json.RawMessage `json:"event"`
 			}
 			if json.Unmarshal(data, &wrapper) == nil && len(wrapper.Event) > 0 {
-				msg := parseRelayJSON(wrapper.Event)
-				if msg != nil {
-					select {
-					case msgCh <- msg:
-					default:
-					}
-				}
+				enqueueRelayMsg(msgCh, parseRelayJSON(wrapper.Event))
 			}
 		})
 
@@ -160,6 +148,30 @@ func getRelayChan() chan tea.Msg {
 	return relayChan
 }
 
+func enqueueRelayMsg(ch chan tea.Msg, msg tea.Msg) {
+	if ch == nil || msg == nil {
+		return
+	}
+	ch <- msg
+}
+
+func parseFinalMessageUpdate(raw json.RawMessage) (MessageUpdateMsg, bool) {
+	var mu MessageUpdateMsg
+	if len(raw) == 0 {
+		return mu, false
+	}
+	if json.Unmarshal(raw, &mu) != nil {
+		return mu, false
+	}
+	var idObj struct {
+		ID string `json:"id"`
+	}
+	if mu.MessageID == "" && json.Unmarshal(raw, &idObj) == nil {
+		mu.MessageID = idObj.ID
+	}
+	return mu, true
+}
+
 // parseRelayJSON converts a raw JSON relay event into a typed tea.Msg.
 // Used by both the "event" and "session_event" handlers.
 func parseRelayJSON(data json.RawMessage) tea.Msg {
@@ -194,22 +206,11 @@ func parseRelayJSON(data json.RawMessage) tea.Msg {
 				return parseStreamingDeltaFromMap(ame)
 			}
 		}
-		// Final message update
-		var mu MessageUpdateMsg
-		if json.Unmarshal(data, &mu) == nil {
-			// Adapter uses "id" in message, but MessageUpdateMsg expects "messageId".
-			// Extract "id" from the nested message object as fallback.
-			if mu.MessageID == "" {
-				var msgWrap struct {
-					Message struct {
-						ID string `json:"id"`
-					} `json:"message"`
-				}
-				if json.Unmarshal(data, &msgWrap) == nil && msgWrap.Message.ID != "" {
-					mu.MessageID = msgWrap.Message.ID
-				}
+		// Final message update lives under the nested "message" object.
+		if json.Unmarshal(data, &raw) == nil {
+			if mu, ok := parseFinalMessageUpdate(raw.Message); ok {
+				return mu
 			}
-			return mu
 		}
 	case "message_start":
 		var raw struct {
@@ -227,17 +228,7 @@ func parseRelayJSON(data json.RawMessage) tea.Msg {
 			Message json.RawMessage `json:"message"`
 		}
 		if json.Unmarshal(data, &raw) == nil && len(raw.Message) > 0 {
-			var mu MessageUpdateMsg
-			if json.Unmarshal(raw.Message, &mu) == nil {
-				// Fallback: adapter uses "id", not "messageId"
-				if mu.MessageID == "" {
-					var idObj struct {
-						ID string `json:"id"`
-					}
-					if json.Unmarshal(raw.Message, &idObj) == nil {
-						mu.MessageID = idObj.ID
-					}
-				}
+			if mu, ok := parseFinalMessageUpdate(raw.Message); ok {
 				return mu
 			}
 		}

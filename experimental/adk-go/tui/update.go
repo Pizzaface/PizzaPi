@@ -132,24 +132,8 @@ func update(a App, msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case SessionActiveMsg:
-		// Merge: parse incoming snapshot, then preserve any trailing local-only
-		// user messages (appended via Enter but not yet in the adapter's history).
 		incoming := parseMessages(msg.State.Messages)
-		incomingIDs := make(map[string]bool, len(incoming))
-		for _, m := range incoming {
-			if m.ID != "" {
-				incomingIDs[m.ID] = true
-			}
-		}
-		// Collect local-only messages: user messages without IDs, or with IDs
-		// not present in the incoming snapshot, that come after the last known message.
-		for _, m := range s.Messages {
-			if m.Role == "user" && m.ID == "" {
-				// Locally-added user message (no ID) — preserve it
-				incoming = append(incoming, m)
-			}
-		}
-		s.Messages = incoming
+		s.Messages = mergeSnapshotMessages(s.Messages, incoming)
 		if msg.State.Model != nil && msg.State.Model.ID != "" {
 			s.ModelID = msg.State.Model.ID
 		}
@@ -206,15 +190,24 @@ func update(a App, msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case MessageUpdateMsg:
 		text := extractTextFromContent(msg.Content)
+		toolOnly := isToolOnlyContent(msg.Content)
 		s.StreamingMessageID = ""
 		s.IsStreaming = false
 		s.ThinkingStart = time.Time{}
 		found := false
 		for i := range s.Messages {
 			if s.Messages[i].ID == msg.MessageID {
-				s.Messages[i].Text = text
-				s.Messages[i].Role = msg.Role
-				s.Messages[i].Timestamp = msg.Timestamp
+				// Tool-use-only updates are advisory and should not clobber already-streamed
+				// assistant text. Tool state/result rendering is handled separately.
+				if !(toolOnly && s.Messages[i].Text != "") {
+					s.Messages[i].Text = text
+				}
+				if msg.Role != "" {
+					s.Messages[i].Role = msg.Role
+				}
+				if msg.Timestamp != 0 {
+					s.Messages[i].Timestamp = msg.Timestamp
+				}
 				found = true
 				break
 			}
@@ -298,6 +291,7 @@ func parseMessages(raw []json.RawMessage) []DisplayMessage {
 			Role      string          `json:"role"`
 			Content   json.RawMessage `json:"content"`
 			MessageID string          `json:"messageId"`
+			ID        string          `json:"id"`
 			ToolName  string          `json:"toolName"`
 			IsError   bool            `json:"isError"`
 			Timestamp int64           `json:"timestamp"`
@@ -306,8 +300,12 @@ func parseMessages(raw []json.RawMessage) []DisplayMessage {
 			continue
 		}
 
+		id := m.MessageID
+		if id == "" {
+			id = m.ID
+		}
 		dm := DisplayMessage{
-			ID:        m.MessageID,
+			ID:        id,
 			Role:      m.Role,
 			Timestamp: m.Timestamp,
 		}
@@ -315,7 +313,12 @@ func parseMessages(raw []json.RawMessage) []DisplayMessage {
 		if m.Role == "tool_result" {
 			dm.ToolName = m.ToolName
 			dm.IsError = m.IsError
-			dm.Text = string(m.Content)
+			var text string
+			if err := json.Unmarshal(m.Content, &text); err == nil {
+				dm.Text = text
+			} else {
+				dm.Text = string(m.Content)
+			}
 			if len(dm.Text) > 500 {
 				dm.Text = dm.Text[:497] + "..."
 			}
@@ -336,6 +339,57 @@ func parseMessages(raw []json.RawMessage) []DisplayMessage {
 		}
 	}
 	return msgs
+}
+
+func mergeSnapshotMessages(current, incoming []DisplayMessage) []DisplayMessage {
+	if len(current) == 0 {
+		return incoming
+	}
+
+	incomingUserCounts := map[string]int{}
+	for _, m := range incoming {
+		if m.Role == "user" {
+			incomingUserCounts[m.Text]++
+		}
+	}
+
+	merged := append([]DisplayMessage{}, incoming...)
+	for _, m := range current {
+		if m.Role != "user" || m.ID != "" {
+			continue
+		}
+		// If the snapshot now contains this user message, treat it as reconciled.
+		if incomingUserCounts[m.Text] > 0 {
+			incomingUserCounts[m.Text]--
+			continue
+		}
+		merged = append(merged, m)
+	}
+	return merged
+}
+
+func isToolOnlyContent(blocks []json.RawMessage) bool {
+	if len(blocks) == 0 {
+		return false
+	}
+	foundTool := false
+	for _, block := range blocks {
+		var b struct {
+			Type string `json:"type"`
+		}
+		if err := json.Unmarshal(block, &b); err != nil {
+			return false
+		}
+		switch b.Type {
+		case "tool_use":
+			foundTool = true
+		case "text", "thinking":
+			return false
+		default:
+			return false
+		}
+	}
+	return foundTool
 }
 
 // extractTextFromContent pulls text from content block arrays.

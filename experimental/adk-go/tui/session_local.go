@@ -117,19 +117,15 @@ func relayEventToMsg(ev runner.RelayEvent) tea.Msg {
 		if ameRaw, hasAME := ev["assistantMessageEvent"]; hasAME {
 			return parseStreamingDelta(ameRaw)
 		}
-		// Final message update — has "message" field
-		var mu MessageUpdateMsg
+		// Final message update — has nested "message" field.
 		if msg, ok := ev["message"].(map[string]any); ok {
 			if b, err := json.Marshal(msg); err == nil {
-				json.Unmarshal(b, &mu)
-			}
-			// The adapter uses "id" but MessageUpdateMsg expects "messageId".
-			// Extract "id" as fallback when "messageId" wasn't populated.
-			if mu.MessageID == "" {
-				mu.MessageID, _ = msg["id"].(string)
+				if mu, ok := parseFinalMessageUpdate(b); ok {
+					return mu
+				}
 			}
 		}
-		return mu
+		return nil
 
 	case "message_start":
 		var ms MessageStartMsg
@@ -141,16 +137,14 @@ func relayEventToMsg(ev runner.RelayEvent) tea.Msg {
 
 	case "message_end":
 		// Extract the message for upsert (same as final message_update)
-		var mu MessageUpdateMsg
 		if msg, ok := ev["message"].(map[string]any); ok {
 			if b, err := json.Marshal(msg); err == nil {
-				json.Unmarshal(b, &mu)
-			}
-			if mu.MessageID == "" {
-				mu.MessageID, _ = msg["id"].(string)
+				if mu, ok := parseFinalMessageUpdate(b); ok {
+					return mu
+				}
 			}
 		}
-		return mu
+		return nil
 
 	case "tool_result_message":
 		var tr ToolResultMsg

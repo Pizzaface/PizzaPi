@@ -900,6 +900,121 @@ func TestParseRelayJSON_MessageUpdateExtractsId(t *testing.T) {
 	if mu.MessageID != "msg_77" {
 		t.Errorf("expected MessageID 'msg_77', got %q", mu.MessageID)
 	}
+	if mu.Role != "assistant" {
+		t.Errorf("expected role assistant, got %q", mu.Role)
+	}
+	if got := extractTextFromContent(mu.Content); got != "hi" {
+		t.Errorf("expected content 'hi', got %q", got)
+	}
+}
+
+func TestParseMessagesSupportsIDAndToolResultString(t *testing.T) {
+	raw := []json.RawMessage{
+		mustJSONBytes(t, map[string]any{
+			"role":    "assistant",
+			"id":      "msg_from_id",
+			"content": []any{map[string]any{"type": "text", "text": "hello"}},
+		}),
+		mustJSONBytes(t, map[string]any{
+			"role":      "tool_result",
+			"toolName":  "bash",
+			"content":   "plain output",
+			"timestamp": 123,
+		}),
+	}
+	msgs := parseMessages(raw)
+	if len(msgs) != 2 {
+		t.Fatalf("expected 2 parsed messages, got %d", len(msgs))
+	}
+	if msgs[0].ID != "msg_from_id" {
+		t.Fatalf("expected assistant ID from id field, got %q", msgs[0].ID)
+	}
+	if msgs[1].Text != "plain output" {
+		t.Fatalf("expected unquoted tool result text, got %q", msgs[1].Text)
+	}
+}
+
+func TestSessionActiveReconcilesOptimisticUserMessage(t *testing.T) {
+	app := New(nil)
+	app.state.Messages = []DisplayMessage{{Role: "user", Text: "same prompt"}}
+
+	sa := SessionActiveMsg{}
+	sa.State.Messages = []json.RawMessage{
+		mustJSONBytes(t, map[string]any{
+			"role":      "user",
+			"messageId": "user_01",
+			"content":   []any{map[string]any{"type": "text", "text": "same prompt"}},
+		}),
+	}
+
+	next, _ := app.Update(sa)
+	app = next.(App)
+	if len(app.state.Messages) != 1 {
+		t.Fatalf("expected optimistic user message to reconcile to 1 entry, got %d", len(app.state.Messages))
+	}
+	if app.state.Messages[0].ID != "user_01" {
+		t.Fatalf("expected reconciled server ID user_01, got %q", app.state.Messages[0].ID)
+	}
+}
+
+func TestToolUseUpdateDoesNotClobberExistingAssistantText(t *testing.T) {
+	app := New(nil)
+	app.state.Messages = []DisplayMessage{{ID: "msg_01", Role: "assistant", Text: "I will inspect the file"}}
+
+	content := []json.RawMessage{mustJSONBytes(t, map[string]any{
+		"type":  "tool_use",
+		"id":    "tool_1",
+		"name":  "read",
+		"input": map[string]any{"path": "main.go"},
+	})}
+	msg := MessageUpdateMsg{MessageID: "msg_01", Role: "assistant", Content: content}
+
+	next, _ := app.Update(msg)
+	app = next.(App)
+	if got := app.state.Messages[0].Text; got != "I will inspect the file" {
+		t.Fatalf("tool-only update clobbered streamed text: %q", got)
+	}
+}
+
+func TestRelayFinalMessageUpdateEndToEnd_NoDuplicateAndContentParsed(t *testing.T) {
+	app := New(nil)
+	next, _ := app.Update(MessageStartMsg{MessageID: "msg_90", Role: "assistant"})
+	app = next.(App)
+
+	stream := mustJSONBytes(t, map[string]any{
+		"type": "message_update",
+		"assistantMessageEvent": map[string]any{
+			"type":  "text_delta",
+			"delta": "hel",
+			"partial": map[string]any{
+				"id":      "msg_90",
+				"role":    "assistant",
+				"content": []any{map[string]any{"type": "text", "text": "hel"}},
+			},
+		},
+	})
+	msg1 := parseRelayJSON(stream)
+	next, _ = app.Update(msg1)
+	app = next.(App)
+
+	final := mustJSONBytes(t, map[string]any{
+		"type": "message_update",
+		"message": map[string]any{
+			"id":      "msg_90",
+			"role":    "assistant",
+			"content": []any{map[string]any{"type": "text", "text": "hello"}},
+		},
+	})
+	msg2 := parseRelayJSON(final)
+	next, _ = app.Update(msg2)
+	app = next.(App)
+
+	if len(app.state.Messages) != 1 {
+		t.Fatalf("expected one upserted message, got %d", len(app.state.Messages))
+	}
+	if app.state.Messages[0].Text != "hello" {
+		t.Fatalf("expected final parsed content hello, got %q", app.state.Messages[0].Text)
+	}
 }
 
 func mustJSONBytes(t *testing.T, v any) json.RawMessage {
