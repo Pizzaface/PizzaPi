@@ -42,10 +42,6 @@ func NewAdapter() *Adapter {
 	}
 }
 
-// SetUserPrompt records a user prompt so it appears in the accumulated
-// message list. For the initial prompt, this is called before Start and
-// the message is appended when the system event arrives. For follow-up
-// messages, the message is appended immediately.
 // SetUserPrompt records a user prompt. It will be added to the message
 // list when the next system event arrives (Claude emits a system event
 // at the start of every turn, including follow-ups).
@@ -73,7 +69,6 @@ func (a *Adapter) HandleEvent(ev ClaudeEvent) []RelayEvent {
 			a.pendingUserPrompt = ""
 		}
 		return []RelayEvent{
-			// Heartbeat to signal the session is active
 			{
 				"type":         "heartbeat",
 				"active":       true,
@@ -83,9 +78,6 @@ func (a *Adapter) HandleEvent(ev ClaudeEvent) []RelayEvent {
 				"sessionName":  nil,
 				"cwd":          e.Cwd,
 			},
-			// session_active with accumulated messages. On first init this is
-			// empty (unblocks the UI's awaitingSnapshot guard). On follow-up
-			// turns this preserves the conversation history.
 			{
 				"type": "session_active",
 				"state": map[string]any{
@@ -95,6 +87,7 @@ func (a *Adapter) HandleEvent(ev ClaudeEvent) []RelayEvent {
 				},
 			},
 		}
+
 	case *MessageStart:
 		a.currentMessageID = e.MessageID
 		if a.currentMessageID == "" {
@@ -106,9 +99,19 @@ func (a *Adapter) HandleEvent(ev ClaudeEvent) []RelayEvent {
 		a.contentBlocks = nil
 		a.toolInputBuffers = map[int]string{}
 		a.toolUseBlocks = map[int]toolUseMeta{}
-		return nil
+
+		// Emit message_start — the UI uses this to show the message appearing.
+		return []RelayEvent{{
+			"type": "message_start",
+			"message": map[string]any{
+				"role": "assistant",
+				"id":   a.currentMessageID,
+			},
+		}}
+
 	case *ContentBlockStart:
 		a.ensureContentIndex(e.Index)
+		var events []RelayEvent
 		switch e.BlockType {
 		case "text":
 			a.contentBlocks[e.Index] = map[string]any{"type": "text", "text": ""}
@@ -116,10 +119,17 @@ func (a *Adapter) HandleEvent(ev ClaudeEvent) []RelayEvent {
 			a.toolUseBlocks[e.Index] = toolUseMeta{id: e.ToolID, name: e.ToolName}
 			a.toolInputBuffers[e.Index] = ""
 			a.toolNamesByID[e.ToolID] = e.ToolName
+			// Emit tool_execution_start — the UI uses this for streaming tool indicators.
+			events = append(events, RelayEvent{
+				"type":       "tool_execution_start",
+				"toolCallId": e.ToolID,
+				"toolName":   e.ToolName,
+			})
 		case "thinking":
 			a.contentBlocks[e.Index] = map[string]any{"type": "thinking", "thinking": ""}
 		}
-		return nil
+		return events
+
 	case *ContentBlockDelta:
 		switch e.DeltaType {
 		case "text_delta":
@@ -129,7 +139,17 @@ func (a *Adapter) HandleEvent(ev ClaudeEvent) []RelayEvent {
 			}
 			text, _ := a.contentBlocks[e.Index]["text"].(string)
 			a.contentBlocks[e.Index]["text"] = text + e.Text
-			return []RelayEvent{a.messageUpdate(false)}
+			// Emit streaming delta with assistantMessageEvent wrapper.
+			// The UI detects assistantMessageEvent.partial for RAF-debounced rendering.
+			return []RelayEvent{{
+				"type": "message_update",
+				"assistantMessageEvent": map[string]any{
+					"partial":      a.buildPartialMessage(),
+					"type":         "text_delta",
+					"contentIndex": e.Index,
+					"delta":        e.Text,
+				},
+			}}
 		case "thinking_delta":
 			a.ensureContentIndex(e.Index)
 			if a.contentBlocks[e.Index] == nil {
@@ -137,13 +157,33 @@ func (a *Adapter) HandleEvent(ev ClaudeEvent) []RelayEvent {
 			}
 			thinking, _ := a.contentBlocks[e.Index]["thinking"].(string)
 			a.contentBlocks[e.Index]["thinking"] = thinking + e.Thinking
-			return nil // thinking streamed but not relayed until final message
+			// Emit thinking delta with assistantMessageEvent wrapper.
+			return []RelayEvent{{
+				"type": "message_update",
+				"assistantMessageEvent": map[string]any{
+					"partial":      a.buildPartialMessage(),
+					"type":         "thinking_delta",
+					"contentIndex": e.Index,
+					"delta":        e.Thinking,
+				},
+			}}
 		case "signature_delta":
-			return nil // signature verification data — not relayed
+			return nil
 		case "input_json_delta":
 			a.toolInputBuffers[e.Index] += e.PartialJSON
+			// Emit toolcall_delta for streaming tool input display.
+			return []RelayEvent{{
+				"type": "message_update",
+				"assistantMessageEvent": map[string]any{
+					"partial":      a.buildPartialMessage(),
+					"type":         "toolcall_delta",
+					"contentIndex": e.Index,
+					"delta":        e.PartialJSON,
+				},
+			}}
 		}
 		return nil
+
 	case *ContentBlockStop:
 		if meta, ok := a.toolUseBlocks[e.Index]; ok {
 			a.ensureContentIndex(e.Index)
@@ -161,10 +201,13 @@ func (a *Adapter) HandleEvent(ev ClaudeEvent) []RelayEvent {
 			}
 		}
 		return nil
+
 	case *MessageDelta:
 		return nil
+
 	case *MessageStop:
 		return nil
+
 	case *AssistantMessage:
 		if len(e.Message) == 0 {
 			return nil
@@ -176,7 +219,7 @@ func (a *Adapter) HandleEvent(ev ClaudeEvent) []RelayEvent {
 		}
 		if err := json.Unmarshal(e.Message, &payload); err == nil {
 			if len(payload.Content) == 0 {
-				return nil // skip empty assistant events
+				return nil
 			}
 			if payload.ID != "" {
 				a.currentMessageID = payload.ID
@@ -192,19 +235,39 @@ func (a *Adapter) HandleEvent(ev ClaudeEvent) []RelayEvent {
 				}
 			}
 		}
-		return []RelayEvent{a.messageUpdate(true)}
+
+		// Build the finalized message object.
+		msg := a.buildFinalMessage()
+
+		// Emit message_update (with message field for upsert) and
+		// message_end (for finalization and partial eviction).
+		return []RelayEvent{
+			{
+				"type":    "message_update",
+				"message": msg,
+			},
+			{
+				"type":    "message_end",
+				"message": msg,
+			},
+		}
+
 	case *ToolUseEvent:
 		var input any = map[string]any{}
 		if len(e.Input) > 0 {
 			_ = json.Unmarshal(e.Input, &input)
 		}
 		a.toolNamesByID[e.ToolID] = e.Name
+		// Emit as message_update with message field containing tool_use block.
 		return []RelayEvent{{
-			"type":      "message_update",
-			"role":      "assistant",
-			"content":   []map[string]any{{"type": "tool_use", "id": e.ToolID, "name": e.Name, "input": input}},
-			"messageId": a.currentOrGeneratedMessageID(),
+			"type": "message_update",
+			"message": map[string]any{
+				"role":    "assistant",
+				"id":      a.currentOrGeneratedMessageID(),
+				"content": []map[string]any{{"type": "tool_use", "id": e.ToolID, "name": e.Name, "input": input}},
+			},
 		}}
+
 	case *ToolResultEvent:
 		toolMsg := RelayEvent{
 			"type":       "tool_result_message",
@@ -216,10 +279,20 @@ func (a *Adapter) HandleEvent(ev ClaudeEvent) []RelayEvent {
 			"timestamp":  nowMillis(),
 		}
 		a.messages = append(a.messages, map[string]any(toolMsg))
-		return []RelayEvent{toolMsg}
+
+		events := []RelayEvent{toolMsg}
+
+		// Emit tool_execution_end for the UI to clear streaming indicators.
+		events = append(events, RelayEvent{
+			"type":       "tool_execution_end",
+			"toolCallId": e.ToolID,
+			"toolName":   a.toolNamesByID[e.ToolID],
+			"isError":    e.IsError,
+		})
+
+		return events
+
 	case *UserMessage:
-		// The Claude CLI reports tool results as "user" messages.
-		// Map them to tool_result_message for PizzaPi.
 		if e.ToolUseID != "" {
 			toolMsg := RelayEvent{
 				"type":       "tool_result_message",
@@ -231,19 +304,26 @@ func (a *Adapter) HandleEvent(ev ClaudeEvent) []RelayEvent {
 				"timestamp":  nowMillis(),
 			}
 			a.messages = append(a.messages, map[string]any(toolMsg))
-			return []RelayEvent{toolMsg}
+
+			events := []RelayEvent{toolMsg}
+			events = append(events, RelayEvent{
+				"type":       "tool_execution_end",
+				"toolCallId": e.ToolUseID,
+				"toolName":   a.toolNamesByID[e.ToolUseID],
+				"isError":    e.IsError,
+			})
+			return events
 		}
 		return nil
+
 	case *RateLimitEvent:
-		// Rate limit info is logged but not forwarded to the relay.
 		return nil
+
 	case *ResultEvent:
 		if a.model.ID == "" {
 			a.model = AdapterModel{Provider: "anthropic", ID: ""}
 		}
-		// Build a complete session_active with the accumulated messages
-		// so the lastState in Redis has the full conversation for
-		// reconnecting viewers.
+
 		events := []RelayEvent{}
 
 		// Emit session_active with the assistant message to persist state
@@ -251,10 +331,9 @@ func (a *Adapter) HandleEvent(ev ClaudeEvent) []RelayEvent {
 			assistantMsg := map[string]any{
 				"role":      "assistant",
 				"content":   cloneBlocks(a.contentBlocks),
-				"messageId": a.currentOrGeneratedMessageID(),
+				"id":        a.currentOrGeneratedMessageID(),
 				"timestamp": nowMillis(),
 			}
-			// Accumulate the full message list
 			a.messages = append(a.messages, assistantMsg)
 			events = append(events, RelayEvent{
 				"type": "session_active",
@@ -290,6 +369,7 @@ func (a *Adapter) HandleEvent(ev ClaudeEvent) []RelayEvent {
 		})
 
 		return events
+
 	case *UnknownEvent, *ParseError:
 		return nil
 	default:
@@ -315,17 +395,24 @@ func (a *Adapter) ensureContentIndex(index int) {
 	}
 }
 
-func (a *Adapter) messageUpdate(includeTimestamp bool) RelayEvent {
-	event := RelayEvent{
-		"type":      "message_update",
+// buildPartialMessage builds the current accumulated assistant message
+// (in-progress, no timestamp) for streaming delta events.
+func (a *Adapter) buildPartialMessage() map[string]any {
+	return map[string]any{
+		"role":    "assistant",
+		"id":      a.currentOrGeneratedMessageID(),
+		"content": cloneBlocks(a.contentBlocks),
+	}
+}
+
+// buildFinalMessage builds the finalized assistant message (with timestamp).
+func (a *Adapter) buildFinalMessage() map[string]any {
+	return map[string]any{
 		"role":      "assistant",
+		"id":        a.currentOrGeneratedMessageID(),
 		"content":   cloneBlocks(a.contentBlocks),
-		"messageId": a.currentOrGeneratedMessageID(),
+		"timestamp": nowMillis(),
 	}
-	if includeTimestamp {
-		event["timestamp"] = nowMillis()
-	}
-	return event
 }
 
 func (a *Adapter) modelMap() map[string]any {
@@ -340,11 +427,11 @@ func (a *Adapter) ModelMap() map[string]any {
 func cloneMessages(msgs []map[string]any) []any {
 	out := make([]any, 0, len(msgs))
 	for _, msg := range msgs {
-		copy := make(map[string]any, len(msg))
+		c := make(map[string]any, len(msg))
 		for k, v := range msg {
-			copy[k] = v
+			c[k] = v
 		}
-		out = append(out, copy)
+		out = append(out, c)
 	}
 	return out
 }
