@@ -1,207 +1,135 @@
 package runner
 
 import (
-	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"sync"
-	"time"
 
-	claudecli "github.com/Pizzaface/PizzaPi/experimental/adk-go/internal/providers/claudecli"
 	guardrails "github.com/Pizzaface/PizzaPi/experimental/adk-go/internal/guardrails"
+	adkprovider "github.com/Pizzaface/PizzaPi/experimental/adk-go/internal/providers/adk"
+	claudecli "github.com/Pizzaface/PizzaPi/experimental/adk-go/internal/providers/claudecli"
 )
 
-// ClaudeCLIProvider implements Provider by spawning a Claude Code CLI
-// subprocess in interactive mode (--input-format stream-json).
-//
-// It owns the claude-wrapper Runner (subprocess lifecycle) and Adapter
-// (NDJSON → RelayEvent translation). Callers never touch these
-// directly — they only see the Provider interface.
+// ClaudeCLIProvider keeps the external provider name (`claude-cli`) while
+// delegating orchestration/session lifecycle to the shared ADK runtime.
+// Claude-specific behavior now lives at the Claude-on-ADK boundary inside
+// internal/providers/claudecli.
 type ClaudeCLIProvider struct {
-	runner  *claudecli.Runner
-	adapter *claudecli.Adapter
 	logger  *log.Logger
+	runtime *adkprovider.Runtime
+	modelID string
 
-	guardEnv    guardrails.EvalEnv // guardrails evaluation environment
-	stdinWriter func([]byte) error  // writes to the claude subprocess stdin; injectable for tests
-
-	events chan RelayEvent // relay events produced by this provider
-	done   chan struct{}
-	mu     sync.Mutex
+	mu      sync.Mutex
+	started bool
 }
 
 // NewClaudeCLIProvider creates a new Claude CLI provider.
 func NewClaudeCLIProvider(logger *log.Logger) *ClaudeCLIProvider {
-	return &ClaudeCLIProvider{
-		adapter: claudecli.NewAdapter(),
-		logger:  logger,
-		events:  make(chan RelayEvent, 128),
-		done:    make(chan struct{}),
+	if logger == nil {
+		logger = log.Default()
 	}
+	return &ClaudeCLIProvider{logger: logger}
 }
 
-// Start launches the claude subprocess in interactive mode and begins
-// converting NDJSON events to RelayEvents on the returned channel.
+// Start launches the shared ADK runtime with a Claude-backed custom agent.
 func (p *ClaudeCLIProvider) Start(pctx ProviderContext) (<-chan RelayEvent, error) {
-	cfg := claudecli.RunnerConfig{
-		OnStderr: pctx.OnStderr,
+	p.mu.Lock()
+	if p.started {
+		p.mu.Unlock()
+		return nil, fmt.Errorf("provider already started")
 	}
+	p.started = true
+	p.mu.Unlock()
+
+	runnerCfg := claudecli.RunnerConfig{OnStderr: pctx.OnStderr}
 	if pctx.Cwd != "" {
-		cfg.WorkDir = pctx.Cwd
+		runnerCfg.WorkDir = pctx.Cwd
 	}
 	if pctx.Model != "" {
-		cfg.Model = pctx.Model
+		runnerCfg.Model = pctx.Model
 	}
 
-	p.runner = claudecli.NewRunner(cfg)
+	agentImpl, err := claudecli.NewClaudeSessionAgent(claudecli.ClaudeSessionAgentConfig{
+		Name:         "claude-cli",
+		Description:  "Claude Code CLI session agent for PizzaPi",
+		RunnerConfig: runnerCfg,
+		GuardEnv:     guardrailsFromContext(pctx),
+		Logger:       p.logger,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create claude session agent: %w", err)
+	}
 
-	// Build the guardrails evaluation environment from the provider context.
-	p.guardEnv = guardrails.EvalEnv{
+	rt, err := adkprovider.NewRuntime(adkprovider.RuntimeConfig{
+		AppName:            "pizzapi",
+		ProviderName:       "claude-cli",
+		ProviderLabel:      "anthropic",
+		ModelID:            runnerCfg.Model,
+		Cwd:                pctx.Cwd,
+		Logger:             p.logger,
+		Agent:              agentImpl,
+		RelayAdapter:       claudecli.NewRuntimeRelayAdapter(),
+		DisableTurnSummary: true,
+	})
+	if err != nil {
+		return nil, err
+	}
+	p.runtime = rt
+	p.modelID = runnerCfg.Model
+	return p.runtime.Start(pctx.Prompt)
+}
+
+func (p *ClaudeCLIProvider) SendMessage(text string) error {
+	p.mu.Lock()
+	rt := p.runtime
+	p.mu.Unlock()
+	if rt == nil {
+		return fmt.Errorf("provider not started")
+	}
+	return rt.SendMessage(text)
+}
+
+func (p *ClaudeCLIProvider) Done() <-chan struct{} {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.runtime == nil {
+		ch := make(chan struct{})
+		close(ch)
+		return ch
+	}
+	return p.runtime.Done()
+}
+
+func (p *ClaudeCLIProvider) ExitCode() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.runtime == nil {
+		return -1
+	}
+	return p.runtime.ExitCode()
+}
+
+func (p *ClaudeCLIProvider) Stop() error {
+	p.mu.Lock()
+	rt := p.runtime
+	p.mu.Unlock()
+	if rt == nil {
+		return nil
+	}
+	return rt.Stop()
+}
+
+func (p *ClaudeCLIProvider) ModelMap() map[string]any {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return map[string]any{"provider": "anthropic", "id": p.modelID}
+}
+
+func guardrailsFromContext(pctx ProviderContext) guardrails.EvalEnv {
+	return guardrails.EvalEnv{
 		CWD:     pctx.Cwd,
 		HomeDir: pctx.HomeDir,
 		Session: guardrails.SessionState{PlanMode: pctx.PlanMode},
 		Config:  pctx.SandboxConfig,
 	}
-
-	// Wire up the real stdin writer.
-	p.stdinWriter = p.runner.WriteStdin
-
-	// Record the initial user prompt for message accumulation
-	p.adapter.SetUserPrompt(pctx.Prompt)
-
-	ctx := context.Background()
-
-	rawEvents, err := p.runner.StartInteractive(ctx, pctx.Prompt)
-	if err != nil {
-		close(p.events)
-		close(p.done)
-		return nil, fmt.Errorf("start claude: %w", err)
-	}
-
-	go p.bridge(rawEvents)
-
-	return p.events, nil
-}
-
-// bridge reads from the claude-wrapper event channel, converts each event
-// to zero or more RelayEvents via the adapter, and sends them on p.events.
-func (p *ClaudeCLIProvider) bridge(rawEvents <-chan claudecli.ClaudeEvent) {
-	defer close(p.events)
-	defer close(p.done)
-
-	for ev := range rawEvents {
-		if toolUse, ok := ev.(*claudecli.ToolUseEvent); ok {
-			if denied, errEvent := p.interceptToolUse(toolUse); denied {
-				if errEvent != nil {
-					p.events <- errEvent
-				}
-				continue
-			}
-		}
-
-		relayEvents := p.adapter.HandleEvent(ev)
-		for _, re := range relayEvents {
-			p.events <- re
-		}
-	}
-}
-
-// interceptToolUse evaluates a tool_use event against the active guardrails.
-func (p *ClaudeCLIProvider) interceptToolUse(e *claudecli.ToolUseEvent) (bool, RelayEvent) {
-	var args map[string]any
-	if len(e.Input) > 0 {
-		if err := json.Unmarshal(e.Input, &args); err != nil {
-			args = map[string]any{}
-		}
-	}
-
-	call := guardrails.ToolCall{Name: e.Name, Args: args}
-	decision := guardrails.EvaluateToolCall(call, p.guardEnv)
-	if decision.Allowed {
-		return false, nil
-	}
-
-	p.logger.Printf("[guardrails] denied tool %q (id=%s): %s", e.Name, e.ToolID, decision.Reason)
-
-	toolResultMsg := map[string]any{
-		"type":        "tool_result",
-		"tool_use_id": e.ToolID,
-		"content":     "Error: " + decision.Reason,
-		"is_error":    true,
-	}
-	if msgBytes, err := json.Marshal(toolResultMsg); err == nil {
-		msgBytes = append(msgBytes, '\n')
-		if p.stdinWriter != nil {
-			if err := p.stdinWriter(msgBytes); err != nil {
-				p.logger.Printf("[guardrails] failed to write tool_result to stdin: %v", err)
-			}
-		}
-	}
-
-	errEvent := RelayEvent{
-		"type":       "tool_result_message",
-		"role":       "tool_result",
-		"toolCallId": e.ToolID,
-		"toolName":   e.Name,
-		"content":    "Error: " + decision.Reason,
-		"isError":    true,
-		"timestamp":  time.Now().UnixMilli(),
-	}
-	return true, errEvent
-}
-
-// SendMessage sends a user follow-up to the running claude subprocess.
-func (p *ClaudeCLIProvider) SendMessage(text string) error {
-	p.adapter.SetUserPrompt(text)
-
-	msg := map[string]any{
-		"type": "user",
-		"message": map[string]any{
-			"role":    "user",
-			"content": text,
-		},
-	}
-	msgBytes, err := json.Marshal(msg)
-	if err != nil {
-		return fmt.Errorf("marshal user message: %w", err)
-	}
-	msgBytes = append(msgBytes, '\n')
-
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.runner == nil {
-		return fmt.Errorf("provider not started")
-	}
-	return p.runner.WriteStdin(msgBytes)
-}
-
-// Done returns a channel that closes when the claude process exits.
-func (p *ClaudeCLIProvider) Done() <-chan struct{} {
-	return p.done
-}
-
-// ExitCode returns the claude process exit code.
-func (p *ClaudeCLIProvider) ExitCode() int {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.runner == nil {
-		return -1
-	}
-	return p.runner.ExitCode()
-}
-
-// Stop terminates the claude subprocess.
-func (p *ClaudeCLIProvider) Stop() error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.runner == nil {
-		return nil
-	}
-	return p.runner.Stop()
-}
-
-// ModelMap returns the current model info from the adapter.
-func (p *ClaudeCLIProvider) ModelMap() map[string]any {
-	return p.adapter.ModelMap()
 }

@@ -17,22 +17,30 @@ import (
 // providers. The long-term goal is for every ADK-founded provider (including
 // Claude via an adapter) to plug into this runtime rather than reimplementing
 // runner/session/event-loop orchestration per provider.
+type RelayAdapter interface {
+	AddUserMessage(text string)
+	HandleEvent(ev *session.Event) []map[string]any
+	HandleTurnEnd(inputTokens, outputTokens int, costUSD float64, numTurns int, stopReason string) []map[string]any
+}
+
 type RuntimeConfig struct {
-	AppName        string
-	ProviderName   string
-	ProviderLabel  string
-	ModelID        string
-	Cwd            string
-	Logger         *log.Logger
-	SessionService session.Service
-	Agent          agent.Agent
+	AppName            string
+	ProviderName       string
+	ProviderLabel      string
+	ModelID            string
+	Cwd                string
+	Logger             *log.Logger
+	SessionService     session.Service
+	Agent              agent.Agent
+	RelayAdapter       RelayAdapter
+	DisableTurnSummary bool
 }
 
 // Runtime owns the common ADK runner/session lifecycle.
 type Runtime struct {
 	cfg RuntimeConfig
 
-	adapter    *Adapter
+	adapter    RelayAdapter
 	adkRunner  *runner.Runner
 	sessionSvc session.Service
 	sessionID  string
@@ -40,9 +48,12 @@ type Runtime struct {
 
 	events chan RelayEvent
 	done   chan struct{}
+	ctx    context.Context
 	cancel context.CancelFunc
 
 	mu      sync.Mutex
+	turnMu  sync.Mutex
+	turnWG  sync.WaitGroup
 	started bool
 	closed  bool
 }
@@ -64,9 +75,13 @@ func NewRuntime(cfg RuntimeConfig) (*Runtime, error) {
 		return nil, fmt.Errorf("runtime provider name is required")
 	}
 
+	if cfg.RelayAdapter == nil {
+		cfg.RelayAdapter = NewAdapter(AdapterModel{Provider: cfg.ProviderLabel, ID: cfg.ModelID}, cfg.Cwd)
+	}
+
 	return &Runtime{
 		cfg:        cfg,
-		adapter:    NewAdapter(AdapterModel{Provider: cfg.ProviderLabel, ID: cfg.ModelID}, cfg.Cwd),
+		adapter:    cfg.RelayAdapter,
 		sessionSvc: cfg.SessionService,
 		userID:     "pizzapi-user",
 		events:     make(chan RelayEvent, 128),
@@ -84,6 +99,7 @@ func (r *Runtime) Start(prompt string) (<-chan RelayEvent, error) {
 	r.mu.Unlock()
 
 	ctx, cancel := context.WithCancel(context.Background())
+	r.ctx = ctx
 	r.cancel = cancel
 
 	sess, err := r.sessionSvc.Create(ctx, &session.CreateRequest{
@@ -110,7 +126,16 @@ func (r *Runtime) Start(prompt string) (<-chan RelayEvent, error) {
 	r.adkRunner = adkRunner
 	r.adapter.AddUserMessage(prompt)
 
-	go r.runLoop(ctx, prompt)
+	go func() {
+		<-ctx.Done()
+		r.turnWG.Wait()
+		r.closeChannels()
+	}()
+	r.turnWG.Add(1)
+	go func() {
+		defer r.turnWG.Done()
+		r.runTurn(ctx, prompt)
+	}()
 	return r.events, nil
 }
 
@@ -123,7 +148,17 @@ func (r *Runtime) SendMessage(text string) error {
 	}
 
 	r.adapter.AddUserMessage(text)
-	go r.runTurn(context.Background(), text)
+	r.mu.Lock()
+	ctx := r.ctx
+	r.mu.Unlock()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	r.turnWG.Add(1)
+	go func() {
+		defer r.turnWG.Done()
+		r.runTurn(ctx, text)
+	}()
 	return nil
 }
 
@@ -139,12 +174,10 @@ func (r *Runtime) Stop() error {
 	return nil
 }
 
-func (r *Runtime) runLoop(ctx context.Context, prompt string) {
-	defer r.closeChannels()
-	r.runTurn(ctx, prompt)
-}
-
 func (r *Runtime) runTurn(ctx context.Context, prompt string) {
+	r.turnMu.Lock()
+	defer r.turnMu.Unlock()
+
 	userMsg := genai.NewContentFromText(prompt, genai.RoleUser)
 	r.cfg.Logger.Printf("[%s] starting agent with model %s", r.cfg.ProviderName, r.cfg.ModelID)
 
@@ -179,8 +212,10 @@ func (r *Runtime) runTurn(ctx context.Context, prompt string) {
 		}
 	}
 
-	for _, re := range r.adapter.HandleTurnEnd(inputTokens, outputTokens, 0, numTurns, "end_turn") {
-		r.emit(re)
+	if !r.cfg.DisableTurnSummary {
+		for _, re := range r.adapter.HandleTurnEnd(inputTokens, outputTokens, 0, numTurns, "end_turn") {
+			r.emit(re)
+		}
 	}
 	r.cfg.Logger.Printf("[%s] agent turn complete (turns=%d, in=%d, out=%d)", r.cfg.ProviderName, numTurns, inputTokens, outputTokens)
 }

@@ -52,7 +52,7 @@ func NewAdapter(model AdapterModel, cwd string) *Adapter {
 // HandleEvent converts an ADK session.Event to zero or more RelayEvents.
 // Events with Partial=true are streaming deltas; events with Partial=false
 // are finalized messages.
-func (a *Adapter) HandleEvent(ev *session.Event) []RelayEvent {
+func (a *Adapter) HandleEvent(ev *session.Event) []map[string]any {
 	if ev == nil || ev.Content == nil {
 		return nil
 	}
@@ -255,7 +255,7 @@ func (a *Adapter) handleFinalEvent(ev *session.Event) []RelayEvent {
 }
 
 // HandleTurnEnd emits events that signal the end of an agent turn.
-func (a *Adapter) HandleTurnEnd(inputTokens, outputTokens int, costUSD float64, numTurns int, stopReason string) []RelayEvent {
+func (a *Adapter) HandleTurnEnd(inputTokens, outputTokens int, costUSD float64, numTurns int, stopReason string) []map[string]any {
 	var events []RelayEvent
 
 	// Session active with accumulated messages

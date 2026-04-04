@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"testing"
 
-	claudecli "github.com/Pizzaface/PizzaPi/experimental/adk-go/internal/providers/claudecli"
 	guardrails "github.com/Pizzaface/PizzaPi/experimental/adk-go/internal/guardrails"
+	claudecli "github.com/Pizzaface/PizzaPi/experimental/adk-go/internal/providers/claudecli"
 	"github.com/Pizzaface/PizzaPi/experimental/adk-go/internal/runner"
 )
 
@@ -27,7 +27,7 @@ func TestDeniedToolCallEmitsErrorEvent(t *testing.T) {
 	p := runner.NewTestClaudeCLIProvider(env, &stdinWrites)
 
 	ev := toolUseEvent("tool-001", "write", map[string]any{"path": "/tmp/foo.txt", "content": "hi"})
-	events := runner.RunBridge(p, []claudecli.ClaudeEvent{ev})
+	events := runner.RunBridge(p, env, &stdinWrites, []claudecli.ClaudeEvent{ev})
 
 	if len(events) != 1 {
 		t.Fatalf("expected 1 relay event, got %d: %v", len(events), events)
@@ -55,7 +55,7 @@ func TestDeniedToolCallWritesStdin(t *testing.T) {
 	p := runner.NewTestClaudeCLIProvider(env, &stdinWrites)
 
 	ev := toolUseEvent("tool-002", "edit", map[string]any{"path": "/tmp/bar.txt"})
-	runner.RunBridge(p, []claudecli.ClaudeEvent{ev})
+	runner.RunBridge(p, env, &stdinWrites, []claudecli.ClaudeEvent{ev})
 
 	if len(stdinWrites) != 1 {
 		t.Fatalf("expected 1 stdin write, got %d", len(stdinWrites))
@@ -83,7 +83,7 @@ func TestAllowedToolCallIsForwarded(t *testing.T) {
 	p := runner.NewTestClaudeCLIProvider(env, &stdinWrites)
 
 	ev := toolUseEvent("tool-003", "bash", map[string]any{"command": "echo hello"})
-	events := runner.RunBridge(p, []claudecli.ClaudeEvent{ev})
+	events := runner.RunBridge(p, env, &stdinWrites, []claudecli.ClaudeEvent{ev})
 
 	for _, re := range events {
 		if re["type"] == "tool_result_message" && re["isError"] == true {
@@ -116,7 +116,7 @@ func TestToolUseEventNotForwardedWhenDenied(t *testing.T) {
 	p := runner.NewTestClaudeCLIProvider(env, &stdinWrites)
 
 	ev := toolUseEvent("tool-004", "write_file", map[string]any{"path": "/tmp/x.txt"})
-	events := runner.RunBridge(p, []claudecli.ClaudeEvent{ev})
+	events := runner.RunBridge(p, env, &stdinWrites, []claudecli.ClaudeEvent{ev})
 
 	for _, re := range events {
 		if re["type"] == "message_update" {
