@@ -72,11 +72,7 @@ func RunBash(command string, opts BashOpts) (BashResult, error) {
 
 	select {
 	case <-ctx.Done():
-		// Kill the entire process group.
-		if cmd.Process != nil {
-			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-		}
-		<-done // drain
+		<-done // drain — context kill already sent SIGKILL to main pid
 	case <-done:
 		// Command finished normally.
 	}
@@ -84,6 +80,12 @@ func RunBash(command string, opts BashOpts) (BashResult, error) {
 	// When both channels are ready simultaneously Go may pick <-done, but the
 	// context is still expired (Go ≥ 1.20 CommandContext behaviour).
 	timedOut := ctx.Err() != nil
+	// Always kill the entire process group when timed out, regardless of which
+	// select branch fired. This prevents orphan grandchild processes that
+	// exec.CommandContext's single-pid kill doesn't reach.
+	if timedOut && cmd.Process != nil {
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	}
 
 	exitCode := 0
 	if cmd.ProcessState != nil {
