@@ -10,7 +10,7 @@ import (
 
 // TestModelDefaults verifies that a new App initialises with correct defaults.
 func TestModelDefaults(t *testing.T) {
-	app := New("http://localhost:7492", "test-key", "")
+	app := New(nil) // no session controller
 	s := app.state
 
 	if len(s.Sessions) != 0 {
@@ -25,9 +25,6 @@ func TestModelDefaults(t *testing.T) {
 	if s.ActivePanel != PanelMain {
 		t.Errorf("expected PanelMain as default, got %v", s.ActivePanel)
 	}
-	if s.RelayURL != "http://localhost:7492" {
-		t.Errorf("expected relay URL to be set")
-	}
 	if s.Components == nil {
 		t.Error("expected non-nil component registry")
 	}
@@ -35,7 +32,7 @@ func TestModelDefaults(t *testing.T) {
 
 // TestQuitKeyFromSidebar verifies that 'q' quits when sidebar is focused.
 func TestQuitKeyFromSidebar(t *testing.T) {
-	app := New("", "", "")
+	app := New(nil)
 	// Switch to sidebar first
 	next, _ := app.Update(tea.KeyMsg{Type: tea.KeyTab})
 	app = next.(App)
@@ -55,7 +52,7 @@ func TestQuitKeyFromSidebar(t *testing.T) {
 
 // TestQKeyInMainPanelDoesNotQuit verifies 'q' in main panel goes to input.
 func TestQKeyInMainPanelDoesNotQuit(t *testing.T) {
-	app := New("", "", "")
+	app := New(nil)
 	if app.state.ActivePanel != PanelMain {
 		t.Fatalf("expected PanelMain initially, got %v", app.state.ActivePanel)
 	}
@@ -71,7 +68,7 @@ func TestQKeyInMainPanelDoesNotQuit(t *testing.T) {
 
 // TestCtrlCQuit verifies ctrl+c quits from any panel.
 func TestCtrlCQuit(t *testing.T) {
-	app := New("", "", "")
+	app := New(nil)
 	_, cmd := app.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
 	if cmd == nil {
 		t.Fatal("expected a command, got nil")
@@ -84,7 +81,7 @@ func TestCtrlCQuit(t *testing.T) {
 
 // TestTabTogglesPanel verifies Tab switches between panels.
 func TestTabTogglesPanel(t *testing.T) {
-	app := New("", "", "")
+	app := New(nil)
 	if app.state.ActivePanel != PanelMain {
 		t.Fatalf("expected PanelMain initially")
 	}
@@ -104,7 +101,7 @@ func TestTabTogglesPanel(t *testing.T) {
 
 // TestEnterAppendsMessage verifies Enter appends input text.
 func TestEnterAppendsMessage(t *testing.T) {
-	app := New("", "", "")
+	app := New(nil)
 	app.state.Input.SetValue("hello world")
 
 	next, _ := app.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -126,7 +123,7 @@ func TestEnterAppendsMessage(t *testing.T) {
 
 // TestEnterEmptyNoMessage verifies blank input doesn't append.
 func TestEnterEmptyNoMessage(t *testing.T) {
-	app := New("", "", "")
+	app := New(nil)
 	app.state.Input.SetValue("   ")
 
 	next, _ := app.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -139,7 +136,7 @@ func TestEnterEmptyNoMessage(t *testing.T) {
 
 // TestViewRendersWithoutPanic verifies View() works.
 func TestViewRendersWithoutPanic(t *testing.T) {
-	app := New("", "", "")
+	app := New(nil)
 	next, _ := app.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	app = next.(App)
 
@@ -151,7 +148,7 @@ func TestViewRendersWithoutPanic(t *testing.T) {
 
 // TestScrollUp verifies Up increments scroll offset.
 func TestScrollUp(t *testing.T) {
-	app := New("", "", "")
+	app := New(nil)
 	app.state.Messages = []DisplayMessage{
 		{Role: "user", Text: "a"},
 		{Role: "user", Text: "b"},
@@ -167,7 +164,7 @@ func TestScrollUp(t *testing.T) {
 
 // TestScrollDownClamp verifies Down doesn't go below 0.
 func TestScrollDownClamp(t *testing.T) {
-	app := New("", "", "")
+	app := New(nil)
 	next, _ := app.Update(tea.KeyMsg{Type: tea.KeyDown})
 	app = next.(App)
 	if app.state.ScrollOffset != 0 {
@@ -177,7 +174,7 @@ func TestScrollDownClamp(t *testing.T) {
 
 // TestRelayConnectedMsg sets connected state.
 func TestRelayConnectedMsg(t *testing.T) {
-	app := New("", "", "")
+	app := New(nil)
 	next, _ := app.Update(RelayConnectedMsg{})
 	app = next.(App)
 	if !app.state.Connected {
@@ -187,7 +184,7 @@ func TestRelayConnectedMsg(t *testing.T) {
 
 // TestRelayDisconnectedMsg clears state.
 func TestRelayDisconnectedMsg(t *testing.T) {
-	app := New("", "", "")
+	app := New(nil)
 	app.state.Connected = true
 	app.state.Active = true
 
@@ -203,7 +200,7 @@ func TestRelayDisconnectedMsg(t *testing.T) {
 
 // TestHeartbeatMsg updates activity state.
 func TestHeartbeatMsg(t *testing.T) {
-	app := New("", "", "")
+	app := New(nil)
 	hb := HeartbeatMsg{
 		Active:       true,
 		IsCompacting: true,
@@ -233,7 +230,7 @@ func TestHeartbeatMsg(t *testing.T) {
 
 // TestMessageUpdateMsg adds/updates messages.
 func TestMessageUpdateMsg(t *testing.T) {
-	app := New("", "", "")
+	app := New(nil)
 
 	// First message
 	content, _ := json.Marshal([]map[string]any{
@@ -283,7 +280,7 @@ func TestMessageUpdateMsg(t *testing.T) {
 
 // TestToolResultMsg appends tool results.
 func TestToolResultMsg(t *testing.T) {
-	app := New("", "", "")
+	app := New(nil)
 	next, _ := app.Update(ToolResultMsg{
 		ToolName: "bash",
 		Content:  "exit code 0",
@@ -304,7 +301,7 @@ func TestToolResultMsg(t *testing.T) {
 
 // TestSessionMetadataMsg updates metadata.
 func TestSessionMetadataMsg(t *testing.T) {
-	app := New("", "", "")
+	app := New(nil)
 	sm := SessionMetadataMsg{
 		CostUSD:  0.0123,
 		NumTurns: 5,
@@ -362,7 +359,7 @@ func TestComponentRegistry(t *testing.T) {
 
 // TestWithComponent verifies fluent component registration.
 func TestWithComponent(t *testing.T) {
-	app := New("", "", "").
+	app := New(nil).
 		WithComponent(&mockComponent{name: "panel-a"}).
 		WithComponent(&mockComponent{name: "panel-b"})
 

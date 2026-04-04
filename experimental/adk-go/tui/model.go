@@ -1,6 +1,6 @@
 package tui
 
-import "github.com/charmbracelet/bubbles/textinput"
+import "github.com/charmbracelet/bubbles/textarea"
 
 // Panel represents which panel is currently focused.
 type Panel int
@@ -13,7 +13,7 @@ const (
 // DisplayMessage is a rendered message shown in the main panel.
 type DisplayMessage struct {
 	ID        string
-	Role      string // "user", "assistant", "tool_result"
+	Role      string // "user", "assistant", "tool_result", "system"
 	Text      string // rendered text content
 	ToolName  string // for tool results
 	IsError   bool   // for tool results
@@ -33,7 +33,7 @@ type AppState struct {
 	ScrollOffset int
 
 	// Input field for composing messages
-	Input textinput.Model
+	Input textarea.Model
 
 	// Which panel is currently focused
 	ActivePanel Panel
@@ -42,13 +42,17 @@ type AppState struct {
 	Width  int
 	Height int
 
-	// Relay connection state
+	// Session controller (local or relay)
+	Session SessionController
+
+	// Connection/session state
 	Connected    bool
 	Active       bool   // session is actively processing
 	IsCompacting bool
 	SessionName  string
 	ModelID      string
 	Cwd          string
+	Mode         string // "local" or "relay"
 
 	// Metadata from last result
 	InputTokens  int
@@ -59,27 +63,34 @@ type AppState struct {
 	// Extension components
 	Components *ComponentRegistry
 
-	// Relay connection config (set at init, used by relay commands)
-	RelayURL  string
-	APIKey    string
-	SessionID string // specific session to join (empty = watch all)
+	// Prompt history
+	PromptHistory []string
+	HistoryIndex  int // -1 = not browsing history
 }
 
 // newAppState creates an AppState with sensible defaults.
-func newAppState(relayURL, apiKey, sessionID string) AppState {
-	ti := textinput.New()
-	ti.Placeholder = "Type a message…"
-	ti.Focus()
-	ti.CharLimit = 4096
+func newAppState(session SessionController) AppState {
+	ta := textarea.New()
+	ta.Placeholder = "Type a message… (Enter to send, Shift+Enter for newline)"
+	ta.Focus()
+	ta.CharLimit = 8192
+	ta.SetHeight(3)
+	ta.ShowLineNumbers = false
+
+	mode := ""
+	if session != nil {
+		mode = session.Mode()
+	}
 
 	return AppState{
-		Sessions:    []SessionInfo{},
-		Messages:    []DisplayMessage{},
-		Input:       ti,
-		ActivePanel: PanelMain,
-		Components:  NewComponentRegistry(),
-		RelayURL:    relayURL,
-		APIKey:      apiKey,
-		SessionID:   sessionID,
+		Sessions:      []SessionInfo{},
+		Messages:      []DisplayMessage{},
+		Input:         ta,
+		ActivePanel:   PanelMain,
+		Components:    NewComponentRegistry(),
+		Session:       session,
+		Mode:          mode,
+		HistoryIndex:  -1,
+		PromptHistory: []string{},
 	}
 }

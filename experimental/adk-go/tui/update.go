@@ -39,6 +39,7 @@ func update(a App, msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, nil
 
 		case "enter":
+			// Enter sends the message (shift+enter handled by textarea for newlines)
 			if s.ActivePanel == PanelMain {
 				text := strings.TrimSpace(s.Input.Value())
 				if text != "" {
@@ -46,12 +47,18 @@ func update(a App, msg tea.Msg) (tea.Model, tea.Cmd) {
 						Role: "user",
 						Text: text,
 					})
-					s.Input.SetValue("")
+					s.Input.Reset()
 					s.ScrollOffset = 0
 
-					// Send via relay if connected
-					if s.Connected {
-						cmds = append(cmds, sendRelayInput(text))
+					// Save to prompt history
+					s.PromptHistory = append(s.PromptHistory, text)
+					s.HistoryIndex = -1
+
+					// Send via session controller
+					if s.Session != nil {
+						if cmd := s.Session.SendMessage(text); cmd != nil {
+							cmds = append(cmds, cmd)
+						}
 					}
 				}
 				a.state = s
@@ -78,11 +85,15 @@ func update(a App, msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, nil
 		}
 
-	// --- Relay connection events ---
+	// --- Connection events ---
 	case RelayConnectedMsg:
 		s.Connected = true
-		// Start listening for relay events
-		cmds = append(cmds, listenRelay())
+		// Start listening for events (relay or local)
+		if ls, ok := s.Session.(*LocalSession); ok {
+			cmds = append(cmds, listenLocal(ls))
+		} else {
+			cmds = append(cmds, listenRelay())
+		}
 
 	case RelayDisconnectedMsg:
 		s.Connected = false
@@ -178,11 +189,15 @@ func update(a App, msg tea.Msg) (tea.Model, tea.Cmd) {
 		s.Sessions = msg.Sessions
 	}
 
-	// After handling any relay event, keep listening for the next one.
+	// After handling any session event, keep listening for the next one.
 	switch msg.(type) {
 	case HeartbeatMsg, SessionActiveMsg, MessageUpdateMsg, ToolResultMsg,
 		SessionMetadataMsg, SessionListMsg, RelayEventMsg:
-		cmds = append(cmds, listenRelay())
+		if ls, ok := s.Session.(*LocalSession); ok {
+			cmds = append(cmds, listenLocal(ls))
+		} else {
+			cmds = append(cmds, listenRelay())
+		}
 	}
 
 	// Forward key messages to the text input when main panel is focused

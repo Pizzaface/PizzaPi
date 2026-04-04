@@ -19,9 +19,19 @@ var (
 	colorActive    = lipgloss.Color("#22D3EE") // cyan
 )
 
+// Global renderer — initialized lazily on first view with terminal width.
+var renderer *Renderer
+
 func view(s AppState) string {
 	if s.Width == 0 || s.Height == 0 {
 		return "Initializing…"
+	}
+
+	// Initialize or resize renderer
+	if renderer == nil {
+		renderer = NewRenderer(s.Width)
+	} else {
+		renderer.SetWidth(s.Width)
 	}
 
 	sidebarWidth := 28
@@ -152,30 +162,9 @@ func renderMain(s AppState, width, height int) string {
 	// Render message lines
 	var msgLines []string
 	for _, msg := range s.Messages {
-		var rendered string
-		switch msg.Role {
-		case "user":
-			rendered = lipgloss.NewStyle().Foreground(colorUser).Bold(true).Render("You: ") +
-				lipgloss.NewStyle().Foreground(colorText).Render(msg.Text)
-		case "assistant":
-			rendered = lipgloss.NewStyle().Foreground(colorSecondary).Bold(true).Render("AI: ") +
-				lipgloss.NewStyle().Foreground(colorText).Render(msg.Text)
-		case "tool_result":
-			icon := "⚙"
-			nameStyle := lipgloss.NewStyle().Foreground(colorTool)
-			if msg.IsError {
-				icon = "✗"
-				nameStyle = lipgloss.NewStyle().Foreground(colorError)
-			}
-			rendered = nameStyle.Render(fmt.Sprintf(" %s %s: ", icon, msg.ToolName)) +
-				lipgloss.NewStyle().Foreground(colorDim).Render(msg.Text)
-		case "system":
-			rendered = lipgloss.NewStyle().Foreground(colorDim).Italic(true).Render(msg.Text)
-		default:
-			rendered = msg.Text
-		}
+		rendered := renderer.RenderMessage(msg, width)
 
-		// Wrap/truncate to width
+		// Split into lines and truncate to width
 		for _, line := range strings.Split(rendered, "\n") {
 			lineRunes := []rune(line)
 			if len(lineRunes) > width-2 {
@@ -205,11 +194,7 @@ func renderMain(s AppState, width, height int) string {
 	msgArea := strings.Join(visible, "\n")
 
 	// Input area
-	inputPrefix := " > "
-	if !focused {
-		inputPrefix = "   "
-	}
-	inputLine := inputPrefix + s.Input.View()
+	inputLine := s.Input.View()
 
 	borderColor := colorDim
 	if focused {
@@ -228,7 +213,11 @@ func renderMain(s AppState, width, height int) string {
 }
 
 func renderStatusBar(s AppState, width int) string {
-	left := " tab: panel  ↑↓: scroll  enter: send  ctrl+c: quit"
+	modeLabel := ""
+	if s.Mode != "" {
+		modeLabel = "[" + s.Mode + "] "
+	}
+	left := " " + modeLabel + "tab: panel  ↑↓: scroll  enter: send  ctrl+c: quit"
 	right := ""
 
 	if s.NumTurns > 0 {
