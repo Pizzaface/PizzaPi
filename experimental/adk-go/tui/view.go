@@ -7,19 +7,28 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// Color constants
+// Color palette — muted, low-noise
 var (
-	colorPrimary   = lipgloss.Color("#7C3AED") // purple
-	colorSecondary = lipgloss.Color("#10B981") // green
-	colorDim       = lipgloss.Color("#6B7280") // gray
-	colorText      = lipgloss.Color("#E5E7EB") // light gray
-	colorError     = lipgloss.Color("#EF4444") // red
-	colorTool      = lipgloss.Color("#3B82F6") // blue
-	colorUser      = lipgloss.Color("#F59E0B") // amber
-	colorActive    = lipgloss.Color("#22D3EE") // cyan
+	colorPrimary   = lipgloss.Color("#7C3AED") // purple — accent
+	colorSecondary = lipgloss.Color("#10B981") // green — success/connected
+	colorDim       = lipgloss.Color("#6B7280") // gray — borders, muted text
+	colorText      = lipgloss.Color("#E5E7EB") // light gray — primary text
+	colorError     = lipgloss.Color("#EF4444") // red — errors
+	colorTool      = lipgloss.Color("#3B82F6") // blue — tool names
+	colorUser      = lipgloss.Color("#F59E0B") // amber — user prompt prefix
+	colorActive    = lipgloss.Color("#22D3EE") // cyan — active indicator
+	colorDiffAdd   = lipgloss.Color("#22C55E") // green — diff additions
+	colorDiffDel   = lipgloss.Color("#EF4444") // red — diff deletions
+	colorThinking  = lipgloss.Color("#A78BFA") // light purple — thinking
 )
 
-// Global renderer — initialized lazily on first view with terminal width.
+// Styles
+var (
+	dimStyle  = lipgloss.NewStyle().Foreground(colorDim)
+	boldStyle = lipgloss.NewStyle().Bold(true)
+)
+
+// Global renderer — initialized lazily.
 var renderer *Renderer
 
 func view(s AppState) string {
@@ -34,32 +43,37 @@ func view(s AppState) string {
 		renderer.SetWidth(s.Width)
 	}
 
-	sidebarWidth := 28
-	if s.Width < 80 {
-		sidebarWidth = 20
-	}
-	mainWidth := s.Width - sidebarWidth
-
-	// Reserve lines: 1 header + 1 status bar
-	contentHeight := s.Height - 2
-	if contentHeight < 3 {
-		contentHeight = 3
+	// Layout: header(1) + messages(flex) + separator(1) + input(1) + footer(1)
+	// Total chrome = 4 lines
+	chromeLines := 4
+	msgAreaHeight := s.Height - chromeLines
+	if msgAreaHeight < 1 {
+		msgAreaHeight = 1
 	}
 
 	header := renderHeader(s)
-	sidebar := renderSidebar(s, sidebarWidth, contentHeight)
-	main := renderMain(s, mainWidth, contentHeight)
-	statusBar := renderStatusBar(s, s.Width)
+	msgArea := renderMessages(s, s.Width, msgAreaHeight)
+	separator := dimStyle.Render(strings.Repeat("─", s.Width))
+	inputLine := renderInput(s)
+	footer := renderFooter(s, s.Width)
 
-	panels := lipgloss.JoinHorizontal(lipgloss.Top, sidebar, main)
-	return lipgloss.JoinVertical(lipgloss.Left, header, panels, statusBar)
+	return lipgloss.JoinVertical(lipgloss.Left,
+		header,
+		msgArea,
+		separator,
+		inputLine,
+		footer,
+	)
 }
+
+// --- Header ---
 
 func renderHeader(s AppState) string {
 	// Connection indicator
 	connIcon := "●"
 	connStyle := lipgloss.NewStyle().Foreground(colorError)
 	label := "disconnected"
+
 	if s.Connected {
 		if s.Active {
 			connStyle = lipgloss.NewStyle().Foreground(colorActive)
@@ -67,170 +81,114 @@ func renderHeader(s AppState) string {
 			if s.IsCompacting {
 				label = "compacting"
 			}
-			// Show active tools in the header
 			if len(s.ActiveTools) > 0 {
-				var toolNames []string
+				var names []string
 				for _, name := range s.ActiveTools {
-					toolNames = append(toolNames, name)
+					names = append(names, name)
 				}
-				label += " ⚡ " + strings.Join(toolNames, ", ")
+				label += " ⚡ " + strings.Join(names, ", ")
 			}
 		} else {
 			connStyle = lipgloss.NewStyle().Foreground(colorSecondary)
-			label = "connected"
+			label = "idle"
 		}
 	}
 
 	left := fmt.Sprintf(" %s %s", connStyle.Render(connIcon), label)
 
-	right := ""
-	if s.ModelID != "" {
-		right = lipgloss.NewStyle().Foreground(colorDim).Render(s.ModelID)
-	}
+	// Right side: session name + model
+	var rightParts []string
 	if s.SessionName != "" {
-		right = lipgloss.NewStyle().Foreground(colorPrimary).Bold(true).Render(s.SessionName) + "  " + right
+		rightParts = append(rightParts,
+			lipgloss.NewStyle().Foreground(colorPrimary).Bold(true).Render(s.SessionName))
 	}
+	if s.ModelID != "" {
+		rightParts = append(rightParts, dimStyle.Render(s.ModelID))
+	}
+	right := strings.Join(rightParts, "  ")
 
-	// Pad to fill width
-	gap := s.Width - lipgloss.Width(left) - lipgloss.Width(right) - 2
+	gap := s.Width - lipgloss.Width(left) - lipgloss.Width(right) - 1
 	if gap < 1 {
 		gap = 1
 	}
 
-	return left + strings.Repeat(" ", gap) + right + " "
+	return left + strings.Repeat(" ", gap) + right
 }
 
-func renderSidebar(s AppState, width, height int) string {
-	focused := s.ActivePanel == PanelSidebar
+// --- Messages ---
 
-	title := " Sessions"
+func renderMessages(s AppState, width, height int) string {
 	var lines []string
-	lines = append(lines, lipgloss.NewStyle().Bold(true).Foreground(colorPrimary).Render(title))
 
-	if len(s.Sessions) == 0 {
-		lines = append(lines, lipgloss.NewStyle().Foreground(colorDim).Render(" No sessions"))
-	} else {
-		for _, sess := range s.Sessions {
-			name := sess.Name
-			if name == "" {
-				name = ShortID(sess.ID)
-			}
-			nameRunes := []rune(name)
-			if len(nameRunes) > width-4 {
-				nameRunes = nameRunes[:width-4]
-				name = string(nameRunes)
-			}
-
-			icon := " "
-			if sess.Active {
-				icon = "●"
-			}
-
-			style := lipgloss.NewStyle().Width(width)
-			if sess.ID == s.ActiveSessionID {
-				style = style.Background(lipgloss.Color("#374151")).Bold(true)
-			}
-			lines = append(lines, style.Render(fmt.Sprintf(" %s %s", icon, name)))
-		}
-	}
-
-	// Pad to height
-	for len(lines) < height {
-		lines = append(lines, "")
-	}
-	if len(lines) > height {
-		lines = lines[:height]
-	}
-
-	content := strings.Join(lines, "\n")
-
-	borderColor := colorDim
-	if focused {
-		borderColor = colorPrimary
-	}
-
-	return lipgloss.NewStyle().
-		Width(width).
-		Height(height).
-		BorderStyle(lipgloss.RoundedBorder()).
-		BorderRight(true).
-		BorderForeground(borderColor).
-		Render(content)
-}
-
-func renderMain(s AppState, width, height int) string {
-	focused := s.ActivePanel == PanelMain
-
-	// Reserve 3 lines for input area
-	msgAreaHeight := height - 3
-	if msgAreaHeight < 1 {
-		msgAreaHeight = 1
-	}
-
-	// Render message lines
-	var msgLines []string
 	for _, msg := range s.Messages {
-		rendered := renderer.RenderMessage(msg, width)
+		rendered := renderer.RenderMessage(msg, width, s)
 
-		// Split into lines and truncate to width
 		for _, line := range strings.Split(rendered, "\n") {
+			// Truncate to width
 			lineRunes := []rune(line)
-			if len(lineRunes) > width-2 {
-				lineRunes = lineRunes[:width-2]
+			if len(lineRunes) > width {
+				lineRunes = lineRunes[:width]
 				line = string(lineRunes)
 			}
-			msgLines = append(msgLines, line)
+			lines = append(lines, line)
 		}
 	}
 
 	// Apply scroll offset (from bottom)
-	end := len(msgLines) - s.ScrollOffset
+	end := len(lines) - s.ScrollOffset
 	if end < 0 {
 		end = 0
 	}
-	start := end - msgAreaHeight
+	start := end - height
 	if start < 0 {
 		start = 0
 	}
-	visible := msgLines[start:end]
+	visible := lines[start:end]
 
-	// Pad to fill area
-	for len(visible) < msgAreaHeight {
+	// Pad to fill area (push content to bottom)
+	for len(visible) < height {
 		visible = append([]string{""}, visible...)
 	}
 
-	msgArea := strings.Join(visible, "\n")
-
-	// Input area
-	inputLine := s.Input.View()
-
-	borderColor := colorDim
-	if focused {
-		borderColor = colorPrimary
-	}
-
-	content := msgArea + "\n" + strings.Repeat("─", width-2) + "\n" + inputLine
-
-	return lipgloss.NewStyle().
-		Width(width).
-		Height(height).
-		BorderStyle(lipgloss.RoundedBorder()).
-		BorderLeft(true).
-		BorderForeground(borderColor).
-		Render(content)
+	return strings.Join(visible, "\n")
 }
 
-func renderStatusBar(s AppState, width int) string {
-	modeLabel := ""
-	if s.Mode != "" {
-		modeLabel = "[" + s.Mode + "] "
+// --- Input ---
+
+func renderInput(s AppState) string {
+	prefix := lipgloss.NewStyle().Foreground(colorUser).Bold(true).Render(" ❯ ")
+	// Use the textarea's view but strip its own chrome
+	return prefix + s.Input.View()
+}
+
+// --- Footer ---
+
+func renderFooter(s AppState, width int) string {
+	// Left: cwd (truncated with ~)
+	cwd := s.Cwd
+	if cwd == "" {
+		cwd = "~"
 	}
-	left := " " + modeLabel + "tab: panel  ↑↓: scroll  enter: send  ctrl+c: quit"
-	right := ""
+
+	// Right: token stats + cost + model
+	var statsParts []string
 
 	if s.NumTurns > 0 {
-		right = fmt.Sprintf("turns:%d  in:%d out:%d  $%.4f ",
-			s.NumTurns, s.InputTokens, s.OutputTokens, s.CostUSD)
+		statsParts = append(statsParts, fmt.Sprintf("in:%s", formatTokens(s.InputTokens)))
+		statsParts = append(statsParts, fmt.Sprintf("out:%s", formatTokens(s.OutputTokens)))
+		if s.CostUSD > 0 {
+			statsParts = append(statsParts, fmt.Sprintf("$%.2f", s.CostUSD))
+		}
+	}
+
+	if s.Mode != "" {
+		statsParts = append(statsParts, "["+s.Mode+"]")
+	}
+
+	left := " " + cwd
+	right := strings.Join(statsParts, "  ")
+	if right != "" {
+		right += " "
 	}
 
 	gap := width - lipgloss.Width(left) - lipgloss.Width(right)
@@ -241,22 +199,26 @@ func renderStatusBar(s AppState, width int) string {
 	bar := left + strings.Repeat(" ", gap) + right
 
 	// Truncate
-	runes := []rune(bar)
-	if len(runes) > width {
-		runes = runes[:width]
-		bar = string(runes)
+	barRunes := []rune(bar)
+	if len(barRunes) > width {
+		barRunes = barRunes[:width]
+		bar = string(barRunes)
 	}
 
-	return lipgloss.NewStyle().
-		Width(width).
-		Foreground(colorDim).
-		Render(bar)
+	return dimStyle.Render(bar)
 }
 
-// ShortID returns the first 8 characters of s for display.
-func ShortID(s string) string {
-	if len(s) > 8 {
-		return s[:8]
+// --- Helpers ---
+
+func formatTokens(count int) string {
+	if count < 1000 {
+		return fmt.Sprintf("%d", count)
 	}
-	return s
+	if count < 10000 {
+		return fmt.Sprintf("%.1fk", float64(count)/1000)
+	}
+	if count < 1000000 {
+		return fmt.Sprintf("%dk", count/1000)
+	}
+	return fmt.Sprintf("%.1fM", float64(count)/1000000)
 }

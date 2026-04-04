@@ -4,9 +4,22 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
+
+// tickMsg is sent by the animation ticker.
+type tickMsg time.Time
+
+// tickInterval is how often the animation ticker fires.
+const tickInterval = 200 * time.Millisecond
+
+func doTick() tea.Cmd {
+	return tea.Tick(tickInterval, func(t time.Time) tea.Msg {
+		return tickMsg(t)
+	})
+}
 
 func update(a App, msg tea.Msg) (tea.Model, tea.Cmd) {
 	s := a.state
@@ -16,70 +29,61 @@ func update(a App, msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		s.Width = msg.Width
 		s.Height = msg.Height
+		// Resize input to match
+		s.Input.SetWidth(msg.Width - 4) // leave room for prompt prefix
+
+	case tickMsg:
+		s.TickCount++
+		// Keep ticking while streaming
+		if s.IsStreaming || s.Active {
+			cmds = append(cmds, doTick())
+		}
 
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "ctrl+c":
 			return a, tea.Quit
 
-		case "q":
-			// Only quit from the sidebar; when the main input is focused 'q' is
-			// a regular character.
-			if s.ActivePanel == PanelSidebar {
-				return a, tea.Quit
-			}
-
-		case "tab":
-			if s.ActivePanel == PanelMain {
-				s.ActivePanel = PanelSidebar
-			} else {
-				s.ActivePanel = PanelMain
-			}
-			a.state = s
-			return a, nil
+		case "esc":
+			s.Input.Reset()
 
 		case "enter":
-			// Enter sends the message (shift+enter handled by textarea for newlines)
-			if s.ActivePanel == PanelMain {
-				text := strings.TrimSpace(s.Input.Value())
-				if text != "" {
-					s.Messages = append(s.Messages, DisplayMessage{
-						Role: "user",
-						Text: text,
-					})
-					s.Input.Reset()
-					s.ScrollOffset = 0
+			text := strings.TrimSpace(s.Input.Value())
+			if text != "" {
+				s.Messages = append(s.Messages, DisplayMessage{
+					Role: "user",
+					Text: text,
+				})
+				s.Input.Reset()
+				s.ScrollOffset = 0
 
-					// Save to prompt history
-					s.PromptHistory = append(s.PromptHistory, text)
-					s.HistoryIndex = -1
+				// Save to prompt history
+				s.PromptHistory = append(s.PromptHistory, text)
+				s.HistoryIndex = -1
 
-					// Send via session controller
-					if s.Session != nil {
-						if cmd := s.Session.SendMessage(text); cmd != nil {
-							cmds = append(cmds, cmd)
-						}
+				// Send via session controller
+				if s.Session != nil {
+					if cmd := s.Session.SendMessage(text); cmd != nil {
+						cmds = append(cmds, cmd)
 					}
 				}
-				a.state = s
-				return a, tea.Batch(cmds...)
 			}
+			a.state = s
+			return a, tea.Batch(cmds...)
 
-		case "up":
-			s.ScrollOffset++
-			maxScroll := len(s.Messages) - 1
-			if maxScroll < 0 {
-				maxScroll = 0
-			}
+		case "ctrl+u", "pgup":
+			s.ScrollOffset += 10
+			maxScroll := len(s.Messages) * 3 // rough estimate
 			if s.ScrollOffset > maxScroll {
 				s.ScrollOffset = maxScroll
 			}
 			a.state = s
 			return a, nil
 
-		case "down":
-			if s.ScrollOffset > 0 {
-				s.ScrollOffset--
+		case "ctrl+d", "pgdown":
+			s.ScrollOffset -= 10
+			if s.ScrollOffset < 0 {
+				s.ScrollOffset = 0
 			}
 			a.state = s
 			return a, nil
@@ -88,25 +92,28 @@ func update(a App, msg tea.Msg) (tea.Model, tea.Cmd) {
 	// --- Connection events ---
 	case RelayConnectedMsg:
 		s.Connected = true
-		// Start listening for events (relay or local)
 		if ls, ok := s.Session.(*LocalSession); ok {
 			cmds = append(cmds, listenLocal(ls))
 		} else {
 			cmds = append(cmds, listenRelay())
 		}
+		// Start animation ticker
+		cmds = append(cmds, doTick())
 
 	case RelayDisconnectedMsg:
 		s.Connected = false
 		s.Active = false
+		s.IsStreaming = false
 
 	case RelayErrorMsg:
 		s.Messages = append(s.Messages, DisplayMessage{
 			Role: "system",
-			Text: fmt.Sprintf("⚠ Relay error: %v", msg.Err),
+			Text: fmt.Sprintf("⚠ %v", msg.Err),
 		})
 
-	// --- Relay session events ---
+	// --- Session events ---
 	case HeartbeatMsg:
+		wasActive := s.Active
 		s.Active = msg.Active
 		s.IsCompacting = msg.IsCompacting
 		if msg.SessionName != "" {
@@ -118,9 +125,13 @@ func update(a App, msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Model != nil && msg.Model.ID != "" {
 			s.ModelID = msg.Model.ID
 		}
+		// Detect transition to idle
+		if wasActive && !msg.Active {
+			s.IsStreaming = false
+			s.StreamingMessageID = ""
+		}
 
 	case SessionActiveMsg:
-		// Full state snapshot — rebuild message list from scratch
 		s.Messages = parseMessages(msg.State.Messages)
 		if msg.State.Model != nil && msg.State.Model.ID != "" {
 			s.ModelID = msg.State.Model.ID
@@ -131,10 +142,9 @@ func update(a App, msg tea.Msg) (tea.Model, tea.Cmd) {
 		s.ScrollOffset = 0
 
 	case StreamingDeltaMsg:
-		// Streaming delta from assistantMessageEvent — upsert by message ID.
-		// Content carries the full accumulated partial message.
 		text := extractTextFromContent(msg.Content)
 		s.StreamingMessageID = msg.MessageID
+		s.IsStreaming = true
 		found := false
 		for i := range s.Messages {
 			if s.Messages[i].ID == msg.MessageID {
@@ -151,13 +161,16 @@ func update(a App, msg tea.Msg) (tea.Model, tea.Cmd) {
 				Text: text,
 			})
 		}
+		// Start thinking timer on first thinking delta
+		if msg.DeltaType == "thinking_delta" && s.ThinkingStart.IsZero() {
+			s.ThinkingStart = time.Now()
+		}
 
 	case MessageStartMsg:
-		// Assistant is starting a new message — create a placeholder so the
-		// user sees the message bubble appear immediately.
 		s.StreamingMessageID = msg.MessageID
+		s.IsStreaming = true
+		s.ThinkingStart = time.Time{} // reset thinking timer
 		if msg.MessageID != "" {
-			// Only add if we don't already have this message
 			found := false
 			for _, m := range s.Messages {
 				if m.ID == msg.MessageID {
@@ -169,15 +182,16 @@ func update(a App, msg tea.Msg) (tea.Model, tea.Cmd) {
 				s.Messages = append(s.Messages, DisplayMessage{
 					ID:   msg.MessageID,
 					Role: msg.Role,
-					Text: "▍", // typing cursor placeholder
+					Text: "", // empty — cursor animation will show
 				})
 			}
 		}
 
 	case MessageUpdateMsg:
-		// Final message update (non-streaming) — upsert by message ID.
 		text := extractTextFromContent(msg.Content)
-		s.StreamingMessageID = "" // streaming done
+		s.StreamingMessageID = ""
+		s.IsStreaming = false
+		s.ThinkingStart = time.Time{}
 		found := false
 		for i := range s.Messages {
 			if s.Messages[i].ID == msg.MessageID {
@@ -213,10 +227,6 @@ func update(a App, msg tea.Msg) (tea.Model, tea.Cmd) {
 				content = string(b)
 			}
 		}
-		// Truncate long tool results for display
-		if len(content) > 500 {
-			content = content[:497] + "..."
-		}
 
 		s.Messages = append(s.Messages, DisplayMessage{
 			Role:      "tool_result",
@@ -236,15 +246,12 @@ func update(a App, msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		s.CostUSD = msg.CostUSD
 		s.NumTurns = msg.NumTurns
-
-	case SessionListMsg:
-		s.Sessions = msg.Sessions
 	}
 
-	// After handling any session event, keep listening for the next one.
+	// After handling session events, keep listening for the next one.
 	switch msg.(type) {
 	case HeartbeatMsg, SessionActiveMsg, MessageUpdateMsg, ToolResultMsg,
-		SessionMetadataMsg, SessionListMsg, RelayEventMsg,
+		SessionMetadataMsg, RelayEventMsg,
 		StreamingDeltaMsg, MessageStartMsg, ToolExecutionStartMsg, ToolExecutionEndMsg:
 		if ls, ok := s.Session.(*LocalSession); ok {
 			cmds = append(cmds, listenLocal(ls))
@@ -253,21 +260,10 @@ func update(a App, msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	// Forward key messages to the text input when main panel is focused
-	if s.ActivePanel == PanelMain {
-		if _, ok := msg.(tea.KeyMsg); ok {
-			var cmd tea.Cmd
-			s.Input, cmd = s.Input.Update(msg)
-			if cmd != nil {
-				cmds = append(cmds, cmd)
-			}
-		}
-	}
-
-	// Forward to extension components
-	for i, c := range s.Components.All() {
-		updated, cmd := c.Update(msg)
-		s.Components.components[i] = updated
+	// Forward key messages to the text input
+	if _, ok := msg.(tea.KeyMsg); ok {
+		var cmd tea.Cmd
+		s.Input, cmd = s.Input.Update(msg)
 		if cmd != nil {
 			cmds = append(cmds, cmd)
 		}
@@ -277,18 +273,17 @@ func update(a App, msg tea.Msg) (tea.Model, tea.Cmd) {
 	return a, tea.Batch(cmds...)
 }
 
-// parseMessages converts raw JSON messages from a session_active snapshot
-// into display messages.
+// parseMessages converts raw JSON messages from a session_active snapshot.
 func parseMessages(raw []json.RawMessage) []DisplayMessage {
 	var msgs []DisplayMessage
 	for _, r := range raw {
 		var m struct {
-			Role      string            `json:"role"`
-			Content   json.RawMessage   `json:"content"`
-			MessageID string            `json:"messageId"`
-			ToolName  string            `json:"toolName"`
-			IsError   bool              `json:"isError"`
-			Timestamp int64             `json:"timestamp"`
+			Role      string          `json:"role"`
+			Content   json.RawMessage `json:"content"`
+			MessageID string          `json:"messageId"`
+			ToolName  string          `json:"toolName"`
+			IsError   bool            `json:"isError"`
+			Timestamp int64           `json:"timestamp"`
 		}
 		if err := json.Unmarshal(r, &m); err != nil {
 			continue
@@ -308,12 +303,10 @@ func parseMessages(raw []json.RawMessage) []DisplayMessage {
 				dm.Text = dm.Text[:497] + "..."
 			}
 		} else {
-			// Try parsing content as array of blocks
 			var blocks []json.RawMessage
 			if err := json.Unmarshal(m.Content, &blocks); err == nil {
 				dm.Text = extractTextFromContent(blocks)
 			} else {
-				// Content might be a plain string
 				var text string
 				if err := json.Unmarshal(m.Content, &text); err == nil {
 					dm.Text = text

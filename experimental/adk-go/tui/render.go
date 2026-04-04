@@ -4,17 +4,17 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
 )
 
 // Renderer handles markdown rendering for the TUI message display.
-// It caches rendered output to avoid re-rendering unchanged content.
 type Renderer struct {
 	mu         sync.Mutex
 	glamour    *glamour.TermRenderer
-	cache      map[string]string // text → rendered output
+	cache      map[string]string
 	width      int
 	maxEntries int
 }
@@ -26,7 +26,7 @@ func NewRenderer(width int) *Renderer {
 	}
 	r, _ := glamour.NewTermRenderer(
 		glamour.WithStandardStyle("dark"),
-		glamour.WithWordWrap(width-4), // leave margin for role prefix
+		glamour.WithWordWrap(width-4),
 	)
 	return &Renderer{
 		glamour:    r,
@@ -58,7 +58,6 @@ func (r *Renderer) SetWidth(width int) {
 }
 
 // RenderMarkdown renders markdown text to styled terminal output.
-// Results are cached by input text.
 func (r *Renderer) RenderMarkdown(text string) string {
 	if text == "" {
 		return ""
@@ -73,16 +72,11 @@ func (r *Renderer) RenderMarkdown(text string) string {
 
 	rendered, err := r.glamour.Render(text)
 	if err != nil {
-		// Fallback to plain text
 		rendered = text
 	}
-
-	// Trim trailing whitespace/newlines glamour adds
 	rendered = strings.TrimRight(rendered, "\n ")
 
-	// Evict oldest entries if cache is full
 	if len(r.cache) >= r.maxEntries {
-		// Simple eviction: clear half the cache
 		count := 0
 		for k := range r.cache {
 			delete(r.cache, k)
@@ -97,70 +91,278 @@ func (r *Renderer) RenderMarkdown(text string) string {
 	return rendered
 }
 
-// RenderMessage renders a DisplayMessage into a styled string for the terminal.
-func (r *Renderer) RenderMessage(msg DisplayMessage, width int) string {
+// RenderMessage renders a DisplayMessage into a styled string.
+func (r *Renderer) RenderMessage(msg DisplayMessage, width int, state AppState) string {
 	switch msg.Role {
 	case "user":
-		prefix := lipgloss.NewStyle().Foreground(colorUser).Bold(true).Render("❯ ")
-		// User messages are typically short — render as markdown
-		body := r.RenderMarkdown(msg.Text)
-		return prefix + indentAfterFirst(body, "  ")
-
+		return renderUserMessage(msg)
 	case "assistant":
-		// Assistant messages are the main output — full markdown rendering
-		body := r.RenderMarkdown(msg.Text)
-		return body
-
+		return renderAssistantMessage(r, msg, width, state)
 	case "tool_result":
 		return renderToolResult(msg, width)
-
 	case "system":
-		return lipgloss.NewStyle().Foreground(colorDim).Italic(true).Render(msg.Text)
-
+		return dimStyle.Render("  " + msg.Text)
 	default:
 		return msg.Text
 	}
 }
 
-// renderToolResult renders a tool result as a compact card.
-func renderToolResult(msg DisplayMessage, width int) string {
-	icon := "✓"
-	nameColor := colorTool
-	if msg.IsError {
-		icon = "✗"
-		nameColor = colorError
-	}
+// --- User message ---
 
-	header := lipgloss.NewStyle().Foreground(nameColor).Bold(true).
-		Render(fmt.Sprintf(" %s %s", icon, msg.ToolName))
-
-	// Truncate content for display
-	content := msg.Text
-	lines := strings.Split(content, "\n")
-	if len(lines) > 5 {
-		content = strings.Join(lines[:5], "\n") + fmt.Sprintf("\n  … (%d more lines)", len(lines)-5)
-	}
-	// Truncate very long single lines
-	contentRunes := []rune(content)
-	if len(contentRunes) > 500 {
-		content = string(contentRunes[:497]) + "..."
-	}
-
-	body := lipgloss.NewStyle().Foreground(colorDim).Render(content)
-
-	return header + "\n" + body
+func renderUserMessage(msg DisplayMessage) string {
+	prefix := lipgloss.NewStyle().Foreground(colorUser).Bold(true).Render("❯ ")
+	return "\n" + prefix + msg.Text + "\n"
 }
 
-// indentAfterFirst indents all lines after the first with the given prefix.
-func indentAfterFirst(text, prefix string) string {
-	lines := strings.Split(text, "\n")
-	if len(lines) <= 1 {
-		return text
-	}
-	for i := 1; i < len(lines); i++ {
-		if lines[i] != "" {
-			lines[i] = prefix + lines[i]
+// --- Assistant message ---
+
+func renderAssistantMessage(r *Renderer, msg DisplayMessage, width int, state AppState) string {
+	text := msg.Text
+
+	// If this is the currently streaming message, append cursor
+	if state.IsStreaming && msg.ID == state.StreamingMessageID {
+		// Animated cursor: alternates between ▍ and space
+		if state.TickCount%4 < 2 {
+			text += "▍"
+		} else {
+			text += " "
 		}
 	}
-	return strings.Join(lines, "\n")
+
+	// Check for thinking block prefix
+	if strings.HasPrefix(text, "[thinking]") {
+		return renderThinkingBlock(text, state)
+	}
+
+	// Render markdown
+	body := r.RenderMarkdown(text)
+	return body
+}
+
+// --- Thinking block ---
+
+func renderThinkingBlock(text string, state AppState) string {
+	thinkingStyle := lipgloss.NewStyle().Foreground(colorThinking).Italic(true)
+
+	// Strip [thinking] prefix
+	content := strings.TrimPrefix(text, "[thinking] ")
+
+	if state.IsStreaming {
+		// Animated dots while thinking
+		elapsed := ""
+		if !state.ThinkingStart.IsZero() {
+			dur := time.Since(state.ThinkingStart)
+			elapsed = fmt.Sprintf(" %.1fs", dur.Seconds())
+		}
+		dots := strings.Repeat("·", (state.TickCount%3)+1)
+		header := thinkingStyle.Render(fmt.Sprintf("  thinking %s%s", dots, elapsed))
+
+		if content != "" {
+			// Show truncated thinking content
+			lines := strings.Split(content, "\n")
+			if len(lines) > 2 {
+				content = strings.Join(lines[:2], "\n") + "\n…"
+			}
+			return header + "\n" + thinkingStyle.Render("  "+content)
+		}
+		return header
+	}
+
+	// Collapsed thinking block (done)
+	lines := strings.Split(content, "\n")
+	summary := content
+	if len(lines) > 1 {
+		summary = lines[0]
+		if len(summary) > 60 {
+			summary = summary[:57] + "..."
+		}
+		summary += fmt.Sprintf(" (%d lines)", len(lines))
+	}
+	return thinkingStyle.Render("  💭 " + summary)
+}
+
+// --- Tool result ---
+
+func renderToolResult(msg DisplayMessage, width int) string {
+	switch msg.ToolName {
+	case "bash":
+		return renderBashResult(msg, width)
+	case "edit":
+		return renderEditResult(msg, width)
+	case "read":
+		return renderReadResult(msg, width)
+	case "write":
+		return renderWriteResult(msg, width)
+	default:
+		return renderGenericToolResult(msg, width)
+	}
+}
+
+// --- Bash tool result ---
+
+func renderBashResult(msg DisplayMessage, width int) string {
+	boxWidth := width - 4
+	if boxWidth < 20 {
+		boxWidth = 20
+	}
+
+	// Header
+	icon := "✓"
+	headerColor := colorTool
+	if msg.IsError {
+		icon = "✗"
+		headerColor = colorError
+	}
+	header := lipgloss.NewStyle().Foreground(headerColor).Bold(true).
+		Render(fmt.Sprintf(" %s bash", icon))
+
+	// Content — truncate
+	content := msg.Text
+	lines := strings.Split(content, "\n")
+	if len(lines) > 8 {
+		content = strings.Join(lines[:8], "\n")
+		content += fmt.Sprintf("\n  … %d more lines", len(lines)-8)
+	}
+
+	// Box
+	border := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(colorDim).
+		Width(boxWidth).
+		Padding(0, 1)
+
+	return header + "\n" + border.Render(dimStyle.Render(content)) + "\n"
+}
+
+// --- Edit tool result ---
+
+func renderEditResult(msg DisplayMessage, width int) string {
+	boxWidth := width - 4
+	if boxWidth < 20 {
+		boxWidth = 20
+	}
+
+	icon := "✓"
+	headerColor := colorTool
+	if msg.IsError {
+		icon = "✗"
+		headerColor = colorError
+	}
+	header := lipgloss.NewStyle().Foreground(headerColor).Bold(true).
+		Render(fmt.Sprintf(" %s edit", icon))
+
+	// Color diff lines
+	content := msg.Text
+	var coloredLines []string
+	for _, line := range strings.Split(content, "\n") {
+		if strings.HasPrefix(line, "+") {
+			coloredLines = append(coloredLines,
+				lipgloss.NewStyle().Foreground(colorDiffAdd).Render(line))
+		} else if strings.HasPrefix(line, "-") {
+			coloredLines = append(coloredLines,
+				lipgloss.NewStyle().Foreground(colorDiffDel).Render(line))
+		} else if strings.HasPrefix(line, "@@") {
+			coloredLines = append(coloredLines,
+				lipgloss.NewStyle().Foreground(colorThinking).Render(line))
+		} else {
+			coloredLines = append(coloredLines, dimStyle.Render(line))
+		}
+	}
+
+	// Truncate
+	if len(coloredLines) > 12 {
+		coloredLines = coloredLines[:12]
+		coloredLines = append(coloredLines,
+			dimStyle.Render(fmt.Sprintf("  … %d more lines", len(strings.Split(content, "\n"))-12)))
+	}
+
+	border := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(colorDim).
+		Width(boxWidth).
+		Padding(0, 1)
+
+	return header + "\n" + border.Render(strings.Join(coloredLines, "\n")) + "\n"
+}
+
+// --- Read tool result ---
+
+func renderReadResult(msg DisplayMessage, width int) string {
+	boxWidth := width - 4
+	if boxWidth < 20 {
+		boxWidth = 20
+	}
+
+	icon := "✓"
+	headerColor := colorTool
+	if msg.IsError {
+		icon = "✗"
+		headerColor = colorError
+	}
+	header := lipgloss.NewStyle().Foreground(headerColor).Bold(true).
+		Render(fmt.Sprintf(" %s read", icon))
+
+	content := msg.Text
+	lines := strings.Split(content, "\n")
+	if len(lines) > 6 {
+		content = strings.Join(lines[:6], "\n")
+		content += fmt.Sprintf("\n  … %d more lines", len(lines)-6)
+	}
+
+	border := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(colorDim).
+		Width(boxWidth).
+		Padding(0, 1)
+
+	return header + "\n" + border.Render(dimStyle.Render(content)) + "\n"
+}
+
+// --- Write tool result ---
+
+func renderWriteResult(msg DisplayMessage, width int) string {
+	icon := "✓"
+	style := lipgloss.NewStyle().Foreground(colorTool)
+	if msg.IsError {
+		icon = "✗"
+		style = lipgloss.NewStyle().Foreground(colorError)
+	}
+
+	// Write results are typically short — render inline
+	text := msg.Text
+	if len(text) > 80 {
+		text = text[:77] + "..."
+	}
+	return style.Render(fmt.Sprintf("  %s write: %s", icon, text)) + "\n"
+}
+
+// --- Generic tool result ---
+
+func renderGenericToolResult(msg DisplayMessage, width int) string {
+	boxWidth := width - 4
+	if boxWidth < 20 {
+		boxWidth = 20
+	}
+
+	icon := "✓"
+	headerColor := colorTool
+	if msg.IsError {
+		icon = "✗"
+		headerColor = colorError
+	}
+	header := lipgloss.NewStyle().Foreground(headerColor).Bold(true).
+		Render(fmt.Sprintf(" %s %s", icon, msg.ToolName))
+
+	content := msg.Text
+	if len(content) > 500 {
+		content = content[:497] + "..."
+	}
+
+	border := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(colorDim).
+		Width(boxWidth).
+		Padding(0, 1)
+
+	return header + "\n" + border.Render(dimStyle.Render(content)) + "\n"
 }

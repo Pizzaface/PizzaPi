@@ -1,16 +1,12 @@
 package tui
 
-import "github.com/charmbracelet/bubbles/textarea"
+import (
+	"time"
 
-// Panel represents which panel is currently focused.
-type Panel int
-
-const (
-	PanelSidebar Panel = iota
-	PanelMain
+	"github.com/charmbracelet/bubbles/textarea"
 )
 
-// DisplayMessage is a rendered message shown in the main panel.
+// DisplayMessage is a rendered message shown in the conversation.
 type DisplayMessage struct {
 	ID        string
 	Role      string // "user", "assistant", "tool_result", "system"
@@ -22,21 +18,13 @@ type DisplayMessage struct {
 
 // AppState holds all mutable state for the TUI application.
 type AppState struct {
-	// Sessions shown in the sidebar
-	Sessions []SessionInfo
-	// ID of the currently active session
-	ActiveSessionID string
-
-	// Message buffer shown in the main panel
+	// Message buffer — the conversation
 	Messages []DisplayMessage
 	// Scroll offset for the message list (lines from bottom)
 	ScrollOffset int
 
-	// Input field for composing messages
+	// Input field
 	Input textarea.Model
-
-	// Which panel is currently focused
-	ActivePanel Panel
 
 	// Terminal dimensions
 	Width  int
@@ -54,18 +42,20 @@ type AppState struct {
 	Cwd          string
 	Mode         string // "local" or "relay"
 
+	// Streaming state
+	ActiveTools        map[string]string // toolCallId → toolName (in-flight tools)
+	StreamingMessageID string            // ID of message currently being streamed
+	IsStreaming        bool              // true while assistant is generating
+	ThinkingStart      time.Time         // when thinking started (for elapsed display)
+
 	// Metadata from last result
 	InputTokens  int
 	OutputTokens int
 	CostUSD      float64
 	NumTurns     int
 
-	// Streaming state
-	ActiveTools        map[string]string // toolCallId → toolName (in-flight tools)
-	StreamingMessageID string            // ID of the message currently being streamed
-
-	// Extension components
-	Components *ComponentRegistry
+	// Animation tick counter (for spinners, cursor blink)
+	TickCount int
 
 	// Prompt history
 	PromptHistory []string
@@ -75,10 +65,10 @@ type AppState struct {
 // newAppState creates an AppState with sensible defaults.
 func newAppState(session SessionController) AppState {
 	ta := textarea.New()
-	ta.Placeholder = "Type a message… (Enter to send, Shift+Enter for newline)"
+	ta.Placeholder = "Message… (Enter to send)"
 	ta.Focus()
 	ta.CharLimit = 8192
-	ta.SetHeight(3)
+	ta.SetHeight(1) // Single-line by default
 	ta.ShowLineNumbers = false
 
 	mode := ""
@@ -87,12 +77,9 @@ func newAppState(session SessionController) AppState {
 	}
 
 	return AppState{
-		Sessions:      []SessionInfo{},
 		Messages:      []DisplayMessage{},
 		Input:         ta,
-		ActivePanel:   PanelMain,
 		ActiveTools:   make(map[string]string),
-		Components:    NewComponentRegistry(),
 		Session:       session,
 		Mode:          mode,
 		HistoryIndex:  -1,
