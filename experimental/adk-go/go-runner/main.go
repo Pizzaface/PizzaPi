@@ -290,6 +290,17 @@ func (r *GoRunner) runSession(ctx context.Context, sess *session, pctx ProviderC
 	sessionID := sess.sessionID
 	cwd := pctx.Cwd
 
+	// Ensure MCP temp file and any other bootstrap resources are always
+	// released, regardless of which exit path is taken (normal exit,
+	// relay-connect error, provider-start error, or ctx.Done() kill path).
+	// cleanup is idempotent (os.Remove on a missing file is a no-op), so
+	// double-calls from handleSessionExit + this defer are safe.
+	defer func() {
+		if sess.cleanup != nil {
+			sess.cleanup()
+		}
+	}()
+
 	// Connect to /relay to register the session in the session store.
 	// This is what makes the session visible to the web UI.
 	relaySess := NewRelaySession(r.relayURL, r.apiKey, sessionID, cwd, r.logger)

@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+
 	bootstrap "github.com/pizzaface/pizzapi/experimental/adk-go/go-runner/internal/bootstrap"
 	"github.com/pizzaface/pizzapi/experimental/adk-go/runtime/guardrails"
 )
@@ -18,7 +20,7 @@ type ToolCallInterceptor func(toolName string, args map[string]any) (allowed boo
 // on every tool invocation so that mid-session toggle_plan_mode changes take effect
 // immediately without requiring a new interceptor to be constructed.
 func NewGuardrailsInterceptor(sandboxCfg bootstrap.SandboxConfig, cwd, homeDir string, planMode func() bool) ToolCallInterceptor {
-	baseCfg := mapSandboxConfig(sandboxCfg)
+	baseCfg := mapSandboxConfig(sandboxCfg, cwd)
 	return func(toolName string, args map[string]any) (bool, string) {
 		env := guardrails.EvalEnv{
 			CWD:     cwd,
@@ -40,13 +42,22 @@ func NewGuardrailsInterceptor(sandboxCfg bootstrap.SandboxConfig, cwd, homeDir s
 //	"" / "off" / "none"           → ModeNone  (no enforcement)
 //	"full" / "restricted"         → ModeFull  (strict network + filesystem)
 //	anything else (e.g. "basic")  → ModeBasic (filesystem only by default)
-func mapSandboxConfig(cfg bootstrap.SandboxConfig) guardrails.SandboxConfig {
+//
+// cwd is the session working directory. When AllowedPaths is set, cwd and
+// /tmp are always appended to the resulting AllowWrite list so that user
+// config additions never silently revoke the baseline write access the
+// session needs to function.
+func mapSandboxConfig(cfg bootstrap.SandboxConfig, cwd string) guardrails.SandboxConfig {
 	mode := mapSandboxMode(cfg.Mode)
 
 	var fs *guardrails.FilesystemConfig
 	if len(cfg.AllowedPaths) > 0 || len(cfg.BlockedPaths) > 0 {
+		// Always include the session CWD and /tmp as baseline write paths so
+		// that user-specified AllowedPaths additions do not strip them.
+		allowWrite := append([]string{}, cfg.AllowedPaths...)
+		allowWrite = append(allowWrite, cwd, os.TempDir())
 		fs = &guardrails.FilesystemConfig{
-			AllowWrite: cfg.AllowedPaths,
+			AllowWrite: allowWrite,
 			DenyRead:   cfg.BlockedPaths,
 			DenyWrite:  cfg.BlockedPaths,
 		}
