@@ -21,7 +21,7 @@ const (
 	OpenAIAuthorizeURL = "https://auth.openai.com/oauth/authorize"
 	OpenAITokenURL     = "https://auth.openai.com/oauth/token"
 	OpenAIRedirectURI  = "http://localhost:1455/auth/callback"
-	OpenAIScopes       = "openid profile email offline_access"
+	OpenAIScopes       = "openid profile email offline_access model.request api.model.read"
 	OpenAIJWTClaimPath = "https://api.openai.com/auth"
 	OpenAICallbackPort = 1455
 )
