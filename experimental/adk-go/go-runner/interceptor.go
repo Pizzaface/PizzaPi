@@ -14,16 +14,18 @@ type ToolCallInterceptor func(toolName string, args map[string]any) (allowed boo
 // The interceptor evaluates each tool call against the sandbox policy derived from the
 // PizzaPi config, the session CWD and home directory, and the current plan mode flag.
 //
-// The returned interceptor captures the environment at construction time. Plan mode
-// changes during a session require constructing a new interceptor.
-func NewGuardrailsInterceptor(sandboxCfg bootstrap.SandboxConfig, cwd, homeDir string, planMode bool) ToolCallInterceptor {
-	env := guardrails.EvalEnv{
-		CWD:     cwd,
-		HomeDir: homeDir,
-		Session: guardrails.SessionState{PlanMode: planMode},
-		Config:  mapSandboxConfig(sandboxCfg),
-	}
+// planMode is a closure that returns the session's current plan mode state. It is called
+// on every tool invocation so that mid-session toggle_plan_mode changes take effect
+// immediately without requiring a new interceptor to be constructed.
+func NewGuardrailsInterceptor(sandboxCfg bootstrap.SandboxConfig, cwd, homeDir string, planMode func() bool) ToolCallInterceptor {
+	baseCfg := mapSandboxConfig(sandboxCfg)
 	return func(toolName string, args map[string]any) (bool, string) {
+		env := guardrails.EvalEnv{
+			CWD:     cwd,
+			HomeDir: homeDir,
+			Session: guardrails.SessionState{PlanMode: planMode()},
+			Config:  baseCfg,
+		}
 		decision := guardrails.EvaluateToolCall(guardrails.ToolCall{Name: toolName, Args: args}, env)
 		return decision.Allowed, decision.Reason
 	}
@@ -82,17 +84,35 @@ func mapSandboxMode(mode string) guardrails.SandboxMode {
 // and returns their names and args. It is used in runSession to inspect
 // message_update events before forwarding them — the entry point for the future
 // native tool execution interception path.
+//
+// The content field may arrive as either []any (when items were decoded into an
+// interface slice) or []map[string]any (when the JSON decoder infers a more
+// specific type). Both shapes are handled; the typed slice is tried first.
 func extractToolUseBlocks(ev map[string]any) []toolUseBlock {
-	content, ok := ev["content"].([]any)
-	if !ok {
+	contentRaw, exists := ev["content"]
+	if !exists || contentRaw == nil {
 		return nil
 	}
-	var blocks []toolUseBlock
-	for _, item := range content {
-		block, ok := item.(map[string]any)
-		if !ok {
-			continue
+
+	// Normalise both content shapes into a flat []map[string]any for uniform processing.
+	var items []map[string]any
+	switch typed := contentRaw.(type) {
+	case []map[string]any:
+		// More-specific type produced by some JSON decoders — use directly.
+		items = typed
+	case []any:
+		// Generic interface slice — extract the underlying map from each element.
+		for _, item := range typed {
+			if block, ok := item.(map[string]any); ok {
+				items = append(items, block)
+			}
 		}
+	default:
+		return nil
+	}
+
+	var blocks []toolUseBlock
+	for _, block := range items {
 		if blockType, _ := block["type"].(string); blockType != "tool_use" {
 			continue
 		}

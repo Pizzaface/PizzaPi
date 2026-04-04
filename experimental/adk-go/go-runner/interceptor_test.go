@@ -15,7 +15,7 @@ func TestInterceptor_BlocksBashWhenSandboxActive(t *testing.T) {
 		bootstrap.SandboxConfig{Mode: "basic"},
 		"/repo",
 		"/home/test",
-		false,
+		func() bool { return false },
 	)
 
 	allowed, reason := interceptor("bash", map[string]any{"command": "cat /etc/passwd"})
@@ -34,7 +34,7 @@ func TestInterceptor_AllowsAllToolsWhenModeNone(t *testing.T) {
 				bootstrap.SandboxConfig{Mode: modeName},
 				"/repo",
 				"/home/test",
-				false,
+				func() bool { return false },
 			)
 
 			// bash should be allowed
@@ -60,7 +60,7 @@ func TestInterceptor_AllowsReadWriteWithinAllowedPaths(t *testing.T) {
 		},
 		"/repo",
 		"/home/test",
-		false,
+		func() bool { return false },
 	)
 
 	// Read within allowed paths (not in denyRead)
@@ -84,7 +84,7 @@ func TestInterceptor_DeniesWriteOutsideAllowedPaths(t *testing.T) {
 		},
 		"/repo",
 		"/home/test",
-		false,
+		func() bool { return false },
 	)
 
 	allowed, reason := interceptor("write", map[string]any{"path": "/etc/hosts"})
@@ -104,7 +104,7 @@ func TestInterceptor_DeniesBlockedPaths(t *testing.T) {
 		},
 		"/repo",
 		"/home/test",
-		false,
+		func() bool { return false },
 	)
 
 	// Blocked path should be denied for read
@@ -122,7 +122,7 @@ func TestInterceptor_FullModeBlocksBashAndUnsafePaths(t *testing.T) {
 		bootstrap.SandboxConfig{Mode: "full"},
 		"/repo",
 		"/home/test",
-		false,
+		func() bool { return false },
 	)
 
 	allowed, _ := interceptor("bash", map[string]any{"command": "ls"})
@@ -138,7 +138,7 @@ func TestInterceptor_RestrictedMapsToFullMode(t *testing.T) {
 		bootstrap.SandboxConfig{Mode: "restricted"},
 		"/repo",
 		"/home/test",
-		false,
+		func() bool { return false },
 	)
 
 	allowed, _ := interceptor("bash", map[string]any{"command": "echo hi"})
@@ -152,7 +152,7 @@ func TestInterceptor_PlanModeBlocksWriteTools(t *testing.T) {
 		bootstrap.SandboxConfig{Mode: "none"}, // sandbox off
 		"/repo",
 		"/home/test",
-		true, // plan mode on
+		func() bool { return true }, // plan mode on
 	)
 
 	allowed, reason := interceptor("write", map[string]any{"path": "/repo/notes.txt"})
@@ -282,6 +282,102 @@ func TestExtractToolUseBlocks_SkipsBlocksWithEmptyName(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// extractToolUseBlocks — typed []map[string]any shape (P2 regression test)
+// ---------------------------------------------------------------------------
+
+// TestExtractToolUseBlocks_TypedMapSliceShape verifies that extractToolUseBlocks
+// handles the []map[string]any content shape that some JSON decoders produce,
+// rather than silently returning nil as it did with the []any-only assertion.
+func TestExtractToolUseBlocks_TypedMapSliceShape(t *testing.T) {
+	ev := map[string]any{
+		"type": "message_update",
+		// Content as []map[string]any (more-specific type) — not []any.
+		"content": []map[string]any{
+			{
+				"type": "text",
+				"text": "Let me run that.",
+			},
+			{
+				"type":  "tool_use",
+				"id":    "tool_typed_001",
+				"name":  "bash",
+				"input": map[string]any{"command": "echo typed"},
+			},
+		},
+	}
+
+	blocks := extractToolUseBlocks(ev)
+	if len(blocks) != 1 {
+		t.Fatalf("expected 1 tool_use block from []map[string]any content, got %d", len(blocks))
+	}
+	if blocks[0].Name != "bash" {
+		t.Fatalf("expected tool name 'bash', got %q", blocks[0].Name)
+	}
+	cmd, _ := blocks[0].Args["command"].(string)
+	if cmd != "echo typed" {
+		t.Fatalf("expected command 'echo typed', got %q", cmd)
+	}
+}
+
+// TestExtractToolUseBlocks_TypedMapSliceMultiple verifies multiple blocks from
+// the []map[string]any shape are all extracted.
+func TestExtractToolUseBlocks_TypedMapSliceMultiple(t *testing.T) {
+	ev := map[string]any{
+		"type": "message_update",
+		"content": []map[string]any{
+			{
+				"type":  "tool_use",
+				"id":    "t1",
+				"name":  "read",
+				"input": map[string]any{"path": "/repo/a.go"},
+			},
+			{
+				"type":  "tool_use",
+				"id":    "t2",
+				"name":  "write",
+				"input": map[string]any{"path": "/repo/b.go"},
+			},
+		},
+	}
+
+	blocks := extractToolUseBlocks(ev)
+	if len(blocks) != 2 {
+		t.Fatalf("expected 2 tool_use blocks from []map[string]any content, got %d", len(blocks))
+	}
+	if blocks[0].Name != "read" || blocks[1].Name != "write" {
+		t.Fatalf("unexpected names: %q, %q", blocks[0].Name, blocks[1].Name)
+	}
+}
+
+// TestInterceptor_PlanModeDynamic verifies that the planMode closure is
+// evaluated on each tool call, so mid-session changes take effect immediately.
+func TestInterceptor_PlanModeDynamic(t *testing.T) {
+	var planModeOn bool
+	interceptor := NewGuardrailsInterceptor(
+		bootstrap.SandboxConfig{Mode: "none"}, // sandbox off so only plan mode matters
+		"/repo",
+		"/home/test",
+		func() bool { return planModeOn },
+	)
+
+	// With plan mode off, writes should be allowed (sandbox is none).
+	allowed, _ := interceptor("write", map[string]any{"path": "/repo/notes.txt"})
+	if !allowed {
+		t.Fatal("expected write to be allowed when plan mode is off")
+	}
+
+	// Flip plan mode on — write should now be denied without constructing a new interceptor.
+	planModeOn = true
+	allowed, reason := interceptor("write", map[string]any{"path": "/repo/notes.txt"})
+	if allowed {
+		t.Fatalf("expected write to be denied after plan mode was toggled on, but was allowed")
+	}
+	if reason == "" {
+		t.Fatal("expected non-empty denial reason in plan mode")
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Integration: event with tool_use → interceptor called
 // ---------------------------------------------------------------------------
 
@@ -290,7 +386,7 @@ func TestInterceptorIntegration_DeniesToolUseFromEvent(t *testing.T) {
 		bootstrap.SandboxConfig{Mode: "basic"},
 		"/repo",
 		"/home/test",
-		false,
+		func() bool { return false },
 	)
 
 	ev := map[string]any{
@@ -324,7 +420,7 @@ func TestInterceptorIntegration_AllowsSafeToolUseFromEvent(t *testing.T) {
 		bootstrap.SandboxConfig{Mode: "basic"},
 		"/repo",
 		"/home/test",
-		false,
+		func() bool { return false },
 	)
 
 	ev := map[string]any{
@@ -355,7 +451,7 @@ func TestInterceptorIntegration_NonUpdateEventsHaveNoBlocks(t *testing.T) {
 		bootstrap.SandboxConfig{Mode: "basic"},
 		"/repo",
 		"/home/test",
-		false,
+		func() bool { return false },
 	)
 
 	heartbeat := map[string]any{
