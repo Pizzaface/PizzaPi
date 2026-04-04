@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -178,6 +179,70 @@ func TestLoadEventsEmpty(t *testing.T) {
 	}
 }
 
+// TestLoadEventsCorruptLine verifies that a truncated/corrupt event line does
+// not prevent LoadEvents from returning the valid events around it (D2).
+func TestLoadEventsCorruptLine(t *testing.T) {
+	ctx := context.Background()
+	store := newStore(t)
+
+	sess := makeSession("corrupt-evts", "/tmp/corrupt-evts", "claude-3")
+	if err := store.Create(ctx, sess); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// Write two good events, then manually splice a corrupt line in the middle,
+	// then a third good event at the end — simulating a crash mid-flush.
+	goodBefore := []sessions.Event{
+		makeEvent("message", "before-corrupt"),
+	}
+	if err := store.AppendEvents(ctx, "corrupt-evts", goodBefore); err != nil {
+		t.Fatalf("AppendEvents (before): %v", err)
+	}
+
+	// Manually append a corrupt (truncated) line directly to the file.
+	dir := store.SessionsDirForTest("/tmp/corrupt-evts")
+	filePath := filepath.Join(dir, "corrupt-evts.jsonl")
+	f, err := os.OpenFile(filePath, os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatalf("OpenFile: %v", err)
+	}
+	if _, err := f.Write([]byte("{\"type\":\"truncated\",\"data\":\n")); err != nil {
+		f.Close()
+		t.Fatalf("Write corrupt line: %v", err)
+	}
+	f.Close()
+
+	goodAfter := []sessions.Event{
+		makeEvent("message", "after-corrupt"),
+	}
+	if err := store.AppendEvents(ctx, "corrupt-evts", goodAfter); err != nil {
+		t.Fatalf("AppendEvents (after): %v", err)
+	}
+
+	// LoadEvents must succeed and return the 2 valid events, skipping the bad line.
+	loaded, err := store.LoadEvents(ctx, "corrupt-evts")
+	if err != nil {
+		t.Fatalf("LoadEvents returned error on corrupt line (should skip): %v", err)
+	}
+	if len(loaded) != 2 {
+		t.Fatalf("event count: got %d, want 2 (1 before + 1 after corrupt)", len(loaded))
+	}
+	if loaded[0].Type != "message" || loaded[1].Type != "message" {
+		t.Errorf("unexpected event types: %q, %q", loaded[0].Type, loaded[1].Type)
+	}
+}
+
+// TestCreateEmptyCWD verifies that Create rejects an empty CWD (D5).
+func TestCreateEmptyCWD(t *testing.T) {
+	ctx := context.Background()
+	store := newStore(t)
+
+	sess := makeSession("no-cwd", "", "claude-3")
+	if err := store.Create(ctx, sess); err == nil {
+		t.Fatal("expected error for empty CWD, got nil")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // List sessions with cwd encoding
 // ---------------------------------------------------------------------------
@@ -188,15 +253,21 @@ func TestListSessions(t *testing.T) {
 
 	cwd := "/Users/alice/my project/с unicode"
 	sess1 := makeSession("s1", cwd, "claude-3")
-	sess1.Updated = time.Now().UTC().Add(-time.Hour)
 	sess2 := makeSession("s2", cwd, "gpt-4")
-	sess2.Updated = time.Now().UTC()
 
 	if err := store.Create(ctx, sess1); err != nil {
 		t.Fatalf("Create s1: %v", err)
 	}
 	if err := store.Create(ctx, sess2); err != nil {
 		t.Fatalf("Create s2: %v", err)
+	}
+
+	// Force sess1's file mtime to be 1 hour in the past so List sorts
+	// sess2 first regardless of filesystem mtime granularity.
+	dir := store.SessionsDirForTest(cwd)
+	past := time.Now().UTC().Add(-time.Hour)
+	if err := os.Chtimes(filepath.Join(dir, "s1.jsonl"), past, past); err != nil {
+		t.Fatalf("Chtimes: %v", err)
 	}
 
 	list, err := store.List(ctx, cwd)
@@ -435,7 +506,7 @@ func TestLargeSession(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	const total = 200
+	const total = 1000
 	events := make([]sessions.Event, total)
 	for i := range events {
 		events[i] = makeEvent("message", fmt.Sprintf("payload-%d", i))
@@ -458,12 +529,12 @@ func TestLargeSession(t *testing.T) {
 		t.Fatalf("event count: got %d, want %d", len(loaded), total)
 	}
 
-	// Performance smoke-test: both operations should finish well under 1 second
-	// for 200 small events on any reasonable machine.
-	if appendDur > 2*time.Second {
+	// Performance smoke-test: both operations should finish well under 5 seconds
+	// for 1000 small events on any reasonable machine.
+	if appendDur > 5*time.Second {
 		t.Errorf("AppendEvents took too long: %v", appendDur)
 	}
-	if loadDur > 2*time.Second {
+	if loadDur > 5*time.Second {
 		t.Errorf("LoadEvents took too long: %v", loadDur)
 	}
 	t.Logf("AppendEvents(%d events): %v, LoadEvents: %v", total, appendDur, loadDur)

@@ -16,15 +16,9 @@ type Session struct {
 	Updated time.Time `json:"updated"`
 }
 
-// SessionMeta is identical to Session and is used when listing sessions
-// (only the first line of each JSONL file is read, so events are not loaded).
-type SessionMeta struct {
-	ID      string    `json:"id"`
-	CWD     string    `json:"cwd"`
-	Model   string    `json:"model"`
-	Created time.Time `json:"created"`
-	Updated time.Time `json:"updated"`
-}
+// SessionMeta is an alias for Session. List returns []*SessionMeta; callers
+// may treat it identically to *Session.
+type SessionMeta = Session
 
 // Event represents a single recorded event in a session.
 type Event struct {

@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 )
 
 // JSONLStore is a SessionStore backed by append-only JSONL files.
@@ -21,8 +22,13 @@ import (
 //
 //	<baseDir>/sessions/<encoded-cwd>/<session-id>.jsonl
 //
-// Line 1  – Session metadata JSON
+// Line 1  – Session metadata JSON (Updated reflects creation time only)
 // Line 2+ – Event JSON objects (one per line), appended over time
+//
+// Concurrency: the embedded mutex provides safe concurrent access within a
+// single process. Multi-process access to the same baseDir is NOT safe without
+// external file locking (e.g. flock(2)) — the mutex has no cross-process
+// visibility.
 type JSONLStore struct {
 	baseDir string
 	mu      sync.RWMutex // guards all file operations
@@ -80,8 +86,13 @@ func (s *JSONLStore) findSessionPath(id string) (string, error) {
 }
 
 // Create writes session metadata as the first line of a new JSONL file.
-// Returns an error if a file for this session already exists.
+// Returns an error if session.CWD is empty or if a file for this session
+// already exists.
 func (s *JSONLStore) Create(_ context.Context, session *Session) error {
+	if session.CWD == "" {
+		return fmt.Errorf("sessions.Create: CWD must not be empty")
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -124,7 +135,11 @@ func (s *JSONLStore) Get(_ context.Context, id string) (*Session, error) {
 }
 
 // List returns metadata for all sessions stored under the given cwd, sorted by
-// Updated descending. Returns an empty (non-nil) slice when none exist.
+// file modification time descending (most-recently written first).
+// Note: the Updated field inside each Session reflects creation time only;
+// recency ordering is determined by the file's OS mtime, which advances on
+// every AppendEvents call.
+// Returns an empty (non-nil) slice when none exist.
 func (s *JSONLStore) List(_ context.Context, cwd string) ([]*SessionMeta, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -138,9 +153,18 @@ func (s *JSONLStore) List(_ context.Context, cwd string) ([]*SessionMeta, error)
 		return nil, fmt.Errorf("sessions.List: readdir: %w", err)
 	}
 
-	var metas []*SessionMeta
+	type sessionWithMtime struct {
+		meta  *SessionMeta
+		mtime time.Time
+	}
+
+	var items []sessionWithMtime
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".jsonl") {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
 			continue
 		}
 		path := filepath.Join(dir, entry.Name())
@@ -149,18 +173,20 @@ func (s *JSONLStore) List(_ context.Context, cwd string) ([]*SessionMeta, error)
 			// Skip corrupt/empty files; don't abort the whole list.
 			continue
 		}
-		metas = append(metas, &SessionMeta{
-			ID:      sess.ID,
-			CWD:     sess.CWD,
-			Model:   sess.Model,
-			Created: sess.Created,
-			Updated: sess.Updated,
+		items = append(items, sessionWithMtime{
+			meta:  sess,
+			mtime: info.ModTime(),
 		})
 	}
 
-	sort.Slice(metas, func(i, j int) bool {
-		return metas[i].Updated.After(metas[j].Updated)
+	sort.Slice(items, func(i, j int) bool {
+		return items[i].mtime.After(items[j].mtime)
 	})
+
+	metas := make([]*SessionMeta, len(items))
+	for i, item := range items {
+		metas[i] = item.meta
+	}
 	return metas, nil
 }
 
@@ -202,6 +228,8 @@ func (s *JSONLStore) AppendEvents(_ context.Context, id string, events []Event) 
 }
 
 // LoadEvents reads all event lines (lines 2+) from the session JSONL file.
+// Corrupt or truncated lines (e.g. from a crash mid-flush) are skipped with a
+// warning to stderr; all valid events before and after such lines are returned.
 func (s *JSONLStore) LoadEvents(_ context.Context, id string) ([]Event, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -235,7 +263,10 @@ func (s *JSONLStore) LoadEvents(_ context.Context, id string) ([]Event, error) {
 		}
 		var ev Event
 		if err := json.Unmarshal(line, &ev); err != nil {
-			return nil, fmt.Errorf("sessions.LoadEvents: parse line %d: %w", lineNum, err)
+			// Skip corrupt/truncated lines (e.g. from a crash mid-flush).
+			// All valid events before and after this line are still returned.
+			fmt.Fprintf(os.Stderr, "sessions.LoadEvents: skipping corrupt line %d in %s: %v\n", lineNum, path, err)
+			continue
 		}
 		events = append(events, ev)
 	}
