@@ -49,8 +49,9 @@ func view(s AppState) string {
 	if mainWidth < 10 {
 		mainWidth = 10
 	}
-	// Header + bottom input + border take ~5 lines.
-	contentHeight := s.Height - 4
+	// Reserve 1 line for the status bar at the very bottom.
+	// Header + bottom input + border + status bar take ~6 lines.
+	contentHeight := s.Height - 5
 	if contentHeight < 3 {
 		contentHeight = 3
 	}
@@ -61,8 +62,10 @@ func view(s AppState) string {
 
 	sidebar := renderSidebar(s, sidebarWidth, contentHeight)
 	main := renderMain(s, mainWidth, contentHeight, msgAreaHeight)
+	statusBar := renderStatusBar(s, s.Width)
 
-	return lipgloss.JoinHorizontal(lipgloss.Top, sidebar, main)
+	panels := lipgloss.JoinHorizontal(lipgloss.Top, sidebar, main)
+	return lipgloss.JoinVertical(lipgloss.Left, panels, statusBar)
 }
 
 // renderSidebar renders the left panel with a session list.
@@ -83,8 +86,11 @@ func renderSidebar(s AppState, width, height int) string {
 
 	for _, sess := range s.Sessions {
 		name := sess.Name
-		if len(name) > width-2 {
-			name = name[:width-2]
+		// Use rune slicing to avoid splitting multi-byte codepoints.
+		nameRunes := []rune(name)
+		if len(nameRunes) > width-2 {
+			nameRunes = nameRunes[:width-2]
+			name = string(nameRunes)
 		}
 
 		rowStyle := lipgloss.NewStyle().Width(width)
@@ -113,6 +119,21 @@ func renderSidebar(s AppState, width, height int) string {
 		Render(inner)
 }
 
+// renderStatusBar renders a one-line help legend at the bottom of the screen.
+func renderStatusBar(_ AppState, width int) string {
+	legend := " tab: switch panel  |  ↑↓: scroll  |  enter: send  |  ctrl+c: quit  |  q: quit (sidebar)"
+	// Truncate to terminal width using rune slicing.
+	runes := []rune(legend)
+	if len(runes) > width {
+		runes = runes[:width]
+		legend = string(runes)
+	}
+	return lipgloss.NewStyle().
+		Width(width).
+		Foreground(colorDim).
+		Render(legend)
+}
+
 // renderMain renders the right panel with the message stream and input field.
 func renderMain(s AppState, width, height, msgAreaHeight int) string {
 	focused := s.ActivePanel == PanelMain
@@ -136,8 +157,11 @@ func renderMain(s AppState, width, height, msgAreaHeight int) string {
 		idx := i - (msgAreaHeight - len(visible))
 		if idx >= 0 && idx < len(visible) {
 			line := visible[idx]
-			if len(line) > width {
-				line = line[:width]
+			// Use rune slicing to avoid splitting multi-byte codepoints.
+			lineRunes := []rune(line)
+			if len(lineRunes) > width {
+				lineRunes = lineRunes[:width]
+				line = string(lineRunes)
 			}
 			msgLines[i] = lipgloss.NewStyle().Foreground(colorText).Render(line)
 		}

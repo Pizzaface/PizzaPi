@@ -19,8 +19,15 @@ func update(a App, msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyMsg:
 		switch m.String() {
-		case "ctrl+c", "q":
+		case "ctrl+c":
 			return a, tea.Quit
+
+		case "q":
+			// Only quit from the sidebar; when the main input is focused 'q' is
+			// a regular character — fall through to the input forwarder below.
+			if s.ActivePanel == PanelSidebar {
+				return a, tea.Quit
+			}
 
 		case "tab":
 			if s.ActivePanel == PanelMain {
@@ -35,6 +42,14 @@ func update(a App, msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case "up":
 			s.ScrollOffset++
+			// Cap scroll so we never scroll past the first message.
+			maxScroll := len(s.Messages) - 1
+			if maxScroll < 0 {
+				maxScroll = 0
+			}
+			if s.ScrollOffset > maxScroll {
+				s.ScrollOffset = maxScroll
+			}
 			a.state = s
 			return a, nil
 

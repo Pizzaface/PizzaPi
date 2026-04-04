@@ -9,10 +9,12 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/pizzaface/pizzapi/experimental/adk-go/tui"
 
-	// Import the claudecli event types so the compiler verifies the replace
-	// directive works and the types are available for future use.
-	_ "github.com/pizzaface/pizzapi/experimental/adk-go/providers/claudecli"
+	claudecli "github.com/pizzaface/pizzapi/experimental/adk-go/providers/claudecli"
 )
+
+// Compile-time assertion: verify the claudecli replace directive resolves and
+// that ClaudeEvent is implemented by at least one concrete type we expect.
+var _ claudecli.ClaudeEvent = (*claudecli.SystemEvent)(nil)
 
 func main() {
 	relayURL := flag.String("relay-url", "", "PizzaPi relay server URL (e.g. wss://relay.example.com)")

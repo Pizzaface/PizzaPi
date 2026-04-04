@@ -29,9 +29,16 @@ func TestModelDefaults(t *testing.T) {
 	}
 }
 
-// TestQuitKey verifies that pressing "q" produces a tea.Quit command.
+// TestQuitKey verifies that pressing "q" while in PanelSidebar produces a tea.Quit command.
 func TestQuitKey(t *testing.T) {
 	app := New()
+	// Switch to sidebar first — 'q' only quits from there.
+	next, _ := app.Update(tea.KeyMsg{Type: tea.KeyTab})
+	app = next.(App)
+	if app.state.ActivePanel != PanelSidebar {
+		t.Fatalf("expected PanelSidebar after Tab, got %v", app.state.ActivePanel)
+	}
+
 	_, cmd := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
 	if cmd == nil {
 		t.Fatal("expected a command, got nil")
@@ -40,6 +47,26 @@ func TestQuitKey(t *testing.T) {
 	msg := cmd()
 	if _, ok := msg.(tea.QuitMsg); !ok {
 		t.Errorf("expected tea.QuitMsg, got %T", msg)
+	}
+}
+
+// TestQKeyInMainPanelDoesNotQuit verifies that 'q' while PanelMain is active
+// does NOT quit — it should be forwarded to the text input instead.
+func TestQKeyInMainPanelDoesNotQuit(t *testing.T) {
+	app := New()
+	// Default is PanelMain, input is focused.
+	if app.state.ActivePanel != PanelMain {
+		t.Fatalf("expected PanelMain initially, got %v", app.state.ActivePanel)
+	}
+
+	_, cmd := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
+	// cmd may be nil (no-op) or a non-quit command from the input component.
+	// It must NOT be tea.Quit.
+	if cmd != nil {
+		msg := cmd()
+		if _, isQuit := msg.(tea.QuitMsg); isQuit {
+			t.Error("pressing 'q' in PanelMain must not quit the app")
+		}
 	}
 }
 

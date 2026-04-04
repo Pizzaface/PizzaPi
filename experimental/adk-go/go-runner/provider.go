@@ -48,6 +48,10 @@ type ProviderContext struct {
 	// Model is the requested model ID (e.g. "claude-sonnet-4-20250514").
 	// Provider implementations map this to their native model identifiers.
 	Model string
+	// SystemPrompt is appended to the provider's built-in instructions.
+	SystemPrompt string
+	// MCPConfigPath points to a Claude-compatible temp config file for MCP servers.
+	MCPConfigPath string
 	// OnStderr is called with each line of stderr output (for logging).
 	OnStderr func(string)
 }
