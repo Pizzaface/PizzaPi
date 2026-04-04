@@ -92,7 +92,14 @@ func EditFileMulti(path string, edits []SingleEdit, opts EditOpts) (string, erro
 
 	// Restore line endings and prepend BOM, then write.
 	finalContent := bom + restoreLineEndings(newContent, originalEnding)
-	if err := os.WriteFile(resolvedPath, []byte(finalContent), 0644); err != nil {
+
+	// Preserve the original file's permission bits (P2 fix). Fall back to 0644
+	// for new files, though EditFileMulti always requires the file to exist.
+	fileMode := os.FileMode(0644)
+	if fi, statErr := os.Stat(resolvedPath); statErr == nil {
+		fileMode = fi.Mode()
+	}
+	if err := os.WriteFile(resolvedPath, []byte(finalContent), fileMode); err != nil {
 		return "", fmt.Errorf("writing file %s: %w", path, err)
 	}
 
@@ -146,6 +153,82 @@ func restoreLineEndings(text, ending string) string {
 // ---------------------------------------------------------------------------
 // Fuzzy matching
 // ---------------------------------------------------------------------------
+
+// normFuzzyRune returns the rune that normalizeForFuzzyMatch would map r to.
+// Each input rune maps to exactly one output rune (never removed, never split).
+func normFuzzyRune(r rune) rune {
+	switch {
+	case r == '\u2018' || r == '\u2019' || r == '\u201A' || r == '\u201B':
+		return '\''
+	case r == '\u201C' || r == '\u201D' || r == '\u201E' || r == '\u201F':
+		return '"'
+	case r == '\u2010' || r == '\u2011' || r == '\u2012' || r == '\u2013' ||
+		r == '\u2014' || r == '\u2015' || r == '\u2212':
+		return '-'
+	case r == '\u00A0' || r == '\u202F' || r == '\u205F' || r == '\u3000':
+		return ' '
+	case r >= '\u2002' && r <= '\u200A':
+		return ' '
+	}
+	return r
+}
+
+// buildFuzzyMapping applies the same transformations as normalizeForFuzzyMatch
+// and simultaneously builds a mapping from each fuzzy byte position back to the
+// corresponding byte position in the original (normalizedContent) string.
+//
+// fuzzyToNorm has len(fuzzyContent)+1 entries. The sentinel entry at index
+// len(fuzzyContent) equals len(normalizedContent), so you can safely look up
+// the normalizedContent end position for any match that reaches the end of fuzzy.
+//
+// When a fuzzy match spans [fuzzyIdx, fuzzyEnd), the corresponding range in
+// normalizedContent is [fuzzyToNorm[fuzzyIdx], fuzzyToNorm[fuzzyEnd]).
+func buildFuzzyMapping(normalizedContent string) (fuzzyContent string, fuzzyToNorm []int) {
+	var b strings.Builder
+	b.Grow(len(normalizedContent))
+	fuzzyToNorm = make([]int, 0, len(normalizedContent)+1)
+
+	lines := strings.Split(normalizedContent, "\n")
+	lineStartInNorm := 0
+
+	for lineIdx, line := range lines {
+		trimmed := strings.TrimRight(line, " \t\r")
+		trimmedLen := len(trimmed) // byte length of the kept prefix
+
+		// Iterate rune-by-rune; the range index i is the byte offset of the rune
+		// within line.
+		for runeByteStart, r := range line {
+			if runeByteStart < trimmedLen {
+				// Rune is in the non-trailing-whitespace region — include in fuzzy.
+				transformed := normFuzzyRune(r)
+				start := b.Len()
+				b.WriteRune(transformed)
+				end := b.Len()
+				// Map every byte of the output rune to the start of the original rune.
+				absNormPos := lineStartInNorm + runeByteStart
+				for j := start; j < end; j++ {
+					fuzzyToNorm = append(fuzzyToNorm, absNormPos)
+				}
+			}
+			// else: trailing whitespace — omitted from fuzzy, no mapping entry.
+		}
+
+		// Advance past the line's bytes.
+		lineStartInNorm += len(line)
+
+		if lineIdx < len(lines)-1 {
+			// Record the '\n' separator that strings.Split consumed.
+			fuzzyToNorm = append(fuzzyToNorm, lineStartInNorm)
+			b.WriteByte('\n')
+			lineStartInNorm++ // '\n' is one byte
+		}
+	}
+
+	// Sentinel: maps the past-the-end position of fuzzy to that of normalized.
+	fuzzyToNorm = append(fuzzyToNorm, lineStartInNorm)
+
+	return b.String(), fuzzyToNorm
+}
 
 // normalizeForFuzzyMatch applies progressive transformations to normalise text
 // for fuzzy matching. This mirrors the JS reference implementation.
@@ -212,44 +295,26 @@ func replaceRuneRange(text string, lo, hi rune, to rune) string {
 }
 
 type findResult struct {
-	found       bool
-	index       int // byte offset in the content space used for replacement
-	matchLength int // byte length of the match in that same space
-	usedFuzzy   bool
-	content     string // content space (original or fuzzy-normalised) used for the match
+	found     bool
+	usedFuzzy bool
 }
 
-// fuzzyFindText attempts an exact match of oldText in content first; if that
-// fails it falls back to a fuzzy-normalised match. The returned findResult
-// includes the content space that should be used for all subsequent operations
-// (so that replacement offsets are consistent).
+// fuzzyFindText reports whether oldText can be found in content (exact or
+// fuzzy) and whether fuzzy matching was required. It is used solely to
+// determine whether fuzzy mode should be activated; actual position resolution
+// is handled separately via buildFuzzyMapping.
 func fuzzyFindText(content, oldText string) findResult {
 	// Exact match.
-	idx := strings.Index(content, oldText)
-	if idx != -1 {
-		return findResult{
-			found:       true,
-			index:       idx,
-			matchLength: len(oldText),
-			usedFuzzy:   false,
-			content:     content,
-		}
+	if strings.Contains(content, oldText) {
+		return findResult{found: true, usedFuzzy: false}
 	}
-
-	// Fuzzy fallback — work entirely in normalised space.
+	// Fuzzy fallback.
 	fuzzyContent := normalizeForFuzzyMatch(content)
 	fuzzyOldText := normalizeForFuzzyMatch(oldText)
-	fuzzyIdx := strings.Index(fuzzyContent, fuzzyOldText)
-	if fuzzyIdx == -1 {
-		return findResult{found: false, content: content}
+	if strings.Contains(fuzzyContent, fuzzyOldText) {
+		return findResult{found: true, usedFuzzy: true}
 	}
-	return findResult{
-		found:       true,
-		index:       fuzzyIdx,
-		matchLength: len(fuzzyOldText),
-		usedFuzzy:   true,
-		content:     fuzzyContent,
-	}
+	return findResult{found: false}
 }
 
 // countOccurrences counts how many non-overlapping occurrences of oldText
@@ -272,11 +337,18 @@ type matchedEdit struct {
 }
 
 // applyEditsToContent applies all edits to normalizedContent and returns:
-//   - baseContent: the content space used for matching (original or fuzzy-normalised)
-//   - newContent:  the result after applying all replacements
+//   - baseContent: normalizedContent (used as the "before" side of the diff)
+//   - newContent:  normalizedContent with all replacements applied
 //
 // Errors are returned for empty oldText, not-found, ambiguous (multi-occurrence),
 // overlapping edits, or no-change results.
+//
+// Fuzzy matching strategy (P1 fix):
+//   - Fuzzy matching is used ONLY to locate match positions.
+//   - Once a position is found in fuzzy space it is mapped back to normalizedContent
+//     byte offsets via buildFuzzyMapping, so the replacement is applied to the
+//     ORIGINAL bytes. Characters outside the matched region — including smart
+//     quotes, em-dashes, or any other Unicode — are never modified.
 func applyEditsToContent(normalizedContent string, edits []SingleEdit, path string) (baseContent, newContent string, err error) {
 	// Normalise edit line endings.
 	normalised := make([]SingleEdit, len(edits))
@@ -294,44 +366,72 @@ func applyEditsToContent(normalizedContent string, edits []SingleEdit, path stri
 		}
 	}
 
-	// Determine the base content space: if any edit needs fuzzy matching, work
-	// entirely in fuzzy-normalised space (mirrors JS reference behaviour).
-	initialMatches := make([]findResult, len(normalised))
-	for i, e := range normalised {
-		initialMatches[i] = fuzzyFindText(normalizedContent, e.OldText)
-	}
+	// baseContent is always the original normalizedContent (for the diff).
+	baseContent = normalizedContent
+
+	// Determine if any edit requires fuzzy matching.
 	useFuzzy := false
-	for _, m := range initialMatches {
-		if m.usedFuzzy {
+	for _, e := range normalised {
+		if r := fuzzyFindText(normalizedContent, e.OldText); r.usedFuzzy {
 			useFuzzy = true
 			break
 		}
 	}
-	base := normalizedContent
-	if useFuzzy {
-		base = normalizeForFuzzyMatch(normalizedContent)
-	}
-	baseContent = base
 
-	// Match every edit against baseContent.
 	matched := make([]matchedEdit, 0, len(normalised))
-	for i, e := range normalised {
-		r := fuzzyFindText(base, e.OldText)
-		if !r.found {
-			_, _, err = errNotFound(path, i, len(normalised))
-			return
+
+	if !useFuzzy {
+		// Fast path: all edits can be found via exact string match.
+		for i, e := range normalised {
+			idx := strings.Index(normalizedContent, e.OldText)
+			if idx == -1 {
+				_, _, err = errNotFound(path, i, len(normalised))
+				return
+			}
+			occ := strings.Count(normalizedContent, e.OldText)
+			if occ > 1 {
+				_, _, err = errDuplicate(path, i, len(normalised), occ)
+				return
+			}
+			matched = append(matched, matchedEdit{
+				editIndex:   i,
+				matchIndex:  idx,
+				matchLength: len(e.OldText),
+				newText:     e.NewText,
+			})
 		}
-		occ := countOccurrences(base, e.OldText)
-		if occ > 1 {
-			_, _, err = errDuplicate(path, i, len(normalised), occ)
-			return
+	} else {
+		// Fuzzy path: build a position mapping from fuzzy space back to normalizedContent.
+		// Replacements are still applied to normalizedContent so non-edited regions
+		// are never touched.
+		fuzzyContent, fuzzyToNorm := buildFuzzyMapping(normalizedContent)
+
+		for i, e := range normalised {
+			fuzzyOldText := normalizeForFuzzyMatch(e.OldText)
+
+			occ := strings.Count(fuzzyContent, fuzzyOldText)
+			if occ == 0 {
+				_, _, err = errNotFound(path, i, len(normalised))
+				return
+			}
+			if occ > 1 {
+				_, _, err = errDuplicate(path, i, len(normalised), occ)
+				return
+			}
+
+			// Locate the match in fuzzy space, then map to normalizedContent offsets.
+			fuzzyIdx := strings.Index(fuzzyContent, fuzzyOldText)
+			fuzzyEnd := fuzzyIdx + len(fuzzyOldText)
+			normStart := fuzzyToNorm[fuzzyIdx]
+			normEnd := fuzzyToNorm[fuzzyEnd]
+
+			matched = append(matched, matchedEdit{
+				editIndex:   i,
+				matchIndex:  normStart,
+				matchLength: normEnd - normStart,
+				newText:     e.NewText,
+			})
 		}
-		matched = append(matched, matchedEdit{
-			editIndex:   i,
-			matchIndex:  r.index,
-			matchLength: r.matchLength,
-			newText:     e.NewText,
-		})
 	}
 
 	// Sort by position (ascending) so overlapping check is O(n).
@@ -349,15 +449,16 @@ func applyEditsToContent(normalizedContent string, edits []SingleEdit, path stri
 		}
 	}
 
-	// Apply replacements in reverse order so earlier offsets stay valid.
-	result := base
+	// Apply replacements to normalizedContent in reverse order so earlier offsets
+	// remain valid after each splice.
+	result := normalizedContent
 	for i := len(matched) - 1; i >= 0; i-- {
 		e := matched[i]
 		result = result[:e.matchIndex] + e.newText + result[e.matchIndex+e.matchLength:]
 	}
 
 	// Guard: no effective change.
-	if result == base {
+	if result == normalizedContent {
 		if len(normalised) == 1 {
 			return "", "", fmt.Errorf(
 				"no changes made to %s. The replacement produced identical content. "+
@@ -368,7 +469,7 @@ func applyEditsToContent(normalizedContent string, edits []SingleEdit, path stri
 		return "", "", fmt.Errorf("no changes made to %s. The replacements produced identical content", path)
 	}
 
-	return base, result, nil
+	return normalizedContent, result, nil
 }
 
 func errEmptyOldText(path string, i, total int) (string, string, error) {

@@ -331,6 +331,97 @@ func TestEditFile_FuzzyTrailingWhitespace(t *testing.T) {
 	}
 }
 
+// TestEditFile_FuzzyPreservesNonEditedSmartQuotes is the P3 regression test.
+// When fuzzy matching fires to locate one region, smart quotes (and other
+// special characters) in NON-edited regions must not be corrupted.
+func TestEditFile_FuzzyPreservesNonEditedSmartQuotes(t *testing.T) {
+	// Both words are wrapped in smart (curly) double-quotes in the file.
+	// We edit only "hello" using ASCII quotes (which triggers fuzzy matching).
+	// The smart quotes around "goodbye" must be preserved verbatim.
+	content := "\u201Chello\u201D and \u201Cgoodbye\u201D\n"
+	path := writeTemp(t, content)
+
+	_, err := EditFile(path, `"hello"`, "REPLACED", EditOpts{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got := readFile(t, path)
+	want := "REPLACED and \u201Cgoodbye\u201D\n"
+	if got != want {
+		t.Errorf("non-edited smart quotes were corrupted\ngot:  %q\nwant: %q", got, want)
+	}
+}
+
+// TestEditFile_FuzzyPreservesNonEditedEmDashes checks that em-dashes outside
+// the edited region survive a fuzzy-triggered edit.
+func TestEditFile_FuzzyPreservesNonEditedEmDashes(t *testing.T) {
+	// File uses smart quotes (triggers fuzzy) and em-dashes in another region.
+	content := "\u201Chello\u201D\nsome \u2014 dash\n"
+	path := writeTemp(t, content)
+
+	_, err := EditFile(path, `"hello"`, "hi", EditOpts{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got := readFile(t, path)
+	want := "hi\nsome \u2014 dash\n"
+	if got != want {
+		t.Errorf("non-edited em-dash was corrupted\ngot:  %q\nwant: %q", got, want)
+	}
+}
+
+// TestEditFile_PreservesFilePermissions verifies that the original file mode
+// bits are kept after an edit (P2 fix: was always writing 0644).
+func TestEditFile_PreservesFilePermissions(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "script.sh")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\necho hello\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := EditFile(path, "echo hello", "echo world", EditOpts{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// os.WriteFile passes the mode directly; mask to permission bits only.
+	gotMode := fi.Mode().Perm()
+	wantMode := os.FileMode(0755)
+	if gotMode != wantMode {
+		t.Errorf("file permissions changed: got %04o, want %04o", gotMode, wantMode)
+	}
+}
+
+// TestEditFile_PreservesRestrictedPermissions verifies that a 0600 file stays 0600.
+func TestEditFile_PreservesRestrictedPermissions(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "secret.txt")
+	if err := os.WriteFile(path, []byte("secret content\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := EditFile(path, "secret content", "updated content", EditOpts{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotMode := fi.Mode().Perm()
+	wantMode := os.FileMode(0600)
+	if gotMode != wantMode {
+		t.Errorf("file permissions changed: got %04o, want %04o", gotMode, wantMode)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Path confinement
 // ---------------------------------------------------------------------------
