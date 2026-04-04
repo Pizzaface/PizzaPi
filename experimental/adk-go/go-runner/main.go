@@ -21,6 +21,7 @@ import (
 	"os"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -41,6 +42,8 @@ type session struct {
 	relaySession *RelaySession // per-session /relay connection
 	cancel       context.CancelFunc
 	cleanup      func()
+	interceptor  ToolCallInterceptor // nil = no tool call interception
+	planMode     atomic.Bool         // updated dynamically by toggle_plan_mode tool calls
 	killed       bool
 	mu           sync.Mutex
 }
@@ -247,7 +250,7 @@ func (r *GoRunner) handleNewSession(data json.RawMessage) {
 	// Future: select provider based on model prefix, config, etc.
 	provider := r.providerFactory(r.logger)
 
-	// Create and track the session
+	// Create the session early so planMode can be closed over by the interceptor.
 	ctx, cancel := context.WithCancel(context.Background())
 	sess := &session{
 		sessionID: sessionID,
@@ -255,6 +258,19 @@ func (r *GoRunner) handleNewSession(data json.RawMessage) {
 		cancel:    cancel,
 		cleanup:   bootstrap.Cleanup,
 	}
+
+	// Build the tool call interceptor from runner config sandbox settings.
+	// On config failure we fall back to ModeBasic (fail-closed) rather than
+	// running without any sandbox enforcement (fail-open).
+	cfg, cfgErr := loadRunnerConfig(payload.Cwd, r.homeDir)
+	if cfgErr != nil {
+		r.logger.Printf("session %s: load runner config for interceptor: %v — enforcing basic sandbox (fail-closed)", shortID(sessionID), cfgErr)
+		cfg = runnerConfig{}
+		cfg.Sandbox.Mode = "basic"
+	}
+	sess.interceptor = NewGuardrailsInterceptor(cfg.Sandbox, payload.Cwd, r.homeDir, func() bool {
+		return sess.planMode.Load()
+	})
 	r.sessions.Store(sessionID, sess)
 
 	// Spawn the provider session
@@ -353,6 +369,25 @@ func (r *GoRunner) runSession(ctx context.Context, sess *session, pctx ProviderC
 
 			evType, _ := ev["type"].(string)
 			r.logger.Printf("session %s relay event: %v", shortID(sessionID), evType)
+
+			// Intercept tool_use blocks in message_update events.
+			// The Claude CLI manages its own tool execution today; this boundary
+			// will be enforced when the runner has its own native tool surface.
+			if evType == "message_update" && sess.interceptor != nil {
+				for _, block := range extractToolUseBlocks(ev) {
+					// Track plan mode changes so the interceptor sees the current state.
+					if block.Name == "toggle_plan_mode" {
+						if enabled, ok := block.Args["enabled"].(bool); ok {
+							sess.planMode.Store(enabled)
+							r.logger.Printf("session %s: plan mode → %v", shortID(sessionID), enabled)
+						}
+					}
+					if allowed, reason := sess.interceptor(block.Name, block.Args); !allowed {
+						r.logger.Printf("session %s: tool_use %q denied by interceptor: %s", shortID(sessionID), block.Name, reason)
+						// Future: emit tool_result error back to provider when native tool surface is wired.
+					}
+				}
+			}
 
 			// Forward via the /relay session connection — this goes through
 			// the server's event pipeline (state caching, image stripping,
