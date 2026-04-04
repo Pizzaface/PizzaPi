@@ -123,6 +123,11 @@ func relayEventToMsg(ev runner.RelayEvent) tea.Msg {
 			if b, err := json.Marshal(msg); err == nil {
 				json.Unmarshal(b, &mu)
 			}
+			// The adapter uses "id" but MessageUpdateMsg expects "messageId".
+			// Extract "id" as fallback when "messageId" wasn't populated.
+			if mu.MessageID == "" {
+				mu.MessageID, _ = msg["id"].(string)
+			}
 		}
 		return mu
 
@@ -140,6 +145,9 @@ func relayEventToMsg(ev runner.RelayEvent) tea.Msg {
 		if msg, ok := ev["message"].(map[string]any); ok {
 			if b, err := json.Marshal(msg); err == nil {
 				json.Unmarshal(b, &mu)
+			}
+			if mu.MessageID == "" {
+				mu.MessageID, _ = msg["id"].(string)
 			}
 		}
 		return mu
@@ -199,6 +207,10 @@ func parseStreamingDelta(ameRaw any) tea.Msg {
 		sd.Role, _ = partial["role"].(string)
 		if sd.Role == "" {
 			sd.Role = "assistant"
+		}
+		// Fallback ID if partial doesn't have one
+		if sd.MessageID == "" {
+			sd.MessageID = "streaming_partial"
 		}
 		// Convert content to []json.RawMessage
 		if content, ok := partial["content"].([]any); ok {

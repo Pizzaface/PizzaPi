@@ -197,6 +197,18 @@ func parseRelayJSON(data json.RawMessage) tea.Msg {
 		// Final message update
 		var mu MessageUpdateMsg
 		if json.Unmarshal(data, &mu) == nil {
+			// Adapter uses "id" in message, but MessageUpdateMsg expects "messageId".
+			// Extract "id" from the nested message object as fallback.
+			if mu.MessageID == "" {
+				var msgWrap struct {
+					Message struct {
+						ID string `json:"id"`
+					} `json:"message"`
+				}
+				if json.Unmarshal(data, &msgWrap) == nil && msgWrap.Message.ID != "" {
+					mu.MessageID = msgWrap.Message.ID
+				}
+			}
 			return mu
 		}
 	case "message_start":
@@ -217,6 +229,15 @@ func parseRelayJSON(data json.RawMessage) tea.Msg {
 		if json.Unmarshal(data, &raw) == nil && len(raw.Message) > 0 {
 			var mu MessageUpdateMsg
 			if json.Unmarshal(raw.Message, &mu) == nil {
+				// Fallback: adapter uses "id", not "messageId"
+				if mu.MessageID == "" {
+					var idObj struct {
+						ID string `json:"id"`
+					}
+					if json.Unmarshal(raw.Message, &idObj) == nil {
+						mu.MessageID = idObj.ID
+					}
+				}
 				return mu
 			}
 		}
@@ -257,6 +278,9 @@ func parseStreamingDeltaFromMap(ame map[string]any) tea.Msg {
 		sd.MessageID, _ = partial["id"].(string)
 		if role, ok := partial["role"].(string); ok && role != "" {
 			sd.Role = role
+		}
+		if sd.MessageID == "" {
+			sd.MessageID = "streaming_partial"
 		}
 		// Content comes as []any from json.Unmarshal into map[string]any
 		if content, ok := partial["content"].([]any); ok {

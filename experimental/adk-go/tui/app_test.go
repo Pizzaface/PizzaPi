@@ -615,6 +615,293 @@ func TestViewVeryShortTerminal(t *testing.T) {
 	}
 }
 
+// --- Message ordering tests ---
+
+// TestMessageEndUpsertsById verifies that message_end with "id" field
+// correctly upserts the existing streaming message (Bug 5 regression test).
+func TestMessageEndUpsertsById(t *testing.T) {
+	app := New(nil)
+
+	// Simulate: message_start creates placeholder
+	next, _ := app.Update(MessageStartMsg{MessageID: "msg_01", Role: "assistant"})
+	app = next.(App)
+	if len(app.state.Messages) != 1 {
+		t.Fatalf("expected 1 message after start, got %d", len(app.state.Messages))
+	}
+
+	// Simulate: streaming delta fills in text
+	content, _ := json.Marshal([]map[string]any{{"type": "text", "text": "Hello"}})
+	var blocks []json.RawMessage
+	json.Unmarshal(content, &blocks)
+	next, _ = app.Update(StreamingDeltaMsg{MessageID: "msg_01", Role: "assistant", Content: blocks})
+	app = next.(App)
+	if len(app.state.Messages) != 1 {
+		t.Fatalf("expected 1 message after delta, got %d", len(app.state.Messages))
+	}
+
+	// Simulate: message_end from relayEventToMsg (adapter uses "id" not "messageId")
+	// This is the actual relay event shape from the Claude adapter.
+	endEvent := map[string]any{
+		"type": "message_end",
+		"message": map[string]any{
+			"role":      "assistant",
+			"id":        "msg_01", // NOTE: "id" not "messageId"
+			"content":   []any{map[string]any{"type": "text", "text": "Hello world"}},
+			"timestamp": float64(12345),
+		},
+	}
+	endMsg := relayEventToMsg(endEvent)
+	mu, ok := endMsg.(MessageUpdateMsg)
+	if !ok {
+		t.Fatalf("expected MessageUpdateMsg from message_end, got %T", endMsg)
+	}
+	// KEY ASSERTION: MessageID must be populated from "id" field
+	if mu.MessageID != "msg_01" {
+		t.Fatalf("Bug 5: message_end MessageID empty — 'id' field not extracted. Got %q", mu.MessageID)
+	}
+
+	next, _ = app.Update(mu)
+	app = next.(App)
+
+	// Must still be 1 message (upsert, not append)
+	if len(app.state.Messages) != 1 {
+		t.Fatalf("Bug 5: message_end created duplicate — expected 1 message, got %d", len(app.state.Messages))
+	}
+	if app.state.Messages[0].Text != "Hello world" {
+		t.Errorf("expected final text 'Hello world', got %q", app.state.Messages[0].Text)
+	}
+}
+
+// TestFinalMessageUpdateById verifies message_update with "id" field upserts.
+func TestFinalMessageUpdateById(t *testing.T) {
+	app := New(nil)
+	app.state.Messages = []DisplayMessage{{ID: "msg_01", Role: "assistant", Text: "partial"}}
+
+	event := map[string]any{
+		"type": "message_update",
+		"message": map[string]any{
+			"role":    "assistant",
+			"id":      "msg_01",
+			"content": []any{map[string]any{"type": "text", "text": "complete"}},
+		},
+	}
+	msg := relayEventToMsg(event)
+	mu, ok := msg.(MessageUpdateMsg)
+	if !ok {
+		t.Fatalf("expected MessageUpdateMsg, got %T", msg)
+	}
+	if mu.MessageID != "msg_01" {
+		t.Fatalf("MessageID not extracted from 'id' field: got %q", mu.MessageID)
+	}
+
+	next, _ := app.Update(mu)
+	app = next.(App)
+
+	if len(app.state.Messages) != 1 {
+		t.Fatalf("expected 1 message (upsert), got %d", len(app.state.Messages))
+	}
+}
+
+// TestSessionActivePreservesLocalUserMessage verifies that session_active
+// doesn't wipe locally-added user messages (Bug 1 regression test).
+func TestSessionActivePreservesLocalUserMessage(t *testing.T) {
+	app := New(nil)
+
+	// User types a message locally (no ID — locally added)
+	app.state.Messages = []DisplayMessage{
+		{Role: "user", Text: "hello from user"},
+	}
+
+	// session_active arrives with only system messages (adapter hasn't seen user msg yet)
+	stateJSON, _ := json.Marshal([]map[string]any{
+		{"role": "assistant", "content": []any{map[string]any{"type": "text", "text": "Hi"}}, "messageId": "msg_01"},
+	})
+	var rawMsgs []json.RawMessage
+	json.Unmarshal(stateJSON, &rawMsgs)
+
+	sa := SessionActiveMsg{}
+	sa.State.Messages = rawMsgs
+
+	next, _ := app.Update(sa)
+	app = next.(App)
+
+	// Should have both: the assistant message from snapshot + the local user message
+	hasUser := false
+	hasAssistant := false
+	for _, m := range app.state.Messages {
+		if m.Role == "user" && m.Text == "hello from user" {
+			hasUser = true
+		}
+		if m.Role == "assistant" {
+			hasAssistant = true
+		}
+	}
+	if !hasUser {
+		t.Error("Bug 1: session_active wiped the locally-added user message")
+	}
+	if !hasAssistant {
+		t.Error("expected assistant message from snapshot")
+	}
+}
+
+// TestStreamingDeltaEmptyIdGetsFallback verifies that streaming deltas
+// with empty ID get a fallback (Bug 3 regression test).
+func TestStreamingDeltaEmptyIdGetsFallback(t *testing.T) {
+	// Simulate an assistantMessageEvent with no id in partial
+	event := map[string]any{
+		"type": "message_update",
+		"assistantMessageEvent": map[string]any{
+			"type":  "text_delta",
+			"delta": "Hello",
+			"partial": map[string]any{
+				"role":    "assistant",
+				"content": []any{map[string]any{"type": "text", "text": "Hello"}},
+				// NOTE: no "id" field
+			},
+		},
+	}
+	msg := relayEventToMsg(event)
+	sd, ok := msg.(StreamingDeltaMsg)
+	if !ok {
+		t.Fatalf("expected StreamingDeltaMsg, got %T", msg)
+	}
+	if sd.MessageID == "" {
+		t.Fatal("Bug 3: empty MessageID not given fallback")
+	}
+	if sd.MessageID != "streaming_partial" {
+		t.Errorf("expected fallback 'streaming_partial', got %q", sd.MessageID)
+	}
+}
+
+// TestFullConversationOrdering simulates a realistic multi-turn conversation
+// and verifies the final message order is correct.
+func TestFullConversationOrdering(t *testing.T) {
+	app := New(nil)
+
+	// 1. User sends a message
+	app.state.Input.SetValue("explain main.go")
+	next, _ := app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	app = next.(App)
+	// Messages: [user:"explain main.go"]
+
+	// 2. message_start
+	next, _ = app.Update(MessageStartMsg{MessageID: "msg_01", Role: "assistant"})
+	app = next.(App)
+	// Messages: [user, assistant:""]
+
+	// 3. Streaming deltas
+	for _, text := range []string{"This", "This file", "This file contains"} {
+		content, _ := json.Marshal([]map[string]any{{"type": "text", "text": text}})
+		var blocks []json.RawMessage
+		json.Unmarshal(content, &blocks)
+		next, _ = app.Update(StreamingDeltaMsg{MessageID: "msg_01", Role: "assistant", Content: blocks})
+		app = next.(App)
+	}
+	// Messages: [user, assistant:"This file contains"]
+
+	// 4. Tool execution
+	next, _ = app.Update(ToolExecutionStartMsg{ToolCallID: "t1", ToolName: "read"})
+	app = next.(App)
+
+	next, _ = app.Update(ToolResultMsg{ToolName: "read", Content: "package main...", Timestamp: 1000})
+	app = next.(App)
+	// Messages: [user, assistant:"This file contains", tool_result:"package main..."]
+
+	next, _ = app.Update(ToolExecutionEndMsg{ToolCallID: "t1"})
+	app = next.(App)
+
+	// 5. More streaming
+	content2, _ := json.Marshal([]map[string]any{{"type": "text", "text": "After reading the file, I can see..."}})
+	var blocks2 []json.RawMessage
+	json.Unmarshal(content2, &blocks2)
+	next, _ = app.Update(StreamingDeltaMsg{MessageID: "msg_02", Role: "assistant", Content: blocks2})
+	app = next.(App)
+
+	// 6. Final message
+	content3, _ := json.Marshal([]map[string]any{{"type": "text", "text": "After reading the file, I can see it's a Go entry point."}})
+	var blocks3 []json.RawMessage
+	json.Unmarshal(content3, &blocks3)
+	next, _ = app.Update(MessageUpdateMsg{MessageID: "msg_02", Role: "assistant", Content: blocks3, Timestamp: 2000})
+	app = next.(App)
+
+	// Verify order
+	if len(app.state.Messages) < 4 {
+		t.Fatalf("expected at least 4 messages, got %d", len(app.state.Messages))
+	}
+
+	// Check roles in order
+	expected := []string{"user", "assistant", "tool_result", "assistant"}
+	for i, exp := range expected {
+		if i >= len(app.state.Messages) {
+			break
+		}
+		if app.state.Messages[i].Role != exp {
+			t.Errorf("message[%d]: expected role %q, got %q", i, exp, app.state.Messages[i].Role)
+		}
+	}
+
+	// Verify no duplicates — msg_01 should appear exactly once
+	count01 := 0
+	for _, m := range app.state.Messages {
+		if m.ID == "msg_01" {
+			count01++
+		}
+	}
+	if count01 != 1 {
+		t.Errorf("expected msg_01 exactly once, found %d times", count01)
+	}
+
+	// Streaming should be cleared
+	if app.state.IsStreaming {
+		t.Error("expected IsStreaming false after final message")
+	}
+}
+
+// TestParseRelayJSON_MessageEndExtractsId verifies the relay JSON parser
+// correctly extracts "id" from message_end events.
+func TestParseRelayJSON_MessageEndExtractsId(t *testing.T) {
+	data := mustJSONBytes(t, map[string]any{
+		"type": "message_end",
+		"message": map[string]any{
+			"role":      "assistant",
+			"id":        "msg_42",
+			"content":   []any{map[string]any{"type": "text", "text": "done"}},
+			"timestamp": float64(99999),
+		},
+	})
+
+	msg := parseRelayJSON(data)
+	mu, ok := msg.(MessageUpdateMsg)
+	if !ok {
+		t.Fatalf("expected MessageUpdateMsg, got %T", msg)
+	}
+	if mu.MessageID != "msg_42" {
+		t.Errorf("expected MessageID 'msg_42', got %q", mu.MessageID)
+	}
+}
+
+// TestParseRelayJSON_MessageUpdateExtractsId verifies final message_update
+// extracts "id" from the nested message object.
+func TestParseRelayJSON_MessageUpdateExtractsId(t *testing.T) {
+	data := mustJSONBytes(t, map[string]any{
+		"type": "message_update",
+		"message": map[string]any{
+			"role":    "assistant",
+			"id":      "msg_77",
+			"content": []any{map[string]any{"type": "text", "text": "hi"}},
+		},
+	})
+
+	msg := parseRelayJSON(data)
+	mu, ok := msg.(MessageUpdateMsg)
+	if !ok {
+		t.Fatalf("expected MessageUpdateMsg, got %T", msg)
+	}
+	if mu.MessageID != "msg_77" {
+		t.Errorf("expected MessageID 'msg_77', got %q", mu.MessageID)
+	}
+}
+
 func mustJSONBytes(t *testing.T, v any) json.RawMessage {
 	t.Helper()
 	b, err := json.Marshal(v)

@@ -132,7 +132,24 @@ func update(a App, msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case SessionActiveMsg:
-		s.Messages = parseMessages(msg.State.Messages)
+		// Merge: parse incoming snapshot, then preserve any trailing local-only
+		// user messages (appended via Enter but not yet in the adapter's history).
+		incoming := parseMessages(msg.State.Messages)
+		incomingIDs := make(map[string]bool, len(incoming))
+		for _, m := range incoming {
+			if m.ID != "" {
+				incomingIDs[m.ID] = true
+			}
+		}
+		// Collect local-only messages: user messages without IDs, or with IDs
+		// not present in the incoming snapshot, that come after the last known message.
+		for _, m := range s.Messages {
+			if m.Role == "user" && m.ID == "" {
+				// Locally-added user message (no ID) — preserve it
+				incoming = append(incoming, m)
+			}
+		}
+		s.Messages = incoming
 		if msg.State.Model != nil && msg.State.Model.ID != "" {
 			s.ModelID = msg.State.Model.ID
 		}
