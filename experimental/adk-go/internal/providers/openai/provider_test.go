@@ -89,12 +89,12 @@ func TestProvider_CallsAPIWithCredentials(t *testing.T) {
 			return
 		}
 
-		// Verify it hits the Responses API endpoint
-		if r.URL.Path != "/responses" {
-			t.Errorf("expected /responses endpoint, got %s", r.URL.Path)
+		// Verify it hits the Codex Responses API endpoint
+		if r.URL.Path != "/codex/responses" {
+			t.Errorf("expected /codex/responses endpoint, got %s", r.URL.Path)
 		}
 
-		var req responsesRequest
+		var req codexRequest
 		json.NewDecoder(r.Body).Decode(&req)
 
 		if req.Model != "gpt-4o" {

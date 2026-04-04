@@ -5,12 +5,14 @@ package openai
 import (
 	"bytes"
 	"context"
+	b64 "encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -19,11 +21,13 @@ import (
 
 const (
 	DefaultModel   = "gpt-4o"
-	DefaultBaseURL = "https://api.openai.com/v1"
+	DefaultBaseURL = "https://chatgpt.com/backend-api"
 	ProviderName   = "openai"
 	APIKeyEnvVar   = "OPENAI_API_KEY"
 	// OAuth provider ID for credential storage
 	OAuthProviderID = "openai-codex"
+	// JWT claim path for extracting account ID
+	JWTClaimPath = "https://api.openai.com/auth"
 )
 
 // RelayEvent is a PizzaPi relay-compatible event map.
@@ -191,7 +195,7 @@ func (p *Provider) runTurn(ctx context.Context, prompt string) {
 		"message": map[string]any{"role": "assistant", "id": assistantMsgID},
 	})
 
-	response, inputTok, outputTok, err := p.callResponsesAPI(ctx)
+	response, inputTok, outputTok, err := p.callCodexResponsesAPI(ctx)
 	if err != nil {
 		p.logger.Printf("[openai] API error: %v", err)
 		p.emit(RelayEvent{
@@ -231,10 +235,11 @@ func (p *Provider) runTurn(ctx context.Context, prompt string) {
 	})
 }
 
-// callResponsesAPI makes a POST to the OpenAI Responses API endpoint.
-// The Responses API is required for OAuth tokens from ChatGPT subscriptions.
+// callCodexResponsesAPI makes a POST to the ChatGPT Codex Responses API.
+// This is the backend used by Codex CLI with ChatGPT OAuth tokens.
+// URL: https://chatgpt.com/backend-api/codex/responses
 // Returns the assistant response text and token counts.
-func (p *Provider) callResponsesAPI(ctx context.Context) (string, int, int, error) {
+func (p *Provider) callCodexResponsesAPI(ctx context.Context) (string, int, int, error) {
 	p.mu.Lock()
 	msgs := make([]chatMessage, len(p.messages))
 	copy(msgs, p.messages)
@@ -243,12 +248,27 @@ func (p *Provider) callResponsesAPI(ctx context.Context) (string, int, int, erro
 	// Convert chat messages to Responses API input format
 	var input []responsesInput
 	for _, m := range msgs {
+		if m.Role == "system" {
+			continue // system prompt goes in instructions field
+		}
 		input = append(input, responsesInput{Role: m.Role, Content: m.Content})
 	}
 
-	body := responsesRequest{
-		Model: p.model,
-		Input: input,
+	// Extract system prompt for instructions
+	var instructions string
+	for _, m := range msgs {
+		if m.Role == "system" {
+			instructions = m.Content
+			break
+		}
+	}
+
+	body := codexRequest{
+		Model:        p.model,
+		Input:        input,
+		Instructions: instructions,
+		Store:        false,
+		Stream:       false, // non-streaming for now
 	}
 
 	bodyJSON, err := json.Marshal(body)
@@ -256,12 +276,24 @@ func (p *Provider) callResponsesAPI(ctx context.Context) (string, int, int, erro
 		return "", 0, 0, err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", p.baseURL+"/responses", bytes.NewReader(bodyJSON))
+	// Resolve the Codex responses URL
+	apiURL := resolveCodexURL(p.baseURL)
+
+	req, err := http.NewRequestWithContext(ctx, "POST", apiURL, bytes.NewReader(bodyJSON))
 	if err != nil {
 		return "", 0, 0, err
 	}
+
+	// Set required Codex headers
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+p.apiKey)
+	req.Header.Set("OpenAI-Beta", "responses=experimental")
+	req.Header.Set("originator", "pizzapi")
+
+	// Extract and set account ID from JWT
+	if accountID := extractAccountIDFromJWT(p.apiKey); accountID != "" {
+		req.Header.Set("chatgpt-account-id", accountID)
+	}
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -301,6 +333,62 @@ func (p *Provider) callResponsesAPI(ctx context.Context) (string, int, int, erro
 	return text, inputTok, outputTok, nil
 }
 
+// resolveCodexURL builds the Codex responses API URL from a base URL.
+func resolveCodexURL(baseURL string) string {
+	if baseURL == "" {
+		baseURL = DefaultBaseURL
+	}
+	// Strip trailing slashes
+	for len(baseURL) > 0 && baseURL[len(baseURL)-1] == '/' {
+		baseURL = baseURL[:len(baseURL)-1]
+	}
+	// Ensure /codex/responses suffix
+	if !strings.Contains(baseURL, "/codex/responses") {
+		if !strings.Contains(baseURL, "/codex") {
+			baseURL += "/codex/responses"
+		} else {
+			baseURL += "/responses"
+		}
+	}
+	return baseURL
+}
+
+
+
+// extractAccountIDFromJWT decodes the JWT and extracts the ChatGPT account ID.
+func extractAccountIDFromJWT(token string) string {
+	parts := strings.SplitN(token, ".", 3)
+	if len(parts) != 3 {
+		return ""
+	}
+	// Add padding if needed
+	payload := parts[1]
+	switch len(payload) % 4 {
+	case 2:
+		payload += "=="
+	case 3:
+		payload += "="
+	}
+	// base64url → standard base64
+	stdPayload := strings.ReplaceAll(strings.ReplaceAll(payload, "-", "+"), "_", "/")
+	decoded, err := b64Decode(stdPayload)
+	if err != nil {
+		return ""
+	}
+	var claims map[string]any
+	if err := json.Unmarshal(decoded, &claims); err != nil {
+		return ""
+	}
+	auth, ok := claims[JWTClaimPath].(map[string]any)
+	if !ok {
+		return ""
+	}
+	accountID, _ := auth["chatgpt_account_id"].(string)
+	return accountID
+}
+
+
+
 func (p *Provider) emit(ev RelayEvent) {
 	select {
 	case p.events <- ev:
@@ -338,16 +426,19 @@ type chatMessage struct {
 	Content string `json:"content"`
 }
 
-// --- Responses API types (https://platform.openai.com/docs/api-reference/responses) ---
+// --- Codex Responses API types (chatgpt.com/backend-api/codex/responses) ---
 
 type responsesInput struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
 }
 
-type responsesRequest struct {
-	Model string           `json:"model"`
-	Input []responsesInput `json:"input"`
+type codexRequest struct {
+	Model        string           `json:"model"`
+	Input        []responsesInput `json:"input"`
+	Instructions string           `json:"instructions,omitempty"`
+	Store        bool             `json:"store"`
+	Stream       bool             `json:"stream"`
 }
 
 type responsesResponse struct {
@@ -365,6 +456,9 @@ type responsesResponse struct {
 	} `json:"usage"`
 	Status string `json:"status"`
 }
+
+// b64Decode is a helper for base64 standard decoding.
+var b64Decode = b64.StdEncoding.DecodeString
 
 func systemPrompt(cwd string) string {
 	return fmt.Sprintf(`You are a helpful coding assistant. You have access to tools for reading files, writing files, editing files, and running bash commands.
