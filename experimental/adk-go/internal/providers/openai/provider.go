@@ -191,7 +191,7 @@ func (p *Provider) runTurn(ctx context.Context, prompt string) {
 		"message": map[string]any{"role": "assistant", "id": assistantMsgID},
 	})
 
-	response, inputTok, outputTok, err := p.callCompletionsAPI(ctx)
+	response, inputTok, outputTok, err := p.callResponsesAPI(ctx)
 	if err != nil {
 		p.logger.Printf("[openai] API error: %v", err)
 		p.emit(RelayEvent{
@@ -231,17 +231,24 @@ func (p *Provider) runTurn(ctx context.Context, prompt string) {
 	})
 }
 
-// callCompletionsAPI makes a POST to the OpenAI chat completions endpoint.
+// callResponsesAPI makes a POST to the OpenAI Responses API endpoint.
+// The Responses API is required for OAuth tokens from ChatGPT subscriptions.
 // Returns the assistant response text and token counts.
-func (p *Provider) callCompletionsAPI(ctx context.Context) (string, int, int, error) {
+func (p *Provider) callResponsesAPI(ctx context.Context) (string, int, int, error) {
 	p.mu.Lock()
 	msgs := make([]chatMessage, len(p.messages))
 	copy(msgs, p.messages)
 	p.mu.Unlock()
 
-	body := completionRequest{
-		Model:    p.model,
-		Messages: msgs,
+	// Convert chat messages to Responses API input format
+	var input []responsesInput
+	for _, m := range msgs {
+		input = append(input, responsesInput{Role: m.Role, Content: m.Content})
+	}
+
+	body := responsesRequest{
+		Model: p.model,
+		Input: input,
 	}
 
 	bodyJSON, err := json.Marshal(body)
@@ -249,7 +256,7 @@ func (p *Provider) callCompletionsAPI(ctx context.Context) (string, int, int, er
 		return "", 0, 0, err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", p.baseURL+"/chat/completions", bytes.NewReader(bodyJSON))
+	req, err := http.NewRequestWithContext(ctx, "POST", p.baseURL+"/responses", bytes.NewReader(bodyJSON))
 	if err != nil {
 		return "", 0, 0, err
 	}
@@ -267,18 +274,29 @@ func (p *Provider) callCompletionsAPI(ctx context.Context) (string, int, int, er
 		return "", 0, 0, fmt.Errorf("OpenAI API error (status %d): %s", resp.StatusCode, string(respBody))
 	}
 
-	var result completionResponse
+	var result responsesResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return "", 0, 0, fmt.Errorf("decode response: %w", err)
 	}
 
-	if len(result.Choices) == 0 {
-		return "", 0, 0, fmt.Errorf("empty response (no choices)")
+	// Extract text from output
+	var text string
+	for _, output := range result.Output {
+		if output.Type == "message" {
+			for _, content := range output.Content {
+				if content.Type == "output_text" {
+					text += content.Text
+				}
+			}
+		}
 	}
 
-	text := result.Choices[0].Message.Content
-	inputTok := result.Usage.PromptTokens
-	outputTok := result.Usage.CompletionTokens
+	if text == "" {
+		return "", 0, 0, fmt.Errorf("empty response (no output text)")
+	}
+
+	inputTok := result.Usage.InputTokens
+	outputTok := result.Usage.OutputTokens
 
 	return text, inputTok, outputTok, nil
 }
@@ -320,22 +338,32 @@ type chatMessage struct {
 	Content string `json:"content"`
 }
 
-type completionRequest struct {
-	Model    string        `json:"model"`
-	Messages []chatMessage `json:"messages"`
+// --- Responses API types (https://platform.openai.com/docs/api-reference/responses) ---
+
+type responsesInput struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
 }
 
-type completionResponse struct {
-	Choices []struct {
-		Message struct {
-			Content string `json:"content"`
-		} `json:"message"`
-		FinishReason string `json:"finish_reason"`
-	} `json:"choices"`
+type responsesRequest struct {
+	Model string           `json:"model"`
+	Input []responsesInput `json:"input"`
+}
+
+type responsesResponse struct {
+	ID     string `json:"id"`
+	Output []struct {
+		Type    string `json:"type"`
+		Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
+	} `json:"output"`
 	Usage struct {
-		PromptTokens     int `json:"prompt_tokens"`
-		CompletionTokens int `json:"completion_tokens"`
+		InputTokens  int `json:"input_tokens"`
+		OutputTokens int `json:"output_tokens"`
 	} `json:"usage"`
+	Status string `json:"status"`
 }
 
 func systemPrompt(cwd string) string {

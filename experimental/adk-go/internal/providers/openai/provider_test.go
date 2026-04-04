@@ -82,35 +82,49 @@ func TestProvider_StopBeforeStart(t *testing.T) {
 }
 
 func TestProvider_CallsAPIWithCredentials(t *testing.T) {
-	// Mock OpenAI API server
+	// Mock OpenAI Responses API server
 	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer test-access-token" {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
 
-		var req completionRequest
+		// Verify it hits the Responses API endpoint
+		if r.URL.Path != "/responses" {
+			t.Errorf("expected /responses endpoint, got %s", r.URL.Path)
+		}
+
+		var req responsesRequest
 		json.NewDecoder(r.Body).Decode(&req)
 
 		if req.Model != "gpt-4o" {
 			t.Errorf("expected model gpt-4o, got %s", req.Model)
 		}
 
-		json.NewEncoder(w).Encode(completionResponse{
-			Choices: []struct {
-				Message struct {
-					Content string `json:"content"`
-				} `json:"message"`
-				FinishReason string `json:"finish_reason"`
+		json.NewEncoder(w).Encode(responsesResponse{
+			ID: "resp_123",
+			Output: []struct {
+				Type    string `json:"type"`
+				Content []struct {
+					Type string `json:"type"`
+					Text string `json:"text"`
+				} `json:"content"`
 			}{
-				{Message: struct {
-					Content string `json:"content"`
-				}{Content: "Hello from mock!"}, FinishReason: "stop"},
+				{
+					Type: "message",
+					Content: []struct {
+						Type string `json:"type"`
+						Text string `json:"text"`
+					}{
+						{Type: "output_text", Text: "Hello from mock!"},
+					},
+				},
 			},
 			Usage: struct {
-				PromptTokens     int `json:"prompt_tokens"`
-				CompletionTokens int `json:"completion_tokens"`
-			}{PromptTokens: 10, CompletionTokens: 5},
+				InputTokens  int `json:"input_tokens"`
+				OutputTokens int `json:"output_tokens"`
+			}{InputTokens: 10, OutputTokens: 5},
+			Status: "completed",
 		})
 	}))
 	defer mockServer.Close()
