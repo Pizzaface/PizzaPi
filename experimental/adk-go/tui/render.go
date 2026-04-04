@@ -184,6 +184,11 @@ func renderThinkingBlock(text string, state AppState) string {
 // --- Tool result ---
 
 func renderToolResult(msg DisplayMessage, width int) string {
+	// At very narrow widths (< 40), use compact inline rendering for all tools
+	if width < 40 {
+		return renderCompactToolResult(msg)
+	}
+
 	switch msg.ToolName {
 	case "bash":
 		return renderBashResult(msg, width)
@@ -198,12 +203,32 @@ func renderToolResult(msg DisplayMessage, width int) string {
 	}
 }
 
+// renderCompactToolResult renders a minimal tool result for narrow terminals.
+func renderCompactToolResult(msg DisplayMessage) string {
+	icon := "✓"
+	style := lipgloss.NewStyle().Foreground(colorTool)
+	if msg.IsError {
+		icon = "✗"
+		style = lipgloss.NewStyle().Foreground(colorError)
+	}
+	text := msg.Text
+	if len(text) > 60 {
+		text = text[:57] + "..."
+	}
+	// Replace newlines with spaces for compact display
+	text = strings.ReplaceAll(text, "\n", " ")
+	return style.Render(fmt.Sprintf("  %s %s: %s", icon, msg.ToolName, text)) + "\n"
+}
+
 // --- Bash tool result ---
 
 func renderBashResult(msg DisplayMessage, width int) string {
 	boxWidth := width - 4
 	if boxWidth < 20 {
 		boxWidth = 20
+	}
+	if boxWidth > width-2 {
+		boxWidth = width - 2
 	}
 
 	// Header
@@ -240,6 +265,9 @@ func renderEditResult(msg DisplayMessage, width int) string {
 	boxWidth := width - 4
 	if boxWidth < 20 {
 		boxWidth = 20
+	}
+	if boxWidth > width-2 {
+		boxWidth = width - 2
 	}
 
 	icon := "✓"
@@ -292,6 +320,9 @@ func renderReadResult(msg DisplayMessage, width int) string {
 	if boxWidth < 20 {
 		boxWidth = 20
 	}
+	if boxWidth > width-2 {
+		boxWidth = width - 2
+	}
 
 	icon := "✓"
 	headerColor := colorTool
@@ -342,6 +373,9 @@ func renderGenericToolResult(msg DisplayMessage, width int) string {
 	boxWidth := width - 4
 	if boxWidth < 20 {
 		boxWidth = 20
+	}
+	if boxWidth > width-2 {
+		boxWidth = width - 2
 	}
 
 	icon := "✓"

@@ -577,6 +577,44 @@ func TestFormatTokens(t *testing.T) {
 	}
 }
 
+// TestViewNarrowTerminal verifies the view doesn't panic at narrow widths.
+func TestViewNarrowTerminal(t *testing.T) {
+	app := New(nil)
+	app.state.Messages = []DisplayMessage{
+		{Role: "user", Text: "hello"},
+		{Role: "assistant", Text: "world"},
+		{Role: "tool_result", Text: "output text here", ToolName: "bash"},
+	}
+	app.state.Connected = true
+	app.state.ModelID = "gpt-5.4-codex-with-a-very-long-name"
+	app.state.Cwd = "/very/long/path/to/some/deeply/nested/directory"
+
+	// Test various narrow widths
+	for _, w := range []int{30, 40, 50, 60, 80, 120} {
+		next, _ := app.Update(tea.WindowSizeMsg{Width: w, Height: 20})
+		app = next.(App)
+		out := app.View()
+		if strings.TrimSpace(out) == "" {
+			t.Errorf("empty view at width %d", w)
+		}
+	}
+}
+
+// TestViewVeryShortTerminal verifies the view works with minimal height.
+func TestViewVeryShortTerminal(t *testing.T) {
+	app := New(nil)
+	app.state.Messages = []DisplayMessage{{Role: "user", Text: "hi"}}
+
+	for _, h := range []int{5, 6, 8, 10} {
+		next, _ := app.Update(tea.WindowSizeMsg{Width: 80, Height: h})
+		app = next.(App)
+		out := app.View()
+		if strings.TrimSpace(out) == "" {
+			t.Errorf("empty view at height %d", h)
+		}
+	}
+}
+
 func mustJSONBytes(t *testing.T, v any) json.RawMessage {
 	t.Helper()
 	b, err := json.Marshal(v)

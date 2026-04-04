@@ -69,6 +69,11 @@ func view(s AppState) string {
 // --- Header ---
 
 func renderHeader(s AppState) string {
+	width := s.Width
+	if width < 20 {
+		width = 20
+	}
+
 	// Connection indicator
 	connIcon := "●"
 	connStyle := lipgloss.NewStyle().Foreground(colorError)
@@ -86,7 +91,12 @@ func renderHeader(s AppState) string {
 				for _, name := range s.ActiveTools {
 					names = append(names, name)
 				}
-				label += " ⚡ " + strings.Join(names, ", ")
+				toolStr := strings.Join(names, ", ")
+				// Truncate tool list at narrow widths
+				if width < 60 && len(toolStr) > 15 {
+					toolStr = toolStr[:12] + "..."
+				}
+				label += " ⚡ " + toolStr
 			}
 		} else {
 			connStyle = lipgloss.NewStyle().Foreground(colorSecondary)
@@ -96,23 +106,34 @@ func renderHeader(s AppState) string {
 
 	left := fmt.Sprintf(" %s %s", connStyle.Render(connIcon), label)
 
-	// Right side: session name + model
+	// Right side: session name + model (omit parts at narrow widths)
 	var rightParts []string
-	if s.SessionName != "" {
+	if s.SessionName != "" && width >= 60 {
 		rightParts = append(rightParts,
 			lipgloss.NewStyle().Foreground(colorPrimary).Bold(true).Render(s.SessionName))
 	}
 	if s.ModelID != "" {
-		rightParts = append(rightParts, dimStyle.Render(s.ModelID))
+		model := s.ModelID
+		// Truncate long model names at narrow widths
+		if width < 80 && len(model) > 20 {
+			model = model[:17] + "..."
+		}
+		rightParts = append(rightParts, dimStyle.Render(model))
 	}
 	right := strings.Join(rightParts, "  ")
 
-	gap := s.Width - lipgloss.Width(left) - lipgloss.Width(right) - 1
+	gap := width - lipgloss.Width(left) - lipgloss.Width(right) - 1
 	if gap < 1 {
 		gap = 1
 	}
 
-	return left + strings.Repeat(" ", gap) + right
+	result := left + strings.Repeat(" ", gap) + right
+	// Hard truncate to width
+	resultRunes := []rune(result)
+	if len(resultRunes) > width {
+		result = string(resultRunes[:width])
+	}
+	return result
 }
 
 // --- Messages ---
@@ -164,13 +185,17 @@ func renderInput(s AppState) string {
 // --- Footer ---
 
 func renderFooter(s AppState, width int) string {
-	// Left: cwd (truncated with ~)
+	if width < 20 {
+		width = 20
+	}
+
+	// Left: cwd (truncated with ~ prefix replacement)
 	cwd := s.Cwd
 	if cwd == "" {
 		cwd = "~"
 	}
 
-	// Right: token stats + cost + model
+	// Right: token stats + cost + mode
 	var statsParts []string
 
 	if s.NumTurns > 0 {
@@ -181,15 +206,26 @@ func renderFooter(s AppState, width int) string {
 		}
 	}
 
-	if s.Mode != "" {
+	if s.Mode != "" && width >= 60 {
 		statsParts = append(statsParts, "["+s.Mode+"]")
 	}
 
-	left := " " + cwd
 	right := strings.Join(statsParts, "  ")
 	if right != "" {
 		right += " "
 	}
+
+	// Truncate cwd to fit: leave room for right side + minimum gap
+	maxCwdWidth := width - lipgloss.Width(right) - 3
+	if maxCwdWidth < 5 {
+		maxCwdWidth = 5
+	}
+	cwdRunes := []rune(cwd)
+	if len(cwdRunes) > maxCwdWidth {
+		// Truncate from the left with ...
+		cwd = "..." + string(cwdRunes[len(cwdRunes)-maxCwdWidth+3:])
+	}
+	left := " " + cwd
 
 	gap := width - lipgloss.Width(left) - lipgloss.Width(right)
 	if gap < 1 {
@@ -198,11 +234,10 @@ func renderFooter(s AppState, width int) string {
 
 	bar := left + strings.Repeat(" ", gap) + right
 
-	// Truncate
+	// Hard truncate
 	barRunes := []rune(bar)
 	if len(barRunes) > width {
-		barRunes = barRunes[:width]
-		bar = string(barRunes)
+		bar = string(barRunes[:width])
 	}
 
 	return dimStyle.Render(bar)

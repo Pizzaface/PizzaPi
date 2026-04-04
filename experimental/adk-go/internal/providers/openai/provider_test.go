@@ -97,8 +97,8 @@ func TestProvider_CallsAPIWithCredentials(t *testing.T) {
 		var req codexRequest
 		json.NewDecoder(r.Body).Decode(&req)
 
-		if req.Model != "codex-mini-latest" {
-			t.Errorf("expected model codex-mini-latest, got %s", req.Model)
+		if req.Model != DefaultModel {
+			t.Errorf("expected model %s, got %s", DefaultModel, req.Model)
 		}
 
 		json.NewEncoder(w).Encode(responsesResponse{
