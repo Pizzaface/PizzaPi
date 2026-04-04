@@ -328,3 +328,266 @@ func TestLoadConfigMalformedGlobal(t *testing.T) {
 		t.Fatal("expected error for malformed JSON")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Build — MCP config temp file creation
+// ---------------------------------------------------------------------------
+
+func TestBuildWithStdioMCPServerCreatesTempFile(t *testing.T) {
+	home := t.TempDir()
+	cwd := t.TempDir()
+	tmp := t.TempDir()
+
+	// Write a global config with one stdio MCP server.
+	globalCfg := map[string]any{
+		"mcpServers": map[string]any{
+			"godmother": map[string]any{
+				"command": "godmother",
+				"args":    []string{"serve"},
+				"env":     map[string]string{"API_KEY": "secret"},
+				"cwd":     "/repo",
+			},
+		},
+	}
+	writeJSON(t, filepath.Join(home, ".pizzapi", "config.json"), globalCfg)
+
+	session, err := Build(cwd, home, tmp)
+	if err != nil {
+		t.Fatalf("Build() error = %v", err)
+	}
+	defer session.Cleanup()
+
+	if session.MCPConfigPath == "" {
+		t.Fatal("expected MCPConfigPath to be set, got empty string")
+	}
+
+	// Verify the temp file exists and parses correctly.
+	data, err := os.ReadFile(session.MCPConfigPath)
+	if err != nil {
+		t.Fatalf("ReadFile(%q): %v", session.MCPConfigPath, err)
+	}
+
+	var out struct {
+		MCPServers map[string]json.RawMessage `json:"mcpServers"`
+	}
+	if err := json.Unmarshal(data, &out); err != nil {
+		t.Fatalf("unmarshal temp file: %v", err)
+	}
+	if len(out.MCPServers) != 1 {
+		t.Fatalf("expected 1 server, got %d", len(out.MCPServers))
+	}
+	raw, ok := out.MCPServers["godmother"]
+	if !ok {
+		t.Fatal("expected 'godmother' entry in mcpServers")
+	}
+
+	// Claude CLI stdio shape: command + args (no url/type).
+	var entry struct {
+		Command string            `json:"command"`
+		Args    []string          `json:"args"`
+		Cwd     string            `json:"cwd"`
+		Env     map[string]string `json:"env"`
+		URL     string            `json:"url"`
+		Type    string            `json:"type"`
+	}
+	if err := json.Unmarshal(raw, &entry); err != nil {
+		t.Fatalf("unmarshal server entry: %v", err)
+	}
+	if entry.Command != "godmother" {
+		t.Errorf("command = %q, want %q", entry.Command, "godmother")
+	}
+	if len(entry.Args) != 1 || entry.Args[0] != "serve" {
+		t.Errorf("args = %v, want [serve]", entry.Args)
+	}
+	if entry.Cwd != "/repo" {
+		t.Errorf("cwd = %q, want /repo", entry.Cwd)
+	}
+	if entry.Env["API_KEY"] != "secret" {
+		t.Errorf("env.API_KEY = %q, want secret", entry.Env["API_KEY"])
+	}
+	// Stdio entries must NOT have url or type.
+	if entry.URL != "" {
+		t.Errorf("stdio entry should not have url, got %q", entry.URL)
+	}
+	if entry.Type != "" {
+		t.Errorf("stdio entry should not have type, got %q", entry.Type)
+	}
+}
+
+func TestBuildWithStreamableMCPServerCreatesTempFile(t *testing.T) {
+	home := t.TempDir()
+	cwd := t.TempDir()
+	tmp := t.TempDir()
+
+	globalCfg := map[string]any{
+		"mcpServers": map[string]any{
+			"github": map[string]any{
+				"type":    "http",
+				"url":     "https://api.githubcopilot.com/mcp/",
+				"headers": map[string]string{"Authorization": "Bearer token"},
+			},
+		},
+	}
+	writeJSON(t, filepath.Join(home, ".pizzapi", "config.json"), globalCfg)
+
+	session, err := Build(cwd, home, tmp)
+	if err != nil {
+		t.Fatalf("Build() error = %v", err)
+	}
+	defer session.Cleanup()
+
+	if session.MCPConfigPath == "" {
+		t.Fatal("expected MCPConfigPath to be set")
+	}
+
+	data, err := os.ReadFile(session.MCPConfigPath)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+
+	var out struct {
+		MCPServers map[string]json.RawMessage `json:"mcpServers"`
+	}
+	if err := json.Unmarshal(data, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	raw, ok := out.MCPServers["github"]
+	if !ok {
+		t.Fatal("expected 'github' entry in mcpServers")
+	}
+
+	// Claude CLI streamable shape: url + type="http" (no command).
+	var entry struct {
+		URL     string            `json:"url"`
+		Type    string            `json:"type"`
+		Headers map[string]string `json:"headers"`
+		Command string            `json:"command"`
+	}
+	if err := json.Unmarshal(raw, &entry); err != nil {
+		t.Fatalf("unmarshal server entry: %v", err)
+	}
+	if entry.URL != "https://api.githubcopilot.com/mcp/" {
+		t.Errorf("url = %q, want https://api.githubcopilot.com/mcp/", entry.URL)
+	}
+	if entry.Type != "http" {
+		t.Errorf("type = %q, want http", entry.Type)
+	}
+	if entry.Headers["Authorization"] != "Bearer token" {
+		t.Errorf("headers.Authorization = %q, want 'Bearer token'", entry.Headers["Authorization"])
+	}
+	if entry.Command != "" {
+		t.Errorf("streamable entry should not have command, got %q", entry.Command)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Build — Cleanup removes temp file
+// ---------------------------------------------------------------------------
+
+func TestBuildCleanupRemovesTempFile(t *testing.T) {
+	home := t.TempDir()
+	cwd := t.TempDir()
+	tmp := t.TempDir()
+
+	globalCfg := map[string]any{
+		"mcpServers": map[string]any{
+			"svc": map[string]any{"command": "svc"},
+		},
+	}
+	writeJSON(t, filepath.Join(home, ".pizzapi", "config.json"), globalCfg)
+
+	session, err := Build(cwd, home, tmp)
+	if err != nil {
+		t.Fatalf("Build() error = %v", err)
+	}
+
+	path := session.MCPConfigPath
+	if path == "" {
+		t.Fatal("expected MCPConfigPath to be set")
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("temp file should exist before Cleanup: %v", err)
+	}
+
+	session.Cleanup()
+
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("expected temp file to be removed after Cleanup, got err=%v", err)
+	}
+}
+
+func TestBuildCleanupTwiceDoesNotPanic(t *testing.T) {
+	home := t.TempDir()
+	cwd := t.TempDir()
+	tmp := t.TempDir()
+
+	globalCfg := map[string]any{
+		"mcpServers": map[string]any{
+			"svc": map[string]any{"command": "svc"},
+		},
+	}
+	writeJSON(t, filepath.Join(home, ".pizzapi", "config.json"), globalCfg)
+
+	session, err := Build(cwd, home, tmp)
+	if err != nil {
+		t.Fatalf("Build() error = %v", err)
+	}
+
+	// Should not panic even when called twice.
+	session.Cleanup()
+	session.Cleanup()
+}
+
+// ---------------------------------------------------------------------------
+// Build — empty mcpServers produces no temp file
+// ---------------------------------------------------------------------------
+
+func TestBuildEmptyMCPServersNoTempFile(t *testing.T) {
+	home := t.TempDir()
+	cwd := t.TempDir()
+	tmp := t.TempDir()
+
+	// Config with empty mcpServers map.
+	globalCfg := map[string]any{
+		"mcpServers": map[string]any{},
+	}
+	writeJSON(t, filepath.Join(home, ".pizzapi", "config.json"), globalCfg)
+
+	session, err := Build(cwd, home, tmp)
+	if err != nil {
+		t.Fatalf("Build() error = %v", err)
+	}
+
+	if session.MCPConfigPath != "" {
+		t.Errorf("expected no MCPConfigPath for empty mcpServers, got %q", session.MCPConfigPath)
+	}
+
+	// tempDir should be empty — no file was created.
+	entries, err := os.ReadDir(tmp)
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("expected no temp files for empty mcpServers, found %d", len(entries))
+	}
+
+	// Cleanup should be callable without panic even with no file.
+	session.Cleanup()
+}
+
+func TestBuildNoConfigNoTempFile(t *testing.T) {
+	home := t.TempDir()
+	cwd := t.TempDir()
+	tmp := t.TempDir()
+
+	// No config files at all.
+	session, err := Build(cwd, home, tmp)
+	if err != nil {
+		t.Fatalf("Build() error = %v", err)
+	}
+
+	if session.MCPConfigPath != "" {
+		t.Errorf("expected no MCPConfigPath when no config exists, got %q", session.MCPConfigPath)
+	}
+	session.Cleanup()
+}

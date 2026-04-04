@@ -113,6 +113,86 @@ func TestMergeProjectPrecedencePreservesGlobalOnlyServers(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// ParsePizzaPiConfig — malformed / edge-case inputs
+// ---------------------------------------------------------------------------
+
+func TestParsePizzaPiConfigInvalidTopLevelJSON(t *testing.T) {
+	_, err := ParsePizzaPiConfig([]byte(`{not valid json`))
+	if err == nil {
+		t.Fatal("expected error for invalid JSON, got nil")
+	}
+}
+
+func TestParsePizzaPiConfigEmptyMCPServers(t *testing.T) {
+	cfg, err := ParsePizzaPiConfig([]byte(`{"mcpServers": {}}`))
+	if err != nil {
+		t.Fatalf("expected no error for empty mcpServers, got %v", err)
+	}
+	if len(cfg.Servers) != 0 {
+		t.Errorf("expected 0 servers, got %d", len(cfg.Servers))
+	}
+}
+
+func TestParsePizzaPiConfigNoMCPServersField(t *testing.T) {
+	// Config with no mcpServers key at all — should return empty config.
+	cfg, err := ParsePizzaPiConfig([]byte(`{"appendSystemPrompt": "hello"}`))
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if len(cfg.Servers) != 0 {
+		t.Errorf("expected 0 servers, got %d", len(cfg.Servers))
+	}
+}
+
+func TestParsePizzaPiConfigServerMissingCommandAndURL(t *testing.T) {
+	_, err := ParsePizzaPiConfig([]byte(`{
+		"mcpServers": {
+			"broken": {"env": {"FOO": "bar"}}
+		}
+	}`))
+	if err == nil {
+		t.Fatal("expected error for server missing command and url, got nil")
+	}
+}
+
+func TestParsePizzaPiConfigServerInvalidEntryJSON(t *testing.T) {
+	// Server entry value is not an object — unmarshal should fail.
+	_, err := ParsePizzaPiConfig([]byte(`{
+		"mcpServers": {
+			"bad": "not-an-object"
+		}
+	}`))
+	if err == nil {
+		t.Fatal("expected error for non-object server entry, got nil")
+	}
+}
+
+func TestParsePizzaPiConfigNullServerEntry(t *testing.T) {
+	// Null server entry: json.RawMessage will be `null`.
+	// Unmarshalling null into rawServer gives an empty struct,
+	// which fails the command/url check.
+	_, err := ParsePizzaPiConfig([]byte(`{
+		"mcpServers": {
+			"nullsvc": null
+		}
+	}`))
+	if err == nil {
+		t.Fatal("expected error for null server entry, got nil")
+	}
+}
+
+func TestParsePizzaPiConfigNullMCPServersField(t *testing.T) {
+	// null mcpServers value — should parse without error and produce empty config.
+	cfg, err := ParsePizzaPiConfig([]byte(`{"mcpServers": null}`))
+	if err != nil {
+		t.Fatalf("expected no error for null mcpServers, got %v", err)
+	}
+	if len(cfg.Servers) != 0 {
+		t.Errorf("expected 0 servers, got %d", len(cfg.Servers))
+	}
+}
+
 func TestMarshalClaudeConfigJSONUsesStableOrderingAndClaudeShape(t *testing.T) {
 	cfg := Config{Servers: map[string]Server{
 		"remote": {
