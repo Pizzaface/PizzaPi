@@ -25,8 +25,10 @@ import {
   ArrowDownCircle,
   ArrowUpCircle,
   Zap,
+  Plus,
   BellRing,
-  BellOff,
+  Trash2,
+  Zap as ZapIcon,
   BookOpen,
   CheckCircle2,
   AlertCircle,
@@ -55,6 +57,7 @@ import { isPendingTrigger, RESPONSE_TRIGGER_TYPES } from "../attention/trigger-u
 // ── Types ──────────────────────────────────────────────────────────────────
 
 export interface TriggerSubscription {
+  subscriptionId?: string;
   triggerType: string;
   runnerId: string;
   params?: Record<string, string | number | boolean | Array<string | number | boolean>>;
@@ -121,10 +124,15 @@ function sourceLabel(source: string): string {
   return source;
 }
 
-/** Truncate a session ID for display. */
+/** Truncate an identifier for compact display. */
 function truncateId(id: string, maxLen = 12): string {
   if (id.length <= maxLen) return id;
   return id.slice(0, maxLen) + "…";
+}
+
+function truncateSubscriptionLabel(id?: string, fallback?: string, maxLen = 18): string {
+  if (!id) return fallback ?? "subscription";
+  return truncateId(id, maxLen);
 }
 
 /** Derive the status of a linked session from its most recent trigger. */
@@ -772,6 +780,7 @@ function TriggerCatalogSection({ sessionId, triggerDefs, subscriptions, onSubscr
   const [pending, setPending] = React.useState<Set<string>>(new Set());
   // Track which trigger type has its param/filter form open
   const [paramFormOpen, setParamFormOpen] = React.useState<string | null>(null);
+  const [editingSubscriptionId, setEditingSubscriptionId] = React.useState<string | null>(null);
   // Track whether the open form is for editing (PUT) vs subscribing (POST)
   const [editMode, setEditMode] = React.useState(false);
   // Track param form values keyed by trigger type (string for scalar, string[] for multiselect)
@@ -781,30 +790,35 @@ function TriggerCatalogSection({ sessionId, triggerDefs, subscriptions, onSubscr
   const [filterValues, setFilterValues] = React.useState<Record<string, Record<string, string>>>({});
   const [filterMode, setFilterMode] = React.useState<Record<string, "and" | "or">>({});
 
+  const subscriptionsByType = React.useMemo(() => {
+    const map = new Map<string, TriggerSubscription[]>();
+    for (const sub of subscriptions) {
+      const existing = map.get(sub.triggerType);
+      if (existing) existing.push(sub);
+      else map.set(sub.triggerType, [sub]);
+    }
+    return map;
+  }, [subscriptions]);
+
   const subscribedTypes = React.useMemo(
     () => new Set(subscriptions.map((s) => s.triggerType)),
     [subscriptions],
   );
 
-  const subscriptionMap = React.useMemo(
-    () => new Map(subscriptions.map((s) => [s.triggerType, s])),
-    [subscriptions],
-  );
-
-  const handleUnsubscribe = React.useCallback(async (triggerType: string) => {
-    setPending((prev) => new Set([...prev, triggerType]));
+  const handleUnsubscribe = React.useCallback(async (triggerType: string, subscriptionId?: string) => {
+    const pendingKey = subscriptionId ?? triggerType;
+    setPending((prev) => new Set([...prev, pendingKey]));
     try {
-      await fetch(
-        `/api/sessions/${encodeURIComponent(sessionId)}/trigger-subscriptions/${encodeURIComponent(triggerType)}`,
-        { method: "DELETE", credentials: "include" },
-      );
+      const url = new URL(`/api/sessions/${encodeURIComponent(sessionId)}/trigger-subscriptions/${encodeURIComponent(triggerType)}`, window.location.origin);
+      if (subscriptionId) url.searchParams.set("subscriptionId", subscriptionId);
+      await fetch(url.toString().replace(window.location.origin, ""), { method: "DELETE", credentials: "include" });
       onSubscriptionsChange();
     } catch {
       // ignore
     } finally {
       setPending((prev) => {
         const next = new Set(prev);
-        next.delete(triggerType);
+        next.delete(pendingKey);
         return next;
       });
     }
@@ -857,11 +871,14 @@ function TriggerCatalogSection({ sessionId, triggerDefs, subscriptions, onSubscr
     filters?: Array<{ field: string; value: unknown; op?: string }>,
     filterModeVal?: string,
   ) => {
-    setPending((prev) => new Set([...prev, triggerType]));
+    const pendingKey = editingSubscriptionId ?? triggerType;
+    setPending((prev) => new Set([...prev, pendingKey]));
     setParamError(null);
     try {
+      const url = new URL(`/api/sessions/${encodeURIComponent(sessionId)}/trigger-subscriptions/${encodeURIComponent(triggerType)}`, window.location.origin);
+      if (editingSubscriptionId) url.searchParams.set("subscriptionId", editingSubscriptionId);
       const res = await fetch(
-        `/api/sessions/${encodeURIComponent(sessionId)}/trigger-subscriptions/${encodeURIComponent(triggerType)}`,
+        url.toString().replace(window.location.origin, ""),
         {
           method: "PUT",
           credentials: "include",
@@ -880,23 +897,24 @@ function TriggerCatalogSection({ sessionId, triggerDefs, subscriptions, onSubscr
       }
       setParamFormOpen(null);
       setEditMode(false);
+      setEditingSubscriptionId(null);
       onSubscriptionsChange();
     } catch {
       // ignore
     } finally {
       setPending((prev) => {
         const next = new Set(prev);
-        next.delete(triggerType);
+        next.delete(pendingKey);
         return next;
       });
     }
-  }, [sessionId, onSubscriptionsChange]);
+  }, [sessionId, onSubscriptionsChange, editingSubscriptionId]);
 
   /** Open the param/filter form pre-populated with the current subscription values. */
-  const handleEdit = React.useCallback((def: ServiceTriggerDef) => {
-    const sub = subscriptionMap.get(def.type);
+  const handleEdit = React.useCallback((def: ServiceTriggerDef, sub?: TriggerSubscription) => {
     setParamFormOpen(def.type);
     setEditMode(true);
+    setEditingSubscriptionId(sub?.subscriptionId ?? null);
     setParamError(null);
 
     // Pre-populate param values from current subscription
@@ -928,18 +946,20 @@ function TriggerCatalogSection({ sessionId, triggerDefs, subscriptions, onSubscr
     if (sub?.filterMode) {
       setFilterMode((prev) => ({ ...prev, [def.type]: sub.filterMode! }));
     }
-  }, [subscriptionMap]);
+  }, []);
 
-  const handleToggle = React.useCallback((def: ServiceTriggerDef, isSubscribed: boolean) => {
+  const handleToggle = React.useCallback((def: ServiceTriggerDef, isSubscribed: boolean, subscriptionId?: string) => {
     const hasParams = def.params && def.params.length > 0;
     const schemaProps = (def.schema as any)?.properties ?? {};
     const hasFilterableFields = Object.keys(schemaProps).length > 0;
 
     if (isSubscribed) {
-      handleUnsubscribe(def.type);
+      handleUnsubscribe(def.type, subscriptionId);
     } else if (hasParams || hasFilterableFields) {
       // Open param/filter form instead of subscribing directly
       setParamFormOpen(def.type);
+      setEditMode(false);
+      setEditingSubscriptionId(null);
       setParamError(null);
       // Pre-fill param defaults
       if (hasParams) {
@@ -1067,7 +1087,7 @@ function TriggerCatalogSection({ sessionId, triggerDefs, subscriptions, onSubscr
           defs={defs}
           subscribedCount={subscribedCount}
           subscribedTypes={subscribedTypes}
-          subscriptionMap={subscriptionMap}
+          subscriptionsByType={subscriptionsByType}
           pending={pending}
           paramFormOpen={paramFormOpen}
           editMode={editMode}
@@ -1079,7 +1099,7 @@ function TriggerCatalogSection({ sessionId, triggerDefs, subscriptions, onSubscr
           onEdit={handleEdit}
           onParamSubmit={handleParamSubmit}
           onParamFormOpen={setParamFormOpen}
-          onParamFormClose={() => { setParamFormOpen(null); setEditMode(false); setParamError(null); }}
+          onParamFormClose={() => { setParamFormOpen(null); setEditMode(false); setEditingSubscriptionId(null); setParamError(null); }}
           onParamValuesChange={setParamValues}
           onFilterValuesChange={setFilterValues}
           onFilterModeChange={setFilterMode}
@@ -1096,7 +1116,7 @@ interface ServiceCatalogAccordionProps {
   defs: ServiceTriggerDef[];
   subscribedCount: number;
   subscribedTypes: Set<string>;
-  subscriptionMap: Map<string, TriggerSubscription>;
+  subscriptionsByType: Map<string, TriggerSubscription[]>;
   pending: Set<string>;
   paramFormOpen: string | null;
   editMode: boolean;
@@ -1104,8 +1124,8 @@ interface ServiceCatalogAccordionProps {
   paramError: string | null;
   filterValues: Record<string, Record<string, string>>;
   filterModeValues: Record<string, "and" | "or">;
-  onToggle: (def: ServiceTriggerDef, isSubscribed: boolean) => void;
-  onEdit: (def: ServiceTriggerDef) => void;
+  onToggle: (def: ServiceTriggerDef, isSubscribed: boolean, subscriptionId?: string) => void;
+  onEdit: (def: ServiceTriggerDef, sub?: TriggerSubscription) => void;
   onParamSubmit: (def: ServiceTriggerDef) => void;
   onParamFormOpen: (type: string) => void;
   onParamFormClose: () => void;
@@ -1152,7 +1172,7 @@ function CollapsibleParamDefs({ params }: { params: ServiceTriggerParamDef[] }) 
 }
 
 function ServiceCatalogAccordion({
-  service, defs, subscribedCount, subscribedTypes, subscriptionMap,
+  service, defs, subscribedCount, subscribedTypes, subscriptionsByType,
   pending, paramFormOpen, editMode, paramValues, paramError,
   filterValues, filterModeValues,
   onToggle, onEdit, onParamSubmit, onParamFormOpen, onParamFormClose, onParamValuesChange,
@@ -1190,24 +1210,23 @@ function ServiceCatalogAccordion({
       {expanded && (
         <div className="border-t border-border/30 divide-y divide-border/50">
           {defs.map((def) => {
-            const isSubscribed = subscribedTypes.has(def.type);
+            const triggerSubscriptions = subscriptionsByType.get(def.type) ?? [];
+            const isSubscribed = triggerSubscriptions.length > 0;
             const isPendingToggle = pending.has(def.type);
             const isParamFormVisible = paramFormOpen === def.type;
-            const sub = subscriptionMap.get(def.type);
             const hasParams = def.params && def.params.length > 0;
 
             return (
               <div key={def.type} className="px-3 py-2">
+                {/* Header: label as primary, type as secondary */}
                 <div className="flex items-start gap-2">
+                  <ZapIcon className={cn("size-3.5 mt-0.5 shrink-0", isSubscribed ? "text-emerald-400" : "text-muted-foreground/40")} />
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-1.5 flex-wrap">
-                      <span className="text-xs font-mono text-foreground truncate">{def.type}</span>
-                      <Badge variant="outline" className="px-1 py-0 text-[10px] h-4 shrink-0">
-                        {def.label}
-                      </Badge>
+                      <span className="text-xs font-medium text-foreground">{def.label}</span>
                       {isSubscribed && (
                         <Badge variant="outline" className="px-1 py-0 text-[10px] h-4 border-emerald-500/40 text-emerald-400 shrink-0">
-                          subscribed
+                          {triggerSubscriptions.length} active
                         </Badge>
                       )}
                       {hasParams && !isSubscribed && (
@@ -1216,68 +1235,105 @@ function ServiceCatalogAccordion({
                         </Badge>
                       )}
                     </div>
+                    <span className="text-[10px] font-mono text-muted-foreground/50 block">{def.type}</span>
                     {def.description && (
                       <p className="text-[10px] text-muted-foreground/70 mt-0.5 leading-snug">
                         {def.description}
                       </p>
                     )}
-                    {/* Show current subscription params */}
-                    {isSubscribed && sub?.params && Object.keys(sub.params).length > 0 && (
-                      <div className="mt-1 flex items-center gap-1 flex-wrap">
-                        {Object.entries(sub.params).map(([k, v]) => (
-                          <Badge key={k} variant="outline" className="px-1 py-0 text-[9px] h-3.5 border-emerald-500/20 text-emerald-400/60">
-                            {k}={Array.isArray(v) ? v.map(String).join(", ") : String(v)}
-                          </Badge>
-                        ))}
-                      </div>
-                    )}
-                    {/* Collapsible param definitions when not subscribed */}
-                    {hasParams && !isSubscribed && !isParamFormVisible && def.params && (
-                      <CollapsibleParamDefs params={def.params} />
-                    )}
                   </div>
 
-                  <div className="flex items-center gap-0.5 shrink-0">
-                    {/* Edit button — only when subscribed and has configurable params/filters */}
-                    {isSubscribed && (hasParams || Object.keys((def.schema as any)?.properties ?? {}).length > 0) && (
-                      <button
-                        type="button"
-                        onClick={() => onEdit(def)}
-                        disabled={isPendingToggle}
-                        className={cn(
-                          "p-1 rounded transition-colors text-muted-foreground/50 hover:text-blue-400 hover:bg-blue-500/10",
-                          isPendingToggle && "opacity-50 cursor-not-allowed",
-                        )}
-                        title="Edit subscription params"
-                        aria-label={`Edit subscription for ${def.type}`}
-                      >
-                        <Pencil className="size-3.5" />
-                      </button>
+                  {/* Add button */}
+                  <button
+                    type="button"
+                    onClick={() => onToggle(def, false)}
+                    disabled={isPendingToggle}
+                    className={cn(
+                      "inline-flex items-center gap-1 shrink-0 px-2 py-1 rounded text-[11px] font-medium transition-colors",
+                      "text-muted-foreground hover:text-emerald-400 hover:bg-emerald-500/10 border border-transparent hover:border-emerald-500/20",
+                      isPendingToggle && "opacity-50 cursor-not-allowed",
                     )}
-                    <button
-                      type="button"
-                      onClick={() => onToggle(def, isSubscribed)}
-                      disabled={isPendingToggle}
-                      className={cn(
-                        "p-1 rounded transition-colors",
-                        isSubscribed
-                          ? "text-emerald-400 hover:text-red-400 hover:bg-red-500/10"
-                          : "text-muted-foreground/50 hover:text-emerald-400 hover:bg-emerald-500/10",
-                        isPendingToggle && "opacity-50 cursor-not-allowed",
-                      )}
-                      title={isSubscribed ? "Unsubscribe" : "Subscribe"}
-                      aria-label={isSubscribed ? `Unsubscribe from ${def.type}` : `Subscribe to ${def.type}`}
-                    >
-                      {isPendingToggle ? (
-                        <Loader2 className="size-3.5 animate-spin" />
-                      ) : isSubscribed ? (
-                        <BellOff className="size-3.5" />
-                      ) : (
-                        <BellRing className="size-3.5" />
-                      )}
-                    </button>
-                  </div>
+                    title={isSubscribed ? "Add another subscription" : "Subscribe"}
+                    aria-label={isSubscribed ? `Add another subscription for ${def.type}` : `Subscribe to ${def.type}`}
+                  >
+                    {isPendingToggle ? (
+                      <Loader2 className="size-3.5 animate-spin" />
+                    ) : (
+                      <Plus className="size-3.5" />
+                    )}
+                    Add
+                  </button>
                 </div>
+
+                {/* Existing subscriptions */}
+                {isSubscribed && (
+                  <div className="mt-2 ml-[22px] space-y-1.5">
+                    {triggerSubscriptions.map((sub, index) => {
+                      const subKey = sub.subscriptionId ?? `${def.type}-${index}`;
+                      const isPendingSub = pending.has(subKey) || isPendingToggle;
+                      const details: string[] = [];
+                      if (sub.params && Object.keys(sub.params).length > 0) {
+                        for (const [k, v] of Object.entries(sub.params)) {
+                          details.push(`${k}=${Array.isArray(v) ? v.map(String).join(", ") : String(v)}`);
+                        }
+                      }
+                      if (sub.filters && sub.filters.length > 0) {
+                        const mode = sub.filterMode === "or" ? "OR" : "AND";
+                        const filterStrs = sub.filters.map((f) => `${f.field}${f.op === "contains" ? "~" : "="}${Array.isArray(f.value) ? f.value.map(String).join("|") : String(f.value)}`);
+                        details.push(`${mode}(${filterStrs.join(", ")})`);
+                      }
+                      return (
+                        <div key={subKey} className="rounded-md border border-border/40 bg-muted/20 px-2.5 py-1.5">
+                          <div className="flex items-center gap-2">
+                            <div className="flex-1 min-w-0">
+                              {details.length > 0 ? (
+                                <p className="text-[10px] font-mono text-muted-foreground/50 truncate">
+                                  {details.join(" \u00B7 ")}
+                                </p>
+                              ) : (
+                                <p className="text-[10px] text-muted-foreground/40 italic">No filters</p>
+                              )}
+                            </div>
+                            <div className="flex items-center gap-0.5 shrink-0">
+                              {(hasParams || Object.keys((def.schema as any)?.properties ?? {}).length > 0) && (
+                                <button
+                                  type="button"
+                                  onClick={() => onEdit(def, sub)}
+                                  disabled={isPendingSub}
+                                  className={cn(
+                                    "p-1 rounded transition-colors text-muted-foreground/40 hover:text-blue-400 hover:bg-blue-500/10",
+                                    isPendingSub && "opacity-50 cursor-not-allowed",
+                                  )}
+                                  title="Edit subscription"
+                                  aria-label={`Edit subscription ${sub.subscriptionId ?? index + 1} for ${def.type}`}
+                                >
+                                  <Pencil className="size-3.5" />
+                                </button>
+                              )}
+                              <button
+                                type="button"
+                                onClick={() => onToggle(def, true, sub.subscriptionId)}
+                                disabled={isPendingSub}
+                                className={cn(
+                                  "p-1 rounded transition-colors text-muted-foreground/40 hover:text-red-400 hover:bg-red-500/10",
+                                  isPendingSub && "opacity-50 cursor-not-allowed",
+                                )}
+                                title="Remove subscription"
+                                aria-label={`Delete subscription ${sub.subscriptionId ?? index + 1} for ${def.type}`}
+                              >
+                                {isPendingSub ? <Loader2 className="size-3.5 animate-spin" /> : <Trash2 className="size-3.5" />}
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+                {/* Collapsible param definitions when not subscribed */}
+                {hasParams && !isSubscribed && !isParamFormVisible && def.params && (
+                  <CollapsibleParamDefs params={def.params} />
+                )}
 
                 {/* Inline param form */}
                 {isParamFormVisible && (hasParams || Object.keys((def.schema as any)?.properties ?? {}).length > 0) && (
@@ -1477,7 +1533,7 @@ function ServiceCatalogAccordion({
                       <Button
                         size="sm"
                         className="h-5 text-[10px] px-1.5"
-                        disabled={isPendingToggle}
+                        disabled={isPendingToggle || (editMode && triggerSubscriptions.length === 0)}
                         onClick={() => onParamSubmit(def)}
                       >
                         {isPendingToggle ? <Loader2 className="size-2.5 animate-spin mr-1" /> : null}
@@ -1502,6 +1558,10 @@ function ServiceCatalogAccordion({
 // ── Active Subscriptions Section ───────────────────────────────────────────
 
 function ActiveSubscriptionsSection({ subscriptions }: { subscriptions: TriggerSubscription[] }) {
+  const countsByType = subscriptions.reduce((map, sub) => {
+    map.set(sub.triggerType, (map.get(sub.triggerType) ?? 0) + 1);
+    return map;
+  }, new Map<string, number>());
   if (subscriptions.length === 0) return null;
 
   return (
@@ -1513,9 +1573,19 @@ function ActiveSubscriptionsSection({ subscriptions }: { subscriptions: TriggerS
         </span>
       </div>
       <div className="divide-y divide-border/50">
-        {subscriptions.map((sub) => (
-          <div key={sub.triggerType} className="flex items-center gap-2 px-3 py-1.5 flex-wrap">
+        {subscriptions.map((sub, index) => (
+          <div key={sub.subscriptionId ?? `${sub.triggerType}-${index}`} className="flex items-center gap-2 px-3 py-1.5 flex-wrap">
             <span className="text-xs font-mono text-foreground truncate flex-1">{sub.triggerType}</span>
+            {sub.subscriptionId && (
+              <Badge variant="outline" className="px-1 py-0 text-[9px] h-3.5 border-emerald-500/20 text-emerald-400/60">
+                {truncateSubscriptionLabel(sub.subscriptionId, undefined, 18)}
+              </Badge>
+            )}
+            {(countsByType.get(sub.triggerType) ?? 0) > 1 && !sub.subscriptionId && (
+              <Badge variant="outline" className="px-1 py-0 text-[9px] h-3.5 border-emerald-500/20 text-emerald-400/60">
+                #{index + 1}
+              </Badge>
+            )}
             {sub.params && Object.keys(sub.params).length > 0 && (
               <div className="flex items-center gap-1 flex-wrap">
                 {Object.entries(sub.params).map(([k, v]) => (

@@ -6,10 +6,8 @@
 // without emitting cleanup.
 // ============================================================================
 
-import { describe, it, expect, beforeEach, mock } from "bun:test";
+import { describe, it, expect, beforeEach } from "bun:test";
 import { trackReceivedTrigger, receivedTriggers } from "./extension.js";
-
-// ── Mock socket for capturing emitted events ─────────────────────────────────
 
 interface EmittedEvent {
     event: string;
@@ -46,13 +44,6 @@ function createMockSocket(opts?: { failSessionMessage?: boolean }) {
     };
 }
 
-// ── Simulated respond_to_trigger logic ───────────────────────────────────────
-//
-// We can't easily instantiate the full pi extension runtime in a unit test.
-// Instead, we extract the core logic that respond_to_trigger executes for
-// session_complete triggers and test it directly. This matches the actual
-// implementation in extension.ts.
-
 async function simulateRespondToTrigger(
     params: { triggerId: string; response: string; action?: string },
     conn: ReturnType<typeof createMockSocket>,
@@ -62,7 +53,6 @@ async function simulateRespondToTrigger(
         return { text: `Error: No pending trigger with ID ${params.triggerId}` };
     }
 
-    // TTL check
     const TRIGGER_TTL_MS = 10 * 60 * 1000;
     if (Date.now() - pending.trackedAt > TRIGGER_TTL_MS) {
         receivedTriggers.delete(params.triggerId);
@@ -100,7 +90,6 @@ async function simulateRespondToTrigger(
             return { text: result.text };
         }
         receivedTriggers.delete(params.triggerId);
-        // ack — emit cleanup request (matches extension.ts implementation)
         conn.socket.emit("cleanup_child_session", {
             token: conn.token,
             childSessionId: pending.sourceSessionId,
@@ -108,7 +97,6 @@ async function simulateRespondToTrigger(
         return { text: `Acknowledged session completion from ${pending.sourceSessionId}` };
     }
 
-    // Non-session_complete triggers
     conn.socket.emit("trigger_response", {
         token: conn.token,
         triggerId: params.triggerId,
@@ -120,133 +108,120 @@ async function simulateRespondToTrigger(
     return { text: `Response sent for trigger ${params.triggerId}` };
 }
 
-// ── Tests ────────────────────────────────────────────────────────────────────
-
-describe("respond_to_trigger — session_complete cleanup", () => {
+describe("respond_to_trigger handling for session_complete", () => {
     beforeEach(() => {
         receivedTriggers.clear();
     });
 
-    it("emits cleanup_child_session when acking a session_complete trigger", async () => {
+    it("ack emits cleanup_child_session instead of trigger_response", async () => {
         const conn = createMockSocket();
-        trackReceivedTrigger("trigger-1", "child-session-abc", "session_complete");
+        trackReceivedTrigger("trig_123", "child-abc", "session_complete");
 
         const result = await simulateRespondToTrigger(
-            { triggerId: "trigger-1", response: "ok", action: "ack" },
+            { triggerId: "trig_123", response: "Done, thanks!", action: "ack" },
             conn,
         );
 
-        expect(result!.text).toContain("Acknowledged session completion from child-session-abc");
+        expect(result?.text).toBe("Acknowledged session completion from child-abc");
+        expect(receivedTriggers.has("trig_123")).toBe(false);
 
-        // Verify cleanup event was emitted
-        const cleanupEvents = conn.emitted.filter(e => e.event === "cleanup_child_session");
-        expect(cleanupEvents).toHaveLength(1);
-        expect(cleanupEvents[0].data).toEqual({
+        const cleanup = conn.emitted.find((e) => e.event === "cleanup_child_session");
+        expect(cleanup).toBeDefined();
+        expect(cleanup?.data).toEqual({
             token: "test-token",
-            childSessionId: "child-session-abc",
+            childSessionId: "child-abc",
         });
 
-        // Trigger should be removed from tracking
-        expect(receivedTriggers.has("trigger-1")).toBe(false);
+        const triggerResp = conn.emitted.find((e) => e.event === "trigger_response");
+        expect(triggerResp).toBeUndefined();
     });
 
-    it("defaults to ack action for session_complete when no action specified", async () => {
+    it("default action for session_complete is ack (cleanup)", async () => {
         const conn = createMockSocket();
-        trackReceivedTrigger("trigger-2", "child-session-xyz", "session_complete");
-
-        await simulateRespondToTrigger(
-            { triggerId: "trigger-2", response: "acknowledged" },
-            conn,
-        );
-
-        // Should still emit cleanup (default action is ack)
-        const cleanupEvents = conn.emitted.filter(e => e.event === "cleanup_child_session");
-        expect(cleanupEvents).toHaveLength(1);
-        expect((cleanupEvents[0].data as any).childSessionId).toBe("child-session-xyz");
-    });
-
-    it("does NOT emit cleanup_child_session on followUp action", async () => {
-        const conn = createMockSocket();
-        trackReceivedTrigger("trigger-3", "child-session-follow", "session_complete");
+        trackReceivedTrigger("trig_456", "child-def", "session_complete");
 
         const result = await simulateRespondToTrigger(
-            { triggerId: "trigger-3", response: "Please fix tests", action: "followUp" },
+            { triggerId: "trig_456", response: "Looks good" },
             conn,
         );
 
-        expect(result!.text).toContain("Follow-up sent to child child-session-follow");
-
-        // No cleanup event should be emitted
-        const cleanupEvents = conn.emitted.filter(e => e.event === "cleanup_child_session");
-        expect(cleanupEvents).toHaveLength(0);
-
-        // Instead, a session_message should be emitted to resume the child
-        const messageEvents = conn.emitted.filter(e => e.event === "session_message");
-        expect(messageEvents).toHaveLength(1);
-        expect((messageEvents[0].data as any).targetSessionId).toBe("child-session-follow");
-        expect((messageEvents[0].data as any).message).toBe("Please fix tests");
-        expect(receivedTriggers.has("trigger-3")).toBe(false);
+        expect(result?.text).toBe("Acknowledged session completion from child-def");
+        expect(conn.emitted.some((e) => e.event === "cleanup_child_session")).toBe(true);
     });
 
-    it("keeps a session_complete followUp trigger pending when delivery fails", async () => {
+    it("followUp sends session_message and does not emit cleanup", async () => {
+        const conn = createMockSocket();
+        trackReceivedTrigger("trig_789", "child-ghi", "session_complete");
+
+        const result = await simulateRespondToTrigger(
+            { triggerId: "trig_789", response: "Please fix the edge case and rerun tests", action: "followUp" },
+            conn,
+        );
+
+        expect(result?.text).toBe("Follow-up sent to child child-ghi");
+        expect(receivedTriggers.has("trig_789")).toBe(false);
+
+        const msg = conn.emitted.find((e) => e.event === "session_message");
+        expect(msg).toBeDefined();
+        expect(msg?.data).toEqual({
+            token: "test-token",
+            targetSessionId: "child-ghi",
+            message: "Please fix the edge case and rerun tests",
+            deliverAs: "input",
+        });
+
+        const cleanup = conn.emitted.find((e) => e.event === "cleanup_child_session");
+        expect(cleanup).toBeUndefined();
+    });
+
+    it("followUp preserves trigger when session_message delivery fails", async () => {
         const conn = createMockSocket({ failSessionMessage: true });
-        trackReceivedTrigger("trigger-3b", "child-session-follow", "session_complete");
+        trackReceivedTrigger("trig_fail", "child-missing", "session_complete");
 
         const result = await simulateRespondToTrigger(
-            { triggerId: "trigger-3b", response: "Please fix tests", action: "followUp" },
+            { triggerId: "trig_fail", response: "keep working", action: "followUp" },
             conn,
         );
 
-        expect(result!.text).toContain("Error sending follow-up to child child-session-follow");
-        expect(receivedTriggers.has("trigger-3b")).toBe(true);
+        expect(result?.text).toContain("Error sending follow-up to child child-missing");
+        expect(receivedTriggers.has("trig_fail")).toBe(true);
+        expect(conn.emitted.some((e) => e.event === "cleanup_child_session")).toBe(false);
     });
 
-    it("does NOT emit cleanup for non-session_complete triggers", async () => {
+    it("non-session_complete triggers still use trigger_response", async () => {
         const conn = createMockSocket();
-        trackReceivedTrigger("trigger-4", "child-session-plan", "plan_review");
-
-        await simulateRespondToTrigger(
-            { triggerId: "trigger-4", response: "looks good", action: "approve" },
-            conn,
-        );
-
-        // No cleanup event
-        const cleanupEvents = conn.emitted.filter(e => e.event === "cleanup_child_session");
-        expect(cleanupEvents).toHaveLength(0);
-
-        // Should emit trigger_response instead
-        const responseEvents = conn.emitted.filter(e => e.event === "trigger_response");
-        expect(responseEvents).toHaveLength(1);
-    });
-
-    it("returns error for non-existent trigger", async () => {
-        const conn = createMockSocket();
+        trackReceivedTrigger("trig_plan", "child-plan", "plan_review");
 
         const result = await simulateRespondToTrigger(
-            { triggerId: "nonexistent", response: "ok", action: "ack" },
+            { triggerId: "trig_plan", response: "Approved", action: "approve" },
             conn,
         );
 
-        expect(result!.text).toContain("No pending trigger");
-        expect(conn.emitted).toHaveLength(0);
-    });
-
-    it("returns error for expired trigger", async () => {
-        const conn = createMockSocket();
-        // Insert a trigger that's already expired (> 10 min old)
-        receivedTriggers.set("expired-trigger", {
-            sourceSessionId: "old-child",
-            type: "session_complete",
-            trackedAt: Date.now() - 15 * 60 * 1000,
+        expect(result?.text).toBe("Response sent for trigger trig_plan");
+        const triggerResp = conn.emitted.find((e) => e.event === "trigger_response");
+        expect(triggerResp).toBeDefined();
+        expect(triggerResp?.data).toEqual({
+            token: "test-token",
+            triggerId: "trig_plan",
+            response: "Approved",
+            action: "approve",
+            targetSessionId: "child-plan",
         });
+    });
+
+    it("expired triggers are rejected and removed", async () => {
+        const conn = createMockSocket();
+        trackReceivedTrigger("trig_old", "child-old", "session_complete");
+        const pending = receivedTriggers.get("trig_old");
+        if (pending) pending.trackedAt = Date.now() - (11 * 60 * 1000);
 
         const result = await simulateRespondToTrigger(
-            { triggerId: "expired-trigger", response: "ok", action: "ack" },
+            { triggerId: "trig_old", response: "late ack", action: "ack" },
             conn,
         );
 
-        expect(result!.text).toContain("expired");
-        expect(conn.emitted).toHaveLength(0);
-        expect(receivedTriggers.has("expired-trigger")).toBe(false);
+        expect(result?.text).toContain("expired");
+        expect(receivedTriggers.has("trig_old")).toBe(false);
+        expect(conn.emitted.length).toBe(0);
     });
 });

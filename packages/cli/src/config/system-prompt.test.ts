@@ -98,7 +98,16 @@ describe("buildSystemPrompt", () => {
         expect(result).toContain("AskUserQuestion");
         expect(result).toContain("create_tunnel");
         expect(result).toContain("subscribe_trigger");
+        expect(result).toContain("unsubscribe_trigger({ subscriptionId })");
+        expect(result).toContain("update_trigger_subscription({ subscriptionId, ... })");
         expect(result).toContain("list_available_sigils");
+    });
+
+    test("describes id-based trigger CRUD for multi-subscription support", () => {
+        const result = buildSystemPrompt({ isRunner: true });
+        expect(result).toContain("subscriptionId");
+        expect(result).toContain("Multiple subscriptions of the same trigger type can exist at once");
+        expect(result).toContain("legacy bulk operations");
     });
 
     test("contains sigil-discovery instruction to call after set_session_name", () => {

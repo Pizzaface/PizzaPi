@@ -137,40 +137,85 @@ export type SubscriptionFilterMode = "and" | "or";
 
 /** Internal storage format for a subscription hash value. */
 interface SubscriptionValue {
+    subscriptionId: string;
+    triggerType: string;
     runnerId: string;
     params?: SubscriptionParams;
     filters?: SubscriptionFilter[];
     filterMode?: SubscriptionFilterMode;
 }
 
-/** Parse a subscription hash value (backward-compatible with plain runnerId strings). */
-function parseSubValue(raw: string): SubscriptionValue {
-    // Old format: just a runnerId string (no braces)
-    if (!raw.startsWith("{")) return { runnerId: raw };
-    try {
-        const parsed = JSON.parse(raw) as SubscriptionValue;
-        if (typeof parsed.runnerId === "string") return parsed;
-        return { runnerId: raw };
-    } catch {
-        return { runnerId: raw };
+export interface SessionTriggerSubscription extends SubscriptionValue {}
+
+function generateSubscriptionId(sessionId: string, triggerType: string): string {
+    return `sub:${sessionId}:${triggerType}:${Date.now()}:${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function isLegacySubscriptionCollection(parsed: unknown): parsed is { triggerType: string; runnerId: string; params?: SubscriptionParams; filters?: SubscriptionFilter[]; filterMode?: SubscriptionFilterMode }[] {
+    return Array.isArray(parsed);
+}
+
+/** Parse a subscription hash value (backward-compatible with plain runnerId strings and legacy keyed-by-triggerType values). */
+function parseSubValues(field: string, raw: string): SubscriptionValue[] {
+    if (!raw.startsWith("{") && !raw.startsWith("[")) {
+        return [{ subscriptionId: generateSubscriptionId(field, field), triggerType: field, runnerId: raw }];
     }
+
+    try {
+        const parsed = JSON.parse(raw) as unknown;
+
+        if (isLegacySubscriptionCollection(parsed)) {
+            return parsed
+                .filter((value): value is { triggerType: string; runnerId: string; params?: SubscriptionParams; filters?: SubscriptionFilter[]; filterMode?: SubscriptionFilterMode } => typeof value?.triggerType === "string" && typeof value?.runnerId === "string")
+                .map((value) => ({
+                    subscriptionId: generateSubscriptionId(field, value.triggerType),
+                    triggerType: value.triggerType,
+                    runnerId: value.runnerId,
+                    ...(value.params ? { params: value.params } : {}),
+                    ...(value.filters ? { filters: value.filters } : {}),
+                    ...(value.filterMode ? { filterMode: value.filterMode } : {}),
+                }));
+        }
+
+        if (parsed && typeof parsed === "object") {
+            const value = parsed as Partial<SubscriptionValue> & { runnerId?: string };
+            if (typeof value.subscriptionId === "string" && typeof value.triggerType === "string" && typeof value.runnerId === "string") {
+                return [{
+                    subscriptionId: value.subscriptionId,
+                    triggerType: value.triggerType,
+                    runnerId: value.runnerId,
+                    ...(value.params ? { params: value.params } : {}),
+                    ...(value.filters ? { filters: value.filters } : {}),
+                    ...(value.filterMode ? { filterMode: value.filterMode } : {}),
+                }];
+            }
+            if (typeof value.runnerId === "string") {
+                return [{
+                    subscriptionId: generateSubscriptionId(field, field),
+                    triggerType: field,
+                    runnerId: value.runnerId,
+                    ...(value.params ? { params: value.params } : {}),
+                    ...(value.filters ? { filters: value.filters } : {}),
+                    ...(value.filterMode ? { filterMode: value.filterMode } : {}),
+                }];
+            }
+        }
+    } catch {
+        // fall through
+    }
+
+    return [];
 }
 
 /** Serialize a subscription value for Redis storage. */
 function serializeSubValue(value: SubscriptionValue): string {
-    // Always serialize the full value — filters/filterMode must be preserved
-    // even when params is empty. Always include the `filters` key (even as [])
-    // so the delivery path can distinguish new-format subscriptions from legacy
-    // ones (which never had a `filters` key).
-    const hasParams = value.params && Object.keys(value.params).length > 0;
-    const hasFilters = value.filters && value.filters.length > 0;
-    if (!hasParams && !hasFilters && !value.filterMode) {
-        return JSON.stringify({ runnerId: value.runnerId });
-    }
-    // Always include filters key so new subscriptions are identifiable
     return JSON.stringify({
-        ...value,
+        subscriptionId: value.subscriptionId,
+        triggerType: value.triggerType,
+        runnerId: value.runnerId,
+        ...(value.params ? { params: value.params } : {}),
         filters: value.filters ?? [],
+        ...(value.filterMode ? { filterMode: value.filterMode } : {}),
     });
 }
 
@@ -194,37 +239,33 @@ export async function subscribeSessionToTrigger(
     params?: SubscriptionParams,
     filters?: SubscriptionFilter[],
     filterMode?: SubscriptionFilterMode,
-): Promise<void> {
+): Promise<string> {
     const redis = await getClient();
-    if (!redis) return;
+    if (!redis) return "";
 
     const sessionKey = SESSION_SUBS_KEY(sessionId);
     const indexKey = RUNNER_TYPE_INDEX_KEY(runnerId, triggerType);
 
     try {
-        const prevRaw = await redis.hGet(sessionKey, triggerType);
-        if (prevRaw) {
-            const prev = parseSubValue(prevRaw);
-            if (prev.runnerId !== runnerId) {
-                const oldIndexKey = RUNNER_TYPE_INDEX_KEY(prev.runnerId, triggerType);
-                await redis.sRem(oldIndexKey, sessionId);
-            }
-        }
-
+        const subscriptionId = generateSubscriptionId(sessionId, triggerType);
         const value = serializeSubValue({
+            subscriptionId,
+            triggerType,
             runnerId,
             params,
             ...(filters && filters.length > 0 ? { filters } : {}),
             ...(filterMode && filterMode !== "and" ? { filterMode } : {}),
         });
         const pipeline = redis.multi();
-        pipeline.hSet(sessionKey, triggerType, value);
+        pipeline.hSet(sessionKey, subscriptionId, value);
         pipeline.expire(sessionKey, ttlSeconds);
         pipeline.sAdd(indexKey, sessionId);
         pipeline.expire(indexKey, ttlSeconds);
         await pipeline.exec();
+        return subscriptionId;
     } catch (err) {
         log.warn("Failed to subscribe session to trigger:", err);
+        return "";
     }
 }
 
@@ -236,22 +277,28 @@ export async function subscribeSessionToTrigger(
 export async function unsubscribeSessionFromTrigger(
     sessionId: string,
     triggerType: string,
-): Promise<void> {
+): Promise<{ removed: number; triggerType: string }> {
     const redis = await getClient();
-    if (!redis) return;
+    if (!redis) return { removed: 0, triggerType };
 
     const sessionKey = SESSION_SUBS_KEY(sessionId);
 
     try {
-        const raw = await redis.hGet(sessionKey, triggerType);
-        await redis.hDel(sessionKey, triggerType);
-        if (raw) {
-            const { runnerId } = parseSubValue(raw);
-            const indexKey = RUNNER_TYPE_INDEX_KEY(runnerId, triggerType);
-            await redis.sRem(indexKey, sessionId);
+        const hash = await redis.hGetAll(sessionKey);
+        const matching = Object.entries(hash)
+            .flatMap(([field, raw]) => parseSubValues(field, raw))
+            .filter((sub) => sub.triggerType === triggerType);
+        if (matching.length === 0) return { removed: 0, triggerType };
+        const pipeline = redis.multi();
+        for (const sub of matching) {
+            pipeline.hDel(sessionKey, sub.subscriptionId);
+            pipeline.sRem(RUNNER_TYPE_INDEX_KEY(sub.runnerId, triggerType), sessionId);
         }
+        await pipeline.exec();
+        return { removed: matching.length, triggerType };
     } catch (err) {
         log.warn("Failed to unsubscribe session from trigger:", err);
+        return { removed: 0, triggerType };
     }
 }
 
@@ -261,7 +308,7 @@ export async function unsubscribeSessionFromTrigger(
  */
 export async function listSessionSubscriptions(
     sessionId: string,
-): Promise<Array<{ triggerType: string; runnerId: string; params?: SubscriptionParams; filters?: SubscriptionFilter[]; filterMode?: SubscriptionFilterMode }>> {
+): Promise<Array<{ subscriptionId: string; triggerType: string; runnerId: string; params?: SubscriptionParams; filters?: SubscriptionFilter[]; filterMode?: SubscriptionFilterMode }>> {
     const redis = await getClient();
     if (!redis) return [];
 
@@ -269,16 +316,14 @@ export async function listSessionSubscriptions(
 
     try {
         const hash = await redis.hGetAll(sessionKey);
-        return Object.entries(hash).map(([triggerType, raw]) => {
-            const { runnerId, params, filters, filterMode } = parseSubValue(raw);
-            return {
-                triggerType,
-                runnerId,
-                ...(params ? { params } : {}),
-                ...(filters && filters.length > 0 ? { filters } : {}),
-                ...(filterMode ? { filterMode } : {}),
-            };
-        });
+        return Object.entries(hash).flatMap(([field, raw]) => parseSubValues(field, raw).map(({ subscriptionId, triggerType, runnerId, params, filters, filterMode }) => ({
+            subscriptionId,
+            triggerType,
+            runnerId,
+            ...(params ? { params } : {}),
+            ...(filters && filters.length > 0 ? { filters } : {}),
+            ...(filterMode ? { filterMode } : {}),
+        })));
     } catch (err) {
         log.warn("Failed to list session subscriptions:", err);
         return [];
@@ -321,10 +366,8 @@ export async function getSubscriptionParams(
 
     const sessionKey = SESSION_SUBS_KEY(sessionId);
     try {
-        const raw = await redis.hGet(sessionKey, triggerType);
-        if (!raw) return undefined;
-        const { params } = parseSubValue(raw);
-        return params;
+        const subs = await getSubscriptionsForSessionTrigger(sessionId, triggerType);
+        return subs[0]?.params;
     } catch (err) {
         log.warn("Failed to get subscription params:", err);
         return undefined;
@@ -338,24 +381,25 @@ export async function getSubscriptionParams(
 export async function getSubscriptionFilters(
     sessionId: string,
     triggerType: string,
-): Promise<{ filters?: SubscriptionFilter[]; filterMode?: SubscriptionFilterMode; isNewFormat?: boolean } | undefined> {
+): Promise<Array<{ subscriptionId: string; filters?: SubscriptionFilter[]; filterMode?: SubscriptionFilterMode; isNewFormat?: boolean }> | undefined> {
     const redis = await getClient();
     if (!redis) return undefined;
 
     const sessionKey = SESSION_SUBS_KEY(sessionId);
     try {
-        const raw = await redis.hGet(sessionKey, triggerType);
-        if (!raw) return undefined;
-        const parsed = parseSubValue(raw);
-        // Detect new-format subscriptions: they always have a `filters` key (even if []).
-        // Legacy subscriptions never had a `filters` key in their JSON.
-        const rawParsed = raw.startsWith("{") ? JSON.parse(raw) : null;
-        const isNewFormat = rawParsed && "filters" in rawParsed;
-        if (isNewFormat) {
-            return { filters: parsed.filters ?? [], filterMode: parsed.filterMode, isNewFormat: true };
+        const hash = await redis.hGetAll(sessionKey);
+        const matches: Array<{ subscriptionId: string; filters?: SubscriptionFilter[]; filterMode?: SubscriptionFilterMode; isNewFormat?: boolean }> = [];
+        for (const [field, raw] of Object.entries(hash)) {
+            const sub = parseSubValues(field, raw).find((entry) => entry.triggerType === triggerType);
+            if (!sub) continue;
+            const rawParsed = raw.startsWith("{") ? JSON.parse(raw) : null;
+            const isNewFormat = rawParsed && !Array.isArray(rawParsed) && "filters" in rawParsed;
+            matches.push({
+                subscriptionId: sub.subscriptionId,
+                ...(isNewFormat ? { filters: sub.filters ?? [], filterMode: sub.filterMode, isNewFormat: true } : {}),
+            });
         }
-        // Legacy subscription — no filters key present
-        return undefined;
+        return matches.length > 0 ? matches : undefined;
     } catch (err) {
         log.warn("Failed to get subscription filters:", err);
         return undefined;
@@ -369,25 +413,28 @@ export async function getSubscriptionFilters(
  */
 export async function updateSessionSubscription(
     sessionId: string,
-    triggerType: string,
+    target: string,
     updates: {
         params?: SubscriptionParams;
         filters?: SubscriptionFilter[];
         filterMode?: SubscriptionFilterMode;
     },
     ttlSeconds = DEFAULT_TTL_SECONDS,
-): Promise<{ updated: boolean; runnerId?: string }> {
+): Promise<{ updated: boolean; subscriptionId?: string; triggerType?: string; runnerId?: string }> {
     const redis = await getClient();
     if (!redis) return { updated: false };
 
     const sessionKey = SESSION_SUBS_KEY(sessionId);
 
     try {
-        const prevRaw = await redis.hGet(sessionKey, triggerType);
-        if (!prevRaw) return { updated: false };
+        const subscriptions = await listSessionSubscriptions(sessionId);
+        const prev = subscriptions.find((sub) => sub.subscriptionId === target) ?? subscriptions.find((sub) => sub.triggerType === target);
+        if (!prev) return { updated: false };
+        const triggerType = prev.triggerType;
 
-        const prev = parseSubValue(prevRaw);
         const value = serializeSubValue({
+            subscriptionId: prev.subscriptionId,
+            triggerType,
             runnerId: prev.runnerId,
             params: updates.params,
             ...(updates.filters && updates.filters.length > 0 ? { filters: updates.filters } : {}),
@@ -396,12 +443,12 @@ export async function updateSessionSubscription(
 
         const indexKey = RUNNER_TYPE_INDEX_KEY(prev.runnerId, triggerType);
         const pipeline = redis.multi();
-        pipeline.hSet(sessionKey, triggerType, value);
+        pipeline.hSet(sessionKey, prev.subscriptionId, value);
         pipeline.expire(sessionKey, ttlSeconds);
         pipeline.expire(indexKey, ttlSeconds);
         await pipeline.exec();
 
-        return { updated: true, runnerId: prev.runnerId };
+        return { updated: true, subscriptionId: prev.subscriptionId, triggerType, runnerId: prev.runnerId };
     } catch (err) {
         log.warn("Failed to update session subscription:", err);
         return { updated: false };
@@ -426,10 +473,11 @@ export async function clearSessionSubscriptions(sessionId: string): Promise<void
     try {
         const hash = await redis.hGetAll(sessionKey);
         const pipeline = redis.multi();
-        for (const [triggerType, raw] of Object.entries(hash)) {
-            const { runnerId } = parseSubValue(raw);
-            const indexKey = RUNNER_TYPE_INDEX_KEY(runnerId, triggerType);
-            pipeline.sRem(indexKey, sessionId);
+        for (const [field, raw] of Object.entries(hash)) {
+            for (const sub of parseSubValues(field, raw)) {
+                const indexKey = RUNNER_TYPE_INDEX_KEY(sub.runnerId, sub.triggerType);
+                pipeline.sRem(indexKey, sessionId);
+            }
         }
         pipeline.del(sessionKey);
         await pipeline.exec();
@@ -447,7 +495,7 @@ export async function clearSessionSubscriptions(sessionId: string): Promise<void
  */
 export async function getSubscriptionsForRunnerSessions(
     sessionIds: string[],
-): Promise<Array<{ sessionId: string; triggerType: string; runnerId: string; params?: SubscriptionParams; filters?: SubscriptionFilter[]; filterMode?: SubscriptionFilterMode }>> {
+): Promise<Array<{ sessionId: string; subscriptionId: string; triggerType: string; runnerId: string; params?: SubscriptionParams; filters?: SubscriptionFilter[]; filterMode?: SubscriptionFilterMode }>> {
     if (sessionIds.length === 0) return [];
     const redis = await getClient();
     if (!redis) return [];
@@ -464,6 +512,36 @@ export async function getSubscriptionsForRunnerSessions(
         })
     );
     return perSessionResults.flat();
+}
+
+export async function getSubscriptionsForSessionTrigger(
+    sessionId: string,
+    triggerType: string,
+): Promise<SessionTriggerSubscription[]> {
+    const subscriptions = await listSessionSubscriptions(sessionId);
+    return subscriptions.filter((subscription) => subscription.triggerType === triggerType);
+}
+
+export async function unsubscribeSessionSubscription(
+    sessionId: string,
+    subscriptionId: string,
+): Promise<void> {
+    const redis = await getClient();
+    if (!redis) return;
+
+    const sessionKey = SESSION_SUBS_KEY(sessionId);
+    try {
+        const raw = await redis.hGet(sessionKey, subscriptionId);
+        if (!raw) return;
+        const sub = parseSubValues(subscriptionId, raw)[0];
+        if (!sub) return;
+        const pipeline = redis.multi();
+        pipeline.hDel(sessionKey, subscriptionId);
+        pipeline.sRem(RUNNER_TYPE_INDEX_KEY(sub.runnerId, sub.triggerType), sessionId);
+        await pipeline.exec();
+    } catch (err) {
+        log.warn("Failed to unsubscribe session subscription:", err);
+    }
 }
 
 /** @deprecated Use `_resetRedisForTesting` instead. */

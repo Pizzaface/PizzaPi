@@ -27,6 +27,7 @@ import type { RelayContext } from "../remote-types.js";
 import { emitSessionActive } from "./chunked-delivery.js";
 import { resetRelayRegistrationGate, signalRelayRegistered } from "./registration-gate.js";
 import { decideRegisteredParentState } from "../remote-registered-parent-state.js";
+import { waitForWorkerStartupComplete } from "../worker-startup-gate.js";
 
 // ── Module-level singletons (safe: one relay extension per process) ───────────
 
@@ -218,7 +219,14 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
         // Prefer "followUp" delivery if any trigger requested it; otherwise "steer".
         const deliverAs = batch.some((b) => b.deliverAs === "followUp") ? "followUp" as const : "steer" as const;
         const rendered = renderTriggerBatch(batch.map((b) => b.trigger));
-        handlers.sendUserMessage(rendered, { deliverAs });
+        void (async () => {
+            try {
+                await waitForWorkerStartupComplete();
+                handlers.sendUserMessage(rendered, { deliverAs });
+            } catch (err) {
+                log.error(`pizzapi: failed to deliver trigger batch: ${err instanceof Error ? err.message : String(err)}`);
+            }
+        })();
     };
 
     // ── Backoff / reconnection logging (Manager-level events) ─────────────
@@ -381,6 +389,7 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
                 const key = rctx.apiKey();
                 const relaySessionId = rctx.relay?.sessionId;
                 const message = await buildUserMessageFromRemoteInput(inputText, attachments, httpBase, key ?? "", relaySessionId);
+                await waitForWorkerStartupComplete();
                 handlers.sendUserMessage(message, deliverAs ? { deliverAs } : undefined);
             } catch (err) {
                 log.error(`pizzapi: failed to deliver remote input: ${err instanceof Error ? err.message : String(err)}`);

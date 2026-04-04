@@ -6,12 +6,11 @@ import {
     InteractiveMode,
     ModelRegistry,
 } from "@mariozechner/pi-coding-agent";
-import { existsSync } from "fs";
-import { readFile, readdir } from "fs/promises";
 import { join } from "path";
 import { buildSystemPrompt, defaultAgentDir, expandHome, loadConfig, resolveSandboxConfig, validateSandboxOverride, applyProviderSettingsEnv } from "./config.js";
 import { c, usageBar, colorPct, colorRemaining } from "./cli-colors.js";
-import { buildInteractiveSkillPaths } from "./skills.js";
+import { buildSkillPaths, buildPromptTemplatePaths, createAgentsFilesOverride } from "./skills.js";
+import { getPluginSkillPaths } from "./extensions/claude-plugins.js";
 import { buildPizzaPiExtensionFactories } from "./extensions/factories.js";
 import { migrateAgentDir } from "./migrations.js";
 import { runSetup } from "./setup.js";
@@ -490,37 +489,9 @@ async function main() {
         log.warn("pizzapi: sandbox was requested but is not active (platform unsupported or init failed)");
     }
 
-    // Load AGENTS.md from cwd (if present)
-    const agentFiles: Array<{ path: string; content: string }> = [];
-    const agentsMdPath = join(cwd, "AGENTS.md");
-    if (existsSync(agentsMdPath)) {
-        try {
-            const content = await readFile(agentsMdPath, "utf-8");
-            agentFiles.push({ path: agentsMdPath, content });
-        } catch (err) {
-            log.warn(`Warning: skipping unreadable ${agentsMdPath}: ${err instanceof Error ? err.message : String(err)}`);
-        }
-    }
-
-    // Load .agents/*.md files from cwd
-    const dotAgentsDir = join(cwd, ".agents");
-    if (existsSync(dotAgentsDir)) {
-        const files = await readdir(dotAgentsDir);
-        const mdFiles = files.filter((file) => file.endsWith(".md"));
-        const loadedAgents = (await Promise.all(
-            mdFiles.map(async (file) => {
-                const filePath = join(dotAgentsDir, file);
-                try {
-                    const content = await readFile(filePath, "utf-8");
-                    return { path: filePath, content };
-                } catch (err) {
-                    log.warn(`Warning: skipping unreadable agent file ${filePath}: ${err instanceof Error ? err.message : String(err)}`);
-                    return null;
-                }
-            })
-        )).filter((f): f is { path: string; content: string } => f !== null);
-        agentFiles.push(...loadedAgents);
-    }
+    // Build shared agentsFilesOverride (loads AGENTS.md + .agents/*.md from cwd,
+    // deduplicating against what DefaultResourceLoader already discovers).
+    const agentsFilesOverride = createAgentsFilesOverride(cwd);
 
     // Override relay URL if --no-relay was passed
     if (noRelay) {
@@ -540,16 +511,16 @@ async function main() {
         cwd,
         agentDir,
         extensionFactories,
-        additionalSkillPaths: buildInteractiveSkillPaths(cwd, config.skills),
+        additionalSkillPaths: [
+            ...buildSkillPaths(cwd, config.skills),
+            ...(noPlugins ? [] : getPluginSkillPaths(cwd)),
+        ],
+        additionalPromptTemplatePaths: buildPromptTemplatePaths(cwd),
         ...(config.systemPrompt !== undefined && {
             systemPromptOverride: () => config.systemPrompt,
         }),
         appendSystemPrompt: [buildSystemPrompt({ cwd }), config.appendSystemPrompt].filter(Boolean).join("\n\n"),
-        ...(agentFiles.length > 0 && {
-            agentsFilesOverride: (base) => ({
-                agentsFiles: [...base.agentsFiles, ...agentFiles],
-            }),
-        }),
+        ...(agentsFilesOverride && { agentsFilesOverride }),
     });
     await loader.reload();
 

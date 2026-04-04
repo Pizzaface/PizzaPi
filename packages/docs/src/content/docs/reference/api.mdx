@@ -555,7 +555,7 @@ List active trigger listeners (auto-spawn subscriptions) for a runner.
 **Response:**
 
 ```json
-{ "listeners": [{ "triggerType": "github_push", "prompt": "...", "cwd": "..." }] }
+{ "listeners": [{ "listenerId": "listener_abc123", "triggerType": "github_push", "prompt": "...", "cwd": "..." }] }
 ```
 
 ---
@@ -581,14 +581,14 @@ Add a trigger listener that auto-spawns sessions when a trigger fires.
 **Response:**
 
 ```json
-{ "ok": true }
+{ "ok": true, "listenerId": "listener_abc123", "triggerType": "github_push" }
 ```
 
 ---
 
-### `PUT /api/runners/{runnerId}/trigger-listeners/{triggerType}`
+### `PUT /api/runners/{runnerId}/trigger-listeners/{target}`
 
-Update an existing trigger listener's configuration.
+Update an existing trigger listener's configuration. Prefer passing a `listenerId` as `{target}` when multiple listeners share the same trigger type. Passing a trigger type is legacy behavior.
 
 **Auth:** Session cookie.
 
@@ -597,21 +597,21 @@ Update an existing trigger listener's configuration.
 **Response:**
 
 ```json
-{ "ok": true }
+{ "ok": true, "listenerId": "listener_abc123", "triggerType": "github_push" }
 ```
 
 ---
 
-### `DELETE /api/runners/{runnerId}/trigger-listeners/{triggerType}`
+### `DELETE /api/runners/{runnerId}/trigger-listeners/{target}`
 
-Remove a trigger listener.
+Remove a trigger listener. Prefer passing a `listenerId` as `{target}` when deleting one specific listener. Passing a trigger type is legacy bulk-style behavior.
 
 **Auth:** Session cookie.
 
 **Response:**
 
 ```json
-{ "ok": true, "removed": true }
+{ "ok": true, "listenerId": "listener_abc123", "triggerType": "github_push", "removed": 1 }
 ```
 
 ---
@@ -973,7 +973,7 @@ List active trigger subscriptions for a session.
 ```json
 {
   "subscriptions": [
-    { "triggerType": "github_push", "runnerId": "runner_a1b2c3" }
+    { "subscriptionId": "sub_abc123", "triggerType": "github_push", "runnerId": "runner_a1b2c3" }
   ]
 }
 ```
@@ -1004,6 +1004,7 @@ Subscribe a session to a trigger type. The trigger type must be available on the
 ```json
 {
   "ok": true,
+  "subscriptionId": "sub_abc123",
   "triggerType": "github_push",
   "runnerId": "runner_a1b2c3"
 }
@@ -1011,9 +1012,9 @@ Subscribe a session to a trigger type. The trigger type must be available on the
 
 ---
 
-### `PUT /api/sessions/{sessionId}/trigger-subscriptions/{triggerType}`
+### `PUT /api/sessions/{sessionId}/trigger-subscriptions/{target}`
 
-Update params/filters on an existing trigger subscription.
+Update params/filters on an existing trigger subscription. Prefer passing a `subscriptionId` as `{target}` or via `?subscriptionId=` when multiple same-type subscriptions exist. Passing only a trigger type is legacy behavior.
 
 **Auth:** API key or session cookie.
 
@@ -1030,21 +1031,21 @@ Update params/filters on an existing trigger subscription.
 **Response:**
 
 ```json
-{ "ok": true, "triggerType": "github_push", "runnerId": "runner_a1b2c3" }
+{ "ok": true, "subscriptionId": "sub_abc123", "triggerType": "github_push", "runnerId": "runner_a1b2c3" }
 ```
 
 ---
 
-### `DELETE /api/sessions/{sessionId}/trigger-subscriptions/{triggerType}`
+### `DELETE /api/sessions/{sessionId}/trigger-subscriptions/{target}`
 
-Unsubscribe a session from a trigger type.
+Unsubscribe a session from a trigger subscription. Prefer passing a `subscriptionId` as `{target}` or via `?subscriptionId=` when deleting one specific subscription. Passing only a trigger type is legacy bulk-style behavior.
 
 **Auth:** API key or session cookie.
 
 **Response:**
 
 ```json
-{ "ok": true, "triggerType": "github_push" }
+{ "ok": true, "subscriptionId": "sub_abc123", "triggerType": "github_push", "removed": 1 }
 ```
 
 ---

@@ -47,8 +47,9 @@ function entry(
     sessionId: string,
     triggerType: string,
     params?: Record<string, string | number | boolean | Array<string | number | boolean>>,
+    subscriptionId?: string,
 ): TriggerSubscriptionEntry {
-    return { sessionId, triggerType, runnerId: "runner-test", params };
+    return { sessionId, triggerType, subscriptionId: subscriptionId ?? `${sessionId}-${triggerType}`, runnerId: "runner-test", params };
 }
 
 function setupBroadcastEnv(): void {
@@ -260,6 +261,61 @@ describe("TimeService.reconcileSubscriptions()", () => {
             ]);
             // Only 2 time subscriptions applied
             expect(result.applied).toBe(2);
+        });
+    });
+
+    describe("same-type multi-subscriptions", () => {
+        test("snapshot keeps two same-session timer subscriptions distinct", async () => {
+            setupBroadcastEnv();
+            const fetchCalls: Array<{ url: string; body: string }> = [];
+            globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+                fetchCalls.push({
+                    url: typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url,
+                    body: typeof init?.body === "string" ? init.body : "",
+                });
+                return new Response(null, { status: 200 });
+            }) as typeof fetch;
+
+            service = new TimeService();
+            const result = service.reconcileSubscriptions([
+                entry("sess-1", "time:timer_fired", { duration: "0.02s", label: "first" }, "sub-1"),
+                entry("sess-1", "time:timer_fired", { duration: "0.03s", label: "second" }, "sub-2"),
+            ]);
+
+            expect(result.applied).toBe(2);
+            await new Promise((resolve) => setTimeout(resolve, 90));
+            expect(fetchCalls).toHaveLength(2);
+            expect(fetchCalls.map((call) => call.body)).toEqual(expect.arrayContaining([
+                expect.stringContaining('"label":"first"'),
+                expect.stringContaining('"label":"second"'),
+            ]));
+        });
+
+        test("targeted unsubscribe removes only the matching subscription id", async () => {
+            setupBroadcastEnv();
+            const fetchCalls: Array<{ url: string; body: string }> = [];
+            globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+                fetchCalls.push({
+                    url: typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url,
+                    body: typeof init?.body === "string" ? init.body : "",
+                });
+                return new Response(null, { status: 200 });
+            }) as typeof fetch;
+
+            service = new TimeService();
+            service.reconcileSubscriptions([
+                entry("sess-1", "time:timer_fired", { duration: "0.02s", label: "first" }, "sub-1"),
+                entry("sess-1", "time:timer_fired", { duration: "0.05s", label: "second" }, "sub-2"),
+            ]);
+
+            const result = service.reconcileSubscriptions([
+                entry("sess-1", "time:timer_fired", undefined, "sub-1"),
+            ], { mode: "delta", action: "unsubscribe" });
+
+            expect(result.applied).toBe(1);
+            await new Promise((resolve) => setTimeout(resolve, 90));
+            expect(fetchCalls).toHaveLength(1);
+            expect(fetchCalls[0]?.body).toContain('"label":"second"');
         });
     });
 

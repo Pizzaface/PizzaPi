@@ -1,4 +1,4 @@
-import { describe, test, expect, mock, beforeEach } from "bun:test";
+import { afterAll, describe, test, expect, mock, beforeEach } from "bun:test";
 
 // ── Mocks ─────────────────────────────────────────────────────────────────────
 
@@ -23,6 +23,10 @@ mock.module("@pizzapi/tools", () => ({
 }));
 
 import { registerServiceMessageHandler } from "./service-message.js";
+
+// Restore module mocks after this file so they don't bleed into other
+// test files sharing the same Bun worker process.
+afterAll(() => mock.restore());
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 

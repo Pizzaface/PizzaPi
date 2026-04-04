@@ -352,7 +352,7 @@ Once triggers are advertised, agents can interact with them using built-in tools
 |-------------|------|
 | Discover available triggers | `list_available_triggers()` |
 | Subscribe to a trigger type | `subscribe_trigger("my-service:file_changed")` |
-| Unsubscribe | `unsubscribe_trigger("my-service:file_changed")` |
+| Unsubscribe | `unsubscribe_trigger({ subscriptionId })` preferred; `unsubscribe_trigger("my-service:file_changed")` is legacy bulk behavior |
 | View subscriptions | `list_trigger_subscriptions()` |
 
 Subscribed triggers arrive as injected messages in the agent's conversation, with the payload and metadata from the broadcast.
@@ -404,10 +404,11 @@ Only `orders:status_changed` events whose payload contains `status === "shipped"
 
 #### Updating filters without re-subscribing
 
-Use the `update_trigger_subscription` tool to change filters or filterMode on an existing subscription without unsubscribing and re-subscribing:
+Use the `update_trigger_subscription` tool to change filters or filterMode on an existing subscription without unsubscribing and re-subscribing. When `subscribe_trigger` returns a `subscriptionId`, use that ID for later edits so multiple same-type subscriptions stay distinct:
 
 ```
-update_trigger_subscription("orders:status_changed", {
+update_trigger_subscription({
+  subscriptionId: "sub_abc123",
   filters: [
     { field: "status", value: "delivered", op: "eq" }
   ],
@@ -415,7 +416,7 @@ update_trigger_subscription("orders:status_changed", {
 })
 ```
 
-This preserves the runner binding and only updates the filter criteria.
+Passing only a trigger type remains supported as a legacy bulk operation, but it is not precise when multiple subscriptions of the same trigger type exist.
 
 ---
 
@@ -462,18 +463,21 @@ Content-Type: application/json
 
 **Update a listener:**
 ```
-PUT /api/runners/{runnerId}/trigger-listeners/{triggerType}
+PUT /api/runners/{runnerId}/trigger-listeners/{listenerId}
 ```
 
 **Remove a listener:**
 ```
-DELETE /api/runners/{runnerId}/trigger-listeners/{triggerType}
+DELETE /api/runners/{runnerId}/trigger-listeners/{listenerId}
 ```
+
+When multiple listeners share the same trigger type, use `listenerId` for edit/delete operations so you only affect the intended listener. Trigger-type targets are legacy behavior.
 
 #### `RunnerTriggerListener` fields
 
 | Field | Required | Description |
 |-------|----------|-------------|
+| `listenerId` | Auto | Stable listener identity returned by the API; use it for precise update/delete operations |
 | `triggerType` | Yes | The trigger type to listen for (e.g. `"my-service:event_name"`) |
 | `prompt` | No | Initial prompt for the spawned session |
 | `cwd` | No | Working directory for the spawned session |

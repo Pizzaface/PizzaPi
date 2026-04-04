@@ -452,7 +452,6 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
                 && typeof (body.model as Record<string, unknown>).id === "string"
                 ? body.model as { provider: string; id: string }
                 : undefined;
-            // Validate model against hidden-models list (same check as /api/runners/spawn)
             if (model) {
                 try {
                     const hiddenModels = await getHiddenModels(identity.userId);
@@ -460,22 +459,20 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
                         return Response.json({ error: "Model is hidden and cannot be used" }, { status: 403 });
                     }
                 } catch {
-                    // If hidden-models check fails, allow — same fallback as spawn route
                 }
             }
 
-            await addRunnerTriggerListener(runnerId, triggerType, {
+            const listenerId = await addRunnerTriggerListener(runnerId, triggerType, {
                 prompt: typeof body?.prompt === "string" ? body.prompt : undefined,
                 cwd: typeof body?.cwd === "string" ? body.cwd : undefined,
                 model,
                 params,
             });
-            return Response.json({ ok: true });
+            return Response.json({ ok: true, listenerId, triggerType });
         }
 
-        // PUT /api/runners/:id/trigger-listeners/:type — update
         if (req.method === "PUT" && listenerMatch[2]) {
-            const triggerType = decodeURIComponent(listenerMatch[2]);
+            const target = decodeURIComponent(listenerMatch[2]);
             const body = await req.json().catch(() => null) as Record<string, unknown> | null;
             if (!body) return Response.json({ error: "Invalid JSON body" }, { status: 400 });
 
@@ -493,24 +490,26 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
                     if (isHiddenModel(hiddenModels, model)) {
                         return Response.json({ error: "Model is hidden and cannot be used" }, { status: 403 });
                     }
-                } catch { /* allow if check fails */ }
+                } catch { }
             }
 
-            const updated = await updateRunnerTriggerListener(runnerId, triggerType, {
+            const updated = await updateRunnerTriggerListener(runnerId, target, {
                 prompt: typeof body.prompt === "string" ? body.prompt : undefined,
                 cwd: typeof body.cwd === "string" ? body.cwd : undefined,
                 model,
                 params,
-            });
+            }) as any;
 
-            if (!updated) {
-                return Response.json({ error: `No listener for trigger type '${triggerType}'` }, { status: 404 });
+            if (!updated || updated.updated === false) {
+                return Response.json({ error: `No listener for target '${target}'` }, { status: 404 });
             }
 
-            // Notify the runner service about the listener config change
+            const triggerType = updated.triggerType ?? target;
+            const listenerId = updated.listenerId ?? (!target.includes(":") ? target : undefined);
             const runnerSocket = getLocalRunnerSocket(runnerId);
             if (runnerSocket) {
                 runnerSocket.emit("listener_config_changed" as any, {
+                    ...(listenerId ? { listenerId } : {}),
                     triggerType,
                     params: params ?? {},
                     prompt: typeof body.prompt === "string" ? body.prompt : undefined,
@@ -519,14 +518,16 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
                 });
             }
 
-            return Response.json({ ok: true });
+            return Response.json({ ok: true, ...(listenerId ? { listenerId } : {}), triggerType });
         }
 
-        // DELETE /api/runners/:id/trigger-listeners/:type — remove
         if (req.method === "DELETE" && listenerMatch[2]) {
-            const triggerType = decodeURIComponent(listenerMatch[2]);
-            const removed = await removeRunnerTriggerListener(runnerId, triggerType);
-            return Response.json({ ok: true, removed });
+            const target = decodeURIComponent(listenerMatch[2]);
+            const removed = await removeRunnerTriggerListener(runnerId, target) as any;
+            const triggerType = removed?.triggerType ?? target;
+            const removedCount = typeof removed?.removed === "number" ? removed.removed : 0;
+            const listenerId = !target.includes(":") ? target : undefined;
+            return Response.json({ ok: true, ...(listenerId ? { listenerId } : {}), triggerType, removed: removedCount });
         }
 
         return undefined;

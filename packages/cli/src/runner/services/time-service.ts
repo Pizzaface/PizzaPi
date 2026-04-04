@@ -63,6 +63,8 @@ function getApiKey(): string | null {
 // ── Timer state ──────────────────────────────────────────────────────────────
 
 interface TimerEntry {
+    /** Stable subscription identity */
+    subscriptionId: string;
     /** Timer handle for clearTimeout */
     handle: ReturnType<typeof setTimeout>;
     /** Absolute fire time in ms */
@@ -76,6 +78,8 @@ interface TimerEntry {
 }
 
 interface CronEntry {
+    /** Stable subscription identity */
+    subscriptionId: string;
     /** Interval handle for the cron checker */
     handle: ReturnType<typeof setInterval>;
     /** Parsed cron expression */
@@ -276,11 +280,9 @@ export class TimeService implements ServiceHandler {
      * time is preserved across restarts). For time:at, the target time is absolute, so
      * the timer fires at the right time (or immediately if already past).
      *
-     * @note This implementation assumes **at most one active subscription per
-     * (sessionId, triggerType) pair**. The internal timer keys are keyed as
-     * `timer:<sessionId>`, `at:<sessionId>`, and `cron:<sessionId>`, which allows
-     * only one slot per session per type. A second subscription for the same
-     * (sessionId, triggerType) will silently overwrite the first.
+     * Runtime entries are keyed by stable `subscriptionId`, not just session/type,
+     * so multiple subscriptions of the same trigger type can coexist for a single
+     * session without clobbering each other.
      */
     reconcileSubscriptions(subscriptions: TriggerSubscriptionEntry[], options: ReconcileOptions = {}): { applied: number; errors?: string[] } {
         const mode = options.mode ?? "snapshot";
@@ -295,26 +297,17 @@ export class TimeService implements ServiceHandler {
         );
 
         if (mode === "snapshot") {
-            // Build a lookup of (sessionId + triggerType) → entry for the snapshot
-            const snapshotKeys = new Set(timeSubs.map((s) => `${s.sessionId}\0${s.triggerType}`));
+            const snapshotKeys = new Set(timeSubs.map((s) => this.#runtimeKey(s)));
 
-            // Remove any timers/crons NOT present in the snapshot (stale from a previous connection)
             for (const [key, timer] of this.#timers) {
-                // Key format: "timer:<sessionId>" or "at:<sessionId>"
-                const colonIdx = key.indexOf(":");
-                const typePrefix = key.slice(0, colonIdx); // "timer" | "at"
-                const sessionId = key.slice(colonIdx + 1);
-                const triggerType = typePrefix === "timer" ? "time:timer_fired" : "time:at";
-                if (!snapshotKeys.has(`${sessionId}\0${triggerType}`)) {
+                if (!snapshotKeys.has(key)) {
                     clearTimeout(timer.handle);
                     this.#timers.delete(key);
                     logInfo(`[time] reconcile: removed stale timer ${key}`);
                 }
             }
             for (const [key, cron] of this.#crons) {
-                // Key format: "cron:<sessionId>"
-                const sessionId = key.slice("cron:".length);
-                if (!snapshotKeys.has(`${sessionId}\0time:cron`)) {
+                if (!snapshotKeys.has(key)) {
                     clearInterval(cron.handle);
                     this.#crons.delete(key);
                     this.#cronIterations.delete(key);
@@ -426,19 +419,27 @@ export class TimeService implements ServiceHandler {
 
     // ── Timer subscription handlers ──────────────────────────────────────
 
+    #runtimeKey(sub: Pick<TriggerSubscriptionEntry, "subscriptionId" | "sessionId" | "triggerType">): string {
+        const baseId = sub.subscriptionId ?? `${sub.sessionId}\0${sub.triggerType}`;
+        if (sub.triggerType === "time:timer_fired") return `timer:${baseId}`;
+        if (sub.triggerType === "time:at") return `at:${baseId}`;
+        return `cron:${baseId}`;
+    }
+
     #applySubscription(sub: TriggerSubscriptionEntry, action: "subscribe" | "update" | "unsubscribe"): void {
         const { sessionId, triggerType, params } = sub;
+        const subscriptionId = sub.subscriptionId ?? `${sessionId}\0${triggerType}`;
         if (triggerType === "time:timer_fired") {
-            this.#handleTimerSubscription(sessionId, params, action);
+            this.#handleTimerSubscription(subscriptionId, sessionId, params, action);
         } else if (triggerType === "time:at") {
-            this.#handleAtSubscription(sessionId, params, action);
+            this.#handleAtSubscription(subscriptionId, sessionId, params, action);
         } else if (triggerType === "time:cron") {
-            this.#handleCronSubscription(sessionId, params, action);
+            this.#handleCronSubscription(subscriptionId, sessionId, params, action);
         }
     }
 
-    #handleTimerSubscription(sessionId: string, params: any, action: string): void {
-        const key = `timer:${sessionId}`;
+    #handleTimerSubscription(subscriptionId: string, sessionId: string, params: any, action: string): void {
+        const key = `timer:${subscriptionId}`;
 
         // Clean up any existing timer for this session
         const existing = this.#timers.get(key);
@@ -477,6 +478,7 @@ export class TimeService implements ServiceHandler {
         }, durationMs);
 
         this.#timers.set(key, {
+            subscriptionId,
             handle,
             fireAt,
             sessionId,
@@ -485,8 +487,8 @@ export class TimeService implements ServiceHandler {
         });
     }
 
-    #handleAtSubscription(sessionId: string, params: any, action: string): void {
-        const key = `at:${sessionId}`;
+    #handleAtSubscription(subscriptionId: string, sessionId: string, params: any, action: string): void {
+        const key = `at:${subscriptionId}`;
 
         const existing = this.#timers.get(key);
         if (existing) {
@@ -534,6 +536,7 @@ export class TimeService implements ServiceHandler {
         }, delayMs);
 
         this.#timers.set(key, {
+            subscriptionId,
             handle,
             fireAt: targetMs,
             sessionId,
@@ -542,8 +545,8 @@ export class TimeService implements ServiceHandler {
         });
     }
 
-    #handleCronSubscription(sessionId: string, params: any, action: string): void {
-        const key = `cron:${sessionId}`;
+    #handleCronSubscription(subscriptionId: string, sessionId: string, params: any, action: string): void {
+        const key = `cron:${subscriptionId}`;
 
         const existing = this.#crons.get(key);
         if (existing) {
@@ -608,6 +611,7 @@ export class TimeService implements ServiceHandler {
         }, 30_000);
 
         this.#crons.set(key, {
+            subscriptionId,
             handle,
             cron,
             sessionId,

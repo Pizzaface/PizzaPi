@@ -32,6 +32,11 @@ export interface HookOutput {
     /** For Input hooks: "continue" | "transform" | "handled". */
     action?: "continue" | "transform" | "handled";
 
+    // -- PreToolUse rewrite fields --
+
+    /** For PreToolUse hooks: replacement tool input (e.g. RTK command rewrite). */
+    updatedInput?: Record<string, unknown>;
+
     // -- BeforeAgentStart hook fields --
 
     /** For BeforeAgentStart hooks: override the system prompt for this turn. */

@@ -719,7 +719,7 @@ export const triggersExtension: ExtensionFactory = (pi) => {
                 if (subFilters) parts.push(`filters: ${JSON.stringify(subFilters)} (${subFilterMode ?? "and"})`);
                 const suffix = parts.length > 0 ? ` with ${parts.join(", ")}` : "";
                 return {
-                    content: [{ type: "text" as const, text: `Subscribed to '${result.triggerType}' on runner ${result.runnerId}${suffix}` }],
+                    content: [{ type: "text" as const, text: `Subscribed to '${result.triggerType}' on runner ${result.runnerId}${result.subscriptionId ? ` (subscription ${result.subscriptionId})` : ""}${suffix}` }],
                     details: null as any,
                 };
             }
@@ -759,32 +759,43 @@ export const triggersExtension: ExtensionFactory = (pi) => {
             properties: {
                 triggerType: {
                     type: "string",
-                    description: "Trigger type to unsubscribe from",
+                    description: "Trigger type to unsubscribe from. Legacy bulk operation when used without subscriptionId.",
+                },
+                subscriptionId: {
+                    type: "string",
+                    description: "Optional specific subscription ID to unsubscribe without affecting other subscriptions of the same trigger type.",
                 },
                 sessionId: {
                     type: "string",
                     description: "Session ID to unsubscribe. Defaults to the current session if omitted.",
                 },
             },
-            required: ["triggerType"],
+            required: [],
         } as any,
         async execute(_toolCallId, rawParams) {
-            const params = rawParams as { triggerType: string; sessionId?: string };
+            const params = rawParams as { triggerType?: string; subscriptionId?: string; sessionId?: string };
             const targetId = params.sessionId ?? getOwnSessionId() ?? "";
             if (!targetId) {
                 return { content: [{ type: "text" as const, text: "Error: Could not determine session ID." }], details: null as any };
             }
+            if (!params.triggerType && !params.subscriptionId) {
+                return { content: [{ type: "text" as const, text: "Error: Provide triggerType or subscriptionId." }], details: null as any };
+            }
 
-            const result = await unsubscribeTrigger(targetId, params.triggerType);
+            const result = await unsubscribeTrigger(targetId, {
+                triggerType: params.triggerType,
+                subscriptionId: params.subscriptionId,
+            });
 
             if (result.ok) {
+                const idSuffix = result.subscriptionId ? ` (subscription ${result.subscriptionId})` : "";
                 return {
-                    content: [{ type: "text" as const, text: `Unsubscribed from '${result.triggerType}'` }],
+                    content: [{ type: "text" as const, text: `Unsubscribed from '${result.triggerType ?? params.triggerType ?? "subscription"}'${idSuffix}` }],
                     details: null as any,
                 };
             }
             return {
-                content: [{ type: "text" as const, text: `Error unsubscribing from '${params.triggerType}': ${result.error}` }],
+                content: [{ type: "text" as const, text: `Error unsubscribing from '${params.triggerType ?? params.subscriptionId}': ${result.error}` }],
                 details: null as any,
             };
         },
@@ -823,7 +834,11 @@ export const triggersExtension: ExtensionFactory = (pi) => {
             properties: {
                 triggerType: {
                     type: "string",
-                    description: "Trigger type to update, e.g. 'godmother:idea_moved'",
+                    description: "Trigger type to update, e.g. 'godmother:idea_moved'. Legacy target when subscriptionId is omitted.",
+                },
+                subscriptionId: {
+                    type: "string",
+                    description: "Optional specific subscription ID to update without affecting other subscriptions of the same trigger type.",
                 },
                 sessionId: {
                     type: "string",
@@ -852,11 +867,12 @@ export const triggersExtension: ExtensionFactory = (pi) => {
                     description: "How multiple filters combine.",
                 },
             },
-            required: ["triggerType"],
+            required: [],
         } as any,
         async execute(_toolCallId, rawParams) {
             const params = rawParams as {
-                triggerType: string;
+                triggerType?: string;
+                subscriptionId?: string;
                 sessionId?: string;
                 params?: Record<string, unknown>;
                 filters?: Array<{ field: string; value: unknown; op?: string }>;
@@ -911,8 +927,14 @@ export const triggersExtension: ExtensionFactory = (pi) => {
             }
 
             const subFilterMode = params.filterMode === "or" ? "or" as const : params.filterMode === "and" ? "and" as const : undefined;
+            if (!params.triggerType && !params.subscriptionId) {
+                return { content: [{ type: "text" as const, text: "Error: Provide triggerType or subscriptionId." }], details: null as any };
+            }
 
-            const result = await updateTriggerSubscription(targetId, params.triggerType, {
+            const result = await updateTriggerSubscription(targetId, {
+                triggerType: params.triggerType,
+                subscriptionId: params.subscriptionId,
+            }, {
                 params: subParams,
                 filters: subFilters,
                 filterMode: subFilterMode,
@@ -924,12 +946,12 @@ export const triggersExtension: ExtensionFactory = (pi) => {
                 if (subFilters) parts.push(`filters: ${JSON.stringify(subFilters)} (${subFilterMode ?? "and"})`);
                 const suffix = parts.length > 0 ? ` with ${parts.join(", ")}` : "";
                 return {
-                    content: [{ type: "text" as const, text: `Updated subscription for '${result.triggerType}' on runner ${result.runnerId}${suffix}` }],
+                    content: [{ type: "text" as const, text: `Updated subscription for '${result.triggerType ?? params.triggerType ?? "subscription"}' on runner ${result.runnerId}${result.subscriptionId ? ` (subscription ${result.subscriptionId})` : ""}${suffix}` }],
                     details: null as any,
                 };
             }
             return {
-                content: [{ type: "text" as const, text: `Error updating subscription for '${params.triggerType}': ${result.error}` }],
+                content: [{ type: "text" as const, text: `Error updating subscription for '${params.triggerType ?? params.subscriptionId}': ${result.error}` }],
                 details: null as any,
             };
         },

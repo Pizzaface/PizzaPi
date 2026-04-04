@@ -25,10 +25,11 @@ class PassiveService implements ServiceHandler {
     dispose(): void {}
 }
 
-function entry(sessionId: string, triggerType: string): TriggerSubscriptionEntry {
+function entry(sessionId: string, triggerType: string, subscriptionId?: string): TriggerSubscriptionEntry {
     return {
         sessionId,
         triggerType,
+        subscriptionId: subscriptionId ?? `${sessionId}-${triggerType}`,
         runnerId: "runner-test",
         params: {},
     };
@@ -55,6 +56,24 @@ describe("reconcileSnapshotSubscriptions", () => {
         expect(timeService.calls).toEqual([[]]);
         expect(result).toEqual({ applied: 1, errors: [] });
         expect(logs).toEqual({ info: [], warn: [], error: [] });
+    });
+
+    test("preserves multiple same-session same-type subscriptions as distinct entries", () => {
+        const registry = new ServiceRegistry();
+        const timeService = new ReconcilingService("time");
+        registry.register(timeService);
+
+        const snapshot = [
+            entry("session-1", "time:timer_fired", "sub-1"),
+            entry("session-1", "time:timer_fired", "sub-2"),
+        ];
+
+        const result = reconcileSnapshotSubscriptions(registry, snapshot);
+
+        expect(timeService.calls).toHaveLength(1);
+        expect(timeService.calls[0]).toHaveLength(2);
+        expect(timeService.calls[0]?.map((sub) => sub.subscriptionId)).toEqual(["sub-1", "sub-2"]);
+        expect(result).toEqual({ applied: 2, errors: [] });
     });
 
     test("warns for unknown prefixes and still reconciles known services", () => {
