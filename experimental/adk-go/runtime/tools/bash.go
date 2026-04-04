@@ -10,9 +10,9 @@ import (
 )
 
 const (
-	defaultTimeout  = 120 * time.Second
-	maxBashLines    = 2000
-	maxBashBytes    = 50 * 1024 // 50KB
+	defaultTimeout = 120 * time.Second
+	maxBashLines   = 2000
+	maxBashBytes   = 50 * 1024 // 50KB
 )
 
 // BashOpts controls how RunBash executes a command.
@@ -158,5 +158,3 @@ func splitLines(s string) []string {
 func joinLines(lines []string) string {
 	return strings.Join(lines, "")
 }
-
-
