@@ -21,10 +21,14 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/Pizzaface/PizzaPi/experimental/adk-go/internal/sessions"
 )
 
 const version = "0.1.0-phase0"
@@ -32,8 +36,9 @@ const version = "0.1.0-phase0"
 // session tracks a running provider session.
 type session struct {
 	sessionID    string
-	provider     Provider      // LLM backend (Claude CLI, API, etc.)
-	relaySession *RelaySession // per-session /relay connection
+	provider     Provider           // LLM backend (Claude CLI, API, etc.)
+	relaySession *RelaySession      // per-session /relay connection
+	compaction   *sessionCompaction // compaction lifecycle manager
 	cancel       context.CancelFunc
 	killed       bool
 	mu           sync.Mutex
@@ -46,20 +51,26 @@ type GoRunner struct {
 	runnerID   string
 	runnerName string
 
-	client   *SIOClient
-	sessions sync.Map // sessionID → *session
-	logger   *log.Logger
-	stop     context.CancelFunc // signals Run() to exit
+	client       *SIOClient
+	sessions     sync.Map // sessionID → *session
+	sessionStore sessions.SessionStore
+	logger       *log.Logger
+	stop         context.CancelFunc // signals Run() to exit
 }
 
 // NewGoRunner creates a new runner daemon.
 func NewGoRunner(relayURL, apiKey, runnerID, runnerName string) *GoRunner {
+	// Session store lives under ~/.pizzapi/agent/
+	home, _ := os.UserHomeDir()
+	storeDir := filepath.Join(home, ".pizzapi", "agent")
+
 	return &GoRunner{
-		relayURL:   relayURL,
-		apiKey:     apiKey,
-		runnerID:   runnerID,
-		runnerName: runnerName,
-		logger:     log.New(os.Stderr, "[go-runner] ", log.LstdFlags|log.Lmsgprefix),
+		relayURL:     relayURL,
+		apiKey:       apiKey,
+		runnerID:     runnerID,
+		runnerName:   runnerName,
+		sessionStore: sessions.NewJSONLStore(storeDir),
+		logger:       log.New(os.Stderr, "[go-runner] ", log.LstdFlags|log.Lmsgprefix),
 	}
 }
 
@@ -228,33 +239,81 @@ func (r *GoRunner) runSession(ctx context.Context, sess *session, pctx ProviderC
 	sessionID := sess.sessionID
 	cwd := pctx.Cwd
 
+	// Create the session record in the JSONL store.
+	if r.sessionStore != nil {
+		sessRecord := &sessions.Session{
+			ID:      sessionID,
+			CWD:     cwd,
+			Model:   pctx.Model,
+			Created: time.Now(),
+			Updated: time.Now(),
+		}
+		if err := r.sessionStore.Create(context.Background(), sessRecord); err != nil {
+			// Non-fatal — session may already exist (resume) or store may be unavailable.
+			r.logger.Printf("session %s: create session record: %v (continuing)", shortID(sessionID), err)
+		}
+	}
+
 	// Connect to /relay to register the session in the session store.
 	// This is what makes the session visible to the web UI.
 	relaySess := NewRelaySession(r.relayURL, r.apiKey, sessionID, cwd, r.logger)
 
+	// Helper to emit an event through both relay paths.
+	emitRelay := func(ev RelayEvent) {
+		if relaySess != nil {
+			relaySess.EmitEvent(ev)
+		}
+	}
+	emitRunner := func(ev RelayEvent) {
+		r.client.Emit("runner_session_event", map[string]any{
+			"sessionId": sessionID,
+			"event":     ev,
+		})
+	}
+
+	// Initialize compaction manager.
+	sc := newSessionCompaction(sessionID, cwd, r.sessionStore, r.logger, emitRelay, emitRunner)
+	sess.compaction = sc
+
+	// Track the initial prompt as a user message.
+	sc.TrackUserMessage(pctx.Prompt)
+
 	// Wire up user input from web UI → provider
 	relaySess.onInput = func(text string) {
-		r.logger.Printf("session %s: sending user input to provider", shortID(sessionID))
+		r.logger.Printf("session %s: received user input from web UI", shortID(sessionID))
 
+		// Track the message for compaction token estimation.
+		sc.TrackUserMessage(text)
+
+		// Proactive pre-turn compaction check (per runtime contract §A).
+		if result, err := sc.TryProactiveCompaction(ctx); err != nil {
+			r.logger.Printf("session %s: proactive compaction error: %v", shortID(sessionID), err)
+		} else if result != nil && !result.WasCancelled && result.Error == nil {
+			r.logger.Printf("session %s: proactive compaction ran (generation %d)", shortID(sessionID), result.Generation)
+		}
+
+		// Send the user message to the provider.
 		if err := sess.provider.SendMessage(text); err != nil {
 			r.logger.Printf("session %s: send message error: %v", shortID(sessionID), err)
 			return
 		}
 
-		// Emit active heartbeat so the UI shows the spinner
+		// Persist the user message event.
+		sc.PersistEvent("user_message", map[string]any{
+			"role":    "user",
+			"content": text,
+		})
+
+		// Emit active heartbeat so the UI shows the spinner.
+		isCompacting := sc.IsCompacting()
 		activeHB := map[string]any{
 			"type":         "heartbeat",
 			"active":       true,
-			"isCompacting": false,
+			"isCompacting": isCompacting,
 			"ts":           time.Now().UnixMilli(),
 		}
-		r.client.Emit("runner_session_event", map[string]any{
-			"sessionId": sessionID,
-			"event":     activeHB,
-		})
-		if relaySess != nil {
-			relaySess.EmitEvent(activeHB)
-		}
+		emitRunner(activeHB)
+		emitRelay(activeHB)
 	}
 
 	if err := relaySess.Connect(r.relayURL, r.apiKey, cwd); err != nil {
@@ -304,30 +363,58 @@ func (r *GoRunner) runSession(ctx context.Context, sess *session, pctx ProviderC
 			evType, _ := ev["type"].(string)
 			r.logger.Printf("session %s relay event: %v", shortID(sessionID), evType)
 
+			// Track assistant messages for compaction token estimation.
+			if evType == "message_update" {
+				if content, ok := ev["content"].(string); ok {
+					if role, _ := ev["role"].(string); role == "assistant" {
+						sc.TrackAssistantMessage(content)
+					}
+				}
+			}
+
+			// Detect context-overflow errors for reactive compaction (§B).
+			if r.isContextOverflow(ev) {
+				r.logger.Printf("session %s: context overflow detected, forcing compaction", shortID(sessionID))
+				if result, err := sc.ForceCompaction(ctx); err != nil {
+					r.logger.Printf("session %s: reactive compaction failed: %v", shortID(sessionID), err)
+				} else if result != nil && result.Error == nil {
+					// Replay the pending user message after compaction.
+					pending := sc.PendingUserMessage()
+					if pending != "" {
+						r.logger.Printf("session %s: replaying pending user message after compaction", shortID(sessionID))
+						if err := sess.provider.SendMessage(pending); err != nil {
+							r.logger.Printf("session %s: replay send error: %v", shortID(sessionID), err)
+						}
+					}
+				}
+				continue // Don't forward the overflow error to the UI
+			}
+
+			// Persist durable events to session store.
+			if shouldPersist(evType) {
+				sc.PersistEvent(evType, ev)
+			}
+
 			// Forward via the /relay session connection — this goes through
 			// the server's event pipeline (state caching, image stripping,
 			// viewer broadcast). This is the primary event delivery path.
-			if sess.relaySession != nil {
-				sess.relaySession.EmitEvent(ev)
-			}
+			emitRelay(ev)
 
 			// Only forward heartbeats via runner protocol — the relay needs
 			// them for session liveness tracking. All other events go
 			// exclusively through /relay to avoid double-publishing.
 			if evType == "heartbeat" {
-				r.client.Emit("runner_session_event", map[string]any{
-					"sessionId": sessionID,
-					"event":     ev,
-				})
+				emitRunner(ev)
 			}
 
 		case <-heartbeatTicker.C:
+			isCompacting := sc.IsCompacting()
 			r.client.Emit("runner_session_event", map[string]any{
 				"sessionId": sessionID,
 				"event": map[string]any{
 					"type":         "heartbeat",
 					"active":       true,
-					"isCompacting": false,
+					"isCompacting": isCompacting,
 					"ts":           time.Now().UnixMilli(),
 				},
 			})
@@ -335,6 +422,41 @@ func (r *GoRunner) runSession(ctx context.Context, sess *session, pctx ProviderC
 		case <-ctx.Done():
 			return
 		}
+	}
+}
+
+// isContextOverflow checks if a relay event indicates a context-overflow error
+// from the provider. This triggers reactive compaction per the runtime contract §B.
+func (r *GoRunner) isContextOverflow(ev RelayEvent) bool {
+	evType, _ := ev["type"].(string)
+
+	// Check for result events with overflow-related error messages.
+	if evType == "result" || evType == "error" {
+		if msg, ok := ev["error"].(string); ok {
+			lower := strings.ToLower(msg)
+			if strings.Contains(lower, "context") && (strings.Contains(lower, "too long") ||
+				strings.Contains(lower, "exceeded") ||
+				strings.Contains(lower, "overflow") ||
+				strings.Contains(lower, "too large")) {
+				return true
+			}
+			if strings.Contains(lower, "max_tokens") || strings.Contains(lower, "context_length") {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+// shouldPersist returns true if the given relay event type should be written
+// to the durable session store.
+func shouldPersist(evType string) bool {
+	switch evType {
+	case "message_update", "tool_result_message", "session_active":
+		return true
+	default:
+		return false
 	}
 }
 
