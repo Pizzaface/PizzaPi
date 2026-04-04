@@ -47,7 +47,7 @@ func (rs *RelaySession) Connect(relayURL, apiKey, cwd string) error {
 		},
 		Logger: rs.logger,
 		OnConnect: func() {
-			rs.logger.Printf("session %s: relay /relay connected, registering", rs.sessionID[:8])
+			rs.logger.Printf("session %s: relay /relay connected, registering", shortID(rs.sessionID))
 			rs.client.Emit("register", map[string]any{
 				"sessionId":  rs.sessionID,
 				"cwd":        cwd,
@@ -65,9 +65,9 @@ func (rs *RelaySession) Connect(relayURL, apiKey, cwd string) error {
 		}
 		if err := json.Unmarshal(data, &payload); err == nil {
 			rs.token = payload.Token
-			rs.logger.Printf("session %s: relay session registered (shareUrl=%s)", rs.sessionID[:8], payload.ShareURL)
+			rs.logger.Printf("session %s: relay session registered (shareUrl=%s)", shortID(rs.sessionID), payload.ShareURL)
 		} else {
-			rs.logger.Printf("session %s: relay session registered (token parse error: %v)", rs.sessionID[:8], err)
+			rs.logger.Printf("session %s: relay session registered (token parse error: %v)", shortID(rs.sessionID), err)
 		}
 		select {
 		case registered <- struct{}{}:
@@ -76,11 +76,11 @@ func (rs *RelaySession) Connect(relayURL, apiKey, cwd string) error {
 	})
 
 	rs.client.On("error", func(data json.RawMessage) {
-		rs.logger.Printf("session %s: relay error: %s", rs.sessionID[:8], string(data))
+		rs.logger.Printf("session %s: relay error: %s", shortID(rs.sessionID), string(data))
 	})
 
 	rs.client.On("exec", func(data json.RawMessage) {
-		rs.logger.Printf("session %s: received exec: %s", rs.sessionID[:8], string(data))
+		rs.logger.Printf("session %s: received exec: %s", shortID(rs.sessionID), string(data))
 	})
 
 	// Handle user input from the web UI (collab mode)
@@ -89,10 +89,10 @@ func (rs *RelaySession) Connect(relayURL, apiKey, cwd string) error {
 			Text string `json:"text"`
 		}
 		if err := json.Unmarshal(data, &payload); err != nil {
-			rs.logger.Printf("session %s: failed to parse input: %v", rs.sessionID[:8], err)
+			rs.logger.Printf("session %s: failed to parse input: %v", shortID(rs.sessionID), err)
 			return
 		}
-		rs.logger.Printf("session %s: received user input: %s", rs.sessionID[:8], payload.Text[:min(len(payload.Text), 80)])
+		rs.logger.Printf("session %s: received user input: %s", shortID(rs.sessionID), payload.Text[:min(len(payload.Text), 80)])
 		if rs.onInput != nil {
 			rs.onInput(payload.Text)
 		}
@@ -132,9 +132,11 @@ func (rs *RelaySession) Done() <-chan struct{} {
 	return rs.done
 }
 
-func min(a, b int) int {
-	if a < b {
-		return a
+// shortID returns the first 8 characters of s, or s itself if shorter.
+// Safe against empty strings and short IDs (e.g. from malformed relay messages).
+func shortID(s string) string {
+	if len(s) > 8 {
+		return s[:8]
 	}
-	return b
+	return s
 }
