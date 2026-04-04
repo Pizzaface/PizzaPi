@@ -21,6 +21,27 @@ func doTick() tea.Cmd {
 	})
 }
 
+func reconnectDelay(attempt int) time.Duration {
+	if attempt < 1 {
+		attempt = 1
+	}
+	d := time.Second
+	for i := 1; i < attempt; i++ {
+		d *= 2
+		if d >= 8*time.Second {
+			return 8 * time.Second
+		}
+	}
+	return d
+}
+
+func scheduleReconnect(attempt int) tea.Cmd {
+	delay := reconnectDelay(attempt)
+	return tea.Tick(delay, func(time.Time) tea.Msg {
+		return RelayReconnectMsg{Attempt: attempt}
+	})
+}
+
 func update(a App, msg tea.Msg) (tea.Model, tea.Cmd) {
 	s := a.state
 	var cmds []tea.Cmd
@@ -92,6 +113,8 @@ func update(a App, msg tea.Msg) (tea.Model, tea.Cmd) {
 	// --- Connection events ---
 	case RelayConnectedMsg:
 		s.Connected = true
+		s.IsReconnecting = false
+		s.ReconnectAttempts = 0
 		if ls, ok := s.Session.(*LocalSession); ok {
 			cmds = append(cmds, listenLocal(ls))
 		} else {
@@ -107,12 +130,36 @@ func update(a App, msg tea.Msg) (tea.Model, tea.Cmd) {
 		s.StreamingMessageID = ""
 		s.ThinkingStart = time.Time{}
 		clear(s.ActiveTools)
+		if s.Mode == "relay" && s.Session != nil && !s.IsReconnecting {
+			s.IsReconnecting = true
+			s.ReconnectAttempts = 1
+			cmds = append(cmds, scheduleReconnect(s.ReconnectAttempts))
+		}
+
+	case RelayReconnectMsg:
+		if s.Mode == "relay" && s.Session != nil && !s.Connected {
+			s.IsReconnecting = true
+			if msg.Attempt > s.ReconnectAttempts {
+				s.ReconnectAttempts = msg.Attempt
+			}
+			if cmd := s.Session.Start(""); cmd != nil {
+				cmds = append(cmds, cmd)
+			}
+		}
 
 	case RelayErrorMsg:
 		s.Messages = append(s.Messages, DisplayMessage{
 			Role: "system",
 			Text: fmt.Sprintf("⚠ %v", msg.Err),
 		})
+		if s.Mode == "relay" && s.Session != nil && !s.Connected {
+			s.IsReconnecting = true
+			s.ReconnectAttempts++
+			if s.ReconnectAttempts < 1 {
+				s.ReconnectAttempts = 1
+			}
+			cmds = append(cmds, scheduleReconnect(s.ReconnectAttempts))
+		}
 
 	// --- Session events ---
 	case HeartbeatMsg:

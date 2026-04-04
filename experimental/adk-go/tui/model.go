@@ -34,13 +34,15 @@ type AppState struct {
 	Session SessionController
 
 	// Connection/session state
-	Connected    bool
-	Active       bool   // session is actively processing
-	IsCompacting bool
-	SessionName  string
-	ModelID      string
-	Cwd          string
-	Mode         string // "local" or "relay"
+	Connected         bool
+	Active            bool   // session is actively processing
+	IsCompacting      bool
+	SessionName       string
+	ModelID           string
+	Cwd               string
+	Mode              string // "local" or "relay"
+	IsReconnecting    bool
+	ReconnectAttempts int
 
 	// Streaming state
 	ActiveTools        map[string]string // toolCallId → toolName (in-flight tools)

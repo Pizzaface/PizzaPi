@@ -23,7 +23,13 @@ func connectToRelay(relayURL, apiKey, sessionID string) tea.Cmd {
 	return func() tea.Msg {
 		logger := log.Default()
 
-		client := relay.NewClient(relay.ClientConfig{
+		oldClient := getRelayClient()
+		if oldClient != nil {
+			oldClient.Close()
+		}
+
+		var client *relay.Client
+		client = relay.NewClient(relay.ClientConfig{
 			URL:       relayURL,
 			Namespace: "/relay",
 			Auth: map[string]any{
@@ -34,18 +40,12 @@ func connectToRelay(relayURL, apiKey, sessionID string) tea.Cmd {
 				logger.Printf("[tui] relay connected")
 				// Join the session as a viewer
 				if sessionID != "" {
-					client := getRelayClient()
-					if client != nil {
-						client.Emit("join_session", map[string]any{
-							"sessionId": sessionID,
-						})
-					}
+					client.Emit("join_session", map[string]any{
+						"sessionId": sessionID,
+					})
 				}
 			},
 		})
-
-		// Store client for input sending
-		setRelayClient(client)
 
 		// Set up event handlers that produce tea.Msg via a channel.
 		// Use a generous buffer and block instead of dropping ordering-critical events.
@@ -69,6 +69,9 @@ func connectToRelay(relayURL, apiKey, sessionID string) tea.Cmd {
 		if err := client.Connect(); err != nil {
 			return RelayErrorMsg{Err: err}
 		}
+
+		// Store client for input sending only after a successful connect.
+		setRelayClient(client)
 
 		// Start a goroutine to pump messages from the channel into the tea.Program.
 		// We return the first message synchronously (RelayConnectedMsg), then

@@ -3,6 +3,7 @@ package tui
 import (
 	"encoding/json"
 	"fmt"
+	"math/rand"
 	"strings"
 	"testing"
 	"time"
@@ -121,6 +122,25 @@ func TestRelayConnectedMsg(t *testing.T) {
 }
 
 // TestRelayDisconnectedMsg clears state.
+func TestReconnectDelay(t *testing.T) {
+	tests := []struct {
+		attempt int
+		want    time.Duration
+	}{
+		{0, time.Second},
+		{1, time.Second},
+		{2, 2 * time.Second},
+		{3, 4 * time.Second},
+		{4, 8 * time.Second},
+		{5, 8 * time.Second},
+	}
+	for _, tt := range tests {
+		if got := reconnectDelay(tt.attempt); got != tt.want {
+			t.Fatalf("reconnectDelay(%d) = %v, want %v", tt.attempt, got, tt.want)
+		}
+	}
+}
+
 func TestRelayDisconnectedMsg(t *testing.T) {
 	app := New(nil)
 	app.state.Connected = true
@@ -1056,6 +1076,59 @@ func TestRelayFinalMessageUpdateEndToEnd_NoDuplicateAndContentParsed(t *testing.
 	}
 }
 
+func TestRelayAutoReconnectFlow(t *testing.T) {
+	session := &fakeSessionController{mode: "relay", startMsg: RelayConnectedMsg{}}
+	app := New(session)
+
+	next, _ := app.Update(RelayDisconnectedMsg{Reason: "network blip"})
+	app = next.(App)
+	if !app.state.IsReconnecting {
+		t.Fatal("expected reconnecting state after relay disconnect")
+	}
+	if app.state.ReconnectAttempts != 1 {
+		t.Fatalf("expected reconnect attempts=1, got %d", app.state.ReconnectAttempts)
+	}
+
+	next, cmd := app.Update(RelayReconnectMsg{Attempt: 1})
+	app = next.(App)
+	if session.startCalls != 1 {
+		t.Fatalf("expected reconnect to call Start once, got %d", session.startCalls)
+	}
+	if cmd == nil {
+		t.Fatal("expected reconnect Start command")
+	}
+	msg := cmd()
+	if _, ok := msg.(RelayConnectedMsg); !ok {
+		t.Fatalf("expected RelayConnectedMsg, got %T", msg)
+	}
+
+	next, _ = app.Update(msg)
+	app = next.(App)
+	if app.state.IsReconnecting {
+		t.Fatal("expected reconnecting cleared after connect")
+	}
+	if app.state.ReconnectAttempts != 0 {
+		t.Fatalf("expected reconnect attempts reset, got %d", app.state.ReconnectAttempts)
+	}
+}
+
+func TestRelayErrorSchedulesFurtherReconnectAttempts(t *testing.T) {
+	session := &fakeSessionController{mode: "relay"}
+	app := New(session)
+	app.state.Mode = "relay"
+	app.state.IsReconnecting = true
+	app.state.ReconnectAttempts = 1
+
+	next, _ := app.Update(RelayErrorMsg{Err: fmt.Errorf("dial failed")})
+	app = next.(App)
+	if !app.state.IsReconnecting {
+		t.Fatal("expected reconnecting to remain true")
+	}
+	if app.state.ReconnectAttempts != 2 {
+		t.Fatalf("expected reconnect attempts incremented to 2, got %d", app.state.ReconnectAttempts)
+	}
+}
+
 func TestReconnectResumeFromSnapshotClearsTransientStateAndPreservesSnapshot(t *testing.T) {
 	app := New(nil)
 
@@ -1199,6 +1272,83 @@ func TestHighVolumeInterleavedStreamingAndToolsOrdering(t *testing.T) {
 	}
 }
 
+func TestSyntheticRelayFuzzHarness(t *testing.T) {
+	rng := rand.New(rand.NewSource(42))
+	app := New(nil)
+	activeMessageID := ""
+	seenAssistantIDs := map[string]bool{}
+
+	for i := 0; i < 500; i++ {
+		op := rng.Intn(8)
+		var next tea.Model
+		switch op {
+		case 0: // message_start
+			activeMessageID = fmt.Sprintf("msg_fuzz_%03d", i)
+			next, _ = app.Update(MessageStartMsg{MessageID: activeMessageID, Role: "assistant"})
+			app = next.(App)
+			seenAssistantIDs[activeMessageID] = true
+		case 1: // streaming delta
+			if activeMessageID == "" {
+				continue
+			}
+			text := fmt.Sprintf("partial-%03d", i)
+			blocks := []json.RawMessage{mustJSONBytes(t, map[string]any{"type": "text", "text": text})}
+			next, _ = app.Update(StreamingDeltaMsg{MessageID: activeMessageID, Role: "assistant", Content: blocks, DeltaType: "text_delta"})
+			app = next.(App)
+		case 2: // tool result burst
+			toolID := fmt.Sprintf("tool_fuzz_%03d", i)
+			next, _ = app.Update(ToolExecutionStartMsg{ToolCallID: toolID, ToolName: "read"})
+			app = next.(App)
+			next, _ = app.Update(ToolResultMsg{ToolCallID: toolID, ToolName: "read", Content: fmt.Sprintf("result-%03d", i), Timestamp: int64(i)})
+			app = next.(App)
+			if rng.Intn(2) == 0 {
+				next, _ = app.Update(ToolExecutionEndMsg{ToolCallID: toolID, ToolName: "read"})
+				app = next.(App)
+			}
+		case 3: // final message_update
+			if activeMessageID == "" {
+				continue
+			}
+			blocks := []json.RawMessage{mustJSONBytes(t, map[string]any{"type": "text", "text": fmt.Sprintf("final-%03d", i)})}
+			next, _ = app.Update(MessageUpdateMsg{MessageID: activeMessageID, Role: "assistant", Content: blocks, Timestamp: int64(i)})
+			app = next.(App)
+		case 4: // heartbeat toggle
+			next, _ = app.Update(HeartbeatMsg{Active: rng.Intn(2) == 0})
+			app = next.(App)
+		case 5: // session_active snapshot restore
+			sa := SessionActiveMsg{}
+			if activeMessageID != "" {
+				sa.State.Messages = []json.RawMessage{
+					mustJSONBytes(t, map[string]any{"role": "assistant", "id": activeMessageID, "content": []any{map[string]any{"type": "text", "text": fmt.Sprintf("snap-%03d", i)}}}),
+				}
+			}
+			next, _ = app.Update(sa)
+			app = next.(App)
+		case 6: // disconnect / reconnect cycle
+			next, _ = app.Update(RelayDisconnectedMsg{Reason: "fuzz disconnect"})
+			app = next.(App)
+		case 7: // parse malformed or unknown relay payload
+			payload := mustJSONBytes(t, map[string]any{"type": "unknown_fuzz", "n": i})
+			msg := parseRelayJSON(payload)
+			if msg != nil {
+				next, _ = app.Update(msg)
+				app = next.(App)
+			}
+		}
+
+		// Invariants: no duplicate assistant IDs, no empty-ID assistant messages except fallback.
+		seen := map[string]bool{}
+		for _, m := range app.state.Messages {
+			if m.Role == "assistant" && m.ID != "" {
+				if seen[m.ID] {
+					t.Fatalf("duplicate assistant message ID after fuzz iteration %d: %q", i, m.ID)
+				}
+				seen[m.ID] = true
+			}
+		}
+	}
+}
+
 func mustJSONBytes(t *testing.T, v any) json.RawMessage {
 	t.Helper()
 	b, err := json.Marshal(v)
@@ -1212,3 +1362,19 @@ func mustTime(t *testing.T) time.Time {
 	t.Helper()
 	return time.Unix(123, 0)
 }
+
+type fakeSessionController struct {
+	mode       string
+	startCalls int
+	startMsg   tea.Msg
+}
+
+func (f *fakeSessionController) Start(prompt string) tea.Cmd {
+	f.startCalls++
+	msg := f.startMsg
+	return func() tea.Msg { return msg }
+}
+
+func (f *fakeSessionController) SendMessage(text string) tea.Cmd { return nil }
+func (f *fakeSessionController) Stop()                          {}
+func (f *fakeSessionController) Mode() string                   { return f.mode }

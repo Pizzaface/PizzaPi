@@ -20,6 +20,11 @@ type RelayErrorMsg struct {
 
 func (e RelayErrorMsg) Error() string { return e.Err.Error() }
 
+// RelayReconnectMsg is sent when a reconnect timer fires.
+type RelayReconnectMsg struct {
+	Attempt int
+}
+
 // RelayEventMsg wraps a raw relay event for the TUI to process.
 type RelayEventMsg struct {
 	Type string
