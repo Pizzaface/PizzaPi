@@ -12,10 +12,11 @@ import (
 // GeminiBackend returns the BackendConfig for Google Gemini models.
 func GeminiBackend() BackendConfig {
 	return BackendConfig{
-		Name:         "gemini",
-		Provider:     "google",
-		DefaultModel: "gemini-2.5-flash",
-		APIKeyEnvVar: "GOOGLE_API_KEY",
+		Name:           "gemini",
+		Provider:       "google",
+		DefaultModel:   "gemini-2.5-flash",
+		APIKeyEnvVar:   "GOOGLE_API_KEY",
+		AuthProviderID: "google-gemini-cli",
 		NewModel: func(ctx context.Context, modelName, apiKey string) (model.LLM, error) {
 			return gemini.NewModel(ctx, modelName, &genai.ClientConfig{
 				APIKey: apiKey,

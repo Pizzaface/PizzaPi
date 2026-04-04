@@ -65,9 +65,10 @@ func main() {
 	}
 
 	// Handle OAuth login for providers that support it
-	if *loginFlag || (*provider == "openai" && needsOpenAILogin()) {
-		if *provider == "openai" {
-			if err := runOpenAILogin(); err != nil {
+	oauthProviders := map[string]bool{"openai": true, "anthropic": true, "gemini": true, "github-copilot": true}
+	if *loginFlag || (oauthProviders[*provider] && needsLogin(*provider)) {
+		if oauthProviders[*provider] {
+			if err := runOAuthLogin(*provider); err != nil {
 				fmt.Fprintf(os.Stderr, "Login failed: %v\n", err)
 				os.Exit(1)
 			}
@@ -111,22 +112,51 @@ func main() {
 	}
 }
 
-// needsOpenAILogin checks if OpenAI OAuth or API key is configured.
-func needsOpenAILogin() bool {
-	storage := auth.NewStorage("")
-	oaiprovider.RegisterOAuthRefresher(storage)
-	p := oaiprovider.NewProvider(storage, nil)
-	return p.NeedsLogin()
+// Provider ID mappings for OAuth credential storage
+var oauthProviderIDs = map[string]string{
+	"openai":         oaiprovider.OAuthProviderID,
+	"anthropic":      "anthropic",
+	"gemini":         "google-gemini-cli",
+	"github-copilot": "github-copilot",
 }
 
-// runOpenAILogin executes the interactive OAuth flow for OpenAI.
-func runOpenAILogin() error {
+// Environment variable fallbacks per provider
+var oauthEnvVars = map[string]string{
+	"openai":         "OPENAI_API_KEY",
+	"anthropic":      "ANTHROPIC_API_KEY",
+	"gemini":         "GOOGLE_API_KEY",
+	"github-copilot": "",
+}
+
+// needsLogin checks if any form of auth is configured for a provider.
+func needsLogin(provider string) bool {
 	storage := auth.NewStorage("")
+	providerID := oauthProviderIDs[provider]
+	if providerID != "" && storage.Has(providerID) {
+		return false
+	}
+	envVar := oauthEnvVars[provider]
+	if envVar != "" && os.Getenv(envVar) != "" {
+		return false
+	}
+	return true
+}
 
-	fmt.Println("🔑 Logging in to OpenAI (ChatGPT Plus/Pro)...")
-	fmt.Println()
+// runOAuthLogin executes the interactive OAuth flow for the given provider.
+func runOAuthLogin(provider string) error {
+	storage := auth.NewStorage("")
+	providerID := oauthProviderIDs[provider]
 
-	cred, err := auth.LoginOpenAI(context.Background(), auth.LoginCallbacks{
+	names := map[string]string{
+		"openai":         "OpenAI (ChatGPT Plus/Pro)",
+		"anthropic":      "Anthropic (Claude Pro/Max)",
+		"gemini":         "Google Gemini CLI",
+		"github-copilot": "GitHub Copilot",
+	}
+
+	fmt.Printf("🔑 Logging in to %s...\n\n", names[provider])
+
+	callbacks := auth.LoginCallbacks{
 		OnAuth: func(url string, instructions string) {
 			fmt.Printf("Opening browser: %s\n", url)
 			fmt.Printf("  %s\n\n", instructions)
@@ -135,13 +165,29 @@ func runOpenAILogin() error {
 		OnProgress: func(message string) {
 			fmt.Printf("  %s\n", message)
 		},
-	})
+	}
+
+	var cred *auth.Credential
+	var err error
+
+	switch provider {
+	case "openai":
+		cred, err = auth.LoginOpenAI(context.Background(), callbacks)
+	case "anthropic":
+		cred, err = auth.LoginAnthropic(context.Background(), callbacks)
+	case "gemini":
+		cred, err = auth.LoginGemini(context.Background(), callbacks)
+	case "github-copilot":
+		cred, err = auth.LoginGitHubCopilot(context.Background(), callbacks)
+	default:
+		return fmt.Errorf("unknown OAuth provider: %s", provider)
+	}
+
 	if err != nil {
 		return err
 	}
 
-	// Store the credential
-	if err := storage.Set(oaiprovider.OAuthProviderID, cred); err != nil {
+	if err := storage.Set(providerID, cred); err != nil {
 		return fmt.Errorf("save credentials: %w", err)
 	}
 

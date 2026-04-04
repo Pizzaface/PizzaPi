@@ -8,6 +8,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Pizzaface/PizzaPi/experimental/adk-go/internal/auth"
+
 	"google.golang.org/adk/agent"
 	"google.golang.org/adk/agent/llmagent"
 	"google.golang.org/adk/model"
@@ -39,6 +41,10 @@ type BackendConfig struct {
 	// NewModel creates the ADK model.LLM for this backend.
 	// The apiKey and modelName are resolved from config/env.
 	NewModel func(ctx context.Context, modelName, apiKey string) (model.LLM, error)
+
+	// AuthProviderID is the credential storage key for OAuth (e.g. "google-gemini-cli").
+	// If empty, only env var is used.
+	AuthProviderID string
 
 	// Instruction is the system instruction for the agent.
 	// If empty, a sensible default is used.
@@ -105,12 +111,24 @@ func (p *Provider) Start(pctx ProviderContext) (<-chan RelayEvent, error) {
 		modelName = p.config.DefaultModel
 	}
 
-	// Resolve API key from environment
-	apiKey := resolveEnvVar(p.config.APIKeyEnvVar)
+	// Resolve API key — try auth storage first (OAuth), then env var
+	apiKey := ""
+	if p.config.AuthProviderID != "" {
+		storage := authStorageFactory()
+		if storage != nil {
+			key, err := storage.GetAPIKey(p.config.AuthProviderID, p.config.APIKeyEnvVar)
+			if err == nil && key != "" {
+				apiKey = key
+			}
+		}
+	}
+	if apiKey == "" {
+		apiKey = resolveEnvVar(p.config.APIKeyEnvVar)
+	}
 	if apiKey == "" {
 		close(p.events)
 		close(p.done)
-		return nil, fmt.Errorf("%s not set — required for %s provider", p.config.APIKeyEnvVar, p.config.Name)
+		return nil, fmt.Errorf("no credentials for %s — set %s or run --login", p.config.Name, p.config.APIKeyEnvVar)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -353,3 +371,13 @@ Be concise in your responses. Show file paths clearly when working with files.`
 
 // resolveEnvVar reads an environment variable. Exported as var for test injection.
 var resolveEnvVar = os.Getenv
+
+// authStorageFactory creates an auth storage. Var for test injection.
+var authStorageFactory = func() *auth.Storage {
+	s := auth.NewStorage("")
+	// Register refreshers for all supported OAuth providers
+	s.RegisterRefresher("google-gemini-cli", func(refreshToken string) (*auth.Credential, error) {
+		return auth.RefreshGeminiToken(refreshToken)
+	})
+	return s
+}

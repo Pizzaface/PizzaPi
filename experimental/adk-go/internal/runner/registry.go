@@ -73,12 +73,16 @@ var DefaultRegistry = func() *Registry {
 		})
 	}
 
-	// OpenAI (direct API + OAuth)
+	// OpenAI (Codex Responses API + OAuth)
 	r.Register("openai", func() Provider {
 		storage := auth.NewStorage("")
 		oaiprovider.RegisterOAuthRefresher(storage)
 		return NewOpenAIProviderAdapter(storage)
 	})
+
+	// Register OAuth refreshers for all providers
+	// (Anthropic and GitHub Copilot providers will be added as
+	// they get their own Provider implementations)
 
 	return r
 }()
