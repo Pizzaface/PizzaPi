@@ -73,6 +73,12 @@ export function MultipleChoiceQuestions({
       clearTimeout(submitTimeoutRef.current);
       submitTimeoutRef.current = null;
     }
+    return () => {
+      if (submitTimeoutRef.current !== null) {
+        clearTimeout(submitTimeoutRef.current);
+        submitTimeoutRef.current = null;
+      }
+    };
   }, [promptKey]);
 
   React.useEffect(() => {
@@ -109,9 +115,12 @@ export function MultipleChoiceQuestions({
     return true;
   };
 
+  const safeCurrentStep = questions.length > 0
+    ? Math.min(currentStep, questions.length - 1)
+    : 0;
   const allAnswered = questions.every((_, idx) => isQuestionAnswered(idx));
-  const currentQuestionAnswered = isQuestionAnswered(currentStep);
-  const isLastStep = currentStep >= questions.length - 1;
+  const currentQuestionAnswered = isQuestionAnswered(safeCurrentStep);
+  const isLastStep = safeCurrentStep >= questions.length - 1;
 
   // ── Handlers ───────────────────────────────────────────────────────────────
 
@@ -178,7 +187,7 @@ export function MultipleChoiceQuestions({
   };
 
   const handleNext = () => {
-    if (!currentQuestionAnswered) return;
+    if (!currentQuestionAnswered || questions.length === 0) return;
     setCurrentStep((prev) => Math.min(prev + 1, questions.length - 1));
   };
 
@@ -212,7 +221,8 @@ export function MultipleChoiceQuestions({
     }
 
     // Radio
-    const sel = selections.get(qIdx)!;
+    const sel = selections.get(qIdx);
+    if (sel === undefined) return "";
     return sel === q.options.length
       ? (customTexts.get(qIdx) ?? "").trim()
       : q.options[sel];
@@ -525,20 +535,20 @@ export function MultipleChoiceQuestions({
         <div className="flex size-6 items-center justify-center rounded-full bg-violet-500/15">
           <MessageCircleQuestion className="size-3.5 text-violet-400" />
         </div>
-        <span className="text-xs font-medium text-violet-300">Question {currentStep + 1} of {questions.length}</span>
+        <span className="text-xs font-medium text-violet-300">Question {questions.length > 0 ? safeCurrentStep + 1 : 0} of {questions.length}</span>
       </div>
 
       <div className="shrink-0 px-3 pt-2.5">
         <div className="h-1.5 w-full overflow-hidden rounded-full bg-violet-500/15">
           <div
             className="h-full rounded-full bg-violet-500/60 transition-all"
-            style={{ width: `${((currentStep + 1) / Math.max(questions.length, 1)) * 100}%` }}
+            style={{ width: `${((questions.length > 0 ? safeCurrentStep + 1 : 0) / Math.max(questions.length, 1)) * 100}%` }}
           />
         </div>
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
-        {questions.length > 0 && renderQuestion(questions[currentStep]!, currentStep)}
+        {questions.length > 0 && renderQuestion(questions[safeCurrentStep]!, safeCurrentStep)}
       </div>
 
       <div className="flex shrink-0 items-center gap-2 border-t border-violet-500/15 px-3 py-2.5">
@@ -546,7 +556,7 @@ export function MultipleChoiceQuestions({
           size="sm"
           variant="outline"
           onClick={handleBack}
-          disabled={currentStep === 0 || isSubmitting}
+          disabled={safeCurrentStep === 0 || isSubmitting}
           className="gap-1.5"
         >
           <ArrowLeft className="size-3.5" />
@@ -572,7 +582,7 @@ export function MultipleChoiceQuestions({
           <Button
             size="sm"
             onClick={handleSubmit}
-            disabled={!allAnswered || isSubmitting}
+            disabled={questions.length === 0 || !allAnswered || isSubmitting}
             className={cn(
               "ml-auto gap-2",
               allAnswered && !isSubmitting
