@@ -28,7 +28,7 @@ type WriteOpts struct {
 // omitted), no confinement is applied (backward compatible).
 func WriteFile(path string, content string, opts ...WriteOpts) error {
 	if len(opts) > 0 && len(opts[0].AllowedRoots) > 0 {
-		resolved, err := ResolvePath(path, opts[0].CWD)
+		resolved, err := resolvePathForWrite(path, opts[0].CWD)
 		if err != nil {
 			return err
 		}
