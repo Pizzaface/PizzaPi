@@ -105,6 +105,8 @@ var noSandboxMutatingCommands = map[string]struct{}{
 	"rm": {}, "rmdir": {}, "mv": {}, "cp": {}, "mkdir": {}, "touch": {},
 	"chmod": {}, "chown": {}, "chgrp": {}, "ln": {}, "tee": {}, "truncate": {},
 	"dd": {}, "shred": {}, "install": {}, "mkfifo": {}, "mknod": {},
+	// Network relay/exfiltration tools — can pipe data to arbitrary hosts.
+	"nc": {}, "ncat": {}, "netcat": {}, "socat": {},
 }
 
 var gitSafeSubcommands = map[string]struct{}{
@@ -117,9 +119,10 @@ var gitSafeSubcommands = map[string]struct{}{
 	"config": {}, "reflog": {}, "worktree": {},
 }
 
-// chainingSeparators lists the operators we split on, longest-first so that
-// "&&" and "||" are checked before a bare "|" would be.
-var chainingSeparators = []string{" && ", " || ", " ; ", " | "}
+// operatorRe matches shell chaining operators without requiring surrounding
+// whitespace.  Multi-char operators (||, &&) are listed before the single-char
+// | so the regex engine prefers the longer match at each position.
+var operatorRe = regexp.MustCompile(`\|\||&&|;|\|`)
 
 func EvaluateToolCall(call ToolCall, env EvalEnv) Decision {
 	policy := resolvePolicy(env)
@@ -325,6 +328,10 @@ func validateURL(rawURL string, policy PolicyInfo) string {
 // placeholder text so that shell operators inside quotes are not treated as
 // real chaining operators.  The result is only used for operator-detection;
 // token parsing still runs on the original command string.
+//
+// Handles backslash escapes inside double-quoted strings (e.g. \" does not
+// close the string).  Single-quoted strings are treated as fully literal —
+// bash does not allow any escape sequence inside single quotes.
 func stripQuotedSegments(command string) string {
 	var buf strings.Builder
 	inSingle := false
@@ -332,6 +339,15 @@ func stripQuotedSegments(command string) string {
 	for i := 0; i < len(command); i++ {
 		c := command[i]
 		switch {
+		case inDouble && c == '\\':
+			// Backslash inside double quotes escapes the next character.
+			// Mask both the backslash and the character it escapes so that an
+			// escaped quote (\"  ) does not prematurely close the string.
+			buf.WriteByte('X')
+			if i+1 < len(command) {
+				i++
+				buf.WriteByte('X')
+			}
 		case c == '\'' && !inDouble:
 			inSingle = !inSingle
 			buf.WriteByte('X')
@@ -347,16 +363,16 @@ func stripQuotedSegments(command string) string {
 	return buf.String()
 }
 
-// splitOnOperator splits s on the first occurrence of sep that appears in
-// stripped (the quote-stripped version of s).  It returns the left and right
-// halves using the original (unstripped) string so that further analysis of
-// each sub-command operates on the real content.
-func splitOnOperator(original, stripped, sep string) (string, string, bool) {
-	idx := strings.Index(stripped, sep)
-	if idx < 0 {
+// splitOnFirstOperator finds the leftmost shell chaining operator (||, &&, ;,
+// or |) in the quote-stripped version of the command and returns the left and
+// right sub-commands from the original (unstripped) string, trimmed of
+// surrounding whitespace so that recursive evaluation starts clean.
+func splitOnFirstOperator(original, stripped string) (left, right string, ok bool) {
+	loc := operatorRe.FindStringIndex(stripped)
+	if loc == nil {
 		return "", "", false
 	}
-	return original[:idx], original[idx+len(sep):], true
+	return strings.TrimSpace(original[:loc[0]]), strings.TrimSpace(original[loc[1]:]), true
 }
 
 // isDestructiveCommand returns true if the given shell command (or any
@@ -380,18 +396,10 @@ func isDestructiveCommand(command string, sandboxActive bool) bool {
 	// Check for shell chaining operators (;, &&, ||, |) by scanning the
 	// quote-stripped command so we don't fire on operators inside strings.
 	stripped := stripQuotedSegments(command)
-	for _, sep := range chainingSeparators {
-		left, right, ok := splitOnOperator(command, stripped, sep)
-		if !ok {
-			continue
-		}
+	if left, right, ok := splitOnFirstOperator(command, stripped); ok {
 		// If either side of the operator is destructive, the whole command is.
-		if isDestructiveCommand(left, sandboxActive) || isDestructiveCommand(right, sandboxActive) {
-			return true
-		}
-		// Neither side alone was destructive — no need to check further
-		// operators at this level; sub-calls above already handled recursion.
-		return false
+		// Recursion handles deeper chains (a ; b ; c splits to (a) and (b ; c)).
+		return isDestructiveCommand(left, sandboxActive) || isDestructiveCommand(right, sandboxActive)
 	}
 
 	// No chaining operators found — evaluate this as a single command.
@@ -422,9 +430,6 @@ func isDestructiveCommand(command string, sandboxActive bool) bool {
 	}
 	if first == "docker" && len(tokens) > 1 && strings.EqualFold(tokens[1], "push") {
 		return true
-	}
-	if first == "curl" || first == "wget" {
-		return false
 	}
 	if first == "gh" && len(tokens) > 2 {
 		group := strings.ToLower(tokens[1])
