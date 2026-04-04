@@ -51,45 +51,7 @@ func connectToRelay(relayURL, apiKey, sessionID string) tea.Cmd {
 		msgCh := make(chan tea.Msg, 64)
 
 		client.On("event", func(data json.RawMessage) {
-			// Relay events arrive as {"type":"...", ...}
-			var wrapper struct {
-				Type string `json:"type"`
-			}
-			if err := json.Unmarshal(data, &wrapper); err != nil {
-				return
-			}
-
-			var msg tea.Msg
-			switch wrapper.Type {
-			case "heartbeat":
-				var hb HeartbeatMsg
-				if json.Unmarshal(data, &hb) == nil {
-					msg = hb
-				}
-			case "session_active":
-				var sa SessionActiveMsg
-				if json.Unmarshal(data, &sa) == nil {
-					msg = sa
-				}
-			case "message_update":
-				var mu MessageUpdateMsg
-				if json.Unmarshal(data, &mu) == nil {
-					msg = mu
-				}
-			case "tool_result_message":
-				var tr ToolResultMsg
-				if json.Unmarshal(data, &tr) == nil {
-					msg = tr
-				}
-			case "session_metadata_update":
-				var sm SessionMetadataMsg
-				if json.Unmarshal(data, &sm) == nil {
-					msg = sm
-				}
-			default:
-				msg = RelayEventMsg{Type: wrapper.Type, Data: data}
-			}
-
+			msg := parseRelayJSON(data)
 			if msg != nil {
 				select {
 				case msgCh <- msg:
@@ -106,44 +68,11 @@ func connectToRelay(relayURL, apiKey, sessionID string) tea.Cmd {
 				Event json.RawMessage `json:"event"`
 			}
 			if json.Unmarshal(data, &wrapper) == nil && len(wrapper.Event) > 0 {
-				// Re-dispatch as the inner event
-				var inner struct {
-					Type string `json:"type"`
-				}
-				if json.Unmarshal(wrapper.Event, &inner) == nil {
-					var msg tea.Msg
-					switch inner.Type {
-					case "heartbeat":
-						var hb HeartbeatMsg
-						if json.Unmarshal(wrapper.Event, &hb) == nil {
-							msg = hb
-						}
-					case "session_active":
-						var sa SessionActiveMsg
-						if json.Unmarshal(wrapper.Event, &sa) == nil {
-							msg = sa
-						}
-					case "message_update":
-						var mu MessageUpdateMsg
-						if json.Unmarshal(wrapper.Event, &mu) == nil {
-							msg = mu
-						}
-					case "tool_result_message":
-						var tr ToolResultMsg
-						if json.Unmarshal(wrapper.Event, &tr) == nil {
-							msg = tr
-						}
-					case "session_metadata_update":
-						var sm SessionMetadataMsg
-						if json.Unmarshal(wrapper.Event, &sm) == nil {
-							msg = sm
-						}
-					}
-					if msg != nil {
-						select {
-						case msgCh <- msg:
-						default:
-						}
+				msg := parseRelayJSON(wrapper.Event)
+				if msg != nil {
+					select {
+					case msgCh <- msg:
+					default:
 					}
 				}
 			}
@@ -229,4 +158,114 @@ func getRelayChan() chan tea.Msg {
 	relayChanMu.Lock()
 	defer relayChanMu.Unlock()
 	return relayChan
+}
+
+// parseRelayJSON converts a raw JSON relay event into a typed tea.Msg.
+// Used by both the "event" and "session_event" handlers.
+func parseRelayJSON(data json.RawMessage) tea.Msg {
+	var wrapper struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(data, &wrapper); err != nil {
+		return nil
+	}
+
+	switch wrapper.Type {
+	case "heartbeat":
+		var hb HeartbeatMsg
+		if json.Unmarshal(data, &hb) == nil {
+			return hb
+		}
+	case "session_active":
+		var sa SessionActiveMsg
+		if json.Unmarshal(data, &sa) == nil {
+			return sa
+		}
+	case "message_update":
+		// Check for streaming delta (assistantMessageEvent) vs final (message)
+		var raw struct {
+			AssistantMessageEvent json.RawMessage `json:"assistantMessageEvent"`
+			Message               json.RawMessage `json:"message"`
+		}
+		if json.Unmarshal(data, &raw) == nil && len(raw.AssistantMessageEvent) > 0 {
+			// Streaming delta — parse assistantMessageEvent
+			var ame map[string]any
+			if json.Unmarshal(raw.AssistantMessageEvent, &ame) == nil {
+				return parseStreamingDeltaFromMap(ame)
+			}
+		}
+		// Final message update
+		var mu MessageUpdateMsg
+		if json.Unmarshal(data, &mu) == nil {
+			return mu
+		}
+	case "message_start":
+		var raw struct {
+			Message struct {
+				ID   string `json:"id"`
+				Role string `json:"role"`
+			} `json:"message"`
+		}
+		if json.Unmarshal(data, &raw) == nil {
+			return MessageStartMsg{MessageID: raw.Message.ID, Role: raw.Message.Role}
+		}
+	case "message_end":
+		// Extract message for upsert (same shape as final message_update)
+		var raw struct {
+			Message json.RawMessage `json:"message"`
+		}
+		if json.Unmarshal(data, &raw) == nil && len(raw.Message) > 0 {
+			var mu MessageUpdateMsg
+			if json.Unmarshal(raw.Message, &mu) == nil {
+				return mu
+			}
+		}
+	case "tool_result_message":
+		var tr ToolResultMsg
+		if json.Unmarshal(data, &tr) == nil {
+			return tr
+		}
+	case "tool_execution_start":
+		var tes ToolExecutionStartMsg
+		if json.Unmarshal(data, &tes) == nil {
+			return tes
+		}
+	case "tool_execution_end":
+		var tee ToolExecutionEndMsg
+		if json.Unmarshal(data, &tee) == nil {
+			return tee
+		}
+	case "session_metadata_update":
+		var sm SessionMetadataMsg
+		if json.Unmarshal(data, &sm) == nil {
+			return sm
+		}
+	default:
+		return RelayEventMsg{Type: wrapper.Type, Data: data}
+	}
+	return nil
+}
+
+// parseStreamingDeltaFromMap creates a StreamingDeltaMsg from a parsed
+// assistantMessageEvent map. Used by the relay JSON parser.
+func parseStreamingDeltaFromMap(ame map[string]any) tea.Msg {
+	sd := StreamingDeltaMsg{Role: "assistant"}
+	sd.DeltaType, _ = ame["type"].(string)
+	sd.Delta, _ = ame["delta"].(string)
+
+	if partial, ok := ame["partial"].(map[string]any); ok {
+		sd.MessageID, _ = partial["id"].(string)
+		if role, ok := partial["role"].(string); ok && role != "" {
+			sd.Role = role
+		}
+		// Content comes as []any from json.Unmarshal into map[string]any
+		if content, ok := partial["content"].([]any); ok {
+			for _, block := range content {
+				if b, err := json.Marshal(block); err == nil {
+					sd.Content = append(sd.Content, json.RawMessage(b))
+				}
+			}
+		}
+	}
+	return sd
 }

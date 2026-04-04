@@ -85,6 +85,36 @@ type SessionMetadataMsg struct {
 	StopReason string  `json:"stopReason"`
 }
 
+// StreamingDeltaMsg represents a streaming text/thinking delta from
+// assistantMessageEvent. It carries the full accumulated partial message
+// so the TUI can upsert it by message ID.
+type StreamingDeltaMsg struct {
+	MessageID string             // stable ID for upsert
+	Role      string             // "assistant"
+	Content   []json.RawMessage  // accumulated content blocks (partial message)
+	DeltaType string             // "text_delta", "thinking_delta", "toolcall_delta"
+	Delta     string             // the incremental text
+}
+
+// MessageStartMsg signals a new assistant message is beginning.
+type MessageStartMsg struct {
+	MessageID string `json:"id"`
+	Role      string `json:"role"`
+}
+
+// ToolExecutionStartMsg signals a tool call is beginning.
+type ToolExecutionStartMsg struct {
+	ToolCallID string `json:"toolCallId"`
+	ToolName   string `json:"toolName"`
+}
+
+// ToolExecutionEndMsg signals a tool call has completed.
+type ToolExecutionEndMsg struct {
+	ToolCallID string `json:"toolCallId"`
+	ToolName   string `json:"toolName"`
+	IsError    bool   `json:"isError"`
+}
+
 // SessionListMsg carries an updated list of sessions from the relay.
 type SessionListMsg struct {
 	Sessions []SessionInfo

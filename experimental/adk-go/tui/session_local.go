@@ -114,12 +114,10 @@ func relayEventToMsg(ev runner.RelayEvent) tea.Msg {
 
 	case "message_update":
 		// Check for streaming delta (assistantMessageEvent) vs final (message)
-		if _, hasAME := ev["assistantMessageEvent"]; hasAME {
-			// Streaming delta — pass through as generic event for now
-			// The TUI model can be updated to handle this more granularly
-			return RelayEventMsg{Type: evType, Data: mustMarshal(ev)}
+		if ameRaw, hasAME := ev["assistantMessageEvent"]; hasAME {
+			return parseStreamingDelta(ameRaw)
 		}
-		// Final message update
+		// Final message update — has "message" field
 		var mu MessageUpdateMsg
 		if msg, ok := ev["message"].(map[string]any); ok {
 			if b, err := json.Marshal(msg); err == nil {
@@ -129,10 +127,15 @@ func relayEventToMsg(ev runner.RelayEvent) tea.Msg {
 		return mu
 
 	case "message_start":
-		return RelayEventMsg{Type: evType, Data: mustMarshal(ev)}
+		var ms MessageStartMsg
+		if msg, ok := ev["message"].(map[string]any); ok {
+			ms.Role, _ = msg["role"].(string)
+			ms.MessageID, _ = msg["id"].(string)
+		}
+		return ms
 
 	case "message_end":
-		// Extract the message for upsert
+		// Extract the message for upsert (same as final message_update)
 		var mu MessageUpdateMsg
 		if msg, ok := ev["message"].(map[string]any); ok {
 			if b, err := json.Marshal(msg); err == nil {
@@ -148,8 +151,19 @@ func relayEventToMsg(ev runner.RelayEvent) tea.Msg {
 		}
 		return tr
 
-	case "tool_execution_start", "tool_execution_end":
-		return RelayEventMsg{Type: evType, Data: mustMarshal(ev)}
+	case "tool_execution_start":
+		var tes ToolExecutionStartMsg
+		if b, err := json.Marshal(ev); err == nil {
+			json.Unmarshal(b, &tes)
+		}
+		return tes
+
+	case "tool_execution_end":
+		var tee ToolExecutionEndMsg
+		if b, err := json.Marshal(ev); err == nil {
+			json.Unmarshal(b, &tee)
+		}
+		return tee
 
 	case "session_metadata_update":
 		var sm SessionMetadataMsg
@@ -161,6 +175,48 @@ func relayEventToMsg(ev runner.RelayEvent) tea.Msg {
 	default:
 		return RelayEventMsg{Type: evType, Data: mustMarshal(ev)}
 	}
+}
+
+// parseStreamingDelta extracts a StreamingDeltaMsg from an assistantMessageEvent.
+// The ameRaw is the value of the "assistantMessageEvent" key in the relay event.
+func parseStreamingDelta(ameRaw any) tea.Msg {
+	ameMap, ok := ameRaw.(map[string]any)
+	if !ok {
+		return nil
+	}
+
+	sd := StreamingDeltaMsg{
+		Role: "assistant",
+	}
+
+	// Extract delta type and text
+	sd.DeltaType, _ = ameMap["type"].(string)
+	sd.Delta, _ = ameMap["delta"].(string)
+
+	// Extract the partial message (accumulated content blocks + ID)
+	if partial, ok := ameMap["partial"].(map[string]any); ok {
+		sd.MessageID, _ = partial["id"].(string)
+		sd.Role, _ = partial["role"].(string)
+		if sd.Role == "" {
+			sd.Role = "assistant"
+		}
+		// Convert content to []json.RawMessage
+		if content, ok := partial["content"].([]any); ok {
+			for _, block := range content {
+				if b, err := json.Marshal(block); err == nil {
+					sd.Content = append(sd.Content, json.RawMessage(b))
+				}
+			}
+		} else if contentMaps, ok := partial["content"].([]map[string]any); ok {
+			for _, block := range contentMaps {
+				if b, err := json.Marshal(block); err == nil {
+					sd.Content = append(sd.Content, json.RawMessage(b))
+				}
+			}
+		}
+	}
+
+	return sd
 }
 
 func mustMarshal(v any) json.RawMessage {

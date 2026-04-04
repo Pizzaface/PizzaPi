@@ -60,6 +60,10 @@ type AppState struct {
 	CostUSD      float64
 	NumTurns     int
 
+	// Streaming state
+	ActiveTools        map[string]string // toolCallId → toolName (in-flight tools)
+	StreamingMessageID string            // ID of the message currently being streamed
+
 	// Extension components
 	Components *ComponentRegistry
 
@@ -87,6 +91,7 @@ func newAppState(session SessionController) AppState {
 		Messages:      []DisplayMessage{},
 		Input:         ta,
 		ActivePanel:   PanelMain,
+		ActiveTools:   make(map[string]string),
 		Components:    NewComponentRegistry(),
 		Session:       session,
 		Mode:          mode,

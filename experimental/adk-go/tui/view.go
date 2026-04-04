@@ -67,6 +67,14 @@ func renderHeader(s AppState) string {
 			if s.IsCompacting {
 				label = "compacting"
 			}
+			// Show active tools in the header
+			if len(s.ActiveTools) > 0 {
+				var toolNames []string
+				for _, name := range s.ActiveTools {
+					toolNames = append(toolNames, name)
+				}
+				label += " ⚡ " + strings.Join(toolNames, ", ")
+			}
 		} else {
 			connStyle = lipgloss.NewStyle().Foreground(colorSecondary)
 			label = "connected"

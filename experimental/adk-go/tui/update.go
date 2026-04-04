@@ -130,14 +130,60 @@ func update(a App, msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		s.ScrollOffset = 0
 
-	case MessageUpdateMsg:
-		// Streaming update — find existing message by ID or append
+	case StreamingDeltaMsg:
+		// Streaming delta from assistantMessageEvent — upsert by message ID.
+		// Content carries the full accumulated partial message.
 		text := extractTextFromContent(msg.Content)
+		s.StreamingMessageID = msg.MessageID
 		found := false
 		for i := range s.Messages {
 			if s.Messages[i].ID == msg.MessageID {
 				s.Messages[i].Text = text
 				s.Messages[i].Role = msg.Role
+				found = true
+				break
+			}
+		}
+		if !found && text != "" {
+			s.Messages = append(s.Messages, DisplayMessage{
+				ID:   msg.MessageID,
+				Role: msg.Role,
+				Text: text,
+			})
+		}
+
+	case MessageStartMsg:
+		// Assistant is starting a new message — create a placeholder so the
+		// user sees the message bubble appear immediately.
+		s.StreamingMessageID = msg.MessageID
+		if msg.MessageID != "" {
+			// Only add if we don't already have this message
+			found := false
+			for _, m := range s.Messages {
+				if m.ID == msg.MessageID {
+					found = true
+					break
+				}
+			}
+			if !found {
+				s.Messages = append(s.Messages, DisplayMessage{
+					ID:   msg.MessageID,
+					Role: msg.Role,
+					Text: "▍", // typing cursor placeholder
+				})
+			}
+		}
+
+	case MessageUpdateMsg:
+		// Final message update (non-streaming) — upsert by message ID.
+		text := extractTextFromContent(msg.Content)
+		s.StreamingMessageID = "" // streaming done
+		found := false
+		for i := range s.Messages {
+			if s.Messages[i].ID == msg.MessageID {
+				s.Messages[i].Text = text
+				s.Messages[i].Role = msg.Role
+				s.Messages[i].Timestamp = msg.Timestamp
 				found = true
 				break
 			}
@@ -150,6 +196,12 @@ func update(a App, msg tea.Msg) (tea.Model, tea.Cmd) {
 				Timestamp: msg.Timestamp,
 			})
 		}
+
+	case ToolExecutionStartMsg:
+		s.ActiveTools[msg.ToolCallID] = msg.ToolName
+
+	case ToolExecutionEndMsg:
+		delete(s.ActiveTools, msg.ToolCallID)
 
 	case ToolResultMsg:
 		content := ""
@@ -192,7 +244,8 @@ func update(a App, msg tea.Msg) (tea.Model, tea.Cmd) {
 	// After handling any session event, keep listening for the next one.
 	switch msg.(type) {
 	case HeartbeatMsg, SessionActiveMsg, MessageUpdateMsg, ToolResultMsg,
-		SessionMetadataMsg, SessionListMsg, RelayEventMsg:
+		SessionMetadataMsg, SessionListMsg, RelayEventMsg,
+		StreamingDeltaMsg, MessageStartMsg, ToolExecutionStartMsg, ToolExecutionEndMsg:
 		if ls, ok := s.Session.(*LocalSession); ok {
 			cmds = append(cmds, listenLocal(ls))
 		} else {
