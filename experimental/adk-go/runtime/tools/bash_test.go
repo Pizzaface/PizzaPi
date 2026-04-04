@@ -129,6 +129,33 @@ func TestRunBash_DefaultTimeout(t *testing.T) {
 	}
 }
 
+// TestRunBash_BackgroundProcessTimeout is a regression test for the deadlock
+// where a command spawning background processes caused RunBash to hang forever
+// on timeout. The background process held the pipe open, blocking cmd.Wait(),
+// so the process-group SIGKILL (which was ordered after the drain) never ran.
+//
+// Fix: kill the process group BEFORE draining the done channel on timeout.
+func TestRunBash_BackgroundProcessTimeout(t *testing.T) {
+	start := time.Now()
+	// "sleep 999 &" spawns a background process that holds the pipe open.
+	// "echo started" prints before bash exits.
+	// Without the fix, RunBash hangs indefinitely waiting for the pipe to close.
+	result, err := tools.RunBash("sleep 999 & echo started", tools.BashOpts{Timeout: 500 * time.Millisecond})
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if elapsed > 2*time.Second {
+		t.Errorf("RunBash deadlocked: took %v, expected < 2s (background process held pipe open)", elapsed)
+	}
+	if !result.TimedOut {
+		t.Error("expected TimedOut = true")
+	}
+	if !strings.Contains(result.Output, "started") {
+		t.Errorf("expected output to contain 'started' (echo ran before timeout), got %q", result.Output)
+	}
+}
+
 func TestRunBash_ByteTruncation(t *testing.T) {
 	// Generate output that exceeds 50KB: 600 lines of 100 'A's each
 	line := strings.Repeat("A", 100)

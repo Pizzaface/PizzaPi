@@ -72,7 +72,20 @@ func RunBash(command string, opts BashOpts) (BashResult, error) {
 
 	select {
 	case <-ctx.Done():
-		<-done // drain — context kill already sent SIGKILL to main pid
+		// Kill the entire process group BEFORE draining the done channel.
+		//
+		// Background processes spawned by the command (e.g. "sleep 999 &") inherit
+		// the pipe file descriptors. exec.CommandContext only sends SIGKILL to the
+		// main bash PID, leaving grandchildren alive and holding the pipe open.
+		// cmd.Wait() (running inside the goroutine above) blocks on pipe EOF, so
+		// <-done never fires — creating a deadlock.
+		//
+		// Killing the process group here closes all child pipe ends, unblocks
+		// cmd.Wait(), and lets <-done drain cleanly.
+		if cmd.Process != nil {
+			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		}
+		<-done // now cmd.Wait() can return
 	case <-done:
 		// Command finished normally.
 	}
@@ -80,9 +93,8 @@ func RunBash(command string, opts BashOpts) (BashResult, error) {
 	// When both channels are ready simultaneously Go may pick <-done, but the
 	// context is still expired (Go ≥ 1.20 CommandContext behaviour).
 	timedOut := ctx.Err() != nil
-	// Always kill the entire process group when timed out, regardless of which
-	// select branch fired. This prevents orphan grandchild processes that
-	// exec.CommandContext's single-pid kill doesn't reach.
+	// Edge case: <-done fired first but context expired simultaneously.
+	// Kill the process group to clean up any surviving orphan grandchildren.
 	if timedOut && cmd.Process != nil {
 		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 	}
