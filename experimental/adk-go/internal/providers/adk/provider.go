@@ -6,19 +6,12 @@ import (
 	"log"
 	"os"
 	"sync"
-	"time"
 
 	"github.com/Pizzaface/PizzaPi/experimental/adk-go/internal/auth"
 
-	"google.golang.org/adk/agent"
 	"google.golang.org/adk/agent/llmagent"
 	"google.golang.org/adk/model"
-	"google.golang.org/adk/runner"
-	"google.golang.org/adk/session"
 	"google.golang.org/adk/tool"
-	"google.golang.org/genai"
-
-
 )
 
 // BackendConfig defines the configuration for a specific model backend.
@@ -58,16 +51,8 @@ type BackendConfig struct {
 type Provider struct {
 	config  BackendConfig
 	logger  *log.Logger
-	adapter *Adapter
-
-	adkRunner *runner.Runner
-	sessionID string
-	userID    string
-	sessionSvc session.Service
-
-	events chan RelayEvent
-	done   chan struct{}
-	cancel context.CancelFunc
+	runtime *Runtime
+	done    chan struct{}
 
 	mu      sync.Mutex
 	started bool
@@ -81,7 +66,6 @@ func NewProvider(config BackendConfig, logger *log.Logger) *Provider {
 	return &Provider{
 		config: config,
 		logger: logger,
-		events: make(chan RelayEvent, 128),
 		done:   make(chan struct{}),
 	}
 }
@@ -111,7 +95,6 @@ func (p *Provider) Start(pctx ProviderContext) (<-chan RelayEvent, error) {
 		modelName = p.config.DefaultModel
 	}
 
-	// Resolve API key — try auth storage first (OAuth), then env var
 	apiKey := ""
 	if p.config.AuthProviderID != "" {
 		storage := authStorageFactory()
@@ -126,237 +109,93 @@ func (p *Provider) Start(pctx ProviderContext) (<-chan RelayEvent, error) {
 		apiKey = resolveEnvVar(p.config.APIKeyEnvVar)
 	}
 	if apiKey == "" {
-		close(p.events)
-		close(p.done)
 		return nil, fmt.Errorf("no credentials for %s — set %s or run --login", p.config.Name, p.config.APIKeyEnvVar)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	p.cancel = cancel
-
-	// Create the ADK model
+	ctx := context.Background()
 	adkModel, err := p.config.NewModel(ctx, modelName, apiKey)
 	if err != nil {
-		cancel()
-		close(p.events)
-		close(p.done)
 		return nil, fmt.Errorf("create %s model: %w", p.config.Name, err)
 	}
 
-	// Create the adapter
-	p.adapter = NewAdapter(
-		AdapterModel{Provider: p.config.Provider, ID: adkModel.Name()},
-		pctx.Cwd,
-	)
-	_ = adkModel // adkModel is model.LLM
-	p.adapter.AddUserMessage(pctx.Prompt)
-
-	// Build tools
 	adkTools, err := AllTools(pctx.Cwd)
 	if err != nil {
-		cancel()
-		close(p.events)
-		close(p.done)
 		return nil, fmt.Errorf("create tools: %w", err)
 	}
-
-	// Create the agent
 	instruction := p.config.Instruction
 	if instruction == "" {
 		instruction = defaultInstruction
 	}
-
 	toolList := make([]tool.Tool, len(adkTools))
 	copy(toolList, adkTools)
 
-	agentCfg := llmagent.Config{
+	a, err := llmagent.New(llmagent.Config{
 		Name:        fmt.Sprintf("pizzapi-%s-agent", p.config.Name),
 		Model:       adkModel,
 		Description: "A PizzaPi coding agent powered by " + p.config.Provider,
 		Instruction: instruction,
 		Tools:       toolList,
-	}
-
-	a, err := llmagent.New(agentCfg)
+	})
 	if err != nil {
-		cancel()
-		close(p.events)
-		close(p.done)
 		return nil, fmt.Errorf("create agent: %w", err)
 	}
 
-	// Create session service and session
-	p.sessionSvc = session.InMemoryService()
-	p.userID = "pizzapi-user"
-
-	sess, err := p.sessionSvc.Create(ctx, &session.CreateRequest{
-		AppName: "pizzapi",
-		UserID:  p.userID,
+	rt, err := NewRuntime(RuntimeConfig{
+		AppName:       "pizzapi",
+		ProviderName:  p.config.Name,
+		ProviderLabel: p.config.Provider,
+		ModelID:       adkModel.Name(),
+		Cwd:           pctx.Cwd,
+		Logger:        p.logger,
+		Agent:         a,
 	})
 	if err != nil {
-		cancel()
-		close(p.events)
-		close(p.done)
-		return nil, fmt.Errorf("create session: %w", err)
+		return nil, err
 	}
-	p.sessionID = sess.Session.ID()
-
-	// Create the ADK runner
-	runnerCfg := runner.Config{
-		AppName:        "pizzapi",
-		Agent:          a,
-		SessionService: p.sessionSvc,
-	}
-	p.adkRunner, err = runner.New(runnerCfg)
-	if err != nil {
-		cancel()
-		close(p.events)
-		close(p.done)
-		return nil, fmt.Errorf("create runner: %w", err)
-	}
-
-	// Start the agent loop in a goroutine
-	go p.runLoop(ctx, pctx.Prompt)
-
-	return p.events, nil
-}
-
-// runLoop executes the ADK runner and bridges events to the relay channel.
-func (p *Provider) runLoop(ctx context.Context, prompt string) {
-	defer close(p.events)
-	defer close(p.done)
-
-	userMsg := genai.NewContentFromText(prompt, genai.RoleUser)
-
-	p.logger.Printf("[%s] starting agent with model %s", p.config.Name, p.adapter.model.ID)
-
-	inputTokens, outputTokens := 0, 0
-	numTurns := 0
-
-	for event, err := range p.adkRunner.Run(ctx, p.userID, p.sessionID, userMsg, agent.RunConfig{
-		StreamingMode: agent.StreamingModeSSE,
-	}) {
-		if err != nil {
-			p.logger.Printf("[%s] runner error: %v", p.config.Name, err)
-			p.emit(RelayEvent{
-				"type":       "tool_result_message",
-				"role":       "tool_result",
-				"toolCallId": "",
-				"toolName":   "system",
-				"content":    fmt.Sprintf("Error: %v", err),
-				"isError":    true,
-				"timestamp":  time.Now().UnixMilli(),
-			})
-			continue
-		}
-
-		// Track usage from event metadata
-		if event.UsageMetadata != nil {
-			inputTokens = int(event.UsageMetadata.PromptTokenCount)
-			outputTokens = int(event.UsageMetadata.CandidatesTokenCount)
-		}
-		if event.TurnComplete {
-			numTurns++
-		}
-
-		// Convert to relay events
-		relayEvents := p.adapter.HandleEvent(event)
-		for _, re := range relayEvents {
-			p.emit(re)
-		}
-	}
-
-	// Turn complete — emit metadata and idle heartbeat
-	endEvents := p.adapter.HandleTurnEnd(inputTokens, outputTokens, 0, numTurns, "end_turn")
-	for _, re := range endEvents {
-		p.emit(re)
-	}
-
-	p.logger.Printf("[%s] agent turn complete (turns=%d, in=%d, out=%d)",
-		p.config.Name, numTurns, inputTokens, outputTokens)
-}
-
-func (p *Provider) emit(ev RelayEvent) {
-	select {
-	case p.events <- ev:
-	default:
-		p.logger.Printf("[%s] event channel full, dropping event type=%v", p.config.Name, ev["type"])
-	}
+	p.runtime = rt
+	return p.runtime.Start(pctx.Prompt)
 }
 
 // SendMessage sends a follow-up user message to the running agent.
 func (p *Provider) SendMessage(text string) error {
 	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	if !p.started || p.adkRunner == nil {
+	rt := p.runtime
+	p.mu.Unlock()
+	if rt == nil {
 		return fmt.Errorf("provider not started")
 	}
-
-	p.adapter.AddUserMessage(text)
-
-	// Re-run the agent with the new message
-	ctx := context.Background()
-	if p.cancel != nil {
-		ctx, _ = context.WithCancel(ctx)
-	}
-
-	userMsg := genai.NewContentFromText(text, genai.RoleUser)
-
-	go func() {
-		inputTokens, outputTokens := 0, 0
-		numTurns := 0
-
-		for event, err := range p.adkRunner.Run(ctx, p.userID, p.sessionID, userMsg, agent.RunConfig{
-			StreamingMode: agent.StreamingModeSSE,
-		}) {
-			if err != nil {
-				p.logger.Printf("[%s] runner error: %v", p.config.Name, err)
-				continue
-			}
-
-			if event.UsageMetadata != nil {
-				inputTokens = int(event.UsageMetadata.PromptTokenCount)
-				outputTokens = int(event.UsageMetadata.CandidatesTokenCount)
-			}
-			if event.TurnComplete {
-				numTurns++
-			}
-
-			relayEvents := p.adapter.HandleEvent(event)
-			for _, re := range relayEvents {
-				p.emit(re)
-			}
-		}
-
-		endEvents := p.adapter.HandleTurnEnd(inputTokens, outputTokens, 0, numTurns, "end_turn")
-		for _, re := range endEvents {
-			p.emit(re)
-		}
-	}()
-
-	return nil
+	return rt.SendMessage(text)
 }
 
 // Done returns a channel that closes when the provider exits.
 func (p *Provider) Done() <-chan struct{} {
-	return p.done
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.runtime == nil {
+		return p.done
+	}
+	return p.runtime.Done()
 }
 
 // ExitCode returns -1 (ADK providers don't have process exit codes).
 func (p *Provider) ExitCode() int {
-	return -1
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.runtime == nil {
+		return -1
+	}
+	return p.runtime.ExitCode()
 }
 
 // Stop terminates the provider.
 func (p *Provider) Stop() error {
 	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	if p.cancel != nil {
-		p.cancel()
+	rt := p.runtime
+	p.mu.Unlock()
+	if rt == nil {
+		return nil
 	}
-	return nil
+	return rt.Stop()
 }
 
 const defaultInstruction = `You are a helpful coding assistant. You have access to tools for reading files, writing files, editing files, and running bash commands. Use these tools to help the user with their coding tasks.
