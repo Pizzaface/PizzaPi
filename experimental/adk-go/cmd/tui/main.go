@@ -16,14 +16,19 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
+	"runtime"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/Pizzaface/PizzaPi/experimental/adk-go/internal/auth"
+	oaiprovider "github.com/Pizzaface/PizzaPi/experimental/adk-go/internal/providers/openai"
 	"github.com/Pizzaface/PizzaPi/experimental/adk-go/internal/runner"
 	"github.com/Pizzaface/PizzaPi/experimental/adk-go/tui"
 )
@@ -35,6 +40,7 @@ func main() {
 	provider := flag.String("provider", "claude-cli", "Provider name (local mode only)")
 	model := flag.String("model", "", "Model ID (e.g. claude-sonnet-4-20250514)")
 	cwd := flag.String("cwd", "", "Working directory (default: current directory)")
+	loginFlag := flag.Bool("login", false, "Run OAuth login flow for the selected provider")
 	flag.Parse()
 
 	// Resolve working directory
@@ -56,6 +62,23 @@ func main() {
 	url := *relayURL
 	if url == "" {
 		url = os.Getenv("PIZZAPI_RELAY_URL")
+	}
+
+	// Handle OAuth login for providers that support it
+	if *loginFlag || (*provider == "openai" && needsOpenAILogin()) {
+		if *provider == "openai" {
+			if err := runOpenAILogin(); err != nil {
+				fmt.Fprintf(os.Stderr, "Login failed: %v\n", err)
+				os.Exit(1)
+			}
+			if *loginFlag {
+				fmt.Println("Login successful!")
+				os.Exit(0)
+			}
+		} else if *loginFlag {
+			fmt.Fprintf(os.Stderr, "OAuth login not supported for provider %q\n", *provider)
+			os.Exit(1)
+		}
 	}
 
 	// Determine mode
@@ -86,4 +109,58 @@ func main() {
 	if _, err := p.Run(); err != nil {
 		log.Fatalf("error: %v", err)
 	}
+}
+
+// needsOpenAILogin checks if OpenAI OAuth or API key is configured.
+func needsOpenAILogin() bool {
+	storage := auth.NewStorage("")
+	oaiprovider.RegisterOAuthRefresher(storage)
+	p := oaiprovider.NewProvider(storage, nil)
+	return p.NeedsLogin()
+}
+
+// runOpenAILogin executes the interactive OAuth flow for OpenAI.
+func runOpenAILogin() error {
+	storage := auth.NewStorage("")
+
+	fmt.Println("🔑 Logging in to OpenAI (ChatGPT Plus/Pro)...")
+	fmt.Println()
+
+	cred, err := auth.LoginOpenAI(context.Background(), auth.LoginCallbacks{
+		OnAuth: func(url string, instructions string) {
+			fmt.Printf("Opening browser: %s\n", url)
+			fmt.Printf("  %s\n\n", instructions)
+			openBrowser(url)
+		},
+		OnProgress: func(message string) {
+			fmt.Printf("  %s\n", message)
+		},
+	})
+	if err != nil {
+		return err
+	}
+
+	// Store the credential
+	if err := storage.Set(oaiprovider.OAuthProviderID, cred); err != nil {
+		return fmt.Errorf("save credentials: %w", err)
+	}
+
+	fmt.Println("✅ Credentials saved to ~/.pizzapi/auth.json")
+	return nil
+}
+
+// openBrowser tries to open a URL in the default browser.
+func openBrowser(url string) {
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "darwin":
+		cmd = exec.Command("open", url)
+	case "linux":
+		cmd = exec.Command("xdg-open", url)
+	case "windows":
+		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
+	default:
+		return
+	}
+	cmd.Start()
 }

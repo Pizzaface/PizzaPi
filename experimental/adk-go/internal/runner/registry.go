@@ -6,7 +6,9 @@ import (
 	"sort"
 	"sync"
 
+	"github.com/Pizzaface/PizzaPi/experimental/adk-go/internal/auth"
 	adkprovider "github.com/Pizzaface/PizzaPi/experimental/adk-go/internal/providers/adk"
+	oaiprovider "github.com/Pizzaface/PizzaPi/experimental/adk-go/internal/providers/openai"
 )
 
 // Registry holds registered provider factories, keyed by name.
@@ -70,6 +72,13 @@ var DefaultRegistry = func() *Registry {
 			return NewADKProviderAdapter(backend)
 		})
 	}
+
+	// OpenAI (direct API + OAuth)
+	r.Register("openai", func() Provider {
+		storage := auth.NewStorage("")
+		oaiprovider.RegisterOAuthRefresher(storage)
+		return NewOpenAIProviderAdapter(storage)
+	})
 
 	return r
 }()

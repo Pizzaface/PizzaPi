@@ -2,7 +2,6 @@ package adk
 
 import (
 	"context"
-	"fmt"
 
 	"google.golang.org/genai"
 
@@ -25,27 +24,11 @@ func GeminiBackend() BackendConfig {
 	}
 }
 
-// OpenAIBackend returns the BackendConfig for OpenAI-compatible models.
-// Uses the genai SDK's OpenAI-compatible endpoint support.
-func OpenAIBackend() BackendConfig {
-	return BackendConfig{
-		Name:         "openai",
-		Provider:     "openai",
-		DefaultModel: "gpt-4o",
-		APIKeyEnvVar: "OPENAI_API_KEY",
-		NewModel: func(ctx context.Context, modelName, apiKey string) (model.LLM, error) {
-			// The genai SDK supports OpenAI-compatible endpoints via Backend config.
-			// For now, we use Gemini's model constructor with OpenAI backend.
-			// TODO: Once ADK Go adds native OpenAI model support, switch to that.
-			return nil, fmt.Errorf("openai backend not yet implemented — waiting for ADK Go native OpenAI support")
-		},
-	}
-}
-
-// AllBackends returns all supported backend configurations.
+// AllBackends returns all ADK-backed backend configurations.
+// OpenAI is handled separately (internal/providers/openai/) since it uses
+// the OpenAI API directly rather than ADK's model abstraction.
 func AllBackends() []BackendConfig {
 	return []BackendConfig{
 		GeminiBackend(),
-		// OpenAIBackend() — uncomment when ADK Go adds OpenAI model support
 	}
 }

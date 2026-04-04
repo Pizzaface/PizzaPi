@@ -23,22 +23,6 @@ func TestGeminiBackend_Config(t *testing.T) {
 	}
 }
 
-func TestOpenAIBackend_Config(t *testing.T) {
-	cfg := OpenAIBackend()
-	if cfg.Name != "openai" {
-		t.Errorf("expected name 'openai', got %q", cfg.Name)
-	}
-	if cfg.Provider != "openai" {
-		t.Errorf("expected provider 'openai', got %q", cfg.Provider)
-	}
-	if cfg.DefaultModel != "gpt-4o" {
-		t.Errorf("expected default model 'gpt-4o', got %q", cfg.DefaultModel)
-	}
-	if cfg.APIKeyEnvVar != "OPENAI_API_KEY" {
-		t.Errorf("expected OPENAI_API_KEY, got %q", cfg.APIKeyEnvVar)
-	}
-}
-
 func TestAllBackends_IncludesGemini(t *testing.T) {
 	backends := AllBackends()
 	found := false
