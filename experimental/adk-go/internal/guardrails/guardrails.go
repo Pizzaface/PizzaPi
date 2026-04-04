@@ -393,6 +393,20 @@ func isDestructiveCommand(command string, sandboxActive bool) bool {
 		return true
 	}
 
+	// Check for subshell execution via parentheses: (cmd) or ( cmd ).
+	// Strip quoted segments first to avoid false positives on quoted parens
+	// like find . -name '*.go' or echo "(note)".
+	// We flag two patterns on the stripped command:
+	//   1. Leading '(' after trim — e.g. "(rm -rf /)"
+	//   2. ' (' anywhere — e.g. "test -f foo && (rm -rf /)"
+	// This is conservative: it catches the bypass without touching the quoted
+	// content that legitimate commands carry.
+	strippedForSubshell := stripQuotedSegments(command)
+	trimmedStripped := strings.TrimSpace(strippedForSubshell)
+	if strings.HasPrefix(trimmedStripped, "(") || strings.Contains(trimmedStripped, " (") {
+		return true
+	}
+
 	// Check for shell chaining operators (;, &&, ||, |) by scanning the
 	// quote-stripped command so we don't fire on operators inside strings.
 	stripped := stripQuotedSegments(command)

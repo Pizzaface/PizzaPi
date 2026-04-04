@@ -65,7 +65,9 @@ func (s *fakeSIOServer) handleWS(w http.ResponseWriter, r *http.Request) {
 
 	// Send Engine.IO open packet
 	openPayload := `0{"sid":"test-sid","upgrades":[],"pingInterval":25000,"pingTimeout":20000}`
+	s.connMu.Lock()
 	conn.WriteMessage(websocket.TextMessage, []byte(openPayload))
+	s.connMu.Unlock()
 
 	// Read Socket.IO CONNECT packet from client
 	_, msg, err := conn.ReadMessage()
@@ -77,11 +79,13 @@ func (s *fakeSIOServer) handleWS(w http.ResponseWriter, r *http.Request) {
 	s.t.Logf("[server] received CONNECT: %s", msgStr)
 
 	// Send Socket.IO CONNECT response
+	s.connMu.Lock()
 	if strings.Contains(msgStr, "/runner") {
 		conn.WriteMessage(websocket.TextMessage, []byte(`40/runner,{"sid":"server-sid"}`))
 	} else {
 		conn.WriteMessage(websocket.TextMessage, []byte(`40{"sid":"server-sid"}`))
 	}
+	s.connMu.Unlock()
 
 	// Read loop
 	for {

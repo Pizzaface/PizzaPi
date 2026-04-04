@@ -1,5 +1,7 @@
 package main
 
+import guardrails "github.com/Pizzaface/PizzaPi/experimental/adk-go/internal/guardrails"
+
 // Provider drives an LLM session. Implementations handle process lifecycle,
 // protocol translation, and event format conversion internally.
 //
@@ -50,6 +52,14 @@ type ProviderContext struct {
 	Model string
 	// OnStderr is called with each line of stderr output (for logging).
 	OnStderr func(string)
+
+	// HomeDir is the user's home directory, used by guardrails for ~ expansion.
+	HomeDir string
+	// PlanMode indicates the session is in read-only plan mode.
+	// When true, write tools (edit, write, subagent, etc.) are blocked.
+	PlanMode bool
+	// SandboxConfig is the sandbox configuration passed to guardrails.
+	SandboxConfig guardrails.SandboxConfig
 }
 
 // RelayEvent is a provider-agnostic event map ready for the PizzaPi relay
