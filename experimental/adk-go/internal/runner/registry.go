@@ -8,6 +8,7 @@ import (
 
 	"github.com/Pizzaface/PizzaPi/experimental/adk-go/internal/auth"
 	adkprovider "github.com/Pizzaface/PizzaPi/experimental/adk-go/internal/providers/adk"
+	anthprovider "github.com/Pizzaface/PizzaPi/experimental/adk-go/internal/providers/anthropicapi"
 	oaiprovider "github.com/Pizzaface/PizzaPi/experimental/adk-go/internal/providers/openai"
 )
 
@@ -80,9 +81,19 @@ var DefaultRegistry = func() *Registry {
 		return NewOpenAIProviderAdapter(storage)
 	})
 
-	// Register OAuth refreshers for all providers
-	// (Anthropic and GitHub Copilot providers will be added as
-	// they get their own Provider implementations)
+	// Anthropic Messages API + OAuth/API key
+	r.Register("anthropic", func() Provider {
+		storage := auth.NewStorage("")
+		anthprovider.RegisterOAuthRefresher(storage, anthprovider.AnthropicOAuthProvider)
+		return NewAnthropicProviderAdapter(storage)
+	})
+
+	// GitHub Copilot Anthropic-compatible API + device auth token
+	r.Register("github-copilot", func() Provider {
+		storage := auth.NewStorage("")
+		anthprovider.RegisterOAuthRefresher(storage, anthprovider.CopilotOAuthProvider)
+		return NewGitHubCopilotProviderAdapter(storage)
+	})
 
 	return r
 }()
