@@ -1,7 +1,6 @@
 package main
 
 import (
-	"log"
 	"sort"
 
 	bootstrap "github.com/pizzaface/pizzapi/experimental/adk-go/go-runner/internal/bootstrap"
@@ -55,8 +54,13 @@ func loadRunnerConfig(cwd, homeDir string) (runnerConfig, error) {
 // A nil or empty map produces an empty slice (never nil) for clean JSON serialisation.
 func marshalHooks(hooks map[string][]bootstrap.HookEntry) []any {
 	result := make([]any, 0)
-	for hookType, entries := range hooks {
-		for _, entry := range entries {
+	hookTypes := make([]string, 0, len(hooks))
+	for hookType := range hooks {
+		hookTypes = append(hookTypes, hookType)
+	}
+	sort.Strings(hookTypes)
+	for _, hookType := range hookTypes {
+		for _, entry := range hooks[hookType] {
 			for _, cmd := range entry.Hooks {
 				result = append(result, map[string]any{
 					"type":    hookType,
@@ -89,8 +93,4 @@ func stableRoots(roots []string) []string {
 
 func normalizeRunnerCwd(cwd string) string {
 	return reg.NormalizeCWD(cwd)
-}
-
-func newDefaultProviderFactory() func(*log.Logger) Provider {
-	return func(logger *log.Logger) Provider { return NewClaudeCLIProvider(logger) }
 }

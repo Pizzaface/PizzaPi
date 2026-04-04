@@ -26,6 +26,14 @@ import (
 
 const version = "0.1.0-phase0"
 
+// shortID returns the first 8 characters of id, or the full string if shorter.
+func shortID(id string) string {
+	if len(id) <= 8 {
+		return id
+	}
+	return id[:8]
+}
+
 // session tracks a running provider session.
 type session struct {
 	sessionID    string
@@ -227,7 +235,7 @@ func (r *GoRunner) handleNewSession(data json.RawMessage) {
 
 	bootstrap, err := buildSessionBootstrap(payload.Cwd, r.homeDir, r.tempDir)
 	if err != nil {
-		r.logger.Printf("session %s bootstrap error: %v", sessionID[:8], err)
+		r.logger.Printf("session %s bootstrap error: %v", shortID(sessionID), err)
 		r.client.Emit("session_error", map[string]any{
 			"sessionId": sessionID,
 			"message":   fmt.Sprintf("session bootstrap failed: %v", err),
@@ -257,7 +265,7 @@ func (r *GoRunner) handleNewSession(data json.RawMessage) {
 		SystemPrompt:  bootstrap.SystemPrompt,
 		MCPConfigPath: bootstrap.MCPConfigPath,
 		OnStderr: func(line string) {
-			r.logger.Printf("[session:%s:stderr] %s", sessionID[:8], line)
+			r.logger.Printf("[session:%s:stderr] %s", shortID(sessionID), line)
 		},
 	})
 }
@@ -272,10 +280,10 @@ func (r *GoRunner) runSession(ctx context.Context, sess *session, pctx ProviderC
 
 	// Wire up user input from web UI → provider
 	relaySess.SetInputHandler(func(text string) {
-		r.logger.Printf("session %s: sending user input to provider", sessionID[:8])
+		r.logger.Printf("session %s: sending user input to provider", shortID(sessionID))
 
 		if err := sess.provider.SendMessage(text); err != nil {
-			r.logger.Printf("session %s: send message error: %v", sessionID[:8], err)
+			r.logger.Printf("session %s: send message error: %v", shortID(sessionID), err)
 			return
 		}
 
@@ -290,17 +298,18 @@ func (r *GoRunner) runSession(ctx context.Context, sess *session, pctx ProviderC
 			"sessionId": sessionID,
 			"event":     activeHB,
 		})
-		if relaySess != nil {
-			relaySess.EmitEvent(activeHB)
-		}
+		relaySess.EmitEvent(activeHB)
 	})
 
 	if err := relaySess.Connect(r.relayURL, r.apiKey, cwd); err != nil {
-		r.logger.Printf("session %s relay registration failed: %v", sessionID[:8], err)
+		r.logger.Printf("session %s relay registration failed: %v", shortID(sessionID), err)
 		r.client.Emit("session_error", map[string]any{
 			"sessionId": sessionID,
 			"message":   fmt.Sprintf("relay registration failed: %v", err),
 		})
+		if sess.cleanup != nil {
+			sess.cleanup()
+		}
 		r.sessions.Delete(sessionID)
 		return
 	}
@@ -309,12 +318,15 @@ func (r *GoRunner) runSession(ctx context.Context, sess *session, pctx ProviderC
 	// Start the provider
 	events, err := sess.provider.Start(pctx)
 	if err != nil {
-		r.logger.Printf("session %s start error: %v", sessionID[:8], err)
+		r.logger.Printf("session %s start error: %v", shortID(sessionID), err)
 		r.client.Emit("session_error", map[string]any{
 			"sessionId": sessionID,
 			"message":   err.Error(),
 		})
 		relaySess.Close()
+		if sess.cleanup != nil {
+			sess.cleanup()
+		}
 		r.sessions.Delete(sessionID)
 		return
 	}
@@ -323,7 +335,7 @@ func (r *GoRunner) runSession(ctx context.Context, sess *session, pctx ProviderC
 	r.client.Emit("session_ready", map[string]any{
 		"sessionId": sessionID,
 	})
-	r.logger.Printf("session %s ready", sessionID[:8])
+	r.logger.Printf("session %s ready", shortID(sessionID))
 
 	// Start a heartbeat ticker
 	heartbeatTicker := time.NewTicker(10 * time.Second)
@@ -340,7 +352,7 @@ func (r *GoRunner) runSession(ctx context.Context, sess *session, pctx ProviderC
 			}
 
 			evType, _ := ev["type"].(string)
-			r.logger.Printf("session %s relay event: %v", sessionID[:8], evType)
+			r.logger.Printf("session %s relay event: %v", shortID(sessionID), evType)
 
 			// Forward via the /relay session connection — this goes through
 			// the server's event pipeline (state caching, image stripping,
@@ -391,7 +403,7 @@ func (r *GoRunner) handleSessionExit(sess *session) {
 	<-sess.provider.Done()
 
 	exitCode := sess.provider.ExitCode()
-	r.logger.Printf("session %s exited (code=%d)", sessionID[:8], exitCode)
+	r.logger.Printf("session %s exited (code=%d)", shortID(sessionID), exitCode)
 
 	// Send final inactive heartbeat
 	r.client.Emit("runner_session_event", map[string]any{
@@ -426,11 +438,11 @@ func (r *GoRunner) handleKillSession(data json.RawMessage) {
 		return
 	}
 
-	r.logger.Printf("kill_session: %s", payload.SessionID[:8])
+	r.logger.Printf("kill_session: %s", shortID(payload.SessionID))
 
 	val, ok := r.sessions.Load(payload.SessionID)
 	if !ok {
-		r.logger.Printf("session %s not found for kill", payload.SessionID[:8])
+		r.logger.Printf("session %s not found for kill", shortID(payload.SessionID))
 		return
 	}
 
@@ -451,7 +463,7 @@ func (r *GoRunner) killSession(sess *session) {
 	select {
 	case <-sess.provider.Done():
 	case <-time.After(10 * time.Second):
-		r.logger.Printf("session %s did not exit after stop, force killed", sess.sessionID[:8])
+		r.logger.Printf("session %s did not exit after stop, force killed", shortID(sess.sessionID))
 	}
 }
 
@@ -463,7 +475,7 @@ func (r *GoRunner) handleSessionEnded(data json.RawMessage) {
 		r.logger.Printf("parse session_ended: %v", err)
 		return
 	}
-	r.logger.Printf("session_ended from relay: %s", payload.SessionID[:8])
+	r.logger.Printf("session_ended from relay: %s", shortID(payload.SessionID))
 	r.sessions.Delete(payload.SessionID)
 }
 

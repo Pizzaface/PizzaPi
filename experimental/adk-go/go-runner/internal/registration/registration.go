@@ -113,6 +113,9 @@ func resourceDescription(path, fallback string) string {
 // The key comparison is case-insensitive. An empty string is returned when
 // the document has no frontmatter or no description key.
 func frontmatterDescription(text string) string {
+	// Normalize CRLF to LF so Windows-style line endings don't bypass the check.
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+
 	// Frontmatter must start at byte 0 with "---\n".
 	if !strings.HasPrefix(text, "---\n") {
 		return ""
