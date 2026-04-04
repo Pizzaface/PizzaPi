@@ -80,6 +80,7 @@ func readText(path string, opts ReadOpts) (ReadResult, error) {
 	// First pass: count total lines
 	totalLines := 0
 	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 1<<20), 10<<20) // raise token limit to 10 MB (default is 64 KB)
 	for scanner.Scan() {
 		totalLines++
 	}
@@ -104,6 +105,7 @@ func readText(path string, opts ReadOpts) (ReadResult, error) {
 	// Second pass: collect lines in window
 	var sb strings.Builder
 	scanner = bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 1<<20), 10<<20) // raise token limit to 10 MB (default is 64 KB)
 	lineNum := 0
 	linesRead := 0
 	byteCount := 0

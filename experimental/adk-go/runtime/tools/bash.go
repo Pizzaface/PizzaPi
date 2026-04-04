@@ -62,8 +62,6 @@ func RunBash(command string, opts BashOpts) (BashResult, error) {
 	cmd.Stdout = &buf
 	cmd.Stderr = &buf
 
-	timedOut := false
-
 	if err := cmd.Start(); err != nil {
 		return BashResult{}, err
 	}
@@ -74,7 +72,6 @@ func RunBash(command string, opts BashOpts) (BashResult, error) {
 
 	select {
 	case <-ctx.Done():
-		timedOut = true
 		// Kill the entire process group.
 		if cmd.Process != nil {
 			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
@@ -83,6 +80,10 @@ func RunBash(command string, opts BashOpts) (BashResult, error) {
 	case <-done:
 		// Command finished normally.
 	}
+	// Derive timedOut from ctx.Err() rather than which select branch fired.
+	// When both channels are ready simultaneously Go may pick <-done, but the
+	// context is still expired (Go ≥ 1.20 CommandContext behaviour).
+	timedOut := ctx.Err() != nil
 
 	exitCode := 0
 	if cmd.ProcessState != nil {
@@ -116,17 +117,29 @@ func truncateTail(output string) (string, bool) {
 	if len(lines) > maxBashLines {
 		lines = lines[len(lines)-maxBashLines:]
 		// After trimming by line, apply byte limit too.
-		result := joinLines(lines)
+		result := strings.Join(lines, "")
 		if len(result) > maxBashBytes {
-			result = result[len(result)-maxBashBytes:]
+			cut := result[len(result)-maxBashBytes:]
+			// Advance past the first (possibly partial) line so output starts
+			// on a complete line boundary.
+			if idx := strings.IndexByte(cut, '\n'); idx >= 0 {
+				cut = cut[idx+1:]
+			}
+			result = cut
 		}
 		return result, true
 	}
 
 	// Apply byte limit: keep last maxBashBytes bytes.
-	joined := joinLines(lines)
+	joined := strings.Join(lines, "")
 	if len(joined) > maxBashBytes {
-		return joined[len(joined)-maxBashBytes:], true
+		cut := joined[len(joined)-maxBashBytes:]
+		// Advance past the first (possibly partial) line so output starts
+		// on a complete line boundary.
+		if idx := strings.IndexByte(cut, '\n'); idx >= 0 {
+			cut = cut[idx+1:]
+		}
+		return cut, true
 	}
 
 	return joined, false
@@ -152,9 +165,4 @@ func splitLines(s string) []string {
 		remaining = remaining[idx+1:]
 	}
 	return lines
-}
-
-// joinLines concatenates a slice of lines back into a single string.
-func joinLines(lines []string) string {
-	return strings.Join(lines, "")
 }

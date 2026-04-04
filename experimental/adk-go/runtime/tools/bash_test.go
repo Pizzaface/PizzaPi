@@ -2,6 +2,7 @@ package tools_test
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -37,12 +38,17 @@ func TestRunBash_CwdRespected(t *testing.T) {
 	if result.ExitCode != 0 {
 		t.Errorf("expected exit code 0, got %d", result.ExitCode)
 	}
-	// On macOS, /tmp is symlinked; resolve both sides
-	trimmed := strings.TrimSpace(result.Output)
-	if !strings.HasSuffix(trimmed, dir) && !strings.Contains(result.Output, dir) {
-		// Allow resolved symlink comparison
-		t.Logf("pwd output: %q, expected dir: %q", trimmed, dir)
-		// Just verify the command ran in the right place by checking it ends with the temp dir base
+	// Resolve symlinks on both sides to handle macOS /private/tmp → /tmp.
+	got, err := filepath.EvalSymlinks(strings.TrimSpace(result.Output))
+	if err != nil {
+		t.Fatalf("EvalSymlinks on pwd output: %v", err)
+	}
+	want, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatalf("EvalSymlinks on expected dir: %v", err)
+	}
+	if got != want {
+		t.Errorf("pwd output: %q, expected dir: %q", got, want)
 	}
 }
 
