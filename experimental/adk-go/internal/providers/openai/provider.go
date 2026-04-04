@@ -20,7 +20,7 @@ import (
 )
 
 const (
-	DefaultModel   = "gpt-4o"
+	DefaultModel   = "codex-mini-latest"
 	DefaultBaseURL = "https://chatgpt.com/backend-api"
 	ProviderName   = "openai"
 	APIKeyEnvVar   = "OPENAI_API_KEY"
@@ -29,6 +29,15 @@ const (
 	// JWT claim path for extracting account ID
 	JWTClaimPath = "https://api.openai.com/auth"
 )
+
+// FallbackCodexModels is the static list used when the API can't be queried.
+var FallbackCodexModels = []string{
+	"codex-mini-latest",
+	"gpt-5.4",
+	"gpt-5.4-mini",
+	"gpt-5.3-codex",
+	"o4-mini",
+}
 
 // RelayEvent is a PizzaPi relay-compatible event map.
 type RelayEvent = map[string]any
@@ -90,6 +99,79 @@ func (p *Provider) NeedsLogin() bool {
 		return false
 	}
 	return true
+}
+
+// ListModels queries the Codex backend for available models.
+// Falls back to a known static list if the API call fails.
+func (p *Provider) ListModels() ([]string, error) {
+	// Resolve API key
+	apiKey, err := p.authStorage.GetAPIKey(OAuthProviderID, APIKeyEnvVar)
+	if err != nil || apiKey == "" {
+		return FallbackCodexModels, nil
+	}
+
+	accountID := extractAccountIDFromJWT(apiKey)
+
+	// Try the Codex backend models endpoint
+	modelsURL := resolveCodexURL(p.baseURL)
+	// Replace /codex/responses with /codex/models
+	modelsURL = strings.Replace(modelsURL, "/codex/responses", "/codex/models", 1)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, "GET", modelsURL, nil)
+	if err != nil {
+		return FallbackCodexModels, nil
+	}
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("OpenAI-Beta", "responses=experimental")
+	req.Header.Set("originator", "pizzapi")
+	if accountID != "" {
+		req.Header.Set("chatgpt-account-id", accountID)
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return FallbackCodexModels, nil
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return FallbackCodexModels, nil
+	}
+
+	var result modelsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return FallbackCodexModels, nil
+	}
+
+	var models []string
+	for _, m := range result.Models {
+		if m.ID != "" {
+			models = append(models, m.ID)
+		}
+	}
+	for _, m := range result.Data {
+		if m.ID != "" {
+			models = append(models, m.ID)
+		}
+	}
+
+	if len(models) == 0 {
+		return FallbackCodexModels, nil
+	}
+	return models, nil
+}
+
+type modelsResponse struct {
+	Models []struct {
+		ID string `json:"id"`
+	} `json:"models"`
+	// Also handle flat array response
+	Data []struct {
+		ID string `json:"id"`
+	} `json:"data"`
 }
 
 // Start launches the provider and begins processing.

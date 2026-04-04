@@ -97,8 +97,8 @@ func TestProvider_CallsAPIWithCredentials(t *testing.T) {
 		var req codexRequest
 		json.NewDecoder(r.Body).Decode(&req)
 
-		if req.Model != "gpt-4o" {
-			t.Errorf("expected model gpt-4o, got %s", req.Model)
+		if req.Model != "codex-mini-latest" {
+			t.Errorf("expected model codex-mini-latest, got %s", req.Model)
 		}
 
 		json.NewEncoder(w).Encode(responsesResponse{
@@ -169,6 +169,65 @@ func TestProvider_CallsAPIWithCredentials(t *testing.T) {
 		if !types[r] {
 			t.Errorf("missing event type %q", r)
 		}
+	}
+}
+
+func TestProvider_ListModels_Fallback(t *testing.T) {
+	// No credentials → returns fallback list
+	storage := auth.InMemoryStorage()
+	p := NewProvider(storage, nil)
+	models, err := p.ListModels()
+	if err != nil {
+		t.Fatalf("ListModels failed: %v", err)
+	}
+	if len(models) == 0 {
+		t.Error("expected non-empty fallback model list")
+	}
+	// Check known model is in the list
+	found := false
+	for _, m := range models {
+		if m == "codex-mini-latest" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected codex-mini-latest in fallback list")
+	}
+}
+
+func TestProvider_ListModels_FromAPI(t *testing.T) {
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/codex/models" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]any{
+			"models": []map[string]any{
+				{"id": "gpt-5.4"},
+				{"id": "gpt-5.3-codex"},
+				{"id": "codex-mini-latest"},
+			},
+		})
+	}))
+	defer mockServer.Close()
+
+	storage := auth.InMemoryStorage()
+	storage.Set(OAuthProviderID, &auth.Credential{
+		Type:    auth.CredTypeOAuth,
+		Access:  "fake-token",
+		Expires: nowMillis() + 3600_000,
+	})
+
+	p := NewProvider(storage, nil)
+	p.baseURL = mockServer.URL
+
+	models, err := p.ListModels()
+	if err != nil {
+		t.Fatalf("ListModels failed: %v", err)
+	}
+	if len(models) != 3 {
+		t.Errorf("expected 3 models, got %d: %v", len(models), models)
 	}
 }
 
