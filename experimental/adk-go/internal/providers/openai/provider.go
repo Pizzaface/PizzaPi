@@ -20,7 +20,7 @@ import (
 )
 
 const (
-	DefaultModel   = "codex-mini-latest"
+	DefaultModel   = "gpt-5.4"
 	DefaultBaseURL = "https://chatgpt.com/backend-api"
 	ProviderName   = "openai"
 	APIKeyEnvVar   = "OPENAI_API_KEY"
@@ -262,8 +262,8 @@ func (p *Provider) runTurn(ctx context.Context, prompt string) {
 
 	// Emit user message
 	p.emit(RelayEvent{
-		"type":      "session_active",
-		"state":     map[string]any{"messages": p.relayMessages(), "model": p.modelMap(), "cwd": p.cwd},
+		"type":  "session_active",
+		"state": map[string]any{"messages": p.relayMessages(), "model": p.modelMap(), "cwd": p.cwd},
 	})
 	_ = userMsgID
 
@@ -273,7 +273,7 @@ func (p *Provider) runTurn(ctx context.Context, prompt string) {
 
 	// Emit message_start
 	p.emit(RelayEvent{
-		"type": "message_start",
+		"type":    "message_start",
 		"message": map[string]any{"role": "assistant", "id": assistantMsgID},
 	})
 
@@ -308,7 +308,7 @@ func (p *Provider) runTurn(ctx context.Context, prompt string) {
 	// Emit metadata + idle heartbeat
 	p.emit(RelayEvent{
 		"type": "session_metadata_update", "model": p.modelMap(),
-		"usage": map[string]any{"inputTokens": inputTok, "outputTokens": outputTok},
+		"usage":   map[string]any{"inputTokens": inputTok, "outputTokens": outputTok},
 		"costUSD": 0, "numTurns": 1, "stopReason": "stop",
 	})
 	p.emit(RelayEvent{
@@ -350,7 +350,7 @@ func (p *Provider) callCodexResponsesAPI(ctx context.Context) (string, int, int,
 		Input:        input,
 		Instructions: instructions,
 		Store:        false,
-		Stream:       false, // non-streaming for now
+		Stream:       true, // non-streaming for now
 	}
 
 	bodyJSON, err := json.Marshal(body)
@@ -435,8 +435,6 @@ func resolveCodexURL(baseURL string) string {
 	return baseURL
 }
 
-
-
 // extractAccountIDFromJWT decodes the JWT and extracts the ChatGPT account ID.
 func extractAccountIDFromJWT(token string) string {
 	parts := strings.SplitN(token, ".", 3)
@@ -468,8 +466,6 @@ func extractAccountIDFromJWT(token string) string {
 	accountID, _ := auth["chatgpt_account_id"].(string)
 	return accountID
 }
-
-
 
 func (p *Provider) emit(ev RelayEvent) {
 	select {
