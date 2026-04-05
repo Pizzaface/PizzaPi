@@ -43,6 +43,12 @@ const TERMINAL_GC_DELAY_MS = 30_000;
 const TERMINAL_PENDING_TIMEOUT_MS = 60_000;
 
 /**
+ * Maximum number of terminal messages buffered while no viewer is attached.
+ * This is a ring buffer: once full, the oldest entries are dropped.
+ */
+const MAX_BUFFERED_TERMINAL_MESSAGES = 1000;
+
+/**
  * Register a terminal in Redis + set up local buffer and GC timer.
  */
 export async function registerTerminal(
@@ -189,9 +195,13 @@ export async function removeTerminal(terminalId: string): Promise<void> {
 export function sendToTerminalViewer(terminalId: string, msg: unknown): void {
     const viewers = localTerminalViewerSockets.get(terminalId);
     if (!viewers || viewers.size === 0) {
-        // Buffer for later replay
+        // Buffer for later replay, but cap growth so background/no-viewer
+        // terminals cannot retain unbounded output in server memory.
         const buffer = localTerminalBuffers.get(terminalId);
         if (buffer) {
+            if (buffer.length >= MAX_BUFFERED_TERMINAL_MESSAGES) {
+                buffer.shift();
+            }
             buffer.push(msg);
         } else {
             const type = msg && typeof msg === "object" ? (msg as Record<string, unknown>).type : "?";

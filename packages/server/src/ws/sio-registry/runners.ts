@@ -472,6 +472,7 @@ export async function removeRunner(runnerId: string): Promise<void> {
     // Read userId before deleting so we can target the correct user room
     const existing = await getRunnerState(runnerId);
     localRunnerSockets.delete(runnerId);
+    runnerSecrets.delete(runnerId);
     await deleteRunnerState(runnerId);
     if (existing) {
         void broadcastToRunnersNs(
