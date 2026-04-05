@@ -139,7 +139,7 @@ function createFakeIo() {
     };
 }
 
-const { initSioRegistry, runnersUserRoom } = await import("./context.js");
+const { initSioRegistry, runnersUserRoom, runnerSecrets } = await import("./context.js");
 const { initStateRedis } = await import("../sio-state/index.js");
 const { registerRunner, removeRunner, updateRunnerSkills, updateRunnerAgents, updateRunnerPlugins, updateRunnerServices, getRunnerServices } =
     await import("./runners.js");
@@ -149,6 +149,7 @@ describe("runners broadcast", () => {
         store.clear();
         setStore.clear();
         emitCalls.length = 0;
+        runnerSecrets.clear();
         initSioRegistry(createFakeIo() as any);
         await initStateRedis(mockRedis as never);
     });
@@ -208,6 +209,32 @@ describe("runners broadcast", () => {
         );
         expect(removed).toBeDefined();
         expect((removed!.data as any).runnerId).toBe(runnerId);
+    });
+
+    it("removes persistent runner secrets when a runner is removed", async () => {
+        const socket = { join: mock(async () => {}), data: {} } as any;
+        const runnerId = "persistent-runner";
+        const runnerSecret = "super-secret";
+        const result = await registerRunner(socket, {
+            name: "runner-with-secret",
+            roots: [],
+            requestedRunnerId: runnerId,
+            runnerSecret,
+            skills: [],
+            agents: [],
+            plugins: [],
+            hooks: [],
+            version: null,
+            platform: null,
+            userId: "user-secret",
+            userName: "User Secret",
+        });
+        expect(result).toBe(runnerId);
+        expect(runnerSecrets.get(runnerId)).toBe(runnerSecret);
+
+        await removeRunner(runnerId);
+
+        expect(runnerSecrets.has(runnerId)).toBe(false);
     });
 
     it("broadcasts runner_updated after updateRunnerSkills", async () => {
