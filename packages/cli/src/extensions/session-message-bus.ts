@@ -16,13 +16,16 @@ export interface SessionMessage {
     ts: string;
 }
 
-type MessageListener = (msg: SessionMessage) => void;
+type MessageListener = (msg: SessionMessage | null) => void;
 
 /** Callback used by the bus to actually send a message over the relay WebSocket. */
 type SendFn = (targetSessionId: string, message: string) => boolean;
 
-class SessionMessageBus {
-    /** Queued incoming messages, keyed by fromSessionId. "any" collects all. */
+const MAX_QUEUED_MESSAGES_PER_SESSION = 100;
+const MAX_TRACKED_CONSUMED_SESSIONS = 1000;
+
+export class SessionMessageBus {
+    /** Queued incoming messages, keyed by fromSessionId. */
     private queues = new Map<string, SessionMessage[]>();
     /** Listeners waiting for a message. */
     private waiters: Array<{
@@ -39,6 +42,28 @@ class SessionMessageBus {
      * triggers when the parent already processed the child's output via messages.
      */
     private consumedSessions = new Set<string>();
+    /** FIFO order for consumed session tracking so old entries can be evicted. */
+    private consumedSessionOrder: string[] = [];
+
+    private markConsumed(sessionId: string): void {
+        if (this.consumedSessions.has(sessionId)) return;
+        this.consumedSessions.add(sessionId);
+        this.consumedSessionOrder.push(sessionId);
+        while (this.consumedSessionOrder.length > MAX_TRACKED_CONSUMED_SESSIONS) {
+            const oldest = this.consumedSessionOrder.shift();
+            if (oldest) this.consumedSessions.delete(oldest);
+        }
+    }
+
+    private resetForNewSession(): void {
+        this.queues.clear();
+        for (const waiter of this.waiters) {
+            waiter.resolve(null);
+        }
+        this.waiters = [];
+        this.consumedSessions.clear();
+        this.consumedSessionOrder = [];
+    }
 
     /** Called by remote extension to wire up the send path. */
     setSendFn(fn: SendFn | null): void {
@@ -47,6 +72,9 @@ class SessionMessageBus {
 
     /** Called by remote extension after relay registration. */
     setOwnSessionId(id: string): void {
+        if (this.ownSessionId && this.ownSessionId !== id) {
+            this.resetForNewSession();
+        }
         this.ownSessionId = id;
     }
 
@@ -67,16 +95,20 @@ class SessionMessageBus {
             const waiter = this.waiters[i];
             if (waiter.fromSessionId === null || waiter.fromSessionId === msg.fromSessionId) {
                 this.waiters.splice(i, 1);
-                this.consumedSessions.add(msg.fromSessionId);
+                this.markConsumed(msg.fromSessionId);
                 waiter.resolve(msg);
                 return;
             }
         }
 
-        // No waiter matched — queue it.
+        // No waiter matched — queue it, but cap queue growth per sender.
         const key = msg.fromSessionId;
         if (!this.queues.has(key)) this.queues.set(key, []);
-        this.queues.get(key)!.push(msg);
+        const queue = this.queues.get(key)!;
+        if (queue.length >= MAX_QUEUED_MESSAGES_PER_SESSION) {
+            queue.shift();
+        }
+        queue.push(msg);
     }
 
     /**
@@ -92,7 +124,7 @@ class SessionMessageBus {
             const q = this.queues.get(fromSessionId);
             if (q && q.length > 0) {
                 const msg = q.shift()!;
-                this.consumedSessions.add(msg.fromSessionId);
+                this.markConsumed(msg.fromSessionId);
                 return Promise.resolve(msg);
             }
         } else {
@@ -108,7 +140,7 @@ class SessionMessageBus {
             }
             if (oldest) {
                 this.queues.get(oldest.key)!.shift();
-                this.consumedSessions.add(oldest.msg.fromSessionId);
+                this.markConsumed(oldest.msg.fromSessionId);
                 return Promise.resolve(oldest.msg);
             }
         }
@@ -135,13 +167,13 @@ class SessionMessageBus {
     drain(fromSessionId?: string): SessionMessage[] {
         if (fromSessionId) {
             const q = this.queues.get(fromSessionId) ?? [];
-            if (q.length > 0) this.consumedSessions.add(fromSessionId);
+            if (q.length > 0) this.markConsumed(fromSessionId);
             this.queues.delete(fromSessionId);
             return q;
         }
         const all: SessionMessage[] = [];
         for (const [key, q] of this.queues) {
-            if (q.length > 0) this.consumedSessions.add(key);
+            if (q.length > 0) this.markConsumed(key);
             all.push(...q);
         }
         this.queues.clear();
@@ -161,6 +193,13 @@ class SessionMessageBus {
         let count = 0;
         for (const [, q] of this.queues) count += q.length;
         return count;
+    }
+
+    /** Test helper: reset singleton state between tests. */
+    resetForTests(): void {
+        this.sendFn = null;
+        this.ownSessionId = null;
+        this.resetForNewSession();
     }
 }
 

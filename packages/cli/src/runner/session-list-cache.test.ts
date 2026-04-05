@@ -278,6 +278,43 @@ describe("session-list-cache", () => {
         expect(results[0].firstMessage).toBe("(no messages)");
         expect(results[0].messageCount).toBe(0);
     });
+
+    test("truncates cached allMessagesText for very large sessions", async () => {
+        const huge = "x".repeat(5000);
+        writeSessionFile(sessionDir, "huge-session.jsonl", {
+            id: "huge-session",
+            messages: Array.from({ length: 30 }, (_, idx) => ({
+                role: idx % 2 === 0 ? "user" : "assistant",
+                content: huge,
+            })),
+        });
+
+        const results = await listSessionsCached(sessionDir);
+        expect(results).toHaveLength(1);
+        expect(results[0].messageCount).toBe(30);
+        expect(results[0].allMessagesText.length).toBeLessThanOrEqual(8192);
+        expect(results[0].allMessagesText).toContain("x");
+    });
+
+    test("persists truncated allMessagesText to disk", async () => {
+        const huge = "y".repeat(5000);
+        writeSessionFile(sessionDir, "persist-huge.jsonl", {
+            id: "persist-huge",
+            messages: Array.from({ length: 30 }, (_, idx) => ({
+                role: idx % 2 === 0 ? "user" : "assistant",
+                content: huge,
+            })),
+        });
+
+        await listSessionsCached(sessionDir);
+        flushSessionListCache();
+
+        const cachePath = join(fakeHome, ".pizzapi", "session-list-cache.json");
+        const cacheData = JSON.parse(readFileSync(cachePath, "utf-8"));
+        const entry = Object.values(cacheData.entries).find((candidate: any) => candidate.id === "persist-huge") as any;
+        expect(entry).toBeDefined();
+        expect(entry.allMessagesText.length).toBeLessThanOrEqual(8192);
+    });
 });
 
 // Restore HOME after all tests complete
