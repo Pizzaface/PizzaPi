@@ -28,6 +28,7 @@ import type { SessionInfo } from "@mariozechner/pi-coding-agent";
 // ── Cache file format ────────────────────────────────────────────────────────
 
 const CACHE_VERSION = 1;
+const MAX_CACHED_ALL_MESSAGES_TEXT_CHARS = 8192;
 
 interface CachedSessionEntry {
     mtimeMs: number;
@@ -239,6 +240,15 @@ function extractTextContent(msg: any): string {
     return "";
 }
 
+function appendWithLimit(current: string, text: string, limit: number): string {
+    if (!text || current.length >= limit) return current;
+    const separator = current.length > 0 ? " " : "";
+    const remaining = limit - current.length;
+    if (remaining <= separator.length) return current;
+    const allowedTextLength = remaining - separator.length;
+    return current + separator + text.slice(0, allowedTextLength);
+}
+
 async function parseSessionFile(filePath: string, stats: { mtime: Date }): Promise<SessionInfo | null> {
     try {
         const content = await readFile(filePath, "utf8");
@@ -258,7 +268,7 @@ async function parseSessionFile(filePath: string, stats: { mtime: Date }): Promi
 
         let messageCount = 0;
         let firstMessage = "";
-        const allMessages: string[] = [];
+        let allMessagesText = "";
         let name: string | undefined;
         let lastActivityTime: number | undefined;
 
@@ -288,7 +298,7 @@ async function parseSessionFile(filePath: string, stats: { mtime: Date }): Promi
 
             const textContent = extractTextContent(message);
             if (!textContent) continue;
-            allMessages.push(textContent);
+            allMessagesText = appendWithLimit(allMessagesText, textContent, MAX_CACHED_ALL_MESSAGES_TEXT_CHARS);
             if (!firstMessage && message!.role === "user") {
                 firstMessage = textContent;
             }
@@ -318,7 +328,7 @@ async function parseSessionFile(filePath: string, stats: { mtime: Date }): Promi
             modified,
             messageCount,
             firstMessage: firstMessage || "(no messages)",
-            allMessagesText: allMessages.join(" "),
+            allMessagesText,
         };
     } catch {
         return null;
