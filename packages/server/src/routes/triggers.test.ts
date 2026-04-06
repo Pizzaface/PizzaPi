@@ -1378,7 +1378,7 @@ describe("POST /api/runners/:runnerId/trigger-broadcast — auto-spawn listeners
         mockPushTriggerHistory.mockReturnValue(Promise.resolve());
     });
 
-    test("prepends the listener prompt into the spawned trigger payload", async () => {
+    test("does not pass listener prompt as initial prompt — only in trigger payload", async () => {
         const runnerEmitMock = mock(() => {});
         const sessionEmitMock = mock(() => {});
 
@@ -1400,9 +1400,14 @@ describe("POST /api/runners/:runnerId/trigger-broadcast — auto-spawn listeners
         const res = await handleTriggersRoute(req, url);
         expect(res?.status).toBe(200);
 
-        expect(runnerEmitMock).toHaveBeenCalledWith("new_session", expect.objectContaining({
-            prompt: "Focus on the failing tests first.",
-        }));
+        // Prompt should NOT be in new_session (avoids race with trigger delivery)
+        const newSessionCall = (runnerEmitMock.mock.calls as any[]).find(
+            (call: any[]) => call[0] === "new_session"
+        );
+        expect(newSessionCall).toBeTruthy();
+        expect(newSessionCall[1]).not.toHaveProperty("prompt");
+
+        // Prompt should be merged into the trigger payload instead
         expect(sessionEmitMock).toHaveBeenCalledWith("session_trigger", expect.objectContaining({
             trigger: expect.objectContaining({
                 payload: expect.objectContaining({

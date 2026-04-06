@@ -1040,10 +1040,13 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
                     const spawnedSessionId = randomUUID();
                     const ackPromise = waitForSpawnAck(spawnedSessionId, 10_000);
                     try {
+                        // Don't pass the listener prompt as the initial prompt —
+                        // it's already merged into the trigger payload below.
+                        // Sending it here would cause a race: the agent starts
+                        // processing the prompt before the trigger data arrives.
                         runnerSocket.emit("new_session", {
                             sessionId: spawnedSessionId,
                             ...(listener.cwd ? { cwd: listener.cwd } : {}),
-                            ...(listener.prompt ? { prompt: listener.prompt } : {}),
                             ...(listener.model ? { model: listener.model } : {}),
                             ...(listener.autoClose ? { autoClose: true } : {}),
                         });
