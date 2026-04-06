@@ -68,6 +68,7 @@ import {
 import {
     getRunnerListenerTypes,
     getRunnerTriggerListener,
+    listRunnerTriggerListeners,
     updateRunnerTriggerListener,
 } from "../sessions/runner-trigger-listener-store.js";
 import { waitForSpawnAck } from "../ws/runner-control.js";
@@ -1017,18 +1018,24 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
         const listenerTypes = await getRunnerListenerTypes(runnerId);
         if (listenerTypes.includes(body.type)) {
             const listenerLookup = await getRunnerTriggerListener(runnerId, body.type) as ListenerLookupResult | ListenerLookupResult[] | null;
-            const listeners = Array.isArray(listenerLookup) ? listenerLookup : listenerLookup ? [listenerLookup] : [];
-            const matchingListener = listeners.find((listener) => {
+            const loadedListeners = Array.isArray(listenerLookup)
+                ? listenerLookup
+                : listenerLookup
+                    ? [listenerLookup]
+                    : [];
+            const listeners = loadedListeners.length > 0
+                ? loadedListeners
+                : (await listRunnerTriggerListeners(runnerId)).filter((listener) => listener.triggerType === body.type);
+            const matchingListeners = listeners.filter((listener) => {
                 if (listener.params && Object.keys(listener.params).length > 0) {
                     const listenerFilters = legacyParamsToFilters(listener.params);
                     return payloadMatchesFilters(body.payload, listenerFilters, "and");
                 }
                 return true;
             });
-            if (matchingListener) {
-                const listener = matchingListener;
-                const runnerSocket = getLocalRunnerSocket(runnerId);
-                if (runnerSocket) {
+            const runnerSocket = getLocalRunnerSocket(runnerId);
+            if (runnerSocket) {
+                for (const listener of matchingListeners) {
                     const spawnedSessionId = randomUUID();
                     const ackPromise = waitForSpawnAck(spawnedSessionId, 10_000);
                     try {
@@ -1066,7 +1073,7 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
                                 targetSessionId: spawnedSessionId,
                             };
                             const spawnHistory = {
-                                triggerId: `${triggerId}_spawn`,
+                                triggerId: `${triggerId}_spawn_${spawned + 1}`,
                                 type: body.type,
                                 source: `external:${body.source ?? "service"}`,
                                 summary: body.summary,

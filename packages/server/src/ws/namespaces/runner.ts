@@ -24,6 +24,7 @@ import type {
 import { shouldPreserveOnSocketDisconnect } from "../../health.js";
 import { apiKeyAuthMiddleware } from "./auth.js";
 import { getSubscriptionsForRunnerSessions, nextTriggerSubRevision } from "../../sessions/trigger-subscription-store.js";
+import { listRunnerTriggerListeners } from "../../sessions/runner-trigger-listener-store.js";
 
 // Inline definitions mirror packages/protocol/src/shared.ts.
 // Using local aliases avoids a cross-worktree symlink resolution issue where
@@ -34,6 +35,20 @@ type ServiceEnvelope = { serviceId: string; type: string; requestId?: string; pa
 // ── Trigger subscription reconciliation ──────────────────────────────────────
 // Revision counter is now Redis-backed (globally monotonic across all server
 // nodes). See nextTriggerSubRevision() in trigger-subscription-store.ts.
+
+function runnerListenerAsSubscription(runnerId: string, listener: {
+    listenerId?: string;
+    triggerType: string;
+    params?: Record<string, unknown>;
+}): TriggerSubscriptionEntry {
+    return {
+        subscriptionId: listener.listenerId ?? `runner-listener:${runnerId}:${listener.triggerType}`,
+        sessionId: `runner-listener:${listener.listenerId ?? listener.triggerType}`,
+        runnerId,
+        triggerType: listener.triggerType,
+        ...(listener.params ? { params: listener.params as TriggerSubscriptionEntry["params"] } : {}),
+    };
+}
 
 /**
  * Emit a trigger_subscription_delta to a runner. Exported so the triggers
@@ -456,30 +471,28 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
                 // so the runner will never overwrite delta-applied state with a stale
                 // snapshot.
                 const snapshotRevision = await nextTriggerSubRevision();
-                if (sessionIdsList.length > 0) {
-                    const allSubs = await getSubscriptionsForRunnerSessions(sessionIdsList);
-                    socket.emit("trigger_subscriptions_snapshot" as any, {
-                        revision: snapshotRevision,
-                        isReconnect: true,
-                        subscriptions: allSubs.map(s => ({
-                            sessionId: s.sessionId,
-                            triggerType: s.triggerType,
-                            runnerId: s.runnerId,
-                            ...(s.params ? { params: s.params } : {}),
-                            ...(s.filters && s.filters.length > 0 ? { filters: s.filters } : {}),
-                            ...(s.filterMode ? { filterMode: s.filterMode } : {}),
-                        })),
-                    });
-                    log.info(`[trigger-reconciliation] sent reconnect snapshot with ${allSubs.length} subscriptions to runner ${result}`);
-                } else {
-                    // No sessions — send empty snapshot so runner knows state is clean
-                    socket.emit("trigger_subscriptions_snapshot" as any, {
-                        revision: snapshotRevision,
-                        isReconnect: true,
-                        subscriptions: [],
-                    });
-                    log.info(`[trigger-reconciliation] sent empty reconnect snapshot to runner ${result}`);
-                }
+                const [allSubs, runnerListeners] = await Promise.all([
+                    sessionIdsList.length > 0 ? getSubscriptionsForRunnerSessions(sessionIdsList) : Promise.resolve([]),
+                    listRunnerTriggerListeners(result),
+                ]);
+                const combinedSubs: TriggerSubscriptionEntry[] = [
+                    ...allSubs.map(s => ({
+                        subscriptionId: s.subscriptionId,
+                        sessionId: s.sessionId,
+                        triggerType: s.triggerType,
+                        runnerId: s.runnerId,
+                        ...(s.params ? { params: s.params } : {}),
+                        ...(s.filters && s.filters.length > 0 ? { filters: s.filters } : {}),
+                        ...(s.filterMode ? { filterMode: s.filterMode } : {}),
+                    })),
+                    ...runnerListeners.map((listener) => runnerListenerAsSubscription(result, listener)),
+                ];
+                socket.emit("trigger_subscriptions_snapshot" as any, {
+                    revision: snapshotRevision,
+                    isReconnect: true,
+                    subscriptions: combinedSubs,
+                });
+                log.info(`[trigger-reconciliation] sent reconnect snapshot with ${combinedSubs.length} subscriptions to runner ${result}`);
             } catch (err) {
                 log.warn(`[trigger-reconciliation] failed to send snapshot to runner ${result}:`, err);
             }

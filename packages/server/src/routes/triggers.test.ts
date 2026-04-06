@@ -1412,6 +1412,53 @@ describe("POST /api/runners/:runnerId/trigger-broadcast — auto-spawn listeners
             }),
         }));
     });
+
+    test("spawns one session per matching auto-spawn listener", async () => {
+        const runnerEmitMock = mock(() => {});
+        const sessionEmitMock = mock(() => {});
+
+        mockGetRunnerListenerTypes.mockReturnValue(Promise.resolve(["svc:event"]));
+        mockGetRunnerTriggerListener.mockReturnValue(Promise.resolve([
+            {
+                listenerId: "listener-1",
+                triggerType: "svc:event",
+                prompt: "first prompt",
+                createdAt: "2026-03-29T00:00:00.000Z",
+            },
+            {
+                listenerId: "listener-2",
+                triggerType: "svc:event",
+                prompt: "second prompt",
+                createdAt: "2026-03-29T00:00:01.000Z",
+            },
+        ] as any));
+        mockGetLocalRunnerSocket.mockReturnValue({ connected: true, emit: runnerEmitMock } as any);
+        mockGetLocalTuiSocket.mockReturnValue({ connected: true, emit: sessionEmitMock } as any);
+        mockGetSharedSession.mockReturnValue(Promise.resolve({ userId: "user-1", sessionId: "sess-1" } as any));
+
+        const [req, url] = makeReq(
+            "POST", "/api/runners/runner-A/trigger-broadcast",
+            { type: "svc:event", payload: { message: "hello" }, source: "svc" },
+            { "x-api-key": "test-key" },
+        );
+        const res = await handleTriggersRoute(req, url);
+        expect(res?.status).toBe(200);
+
+        const body = await res!.json();
+        expect(body.spawned).toBe(2);
+        expect(runnerEmitMock).toHaveBeenCalledTimes(2);
+        expect(sessionEmitMock).toHaveBeenCalledTimes(2);
+        expect(sessionEmitMock).toHaveBeenNthCalledWith(1, "session_trigger", expect.objectContaining({
+            trigger: expect.objectContaining({
+                payload: expect.objectContaining({ prompt: "first prompt" }),
+            }),
+        }));
+        expect(sessionEmitMock).toHaveBeenNthCalledWith(2, "session_trigger", expect.objectContaining({
+            trigger: expect.objectContaining({
+                payload: expect.objectContaining({ prompt: "second prompt" }),
+            }),
+        }));
+    });
 });
 
 describe("non-matching routes", () => {
