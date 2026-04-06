@@ -3,7 +3,8 @@
  *
  * The auto-close logic lives in lifecycle-handlers.ts's agent_end handler:
  * when PIZZAPI_WORKER_AUTO_CLOSE=true and the exit reason is "completed"
- * (no error, not killed), ctx.shutdown() is called immediately.
+ * (no error, not killed), ctx.shutdown() is called — unless the session
+ * has active trigger subscriptions.
  *
  * Since lifecycle-handlers.ts has heavy dependencies (pi event system,
  * relay context, etc.), we test the decision logic in isolation here.
@@ -17,6 +18,7 @@ function shouldAutoClose(opts: {
     exitReason: "completed" | "killed" | "error";
     isChildSession: boolean;
     hasPendingMessages: boolean;
+    activeSubscriptionCount?: number;
 }): boolean {
     // Auto-close only applies to non-child sessions (trigger-spawned)
     if (opts.isChildSession) return false;
@@ -26,6 +28,8 @@ function shouldAutoClose(opts: {
     if (opts.exitReason !== "completed") return false;
     // Only when there are no pending messages
     if (opts.hasPendingMessages) return false;
+    // Skip if the session has active trigger subscriptions
+    if ((opts.activeSubscriptionCount ?? 0) > 0) return false;
     return true;
 }
 
@@ -103,5 +107,36 @@ describe("auto-close decision logic", () => {
             isChildSession: false,
             hasPendingMessages: true,
         })).toBe(false);
+    });
+
+    test("does NOT shut down when session has active trigger subscriptions", () => {
+        expect(shouldAutoClose({
+            autoCloseEnv: "true",
+            exitReason: "completed",
+            isChildSession: false,
+            hasPendingMessages: false,
+            activeSubscriptionCount: 2,
+        })).toBe(false);
+    });
+
+    test("shuts down when session has zero subscriptions", () => {
+        expect(shouldAutoClose({
+            autoCloseEnv: "true",
+            exitReason: "completed",
+            isChildSession: false,
+            hasPendingMessages: false,
+            activeSubscriptionCount: 0,
+        })).toBe(true);
+    });
+
+    test("shuts down when subscription count is undefined (query failed)", () => {
+        // If we can't check subscriptions, proceed with auto-close
+        expect(shouldAutoClose({
+            autoCloseEnv: "true",
+            exitReason: "completed",
+            isChildSession: false,
+            hasPendingMessages: false,
+            activeSubscriptionCount: undefined,
+        })).toBe(true);
     });
 });
