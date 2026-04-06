@@ -367,6 +367,27 @@ export function registerLifecycleHandlers(deps: LifecycleHandlersDeps): void {
 
             if (rctx.isChildSession) {
                 followUpGrace.startFollowUpGrace(ctx);
+            } else if (process.env.PIZZAPI_WORKER_AUTO_CLOSE === "true" && exitReason === "completed") {
+                // Auto-close: trigger-spawned sessions with autoClose shut down
+                // immediately on successful completion — no follow-up grace.
+                // But skip if the session has active trigger subscriptions —
+                // it may be waiting for future events (e.g. github:pr_comment).
+                void (async () => {
+                    try {
+                        const sessionId = rctx.relaySessionId;
+                        if (sessionId) {
+                            const subs = await listTriggerSubscriptions(sessionId);
+                            if (subs.length > 0) {
+                                log.info(`pizzapi: auto-close skipped — session has ${subs.length} active trigger subscription(s)`);
+                                return;
+                            }
+                        }
+                    } catch {
+                        // If we can't check subscriptions, proceed with auto-close
+                    }
+                    log.info("pizzapi: auto-close enabled and session completed successfully — shutting down");
+                    ctx.shutdown();
+                })();
             }
         }
     });

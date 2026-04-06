@@ -86,6 +86,7 @@ interface ListenerLookupResult {
     cwd?: string;
     model?: { provider: string; id: string };
     params?: Record<string, unknown>;
+    autoClose?: boolean;
 }
 
 const log = createLogger("triggers-api");
@@ -1039,11 +1040,15 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
                     const spawnedSessionId = randomUUID();
                     const ackPromise = waitForSpawnAck(spawnedSessionId, 10_000);
                     try {
+                        // Don't pass the listener prompt as the initial prompt —
+                        // it's already merged into the trigger payload below.
+                        // Sending it here would cause a race: the agent starts
+                        // processing the prompt before the trigger data arrives.
                         runnerSocket.emit("new_session", {
                             sessionId: spawnedSessionId,
                             ...(listener.cwd ? { cwd: listener.cwd } : {}),
-                            ...(listener.prompt ? { prompt: listener.prompt } : {}),
                             ...(listener.model ? { model: listener.model } : {}),
+                            ...(listener.autoClose ? { autoClose: true } : {}),
                         });
                         const ack = await ackPromise;
                         if (ack.ok !== false) {
@@ -1083,11 +1088,13 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
                                 direction: "inbound" as const,
                             };
 
+                            let triggerDelivered = false;
                             const spawnSocket = getLocalTuiSocket(spawnedSessionId);
                             if (spawnSocket?.connected) {
                                 spawnSocket.emit("session_trigger", { trigger: spawnTrigger });
                                 void pushTriggerHistory(spawnedSessionId, spawnHistory).catch(() => {});
                                 broadcastToSessionViewers(spawnedSessionId, "trigger_delivered", { triggerId: spawnHistory.triggerId });
+                                triggerDelivered = true;
                                 spawned++;
                             } else {
                                 const cross = await emitToRelaySessionVerified(
@@ -1096,8 +1103,17 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
                                 if (cross) {
                                     void pushTriggerHistory(spawnedSessionId, spawnHistory).catch(() => {});
                                     broadcastToSessionViewers(spawnedSessionId, "trigger_delivered", { triggerId: spawnHistory.triggerId });
+                                    triggerDelivered = true;
                                     spawned++;
                                 }
+                            }
+
+                            // Kill the orphaned session if trigger delivery failed —
+                            // without a prompt or trigger, the worker has no work to do
+                            // and would sit idle indefinitely.
+                            if (!triggerDelivered) {
+                                log.warn(`Auto-spawn: trigger delivery failed for session ${spawnedSessionId} — killing orphaned worker`);
+                                runnerSocket.emit("kill_session", { sessionId: spawnedSessionId });
                             }
                             log.info(`Auto-spawned session ${spawnedSessionId} for listener ${body.type} on runner ${runnerId}`);
                         }
