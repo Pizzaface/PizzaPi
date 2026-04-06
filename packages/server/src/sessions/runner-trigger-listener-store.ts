@@ -16,6 +16,7 @@
 import { connectRedisClient, type RedisClient } from "../redis-client.js";
 import { createLogger } from "@pizzapi/tools";
 import { getKysely } from "../auth.js";
+import crypto from "crypto";
 
 const log = createLogger("runner-trigger-listener-store");
 
@@ -64,7 +65,8 @@ interface ListenerRow {
 }
 
 function generateListenerId(runnerId: string, triggerType: string): string {
-    return `listener:${runnerId}:${triggerType}:${Date.now()}:${Math.random().toString(36).slice(2, 10)}`;
+    const randomPart = crypto.randomBytes(6).toString("base64url").slice(0, 8);
+    return `listener:${runnerId}:${triggerType}:${Date.now()}:${randomPart}`;
 }
 
 function parseListenerJson(json: string, dbRowId?: string): RunnerTriggerListener | null {
