@@ -343,3 +343,48 @@ describe("pi-ai patch application — Anthropic web search", () => {
         expect(typeof mod.streamSimpleAnthropic).toBe("function");
     });
 });
+
+describe("pi-ai patch application — Claude Code credentials fallback", () => {
+    test("anthropic.js (oauth): tryReadClaudeCodeCredentials function is present", async () => {
+        const source = await Bun.file(
+            piAiPath("dist/utils/oauth/anthropic.js"),
+        ).text();
+
+        expect(source).toContain("PATCH(pizzapi): read Claude Code credentials as a refresh fallback");
+        expect(source).toContain("tryReadClaudeCodeCredentials");
+        expect(source).toContain(".claude");
+        expect(source).toContain(".credentials.json");
+        expect(source).toContain("claudeAiOauth");
+    });
+
+    test("anthropic.js (oauth): refreshToken tries Claude Code credentials first", async () => {
+        const source = await Bun.file(
+            piAiPath("dist/utils/oauth/anthropic.js"),
+        ).text();
+
+        expect(source).toContain("PATCH(pizzapi): try Claude Code credentials first");
+        // Verify the fallback calls tryReadClaudeCodeCredentials before refreshAnthropicToken
+        const ccCredsIndex = source.indexOf("tryReadClaudeCodeCredentials()");
+        const refreshIndex = source.indexOf("refreshAnthropicToken(credentials.refresh)");
+        expect(ccCredsIndex).toBeGreaterThan(-1);
+        expect(refreshIndex).toBeGreaterThan(-1);
+        expect(ccCredsIndex).toBeLessThan(refreshIndex);
+    });
+
+    test("anthropic.js (oauth): file is syntactically valid", async () => {
+        const mod = await import(piAiPath("dist/utils/oauth/anthropic.js"));
+        expect(typeof mod.anthropicOAuthProvider).toBe("object");
+        expect(typeof mod.anthropicOAuthProvider.refreshToken).toBe("function");
+        expect(typeof mod.loginAnthropic).toBe("function");
+        expect(typeof mod.refreshAnthropicToken).toBe("function");
+    });
+
+    test("anthropic.js (oauth): 60s safety margin on credential expiry", async () => {
+        const source = await Bun.file(
+            piAiPath("dist/utils/oauth/anthropic.js"),
+        ).text();
+
+        // Ensures we don't use credentials that expire within 60 seconds
+        expect(source).toContain("Date.now() + 60000");
+    });
+});

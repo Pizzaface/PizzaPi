@@ -36,8 +36,15 @@ on top.
 
 ## @mariozechner/pi-ai@0.63.1
 
-Same web search changes as 0.58.3 (see below), ported forward. No upstream
-changes affected our patch points in this release.
+Same web search changes as 0.58.3 (see below), ported forward, plus one new
+patch:
+
+- **Claude Code credentials fallback:** When refreshing an expired Anthropic
+  OAuth token, the patch first checks `~/.claude/.credentials.json` for a
+  valid, pre-refreshed token from Claude Code. If found (and not expiring
+  within 60 seconds), it's returned directly — avoiding an API round-trip to
+  `platform.claude.com/v1/oauth/token`. Falls through to the normal refresh
+  flow if Claude Code isn't installed or its credentials are stale.
 
 **What it changes:**
 
@@ -47,6 +54,7 @@ changes affected our patch points in this release.
 | `dist/providers/anthropic.js` — `buildParams()` | Inject `web_search_20250305` tool when `PIZZAPI_WEB_SEARCH` env var is set |
 | `dist/providers/anthropic.js` — stream handler | Handle `server_tool_use` and `web_search_tool_result` blocks |
 | `dist/providers/anthropic.js` — `convertMessages()` | Round-trip `_serverToolUse` and `_webSearchResult` blocks |
+| `dist/utils/oauth/anthropic.js` — `anthropicOAuthProvider.refreshToken()` | Try Claude Code credentials (`~/.claude/.credentials.json`) before API refresh |
 
 ## @mariozechner/pi-coding-agent@0.58.3
 

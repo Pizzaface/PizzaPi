@@ -1,3 +1,6 @@
+diff --git a/node_modules/@mariozechner/pi-ai/.bun-tag-308425d7494b03d6 b/.bun-tag-308425d7494b03d6
+new file mode 100644
+index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
 diff --git a/dist/providers/anthropic.js b/dist/providers/anthropic.js
 index d4fc29b8c97264ae51b212bdf69b29f7e8001ad1..b24a943c5bb06f521c629bbe93c8ea2eb295b7c5 100644
 --- a/dist/providers/anthropic.js
@@ -126,3 +129,52 @@ index d4fc29b8c97264ae51b212bdf69b29f7e8001ad1..b24a943c5bb06f521c629bbe93c8ea2e
          const jsonSchema = tool.parameters; // TypeBox already generates JSON Schema
          return {
              name: isOAuthToken ? toClaudeCodeName(tool.name) : tool.name,
+diff --git a/dist/utils/oauth/anthropic.js b/dist/utils/oauth/anthropic.js
+index ba615d91cf0f91fe23c82c206e4397dd643f202f..50d8566b5c210063460d99165c88c16bde0b89d2 100644
+--- a/dist/utils/oauth/anthropic.js
++++ b/dist/utils/oauth/anthropic.js
+@@ -313,6 +313,32 @@ export async function refreshAnthropicToken(refreshToken) {
+         expires: Date.now() + data.expires_in * 1000 - 5 * 60 * 1000,
+     };
+ }
++// PATCH(pizzapi): read Claude Code credentials as a refresh fallback.
++// If the user has Claude Code installed and authenticated, we can reuse
++// its already-refreshed OAuth token instead of hitting the refresh endpoint,
++// which avoids unnecessary round-trips and works even when the stored
++// refresh_token has expired as long as Claude Code's session is still live.
++function tryReadClaudeCodeCredentials() {
++    try {
++        const { readFileSync } = require("fs");
++        const { join } = require("path");
++        const { homedir } = require("os");
++        const credPath = join(homedir(), ".claude", ".credentials.json");
++        const creds = JSON.parse(readFileSync(credPath, "utf-8"));
++        const cc = creds?.claudeAiOauth;
++        if (cc && cc.accessToken && cc.expiresAt > Date.now() + 60000) {
++            return {
++                refresh: cc.refreshToken,
++                access: cc.accessToken,
++                expires: cc.expiresAt,
++            };
++        }
++    }
++    catch {
++        // Claude Code not installed, credentials missing, or file unreadable — skip
++    }
++    return null;
++}
+ export const anthropicOAuthProvider = {
+     id: "anthropic",
+     name: "Anthropic (Claude Pro/Max)",
+@@ -326,6 +352,11 @@ export const anthropicOAuthProvider = {
+         });
+     },
+     async refreshToken(credentials) {
++        // PATCH(pizzapi): try Claude Code credentials first
++        const ccCreds = tryReadClaudeCodeCredentials();
++        if (ccCreds) {
++            return ccCreds;
++        }
+         return refreshAnthropicToken(credentials.refresh);
+     },
+     getApiKey(credentials) {
