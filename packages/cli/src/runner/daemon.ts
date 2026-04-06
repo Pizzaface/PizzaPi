@@ -29,6 +29,7 @@ import { extractHookSummary } from "./hook-summary.js";
 import { sanitizeConfigForUI, restoreMaskedServerEntry, MASK_SENTINEL } from "./daemon-config-sanitize.js";
 import { defaultStatePath, acquireStateAndIdentity, releaseStateLock } from "./runner-state.js";
 import { startUsageRefreshLoop, stopUsageRefreshLoop } from "./runner-usage-cache.js";
+import { syncKeychainToAuthJsonFile } from "./keychain-auth.js";
 import { getWorkspaceRoots, isCwdAllowed } from "./workspace.js";
 import { type RunnerSession, spawnSession } from "./session-spawner.js";
 
@@ -180,6 +181,17 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
     // Start fetching provider usage immediately so workers have cached data from
     // the moment they are spawned.  One daemon refresh covers all sessions on this node.
     startUsageRefreshLoop();
+
+    // ── Keychain → auth.json sync (macOS only) ────────────────────────────
+    // Claude Code refreshes its OAuth token independently and stores it in the
+    // macOS Keychain.  Periodically check if the Keychain copy is fresher and
+    // update auth.json so all workers benefit without their own Keychain reads.
+    const keychainAuthJsonPath = join(defaultAgentDir(), "auth.json");
+    // Immediate sync on daemon boot
+    try { syncKeychainToAuthJsonFile(keychainAuthJsonPath); } catch {}
+    const keychainSyncInterval = setInterval(() => {
+        try { syncKeychainToAuthJsonFile(keychainAuthJsonPath); } catch {}
+    }, 10 * 60 * 1000); // every 10 minutes
 
     // Load global config so relayUrl and apiKey can be read from
     // ~/.pizzapi/config.json (important for LaunchAgent contexts where
@@ -471,6 +483,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             isShuttingDown = true;
             clearInterval(endedSessionSweep);
             clearInterval(usageScanInterval);
+            clearInterval(keychainSyncInterval);
             tunnelClient?.dispose();
             registry.disposeAll();
             stopUsageRefreshLoop();

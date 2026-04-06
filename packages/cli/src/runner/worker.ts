@@ -148,6 +148,7 @@ async function createAuthStorageWithRetry(authPath: string, maxAttempts = 5): Pr
 
 // buildPromptPaths moved to ../skills.ts as buildPromptTemplatePaths
 import { forwardCliError } from "../extensions/remote.js";
+import { syncKeychainToAuthStorage } from "./keychain-auth.js";
 import { buildPizzaPiExtensionFactories } from "../extensions/factories.js";
 import { armWorkerStartupGate, markWorkerStartupComplete } from "../extensions/worker-startup-gate.js";
 
@@ -268,6 +269,11 @@ async function main(): Promise<void> {
     // multiple workers spawn simultaneously (common with parallel sub-sessions).
     const authPath = join(agentDir, "auth.json");
     const authStorage = await createAuthStorageWithRetry(authPath);
+
+    // ── Keychain enrichment (macOS) ─────────────────────────────────────
+    // If Claude Code has a fresher Anthropic token in the Keychain, inject
+    // it into our in-memory AuthStorage so this worker uses it immediately.
+    try { syncKeychainToAuthStorage(authStorage); } catch {}
 
     // ── Auth diagnostics — log credential state before first API call ────
     // This helps diagnose intermittent "No API key found" failures in
