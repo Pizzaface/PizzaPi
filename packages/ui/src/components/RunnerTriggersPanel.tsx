@@ -200,6 +200,20 @@ function ParamForm({
             </div>
           )}
         </div>
+        <div className="flex items-center gap-2">
+          <label className="text-[11px] text-muted-foreground/70 w-24 shrink-0">
+            Auto-close
+          </label>
+          <label className="flex items-center gap-1.5 cursor-pointer text-[11px] text-foreground/80">
+            <input
+              type="checkbox"
+              checked={sessionConfig.autoClose}
+              onChange={(e) => onSessionConfigChange({ ...sessionConfig, autoClose: e.target.checked })}
+              className="accent-primary size-3"
+            />
+            Shut down session on successful completion
+          </label>
+        </div>
       </div>
 
       {/* Trigger params */}
@@ -430,6 +444,7 @@ function TriggerItem({
             const details: string[] = [];
             if (listener.cwd) details.push(listener.cwd);
             if (listener.model) details.push(`${listener.model.provider}/${listener.model.id}`);
+            if (listener.autoClose) details.push("auto-close");
             if (listener.params) {
               for (const [k, v] of Object.entries(listener.params)) {
                 details.push(`${k}=${Array.isArray(v) ? v.map(String).join(", ") : String(v)}`);
@@ -585,7 +600,7 @@ function ServiceAccordion({
               editMode={editMode && paramFormOpen === def.type}
               paramValues={paramValues[def.type] ?? {}}
               paramError={paramFormOpen === def.type ? paramError : null}
-              sessionConfig={sessionConfigs[def.type] ?? { cwd: "", prompt: "", modelProvider: "", modelId: "" }}
+              sessionConfig={sessionConfigs[def.type] ?? { cwd: "", prompt: "", modelProvider: "", modelId: "", autoClose: false }}
               onToggle={onToggle}
               onEdit={onEdit}
               onParamValuesChange={(vals) => onParamValuesChange(def.type, vals)}
@@ -616,6 +631,7 @@ interface ListenerInfo {
   cwd?: string;
   model?: { provider: string; id: string };
   params?: Record<string, unknown>;
+  autoClose?: boolean;
   createdAt: string;
 }
 
@@ -624,6 +640,7 @@ interface SessionConfig {
   prompt: string;
   modelProvider: string;
   modelId: string;
+  autoClose: boolean;
 }
 
 export function RunnerTriggersPanel({ runnerId, triggerDefs: propDefs }: RunnerTriggersPanelProps) {
@@ -748,6 +765,7 @@ export function RunnerTriggersPanel({ runnerId, triggerDefs: propDefs }: RunnerT
         prompt: listener?.prompt ?? "",
         modelProvider: listener?.model?.provider ?? "",
         modelId: listener?.model?.id ?? "",
+        autoClose: listener?.autoClose ?? false,
       },
     }));
   }, []);
@@ -786,7 +804,7 @@ export function RunnerTriggersPanel({ runnerId, triggerDefs: propDefs }: RunnerT
       setParamValues((prev) => ({ ...prev, [def.type]: { ...defaults, ...prev[def.type] } }));
       setSessionConfigs((prev) => ({
         ...prev,
-        [def.type]: prev[def.type] ?? { cwd: "", prompt: "", modelProvider: "", modelId: "" },
+        [def.type]: prev[def.type] ?? { cwd: "", prompt: "", modelProvider: "", modelId: "", autoClose: false },
       }));
     }
   }, [runnerId]);
@@ -829,7 +847,7 @@ export function RunnerTriggersPanel({ runnerId, triggerDefs: propDefs }: RunnerT
       }
     }
 
-    const sc = sessionConfigs[def.type] ?? { cwd: "", prompt: "", modelProvider: "", modelId: "" };
+    const sc = sessionConfigs[def.type] ?? { cwd: "", prompt: "", modelProvider: "", modelId: "", autoClose: false };
     const cwd = sc.cwd.trim() || undefined;
     const prompt = sc.prompt.trim() || undefined;
     const model = sc.modelProvider.trim() && sc.modelId.trim()
@@ -856,6 +874,7 @@ export function RunnerTriggersPanel({ runnerId, triggerDefs: propDefs }: RunnerT
               ...(cwd ? { cwd } : {}),
               ...(prompt ? { prompt } : {}),
               ...(model ? { model } : {}),
+              autoClose: sc.autoClose,
             }),
           },
         );
@@ -879,6 +898,7 @@ export function RunnerTriggersPanel({ runnerId, triggerDefs: propDefs }: RunnerT
             cwd,
             prompt,
             model,
+            autoClose: sc.autoClose || undefined,
             createdAt: existing?.createdAt ?? new Date().toISOString(),
           };
           if (editingListenerId) {

@@ -1088,11 +1088,13 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
                                 direction: "inbound" as const,
                             };
 
+                            let triggerDelivered = false;
                             const spawnSocket = getLocalTuiSocket(spawnedSessionId);
                             if (spawnSocket?.connected) {
                                 spawnSocket.emit("session_trigger", { trigger: spawnTrigger });
                                 void pushTriggerHistory(spawnedSessionId, spawnHistory).catch(() => {});
                                 broadcastToSessionViewers(spawnedSessionId, "trigger_delivered", { triggerId: spawnHistory.triggerId });
+                                triggerDelivered = true;
                                 spawned++;
                             } else {
                                 const cross = await emitToRelaySessionVerified(
@@ -1101,8 +1103,17 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
                                 if (cross) {
                                     void pushTriggerHistory(spawnedSessionId, spawnHistory).catch(() => {});
                                     broadcastToSessionViewers(spawnedSessionId, "trigger_delivered", { triggerId: spawnHistory.triggerId });
+                                    triggerDelivered = true;
                                     spawned++;
                                 }
+                            }
+
+                            // Kill the orphaned session if trigger delivery failed —
+                            // without a prompt or trigger, the worker has no work to do
+                            // and would sit idle indefinitely.
+                            if (!triggerDelivered) {
+                                log.warn(`Auto-spawn: trigger delivery failed for session ${spawnedSessionId} — killing orphaned worker`);
+                                runnerSocket.emit("kill_session", { sessionId: spawnedSessionId });
                             }
                             log.info(`Auto-spawned session ${spawnedSessionId} for listener ${body.type} on runner ${runnerId}`);
                         }

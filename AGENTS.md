@@ -102,6 +102,7 @@ bun run clean
 - **Redis** is required for the server. For local dev without Docker: `redis-server` or `docker compose up redis`.
 - **Do not repoint sandbox/test harnesses at an existing user or production Redis instance** (for example `redis://127.0.0.1:6379`) without explicit user permission. Sandboxes must use their own isolated Redis and must not assume the user's local Redis is safe to reuse.
 - **Database migrations**: run `bun run migrate` after schema changes. DB file is `packages/server/auth.db`.
+- **UI + TUI for every feature**: Custom features should include both a **web UI** component (in `packages/ui`) and **TUI/CLI** support (agent tools in `packages/cli`). Backend-only features without a UI are incomplete — users interact through the web interface, not just agent tools. When adding a new capability, ask: "Can the user configure/see/use this from the web UI?" If not, add it.
 
 ---
 
