@@ -477,11 +477,14 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
                 }
             }
 
+            const autoClose = body?.autoClose === true ? true : undefined;
+
             const listenerId = await addRunnerTriggerListener(runnerId, triggerType, {
                 prompt: typeof body?.prompt === "string" ? body.prompt : undefined,
                 cwd: typeof body?.cwd === "string" ? body.cwd : undefined,
                 model,
                 params,
+                autoClose,
             });
             if (!listenerId) {
                 return Response.json({ error: "Failed to create trigger listener" }, { status: 500 });
@@ -521,11 +524,14 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
                 } catch { }
             }
 
+            const autoClose = typeof body.autoClose === "boolean" ? body.autoClose : undefined;
+
             const updated = await updateRunnerTriggerListener(runnerId, target, {
                 prompt: typeof body.prompt === "string" ? body.prompt : undefined,
                 cwd: typeof body.cwd === "string" ? body.cwd : undefined,
                 model,
                 params,
+                autoClose,
             }) as any;
 
             if (!updated || updated.updated === false) {

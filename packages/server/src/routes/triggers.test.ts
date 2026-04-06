@@ -1459,6 +1459,66 @@ describe("POST /api/runners/:runnerId/trigger-broadcast — auto-spawn listeners
             }),
         }));
     });
+
+    test("passes autoClose flag to new_session when listener has autoClose: true", async () => {
+        const runnerEmitMock = mock(() => {});
+        const sessionEmitMock = mock(() => {});
+
+        mockGetRunnerListenerTypes.mockReturnValue(Promise.resolve(["svc:event"]));
+        mockGetRunnerTriggerListener.mockReturnValue(Promise.resolve({
+            listenerId: "listener-ac",
+            triggerType: "svc:event",
+            prompt: "auto-close test",
+            autoClose: true,
+            createdAt: "2026-03-29T00:00:00.000Z",
+        } as any));
+        mockGetLocalRunnerSocket.mockReturnValue({ connected: true, emit: runnerEmitMock } as any);
+        mockGetLocalTuiSocket.mockReturnValue({ connected: true, emit: sessionEmitMock } as any);
+        mockGetSharedSession.mockReturnValue(Promise.resolve({ userId: "user-1", sessionId: "sess-1" } as any));
+
+        const [req, url] = makeReq(
+            "POST", "/api/runners/runner-A/trigger-broadcast",
+            { type: "svc:event", payload: { message: "hello" }, source: "svc" },
+            { "x-api-key": "test-key" },
+        );
+        const res = await handleTriggersRoute(req, url);
+        expect(res?.status).toBe(200);
+
+        expect(runnerEmitMock).toHaveBeenCalledWith("new_session", expect.objectContaining({
+            autoClose: true,
+        }));
+    });
+
+    test("does not pass autoClose when listener has autoClose: false or undefined", async () => {
+        const runnerEmitMock = mock(() => {});
+        const sessionEmitMock = mock(() => {});
+
+        mockGetRunnerListenerTypes.mockReturnValue(Promise.resolve(["svc:event"]));
+        mockGetRunnerTriggerListener.mockReturnValue(Promise.resolve({
+            listenerId: "listener-no-ac",
+            triggerType: "svc:event",
+            prompt: "no auto-close",
+            createdAt: "2026-03-29T00:00:00.000Z",
+        } as any));
+        mockGetLocalRunnerSocket.mockReturnValue({ connected: true, emit: runnerEmitMock } as any);
+        mockGetLocalTuiSocket.mockReturnValue({ connected: true, emit: sessionEmitMock } as any);
+        mockGetSharedSession.mockReturnValue(Promise.resolve({ userId: "user-1", sessionId: "sess-1" } as any));
+
+        const [req, url] = makeReq(
+            "POST", "/api/runners/runner-A/trigger-broadcast",
+            { type: "svc:event", payload: { message: "hello" }, source: "svc" },
+            { "x-api-key": "test-key" },
+        );
+        const res = await handleTriggersRoute(req, url);
+        expect(res?.status).toBe(200);
+
+        // autoClose should NOT be in the new_session call
+        const newSessionCall = (runnerEmitMock.mock.calls as any[]).find(
+            (call: any[]) => call[0] === "new_session"
+        );
+        expect(newSessionCall).toBeTruthy();
+        expect(newSessionCall[1]).not.toHaveProperty("autoClose");
+    });
 });
 
 describe("non-matching routes", () => {
