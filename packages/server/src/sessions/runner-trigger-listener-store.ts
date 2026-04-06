@@ -16,6 +16,7 @@
 import { connectRedisClient, type RedisClient } from "../redis-client.js";
 import { createLogger } from "@pizzapi/tools";
 import { getKysely } from "../auth.js";
+import crypto from "crypto";
 
 const log = createLogger("runner-trigger-listener-store");
 
@@ -64,20 +65,26 @@ interface ListenerRow {
 }
 
 function generateListenerId(runnerId: string, triggerType: string): string {
-    return `listener:${runnerId}:${triggerType}:${Date.now()}:${Math.random().toString(36).slice(2, 10)}`;
+    const randomPart = crypto.randomBytes(6).toString("base64url").slice(0, 8);
+    return `listener:${runnerId}:${triggerType}:${Date.now()}:${randomPart}`;
 }
 
-function parseListenerJson(json: string): RunnerTriggerListener | null {
+function parseListenerJson(json: string, dbRowId?: string): RunnerTriggerListener | null {
     try {
         const parsed = JSON.parse(json) as unknown;
         if (!parsed || typeof parsed !== "object") return null;
         const listener = parsed as Partial<RunnerTriggerListener>;
         if (typeof listener.triggerType !== "string" || typeof listener.createdAt !== "string") return null;
+        // Use the listenerId from the JSON if present, otherwise fall back to
+        // the DB row id (which may be a legacy JSON-array composite key like
+        // '["runnerId","triggerType"]'). Only generate a synthetic ID as a
+        // last resort — synthetic IDs can't be used to delete the row.
+        const listenerId = typeof listener.listenerId === "string"
+            ? listener.listenerId
+            : (dbRowId ?? generateListenerId("legacy", listener.triggerType));
         return {
             ...listener,
-            listenerId: typeof listener.listenerId === "string"
-                ? listener.listenerId
-                : generateListenerId("legacy", listener.triggerType),
+            listenerId,
         } as RunnerTriggerListener;
     } catch {
         return null;
@@ -128,7 +135,7 @@ async function deleteListenerRowsByTriggerType(runnerId: string, triggerType: st
 async function getListenerRow(runnerId: string, listenerIdOrTriggerType: string): Promise<RunnerTriggerListener | null> {
     const row = await getKysely()
         .selectFrom(LISTENER_TABLE)
-        .select(["listenerJson"])
+        .select(["id", "listenerJson"])
         .where((eb) => eb.or([
             eb("id", "=", listenerIdOrTriggerType),
             eb.and([eb("runnerId", "=", runnerId), eb("triggerType", "=", listenerIdOrTriggerType)]),
@@ -136,19 +143,19 @@ async function getListenerRow(runnerId: string, listenerIdOrTriggerType: string)
         .orderBy("updatedAt", "desc")
         .executeTakeFirst();
     if (!row) return null;
-    return parseListenerJson(row.listenerJson);
+    return parseListenerJson(row.listenerJson, row.id);
 }
 
 async function listListenerRows(runnerId: string): Promise<RunnerTriggerListener[]> {
     const rows = await getKysely()
         .selectFrom(LISTENER_TABLE)
-        .select(["listenerJson"])
+        .select(["id", "listenerJson"])
         .where("runnerId", "=", runnerId)
         .orderBy("updatedAt", "desc")
         .execute();
 
     return rows
-        .map((row) => parseListenerJson(row.listenerJson))
+        .map((row) => parseListenerJson(row.listenerJson, row.id))
         .filter((listener): listener is RunnerTriggerListener => listener !== null);
 }
 

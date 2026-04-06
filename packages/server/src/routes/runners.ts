@@ -17,12 +17,13 @@ import {
 import { getRunnerServices } from "../ws/sio-registry/runners.js";
 import {
     addRunnerTriggerListener,
+    getRunnerTriggerListener,
     removeRunnerTriggerListener,
     listRunnerTriggerListeners,
     updateRunnerTriggerListener,
 } from "../sessions/runner-trigger-listener-store.js";
 import { getSession } from "../ws/sio-state/index.js";
-import { sendSkillCommand, sendAgentCommand, sendRunnerCommand } from "../ws/namespaces/runner.js";
+import { sendSkillCommand, sendAgentCommand, sendRunnerCommand, emitTriggerSubscriptionDelta } from "../ws/namespaces/runner.js";
 import { waitForSpawnAck } from "../ws/runner-control.js";
 import { requireSession, validateApiKey } from "../middleware.js";
 import { deleteRecentFolder, getRecentFolders, recordRecentFolder } from "../runner-recent-folders.js";
@@ -38,6 +39,20 @@ const log = createLogger("runners");
 const skillsLog = createLogger("skills");
 const agentsLog = createLogger("agents");
 const pluginsLog = createLogger("plugins");
+
+function runnerListenerAsSubscription(runnerId: string, listener: {
+    listenerId?: string;
+    triggerType: string;
+    params?: Record<string, unknown>;
+}) {
+    return {
+        subscriptionId: listener.listenerId ?? `runner-listener:${runnerId}:${listener.triggerType}`,
+        sessionId: `runner-listener:${listener.listenerId ?? listener.triggerType}`,
+        runnerId,
+        triggerType: listener.triggerType,
+        ...(listener.params ? { params: listener.params as Record<string, string | number | boolean | Array<string | number | boolean>> } : {}),
+    };
+}
 
 export const handleRunnersRoute: RouteHandler = async (req, url) => {
     // ── List runners ───────────────────────────────────────────────────
@@ -468,6 +483,19 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
                 model,
                 params,
             });
+            if (!listenerId) {
+                return Response.json({ error: "Failed to create trigger listener" }, { status: 500 });
+            }
+            await emitTriggerSubscriptionDelta(runnerId, {
+                action: "subscribe",
+                subscription: runnerListenerAsSubscription(runnerId, {
+                    listenerId,
+                    triggerType,
+                    params,
+                }),
+            }).catch((err) => {
+                log.warn("Failed to emit runner listener subscribe delta:", err);
+            });
             return Response.json({ ok: true, listenerId, triggerType });
         }
 
@@ -517,16 +545,45 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
                     model,
                 });
             }
+            if (listenerId) {
+                await emitTriggerSubscriptionDelta(runnerId, {
+                    action: "update",
+                    subscription: runnerListenerAsSubscription(runnerId, {
+                        listenerId,
+                        triggerType,
+                        params,
+                    }),
+                }).catch((err) => {
+                    log.warn("Failed to emit runner listener update delta:", err);
+                });
+            }
 
             return Response.json({ ok: true, ...(listenerId ? { listenerId } : {}), triggerType });
         }
 
         if (req.method === "DELETE" && listenerMatch[2]) {
             const target = decodeURIComponent(listenerMatch[2]);
+            const normalizedListeners = target.includes(":")
+                ? (await listRunnerTriggerListeners(runnerId)).filter((listener) => listener.triggerType === target)
+                : (() => [])();
+            if (!target.includes(":")) {
+                const byId = await getRunnerTriggerListener(runnerId, target);
+                if (byId) normalizedListeners.push(byId);
+            }
             const removed = await removeRunnerTriggerListener(runnerId, target) as any;
             const triggerType = removed?.triggerType ?? target;
-            const removedCount = typeof removed?.removed === "number" ? removed.removed : 0;
+            const removedCount = typeof removed?.removed === "number"
+                ? removed.removed
+                : normalizedListeners.length > 0
+                    ? normalizedListeners.length
+                    : 0;
             const listenerId = !target.includes(":") ? target : undefined;
+            await Promise.all(normalizedListeners.map((listener) => emitTriggerSubscriptionDelta(runnerId, {
+                action: "unsubscribe",
+                subscription: runnerListenerAsSubscription(runnerId, listener),
+            }).catch((err) => {
+                log.warn("Failed to emit runner listener unsubscribe delta:", err);
+            })));
             return Response.json({ ok: true, ...(listenerId ? { listenerId } : {}), triggerType, removed: removedCount });
         }
 

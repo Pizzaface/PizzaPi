@@ -31,21 +31,25 @@ mock.module("../ws/sio-registry.js", () => ({
 const mockGetRunnerServices = mock((_runnerId: string) => Promise.resolve(null as any));
 
 const mockAddRunnerTriggerListener = mock((_runnerId: string, _triggerType: string, _config: any) => Promise.resolve("listener-default"));
+const mockGetRunnerTriggerListener = mock((_runnerId: string, _target: string) => Promise.resolve(null as any));
 const mockRemoveRunnerTriggerListener = mock((_runnerId: string, _target: string) => Promise.resolve({ removed: 1, triggerType: _target }));
 const mockListRunnerTriggerListeners = mock((_runnerId: string) => Promise.resolve([] as any[]));
 const mockUpdateRunnerTriggerListener = mock((_runnerId: string, _target: string, _updates: any) => Promise.resolve({ updated: false }));
 mock.module("../sessions/runner-trigger-listener-store.js", () => ({
     addRunnerTriggerListener: mockAddRunnerTriggerListener,
+    getRunnerTriggerListener: mockGetRunnerTriggerListener,
     removeRunnerTriggerListener: mockRemoveRunnerTriggerListener,
     listRunnerTriggerListeners: mockListRunnerTriggerListeners,
     updateRunnerTriggerListener: mockUpdateRunnerTriggerListener,
 }));
 
 const mockGetSession = mock(() => Promise.resolve(null));
+const mockEmitTriggerSubscriptionDelta = mock((_runnerId: string, _delta: any) => Promise.resolve());
 mock.module("../ws/namespaces/runner.js", () => ({
     sendSkillCommand: mock(() => Promise.resolve({ ok: true })),
     sendAgentCommand: mock(() => Promise.resolve({ ok: true })),
     sendRunnerCommand: mock(() => Promise.resolve({ ok: true })),
+    emitTriggerSubscriptionDelta: mockEmitTriggerSubscriptionDelta,
 }));
 mock.module("../ws/runner-control.js", () => ({ waitForSpawnAck: mock(() => Promise.resolve({ ok: true })) }));
 mock.module("../runner-recent-folders.js", () => ({
@@ -78,10 +82,18 @@ describe("runner trigger listener routes", () => {
         mockGetRunnerData.mockReset();
         mockGetRunnerData.mockReturnValue(Promise.resolve({ userId: "user-1", runnerId: "runner-A" } as any));
         mockAddRunnerTriggerListener.mockReset();
+        mockAddRunnerTriggerListener.mockReturnValue(Promise.resolve("listener-default"));
         mockRemoveRunnerTriggerListener.mockReset();
+        mockRemoveRunnerTriggerListener.mockReturnValue(Promise.resolve({ removed: 1, triggerType: "svc:event" }));
+        mockGetRunnerTriggerListener.mockReset();
+        mockGetRunnerTriggerListener.mockReturnValue(Promise.resolve(null as any));
         mockListRunnerTriggerListeners.mockReset();
+        mockListRunnerTriggerListeners.mockReturnValue(Promise.resolve([] as any[]));
         mockUpdateRunnerTriggerListener.mockReset();
+        mockUpdateRunnerTriggerListener.mockReturnValue(Promise.resolve({ updated: false }));
         mockGetLocalRunnerSocket.mockReset();
+        mockEmitTriggerSubscriptionDelta.mockReset();
+        mockEmitTriggerSubscriptionDelta.mockReturnValue(Promise.resolve());
     });
 
     test("GET returns all listeners with ids", async () => {
@@ -99,12 +111,13 @@ describe("runner trigger listener routes", () => {
         expect(body.listeners[1].listenerId).toBe("listener-2");
     });
 
-    test("POST returns listenerId", async () => {
+    test("POST returns listenerId and emits a runner subscription delta", async () => {
         mockAddRunnerTriggerListener.mockReturnValue(Promise.resolve("listener-123"));
 
         const [req, url] = makeReq("POST", "/api/runners/runner-A/trigger-listeners", {
             triggerType: "svc:event",
             prompt: "Investigate",
+            params: { duration: "10m" },
         });
         const res = await handleRunnersRoute(req, url);
         expect(res!.status).toBe(200);
@@ -112,6 +125,27 @@ describe("runner trigger listener routes", () => {
         expect(body.ok).toBe(true);
         expect(body.listenerId).toBe("listener-123");
         expect(body.triggerType).toBe("svc:event");
+        expect(mockEmitTriggerSubscriptionDelta).toHaveBeenCalledWith("runner-A", expect.objectContaining({
+            action: "subscribe",
+            subscription: expect.objectContaining({
+                subscriptionId: "listener-123",
+                triggerType: "svc:event",
+                params: { duration: "10m" },
+            }),
+        }));
+    });
+
+    test("POST returns 500 when listener creation fails", async () => {
+        mockAddRunnerTriggerListener.mockReturnValue(Promise.resolve(""));
+
+        const [req, url] = makeReq("POST", "/api/runners/runner-A/trigger-listeners", {
+            triggerType: "svc:event",
+            prompt: "Investigate",
+        });
+        const res = await handleRunnersRoute(req, url);
+        expect(res!.status).toBe(500);
+        const body = await res!.json();
+        expect(body.error).toBe("Failed to create trigger listener");
     });
 
     test("PUT updates one listener by id", async () => {

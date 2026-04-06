@@ -197,6 +197,41 @@ describe("runner trigger listener store", () => {
         expect(dbRow).toBeTruthy();
     });
 
+    (isCI ? test.skip : test)("removes legacy rows with JSON-array composite key IDs", async () => {
+        // Simulate a legacy row: id is a JSON array like '["runnerId","triggerType"]'
+        const legacyId = JSON.stringify(["runner-1", "svc:legacy-del"]);
+        const listenerJson = JSON.stringify({
+            triggerType: "svc:legacy-del",
+            prompt: "old prompt",
+            createdAt: new Date().toISOString(),
+            // Note: no listenerId field — this is what makes it legacy
+        });
+        await getKysely()
+            .insertInto("runner_trigger_listener")
+            .values({
+                id: legacyId,
+                runnerId: "runner-1",
+                triggerType: "svc:legacy-del",
+                listenerJson,
+                updatedAt: new Date().toISOString(),
+            })
+            .execute();
+
+        // Listing should return the listener with the DB row id as listenerId
+        const listeners = await listRunnerTriggerListeners("runner-1");
+        const legacy = listeners.find((l) => l.triggerType === "svc:legacy-del");
+        expect(legacy).toBeTruthy();
+        expect(legacy!.listenerId).toBe(legacyId);
+
+        // Removing by the listenerId (which is the DB row id) should work
+        const removed = await removeRunnerTriggerListener("runner-1", legacy!.listenerId);
+        expect(removed).toBe(true);
+
+        // Verify it's gone
+        const after = await listRunnerTriggerListeners("runner-1");
+        expect(after.find((l) => l.triggerType === "svc:legacy-del")).toBeUndefined();
+    });
+
     (isCI ? test.skip : test)("returns trigger types for listener lookup", async () => {
         await addRunnerTriggerListener("runner-1", "svc:one", { prompt: "one" });
         await addRunnerTriggerListener("runner-1", "svc:two", { prompt: "two" });
