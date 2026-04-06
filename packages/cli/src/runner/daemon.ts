@@ -760,7 +760,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
 
         socket.on("new_session", async (data: any) => {
             if (isShuttingDown) return;
-            const { sessionId, cwd: requestedCwd, prompt: requestedPrompt, model: requestedModel, hiddenModels: requestedHiddenModels, agent: requestedAgent, parentSessionId: requestedParentSessionId, resumePath: requestedResumePath, resumeId: requestedResumeId } = data;
+            const { sessionId, cwd: requestedCwd, prompt: requestedPrompt, model: requestedModel, hiddenModels: requestedHiddenModels, agent: requestedAgent, parentSessionId: requestedParentSessionId, resumePath: requestedResumePath, resumeId: requestedResumeId, autoClose: requestedAutoClose } = data;
 
             if (!sessionId) {
                 socket.emit("session_error", { sessionId: sessionId ?? "", message: "Missing sessionId" });
@@ -833,8 +833,8 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                     // On restart (exit code 43), the session already has
                     // the prompt in its history — re-sending would duplicate it.
                     const spawnOpts = isFirstSpawn
-                        ? { prompt: requestedPrompt, model: requestedModel, hiddenModels: requestedHiddenModels, agent: resolvedAgent, parentSessionId: requestedParentSessionId, resumePath: resolvedResumePath }
-                        : { hiddenModels: requestedHiddenModels, agent: resolvedAgent, parentSessionId: requestedParentSessionId }; // Always pass agent + hidden models + parent on restart
+                        ? { prompt: requestedPrompt, model: requestedModel, hiddenModels: requestedHiddenModels, agent: resolvedAgent, parentSessionId: requestedParentSessionId, resumePath: resolvedResumePath, autoClose: requestedAutoClose === true }
+                        : { hiddenModels: requestedHiddenModels, agent: resolvedAgent, parentSessionId: requestedParentSessionId, autoClose: requestedAutoClose === true }; // Always pass agent + hidden models + parent + autoClose on restart
                     isFirstSpawn = false;
                     spawnSession(sessionId, apiKey!, relayRaw, requestedCwd, runningSessions, restartingSessions, killedSessions, doSpawn, spawnOpts);
                     socket.emit("session_ready", { sessionId });

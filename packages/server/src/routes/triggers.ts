@@ -86,6 +86,7 @@ interface ListenerLookupResult {
     cwd?: string;
     model?: { provider: string; id: string };
     params?: Record<string, unknown>;
+    autoClose?: boolean;
 }
 
 const log = createLogger("triggers-api");
@@ -1044,6 +1045,7 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
                             ...(listener.cwd ? { cwd: listener.cwd } : {}),
                             ...(listener.prompt ? { prompt: listener.prompt } : {}),
                             ...(listener.model ? { model: listener.model } : {}),
+                            ...(listener.autoClose ? { autoClose: true } : {}),
                         });
                         const ack = await ackPromise;
                         if (ack.ok !== false) {

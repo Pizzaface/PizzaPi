@@ -367,6 +367,11 @@ export function registerLifecycleHandlers(deps: LifecycleHandlersDeps): void {
 
             if (rctx.isChildSession) {
                 followUpGrace.startFollowUpGrace(ctx);
+            } else if (process.env.PIZZAPI_WORKER_AUTO_CLOSE === "true" && exitReason === "completed") {
+                // Auto-close: trigger-spawned sessions with autoClose shut down
+                // immediately on successful completion — no follow-up grace.
+                log.info("pizzapi: auto-close enabled and session completed successfully — shutting down");
+                ctx.shutdown();
             }
         }
     });

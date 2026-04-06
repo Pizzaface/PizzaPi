@@ -232,6 +232,26 @@ describe("runner trigger listener store", () => {
         expect(after.find((l) => l.triggerType === "svc:legacy-del")).toBeUndefined();
     });
 
+    (isCI ? test.skip : test)("persists and updates autoClose flag", async () => {
+        const listenerId = await addRunnerTriggerListener("runner-1", "svc:auto", {
+            prompt: "auto close test",
+            autoClose: true,
+        });
+        expect(listenerId).toBeString();
+
+        const listener = await getRunnerTriggerListener("runner-1", "svc:auto");
+        expect(listener).toMatchObject({
+            triggerType: "svc:auto",
+            prompt: "auto close test",
+            autoClose: true,
+        });
+
+        // Update autoClose to false
+        await updateRunnerTriggerListener("runner-1", listenerId, { autoClose: false });
+        const updated = await getRunnerTriggerListener("runner-1", listenerId);
+        expect(updated?.autoClose).toBe(false);
+    });
+
     (isCI ? test.skip : test)("returns trigger types for listener lookup", async () => {
         await addRunnerTriggerListener("runner-1", "svc:one", { prompt: "one" });
         await addRunnerTriggerListener("runner-1", "svc:two", { prompt: "two" });

@@ -53,6 +53,8 @@ export interface RunnerTriggerListener {
     cwd?: string;
     model?: { provider: string; id: string };
     params?: Record<string, string | number | boolean | Array<string | number | boolean>>;
+    /** When true, auto-spawned sessions shut down automatically on successful completion. */
+    autoClose?: boolean;
     createdAt: string;
 }
 
@@ -240,7 +242,7 @@ async function loadListener(runnerId: string, listenerIdOrTriggerType: string): 
 export async function addRunnerTriggerListener(
     runnerId: string,
     triggerType: string,
-    opts?: { prompt?: string; cwd?: string; model?: { provider: string; id: string }; params?: Record<string, unknown> },
+    opts?: { prompt?: string; cwd?: string; model?: { provider: string; id: string }; params?: Record<string, unknown>; autoClose?: boolean },
 ): Promise<string> {
     const listenerId = generateListenerId(runnerId, triggerType);
     const listener = {
@@ -250,6 +252,7 @@ export async function addRunnerTriggerListener(
         cwd: opts?.cwd,
         model: opts?.model,
         params: opts?.params as RunnerTriggerListener["params"],
+        autoClose: opts?.autoClose,
         createdAt: new Date().toISOString(),
     } satisfies RunnerTriggerListener;
 
@@ -314,7 +317,7 @@ export async function listRunnerTriggerListeners(
 export async function updateRunnerTriggerListener(
     runnerId: string,
     listenerIdOrTriggerType: string,
-    updates: { prompt?: string; cwd?: string; model?: { provider: string; id: string }; params?: Record<string, unknown> },
+    updates: { prompt?: string; cwd?: string; model?: { provider: string; id: string }; params?: Record<string, unknown>; autoClose?: boolean },
 ): Promise<boolean> {
     try {
         const existing = await loadListener(runnerId, listenerIdOrTriggerType);
@@ -326,6 +329,7 @@ export async function updateRunnerTriggerListener(
             ...(updates.cwd !== undefined ? { cwd: updates.cwd } : {}),
             ...(updates.model !== undefined ? { model: updates.model } : {}),
             ...(updates.params !== undefined ? { params: updates.params as RunnerTriggerListener["params"] } : {}),
+            ...(updates.autoClose !== undefined ? { autoClose: updates.autoClose } : {}),
         };
         await upsertListenerRow(runnerId, updated);
         await persistRedisListener(runnerId, updated);

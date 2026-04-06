@@ -66,6 +66,7 @@ export function spawnSession(
         agent?: { name: string; systemPrompt?: string; tools?: string; disallowedTools?: string };
         parentSessionId?: string;
         resumePath?: string;
+        autoClose?: boolean;
     },
 ): void {
     logInfo(`spawning headless worker for session ${sessionId}…`);
@@ -158,6 +159,7 @@ export function spawnSession(
         ...(options?.agent?.tools ? { PIZZAPI_WORKER_AGENT_TOOLS: options.agent.tools } : {}),
         ...(options?.agent?.disallowedTools ? { PIZZAPI_WORKER_AGENT_DISALLOWED_TOOLS: options.agent.disallowedTools } : {}),
         ...(options?.resumePath ? { PIZZAPI_WORKER_RESUME_PATH: options.resumePath } : {}),
+        ...(options?.autoClose ? { PIZZAPI_WORKER_AUTO_CLOSE: "true" } : {}),
     };
 
     const child = spawn(process.execPath, workerArgs, {
