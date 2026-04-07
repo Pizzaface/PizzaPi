@@ -119,7 +119,7 @@ export async function nextTriggerSubRevision(): Promise<number> {
  * Subscription params — values the subscriber provided for the service to handle.
  * These are NOT used for server-side delivery filtering (use filters for that).
  */
-export type SubscriptionParamValue = string | number | boolean | Array<string | number | boolean>;
+export type SubscriptionParamValue = null | string | number | boolean | SubscriptionParamValue[] | { [key: string]: SubscriptionParamValue };
 export type SubscriptionParams = Record<string, SubscriptionParamValue>;
 
 /** A single filter condition on the trigger's output payload. */

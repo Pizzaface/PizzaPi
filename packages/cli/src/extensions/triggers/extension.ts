@@ -28,6 +28,16 @@ function preview(text: string, max = 50): string {
     return text.length > max ? text.slice(0, max) + "..." : text;
 }
 
+type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
+
+function isJsonValue(value: unknown): value is JsonValue {
+    if (value === null) return true;
+    if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") return true;
+    if (Array.isArray(value)) return value.every(isJsonValue);
+    if (typeof value === "object") return Object.values(value as Record<string, unknown>).every(isJsonValue);
+    return false;
+}
+
 /** Tracks triggers this session has received (as parent) for response routing. */
 export const receivedTriggers = new Map<string, { sourceSessionId: string; type: string; trackedAt: number }>();
 
@@ -666,22 +676,12 @@ export const triggersExtension: ExtensionFactory = (pi) => {
                 return { content: [{ type: "text" as const, text: "Error: Could not determine session ID." }], details: null as any };
             }
 
-            // Coerce param values to primitives or arrays of primitives (multiselect)
-            let subParams: Record<string, string | number | boolean | Array<string | number | boolean>> | undefined;
+            // Coerce param values to JSON-safe values (including arrays/objects)
+            let subParams: Record<string, JsonValue> | undefined;
             if (params.params && typeof params.params === "object") {
                 subParams = {};
                 for (const [k, v] of Object.entries(params.params)) {
-                    if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") {
-                        subParams[k] = v;
-                    } else if (Array.isArray(v)) {
-                        const primitives = v.filter(
-                            (item): item is string | number | boolean =>
-                                typeof item === "string" || typeof item === "number" || typeof item === "boolean",
-                        );
-                        if (primitives.length > 0) subParams[k] = primitives;
-                    } else if (v !== undefined && v !== null) {
-                        subParams[k] = String(v);
-                    }
+                    if (isJsonValue(v)) subParams[k] = v;
                 }
                 if (Object.keys(subParams).length === 0) subParams = undefined;
             }
@@ -883,22 +883,12 @@ export const triggersExtension: ExtensionFactory = (pi) => {
                 return { content: [{ type: "text" as const, text: "Error: Could not determine session ID." }], details: null as any };
             }
 
-            // Coerce param values to primitives
-            let subParams: Record<string, string | number | boolean | Array<string | number | boolean>> | undefined;
+            // Coerce param values to JSON-safe values (including arrays/objects)
+            let subParams: Record<string, JsonValue> | undefined;
             if (params.params && typeof params.params === "object") {
                 subParams = {};
                 for (const [k, v] of Object.entries(params.params)) {
-                    if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") {
-                        subParams[k] = v;
-                    } else if (Array.isArray(v)) {
-                        const primitives = v.filter(
-                            (item): item is string | number | boolean =>
-                                typeof item === "string" || typeof item === "number" || typeof item === "boolean",
-                        );
-                        if (primitives.length > 0) subParams[k] = primitives;
-                    } else if (v !== undefined && v !== null) {
-                        subParams[k] = String(v);
-                    }
+                    if (isJsonValue(v)) subParams[k] = v;
                 }
                 if (Object.keys(subParams).length === 0) subParams = undefined;
             }

@@ -102,12 +102,14 @@ Each entry in `params`:
 |-------|----------|-------------|
 | `name` | Yes | Parameter name — must match a key in the trigger payload |
 | `label` | Yes | Human-readable label for the UI |
-| `type` | No | Value type: `"string"` (default), `"number"`, or `"boolean"` |
+| `type` | No | Value type: `"string"` (default), `"number"`, `"boolean"`, or `"json"` |
 | `description` | No | Help text for the subscriber |
 | `required` | No | If `true`, subscriber must provide this param |
 | `default` | No | Default value if not provided |
 | `enum` | No | Array of allowed values — renders as a dropdown in the UI |
-| `multiselect` | No | If `true` (requires `enum`), subscriber can pick multiple values. Delivery matches if payload value is **in** the selected set (OR semantics). |
+| `multiselect` | No | If `true` (requires `enum`), subscriber can pick multiple values. Subscribers send an actual JSON array, the UI renders selected values as chips, and delivery matches if the payload value is **in** the selected set (OR semantics). |
++
++Use `type: "json"` when the subscription param should carry an arbitrary JSON value such as an object or array. The UI renders a JSON textarea for these params and forwards the parsed value to the service unchanged.
 
 **Example — scalar param with enum:**
 
@@ -126,6 +128,22 @@ An agent subscribes with: `subscribe_trigger(triggerType: "github:pr_comment_add
 
 Only events with `prNumber: 42` **and** `repo: "pizzapi"` in their payload are delivered.
 
+**Example — JSON param:**
+
+```json
+{
+  "type": "review:requested",
+  "label": "Review Requested",
+  "params": [
+    { "name": "config", "label": "Config", "type": "json", "description": "Arbitrary review routing config" }
+  ]
+}
+```
+
+An agent subscribes with: `subscribe_trigger(triggerType: "review:requested", params: { config: { reviewers: ["jordanpizza"], labels: ["bug"], dryRun: true } })`
+
+The service receives the parsed object exactly as provided.
+
 **Example — multiselect param:**
 
 ```json
@@ -142,7 +160,12 @@ An agent subscribes with: `subscribe_trigger(triggerType: "demo:message_sent", p
 
 Events with `channel: "alerts"` **or** `channel: "debug"` in their payload are delivered. Events with `channel: "general"` are not. Sessions subscribed without specifying `channel` receive all events.
 
-Array-valued payload fields also work with scalar subscription params: if the payload has `labels: ["bug", "urgent"]`, a subscriber with `labels: "bug"` receives the event.
+**Important contract:**
+- `multiselect` only works when `enum` is also declared
+- subscribers send a real JSON array, not a comma-separated string
+- matching is currently **subscriber array vs payload scalar** (`params.channel = ["alerts", "debug"]` matches payload `channel: "alerts"`)
+- array-valued payload fields also work with scalar subscription params: if the payload has `labels: ["bug", "urgent"]`, a subscriber with `labels: "bug"` receives the event
+- if you need arbitrary freeform lists (for example usernames not known ahead of time), `multiselect` is the wrong fit today unless you can declare those values in `enum`
 
 For substring filtering, name the param with a `Contains` suffix. For example, a trigger with `bodyContains` will match when the payload's `body` field includes the subscriber's text.
 

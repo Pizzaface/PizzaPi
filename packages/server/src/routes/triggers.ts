@@ -67,7 +67,6 @@ import {
 } from "../sessions/trigger-subscription-store.js";
 import {
     getRunnerListenerTypes,
-    getRunnerTriggerListener,
     listRunnerTriggerListeners,
     updateRunnerTriggerListener,
 } from "../sessions/runner-trigger-listener-store.js";
@@ -79,17 +78,15 @@ interface SubscriptionFilterRecord {
     filterMode?: SubscriptionFilterMode;
 }
 
-interface ListenerLookupResult {
-    listenerId?: string;
-    triggerType: string;
-    prompt?: string;
-    cwd?: string;
-    model?: { provider: string; id: string };
-    params?: Record<string, unknown>;
-    autoClose?: boolean;
-}
-
 const log = createLogger("triggers-api");
+
+function isJsonValue(value: unknown): value is null | string | number | boolean | unknown[] | Record<string, unknown> {
+    if (value === null) return true;
+    if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") return true;
+    if (Array.isArray(value)) return value.every(isJsonValue);
+    if (typeof value === "object") return Object.values(value as Record<string, unknown>).every(isJsonValue);
+    return false;
+}
 
 /**
  * Check whether a single filter condition matches a trigger payload field.
@@ -526,6 +523,16 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
                     continue;
                 }
 
+                // Generic JSON param: preserve object/array/scalar values as-is
+                if (def.type === "json") {
+                    if (!isJsonValue(raw)) {
+                        errors.push(`Param '${def.name}' must be valid JSON`);
+                    } else {
+                        validated[def.name] = raw as SubscriptionParams[string];
+                    }
+                    continue;
+                }
+
                 // Scalar: coerce to the declared type
                 if (def.type === "number") {
                     const num = Number(raw);
@@ -564,14 +571,8 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
                 if (key in validated) continue;
                 if (paramDefs.some(d => d.name === key)) continue; // already processed
                 if (val === undefined || val === null) continue;
-                if (typeof val === "string" || typeof val === "number" || typeof val === "boolean") {
-                    validated[key] = val;
-                } else if (Array.isArray(val)) {
-                    const primitives = val.filter(
-                        (v: unknown): v is string | number | boolean =>
-                            typeof v === "string" || typeof v === "number" || typeof v === "boolean",
-                    );
-                    if (primitives.length > 0) validated[key] = primitives;
+                if (isJsonValue(val)) {
+                    validated[key] = val as SubscriptionParams[string];
                 }
             }
 
@@ -784,7 +785,10 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
                         else if (def.required) errors.push(`Param '${def.name}' requires at least one valid value`);
                         continue;
                     }
-                    if (def.type === "number") {
+                    if (def.type === "json") {
+                        if (!isJsonValue(raw)) errors.push(`Param '${def.name}' must be valid JSON`);
+                        else validated[def.name] = raw as SubscriptionParams[string];
+                    } else if (def.type === "number") {
                         const num = Number(raw);
                         // eslint-disable-next-line eqeqeq
                         if (isNaN(num)) errors.push(`Param '${def.name}' must be a number`);
@@ -1018,15 +1022,12 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
         let spawned = 0;
         const listenerTypes = await getRunnerListenerTypes(runnerId);
         if (listenerTypes.includes(body.type)) {
-            const listenerLookup = await getRunnerTriggerListener(runnerId, body.type) as ListenerLookupResult | ListenerLookupResult[] | null;
-            const loadedListeners = Array.isArray(listenerLookup)
-                ? listenerLookup
-                : listenerLookup
-                    ? [listenerLookup]
-                    : [];
-            const listeners = loadedListeners.length > 0
-                ? loadedListeners
-                : (await listRunnerTriggerListeners(runnerId)).filter((listener) => listener.triggerType === body.type);
+            // Auto-spawn listeners support multiple rows for the same trigger type.
+            // Looking up by trigger type returns only the newest row, which can drop
+            // valid matches when older listeners have different params. Always load
+            // the full listener list for broadcast matching.
+            const listeners = (await listRunnerTriggerListeners(runnerId))
+                .filter((listener) => listener.triggerType === body.type);
             const matchingListeners = listeners.filter((listener) => {
                 if (listener.params && Object.keys(listener.params).length > 0) {
                     const listenerFilters = legacyParamsToFilters(listener.params);
