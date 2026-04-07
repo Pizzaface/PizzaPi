@@ -418,11 +418,19 @@ export function registerLifecycleHandlers(deps: LifecycleHandlersDeps): void {
                         return;
                     }
 
+                    // Re-check idleness after the async probes: a trigger,
+                    // user message, or new turn may have arrived while we were
+                    // awaiting subscription/child-count results.
+                    if (ctx.hasPendingMessages() || rctx.isAgentActive) {
+                        log.info("pizzapi: auto-close skipped — new work arrived during async checks");
+                        return;
+                    }
+
                     if (!shouldAutoClose({
                         autoCloseEnv: process.env.PIZZAPI_WORKER_AUTO_CLOSE,
                         exitReason,
                         isChildSession: rctx.isChildSession,
-                        hasPendingMessages: false,
+                        hasPendingMessages: ctx.hasPendingMessages(),
                         activeSubscriptionCount,
                         linkedChildCount,
                     })) {
