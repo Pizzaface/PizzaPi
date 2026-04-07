@@ -9,9 +9,8 @@
  */
 import { describe, expect, test, mock } from "bun:test";
 
-mock.module("@/lib/viewer-switch", () => ({
-    matchesViewerGeneration: () => true,
-}));
+const actualViewerSwitchModule = await import("../lib/viewer-switch");
+mock.module("@/lib/viewer-switch", () => actualViewerSwitchModule);
 
 const { attachServiceAnnounceListener, seedServiceCache } = await import("./useRunnerServices");
 

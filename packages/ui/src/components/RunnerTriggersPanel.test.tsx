@@ -91,10 +91,8 @@ mock.module("@/lib/utils", () => ({
 mock.module("@/hooks/useRunnerModels", () => ({
   useRunnerModels: () => ({ models: [] }),
 }));
-
-mock.module("@/lib/path", () => ({
-  formatPathTail: (path: string) => path,
-}));
+const actualPathModule = await import("../lib/path");
+mock.module("@/lib/path", () => actualPathModule);
 
 afterAll(() => mock.restore());
 
