@@ -27,7 +27,32 @@ import { createLogger } from "@pizzapi/tools";
 
 const log = createLogger("sio/relay");
 
+export async function countLinkedChildrenForParent(
+    parentSessionId: string,
+    deps: { getChildSessions?: typeof getChildSessions } = {},
+): Promise<number> {
+    const childIds = await (deps.getChildSessions ?? getChildSessions)(parentSessionId);
+    return childIds.length;
+}
+
 export function registerChildLifecycleHandlers(socket: RelaySocket, io: SocketIOServer): void {
+    socket.on("get_linked_child_count", async (data, ack) => {
+        const sessionId = socket.data.sessionId;
+        if (!sessionId || data?.token !== socket.data.token) {
+            socket.emit("error", { message: "Invalid token" });
+            if (typeof ack === "function") ack({ ok: false, error: "Invalid token" });
+            return;
+        }
+
+        try {
+            const count = await countLinkedChildrenForParent(sessionId);
+            if (typeof ack === "function") ack({ ok: true, count });
+        } catch (err: any) {
+            log.error(`get_linked_child_count failed for parent=${sessionId}:`, err);
+            if (typeof ack === "function") ack({ ok: false, error: err?.message ?? "Internal error" });
+        }
+    });
+
     // ── cleanup_child_session — parent requests child teardown on ack ────
     socket.on("cleanup_child_session", async (data, ack) => {
         const sessionId = socket.data.sessionId;

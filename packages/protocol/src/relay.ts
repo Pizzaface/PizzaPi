@@ -87,6 +87,11 @@ export interface RelayClientToServerEvents {
     childSessionId: string;
   }, ack?: (result: { ok: boolean; error?: string }) => void) => void;
 
+  /** Returns how many linked child sessions are still associated with this parent. */
+  get_linked_child_count: (data: {
+    token: string;
+  }, ack?: (result: { ok: boolean; count?: number; error?: string }) => void) => void;
+
   /** Parent requests delinking of all child sessions (e.g. on /new).
    *  The server clears child→parent links and notifies children their parent is gone. */
   delink_children: (data: {
