@@ -183,34 +183,27 @@ export function useRunnerServices(socket: Socket | null, runnerInfo: RunnerInfo 
         // Prefer runner-feed metadata when available. The feed now carries the
         // runner's service metadata, so the viewer can join by runnerId instead
         // of depending on per-session service_announce copies.
-        // Gate on hasRunnerServiceMetadata() — truthy runnerInfo with no
-        // metadata arrays would clear services and bypass the socket-cache
-        // fallback, causing missing panels/triggers until a full announce.
         if (hasRunnerServiceMetadata(runnerInfo)) {
             const next = runnerInfoToServices(runnerInfo);
             setServices(next.services);
             setPanels(next.panels);
             setTriggerDefs(next.triggerDefs);
             setSigilDefs(next.sigilDefs);
+        } else if (runnerInfo === null) {
+            // True non-runner/local session: clear stale runner service state.
+            setServices(new Set());
+            setPanels([]);
+            setTriggerDefs([]);
+            setSigilDefs([]);
         } else {
-            // Read eagerly in case announce arrived before this effect ran
-            // (e.g. seeded via seedServiceCache for same-runner switches).
-            const cached = getEagerServiceIds(socket);
-            if (cached.size > 0) {
-                setServices(cached);
-            }
-            const cachedPanels = getEagerPanels(socket);
-            if (cachedPanels.length > 0) {
-                setPanels(cachedPanels);
-            }
-            const cachedDefs = getEagerTriggerDefs(socket);
-            if (cachedDefs.length > 0) {
-                setTriggerDefs(cachedDefs);
-            }
-            const cachedSigilDefs = getEagerSigilDefs(socket);
-            if (cachedSigilDefs.length > 0) {
-                setSigilDefs(cachedSigilDefs);
-            }
+            // Runner is known but feed metadata is not hydrated yet.
+            // Preserve/restore any eagerly captured announce data (e.g. seeded
+            // via seedServiceCache for same-runner switches) instead of
+            // clearing state and causing a flash of missing panels/triggers.
+            setServices(getEagerServiceIds(socket));
+            setPanels(getEagerPanels(socket));
+            setTriggerDefs(getEagerTriggerDefs(socket));
+            setSigilDefs(getEagerSigilDefs(socket));
         }
 
         const handleAnnounce = (data: ServiceAnnounceData & { generation?: number }) => {
