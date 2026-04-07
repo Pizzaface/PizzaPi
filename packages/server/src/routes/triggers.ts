@@ -67,7 +67,6 @@ import {
 } from "../sessions/trigger-subscription-store.js";
 import {
     getRunnerListenerTypes,
-    getRunnerTriggerListener,
     listRunnerTriggerListeners,
     updateRunnerTriggerListener,
 } from "../sessions/runner-trigger-listener-store.js";
@@ -77,16 +76,6 @@ interface SubscriptionFilterRecord {
     subscriptionId?: string;
     filters?: SubscriptionFilter[];
     filterMode?: SubscriptionFilterMode;
-}
-
-interface ListenerLookupResult {
-    listenerId?: string;
-    triggerType: string;
-    prompt?: string;
-    cwd?: string;
-    model?: { provider: string; id: string };
-    params?: Record<string, unknown>;
-    autoClose?: boolean;
 }
 
 const log = createLogger("triggers-api");
@@ -1033,15 +1022,12 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
         let spawned = 0;
         const listenerTypes = await getRunnerListenerTypes(runnerId);
         if (listenerTypes.includes(body.type)) {
-            const listenerLookup = await getRunnerTriggerListener(runnerId, body.type) as ListenerLookupResult | ListenerLookupResult[] | null;
-            const loadedListeners = Array.isArray(listenerLookup)
-                ? listenerLookup
-                : listenerLookup
-                    ? [listenerLookup]
-                    : [];
-            const listeners = loadedListeners.length > 0
-                ? loadedListeners
-                : (await listRunnerTriggerListeners(runnerId)).filter((listener) => listener.triggerType === body.type);
+            // Auto-spawn listeners support multiple rows for the same trigger type.
+            // Looking up by trigger type returns only the newest row, which can drop
+            // valid matches when older listeners have different params. Always load
+            // the full listener list for broadcast matching.
+            const listeners = (await listRunnerTriggerListeners(runnerId))
+                .filter((listener) => listener.triggerType === body.type);
             const matchingListeners = listeners.filter((listener) => {
                 if (listener.params && Object.keys(listener.params).length > 0) {
                     const listenerFilters = legacyParamsToFilters(listener.params);

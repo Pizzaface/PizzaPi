@@ -1489,6 +1489,8 @@ describe("POST /api/runners/:runnerId/trigger-broadcast — auto-spawn listeners
         mockGetSubscriptionFilters.mockReturnValue(Promise.resolve(undefined));
         mockGetRunnerListenerTypes.mockReset();
         mockGetRunnerTriggerListener.mockReset();
+        mockListRunnerTriggerListeners.mockReset();
+        mockListRunnerTriggerListeners.mockReturnValue(Promise.resolve([]));
         mockGetLocalRunnerSocket.mockReset();
         mockRecordRunnerSession.mockReset();
         mockRecordRunnerSession.mockReturnValue(Promise.resolve());
@@ -1503,11 +1505,11 @@ describe("POST /api/runners/:runnerId/trigger-broadcast — auto-spawn listeners
         const sessionEmitMock = mock(() => {});
 
         mockGetRunnerListenerTypes.mockReturnValue(Promise.resolve(["svc:event"]));
-        mockGetRunnerTriggerListener.mockReturnValue(Promise.resolve({
+        mockListRunnerTriggerListeners.mockReturnValue(Promise.resolve([{
             triggerType: "svc:event",
             prompt: "Focus on the failing tests first.",
             createdAt: "2026-03-29T00:00:00.000Z",
-        } as any));
+        }] as any));
         mockGetLocalRunnerSocket.mockReturnValue({ connected: true, emit: runnerEmitMock } as any);
         mockGetLocalTuiSocket.mockReturnValue({ connected: true, emit: sessionEmitMock } as any);
         mockGetSharedSession.mockReturnValue(Promise.resolve({ userId: "user-1", sessionId: "sess-1" } as any));
@@ -1543,7 +1545,7 @@ describe("POST /api/runners/:runnerId/trigger-broadcast — auto-spawn listeners
         const sessionEmitMock = mock(() => {});
 
         mockGetRunnerListenerTypes.mockReturnValue(Promise.resolve(["svc:event"]));
-        mockGetRunnerTriggerListener.mockReturnValue(Promise.resolve([
+        mockListRunnerTriggerListeners.mockReturnValue(Promise.resolve([
             {
                 listenerId: "listener-1",
                 triggerType: "svc:event",
@@ -1585,18 +1587,73 @@ describe("POST /api/runners/:runnerId/trigger-broadcast — auto-spawn listeners
         }));
     });
 
+    test("falls back to the full listener list when the newest listener does not match", async () => {
+        const runnerEmitMock = mock(() => {});
+        const sessionEmitMock = mock(() => {});
+
+        mockGetRunnerListenerTypes.mockReturnValue(Promise.resolve(["shortcut:story_commented"]));
+        mockGetRunnerTriggerListener.mockReturnValue(Promise.resolve({
+            listenerId: "listener-newest",
+            triggerType: "shortcut:story_commented",
+            prompt: "rewst prompt",
+            params: { author: "jordanpizza", textContains: "!pizza-rewst" },
+            createdAt: "2026-04-07T17:41:54.543Z",
+        } as any));
+        mockListRunnerTriggerListeners.mockReturnValue(Promise.resolve([
+            {
+                listenerId: "listener-newest",
+                triggerType: "shortcut:story_commented",
+                prompt: "rewst prompt",
+                params: { author: "jordanpizza", textContains: "!pizza-rewst" },
+                createdAt: "2026-04-07T17:41:54.543Z",
+            },
+            {
+                listenerId: "listener-rift",
+                triggerType: "shortcut:story_commented",
+                prompt: "rift prompt",
+                params: { author: "jordanpizza", textContains: "!pizza-rift" },
+                createdAt: "2026-04-07T17:41:37.737Z",
+            },
+        ] as any));
+        mockGetLocalRunnerSocket.mockReturnValue({ connected: true, emit: runnerEmitMock } as any);
+        mockGetLocalTuiSocket.mockReturnValue({ connected: true, emit: sessionEmitMock } as any);
+        mockGetSharedSession.mockReturnValue(Promise.resolve({ userId: "user-1", sessionId: "sess-1" } as any));
+
+        const [req, url] = makeReq(
+            "POST", "/api/runners/runner-A/trigger-broadcast",
+            {
+                type: "shortcut:story_commented",
+                payload: { author: "jordanpizza", text: "please handle !pizza-rift" },
+                source: "shortcut",
+            },
+            { "x-api-key": "test-key" },
+        );
+        const res = await handleTriggersRoute(req, url);
+        expect(res?.status).toBe(200);
+
+        const body = await res!.json();
+        expect(body.spawned).toBe(1);
+        expect(runnerEmitMock).toHaveBeenCalledTimes(1);
+        expect(sessionEmitMock).toHaveBeenCalledTimes(1);
+        expect(sessionEmitMock).toHaveBeenCalledWith("session_trigger", expect.objectContaining({
+            trigger: expect.objectContaining({
+                payload: expect.objectContaining({ prompt: "rift prompt" }),
+            }),
+        }));
+    });
+
     test("passes autoClose flag to new_session when listener has autoClose: true", async () => {
         const runnerEmitMock = mock(() => {});
         const sessionEmitMock = mock(() => {});
 
         mockGetRunnerListenerTypes.mockReturnValue(Promise.resolve(["svc:event"]));
-        mockGetRunnerTriggerListener.mockReturnValue(Promise.resolve({
+        mockListRunnerTriggerListeners.mockReturnValue(Promise.resolve([{
             listenerId: "listener-ac",
             triggerType: "svc:event",
             prompt: "auto-close test",
             autoClose: true,
             createdAt: "2026-03-29T00:00:00.000Z",
-        } as any));
+        }] as any));
         mockGetLocalRunnerSocket.mockReturnValue({ connected: true, emit: runnerEmitMock } as any);
         mockGetLocalTuiSocket.mockReturnValue({ connected: true, emit: sessionEmitMock } as any);
         mockGetSharedSession.mockReturnValue(Promise.resolve({ userId: "user-1", sessionId: "sess-1" } as any));
@@ -1619,12 +1676,12 @@ describe("POST /api/runners/:runnerId/trigger-broadcast — auto-spawn listeners
         const sessionEmitMock = mock(() => {});
 
         mockGetRunnerListenerTypes.mockReturnValue(Promise.resolve(["svc:event"]));
-        mockGetRunnerTriggerListener.mockReturnValue(Promise.resolve({
+        mockListRunnerTriggerListeners.mockReturnValue(Promise.resolve([{
             listenerId: "listener-no-ac",
             triggerType: "svc:event",
             prompt: "no auto-close",
             createdAt: "2026-03-29T00:00:00.000Z",
-        } as any));
+        }] as any));
         mockGetLocalRunnerSocket.mockReturnValue({ connected: true, emit: runnerEmitMock } as any);
         mockGetLocalTuiSocket.mockReturnValue({ connected: true, emit: sessionEmitMock } as any);
         mockGetSharedSession.mockReturnValue(Promise.resolve({ userId: "user-1", sessionId: "sess-1" } as any));
