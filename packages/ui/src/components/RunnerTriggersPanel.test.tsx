@@ -7,7 +7,9 @@ import { render, act, cleanup, fireEvent } from "@testing-library/react";
 import React from "react";
 
 const win = new Window({ url: "http://localhost/" });
+(win as any).SyntaxError = globalThis.SyntaxError;
 (globalThis as any).window = win;
+(globalThis as any).SyntaxError = globalThis.SyntaxError;
 (globalThis as any).document = win.document;
 (globalThis as any).navigator = win.navigator;
 (globalThis as any).HTMLElement = win.HTMLElement;
@@ -90,6 +92,9 @@ mock.module("@/hooks/useRunnerModels", () => ({
   useRunnerModels: () => ({ models: [] }),
 }));
 
+mock.module("@/lib/path", () => ({
+  formatPathTail: (path: string) => path,
+}));
 
 afterAll(() => mock.restore());
 
@@ -137,6 +142,110 @@ describe("RunnerTriggersPanel", () => {
     expect(Array.from(container.getElementsByTagName("button")).find((b) => b.getAttribute("aria-label") === "Edit listener listener-1 for svc:event")).toBeDefined();
     expect(Array.from(container.getElementsByTagName("button")).find((b) => b.getAttribute("aria-label") === "Delete listener listener-2 for svc:event")).toBeDefined();
     expect(Array.from(container.getElementsByTagName("button")).find((b) => b.getAttribute("aria-label") === "Add another listener for svc:event")).toBeDefined();
+  });
+
+  test("renders saved json listener params and shows a textarea editor for json params", async () => {
+    fetchState.response = {
+      ok: true,
+      body: {
+        triggerDefs: [{ type: "svc:event", label: "Service Event", params: [{ name: "config", label: "Config", type: "json" }] }],
+        listeners: [
+          { listenerId: "listener-json", triggerType: "svc:event", params: { config: { users: ["jordanpizza"], flags: { dryRun: true } } }, createdAt: "2026-04-03T00:00:00.000Z" },
+        ],
+      },
+    };
+
+    let container!: HTMLElement;
+    await act(async () => {
+      ({ container } = render(<RunnerTriggersPanel runnerId="runner-1" />));
+    });
+
+    const accordionBtn = Array.from(container.getElementsByTagName("button")).find((b) => b.textContent?.includes("svc"));
+    await act(async () => {
+      fireEvent.click(accordionBtn!);
+    });
+
+    expect(container.textContent).toContain('config={"users":["jordanpizza"],"flags":{"dryRun":true}}');
+
+    const addBtn = Array.from(container.getElementsByTagName("button")).find((b) => b.getAttribute("aria-label") === "Add another listener for svc:event");
+    await act(async () => {
+      fireEvent.click(addBtn!);
+    });
+
+    const textareas = Array.from(container.getElementsByTagName("textarea"));
+    const textarea = textareas[textareas.length - 1];
+    expect(textarea).toBeDefined();
+  });
+
+  test("submits multiselect listener params as arrays and renders array values as separate chips", async () => {
+    let postBody: any = null;
+    fetchState.response = {
+      ok: true,
+      body: {
+        triggerDefs: [{
+          type: "svc:event",
+          label: "Service Event",
+          params: [{ name: "channel", label: "Channel", type: "string", enum: ["alerts", "debug", "info"], multiselect: true }],
+        }],
+        listeners: [
+          { listenerId: "listener-1", triggerType: "svc:event", params: { channel: ["alerts", "debug"] }, createdAt: "2026-04-03T00:00:00.000Z" },
+        ],
+      },
+    };
+
+    fetchSpy.mockImplementation((url: string, opts?: RequestInit) => {
+      if (url.includes("/api/runners/runner-1/trigger-listeners") && (opts?.method ?? "GET") === "POST") {
+        postBody = JSON.parse(String(opts?.body ?? "{}"));
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ ok: true, listenerId: "listener-new", triggerType: "svc:event" }) } as Response);
+      }
+      const { ok, status, body } = fetchState.response;
+      return Promise.resolve({
+        ok,
+        status: status ?? (ok ? 200 : 500),
+        json: async () => body,
+      } as Response);
+    });
+
+    let container!: HTMLElement;
+    await act(async () => {
+      ({ container } = render(<RunnerTriggersPanel runnerId="runner-1" />));
+    });
+
+    const accordionBtn = Array.from(container.getElementsByTagName("button")).find((b) => b.textContent?.includes("svc"));
+    await act(async () => {
+      fireEvent.click(accordionBtn!);
+    });
+
+    const channelChipTexts = Array.from(container.getElementsByTagName("span"))
+      .map((el) => el.textContent)
+      .filter((text): text is string => !!text && text.startsWith("channel="));
+    expect(new Set(channelChipTexts)).toEqual(new Set(["channel=alerts", "channel=debug"]));
+
+    const addBtn = Array.from(container.getElementsByTagName("button")).find((b) => b.getAttribute("aria-label") === "Add another listener for svc:event");
+    await act(async () => {
+      fireEvent.click(addBtn!);
+    });
+
+    const checkboxes = Array.from(container.getElementsByTagName("input")).filter((input) => (input as HTMLInputElement).type === "checkbox") as HTMLInputElement[];
+    const alertsCheckbox = checkboxes.find((input) => input.parentElement?.textContent?.includes("alerts"));
+    const debugCheckbox = checkboxes.find((input) => input.parentElement?.textContent?.includes("debug"));
+    expect(alertsCheckbox).toBeDefined();
+    expect(debugCheckbox).toBeDefined();
+
+    await act(async () => {
+      fireEvent.click(alertsCheckbox!);
+      fireEvent.click(debugCheckbox!);
+    });
+
+    const submitBtn = Array.from(container.getElementsByTagName("button")).find((b) => b.textContent?.includes("Subscribe"));
+    await act(async () => {
+      fireEvent.click(submitBtn!);
+    });
+
+    expect(postBody).toMatchObject({
+      triggerType: "svc:event",
+      params: { channel: ["alerts", "debug"] },
+    });
   });
 
   test("keeps sibling listener actions available while one listener delete is pending", async () => {

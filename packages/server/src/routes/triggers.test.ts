@@ -719,6 +719,72 @@ describe("POST /api/sessions/:id/trigger-subscriptions", () => {
         expect(res!.status).toBe(400);
     });
 
+    test("accepts json params as objects", async () => {
+        mockGetSharedSession.mockReturnValue(
+            Promise.resolve({ userId: "user-1", sessionId: "sess-1", runnerId: "runner-A" } as any),
+        );
+        mockGetRunnerServices.mockReturnValue(Promise.resolve({
+            serviceIds: ["svc"],
+            triggerDefs: [{
+                type: "svc:event",
+                label: "Event",
+                params: [{ name: "config", label: "Config", type: "json" }],
+            }],
+        }));
+        mockSubscribeSessionToTrigger.mockReturnValue(Promise.resolve("sub-json"));
+
+        const [req, url] = makeReq("POST", "/api/sessions/sess-1/trigger-subscriptions", {
+            triggerType: "svc:event",
+            params: { config: { users: ["jordanpizza"], flags: { dryRun: true } } },
+        });
+        const res = await handleTriggersRoute(req, url);
+        expect(res!.status).toBe(200);
+        const body = await res!.json();
+        expect(body.params).toEqual({ config: { users: ["jordanpizza"], flags: { dryRun: true } } });
+        expect(mockSubscribeSessionToTrigger).toHaveBeenCalledWith(
+            "sess-1",
+            "runner-A",
+            "svc:event",
+            undefined,
+            { config: { users: ["jordanpizza"], flags: { dryRun: true } } },
+            undefined,
+            undefined,
+        );
+    });
+
+    test("accepts multiselect params as arrays", async () => {
+        mockGetSharedSession.mockReturnValue(
+            Promise.resolve({ userId: "user-1", sessionId: "sess-1", runnerId: "runner-A" } as any),
+        );
+        mockGetRunnerServices.mockReturnValue(Promise.resolve({
+            serviceIds: ["svc"],
+            triggerDefs: [{
+                type: "svc:event",
+                label: "Event",
+                params: [{ name: "channel", label: "Channel", type: "string", enum: ["alerts", "debug", "info"], multiselect: true }],
+            }],
+        }));
+        mockSubscribeSessionToTrigger.mockReturnValue(Promise.resolve("sub-multi"));
+
+        const [req, url] = makeReq("POST", "/api/sessions/sess-1/trigger-subscriptions", {
+            triggerType: "svc:event",
+            params: { channel: ["alerts", "debug"] },
+        });
+        const res = await handleTriggersRoute(req, url);
+        expect(res!.status).toBe(200);
+        const body = await res!.json();
+        expect(body.params).toEqual({ channel: ["alerts", "debug"] });
+        expect(mockSubscribeSessionToTrigger).toHaveBeenCalledWith(
+            "sess-1",
+            "runner-A",
+            "svc:event",
+            undefined,
+            { channel: ["alerts", "debug"] },
+            undefined,
+            undefined,
+        );
+    });
+
     test("returns 404 for wrong user", async () => {
         mockGetSharedSession.mockReturnValue(
             Promise.resolve({ userId: "user-2", sessionId: "sess-1" } as any),
@@ -1249,6 +1315,60 @@ describe("PUT /api/sessions/:id/trigger-subscriptions/:triggerType", () => {
         const res = await handleTriggersRoute(req, url);
         expect(res).toBeTruthy();
         expect(res!.status).toBe(404);
+    });
+
+    test("updates json params as objects", async () => {
+        mockGetSharedSession.mockReturnValue(
+            Promise.resolve({ userId: "user-1", runnerId: "runner-A" }),
+        );
+        mockGetRunnerServices.mockReturnValue(
+            Promise.resolve({ serviceIds: [], triggerDefs: [{ type: "svc:event", label: "Event", params: [{ name: "config", label: "Config", type: "json" }] }] }),
+        );
+        mockUpdateSessionSubscription.mockReturnValue(
+            Promise.resolve({ updated: true, runnerId: "runner-A" }),
+        );
+
+        const [req, url] = makeReq(
+            "PUT", "/api/sessions/session-1/trigger-subscriptions/svc:event",
+            { params: { config: { users: ["jordanpizza"], flags: { dryRun: true } } } },
+            { "x-api-key": "test-key" },
+        );
+        const res = await handleTriggersRoute(req, url);
+        const body = await res!.json();
+        expect(body.ok).toBe(true);
+        expect(body.params).toEqual({ config: { users: ["jordanpizza"], flags: { dryRun: true } } });
+        expect(mockUpdateSessionSubscription).toHaveBeenCalledWith(
+            "session-1",
+            "svc:event",
+            { params: { config: { users: ["jordanpizza"], flags: { dryRun: true } } }, filters: undefined, filterMode: undefined },
+        );
+    });
+
+    test("updates multiselect params as arrays", async () => {
+        mockGetSharedSession.mockReturnValue(
+            Promise.resolve({ userId: "user-1", runnerId: "runner-A" }),
+        );
+        mockGetRunnerServices.mockReturnValue(
+            Promise.resolve({ serviceIds: [], triggerDefs: [{ type: "svc:event", label: "Event", params: [{ name: "channel", label: "Channel", type: "string", enum: ["alerts", "debug"], multiselect: true }] }] }),
+        );
+        mockUpdateSessionSubscription.mockReturnValue(
+            Promise.resolve({ updated: true, runnerId: "runner-A" }),
+        );
+
+        const [req, url] = makeReq(
+            "PUT", "/api/sessions/session-1/trigger-subscriptions/svc:event",
+            { params: { channel: ["alerts", "debug"] } },
+            { "x-api-key": "test-key" },
+        );
+        const res = await handleTriggersRoute(req, url);
+        const body = await res!.json();
+        expect(body.ok).toBe(true);
+        expect(body.params).toEqual({ channel: ["alerts", "debug"] });
+        expect(mockUpdateSessionSubscription).toHaveBeenCalledWith(
+            "session-1",
+            "svc:event",
+            { params: { channel: ["alerts", "debug"] }, filters: undefined, filterMode: undefined },
+        );
     });
 
     test("updates filters and filterMode", async () => {

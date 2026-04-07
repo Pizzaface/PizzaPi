@@ -27,7 +27,7 @@ import { formatPathTail } from "@/lib/path";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
-import type { ServiceTriggerDef, ServiceTriggerParamDef } from "@pizzapi/protocol";
+import type { JsonValue, ServiceTriggerDef, ServiceTriggerParamDef } from "@pizzapi/protocol";
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -45,6 +45,31 @@ function truncateCompactId(id?: string, fallback?: string, maxLen = 18): string 
   if (!id) return fallback ?? "listener";
   if (id.length <= maxLen) return id;
   return id.slice(0, maxLen) + "…";
+}
+
+function formatParamValue(value: JsonValue): string {
+  if (typeof value === "string") return value;
+  return JSON.stringify(value);
+}
+
+function renderParamValueBadges(
+  key: string,
+  value: JsonValue,
+  className: string,
+): React.ReactNode {
+  if (Array.isArray(value) && value.every((item) => typeof item === "string" || typeof item === "number" || typeof item === "boolean")) {
+    return value.map((item, index) => (
+      <Badge key={`${key}:${String(item)}:${index}`} variant="outline" className={className}>
+        {key}={String(item)}
+      </Badge>
+    ));
+  }
+
+  return (
+    <Badge key={key} variant="outline" className={className}>
+      {key}={formatParamValue(value)}
+    </Badge>
+  );
 }
 
 // ── Service Group ──────────────────────────────────────────────────────────
@@ -237,27 +262,38 @@ function ParamForm({
 
             {/* Multiselect: checkboxes */}
             {p.multiselect && p.enum ? (
-              <div className="flex-1 flex flex-wrap gap-x-3 gap-y-1">
-                {p.enum.map((opt) => {
-                  const optStr = String(opt);
-                  const checked = selectedArr.includes(optStr);
-                  return (
-                    <label key={optStr} className="flex items-center gap-1 cursor-pointer text-[11px] text-foreground/80">
-                      <input
-                        type="checkbox"
-                        checked={checked}
-                        onChange={() => {
-                          const next = checked
-                            ? selectedArr.filter(v => v !== optStr)
-                            : [...selectedArr, optStr];
-                          updateValue(p.name, next);
-                        }}
-                        className="accent-primary size-3"
-                      />
-                      {optStr}
-                    </label>
-                  );
-                })}
+              <div className="flex-1 space-y-1">
+                {selectedArr.length > 0 && (
+                  <div className="flex flex-wrap gap-1">
+                    {selectedArr.map((value, index) => (
+                      <Badge key={`${p.name}:${value}:${index}`} variant="outline" className="px-1 py-0 text-[10px] h-4 border-violet-500/30 text-violet-300/80 bg-violet-500/5">
+                        {value}
+                      </Badge>
+                    ))}
+                  </div>
+                )}
+                <div className="flex flex-wrap gap-x-3 gap-y-1">
+                  {p.enum.map((opt) => {
+                    const optStr = String(opt);
+                    const checked = selectedArr.includes(optStr);
+                    return (
+                      <label key={optStr} className="flex items-center gap-1 cursor-pointer text-[11px] text-foreground/80">
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() => {
+                            const next = checked
+                              ? selectedArr.filter(v => v !== optStr)
+                              : [...selectedArr, optStr];
+                            updateValue(p.name, next);
+                          }}
+                          className="accent-primary size-3"
+                        />
+                        {optStr}
+                      </label>
+                    );
+                  })}
+                </div>
               </div>
 
             /* Enum single select: dropdown */
@@ -272,6 +308,16 @@ function ParamForm({
                   <option key={String(opt)} value={String(opt)}>{String(opt)}</option>
                 ))}
               </select>
+
+            /* JSON */
+            ) : p.type === "json" ? (
+              <textarea
+                rows={3}
+                placeholder={p.default !== undefined ? formatParamValue(p.default) : "{}"}
+                value={typeof currentVal === "string" ? currentVal : ""}
+                onChange={(e) => updateValue(p.name, e.target.value)}
+                className="flex-1 rounded border border-border bg-background px-2 py-1 text-[11px] font-mono focus:outline-none focus:ring-1 focus:ring-ring resize-y"
+              />
 
             /* Boolean */
             ) : p.type === "boolean" ? (
@@ -289,7 +335,7 @@ function ParamForm({
             ) : (
               <input
                 type={p.type === "number" ? "number" : "text"}
-                placeholder={p.default !== undefined ? String(p.default) : undefined}
+                placeholder={p.default !== undefined ? formatParamValue(p.default) : undefined}
                 value={typeof currentVal === "string" ? currentVal : ""}
                 onChange={(e) => updateValue(p.name, e.target.value)}
                 className="flex-1 rounded border border-border bg-background px-2 py-1 text-[11px] focus:outline-none focus:ring-1 focus:ring-ring"
@@ -445,9 +491,15 @@ function TriggerItem({
             if (listener.cwd) details.push(listener.cwd);
             if (listener.model) details.push(`${listener.model.provider}/${listener.model.id}`);
             if (listener.autoClose) details.push("auto-close");
+            const paramBadges = listener.params
+              ? Object.entries(listener.params).flatMap(([k, v]) => {
+                  const badges = renderParamValueBadges(k, v, "px-1 py-0 text-[9px] h-3.5 border-emerald-500/20 text-emerald-400/60");
+                  return Array.isArray(badges) ? badges : [badges];
+                })
+              : [];
             if (listener.params) {
               for (const [k, v] of Object.entries(listener.params)) {
-                details.push(`${k}=${Array.isArray(v) ? v.map(String).join(", ") : String(v)}`);
+                details.push(`${k}=${formatParamValue(v)}`);
               }
             }
             return (
@@ -460,9 +512,16 @@ function TriggerItem({
                       </p>
                     )}
                     {details.length > 0 && (
-                      <p className="text-[10px] font-mono text-muted-foreground/50 truncate">
-                        {details.join(" \u00B7 ")}
-                      </p>
+                      <div className="space-y-1">
+                        <p className="text-[10px] font-mono text-muted-foreground/50 truncate">
+                          {details.join(" \u00B7 ")}
+                        </p>
+                        {paramBadges.length > 0 && (
+                          <div className="flex items-center gap-1 flex-wrap">
+                            {paramBadges}
+                          </div>
+                        )}
+                      </div>
                     )}
                     {!listener.prompt && details.length === 0 && (
                       <p className="text-[10px] text-muted-foreground/40 italic">No config</p>
@@ -630,7 +689,7 @@ interface ListenerInfo {
   prompt?: string;
   cwd?: string;
   model?: { provider: string; id: string };
-  params?: Record<string, unknown>;
+  params?: Record<string, JsonValue>;
   autoClose?: boolean;
   createdAt: string;
 }
@@ -742,17 +801,19 @@ export function RunnerTriggersPanel({ runnerId, triggerDefs: propDefs }: RunnerT
 
     // Pre-populate param values from current listener
     const vals: Record<string, string | string[]> = {};
+    const paramDefsByName = new Map((def.params ?? []).map((param) => [param.name, param]));
     if (listener?.params) {
       for (const [k, v] of Object.entries(listener.params)) {
-        if (Array.isArray(v)) vals[k] = v.map(String);
-        else vals[k] = String(v);
+        const paramDef = paramDefsByName.get(k);
+        if (paramDef?.multiselect && Array.isArray(v)) vals[k] = v.map(String);
+        else vals[k] = formatParamValue(v);
       }
     }
     if (def.params) {
       for (const p of def.params) {
         if (vals[p.name] !== undefined) continue;
         if (p.multiselect) vals[p.name] = [];
-        else if (p.default !== undefined) vals[p.name] = String(p.default);
+        else if (p.default !== undefined) vals[p.name] = formatParamValue(p.default);
       }
     }
     setParamValues((prev) => ({ ...prev, [def.type]: vals }));
@@ -798,7 +859,7 @@ export function RunnerTriggersPanel({ runnerId, triggerDefs: propDefs }: RunnerT
       if (def.params) {
         for (const p of def.params) {
           if (p.multiselect) defaults[p.name] = [];
-          else if (p.default !== undefined) defaults[p.name] = String(p.default);
+          else if (p.default !== undefined) defaults[p.name] = formatParamValue(p.default);
         }
       }
       setParamValues((prev) => ({ ...prev, [def.type]: { ...defaults, ...prev[def.type] } }));
@@ -811,7 +872,7 @@ export function RunnerTriggersPanel({ runnerId, triggerDefs: propDefs }: RunnerT
 
   const handleParamSubmit = React.useCallback((def: ServiceTriggerDef) => {
     const vals = paramValues[def.type] ?? {};
-    const params: Record<string, unknown> = {};
+    const params: Record<string, JsonValue> = {};
     for (const p of (def.params ?? [])) {
       const raw = vals[p.name];
 
@@ -842,6 +903,13 @@ export function RunnerTriggersPanel({ runnerId, triggerDefs: propDefs }: RunnerT
         params[p.name] = num;
       } else if (p.type === "boolean") {
         params[p.name] = str === "true";
+      } else if (p.type === "json") {
+        try {
+          params[p.name] = JSON.parse(str) as JsonValue;
+        } catch {
+          setParamError(`'${p.label}' must be valid JSON`);
+          return;
+        }
       } else {
         params[p.name] = str;
       }

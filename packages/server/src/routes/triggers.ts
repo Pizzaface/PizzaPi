@@ -91,6 +91,14 @@ interface ListenerLookupResult {
 
 const log = createLogger("triggers-api");
 
+function isJsonValue(value: unknown): value is null | string | number | boolean | unknown[] | Record<string, unknown> {
+    if (value === null) return true;
+    if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") return true;
+    if (Array.isArray(value)) return value.every(isJsonValue);
+    if (typeof value === "object") return Object.values(value as Record<string, unknown>).every(isJsonValue);
+    return false;
+}
+
 /**
  * Check whether a single filter condition matches a trigger payload field.
  */
@@ -526,6 +534,16 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
                     continue;
                 }
 
+                // Generic JSON param: preserve object/array/scalar values as-is
+                if (def.type === "json") {
+                    if (!isJsonValue(raw)) {
+                        errors.push(`Param '${def.name}' must be valid JSON`);
+                    } else {
+                        validated[def.name] = raw as SubscriptionParams[string];
+                    }
+                    continue;
+                }
+
                 // Scalar: coerce to the declared type
                 if (def.type === "number") {
                     const num = Number(raw);
@@ -564,14 +582,8 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
                 if (key in validated) continue;
                 if (paramDefs.some(d => d.name === key)) continue; // already processed
                 if (val === undefined || val === null) continue;
-                if (typeof val === "string" || typeof val === "number" || typeof val === "boolean") {
-                    validated[key] = val;
-                } else if (Array.isArray(val)) {
-                    const primitives = val.filter(
-                        (v: unknown): v is string | number | boolean =>
-                            typeof v === "string" || typeof v === "number" || typeof v === "boolean",
-                    );
-                    if (primitives.length > 0) validated[key] = primitives;
+                if (isJsonValue(val)) {
+                    validated[key] = val as SubscriptionParams[string];
                 }
             }
 
@@ -784,7 +796,10 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
                         else if (def.required) errors.push(`Param '${def.name}' requires at least one valid value`);
                         continue;
                     }
-                    if (def.type === "number") {
+                    if (def.type === "json") {
+                        if (!isJsonValue(raw)) errors.push(`Param '${def.name}' must be valid JSON`);
+                        else validated[def.name] = raw as SubscriptionParams[string];
+                    } else if (def.type === "number") {
                         const num = Number(raw);
                         // eslint-disable-next-line eqeqeq
                         if (isNaN(num)) errors.push(`Param '${def.name}' must be a number`);

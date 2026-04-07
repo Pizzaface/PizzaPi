@@ -27,6 +27,7 @@
 
 import { randomUUID } from "node:crypto";
 import { createLogger } from "@pizzapi/tools";
+import type { JsonValue } from "@pizzapi/protocol";
 import type { ServiceSigilDef } from "@pizzapi/protocol";
 import { getRelaySocket as getRelaySocketDefault } from "./remote.js";
 import { loadConfig } from "../config.js";
@@ -390,7 +391,7 @@ export async function subscribeTrigger(
     sessionId: string,
     triggerType: string,
     deps: Partial<TriggerClientDeps> = {},
-    params?: Record<string, string | number | boolean | Array<string | number | boolean>>,
+    params?: Record<string, JsonValue>,
     filters?: Array<{ field: string; value: string | number | boolean | Array<string | number | boolean>; op?: "eq" | "contains" }>,
     filterMode?: "and" | "or",
 ): Promise<SubscriptionResult> {
@@ -434,7 +435,7 @@ export async function updateTriggerSubscription(
         triggerType?: string;
     },
     updates: {
-        params?: Record<string, string | number | boolean | Array<string | number | boolean>>;
+        params?: Record<string, JsonValue>;
         filters?: Array<{ field: string; value: string | number | boolean | Array<string | number | boolean>; op?: "eq" | "contains" }>;
         filterMode?: "and" | "or";
     },

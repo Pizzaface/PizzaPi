@@ -173,19 +173,21 @@ export interface ServiceTriggerDef {
  * Subscribers provide values for these when subscribing. These are forwarded
  * to the service for its own use — they do NOT filter trigger delivery.
  */
+export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
+
 export interface ServiceTriggerParamDef {
   /** Parameter name — identifies this param to the service */
   name: string;
   /** Human-readable label for the UI */
   label: string;
   /** Value type */
-  type: "string" | "number" | "boolean";
+  type: "string" | "number" | "boolean" | "json";
   /** Optional description */
   description?: string;
   /** Whether the subscriber must provide this param */
   required?: boolean;
   /** Default value if not provided */
-  default?: string | number | boolean;
+  default?: JsonValue;
   /** Allowed values — renders as a dropdown in the UI */
   enum?: Array<string | number | boolean>;
   /**

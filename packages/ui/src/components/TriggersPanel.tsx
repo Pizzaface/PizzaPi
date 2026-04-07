@@ -46,7 +46,7 @@ import {
 } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
-import type { ServiceTriggerDef, ServiceTriggerParamDef } from "@pizzapi/protocol";
+import type { JsonValue, ServiceTriggerDef, ServiceTriggerParamDef } from "@pizzapi/protocol";
 
 // ── Shared trigger utilities (re-exported for backward compat) ─────────────
 export type { TriggerHistoryEntry } from "../attention/trigger-utils";
@@ -60,7 +60,7 @@ export interface TriggerSubscription {
   subscriptionId?: string;
   triggerType: string;
   runnerId: string;
-  params?: Record<string, string | number | boolean | Array<string | number | boolean>>;
+  params?: Record<string, JsonValue>;
   filters?: Array<{ field: string; value: string | number | boolean | Array<string | number | boolean>; op?: "eq" | "contains" }>;
   filterMode?: "and" | "or";
 }
@@ -71,6 +71,31 @@ interface TriggerStatusUpdate {
   sourceSessionId: string;
   statusText: string;
   ts: string;
+}
+
+function formatParamValue(value: JsonValue): string {
+  if (typeof value === "string") return value;
+  return JSON.stringify(value);
+}
+
+function renderParamValueBadges(
+  key: string,
+  value: JsonValue,
+  className: string,
+): React.ReactNode {
+  if (Array.isArray(value) && value.every((item) => typeof item === "string" || typeof item === "number" || typeof item === "boolean")) {
+    return value.map((item, index) => (
+      <Badge key={`${key}:${String(item)}:${index}`} variant="outline" className={className}>
+        {key}={String(item)}
+      </Badge>
+    ));
+  }
+
+  return (
+    <Badge key={key} variant="outline" className={className}>
+      {key}={formatParamValue(value)}
+    </Badge>
+  );
 }
 
 /** A linked child session derived from trigger history. */
@@ -919,17 +944,19 @@ function TriggerCatalogSection({ sessionId, triggerDefs, subscriptions, onSubscr
 
     // Pre-populate param values from current subscription
     const vals: Record<string, string | string[]> = {};
+    const paramDefsByName = new Map((def.params ?? []).map((param) => [param.name, param]));
     if (sub?.params) {
       for (const [k, v] of Object.entries(sub.params)) {
-        if (Array.isArray(v)) vals[k] = v.map(String);
-        else vals[k] = String(v);
+        const paramDef = paramDefsByName.get(k);
+        if (paramDef?.multiselect && Array.isArray(v)) vals[k] = v.map(String);
+        else vals[k] = formatParamValue(v);
       }
     }
     if (def.params) {
       for (const p of def.params) {
         if (vals[p.name] !== undefined) continue;
         if (p.multiselect) vals[p.name] = [];
-        else if (p.default !== undefined) vals[p.name] = String(p.default);
+        else if (p.default !== undefined) vals[p.name] = formatParamValue(p.default);
       }
     }
     setParamValues((prev) => ({ ...prev, [def.type]: vals }));
@@ -968,7 +995,7 @@ function TriggerCatalogSection({ sessionId, triggerDefs, subscriptions, onSubscr
           if (p.multiselect) {
             defaults[p.name] = defaults[p.name] ?? [];
           } else if (p.default !== undefined) {
-            defaults[p.name] = String(p.default);
+            defaults[p.name] = formatParamValue(p.default);
           }
         }
         setParamValues((prev) => ({ ...prev, [def.type]: { ...defaults, ...prev[def.type] } }));
@@ -980,7 +1007,7 @@ function TriggerCatalogSection({ sessionId, triggerDefs, subscriptions, onSubscr
 
   const handleParamSubmit = React.useCallback((def: ServiceTriggerDef) => {
     const vals = paramValues[def.type] ?? {};
-    const params: Record<string, unknown> = {};
+    const params: Record<string, JsonValue> = {};
     for (const p of (def.params ?? [])) {
       const raw = vals[p.name];
 
@@ -1019,6 +1046,13 @@ function TriggerCatalogSection({ sessionId, triggerDefs, subscriptions, onSubscr
         params[p.name] = num;
       } else if (p.type === "boolean") {
         params[p.name] = str === "true";
+      } else if (p.type === "json") {
+        try {
+          params[p.name] = JSON.parse(str) as JsonValue;
+        } catch {
+          setParamError(`'${p.label}' must be valid JSON`);
+          return;
+        }
       } else {
         params[p.name] = str;
       }
@@ -1272,9 +1306,13 @@ function ServiceCatalogAccordion({
                       const subKey = sub.subscriptionId ?? `${def.type}-${index}`;
                       const isPendingSub = pending.has(subKey) || isPendingToggle;
                       const details: string[] = [];
+                      const paramBadges: React.ReactNode[] = [];
                       if (sub.params && Object.keys(sub.params).length > 0) {
                         for (const [k, v] of Object.entries(sub.params)) {
-                          details.push(`${k}=${Array.isArray(v) ? v.map(String).join(", ") : String(v)}`);
+                          details.push(`${k}=${formatParamValue(v)}`);
+                          const badges = renderParamValueBadges(k, v, "px-1 py-0 text-[9px] h-3.5 border-emerald-500/20 text-emerald-400/60");
+                          if (Array.isArray(badges)) paramBadges.push(...badges);
+                          else paramBadges.push(badges);
                         }
                       }
                       if (sub.filters && sub.filters.length > 0) {
@@ -1287,9 +1325,16 @@ function ServiceCatalogAccordion({
                           <div className="flex items-center gap-2">
                             <div className="flex-1 min-w-0">
                               {details.length > 0 ? (
-                                <p className="text-[10px] font-mono text-muted-foreground/50 truncate">
-                                  {details.join(" \u00B7 ")}
-                                </p>
+                                <div className="space-y-1">
+                                  <p className="text-[10px] font-mono text-muted-foreground/50 truncate">
+                                    {details.join(" \u00B7 ")}
+                                  </p>
+                                  {paramBadges.length > 0 && (
+                                    <div className="flex items-center gap-1 flex-wrap">
+                                      {paramBadges}
+                                    </div>
+                                  )}
+                                </div>
                               ) : (
                                 <p className="text-[10px] text-muted-foreground/40 italic">No filters</p>
                               )}
@@ -1351,8 +1396,18 @@ function ServiceCatalogAccordion({
 
                           {/* Multiselect: checkboxes for each enum value */}
                           {p.multiselect && p.enum ? (
-                            <div className="flex-1 flex flex-wrap gap-x-2.5 gap-y-1">
-                              {p.enum.map((opt) => {
+                            <div className="flex-1 space-y-1">
+                              {selectedArr.length > 0 && (
+                                <div className="flex flex-wrap gap-1">
+                                  {selectedArr.map((value, index) => (
+                                    <Badge key={`${p.name}:${value}:${index}`} variant="outline" className="px-1 py-0 text-[9px] h-4 border-violet-500/30 text-violet-300/80 bg-violet-500/5">
+                                      {value}
+                                    </Badge>
+                                  ))}
+                                </div>
+                              )}
+                              <div className="flex flex-wrap gap-x-2.5 gap-y-1">
+                                {p.enum.map((opt) => {
                                 const optStr = String(opt);
                                 const checked = selectedArr.includes(optStr);
                                 return (
@@ -1372,7 +1427,8 @@ function ServiceCatalogAccordion({
                                     {optStr}
                                   </label>
                                 );
-                              })}
+                                })}
+                              </div>
                             </div>
 
                           /* Enum (single select): dropdown */
@@ -1390,6 +1446,19 @@ function ServiceCatalogAccordion({
                                 <option key={String(opt)} value={String(opt)}>{String(opt)}</option>
                               ))}
                             </select>
+
+                          /* JSON */
+                          ) : p.type === "json" ? (
+                            <textarea
+                              rows={3}
+                              placeholder={p.default !== undefined ? formatParamValue(p.default) : "{}"}
+                              value={typeof currentVal === "string" ? currentVal : ""}
+                              onChange={(e) => onParamValuesChange((prev) => ({
+                                ...prev,
+                                [def.type]: { ...prev[def.type], [p.name]: e.target.value },
+                              }))}
+                              className="flex-1 rounded border border-border bg-background px-1.5 py-1 text-[10px] font-mono focus:outline-none focus:ring-1 focus:ring-ring resize-y"
+                            />
 
                           /* Boolean */
                           ) : p.type === "boolean" ? (
@@ -1588,11 +1657,10 @@ function ActiveSubscriptionsSection({ subscriptions }: { subscriptions: TriggerS
             )}
             {sub.params && Object.keys(sub.params).length > 0 && (
               <div className="flex items-center gap-1 flex-wrap">
-                {Object.entries(sub.params).map(([k, v]) => (
-                  <Badge key={k} variant="outline" className="px-1 py-0 text-[9px] h-3.5 border-emerald-500/20 text-emerald-400/60">
-                    {k}={Array.isArray(v) ? v.map(String).join(", ") : String(v)}
-                  </Badge>
-                ))}
+                {Object.entries(sub.params).flatMap(([k, v]) => {
+                  const badges = renderParamValueBadges(k, v, "px-1 py-0 text-[9px] h-3.5 border-emerald-500/20 text-emerald-400/60");
+                  return Array.isArray(badges) ? badges : [badges];
+                })}
               </div>
             )}
             {sub.filters && sub.filters.length > 0 && (

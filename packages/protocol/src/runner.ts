@@ -2,7 +2,7 @@
 // /runner namespace — Runner daemon ↔ Server
 // ============================================================================
 
-import type { RunnerSkill, RunnerAgent, RunnerPlugin, RunnerHook, ServiceAnnounceData, ServiceEnvelope, SocketClientMetadata, TriggerFilter, TriggerFilterMode } from "./shared.js";
+import type { JsonValue, RunnerSkill, RunnerAgent, RunnerPlugin, RunnerHook, ServiceAnnounceData, ServiceEnvelope, SocketClientMetadata, TriggerFilter, TriggerFilterMode } from "./shared.js";
 
 // ---------------------------------------------------------------------------
 // Trigger subscription reconciliation types
@@ -18,7 +18,7 @@ export interface TriggerSubscriptionEntry {
   sessionId: string;
   triggerType: string;
   runnerId: string;
-  params?: Record<string, string | number | boolean | Array<string | number | boolean>>;
+  params?: Record<string, JsonValue>;
   filters?: TriggerFilter[];
   filterMode?: TriggerFilterMode;
 }

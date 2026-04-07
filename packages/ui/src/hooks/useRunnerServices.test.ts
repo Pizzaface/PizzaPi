@@ -7,8 +7,13 @@
  * had data (`if (cached.size > 0)`), so switching to a non-runner session
  * left stale services/panels from the previous runner session visible.
  */
-import { describe, expect, test } from "bun:test";
-import { attachServiceAnnounceListener, seedServiceCache } from "./useRunnerServices";
+import { describe, expect, test, mock } from "bun:test";
+
+mock.module("@/lib/viewer-switch", () => ({
+    matchesViewerGeneration: () => true,
+}));
+
+const { attachServiceAnnounceListener, seedServiceCache } = await import("./useRunnerServices");
 
 // The internal cache keys used by the module
 const SERVICE_IDS_KEY = "__serviceIds";

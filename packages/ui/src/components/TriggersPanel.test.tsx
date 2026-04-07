@@ -18,8 +18,10 @@ import React from "react";
 
 // ── DOM globals ──────────────────────────────────────────────────────────────
 const win = new Window({ url: "http://localhost/" });
+(win as any).SyntaxError = globalThis.SyntaxError;
 /* eslint-disable @typescript-eslint/no-explicit-any */
 (globalThis as any).window = win;
+(globalThis as any).SyntaxError = globalThis.SyntaxError;
 (globalThis as any).document = win.document;
 (globalThis as any).navigator = win.navigator;
 (globalThis as any).HTMLElement = win.HTMLElement;
@@ -602,6 +604,120 @@ describe("TriggersPanel — trigger catalog", () => {
     expect(buttons.find((b) => b.getAttribute("aria-label") === "Edit subscription sub-1 for svc:event")).toBeDefined();
     expect(buttons.find((b) => b.getAttribute("aria-label") === "Delete subscription sub-2 for svc:event")).toBeDefined();
     expect(buttons.find((b) => b.getAttribute("aria-label") === "Add another subscription for svc:event")).toBeDefined();
+  });
+
+  test("renders saved json params and shows a textarea editor for json params", async () => {
+    fetchState.urlOverrides = {
+      "trigger-subscriptions": {
+        ok: true,
+        body: {
+          subscriptions: [
+            { subscriptionId: "sub-json", triggerType: "svc:event", runnerId: "runner-A", params: { config: { users: ["jordanpizza"], flags: { dryRun: true } } } },
+          ],
+        },
+      },
+    };
+
+    const triggerDefs = [{ type: "svc:event", label: "Service Event", params: [{ name: "config", label: "Config", type: "json" }] }];
+
+    let container!: HTMLElement;
+    await act(async () => {
+      ({ container } = render(<TriggersPanel sessionId="sess-abc" triggerDefs={triggerDefs} />));
+    });
+
+    const accordionBtn = Array.from(container.getElementsByTagName("button")).find((b) => b.textContent?.includes("svc"));
+    await act(async () => { fireEvent.click(accordionBtn!); });
+
+    expect(container.textContent).toContain('config={"users":["jordanpizza"],"flags":{"dryRun":true}}');
+
+    const addBtn = Array.from(container.getElementsByTagName("button")).find((b) => b.getAttribute("aria-label") === "Add another subscription for svc:event");
+    await act(async () => { fireEvent.click(addBtn!); });
+
+    const textareas = Array.from(container.getElementsByTagName("textarea"));
+    const textarea = textareas[textareas.length - 1];
+    expect(textarea).toBeDefined();
+  });
+
+  test("submits multiselect params as arrays and renders array values as separate chips", async () => {
+    let postBody: any = null;
+    fetchState.urlOverrides = {
+      "trigger-subscriptions": {
+        ok: true,
+        body: {
+          subscriptions: [
+            { subscriptionId: "sub-1", triggerType: "svc:event", runnerId: "runner-A", params: { channel: ["alerts", "debug"] } },
+          ],
+        },
+      },
+    };
+
+    fetchSpy.mockImplementation((url: string, opts?: RequestInit) => {
+      if (url.includes("/api/sessions/sess-abc/trigger-subscriptions") && (opts?.method ?? "GET") === "POST") {
+        postBody = JSON.parse(String(opts?.body ?? "{}"));
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ ok: true, subscriptionId: "sub-new", triggerType: "svc:event", runnerId: "runner-A", params: postBody.params }) } as Response);
+      }
+      if (fetchState.urlOverrides) {
+        for (const [key, override] of Object.entries(fetchState.urlOverrides)) {
+          if (url.includes(key)) {
+            return Promise.resolve({
+              ok: override.ok,
+              status: override.status ?? (override.ok ? 200 : 500),
+              json: async () => override.body,
+            } as Response);
+          }
+        }
+      }
+      const { ok, status, body } = fetchState.response;
+      return Promise.resolve({
+        ok,
+        status: status ?? (ok ? 200 : 500),
+        json: async () => body,
+      } as Response);
+    });
+
+    const triggerDefs = [{
+      type: "svc:event",
+      label: "Service Event",
+      params: [{ name: "channel", label: "Channel", type: "string", enum: ["alerts", "debug", "info"], multiselect: true }],
+    }];
+
+    let container!: HTMLElement;
+    await act(async () => {
+      ({ container } = render(<TriggersPanel sessionId="sess-abc" triggerDefs={triggerDefs} />));
+    });
+
+    const accordionBtn = Array.from(container.getElementsByTagName("button")).find((b) => b.textContent?.includes("svc"));
+    await act(async () => { fireEvent.click(accordionBtn!); });
+
+    const channelChipTexts = Array.from(container.getElementsByTagName("span"))
+      .map((el) => el.textContent)
+      .filter((text): text is string => !!text && text.startsWith("channel="));
+    expect(new Set(channelChipTexts)).toEqual(new Set(["channel=alerts", "channel=debug"]));
+
+    const addBtn = Array.from(container.getElementsByTagName("button")).find((b) => b.getAttribute("aria-label") === "Add another subscription for svc:event");
+    await act(async () => { fireEvent.click(addBtn!); });
+
+    const checkboxes = Array.from(container.getElementsByTagName("input")).filter((input) => (input as HTMLInputElement).type === "checkbox") as HTMLInputElement[];
+    const alertsCheckbox = checkboxes.find((input) => input.parentElement?.textContent?.includes("alerts"));
+    const debugCheckbox = checkboxes.find((input) => input.parentElement?.textContent?.includes("debug"));
+    expect(alertsCheckbox).toBeDefined();
+    expect(debugCheckbox).toBeDefined();
+
+    await act(async () => {
+      fireEvent.click(alertsCheckbox!);
+      fireEvent.click(debugCheckbox!);
+    });
+
+    expect(container.textContent).toContain("alerts");
+    expect(container.textContent).toContain("debug");
+
+    const submitBtn = Array.from(container.getElementsByTagName("button")).find((b) => b.textContent?.includes("Subscribe"));
+    await act(async () => { fireEvent.click(submitBtn!); });
+
+    expect(postBody).toMatchObject({
+      triggerType: "svc:event",
+      params: { channel: ["alerts", "debug"] },
+    });
   });
 
   test("keeps sibling subscription actions available while one unsubscribe is pending", async () => {

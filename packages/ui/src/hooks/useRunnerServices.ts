@@ -197,9 +197,11 @@ export function useRunnerServices(socket: Socket | null, runnerInfo: RunnerInfo 
             setSigilDefs([]);
         } else {
             // Runner is known but feed metadata is not hydrated yet.
-            // Preserve/restore any eagerly captured announce data (e.g. seeded
-            // via seedServiceCache for same-runner switches) instead of
-            // clearing state and causing a flash of missing panels/triggers.
+            // Read any eagerly captured announce data (including values seeded
+            // via seedServiceCache for same-runner switches) and apply it
+            // unconditionally. When the cache is empty, this clears stale
+            // service state from the previous session instead of leaving old
+            // panels/triggers visible.
             setServices(getEagerServiceIds(socket));
             setPanels(getEagerPanels(socket));
             setTriggerDefs(getEagerTriggerDefs(socket));

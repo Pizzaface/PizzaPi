@@ -17,7 +17,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, extname, join, resolve } from "node:path";
 import type { ServiceHandler } from "./service-handler.js";
-import type { ServiceTriggerDef, ServiceTriggerParamDef, ServiceSigilDef } from "@pizzapi/protocol";
+import type { JsonValue, ServiceTriggerDef, ServiceTriggerParamDef, ServiceSigilDef } from "@pizzapi/protocol";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -60,6 +60,14 @@ export interface ServiceLoadError {
 export interface DiscoverServicesResult {
     services: ServicePluginResult[];
     errors: ServiceLoadError[];
+}
+
+function isJsonValue(value: unknown): value is JsonValue {
+    if (value === null) return true;
+    if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") return true;
+    if (Array.isArray(value)) return value.every(isJsonValue);
+    if (typeof value === "object") return Object.values(value as Record<string, unknown>).every(isJsonValue);
+    return false;
 }
 
 // ── Discovery directories ─────────────────────────────────────────────────────
@@ -359,8 +367,8 @@ function parseTriggers(raw: unknown): ServiceTriggerDef[] {
                 if (!p || typeof p !== "object") continue;
                 if (typeof p.name !== "string" || !p.name) continue;
                 if (typeof p.label !== "string" || !p.label) continue;
-                const pType = typeof p.type === "string" && ["string", "number", "boolean"].includes(p.type)
-                    ? p.type as "string" | "number" | "boolean"
+                const pType = typeof p.type === "string" && ["string", "number", "boolean", "json"].includes(p.type)
+                    ? p.type as "string" | "number" | "boolean" | "json"
                     : "string";
                 let enumVals: Array<string | number | boolean> | undefined;
                 if (Array.isArray(p.enum) && p.enum.length > 0) {
@@ -375,8 +383,8 @@ function parseTriggers(raw: unknown): ServiceTriggerDef[] {
                     type: pType,
                     description: typeof p.description === "string" ? p.description : undefined,
                     required: typeof p.required === "boolean" ? p.required : undefined,
-                    default: (typeof p.default === "string" || typeof p.default === "number" || typeof p.default === "boolean")
-                        ? p.default
+                    default: isJsonValue(p.default)
+                        ? p.default as JsonValue
                         : undefined,
                     ...(enumVals ? { enum: enumVals } : {}),
                     ...(enumVals && p.multiselect === true ? { multiselect: true } : {}),
