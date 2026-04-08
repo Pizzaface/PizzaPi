@@ -39,12 +39,13 @@ on top.
 Same web search changes as 0.58.3 (see below), ported forward, plus one new
 patch:
 
-- **Claude Code credentials fallback:** When refreshing an expired Anthropic
-  OAuth token, the patch first checks `~/.claude/.credentials.json` for a
-  valid, pre-refreshed token from Claude Code. If found (and not expiring
-  within 60 seconds), it's returned directly — avoiding an API round-trip to
-  `platform.claude.com/v1/oauth/token`. Falls through to the normal refresh
-  flow if Claude Code isn't installed or its credentials are stale.
+- **Claude Code credentials fallback (Keychain-first):** When refreshing an
+  expired Anthropic OAuth token, the patch first reads the macOS Keychain
+  item `Claude Code-credentials` via `security find-generic-password`. If
+  the token is valid (and not expiring within 60 seconds), it's returned
+  directly — avoiding an API round-trip to `platform.claude.com/v1/oauth/token`.
+  If the Keychain entry is unavailable (non-macOS, locked keychain, missing
+  entry), the patch falls back to reading `~/.claude/.credentials.json`.
 
 **What it changes:**
 
@@ -54,7 +55,7 @@ patch:
 | `dist/providers/anthropic.js` — `buildParams()` | Inject `web_search_20250305` tool when `PIZZAPI_WEB_SEARCH` env var is set |
 | `dist/providers/anthropic.js` — stream handler | Handle `server_tool_use` and `web_search_tool_result` blocks |
 | `dist/providers/anthropic.js` — `convertMessages()` | Round-trip `_serverToolUse` and `_webSearchResult` blocks |
-| `dist/utils/oauth/anthropic.js` — `anthropicOAuthProvider.refreshToken()` | Try Claude Code credentials (`~/.claude/.credentials.json`) before API refresh |
+| `dist/utils/oauth/anthropic.js` — `anthropicOAuthProvider.refreshToken()` | Try Claude Code Keychain (`security find-generic-password`) first, then `~/.claude/.credentials.json`, before API refresh |
 
 ## @mariozechner/pi-coding-agent@0.58.3
 
