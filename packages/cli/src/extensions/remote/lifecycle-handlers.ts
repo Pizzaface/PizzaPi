@@ -45,6 +45,7 @@ import { registerAskUserTool } from "../remote-ask-user.js";
 import { registerPlanModeTool } from "../remote-plan-mode.js";
 import { isDisabled } from "./connection.js";
 import { emitSessionActive } from "./chunked-delivery.js";
+import { shouldAutoClose } from "./auto-close.js";
 import type { RelayContext } from "../remote-types.js";
 import type { TriggerWaitManager } from "../trigger-wait-manager.js";
 import type { DelinkManager } from "./delink-management.js";
@@ -52,6 +53,33 @@ import type { CancellationManager } from "./trigger-cancellation.js";
 import type { FollowUpGraceManager } from "./followup-grace.js";
 
 const log = createLogger("remote");
+const LINKED_CHILD_COUNT_TIMEOUT_MS = 2_000;
+
+async function getLinkedChildCount(rctx: RelayContext): Promise<number | null> {
+    if (!rctx.relay || !rctx.sioSocket?.connected) return null;
+
+    return await new Promise<number | null>((resolve) => {
+        let settled = false;
+        const finish = (count: number | null) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timeout);
+            resolve(count);
+        };
+        const timeout = setTimeout(() => finish(null), LINKED_CHILD_COUNT_TIMEOUT_MS);
+        rctx.sioSocket!.emit(
+            "get_linked_child_count",
+            { token: rctx.relay!.token },
+            (result?: { ok?: boolean; count?: number }) => {
+                if (!result?.ok || typeof result.count !== "number") {
+                    finish(null);
+                    return;
+                }
+                finish(result.count);
+            },
+        );
+    });
+}
 
 /** Shared mutable state fields accessed by the lifecycle handlers. */
 export interface LifecycleHandlerState {
@@ -370,21 +398,46 @@ export function registerLifecycleHandlers(deps: LifecycleHandlersDeps): void {
             } else if (process.env.PIZZAPI_WORKER_AUTO_CLOSE === "true" && exitReason === "completed") {
                 // Auto-close: trigger-spawned sessions with autoClose shut down
                 // immediately on successful completion — no follow-up grace.
-                // But skip if the session has active trigger subscriptions —
-                // it may be waiting for future events (e.g. github:pr_comment).
+                // But skip if the session still has active trigger subscriptions
+                // or linked child sessions that may session_complete later.
                 void (async () => {
-                    try {
-                        const sessionId = rctx.relaySessionId;
-                        if (sessionId) {
-                            const subs = await listTriggerSubscriptions(sessionId);
-                            if (subs.length > 0) {
-                                log.info(`pizzapi: auto-close skipped — session has ${subs.length} active trigger subscription(s)`);
-                                return;
-                            }
-                        }
-                    } catch {
-                        // If we can't check subscriptions, proceed with auto-close
+                    const sessionId = rctx.relaySessionId;
+                    const activeSubscriptionCount = sessionId
+                        ? await listTriggerSubscriptions(sessionId)
+                            .then((subs) => subs.length)
+                            .catch(() => null)
+                        : null;
+                    if (typeof activeSubscriptionCount === "number" && activeSubscriptionCount > 0) {
+                        log.info(`pizzapi: auto-close skipped — session has ${activeSubscriptionCount} active trigger subscription(s)`);
+                        return;
                     }
+
+                    const linkedChildCount = await getLinkedChildCount(rctx);
+                    if (typeof linkedChildCount === "number" && linkedChildCount > 0) {
+                        log.info(`pizzapi: auto-close skipped — session has ${linkedChildCount} linked child session(s)`);
+                        return;
+                    }
+
+                    // Re-check idleness after the async probes: a trigger,
+                    // user message, or new turn may have arrived while we were
+                    // awaiting subscription/child-count results.
+                    if (ctx.hasPendingMessages() || rctx.isAgentActive) {
+                        log.info("pizzapi: auto-close skipped — new work arrived during async checks");
+                        return;
+                    }
+
+                    if (!shouldAutoClose({
+                        autoCloseEnv: process.env.PIZZAPI_WORKER_AUTO_CLOSE,
+                        exitReason,
+                        isChildSession: rctx.isChildSession,
+                        hasPendingMessages: ctx.hasPendingMessages(),
+                        activeSubscriptionCount,
+                        linkedChildCount,
+                    })) {
+                        log.info("pizzapi: auto-close skipped — unable to prove session is fully idle");
+                        return;
+                    }
+
                     log.info("pizzapi: auto-close enabled and session completed successfully — shutting down");
                     ctx.shutdown();
                 })();

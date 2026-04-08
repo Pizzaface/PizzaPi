@@ -9,29 +9,8 @@
  * Since lifecycle-handlers.ts has heavy dependencies (pi event system,
  * relay context, etc.), we test the decision logic in isolation here.
  */
-import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-
-// ── Decision logic extracted from lifecycle-handlers.ts ───────────────────
-// This mirrors the exact conditional in the agent_end handler.
-function shouldAutoClose(opts: {
-    autoCloseEnv: string | undefined;
-    exitReason: "completed" | "killed" | "error";
-    isChildSession: boolean;
-    hasPendingMessages: boolean;
-    activeSubscriptionCount?: number;
-}): boolean {
-    // Auto-close only applies to non-child sessions (trigger-spawned)
-    if (opts.isChildSession) return false;
-    // Only when explicitly enabled
-    if (opts.autoCloseEnv !== "true") return false;
-    // Only on successful completion
-    if (opts.exitReason !== "completed") return false;
-    // Only when there are no pending messages
-    if (opts.hasPendingMessages) return false;
-    // Skip if the session has active trigger subscriptions
-    if ((opts.activeSubscriptionCount ?? 0) > 0) return false;
-    return true;
-}
+import { describe, test, expect, afterEach } from "bun:test";
+import { shouldAutoClose } from "./auto-close.js";
 
 // ── Tests ─────────────────────────────────────────────────────────────────
 
@@ -52,6 +31,8 @@ describe("auto-close decision logic", () => {
             exitReason: "completed",
             isChildSession: false,
             hasPendingMessages: false,
+            activeSubscriptionCount: 0,
+            linkedChildCount: 0,
         })).toBe(true);
     });
 
@@ -61,6 +42,8 @@ describe("auto-close decision logic", () => {
             exitReason: "error",
             isChildSession: false,
             hasPendingMessages: false,
+            activeSubscriptionCount: 0,
+            linkedChildCount: 0,
         })).toBe(false);
     });
 
@@ -70,6 +53,8 @@ describe("auto-close decision logic", () => {
             exitReason: "killed",
             isChildSession: false,
             hasPendingMessages: false,
+            activeSubscriptionCount: 0,
+            linkedChildCount: 0,
         })).toBe(false);
     });
 
@@ -79,6 +64,8 @@ describe("auto-close decision logic", () => {
             exitReason: "completed",
             isChildSession: false,
             hasPendingMessages: false,
+            activeSubscriptionCount: 0,
+            linkedChildCount: 0,
         })).toBe(false);
     });
 
@@ -88,6 +75,8 @@ describe("auto-close decision logic", () => {
             exitReason: "completed",
             isChildSession: false,
             hasPendingMessages: false,
+            activeSubscriptionCount: 0,
+            linkedChildCount: 0,
         })).toBe(false);
     });
 
@@ -97,6 +86,8 @@ describe("auto-close decision logic", () => {
             exitReason: "completed",
             isChildSession: true,
             hasPendingMessages: false,
+            activeSubscriptionCount: 0,
+            linkedChildCount: 0,
         })).toBe(false);
     });
 
@@ -106,6 +97,8 @@ describe("auto-close decision logic", () => {
             exitReason: "completed",
             isChildSession: false,
             hasPendingMessages: true,
+            activeSubscriptionCount: 0,
+            linkedChildCount: 0,
         })).toBe(false);
     });
 
@@ -116,27 +109,53 @@ describe("auto-close decision logic", () => {
             isChildSession: false,
             hasPendingMessages: false,
             activeSubscriptionCount: 2,
+            linkedChildCount: 0,
         })).toBe(false);
     });
 
-    test("shuts down when session has zero subscriptions", () => {
+    test("does NOT shut down when session still has linked children", () => {
         expect(shouldAutoClose({
             autoCloseEnv: "true",
             exitReason: "completed",
             isChildSession: false,
             hasPendingMessages: false,
             activeSubscriptionCount: 0,
+            linkedChildCount: 1,
+        })).toBe(false);
+    });
+
+    test("shuts down when session has zero subscriptions and no linked children", () => {
+        expect(shouldAutoClose({
+            autoCloseEnv: "true",
+            exitReason: "completed",
+            isChildSession: false,
+            hasPendingMessages: false,
+            activeSubscriptionCount: 0,
+            linkedChildCount: 0,
         })).toBe(true);
     });
 
-    test("shuts down when subscription count is undefined (query failed)", () => {
-        // If we can't check subscriptions, proceed with auto-close
+    test("does NOT shut down when linked-child count is unknown", () => {
+        // Fail safe: if we can't prove there are no linked children, preserve the session.
+        expect(shouldAutoClose({
+            autoCloseEnv: "true",
+            exitReason: "completed",
+            isChildSession: false,
+            hasPendingMessages: false,
+            activeSubscriptionCount: 0,
+            linkedChildCount: null,
+        })).toBe(false);
+    });
+
+    test("does NOT shut down when subscription count is undefined (query failed)", () => {
+        // If we can't check subscriptions, preserve the session.
         expect(shouldAutoClose({
             autoCloseEnv: "true",
             exitReason: "completed",
             isChildSession: false,
             hasPendingMessages: false,
             activeSubscriptionCount: undefined,
-        })).toBe(true);
+            linkedChildCount: 0,
+        })).toBe(false);
     });
 });

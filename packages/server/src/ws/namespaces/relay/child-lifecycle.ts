@@ -27,7 +27,60 @@ import { createLogger } from "@pizzapi/tools";
 
 const log = createLogger("sio/relay");
 
+/**
+ * Count only *live* linked children for a parent session.
+ *
+ * The Redis children set intentionally retains entries for disconnected or
+ * ended children (so delink_children can still reach them later).  For the
+ * auto-close decision we must not count those stale entries — only children
+ * whose session hash still exists AND still points at this parent.
+ */
+export async function countLinkedChildrenForParent(
+    parentSessionId: string,
+    deps: {
+        getChildSessions?: typeof getChildSessions;
+        getSession?: typeof getSession;
+    } = {},
+): Promise<number> {
+    const _getChildSessions = deps.getChildSessions ?? getChildSessions;
+    const _getSession = deps.getSession ?? getSession;
+
+    const childIds = await _getChildSessions(parentSessionId);
+    if (childIds.length === 0) return 0;
+
+    // Check each child in parallel — only count those still alive and linked.
+    const checks = await Promise.all(
+        childIds.map(async (childId) => {
+            const session = await _getSession(childId);
+            if (!session) return false; // session hash gone — child already ended
+            // Child still linked if parentSessionId or linkedParentId points here.
+            return (
+                session.parentSessionId === parentSessionId ||
+                (session as any).linkedParentId === parentSessionId
+            );
+        }),
+    );
+    return checks.filter(Boolean).length;
+}
+
 export function registerChildLifecycleHandlers(socket: RelaySocket, io: SocketIOServer): void {
+    socket.on("get_linked_child_count", async (data, ack) => {
+        const sessionId = socket.data.sessionId;
+        if (!sessionId || data?.token !== socket.data.token) {
+            socket.emit("error", { message: "Invalid token" });
+            if (typeof ack === "function") ack({ ok: false, error: "Invalid token" });
+            return;
+        }
+
+        try {
+            const count = await countLinkedChildrenForParent(sessionId);
+            if (typeof ack === "function") ack({ ok: true, count });
+        } catch (err: any) {
+            log.error(`get_linked_child_count failed for parent=${sessionId}:`, err);
+            if (typeof ack === "function") ack({ ok: false, error: err?.message ?? "Internal error" });
+        }
+    });
+
     // ── cleanup_child_session — parent requests child teardown on ack ────
     socket.on("cleanup_child_session", async (data, ack) => {
         const sessionId = socket.data.sessionId;
