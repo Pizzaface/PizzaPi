@@ -344,27 +344,31 @@ describe("pi-ai patch application — Anthropic web search", () => {
     });
 });
 
-describe("pi-ai patch application — Claude Code credentials fallback", () => {
-    test("anthropic.js (oauth): tryReadClaudeCodeCredentials function is present", async () => {
+describe("pi-ai patch application — Claude Code credentials fallback (Keychain-first)", () => {
+    test("anthropic.js (oauth): tryReadClaudeCodeCredentials with Keychain + file fallback", async () => {
         const source = await Bun.file(
             piAiPath("dist/utils/oauth/anthropic.js"),
         ).text();
 
         expect(source).toContain("PATCH(pizzapi): read Claude Code credentials as a refresh fallback");
-        expect(source).toContain("tryReadClaudeCodeCredentials");
+        expect(source).toContain("async function tryReadClaudeCodeCredentials");
+        // Keychain path (macOS preferred)
+        expect(source).toContain("security find-generic-password");
+        expect(source).toContain("Claude Code-credentials");
+        // File fallback path
         expect(source).toContain(".claude");
         expect(source).toContain(".credentials.json");
         expect(source).toContain("claudeAiOauth");
     });
 
-    test("anthropic.js (oauth): refreshToken tries Claude Code credentials first", async () => {
+    test("anthropic.js (oauth): refreshToken awaits Claude Code credentials first", async () => {
         const source = await Bun.file(
             piAiPath("dist/utils/oauth/anthropic.js"),
         ).text();
 
         expect(source).toContain("PATCH(pizzapi): try Claude Code credentials first");
-        // Verify the fallback calls tryReadClaudeCodeCredentials before refreshAnthropicToken
-        const ccCredsIndex = source.indexOf("tryReadClaudeCodeCredentials()");
+        // Verify the fallback awaits tryReadClaudeCodeCredentials before refreshAnthropicToken
+        const ccCredsIndex = source.indexOf("await tryReadClaudeCodeCredentials()");
         const refreshIndex = source.indexOf("refreshAnthropicToken(credentials.refresh)");
         expect(ccCredsIndex).toBeGreaterThan(-1);
         expect(refreshIndex).toBeGreaterThan(-1);
