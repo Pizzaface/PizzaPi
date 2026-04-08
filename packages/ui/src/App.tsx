@@ -325,7 +325,11 @@ export function App() {
   );
   const setAgentActive = React.useCallback(
     (v: React.SetStateAction<boolean>) =>
-      setSessionState((p: SessionState) => ({ ...p, agentActive: typeof v === "function" ? v(p.agentActive) : v })),
+      setSessionState((p: SessionState) => {
+        const next = typeof v === "function" ? v(p.agentActive) : v;
+        agentActiveRef.current = next;
+        return { ...p, agentActive: next };
+      }),
     []
   );
   const setEffortLevel = React.useCallback(
@@ -692,6 +696,7 @@ export function App() {
   // Tracked as state so HubSocketContext consumers re-render when the socket changes.
   const [hubSocket, setHubSocket] = React.useState<Socket<HubServerToClientEvents, HubClientToServerEvents> | null>(null);
   const activeSessionRef = React.useRef<string | null>(null);
+  const agentActiveRef = React.useRef(false);
   const viewerSwitchGenerationRef = React.useRef(0);
 
   const checkVersionCompatibility = React.useCallback(async () => {
@@ -2854,9 +2859,12 @@ export function App() {
 
       // Stale-connection watchdog: if the socket thinks it's connected but
       // no event has arrived for STALE_THRESHOLD_MS, force a reconnect.
+      // Only armed when the agent is active — idle sessions produce no events,
+      // so silence is expected and not a sign of a broken connection.
       staleCheckTimerRef.current = setInterval(() => {
         if (!activeSessionRef.current) return;
         if (!nextSocket.connected) return;
+        if (!agentActiveRef.current) return;
         const elapsed = Date.now() - lastViewerEventAtRef.current;
         if (elapsed > STALE_THRESHOLD_MS) {
           log.warn(`Stale connection detected (${Math.round(elapsed / 1000)}s since last event). Reconnecting…`);
