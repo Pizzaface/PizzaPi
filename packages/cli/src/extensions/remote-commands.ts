@@ -23,7 +23,10 @@ export type RemoteExecRequest =
     | { type: "exec"; id: string; command: "mcp_toggle_server"; serverName: string; disabled: boolean }
     | { type: "exec"; id: string; command: "set_plan_mode"; enabled?: boolean }
     | { type: "exec"; id: string; command: "sandbox_get_status" }
-    | { type: "exec"; id: string; command: "sandbox_update_config"; config: any };
+    | { type: "exec"; id: string; command: "sandbox_update_config"; config: any }
+    | { type: "exec"; id: string; command: "get_session_tree" }
+    | { type: "exec"; id: string; command: "navigate_tree"; targetId: string; summarize?: boolean; customInstructions?: string }
+    | { type: "exec"; id: string; command: "fork_session"; entryId: string };
 
 export type RemoteExecResponse =
     | { type: "exec_result"; id: string; ok: true; command: RemoteExecRequest["command"]; result?: unknown }

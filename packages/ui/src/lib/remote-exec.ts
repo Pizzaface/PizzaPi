@@ -19,9 +19,31 @@ export type RemoteExecCommand =
   | { command: "restart" }
   | { command: "end_session" }
   | { command: "mcp_toggle_server"; serverName: string; disabled: boolean }
-  | { command: "set_plan_mode"; enabled?: boolean };
+  | { command: "set_plan_mode"; enabled?: boolean }
+  | { command: "get_session_tree" }
+  | { command: "navigate_tree"; targetId: string; summarize?: boolean; customInstructions?: string }
+  | { command: "fork_session"; entryId: string };
 
 export type RemoteExecRequest = { type: "exec"; id: string } & RemoteExecCommand;
+
+// ── Session tree types ───────────────────────────────────────────────────────
+
+export interface SessionTreeNode {
+  id: string;
+  parentId: string | null;
+  type: string;
+  timestamp: string;
+  role?: string;
+  preview?: string;
+  label?: string;
+  isBranchPoint: boolean;
+  children: SessionTreeNode[];
+}
+
+export interface SessionTreeResult {
+  tree: SessionTreeNode[];
+  leafId: string | null;
+}
 
 export type RemoteExecResponse =
   | { type: "exec_result"; id: string; ok: true; command: RemoteExecCommand["command"]; result?: any }

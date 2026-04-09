@@ -5,7 +5,7 @@
  */
 
 import { spawn } from "node:child_process";
-import { buildSessionContext, SessionManager, type ExtensionContext, type SessionInfo } from "@mariozechner/pi-coding-agent";
+import { buildSessionContext, SessionManager, type ExtensionContext, type SessionInfo, type SessionEntry } from "@mariozechner/pi-coding-agent";
 import { getMcpBridge } from "./mcp-bridge.js";
 import { toggleMcpServer, saveGlobalConfig, loadConfig, loadGlobalConfig, resolveSandboxConfig, type SandboxConfig } from "../config.js";
 import { isPlanModeEnabled, togglePlanModeFromRemote, setPlanModeFromRemote } from "./plan-mode/index.js";
@@ -15,6 +15,72 @@ import type { RemoteExecRequest, RemoteExecResponse } from "./remote-commands.js
 import type { RelayContext, RelayModelInfo } from "./remote-types.js";
 import { emitThinkingLevelChanged, emitCompactStarted, emitCompactEnded, emitRetryStateChanged, emitPluginTrustResolved } from "./remote-meta-events.js";
 import { listSessionsCached } from "../runner/session-list-cache.js";
+
+// ── Session tree types (inlined — not publicly exported from pi-coding-agent) ─
+
+/** Tree node returned by SessionManager.getTree() */
+interface PiSessionTreeNode {
+    entry: SessionEntry;
+    children: PiSessionTreeNode[];
+    label?: string;
+}
+
+// ── Session tree serialization ────────────────────────────────────────────────
+
+/** Lightweight tree node sent to the UI — omits full message content. */
+interface SerializedTreeNode {
+    id: string;
+    parentId: string | null;
+    type: string;
+    timestamp: string;
+    /** role of the message (user, assistant, tool, etc.) — only for message entries */
+    role?: string;
+    /** Short text preview (first ~200 chars) */
+    preview?: string;
+    /** Label / bookmark */
+    label?: string;
+    /** Whether this node has multiple children (branch point) */
+    isBranchPoint: boolean;
+    children: SerializedTreeNode[];
+}
+
+function extractPreview(entry: SessionEntry, maxLen = 200): string | undefined {
+    if (entry.type === "message") {
+        const msg = (entry as any).message;
+        if (!msg) return undefined;
+        const content = msg.content;
+        if (typeof content === "string") return content.slice(0, maxLen);
+        if (Array.isArray(content)) {
+            const texts = content
+                .filter((c: any) => c && typeof c === "object" && c.type === "text" && typeof c.text === "string")
+                .map((c: any) => c.text);
+            if (texts.length > 0) return texts.join(" ").slice(0, maxLen);
+        }
+        return undefined;
+    }
+    if (entry.type === "compaction") {
+        return `[Compaction — ${(entry as any).tokensBefore ?? "?"} tokens summarized]`;
+    }
+    if (entry.type === "branch_summary") {
+        const summary = (entry as any).summary;
+        return summary ? `[Branch summary] ${String(summary).slice(0, maxLen - 20)}` : "[Branch summary]";
+    }
+    return undefined;
+}
+
+function serializeTree(nodes: PiSessionTreeNode[]): SerializedTreeNode[] {
+    return nodes.map((node: PiSessionTreeNode) => ({
+        id: node.entry.id,
+        parentId: node.entry.parentId,
+        type: node.entry.type,
+        timestamp: node.entry.timestamp,
+        role: node.entry.type === "message" ? (node.entry as any).message?.role : undefined,
+        preview: extractPreview(node.entry),
+        label: node.label,
+        isBranchPoint: node.children.length > 1,
+        children: serializeTree(node.children),
+    }));
+}
 
 export interface ExecHandlerCallbacks {
     setModelFromWeb(provider: string, modelId: string): Promise<void>;
@@ -550,6 +616,73 @@ export async function handleExecFromWeb(
             rctx.pendingPluginTrust = null;
             emitPluginTrustResolved(rctx, resolvedPromptId);
             replyOk({ trusted });
+            return;
+        }
+
+        // ── Session tree commands ─────────────────────────────────────────────
+
+        if (req.command === "get_session_tree") {
+            if (!rctx.latestCtx) {
+                replyErr("No active session");
+                return;
+            }
+            const tree = rctx.latestCtx.sessionManager.getTree();
+            const leafId = rctx.latestCtx.sessionManager.getLeafId();
+            replyOk({
+                tree: serializeTree(tree),
+                leafId,
+            });
+            return;
+        }
+
+        if (req.command === "navigate_tree") {
+            if (!rctx.latestCtx) {
+                replyErr("No active session");
+                return;
+            }
+            if (typeof (rctx.pi as any).navigateTree !== "function") {
+                replyErr("navigateTree is not available in this pi version");
+                return;
+            }
+            try {
+                const result = await (rctx.pi as any).navigateTree(req.targetId, {
+                    summarize: req.summarize,
+                    customInstructions: req.customInstructions,
+                });
+                if (result?.cancelled) {
+                    replyErr("Tree navigation was cancelled");
+                    return;
+                }
+                replyOk({ editorText: result?.editorText ?? null });
+                rctx.emitSessionActive();
+                rctx.forwardEvent(rctx.buildHeartbeat());
+            } catch (e) {
+                replyErr(e instanceof Error ? e.message : String(e));
+            }
+            return;
+        }
+
+        if (req.command === "fork_session") {
+            if (!rctx.latestCtx) {
+                replyErr("No active session");
+                return;
+            }
+            if (typeof (rctx.pi as any).fork !== "function") {
+                replyErr("fork is not available in this pi version");
+                return;
+            }
+            try {
+                const result = await (rctx.pi as any).fork(req.entryId);
+                if (result?.cancelled) {
+                    replyErr("Fork was cancelled");
+                    return;
+                }
+                replyOk({ selectedText: result?.selectedText ?? null });
+                rctx.emitSessionActive();
+                rctx.forwardEvent(rctx.buildHeartbeat());
+            } catch (e) {
+                replyErr(e instanceof Error ? e.message : String(e));
+            }
             return;
         }
 

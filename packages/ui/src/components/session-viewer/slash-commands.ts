@@ -60,6 +60,10 @@ export interface SlashCommandDeps {
    * and invoking `action()` if the user confirms.
    */
   onIncompleteTriggers: (incomplete: IncompleteTriggerItem[], action: () => void) => void;
+  /** Opens the session tree viewer dialog. */
+  onOpenTreeViewer?: () => void;
+  /** Triggers a fork from the current leaf. */
+  onForkSession?: () => void;
 }
 
 export interface SlashCommandState {
@@ -121,6 +125,8 @@ export function useSlashCommands(
     extensionCommands,
     promptCommands,
     onIncompleteTriggers,
+    onOpenTreeViewer,
+    onForkSession,
   } = deps;
 
   const [commandOpen, setCommandOpen] = React.useState(false);
@@ -134,7 +140,7 @@ export function useSlashCommands(
       new Set([
         "new", "resume", "mcp", "plugins", "skills", "agents", "model",
         "cycle_model", "effort", "cycle_effort", "compact", "name", "copy",
-        "stop", "restart", "remote", "plan", "sandbox",
+        "stop", "restart", "remote", "plan", "sandbox", "tree", "fork",
       ]),
     [],
   );
@@ -168,6 +174,8 @@ export function useSlashCommands(
       { name: "restart", description: "Restart the CLI process" },
       { name: "plan", description: "Toggle plan mode (read-only exploration)" },
       { name: "sandbox", description: "Show sandbox status" },
+      { name: "tree", description: "Browse session history tree" },
+      { name: "fork", description: "Fork session into a new session" },
     ],
     [],
   );
@@ -708,6 +716,22 @@ export function useSlashCommands(
         return true;
       }
 
+      if (rawCommand === "tree") {
+        onOpenTreeViewer?.();
+        setInput("");
+        setCommandOpen(false);
+        setCommandQuery("");
+        return true;
+      }
+
+      if (rawCommand === "fork") {
+        onForkSession?.();
+        setInput("");
+        setCommandOpen(false);
+        setCommandQuery("");
+        return true;
+      }
+
       return false;
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -729,6 +753,8 @@ export function useSlashCommands(
       setInput,
       sessionIdRef,
       compactingRef,
+      onOpenTreeViewer,
+      onForkSession,
     ],
   );
 

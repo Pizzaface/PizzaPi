@@ -81,6 +81,8 @@ import { useDraftManagement } from "@/components/session-viewer/draft-management
 import { useSessionActionsSetup } from "@/components/session-viewer/session-actions";
 import { useAtMentionHandlers } from "@/components/session-viewer/at-mention-handlers";
 import { useSlashCommands } from "@/components/session-viewer/slash-commands";
+import { TreeViewerDialog } from "@/components/session-viewer/TreeViewerDialog";
+import type { SessionTreeNode, SessionTreeResult } from "@/lib/remote-exec";
 import { useAgentLoading } from "@/components/session-viewer/agent-loading";
 import {
   HeartbeatStaleBadge,
@@ -158,10 +160,13 @@ export function SessionViewer({
   hasMoreServerMessages,
   onLoadMoreServerMessages,
   loadingOlderMessages,
+  treeResultCallbackRef,
 }: BaseSessionViewerProps & {
   hasMoreServerMessages?: boolean;
   onLoadMoreServerMessages?: () => void;
   loadingOlderMessages?: boolean;
+  /** Ref for receiving session tree data from App.tsx exec_result handler */
+  treeResultCallbackRef?: React.MutableRefObject<((data: { tree: unknown[]; leafId: string | null }) => void) | null>;
 }) {
   // ── Misc local state ──────────────────────────────────────────────────────
   const [composerError, setComposerError] = React.useState<string | null>(null);
@@ -249,6 +254,68 @@ export function SessionViewer({
     [],
   );
 
+  // ── Tree viewer state ──────────────────────────────────────────────────────
+  const [treeViewerOpen, setTreeViewerOpen] = React.useState(false);
+  const [treeData, setTreeData] = React.useState<SessionTreeNode[]>([]);
+  const [treeLeafId, setTreeLeafId] = React.useState<string | null>(null);
+
+  // Register the tree result callback so App.tsx can forward exec_result data
+  React.useEffect(() => {
+    if (!treeResultCallbackRef) return;
+    treeResultCallbackRef.current = (data) => {
+      setTreeData(data.tree as SessionTreeNode[]);
+      setTreeLeafId(data.leafId);
+      setTreeViewerOpen(true);
+    };
+    return () => { treeResultCallbackRef.current = null; };
+  }, [treeResultCallbackRef]);
+
+  const openTreeViewer = React.useCallback(() => {
+    if (!onExec) return;
+    const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    onExec({
+      type: "exec",
+      id,
+      command: "get_session_tree",
+    });
+    // The exec result handler in App.tsx will call treeResultCallbackRef
+  }, [onExec]);
+
+  const handleTreeNavigate = React.useCallback((targetId: string, summarize?: boolean) => {
+    if (!onExec) return;
+    const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    onExec({
+      type: "exec",
+      id,
+      command: "navigate_tree",
+      targetId,
+      summarize,
+    });
+  }, [onExec]);
+
+  const handleTreeFork = React.useCallback((entryId: string) => {
+    if (!onExec) return;
+    const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    onExec({
+      type: "exec",
+      id,
+      command: "fork_session",
+      entryId,
+    });
+  }, [onExec]);
+
+  const handleForkFromCurrent = React.useCallback(() => {
+    // Fork from the current leaf — need to get the tree first to find the leaf
+    if (!onExec) return;
+    const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    onExec({
+      type: "exec",
+      id,
+      command: "get_session_tree",
+    });
+    // Result handler will fork from the leaf
+  }, [onExec]);
+
   // ── Slash commands ────────────────────────────────────────────────────────
   const slashCmd = useSlashCommands(input, setInput, {
     sessionId,
@@ -269,6 +336,8 @@ export function SessionViewer({
     extensionCommands,
     promptCommands,
     onIncompleteTriggers: handleIncompleteTriggers,
+    onOpenTreeViewer: openTreeViewer,
+    onForkSession: handleForkFromCurrent,
   });
 
   const {
@@ -564,6 +633,16 @@ export function SessionViewer({
                       </Button>
                     </TooltipTrigger>
                     <TooltipContent>Git</TooltipContent>
+                  </Tooltip>
+                )}
+                {onExec && (
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button className="hidden md:inline-flex h-7 w-7" onClick={openTreeViewer} size="icon" type="button" variant="ghost" aria-label="Session tree">
+                        <GitBranch className="size-3.5" />
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>Session Tree</TooltipContent>
                   </Tooltip>
                 )}
                 {showTriggersButton && onToggleTriggers && (
@@ -1552,6 +1631,15 @@ export function SessionViewer({
               </DialogFooter>
             </DialogContent>
           </Dialog>
+
+          <TreeViewerDialog
+            open={treeViewerOpen}
+            onOpenChange={setTreeViewerOpen}
+            tree={treeData}
+            leafId={treeLeafId}
+            onNavigate={handleTreeNavigate}
+            onFork={handleTreeFork}
+          />
 
           <Dialog open={showEndSessionDialog} onOpenChange={setShowEndSessionDialog}>
             <DialogContent showCloseButton={false} className="max-w-sm">

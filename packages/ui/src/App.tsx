@@ -574,6 +574,9 @@ export function App() {
   // arrive after the ref has been cleared (e.g. from a superseded sender).
   const lastCompletedSnapshotRef = React.useRef<string | null>(null);
 
+  // Tree viewer callback — SessionViewer registers a handler, App.tsx forwards exec results
+  const treeResultCallbackRef = React.useRef<((data: { tree: unknown[]; leafId: string | null }) => void) | null>(null);
+
   // Mobile layout
   const {
     sidebarOpen, setSidebarOpen,
@@ -2083,6 +2086,33 @@ export function App() {
         setViewerStatus(summary);
         // Clear the compact status after a few seconds so it doesn't stick forever
         setTimeout(() => setViewerStatus((prev) => (prev === summary || prev.startsWith("Compacted") ? "Connected" : prev)), 5000);
+        return;
+      }
+
+      if (command === "get_session_tree") {
+        const tree = Array.isArray(result?.tree) ? result.tree : [];
+        const leafId = typeof result?.leafId === "string" ? result.leafId : null;
+        treeResultCallbackRef.current?.({ tree, leafId });
+        return;
+      }
+
+      if (command === "navigate_tree") {
+        setViewerStatus("Navigated to branch point");
+        return;
+      }
+
+      if (command === "fork_session") {
+        cancelPendingDeltas();
+        injectedMessagesRef.current = [];
+        setMessages([]);
+        setPendingQuestion(null);
+        setPendingPlan(null);
+        setMcpOAuthPastes([]);
+        setActiveToolCalls(new Map());
+        setMessageQueue([]);
+        setSessionName(null);
+        setAgentActive(false);
+        setViewerStatus("Session forked");
         return;
       }
 
@@ -4737,6 +4767,7 @@ export function App() {
                         onTriggerResponse={handleTriggerResponse}
                         onQuestionDismiss={() => setPendingQuestion(null)}
                         onPlanDismiss={() => setPendingPlan(null)}
+                        treeResultCallbackRef={treeResultCallbackRef}
                         onDuplicateSession={activeSessionInfo?.runnerId ? () => handleDuplicateSession(activeSessionInfo.runnerId!, activeSessionInfo.cwd || "") : undefined}
                         runnerInfo={activeRunnerInfo}
                         mcpOAuthPastes={mcpOAuthPastes}
