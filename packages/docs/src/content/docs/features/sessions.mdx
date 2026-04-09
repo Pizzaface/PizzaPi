@@ -1,0 +1,218 @@
+---
+title: Sessions & Context
+description: Session management, branching, tree navigation, compaction, and context management in PizzaPi.
+---
+
+import { Aside } from "@astrojs/starlight/components";
+
+PizzaPi sessions are powered by pi's session engine — a tree-structured conversation format that supports branching, forking, and automatic context compaction. This page covers how sessions work under the hood and the tools available for managing them.
+
+---
+
+## Session Basics
+
+### Starting and Resuming
+
+| Command | Description |
+|---------|-------------|
+| `/new` | Start a fresh session |
+| `/resume [query]` | Browse and resume a previous session — fuzzy-search by name, ID, or content |
+| `/name <name>` | Give the current session a display name |
+| `/session` | Show session info (path, tokens, cost) |
+
+Sessions auto-save as JSONL files under `~/.pi/agent/sessions/`, organized by working directory.
+
+### Session Storage
+
+Each session is a single `.jsonl` file with a tree structure. Every entry has an `id` and `parentId`, enabling in-place branching without creating new files. The file format preserves all history — even when you branch or compact, nothing is deleted.
+
+---
+
+## Branching with `/tree`
+
+The `/tree` command opens a tree-based navigator showing your full conversation history. Unlike linear chat, pi sessions form a tree — every time you go back and try a different approach, a new branch is created.
+
+### What You Can Do
+
+- **Navigate** to any point in the conversation
+- **Branch** from any message to try a different approach
+- **View branches** side by side to compare approaches
+- **Label** important messages as bookmarks
+
+### How It Works
+
+When you select a **user message** in the tree:
+1. The conversation pointer moves to the parent of that message
+2. The message text is placed in your editor for re-submission
+3. You can edit it and submit, creating a new branch
+
+When you select a **non-user message** (assistant response, compaction, etc.):
+1. The conversation continues from that point
+2. The editor stays empty
+
+### Branch Summarization
+
+When switching between branches, you'll be asked whether to **summarize** the branch you're leaving. This creates a compact summary that preserves context without keeping every message in the active context window. Options:
+
+- **No summary** — switch immediately
+- **Summarize** — generate a summary with the default prompt
+- **Summarize with custom prompt** — provide focus instructions for the summary
+
+<Aside type="tip">
+  Branch summaries are stored as separate entries in the session file. The full original messages are always preserved — summaries are additive, never destructive.
+</Aside>
+
+---
+
+## Forking with `/fork`
+
+While `/tree` branches within the same session file, `/fork` creates an **entirely new session** from any point in the current one.
+
+| Feature | `/tree` | `/fork` |
+|---------|---------|---------|
+| Result | New branch in same file | New session file |
+| History | Shared | Copied (independent) |
+| Summarization | Optional | Never |
+
+Use `/fork` when you want to explore a completely different direction without cluttering the original session's tree.
+
+---
+
+## Compaction
+
+Long conversations eventually fill the model's context window. **Compaction** summarizes older messages while keeping recent ones, freeing up context space.
+
+### Automatic Compaction
+
+Enabled by default. Triggers when:
+
+```
+contextTokens > contextWindow − reserveTokens
+```
+
+When triggered, pi:
+
+1. Walks backwards from the newest message, keeping recent messages (default: 20,000 tokens)
+2. Summarizes everything older into a structured summary
+3. Continues with the summary + recent messages
+
+<Aside>
+  Compaction is **lossy for the model's context** but **lossless for your session file**. The full history is always preserved — use `/tree` to revisit any earlier message.
+</Aside>
+
+### Manual Compaction
+
+Use `/compact` to trigger compaction manually, optionally with focus instructions:
+
+```
+/compact                           # Default summarization
+/compact focus on the auth module  # Guided summarization
+```
+
+This is useful when you want to steer what the summary emphasizes before the context runs out naturally.
+
+### Compaction Settings
+
+Configure in `~/.pi/agent/settings.json` (global) or `.pi/settings.json` (project):
+
+```json
+{
+  "compaction": {
+    "enabled": true,
+    "reserveTokens": 16384,
+    "keepRecentTokens": 20000
+  }
+}
+```
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `compaction.enabled` | `true` | Enable automatic compaction |
+| `compaction.reserveTokens` | `16384` | Tokens reserved for the model's response |
+| `compaction.keepRecentTokens` | `20000` | Recent tokens to keep (not summarized) |
+
+---
+
+## Session Settings
+
+Additional session-related settings:
+
+### Branch Summary
+
+```json
+{
+  "branchSummary": {
+    "reserveTokens": 16384,
+    "skipPrompt": false
+  }
+}
+```
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `branchSummary.reserveTokens` | `16384` | Tokens reserved for branch summarization |
+| `branchSummary.skipPrompt` | `false` | Skip the "Summarize branch?" prompt (defaults to no summary) |
+
+### Retry on Errors
+
+```json
+{
+  "retry": {
+    "enabled": true,
+    "maxRetries": 3,
+    "baseDelayMs": 2000,
+    "maxDelayMs": 60000
+  }
+}
+```
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `retry.enabled` | `true` | Auto-retry on transient errors |
+| `retry.maxRetries` | `3` | Maximum retry attempts |
+| `retry.baseDelayMs` | `2000` | Base delay (exponential backoff: 2s, 4s, 8s) |
+| `retry.maxDelayMs` | `60000` | Max delay before failing (prevents multi-hour waits) |
+
+### Custom Session Directory
+
+```json
+{
+  "sessionDir": "/path/to/sessions"
+}
+```
+
+Priority: `--session-dir` CLI flag → `sessionDir` in settings → default (`~/.pi/agent/sessions/`).
+
+---
+
+## Exporting and Sharing
+
+| Command | Description |
+|---------|-------------|
+| `/export [file]` | Export the current session to an HTML file |
+| `/share` | Upload as a private GitHub gist with a shareable HTML link |
+| `/copy` | Copy the last assistant message to your clipboard |
+
+---
+
+## Context Files
+
+pi automatically loads **context files** at startup to give the agent project-specific knowledge. These files are loaded from multiple locations and concatenated:
+
+| File | Location | Purpose |
+|------|----------|---------|
+| `AGENTS.md` or `CLAUDE.md` | `~/.pi/agent/`, parent directories, current directory | Project instructions, conventions, common commands |
+| `SYSTEM.md` | `.pi/SYSTEM.md` (project) or `~/.pi/agent/SYSTEM.md` (global) | Replace the default system prompt entirely |
+| `APPEND_SYSTEM.md` | Same locations | Append to the system prompt without replacing it |
+
+<Aside type="note">
+  PizzaPi uses `~/.pizzapi/` as its config directory, but pi's context file discovery still checks `~/.pi/agent/` and `.pi/` paths. Both conventions work — PizzaPi adds its own `AGENTS.md` at `~/.pizzapi/AGENTS.md` alongside the pi defaults.
+</Aside>
+
+### How Context Files Load
+
+1. Global `AGENTS.md` from `~/.pi/agent/` (or `~/.pizzapi/`)
+2. Walk up from the current working directory, loading each `AGENTS.md` or `CLAUDE.md` found
+3. Project-level `AGENTS.md` in the current directory
+
+All files are concatenated and included in the system prompt. This means you can have repository-wide instructions in the repo root and more specific instructions in subdirectories.
