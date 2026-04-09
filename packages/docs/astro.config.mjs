@@ -97,9 +97,12 @@ export default defineConfig({
                 {
                     label: "Features",
                     items: [
+                        { label: "Providers & Models", slug: "features/providers-and-models" },
+                        { label: "Sessions & Context", slug: "features/sessions" },
                         { label: "Slash Commands", slug: "features/slash-commands" },
                         { label: "Plan Mode", slug: "features/plan-mode" },
                         { label: "Multi-Agent Sessions", slug: "features/multi-agent" },
+                        { label: "Pi Packages", slug: "features/pi-packages" },
                         { label: "Webhooks", slug: "features/webhooks" },
                         { label: "Tunnel Tools", slug: "features/tunnels" },
                     ],

@@ -225,6 +225,47 @@ PIZZAPI_RELAY_URL=off pizzapi
 
 ---
 
+## Pi Agent Settings
+
+In addition to PizzaPi's own config, the underlying **pi agent** has its own settings file for model defaults, compaction, retry behavior, and UI preferences. These are separate from `~/.pizzapi/config.json`:
+
+| File | Scope |
+|------|-------|
+| `~/.pi/agent/settings.json` | Global pi settings |
+| `.pi/settings.json` | Project-local pi settings (overrides global) |
+
+Edit directly or use the `/settings` command inside a session.
+
+### Key Settings
+
+```json
+{
+  "defaultProvider": "anthropic",
+  "defaultModel": "claude-sonnet-4-20250514",
+  "defaultThinkingLevel": "medium",
+  "compaction": {
+    "enabled": true,
+    "reserveTokens": 16384,
+    "keepRecentTokens": 20000
+  },
+  "retry": {
+    "enabled": true,
+    "maxRetries": 3,
+    "baseDelayMs": 2000,
+    "maxDelayMs": 60000
+  },
+  "enabledModels": ["claude-*", "gpt-4o"]
+}
+```
+
+See [Providers & Models](/PizzaPi/features/providers-and-models/) for model configuration and [Sessions & Context](/PizzaPi/features/sessions/) for compaction and session settings.
+
+<Aside type="note">
+  PizzaPi config (`~/.pizzapi/config.json`) controls the relay, MCP servers, hooks, and sandbox. Pi settings (`~/.pi/agent/settings.json`) control model defaults, compaction, retry, and session behavior. They are independent — don't mix them up.
+</Aside>
+
+---
+
 ## Merge Order
 
 When PizzaPi starts, config is resolved in this order (later entries win):
