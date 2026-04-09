@@ -575,21 +575,38 @@ export const triggersExtension: ExtensionFactory = (pi) => {
             }
 
             const defs = await getAvailableSigils(targetId);
-            if (defs.length === 0) {
-                return {
-                    content: [{ type: "text" as const, text: "No sigil types available. The runner may not have any services with declared sigils." }],
-                    details: null as any,
-                };
-            }
 
-            const lines = defs.map((d) => {
+            const builtInLines = [
+                "• action — Action Sigils",
+                "  Built-in interactive sigils for confirmations, choices, and short text input.",
+                "  Variants:",
+                "  - [[action:confirm question=\"Deploy to production?\"]]",
+                "  - [[action:choose question=\"Which branch?\" options=\"main,develop,release\"]]",
+                "  - [[action:input question=\"Branch name?\" placeholder=\"feat/my-change\"]]",
+                "  Service: built-in-ui",
+            ];
+
+            const runnerLines = defs.map((d) => {
                 const aliases = d.aliases && d.aliases.length > 0 ? `\n  Aliases: ${d.aliases.join(", ")}` : "";
                 const resolver = d.resolve ? `\n  Resolve: ${d.resolve}` : "";
                 const service = d.serviceId ? `\n  Service: ${d.serviceId}` : "";
                 return `• ${d.type} — ${d.label}${d.description ? `\n  ${d.description}` : ""}${aliases}${resolver}${service}`;
             });
+            const totalCount = defs.length + 1;
+            const sections = defs.length > 0
+                ? [
+                    "Built-in sigils:",
+                    ...builtInLines,
+                    "",
+                    "Runner-provided sigils:",
+                    ...runnerLines,
+                ]
+                : [
+                    "Built-in sigils:",
+                    ...builtInLines,
+                ];
             return {
-                content: [{ type: "text" as const, text: `Available sigils (${defs.length}):\n${lines.join("\n")}` }],
+                content: [{ type: "text" as const, text: `Available sigils (${totalCount}):\n${sections.join("\n")}` }],
                 details: null as any,
             };
         },

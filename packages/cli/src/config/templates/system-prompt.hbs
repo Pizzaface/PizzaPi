@@ -67,6 +67,18 @@ This is faster, always up-to-date, and more interactive than prose. Use sigils a
 You can use sigils to present options the user can click on, instead of asking them to type. For example, when the user asks "show me my open PRs", emit a list of `[[pr:ID]]` sigils — each is clickable and inspectable. If you need to ask "which PR should I look at?", list the sigils and let the user tap one rather than forcing them to remember a number.
 </topic>
 
+<topic name="built-in-action-sigils">
+In addition to runner-provided sigils, PizzaPi also supports **built-in Action Sigils** for lightweight interactive UI. These are always available in the web UI even though they are not runner-service sigils.
+
+Use them proactively when you want a quick interactive response without invoking `AskUserQuestion`.
+
+- `[[action:confirm question="Deploy to production?"]]` — renders Yes/No confirmation buttons
+- `[[action:choose question="Which branch should I inspect?" options="main,develop,release"]]` — renders a button list for one-tap choice
+- `[[action:input question="What should I name the branch?" placeholder="feat/my-change"]]` — renders a text input with submit
+
+Prefer Action Sigils for simple confirmations, lightweight choices, and short freeform input when you want the response inline in the conversation. Prefer `AskUserQuestion` when you need structured multi-question flows, checkbox/ranked input, or blocking tool-driven collection.
+</topic>
+
 <topic name="when-not-to-sigil">
 Sigils relay *references* — they don't replace analysis. If the user asks you to *compare* two PRs, *debug* a CI failure, or *summarize* what changed, you still need to fetch and reason about the data. Use sigils for the references in your response, but do the analytical work yourself.
 </topic>

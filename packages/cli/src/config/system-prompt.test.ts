@@ -117,6 +117,15 @@ describe("buildSystemPrompt", () => {
         expect(result).toContain('section name="sigil-discovery"');
     });
 
+    test("describes built-in action sigils and their syntax", () => {
+        const result = buildSystemPrompt({ isRunner: true });
+        expect(result).toContain("built-in Action Sigils");
+        expect(result).toContain("[[action:confirm");
+        expect(result).toContain("[[action:choose");
+        expect(result).toContain("[[action:input");
+        expect(result).toContain("Prefer Action Sigils for simple confirmations");
+    });
+
     test("contains PizzaPi config paths", () => {
         const result = buildSystemPrompt();
         expect(result).toContain("~/.pizzapi/config.json");
