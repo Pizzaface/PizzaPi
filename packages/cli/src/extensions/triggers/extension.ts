@@ -20,6 +20,7 @@ import {
     unsubscribeTrigger,
     updateTriggerSubscription,
 } from "../trigger-client.js";
+import type { ServiceSigilDef } from "@pizzapi/protocol";
 
 function shortId(id: string, len = 8): string {
     return id.length > len ? id.slice(-len) : id;
@@ -108,6 +109,25 @@ export function trackReceivedTrigger(triggerId: string, sourceSessionId: string,
         if (now - entry.trackedAt > TRIGGER_TTL_MS) receivedTriggers.delete(id);
     }
 }
+
+// ── Built-in sigils ──────────────────────────────────────────────────────────
+// These are rendered client-side by the UI without needing a resolve endpoint.
+// They are always available regardless of which runner services are installed.
+const BUILTIN_SIGIL_DEFS: ServiceSigilDef[] = [
+    { type: "action", label: "Action", description: "Interactive action button. Variants: confirm, choose, input. Use [[action:confirm question=\"...\"]],  [[action:choose question=\"...\" options=\"a,b,c\"]], or [[action:input question=\"...\" placeholder=\"...\"]].", icon: "mouse-pointer-click" },
+    { type: "file", label: "File", description: "A file path reference. Renders as a clickable file pill.", icon: "file" },
+    { type: "status", label: "Status", description: "A status indicator.", icon: "circle" },
+    { type: "error", label: "Error", description: "An error or warning indicator.", icon: "alert-triangle", aliases: ["warn", "notice"] },
+    { type: "cost", label: "Cost", description: "A cost or price value.", icon: "dollar-sign", aliases: ["price", "budget"] },
+    { type: "duration", label: "Duration", description: "A time duration value.", icon: "clock", aliases: ["elapsed"] },
+    { type: "session", label: "Session", description: "A reference to an agent session.", icon: "terminal" },
+    { type: "model", label: "Model", description: "An AI model reference.", icon: "brain", aliases: ["agent", "llm"] },
+    { type: "cmd", label: "Command", description: "A shell command reference.", icon: "terminal-square", aliases: ["bash", "shell"] },
+    { type: "tag", label: "Tag", description: "A tag or label.", icon: "tag" },
+    { type: "test", label: "Test", description: "A test case reference.", icon: "flask-conical" },
+    { type: "link", label: "Link", description: "An external URL link.", icon: "external-link", aliases: ["url", "href"] },
+    { type: "diff", label: "Diff", description: "A diff or changeset reference.", icon: "diff" },
+];
 
 export const triggersExtension: ExtensionFactory = (pi) => {
     const parentSessionId = process.env.PIZZAPI_WORKER_PARENT_SESSION_ID ?? null;
@@ -574,7 +594,14 @@ export const triggersExtension: ExtensionFactory = (pi) => {
                 return { content: [{ type: "text" as const, text: "Error: Could not determine session ID." }], details: null as any };
             }
 
-            const defs = await getAvailableSigils(targetId);
+            const serviceDefs = await getAvailableSigils(targetId);
+
+            // Merge service-provided sigils with built-in sigils.
+            // Built-in sigils are rendered client-side and don't need a resolve endpoint.
+            const serviceTypes = new Set(serviceDefs.map((d) => d.type));
+            const builtins = BUILTIN_SIGIL_DEFS.filter((b) => !serviceTypes.has(b.type));
+            const defs = [...serviceDefs, ...builtins];
+
             if (defs.length === 0) {
                 return {
                     content: [{ type: "text" as const, text: "No sigil types available. The runner may not have any services with declared sigils." }],
