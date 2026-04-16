@@ -225,14 +225,14 @@ export interface AuthConfig {
 function createBetterAuth(opts: {
     baseURL: string;
     secret: string | undefined;
-    dialect: BunSqliteDialect;
+    db: Kysely<DB>;
     trustedOrigins: string[];
     rateLimitConfig: ApiKeyRateLimitConfig;
 }) {
     return betterAuth({
         baseURL: opts.baseURL,
         secret: opts.secret,
-        database: { dialect: opts.dialect, type: "sqlite" as const, transaction: true },
+        database: { db: opts.db, type: "sqlite" as const, transaction: true },
         trustedOrigins: () => opts.trustedOrigins,
         emailAndPassword: { enabled: true },
         advanced: {
@@ -331,7 +331,7 @@ export function createAuthContext(config: AuthConfig = {}): AuthContext {
     const auth = createBetterAuth({
         baseURL,
         secret,
-        dialect,
+        db,
         trustedOrigins,
         rateLimitConfig: apiKeyRateLimitConfig,
     });

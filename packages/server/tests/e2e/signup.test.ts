@@ -58,7 +58,6 @@ async function createHarness(prefix: string, config: Partial<AuthConfig> = {}): 
                 headers: {
                     "content-type": "application/json",
                     "x-pizzapi-client-ip": nextSocketIp(headers),
-                    "x-pizzapi-debug-db-path": dbPath,
                     ...headers,
                 },
             };

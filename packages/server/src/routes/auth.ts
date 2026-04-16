@@ -6,8 +6,7 @@
  * registration endpoint and the signup-status check.
  */
 
-import { getApiKeyRateLimitConfig, getAuth, getAuthContext, getKysely, isSignupAllowed } from "../auth.js";
-import { sql } from "kysely";
+import { getApiKeyRateLimitConfig, getAuth, getKysely, isSignupAllowed } from "../auth.js";
 import { RateLimiter, isValidEmail, isValidPassword, getClientIp } from "../security.js";
 import { PASSWORD_REQUIREMENTS_SUMMARY } from "@pizzapi/protocol";
 import { hashPassword as betterAuthHashPassword } from "better-auth/crypto";
@@ -16,28 +15,10 @@ import type { RouteHandler } from "./types.js";
 // 5 requests per 15 minutes
 const registerRateLimiter = new RateLimiter(5, 15 * 60 * 1000);
 
-async function logAuthDebug(req: Request, stage: string): Promise<void> {
-    if (!process.env.CI) return;
-
-    try {
-        const context = getAuthContext();
-        const userTable = await sql<{ name: string }>`
-            SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'user'
-        `.execute(context.db);
-        console.log(
-            `[auth-debug] stage=${stage} method=${req.method} path=${new URL(req.url).pathname} expectedDb=${req.headers.get("x-pizzapi-debug-db-path") ?? "-"} actualDb=${context.config.dbPath} userTable=${userTable.rows.length > 0 ? "present" : "missing"}`,
-        );
-    } catch (error) {
-        console.error(`[auth-debug] stage=${stage} failed`, error);
-    }
-}
-
 export const handleAuthRoute: RouteHandler = async (req, url) => {
     // ── Public endpoint: signup status ───────────────────────────────
     if (url.pathname === "/api/signup-status" && req.method === "GET") {
-        await logAuthDebug(req, "signup-status:before-isSignupAllowed");
         const allowed = await isSignupAllowed();
-        await logAuthDebug(req, "signup-status:after-isSignupAllowed");
         return Response.json({ signupEnabled: allowed });
     }
 
@@ -58,9 +39,7 @@ export const handleAuthRoute: RouteHandler = async (req, url) => {
             );
         }
 
-        await logAuthDebug(req, "register:before-json");
         const body = (await req.json()) as { name?: string; email?: string; password?: string };
-        await logAuthDebug(req, "register:after-json");
         const { name, email, password } = body;
         if (!email || !password) {
             return Response.json({ error: "Missing required fields: email, password" }, { status: 400 });
@@ -74,7 +53,6 @@ export const handleAuthRoute: RouteHandler = async (req, url) => {
             return Response.json({ error: PASSWORD_REQUIREMENTS_SUMMARY }, { status: 400 });
         }
 
-        await logAuthDebug(req, "register:before-existing-query");
         const existing = await getKysely()
             .selectFrom("user")
             .select("id")
