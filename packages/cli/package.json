@@ -29,7 +29,7 @@
     "build:binaries": "bun build-binaries.ts"
   },
   "dependencies": {
-    "@mariozechner/pi-coding-agent": "^0.66.1",
+    "@mariozechner/pi-coding-agent": "^0.67.5",
     "@modelcontextprotocol/sdk": "^1.27.1",
     "@pizzapi/protocol": "workspace:*",
     "@pizzapi/tools": "workspace:*",

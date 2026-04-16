@@ -4,7 +4,16 @@ Patches in this directory are applied automatically by Bun via the
 `patchedDependencies` field in the root `package.json`. They are reapplied on
 every `bun install` — no postinstall script is needed.
 
-## @mariozechner/pi-coding-agent@0.66.1
+## @mariozechner/pi-coding-agent@0.67.5
+
+Same changes as 0.66.1, ported forward. The upstream 0.67.x series changed
+`appendSystemPrompt` from `string` to `string[]` in `DefaultResourceLoaderOptions`.
+
+## @mariozechner/pi-ai@0.67.5
+
+Same changes as 0.66.1, ported forward. This version adds `claude-opus-4-7`.
+
+## @mariozechner/pi-coding-agent@0.66.1 (replaced by 0.67.5 patch)
 
 Same changes as 0.63.1 (see below), ported forward to the 0.66.1 refactor.
 
@@ -37,7 +46,7 @@ Notable upstream changes in 0.66.1:
 | `dist/modes/interactive/interactive-mode.js` — section headers | Box-drawing themed headers, compact extension table |
 | `dist/modes/interactive/interactive-mode.js` — diagnostics | Uses themed section headers for skill/prompt/extension/theme issues |
 
-## @mariozechner/pi-ai@0.66.1
+## @mariozechner/pi-ai@0.66.1 (replaced by 0.67.5 patch)
 
 Same changes as 0.63.1 (see below), ported forward.
 

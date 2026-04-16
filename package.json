@@ -37,9 +37,9 @@
     "postinstall": "bun scripts/link-workspaces.ts"
   },
   "dependencies": {
-    "@mariozechner/pi-agent-core": "^0.66.1",
-    "@mariozechner/pi-ai": "^0.66.1",
-    "@mariozechner/pi-tui": "^0.66.1",
+    "@mariozechner/pi-agent-core": "^0.67.5",
+    "@mariozechner/pi-ai": "^0.67.5",
+    "@mariozechner/pi-tui": "^0.67.5",
     "motion": "^12.34.2",
     "pizzapi": "."
   },
@@ -51,7 +51,7 @@
   },
   "version": "",
   "patchedDependencies": {
-    "@mariozechner/pi-ai@0.66.1": "patches/@mariozechner%2Fpi-ai@0.66.1.patch",
-    "@mariozechner/pi-coding-agent@0.66.1": "patches/@mariozechner%2Fpi-coding-agent@0.66.1.patch"
+    "@mariozechner/pi-ai@0.67.5": "patches/@mariozechner%2Fpi-ai@0.67.5.patch",
+    "@mariozechner/pi-coding-agent@0.67.5": "patches/@mariozechner%2Fpi-coding-agent@0.67.5.patch"
   }
 }

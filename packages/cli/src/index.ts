@@ -523,7 +523,7 @@ async function main() {
         ...(config.systemPrompt !== undefined && {
             systemPromptOverride: () => config.systemPrompt,
         }),
-        appendSystemPrompt: [buildSystemPrompt({ cwd }), config.appendSystemPrompt].filter(Boolean).join("\n\n"),
+        appendSystemPrompt: [buildSystemPrompt({ cwd }), config.appendSystemPrompt].filter(Boolean) as string[],
         ...(agentsFilesOverride && { agentsFilesOverride }),
     });
     await loader.reload();
@@ -544,7 +544,7 @@ async function main() {
                 ...(config.systemPrompt !== undefined && {
                     systemPromptOverride: () => config.systemPrompt,
                 }),
-                appendSystemPrompt: [buildSystemPrompt({ cwd: opts.cwd }), config.appendSystemPrompt].filter(Boolean).join("\n\n"),
+                appendSystemPrompt: [buildSystemPrompt({ cwd: opts.cwd }), config.appendSystemPrompt].filter(Boolean) as string[],
                 ...(agentsFilesOverride && { agentsFilesOverride }),
             },
         });

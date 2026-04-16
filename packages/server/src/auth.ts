@@ -225,14 +225,14 @@ export interface AuthConfig {
 function createBetterAuth(opts: {
     baseURL: string;
     secret: string | undefined;
-    db: Kysely<DB>;
+    dialect: BunSqliteDialect;
     trustedOrigins: string[];
     rateLimitConfig: ApiKeyRateLimitConfig;
 }) {
     return betterAuth({
         baseURL: opts.baseURL,
         secret: opts.secret,
-        database: { db: opts.db, type: "sqlite" as const, transaction: true },
+        database: { dialect: opts.dialect, type: "sqlite" as const, transaction: true },
         trustedOrigins: () => opts.trustedOrigins,
         emailAndPassword: { enabled: true },
         advanced: {
@@ -331,7 +331,7 @@ export function createAuthContext(config: AuthConfig = {}): AuthContext {
     const auth = createBetterAuth({
         baseURL,
         secret,
-        db,
+        dialect,
         trustedOrigins,
         rateLimitConfig: apiKeyRateLimitConfig,
     });
@@ -421,6 +421,10 @@ export type Auth = AuthInstance;
 export function createTestDatabase(dbPath: string): Kysely<DB> {
     const sqliteDb = new Database(dbPath);
     return new Kysely<DB>({ dialect: new BunSqliteDialect({ database: sqliteDb }) });
+}
+
+export function _setKyselyForTest(_db: Kysely<DB>): never {
+    throw new Error("_setKyselyForTest() was removed. Use createTestAuthContext() + runWithAuthContext() instead.");
 }
 
 /**

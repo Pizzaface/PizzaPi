@@ -259,7 +259,7 @@ async function main(): Promise<void> {
         ...(config.systemPrompt !== undefined && {
             systemPromptOverride: () => config.systemPrompt,
         }),
-        appendSystemPrompt: [buildSystemPrompt({ cwd, isRunner: true }), config.appendSystemPrompt, agentSystemPrompt].filter(Boolean).join("\n\n"),
+        appendSystemPrompt: [buildSystemPrompt({ cwd, isRunner: true }), config.appendSystemPrompt, agentSystemPrompt].filter(Boolean) as string[],
         ...(agentsFilesOverride && { agentsFilesOverride }),
     });
     await loader.reload();
