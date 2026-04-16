@@ -53,11 +53,22 @@ export const handleAuthRoute: RouteHandler = async (req, url) => {
             return Response.json({ error: PASSWORD_REQUIREMENTS_SUMMARY }, { status: 400 });
         }
 
-        const existing = await getKysely()
-            .selectFrom("user")
-            .select("id")
-            .where("email", "=", email)
-            .executeTakeFirst();
+        let existing: { id: string } | undefined;
+        try {
+            existing = await getKysely()
+                .selectFrom("user")
+                .select("id")
+                .where("email", "=", email)
+                .executeTakeFirst();
+            if (process.env.CI) {
+                console.log(`[auth-debug] existing-query ok email=${email} hit=${existing ? "yes" : "no"}`);
+            }
+        } catch (error) {
+            if (process.env.CI) {
+                console.error(`[auth-debug] existing-query failed email=${email}`, error);
+            }
+            throw error;
+        }
 
         // Constant response used when signups are disabled, regardless of
         // whether the email already exists. Returning the same status + body
@@ -71,7 +82,12 @@ export const handleAuthRoute: RouteHandler = async (req, url) => {
             // Verify password by attempting sign-in
             const signIn = await getAuth()
                 .api.signInEmail({ body: { email, password } })
-                .catch(() => null);
+                .catch((error) => {
+                    if (process.env.CI) {
+                        console.error(`[auth-debug] signInEmail failed email=${email}`, error);
+                    }
+                    return null;
+                });
             if (!signIn?.user?.id) {
                 // When signups are disabled return the same 403 as "no account"
                 // so callers cannot distinguish existing vs non-existing emails.
@@ -102,6 +118,11 @@ export const handleAuthRoute: RouteHandler = async (req, url) => {
             }
             const created = await getAuth().api.signUpEmail({
                 body: { name, email, password },
+            }).catch((error) => {
+                if (process.env.CI) {
+                    console.error(`[auth-debug] signUpEmail failed email=${email}`, error);
+                }
+                throw error;
             });
             if (!created?.user?.id) {
                 return Response.json({ error: "Failed to create user" }, { status: 500 });
