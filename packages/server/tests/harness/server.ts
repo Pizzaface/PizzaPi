@@ -18,8 +18,9 @@ import { createAdapter } from "@socket.io/redis-adapter";
 // Type-only import — erased at compile time, no runtime module registry lookup.
 import type { RedisClientType } from "redis";
 
-import { initAuth, getTrustedOrigins } from "../../src/auth.js";
+import { initAuth, getKysely, getTrustedOrigins } from "../../src/auth.js";
 import { runAllMigrations } from "../../src/migrations.js";
+import { ensureBetterAuthCoreTables } from "./ensure-auth-tables.js";
 import { handleFetch } from "../../src/handler.js";
 import { initStateRedis, closeStateRedis } from "../../src/ws/sio-state/index.js";
 import { serverHealth } from "../../src/health.js";
@@ -208,6 +209,8 @@ export async function createTestServer(opts?: TestServerOptions): Promise<TestSe
 
     // 4. Run DB migrations
     await runAllMigrations();
+    // Defensive fallback — see ensure-auth-tables.ts for details.
+    await ensureBetterAuthCoreTables(getKysely());
 
     // 5. Create Redis pub/sub clients and connect them
     pubClient = createClient({ url: getRedisUrl() }) as RedisClientType;

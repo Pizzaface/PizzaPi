@@ -9,6 +9,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { initAuth, getAuth, getKysely, type AuthConfig } from "../../src/auth.js";
+import { ensureBetterAuthCoreTables } from "../harness/ensure-auth-tables.js";
 import { runAllMigrations } from "../../src/migrations.js";
 import { handleFetch } from "../../src/handler.js";
 import { initStateRedis } from "../../src/ws/sio-state/index.js";
@@ -52,6 +53,13 @@ beforeAll(async () => {
         disableSignupAfterFirstUser: false,
     });
     await runAllMigrations();
+
+    // Defensive: better-auth's runMigrations() can silently skip core table
+    // creation when initAuth() has been called multiple times in the same Bun
+    // process (its internal Kysely adapter gets stale dialect state). Verify
+    // and create manually if missing.
+    await ensureBetterAuthCoreTables(getKysely());
+
     // Routes like /api/runners/spawn need Redis for runner lookups.
     await initStateRedis();
 });

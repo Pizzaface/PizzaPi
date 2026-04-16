@@ -1,10 +1,29 @@
-import { expect, test, beforeAll } from "bun:test";
+import { expect, test, beforeAll, beforeEach, afterAll } from "bun:test";
 import { randomUUID } from "crypto";
-import { getKysely } from "../src/auth.js";
+import { mkdtempSync, rmSync } from "fs";
+import { join } from "path";
+import { tmpdir } from "os";
+import { getKysely, createTestDatabase, _setKyselyForTest } from "../src/auth.js";
 import { ensureRelaySessionTables, touchRelaySession, recordRelaySessionStart, getPersistedRelaySessionSnapshot } from "../src/sessions/store.js";
 
+// Own temp DB — immune to other test files clobbering the auth singleton.
+// Only pins _kysely; does NOT call initAuth() to avoid poisoning the auth
+// singleton that e2e tests (signup.test.ts) depend on.
+const tmpDir = mkdtempSync(join(tmpdir(), "touch-test-"));
+const testDb = createTestDatabase(join(tmpDir, "test.db"));
+
 beforeAll(async () => {
+    _setKyselyForTest(testDb);
     await ensureRelaySessionTables();
+});
+
+// Re-pin before every test in case another file overwrote the singleton.
+beforeEach(() => {
+    _setKyselyForTest(testDb);
+});
+
+afterAll(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
 });
 
 test("touchRelaySession updates ephemeral session correctly", async () => {
