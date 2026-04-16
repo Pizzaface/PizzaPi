@@ -10,6 +10,7 @@ import { getApiKeyRateLimitConfig, getAuth, getKysely, isSignupAllowed } from ".
 import { RateLimiter, isValidEmail, isValidPassword, getClientIp } from "../security.js";
 import { PASSWORD_REQUIREMENTS_SUMMARY } from "@pizzapi/protocol";
 import { hashPassword as betterAuthHashPassword } from "better-auth/crypto";
+import { sql } from "kysely";
 import type { RouteHandler } from "./types.js";
 
 // 5 requests per 15 minutes
@@ -55,11 +56,10 @@ export const handleAuthRoute: RouteHandler = async (req, url) => {
 
         let existing: { id: string } | undefined;
         try {
-            existing = await getKysely()
-                .selectFrom("user")
-                .select("id")
-                .where("email", "=", email)
-                .executeTakeFirst();
+            const result = await sql<{ id: string }>`
+                SELECT id FROM user WHERE email = ${email} LIMIT 1
+            `.execute(getKysely());
+            existing = result.rows[0];
             if (process.env.CI) {
                 console.log(`[auth-debug] existing-query ok email=${email} hit=${existing ? "yes" : "no"}`);
             }
