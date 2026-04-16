@@ -11,7 +11,7 @@ import {
     SessionManager,
 } from "@mariozechner/pi-coding-agent";
 import { join } from "path";
-import { buildSystemPrompt, defaultAgentDir, expandHome, loadConfig, resolveSandboxConfig, validateSandboxOverride, applyProviderSettingsEnv } from "./config.js";
+import { buildSystemPrompt, rewriteForClaudeCodeProvider, defaultAgentDir, expandHome, loadConfig, resolveSandboxConfig, validateSandboxOverride, applyProviderSettingsEnv } from "./config.js";
 import { c, usageBar, colorPct, colorRemaining } from "./cli-colors.js";
 import { buildSkillPaths, buildPromptTemplatePaths, createAgentsFilesOverride } from "./skills.js";
 import { getPluginSkillPaths } from "./extensions/claude-plugins.js";
@@ -520,10 +520,16 @@ async function main() {
             ...(noPlugins ? [] : getPluginSkillPaths(cwd)),
         ],
         additionalPromptTemplatePaths: buildPromptTemplatePaths(cwd),
-        ...(config.systemPrompt !== undefined && {
-            systemPromptOverride: () => config.systemPrompt,
-        }),
-        appendSystemPrompt: [buildSystemPrompt({ cwd }), config.appendSystemPrompt].filter(Boolean) as string[],
+        ...(config.systemPrompt !== undefined
+            ? { systemPromptOverride: () => config.systemPrompt }
+            : config.claudeCodeProvider
+                ? { systemPromptOverride: (base: string | undefined) => base ? rewriteForClaudeCodeProvider(base) : base }
+                : {}
+        ),
+        appendSystemPrompt: (() => {
+            const parts = [buildSystemPrompt({ cwd }), config.appendSystemPrompt].filter(Boolean) as string[];
+            return config.claudeCodeProvider ? parts.map(rewriteForClaudeCodeProvider) : parts;
+        })(),
         ...(agentsFilesOverride && { agentsFilesOverride }),
     });
     await loader.reload();

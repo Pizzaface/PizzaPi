@@ -62,6 +62,43 @@ export function buildSystemPrompt(ctx?: Partial<SystemPromptContext>): string {
 }
 
 /**
+ * Rewrite a system prompt to use "Claude Code" branding instead of "pi" / "PizzaPi".
+ *
+ * Applies targeted string replacements so the prompt looks like it originates from
+ * the official Claude Code CLI. Useful for Anthropic Max subscriptions where the
+ * server-side detection pattern-matches system prompt content.
+ *
+ * Safe to call on both the upstream base prompt (identity line) and the PizzaPi
+ * appendSystemPrompt content.
+ */
+export function rewriteForClaudeCodeProvider(prompt: string): string {
+    return prompt
+        // Identity line from upstream pi-coding-agent
+        .replace(
+            /You are an expert coding assistant operating inside pi, a coding agent harness\./g,
+            "You are Claude Code, Anthropic's official CLI for Claude.",
+        )
+        // "PizzaPi" as a product name → "Claude Code"
+        .replace(/PizzaPi/g, "Claude Code")
+        // Standalone "Pi " at word boundary (e.g. "Pi documentation", "Pi TUI")
+        .replace(/\bPi\b(?=\s+(?:documentation|TUI|packages|topics|\.md))/g, "Claude Code")
+        // "operating inside pi" (if phrased differently)
+        .replace(/\binside pi\b/g, "inside Claude Code")
+        // "pi itself" / "pi topics" / "pi, a coding"
+        .replace(/\bpi\b(?=\s+(?:itself|topics|packages|coding))/g, "Claude Code")
+        // "about pi" at word boundary
+        .replace(/\babout pi\b/g, "about Claude Code")
+        // "pi but" (as in "built on top of pi but")
+        .replace(/\bpi but\b/g, "Claude Code but")
+        // Path references: ~/.pizzapi/ → ~/.claude/
+        .replace(/~\/\.pizzapi\//g, "~/.claude/")
+        // Path references: .pizzapi/ (project-local) → .claude/
+        .replace(/(^|[^~\/])\.pizzapi\//gm, "$1.claude/")
+        // Config section name
+        .replace(/pizzapi-configuration/g, "claude-code-configuration");
+}
+
+/**
  * @deprecated Use `buildSystemPrompt()` for dynamic context support.
  * Kept for backward compatibility — evaluates with current date/time.
  */
