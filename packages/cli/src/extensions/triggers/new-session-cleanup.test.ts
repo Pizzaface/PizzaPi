@@ -9,6 +9,7 @@
 // ============================================================================
 
 import { afterAll, describe, it, expect, beforeEach, mock } from "bun:test";
+import * as actualRemote from "../remote.js";
 import { trackReceivedTrigger, receivedTriggers, clearAndCancelPendingTriggers } from "./extension.js";
 
 // ── Mock the relay socket used by clearAndCancelPendingTriggers ──────────────
@@ -26,6 +27,7 @@ let mockToken = "test-token-123";
 
 // Mock getRelaySocket to return our mock
 mock.module("../remote.js", () => ({
+    ...actualRemote,
     getRelaySocket: () =>
         mockSocket
             ? { socket: mockSocket, token: mockToken }

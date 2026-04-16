@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
+import * as actualRemote from "./remote.js";
 
 describe("initialPromptExtension", () => {
     const envKeys = [
@@ -17,6 +18,7 @@ describe("initialPromptExtension", () => {
 
     test("registers and applies the initial model even when no prompt or agent is set", async () => {
         mock.module("./remote.js", () => ({
+            ...actualRemote,
             waitForRelayRegistration: mock(async (_timeoutMs?: number) => {}),
         }));
 
