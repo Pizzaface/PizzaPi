@@ -1,36 +1,25 @@
-import { expect, test, beforeAll, beforeEach, afterAll } from "bun:test";
+import { expect, test, beforeAll } from "bun:test";
 import { randomUUID } from "crypto";
-import { mkdtempSync, rmSync } from "fs";
-import { join } from "path";
-import { tmpdir } from "os";
-import { getKysely, initTestAuth } from "../src/auth.js";
+import { mkdtempSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { createTestAuthContext, getKysely, runWithAuthContext } from "../src/auth.js";
 import { ensureRelaySessionTables, recordRelaySessionStart, pruneExpiredRelaySessions, recordRelaySessionState } from "../src/sessions/store.js";
 
-// Own temp DB — immune to other test files clobbering the auth singleton.
-const tmpDir = mkdtempSync(join(tmpdir(), "prune-test-"));
-const dbPath = join(tmpDir, "test.db");
+const authContext = createTestAuthContext({
+    dbPath: join(mkdtempSync(join(tmpdir(), "prune-test-")), "auth.db"),
+});
+const withAuth = <T>(fn: () => T): T => runWithAuthContext(authContext, fn);
 
 beforeAll(async () => {
-    initTestAuth({ dbPath });
-    await ensureRelaySessionTables();
-});
-
-// Re-pin before every test in case another file overwrote the auth singleton.
-beforeEach(() => {
-    initTestAuth({ dbPath });
-});
-
-afterAll(() => {
-    rmSync(tmpDir, { recursive: true, force: true });
+    await withAuth(() => ensureRelaySessionTables());
 });
 
 test("pruneExpiredRelaySessions removes expired sessions and returns their IDs", async () => {
-    // 1. Create an expired session
     const expiredSessionId = randomUUID();
     const past = new Date(Date.now() - 10000).toISOString();
 
-    // Create expired session
-    await recordRelaySessionStart({
+    await withAuth(() => recordRelaySessionStart({
         sessionId: expiredSessionId,
         userId: "u1",
         userName: "user1",
@@ -38,20 +27,17 @@ test("pruneExpiredRelaySessions removes expired sessions and returns their IDs",
         shareUrl: "http://test",
         startedAt: past,
         isEphemeral: true,
-    });
+    }));
 
-    // Create session state
-    await recordRelaySessionState(expiredSessionId, "u1", { foo: "bar" });
+    await withAuth(() => recordRelaySessionState(expiredSessionId, "u1", { foo: "bar" }));
 
-    // Update expiry to be in the past
-    await getKysely().updateTable("relay_session")
+    await withAuth(() => getKysely().updateTable("relay_session")
         .set({ expiresAt: past })
         .where("id", "=", expiredSessionId)
-        .execute();
+        .execute());
 
-    // 2. Create an active session
     const activeSessionId = randomUUID();
-    await recordRelaySessionStart({
+    await withAuth(() => recordRelaySessionStart({
         sessionId: activeSessionId,
         userId: "u1",
         userName: "user1",
@@ -59,21 +45,19 @@ test("pruneExpiredRelaySessions removes expired sessions and returns their IDs",
         shareUrl: "http://test",
         startedAt: new Date().toISOString(),
         isEphemeral: true,
-    });
+    }));
 
-    // 3. Prune
-    const prunedIds = await pruneExpiredRelaySessions();
+    const prunedIds = await withAuth(() => pruneExpiredRelaySessions());
 
-    // 4. Verify
     expect(prunedIds).toContain(expiredSessionId);
     expect(prunedIds).not.toContain(activeSessionId);
 
-    const expiredRow = await getKysely().selectFrom("relay_session").selectAll().where("id", "=", expiredSessionId).executeTakeFirst();
+    const expiredRow = await withAuth(() => getKysely().selectFrom("relay_session").selectAll().where("id", "=", expiredSessionId).executeTakeFirst());
     expect(expiredRow).toBeUndefined();
 
-    const activeRow = await getKysely().selectFrom("relay_session").selectAll().where("id", "=", activeSessionId).executeTakeFirst();
+    const activeRow = await withAuth(() => getKysely().selectFrom("relay_session").selectAll().where("id", "=", activeSessionId).executeTakeFirst());
     expect(activeRow).toBeDefined();
 
-    const stateRow = await getKysely().selectFrom("relay_session_state").selectAll().where("sessionId", "=", expiredSessionId).executeTakeFirst();
+    const stateRow = await withAuth(() => getKysely().selectFrom("relay_session_state").selectAll().where("sessionId", "=", expiredSessionId).executeTakeFirst());
     expect(stateRow).toBeUndefined();
 });

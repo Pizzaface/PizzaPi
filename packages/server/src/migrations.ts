@@ -1,5 +1,5 @@
 import { getMigrations } from "better-auth/db";
-import { getAuth } from "./auth.js";
+import { type AuthContext, runWithAuthContext } from "./auth.js";
 import { ensureRelaySessionTables } from "./sessions/store.js";
 import { ensurePushSubscriptionTable } from "./push.js";
 import { ensureRunnerRecentFoldersTable } from "./runner-recent-folders.js";
@@ -37,27 +37,29 @@ export function summarizePendingBetterAuthMigrations(plan: BetterAuthMigrationPl
  * Run all database migrations (better-auth + custom tables).
  * Idempotent — safe to call on every server boot.
  */
-export async function runAllMigrations(): Promise<void> {
+export async function runAllMigrations(context: AuthContext): Promise<void> {
     try {
-        const migrationPlan = await getMigrations(getAuth().options);
-        const { runMigrations } = migrationPlan;
+        await runWithAuthContext(context, async () => {
+            const migrationPlan = await getMigrations(context.auth.options);
+            const { runMigrations } = migrationPlan;
 
-        const summary = summarizePendingBetterAuthMigrations(migrationPlan);
-        if (summary.hasPending) {
-            log.warn(
-                `Database schema is behind: ${summary.tablesToCreate} table(s) to create, ${summary.fieldsToAdd} field(s) to add. Applying migrations now.`,
-            );
-        }
+            const summary = summarizePendingBetterAuthMigrations(migrationPlan);
+            if (summary.hasPending) {
+                log.warn(
+                    `Database schema is behind: ${summary.tablesToCreate} table(s) to create, ${summary.fieldsToAdd} field(s) to add. Applying migrations now.`,
+                );
+            }
 
-        await runMigrations();
-        await ensureRelaySessionTables();
-        await ensurePushSubscriptionTable();
-        await ensureUserHiddenModelTable();
-        await ensureRunnerRecentFoldersTable();
-        await ensureRunnerTriggerListenersTable();
-        await ensureExtractedAttachmentTable();
-        await ensureWebhookTable();
-        log.info("All database migrations complete.");
+            await runMigrations();
+            await ensureRelaySessionTables();
+            await ensurePushSubscriptionTable();
+            await ensureUserHiddenModelTable();
+            await ensureRunnerRecentFoldersTable();
+            await ensureRunnerTriggerListenersTable();
+            await ensureExtractedAttachmentTable();
+            await ensureWebhookTable();
+            log.info("All database migrations complete.");
+        });
     } catch (e) {
         log.error("Migration failed:", e);
         process.exit(1);

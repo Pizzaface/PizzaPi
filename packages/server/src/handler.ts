@@ -1,4 +1,4 @@
-import { getAuth, isSignupAllowed } from "./auth.js";
+import { getAuth, isSignupAllowed, runWithAuthContext, type AuthContext } from "./auth.js";
 import { isValidPassword, PASSWORD_REQUIREMENTS_SUMMARY } from "@pizzapi/protocol";
 import { handleApi } from "./routes/index.js";
 import { serveStaticFile } from "./static.js";
@@ -199,9 +199,11 @@ export function withSecurityHeaders(res: Response): Response {
  * Fetch-style request handler (REST + auth + static).
  * Extracted so it can be used both by the production server and integration tests.
  */
-export async function handleFetch(req: Request): Promise<Response> {
-    const res = await _handleFetch(req);
-    return withSecurityHeaders(res);
+export async function handleFetch(req: Request, authContext: AuthContext): Promise<Response> {
+    return runWithAuthContext(authContext, async () => {
+        const res = await _handleFetch(req);
+        return withSecurityHeaders(res);
+    });
 }
 
 async function _handleFetch(req: Request): Promise<Response> {

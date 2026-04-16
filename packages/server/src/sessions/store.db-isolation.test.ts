@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, beforeEach, afterAll } from "bun:test"
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { initTestAuth, getKysely } from "../auth.js";
+import { createTestAuthContext, getKysely, runWithAuthContext } from "../auth.js";
 import {
     ensureRelaySessionTables,
     pinRelaySession,
@@ -18,6 +18,9 @@ import {
 
 const tmpDir = mkdtempSync(join(tmpdir(), "pizzapi-store-db-isolation-"));
 const dbPath = join(tmpDir, "test.db");
+const authContext = createTestAuthContext({ dbPath });
+const withAuth = <T>(fn: () => T): T => runWithAuthContext(authContext, fn);
+const authIt = (name: string, fn: () => Promise<void> | void) => it(name, () => withAuth(fn));
 const TEST_USER_ID = "test-user-pin";
 const TEST_USER = "test-user-runner-assoc";
 
@@ -55,14 +58,14 @@ async function insertSession(opts: {
 }
 
 beforeAll(async () => {
-    initTestAuth({ dbPath });
-    await ensureRelaySessionTables();
+    await withAuth(() => ensureRelaySessionTables());
 });
 
 beforeEach(async () => {
-    initTestAuth({ dbPath });
-    await getKysely().deleteFrom("relay_session_state").execute();
-    await getKysely().deleteFrom("relay_session").execute();
+    await withAuth(async () => {
+        await getKysely().deleteFrom("relay_session_state").execute();
+        await getKysely().deleteFrom("relay_session").execute();
+    });
 });
 
 afterAll(() => {
@@ -72,7 +75,7 @@ afterAll(() => {
 const isCI = !!process.env.CI;
 
 (isCI ? describe.skip : describe)("pinRelaySession", () => {
-    it("pins an existing session owned by the user", async () => {
+    authIt("pins an existing session owned by the user", async () => {
         await insertSession({ sessionId: "s1" });
 
         const result = await pinRelaySession("s1", TEST_USER_ID);
@@ -86,26 +89,26 @@ const isCI = !!process.env.CI;
         expect(row?.isPinned).toBe(1);
     });
 
-    it("returns false for non-existent session", async () => {
+    authIt("returns false for non-existent session", async () => {
         const result = await pinRelaySession("nonexistent", TEST_USER_ID);
         expect(result).toBe(false);
     });
 
-    it("returns false when user doesn't own the session", async () => {
+    authIt("returns false when user doesn't own the session", async () => {
         await insertSession({ sessionId: "s2", userId: "other-user" });
 
         const result = await pinRelaySession("s2", TEST_USER_ID);
         expect(result).toBe(false);
     });
 
-    it("is idempotent — pinning already-pinned session succeeds", async () => {
+    authIt("is idempotent — pinning already-pinned session succeeds", async () => {
         await insertSession({ sessionId: "s3", isPinned: 1 });
 
         const result = await pinRelaySession("s3", TEST_USER_ID);
         expect(result).toBe(true);
     });
 
-    it("succeeds on retry when session row appears after a delay", async () => {
+    authIt("succeeds on retry when session row appears after a delay", async () => {
         const delayedInsert = setTimeout(async () => {
             await insertSession({ sessionId: "s-delayed" });
         }, 300);
@@ -117,7 +120,7 @@ const isCI = !!process.env.CI;
 });
 
 (isCI ? describe.skip : describe)("unpinRelaySession", () => {
-    it("unpins a pinned session", async () => {
+    authIt("unpins a pinned session", async () => {
         await insertSession({ sessionId: "s4", isPinned: 1 });
 
         const result = await unpinRelaySession("s4", TEST_USER_ID);
@@ -131,12 +134,12 @@ const isCI = !!process.env.CI;
         expect(row?.isPinned).toBe(0);
     });
 
-    it("returns false for non-existent session", async () => {
+    authIt("returns false for non-existent session", async () => {
         const result = await unpinRelaySession("nonexistent", TEST_USER_ID);
         expect(result).toBe(false);
     });
 
-    it("returns false when user doesn't own the session", async () => {
+    authIt("returns false when user doesn't own the session", async () => {
         await insertSession({ sessionId: "s5", userId: "other-user", isPinned: 1 });
 
         const result = await unpinRelaySession("s5", TEST_USER_ID);
@@ -145,7 +148,7 @@ const isCI = !!process.env.CI;
 });
 
 (isCI ? describe.skip : describe)("listPersistedRelaySessionsForUser", () => {
-    it("includes isPinned field in results", async () => {
+    authIt("includes isPinned field in results", async () => {
         await insertSession({ sessionId: "s6", isPinned: 1, isEphemeral: false });
         await insertSession({ sessionId: "s7", isPinned: 0, isEphemeral: false });
 
@@ -157,7 +160,7 @@ const isCI = !!process.env.CI;
         expect(unpinned?.isPinned).toBe(false);
     });
 
-    it("pinned sessions appear before unpinned sessions", async () => {
+    authIt("pinned sessions appear before unpinned sessions", async () => {
         await insertSession({ sessionId: "s-old-pinned", isPinned: 1, isEphemeral: false });
         await insertSession({ sessionId: "s-new-unpinned", isPinned: 0, isEphemeral: false });
 
@@ -166,7 +169,7 @@ const isCI = !!process.env.CI;
         expect(sessions[0].sessionId).toBe("s-old-pinned");
     });
 
-    it("includes pinned sessions even if expired", async () => {
+    authIt("includes pinned sessions even if expired", async () => {
         const pastDate = new Date(Date.now() - 60 * 60 * 1000).toISOString();
 
         await insertSession({ sessionId: "s-expired-pinned", isPinned: 1, expiresAt: pastDate });
@@ -179,7 +182,7 @@ const isCI = !!process.env.CI;
         expect(ids).not.toContain("s-expired-unpinned");
     });
 
-    it("includes runner info", async () => {
+    authIt("includes runner info", async () => {
         await recordRelaySessionStart({
             sessionId: "s-ra-4",
             userId: TEST_USER,
@@ -201,7 +204,7 @@ const isCI = !!process.env.CI;
 });
 
 (isCI ? describe.skip : describe)("listPinnedRelaySessionsForUser", () => {
-    it("returns only pinned sessions", async () => {
+    authIt("returns only pinned sessions", async () => {
         await insertSession({ sessionId: "s-only-pinned", isPinned: 1, isEphemeral: false });
         await insertSession({ sessionId: "s-only-unpinned", isPinned: 0, isEphemeral: false });
 
@@ -212,7 +215,7 @@ const isCI = !!process.env.CI;
         expect(ids).not.toContain("s-only-unpinned");
     });
 
-    it("returns pinned sessions even when total session count exceeds the general cap", async () => {
+    authIt("returns pinned sessions even when total session count exceeds the general cap", async () => {
         for (let i = 0; i < 55; i++) {
             await insertSession({ sessionId: `s-cap-unpinned-${i}`, isPinned: 0, isEphemeral: false });
         }
@@ -225,7 +228,7 @@ const isCI = !!process.env.CI;
         expect(sessions.every((s) => s.isPinned)).toBe(true);
     });
 
-    it("includes runner info", async () => {
+    authIt("includes runner info", async () => {
         await recordRelaySessionStart({
             sessionId: "s-ra-5",
             userId: TEST_USER,
@@ -247,7 +250,7 @@ const isCI = !!process.env.CI;
         expect(found!.runnerName).toBe("Pinned Runner");
     });
 
-    it("runner info survives after session ends", async () => {
+    authIt("runner info survives after session ends", async () => {
         await recordRelaySessionStart({
             sessionId: "s-ra-6",
             userId: TEST_USER,
@@ -278,7 +281,7 @@ const isCI = !!process.env.CI;
 });
 
 describe("getPersistedRelaySessionSnapshot", () => {
-    it("returns pinned session even if expired", async () => {
+    authIt("returns pinned session even if expired", async () => {
         const pastDate = new Date(Date.now() - 60 * 60 * 1000).toISOString();
         await insertSession({ sessionId: "s-snap-pinned", isPinned: 1, expiresAt: pastDate });
 
@@ -287,7 +290,7 @@ describe("getPersistedRelaySessionSnapshot", () => {
         expect(snap?.sessionId).toBe("s-snap-pinned");
     });
 
-    it("returns null for expired unpinned session", async () => {
+    authIt("returns null for expired unpinned session", async () => {
         const pastDate = new Date(Date.now() - 60 * 60 * 1000).toISOString();
         await insertSession({ sessionId: "s-snap-unpinned", isPinned: 0, expiresAt: pastDate });
 
@@ -295,7 +298,7 @@ describe("getPersistedRelaySessionSnapshot", () => {
         expect(snap).toBeNull();
     });
 
-    it("returns null when requesting another user's session", async () => {
+    authIt("returns null when requesting another user's session", async () => {
         await insertSession({ sessionId: "s-snap-foreign", userId: "other-user", isPinned: 1, isEphemeral: false });
 
         const snap = await getPersistedRelaySessionSnapshot("s-snap-foreign", TEST_USER_ID);
@@ -304,7 +307,7 @@ describe("getPersistedRelaySessionSnapshot", () => {
 });
 
 describe("pruneExpiredRelaySessions", () => {
-    it("does not prune pinned sessions even when expired", async () => {
+    authIt("does not prune pinned sessions even when expired", async () => {
         const pastDate = new Date(Date.now() - 60 * 60 * 1000).toISOString();
 
         await insertSession({ sessionId: "s-prune-pinned", isPinned: 1, expiresAt: pastDate });
@@ -323,7 +326,7 @@ describe("pruneExpiredRelaySessions", () => {
         expect(remaining).toBeTruthy();
     });
 
-    it("prunes expired unpinned sessions normally", async () => {
+    authIt("prunes expired unpinned sessions normally", async () => {
         const pastDate = new Date(Date.now() - 60 * 60 * 1000).toISOString();
 
         await insertSession({ sessionId: "s-prune1", isPinned: 0, expiresAt: pastDate });
@@ -334,7 +337,7 @@ describe("pruneExpiredRelaySessions", () => {
         expect(pruned).toContain("s-prune2");
     });
 
-    it("does not prune sessions without an expiry", async () => {
+    authIt("does not prune sessions without an expiry", async () => {
         await insertSession({ sessionId: "s-no-expiry", isPinned: 0, expiresAt: null, isEphemeral: false });
 
         const pruned = await pruneExpiredRelaySessions();
@@ -343,7 +346,7 @@ describe("pruneExpiredRelaySessions", () => {
 });
 
 describe("runner association persistence", () => {
-    it("recordRelaySessionStart stores runnerId and runnerName", async () => {
+    authIt("recordRelaySessionStart stores runnerId and runnerName", async () => {
         await recordRelaySessionStart({
             sessionId: "s-ra-1",
             userId: TEST_USER,
@@ -365,7 +368,7 @@ describe("runner association persistence", () => {
         expect(row?.runnerName).toBe("My Runner");
     });
 
-    it("recordRelaySessionStart stores null when no runner info provided", async () => {
+    authIt("recordRelaySessionStart stores null when no runner info provided", async () => {
         await recordRelaySessionStart({
             sessionId: "s-ra-2",
             userId: TEST_USER,
@@ -385,7 +388,7 @@ describe("runner association persistence", () => {
         expect(row?.runnerName).toBeNull();
     });
 
-    it("updateRelaySessionRunner updates runner info after creation", async () => {
+    authIt("updateRelaySessionRunner updates runner info after creation", async () => {
         await recordRelaySessionStart({
             sessionId: "s-ra-3",
             userId: TEST_USER,
@@ -407,12 +410,12 @@ describe("runner association persistence", () => {
         expect(row?.runnerName).toBe("Late Runner");
     });
 
-    it("updateRelaySessionRunner returns false for nonexistent session", async () => {
+    authIt("updateRelaySessionRunner returns false for nonexistent session", async () => {
         const result = await updateRelaySessionRunner("nonexistent-session", "runner-x", "Runner X");
         expect(result).toBe(false);
     });
 
-    it("updateRelaySessionRunner retries and succeeds when row appears after delay", async () => {
+    authIt("updateRelaySessionRunner retries and succeeds when row appears after delay", async () => {
         const insertPromise = (async () => {
             await new Promise<void>((r) => setTimeout(r, 50));
             await recordRelaySessionStart({
@@ -440,7 +443,7 @@ describe("runner association persistence", () => {
         expect(row?.runnerName).toBe("Late Linker");
     });
 
-    it("recordRelaySessionStart updates runner info on reconnect", async () => {
+    authIt("recordRelaySessionStart updates runner info on reconnect", async () => {
         await recordRelaySessionStart({
             sessionId: "s-ra-reconn",
             userId: TEST_USER,
@@ -477,7 +480,7 @@ describe("runner association persistence", () => {
         expect(after?.runnerName).toBe("Reconnected Runner");
     });
 
-    it("recordRelaySessionStart does NOT null out runner info on reconnect without runner data", async () => {
+    authIt("recordRelaySessionStart does NOT null out runner info on reconnect without runner data", async () => {
         await recordRelaySessionStart({
             sessionId: "s-ra-null-guard",
             userId: TEST_USER,
@@ -508,7 +511,7 @@ describe("runner association persistence", () => {
         expect(row?.runnerName).toBe("Original Runner");
     });
 
-    it("getRelaySessionUserId returns userId for existing session", async () => {
+    authIt("getRelaySessionUserId returns userId for existing session", async () => {
         await recordRelaySessionStart({
             sessionId: "s-ra-uid",
             userId: TEST_USER,
@@ -522,7 +525,7 @@ describe("runner association persistence", () => {
         expect(uid).toBe(TEST_USER);
     });
 
-    it("getRelaySessionUserId returns null for nonexistent session", async () => {
+    authIt("getRelaySessionUserId returns null for nonexistent session", async () => {
         const uid = await getRelaySessionUserId("nonexistent-uid-session");
         expect(uid).toBeNull();
     });

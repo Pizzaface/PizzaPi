@@ -7,6 +7,7 @@
 // ============================================================================
 
 import type { Server as SocketIOServer, Namespace, Socket } from "socket.io";
+import { bindAuthContext, type AuthContext } from "../../auth.js";
 import type {
     ViewerClientToServerEvents,
     ViewerServerToClientEvents,
@@ -20,6 +21,7 @@ import type {
 // worktree's updated dist.
 type ServiceEnvelope = { serviceId: string; type: string; requestId?: string; payload: unknown };
 import { sessionCookieAuthMiddleware } from "./auth.js";
+import { bindSocketHandlersToAuthContext } from "./context.js";
 import { getRunnerServiceAnnounce } from "./runner.js";
 import { withRunnerRefHint } from "./runner-ref.js";
 import {
@@ -222,7 +224,7 @@ async function replayPersistedSnapshot(
 
 // ── Namespace registration ───────────────────────────────────────────────────
 
-export function registerViewerNamespace(io: SocketIOServer): void {
+export function registerViewerNamespace(io: SocketIOServer, context: AuthContext): void {
     const viewer: Namespace<
         ViewerClientToServerEvents,
         ViewerServerToClientEvents,
@@ -231,9 +233,10 @@ export function registerViewerNamespace(io: SocketIOServer): void {
     > = io.of("/viewer");
 
     // Auth: validate session cookie from handshake
-    viewer.use(sessionCookieAuthMiddleware() as Parameters<typeof viewer.use>[0]);
+    viewer.use(sessionCookieAuthMiddleware(context) as Parameters<typeof viewer.use>[0]);
 
-    viewer.on("connection", async (socket) => {
+    viewer.on("connection", bindAuthContext(context, async (socket) => {
+        bindSocketHandlersToAuthContext(socket, context);
         // Optional initial session ID from the handshake. Newer clients keep one
         // viewer socket alive and switch sessions logically via switch_session,
         // but we preserve handshake-based bootstrap for backward compatibility.
@@ -842,5 +845,5 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
 
             await activateSession(initialSessionId, 0);
         }
-    });
+    }));
 }

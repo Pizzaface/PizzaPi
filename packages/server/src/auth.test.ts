@@ -1,20 +1,27 @@
 import { describe, expect, test, beforeAll, beforeEach, afterAll, spyOn } from "bun:test";
-import { getDisableSignupAfterFirstUser, isSignupAllowed, getKysely, initAuth, initTestAuth } from "./auth";
+import {
+    createAuthContext,
+    getDisableSignupAfterFirstUser,
+    getKysely,
+    initAuth,
+    initTestAuth,
+    isSignupAllowed,
+    runWithAuthContext,
+} from "./auth";
 import { sql } from "kysely";
 import { mkdtempSync, rmSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 
-// Use a temp directory so the test is portable (CI runners have read-only working dirs)
 const tmpDir = mkdtempSync(join(tmpdir(), "auth-test-"));
 const tmpDbPath = join(tmpDir, "test.db");
+let testAuthContext = initTestAuth({ dbPath: tmpDbPath });
+const withTestAuth = <T>(fn: () => T): T => runWithAuthContext(testAuthContext, fn);
 
-// Initialize auth with the temp DB before any tests run
 beforeAll(async () => {
-    initTestAuth({ dbPath: tmpDbPath });
+    testAuthContext = initTestAuth({ dbPath: tmpDbPath });
 
-    // Ensure the user table exists for testing (better-auth normally creates it via migrations)
-    await sql`
+    await withTestAuth(() => sql`
         CREATE TABLE IF NOT EXISTS user (
             id TEXT PRIMARY KEY,
             name TEXT NOT NULL,
@@ -24,12 +31,11 @@ beforeAll(async () => {
             createdAt TEXT NOT NULL,
             updatedAt TEXT NOT NULL
         )
-    `.execute(getKysely());
+    `.execute(getKysely()));
 });
 
-// Re-pin before every test — other files may overwrite the auth singleton.
 beforeEach(() => {
-    initTestAuth({ dbPath: tmpDbPath });
+    testAuthContext = initTestAuth({ dbPath: tmpDbPath });
 });
 
 afterAll(() => {
@@ -64,7 +70,6 @@ describe("secret validation", () => {
         const dbPath = join(tmpD, "test.db");
         const warnSpy = spyOn(console, "warn");
         try {
-            // Should not throw — generates a random fallback
             expect(() => initAuth({ dbPath })).not.toThrow();
             const warnCalls = warnSpy.mock.calls.map((args) => args.join(" "));
             const found = warnCalls.some((msg) => msg.includes("BETTER_AUTH_SECRET") && msg.includes("random ephemeral secret"));
@@ -120,30 +125,42 @@ describe("secret validation", () => {
 });
 
 describe("signup gating", () => {
-    // Re-pin after secret validation tests which call initAuth() with different temp DBs.
     beforeAll(async () => {
-        initTestAuth({ dbPath: tmpDbPath });
+        testAuthContext = initTestAuth({ dbPath: tmpDbPath });
+    });
+
+    test("independent auth contexts keep their own signup config", async () => {
+        const allowCtx = createAuthContext({
+            dbPath: join(tmpdir(), `auth-allow-${crypto.randomUUID()}.db`),
+            secret: "a".repeat(32),
+            disableSignupAfterFirstUser: false,
+            baseURL: "http://localhost:7001",
+        });
+        const blockCtx = createAuthContext({
+            dbPath: join(tmpdir(), `auth-block-${crypto.randomUUID()}.db`),
+            secret: "b".repeat(32),
+            disableSignupAfterFirstUser: true,
+            baseURL: "http://localhost:7002",
+        });
+
+        expect(await runWithAuthContext(allowCtx, () => Promise.resolve(getDisableSignupAfterFirstUser()))).toBe(false);
+        expect(await runWithAuthContext(blockCtx, () => Promise.resolve(getDisableSignupAfterFirstUser()))).toBe(true);
     });
 
     test("disableSignupAfterFirstUser defaults to true", () => {
-        // The env var PIZZAPI_DISABLE_SIGNUP_AFTER_FIRST_USER is not set in
-        // the test environment, so it should fall back to the default (true).
-        expect(getDisableSignupAfterFirstUser()).toBe(true);
+        expect(withTestAuth(() => getDisableSignupAfterFirstUser())).toBe(true);
     });
 
     test("isSignupAllowed returns true when no users exist", async () => {
-        // Clean the table for a deterministic test
-        await getKysely().deleteFrom("user").execute();
-
-        const allowed = await isSignupAllowed();
+        await withTestAuth(() => getKysely().deleteFrom("user").execute());
+        const allowed = await withTestAuth(() => isSignupAllowed());
         expect(allowed).toBe(true);
     });
 
     test("isSignupAllowed returns false when users exist", async () => {
-        // Insert a test user
-        await getKysely().deleteFrom("user").execute();
+        await withTestAuth(() => getKysely().deleteFrom("user").execute());
         const now = new Date().toISOString();
-        await getKysely()
+        await withTestAuth(() => getKysely()
             .insertInto("user")
             .values({
                 id: "test-user-1",
@@ -154,12 +171,11 @@ describe("signup gating", () => {
                 createdAt: now,
                 updatedAt: now,
             })
-            .execute();
+            .execute());
 
-        const allowed = await isSignupAllowed();
+        const allowed = await withTestAuth(() => isSignupAllowed());
         expect(allowed).toBe(false);
 
-        // Clean up
-        await getKysely().deleteFrom("user").execute();
+        await withTestAuth(() => getKysely().deleteFrom("user").execute());
     });
 });

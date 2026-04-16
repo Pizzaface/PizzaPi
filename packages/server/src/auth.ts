@@ -1,8 +1,9 @@
+import { AsyncLocalStorage } from "node:async_hooks";
+import { Database } from "bun:sqlite";
 import { betterAuth } from "better-auth";
 import { apiKey } from "better-auth/plugins";
-import { BunSqliteDialect } from "kysely-bun-sqlite";
 import { Kysely } from "kysely";
-import { Database } from "bun:sqlite";
+import { BunSqliteDialect } from "kysely-bun-sqlite";
 import { createLogger } from "@pizzapi/tools";
 
 const log = createLogger("auth");
@@ -184,6 +185,13 @@ export interface DB {
 
 const DEFAULT_API_KEY_RATE_LIMIT_TIME_WINDOW_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_API_KEY_RATE_LIMIT_MAX_REQUESTS = 10;
+const TEST_AUTH_SECRET = "test-secret-for-server-tests-at-least-32-chars-long!!";
+
+type ApiKeyRateLimitConfig = {
+    enabled: boolean;
+    timeWindow: number;
+    maxRequests: number;
+};
 
 function parseBooleanEnv(value: string | undefined, fallback: boolean): boolean {
     if (!value) return fallback;
@@ -214,55 +222,21 @@ export interface AuthConfig {
     extraOrigins?: string[];
 }
 
-const TEST_AUTH_SECRET = "test-secret-for-server-tests-at-least-32-chars-long!!";
-
-/**
- * Initialize auth for server tests while keeping getAuth() and getKysely()
- * aligned to the same temp database. Use this instead of _setKyselyForTest()
- * when a test file wants DB isolation; re-pinning only Kysely lets another
- * file's getAuth() point at a different DB, which causes cross-file flakiness
- * in Bun's single-process test runner.
- */
-export function initTestAuth(config: AuthConfig = {}): void {
-    initAuth({
-        baseURL: config.baseURL ?? "http://localhost",
-        secret: config.secret ?? TEST_AUTH_SECRET,
-        disableSignupAfterFirstUser: config.disableSignupAfterFirstUser,
-        extraOrigins: config.extraOrigins,
-        dbPath: config.dbPath,
-    });
-}
-
-// ── Singleton state ───────────────────────────────────────────────────────────
-
-let _kysely: Kysely<DB> | null = null;
-// Use a factory function to capture the full inferred type including plugins
-function _createAuth(opts: {
+function createBetterAuth(opts: {
     baseURL: string;
     secret: string | undefined;
     dialect: BunSqliteDialect;
     trustedOrigins: string[];
-    rateLimitConfig: { enabled: boolean; timeWindow: number; maxRequests: number };
+    rateLimitConfig: ApiKeyRateLimitConfig;
 }) {
     return betterAuth({
         baseURL: opts.baseURL,
         secret: opts.secret,
         database: { dialect: opts.dialect, type: "sqlite" as const, transaction: true },
-        // Pass as a function so better-auth reads the live array contents
-        // at request time. This allows origins to be added after init (e.g.
-        // test harness adding the ephemeral port after server startup).
         trustedOrigins: () => opts.trustedOrigins,
         emailAndPassword: { enabled: true },
         advanced: {
             ipAddress: {
-                // Use our securely-injected header instead of the default x-forwarded-for.
-                // x-pizzapi-client-ip is set in nodeReqToFetchRequest() from the TCP socket's
-                // remoteAddress and stripped from any client-supplied value, making it
-                // spoofing-proof. This prevents attackers from rotating X-Forwarded-For to
-                // bypass Better Auth's built-in rate limits on /sign-in, /sign-up, etc.
-                // handler.ts further rewrites x-pizzapi-client-ip to the fully-resolved
-                // client IP (accounting for trusted reverse proxy hops) before auth routes
-                // are dispatched.
                 ipAddressHeaders: ["x-pizzapi-client-ip"],
             },
         },
@@ -278,23 +252,29 @@ function _createAuth(opts: {
         ],
     });
 }
-type AuthInstance = ReturnType<typeof _createAuth>;
-let _auth: AuthInstance | null = null;
-let _trustedOrigins: string[] | null = null;
-let _disableSignupAfterFirstUser: boolean | null = null;
-let _apiKeyRateLimitConfig: { enabled: boolean; timeWindow: number; maxRequests: number } | null = null;
-let _initialized = false;
 
-/**
- * Initialize the auth subsystem. Must be called once before any getters.
- * Safe to call multiple times (resets state — useful for tests).
- */
-export function initAuth(config: AuthConfig = {}): void {
+type AuthInstance = ReturnType<typeof createBetterAuth>;
+
+export interface AuthContext {
+    config: {
+        dbPath: string;
+        baseURL: string;
+        secret: string;
+    };
+    db: Kysely<DB>;
+    auth: AuthInstance;
+    trustedOrigins: string[];
+    disableSignupAfterFirstUser: boolean;
+    apiKeyRateLimitConfig: ApiKeyRateLimitConfig;
+}
+
+const authContextStorage = new AsyncLocalStorage<AuthContext>();
+
+export function createAuthContext(config: AuthConfig = {}): AuthContext {
     const dbPath = config.dbPath ?? process.env.AUTH_DB_PATH ?? "auth.db";
     const baseURL = config.baseURL ?? process.env.BETTER_AUTH_BASE_URL ?? `http://localhost:${process.env.PORT ?? "7492"}`;
     let secret = config.secret ?? process.env.BETTER_AUTH_SECRET;
 
-    // Validate the auth secret
     const isProd = process.env.NODE_ENV === "production";
     if (!secret || secret.trim() === "") {
         const msg =
@@ -303,11 +283,10 @@ export function initAuth(config: AuthConfig = {}): void {
             "  Example: BETTER_AUTH_SECRET=$(openssl rand -hex 32)";
         if (isProd) {
             throw new Error(`[auth] ${msg}`);
-        } else {
-            const fallback = crypto.randomUUID().replace(/-/g, "") + crypto.randomUUID().replace(/-/g, "");
-            log.warn(`WARNING: ${msg}\n  Using a random ephemeral secret for this development session.`);
-            secret = fallback;
         }
+        const fallback = crypto.randomUUID().replace(/-/g, "") + crypto.randomUUID().replace(/-/g, "");
+        log.warn(`WARNING: ${msg}\n  Using a random ephemeral secret for this development session.`);
+        secret = fallback;
     } else if (secret.length < 32) {
         log.warn(
             `WARNING: BETTER_AUTH_SECRET is shorter than 32 characters (got ${secret.length}). ` +
@@ -315,10 +294,10 @@ export function initAuth(config: AuthConfig = {}): void {
         );
     }
 
-    _disableSignupAfterFirstUser = config.disableSignupAfterFirstUser ??
+    const disableSignupAfterFirstUser = config.disableSignupAfterFirstUser ??
         parseBooleanEnv(process.env.PIZZAPI_DISABLE_SIGNUP_AFTER_FIRST_USER, true);
 
-    _apiKeyRateLimitConfig = {
+    const apiKeyRateLimitConfig: ApiKeyRateLimitConfig = {
         enabled: parseBooleanEnv(process.env.PIZZAPI_API_KEY_RATE_LIMIT_ENABLED, false),
         timeWindow: parsePositiveIntEnv(
             process.env.PIZZAPI_API_KEY_RATE_LIMIT_TIME_WINDOW_MS,
@@ -330,7 +309,6 @@ export function initAuth(config: AuthConfig = {}): void {
         ),
     };
 
-    // Trusted origins
     const extraOrigins = config.extraOrigins ??
         (process.env.PIZZAPI_EXTRA_ORIGINS
             ? process.env.PIZZAPI_EXTRA_ORIGINS.split(",").map((o) => o.trim()).filter(Boolean)
@@ -345,105 +323,105 @@ export function initAuth(config: AuthConfig = {}): void {
     } else if (!isProduction) {
         baseOrigins.push("http://localhost:5173", "http://127.0.0.1:5173");
     }
-    _trustedOrigins = [...baseOrigins, ...extraOrigins];
+    const trustedOrigins = [...baseOrigins, ...extraOrigins];
 
-    // Database
     const sqliteDb = new Database(dbPath);
     const dialect = new BunSqliteDialect({ database: sqliteDb });
-    _kysely = new Kysely<DB>({ dialect });
-
-    // Auth
-    _auth = _createAuth({
+    const db = new Kysely<DB>({ dialect });
+    const auth = createBetterAuth({
         baseURL,
         secret,
         dialect,
-        trustedOrigins: _trustedOrigins,
-        rateLimitConfig: _apiKeyRateLimitConfig,
+        trustedOrigins,
+        rateLimitConfig: apiKeyRateLimitConfig,
     });
 
-    _initialized = true;
+    return {
+        config: { dbPath, baseURL, secret },
+        db,
+        auth,
+        trustedOrigins,
+        disableSignupAfterFirstUser,
+        apiKeyRateLimitConfig,
+    };
 }
 
-// ── Lazy auto-init ────────────────────────────────────────────────────────────
-// For backward compatibility: if code accesses a getter before explicit init,
-// auto-initialize with env-based defaults. This preserves the old behavior
-// where importing auth.ts was enough.
+export function createTestAuthContext(config: AuthConfig = {}): AuthContext {
+    return createAuthContext({
+        baseURL: config.baseURL ?? "http://localhost",
+        secret: config.secret ?? TEST_AUTH_SECRET,
+        disableSignupAfterFirstUser: config.disableSignupAfterFirstUser,
+        extraOrigins: config.extraOrigins,
+        dbPath: config.dbPath,
+    });
+}
 
-function ensureInitialized(): void {
-    if (!_initialized) {
-        initAuth();
+export function initAuth(config: AuthConfig = {}): AuthContext {
+    return createAuthContext(config);
+}
+
+export function initTestAuth(config: AuthConfig = {}): AuthContext {
+    return createTestAuthContext(config);
+}
+
+export function runWithAuthContext<T>(context: AuthContext, fn: () => T): T {
+    return authContextStorage.run(context, fn);
+}
+
+export function bindAuthContext<T extends (...args: any[]) => any>(context: AuthContext, fn: T): T {
+    return ((...args: Parameters<T>) => runWithAuthContext(context, () => fn(...args))) as T;
+}
+
+export function getAuthContext(): AuthContext {
+    const context = authContextStorage.getStore();
+    if (!context) {
+        throw new Error(
+            "[auth] No auth context is active. Create one with createAuthContext()/createTestAuthContext() and call the code inside runWithAuthContext(...).",
+        );
     }
+    return context;
 }
 
-// ── Accessors ─────────────────────────────────────────────────────────────────
-
-/** Get the Kysely database instance. */
+/** Get the Kysely database instance for the active auth context. */
 export function getKysely(): Kysely<DB> {
-    ensureInitialized();
-    return _kysely!;
+    return getAuthContext().db;
 }
 
-/** Get the better-auth instance. */
+/** Get the better-auth instance for the active auth context. */
 export function getAuth(): AuthInstance {
-    ensureInitialized();
-    return _auth!;
+    return getAuthContext().auth;
 }
 
-/** Get trusted origins list. */
+/** Get trusted origins list for the active auth context. */
 export function getTrustedOrigins(): string[] {
-    ensureInitialized();
-    return _trustedOrigins!;
+    return getAuthContext().trustedOrigins;
 }
 
-/** Add an origin to the trusted origins list at runtime (e.g. Vite dev port in sandbox). */
+/** Add an origin to the active auth context at runtime (e.g. Vite dev port in sandbox). */
 export function addTrustedOrigin(origin: string): void {
-    ensureInitialized();
-    if (!_trustedOrigins!.includes(origin)) {
-        _trustedOrigins!.push(origin);
+    const trustedOrigins = getTrustedOrigins();
+    if (!trustedOrigins.includes(origin)) {
+        trustedOrigins.push(origin);
     }
 }
 
-/** Get API key rate limit configuration. */
-export function getApiKeyRateLimitConfig() {
-    ensureInitialized();
-    return _apiKeyRateLimitConfig!;
+/** Get API key rate limit configuration for the active auth context. */
+export function getApiKeyRateLimitConfig(): ApiKeyRateLimitConfig {
+    return getAuthContext().apiKeyRateLimitConfig;
 }
 
-/** Whether signup gating is enabled. */
+/** Whether signup gating is enabled for the active auth context. */
 export function getDisableSignupAfterFirstUser(): boolean {
-    ensureInitialized();
-    return _disableSignupAfterFirstUser!;
+    return getAuthContext().disableSignupAfterFirstUser;
 }
 
 export type Auth = AuthInstance;
 
-// ── Test helpers ──────────────────────────────────────────────────────────────
-// Bun's test runner runs ALL test files in a single process, so module-level
-// singletons like `_kysely` are shared across files.  When two test files each
-// call `initAuth({ dbPath })` with different temp DBs, the last one wins and
-// the other file's tests silently query the wrong database.
-//
-// These helpers let a test file pin `_kysely` to its own instance in
-// `beforeEach`, guaranteeing it is always correct even if another file's
-// `beforeAll` ran later and overwrote the singleton.
-
-/** Create a standalone Kysely instance for test isolation (does NOT touch the singleton). */
+/** Create a standalone Kysely instance for ad-hoc test setup. */
 export function createTestDatabase(dbPath: string): Kysely<DB> {
     const sqliteDb = new Database(dbPath);
     return new Kysely<DB>({ dialect: new BunSqliteDialect({ database: sqliteDb }) });
 }
-
-/**
- * Override the global `_kysely` singleton.  Call this in `beforeEach` so
- * every test case in your file uses the right database, regardless of
- * what other test files did to the singleton between `beforeAll` hooks.
- */
-export function _setKyselyForTest(db: Kysely<DB>): void {
-    _kysely = db;
-    _initialized = true;
-}
-
-// ── Signup gating ──────────────────────────────────────────────────────────────
 
 /**
  * Returns `true` when new user signups are currently allowed.

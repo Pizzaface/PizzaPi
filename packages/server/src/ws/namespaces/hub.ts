@@ -7,6 +7,7 @@
 // ============================================================================
 
 import type { Server as SocketIOServer, Namespace } from "socket.io";
+import { bindAuthContext, type AuthContext } from "../../auth.js";
 import type {
     HubClientToServerEvents,
     HubServerToClientEvents,
@@ -14,6 +15,7 @@ import type {
     HubSocketData,
 } from "@pizzapi/protocol";
 import { sessionCookieAuthMiddleware } from "./auth.js";
+import { bindSocketHandlersToAuthContext } from "./context.js";
 import {
     addHubClient,
     removeHubClient,
@@ -25,7 +27,7 @@ import { createLogger } from "@pizzapi/tools";
 
 const log = createLogger("sio/hub");
 
-export function registerHubNamespace(io: SocketIOServer): void {
+export function registerHubNamespace(io: SocketIOServer, context: AuthContext): void {
     const hub: Namespace<
         HubClientToServerEvents,
         HubServerToClientEvents,
@@ -34,9 +36,10 @@ export function registerHubNamespace(io: SocketIOServer): void {
     > = io.of("/hub");
 
     // Auth: validate session cookie from handshake
-    hub.use(sessionCookieAuthMiddleware() as Parameters<typeof hub.use>[0]);
+    hub.use(sessionCookieAuthMiddleware(context) as Parameters<typeof hub.use>[0]);
 
-    hub.on("connection", async (socket) => {
+    hub.on("connection", bindAuthContext(context, async (socket) => {
+        bindSocketHandlersToAuthContext(socket, context);
         const userId = socket.data.userId ?? "";
 
         log.info(`connected: ${socket.id} userId=${userId}`);
@@ -100,5 +103,5 @@ export function registerHubNamespace(io: SocketIOServer): void {
           socket.leave(sessionMetaRoom(sessionId));
           log.info(`meta unsubscribe: ${socket.id} ← session ${sessionId}`);
         });
-    });
+    }));
 }

@@ -1,17 +1,6 @@
-// ============================================================================
-// auth.ts — Socket.IO authentication middleware factories
-//
-// Two middleware factories:
-//   1. apiKeyAuthMiddleware()     — for /relay and /runner namespaces
-//   2. sessionCookieAuthMiddleware() — for /viewer, /terminal, /hub namespaces
-//
-// Each validates credentials from the Socket.IO handshake and populates
-// socket.data with userId and userName on success.
-// ============================================================================
-
 import type { Socket } from "socket.io";
 import { isSocketProtocolCompatible, SOCKET_PROTOCOL_VERSION } from "@pizzapi/protocol";
-import { getAuth, getKysely, getTrustedOrigins } from "../../auth.js";
+import { bindAuthContext, getAuth, getKysely, getTrustedOrigins, type AuthContext } from "../../auth.js";
 import { createLogger } from "@pizzapi/tools";
 
 const log = createLogger("sio/auth");
@@ -47,17 +36,8 @@ function applyHandshakeClientMetadata(socket: Socket): void {
     }
 }
 
-/**
- * Middleware for /relay and /runner namespaces.
- *
- * Extracts the API key from `socket.handshake.auth.apiKey`, validates it
- * via better-auth's `verifyApiKey`, and sets `socket.data.userId` and
- * `socket.data.userName`.
- *
- * Rejects with `next(new Error("unauthorized"))` if the key is missing or invalid.
- */
-export function apiKeyAuthMiddleware() {
-    return async (socket: Socket, next: (err?: Error) => void): Promise<void> => {
+export function apiKeyAuthMiddleware(context: AuthContext) {
+    return bindAuthContext(context, async (socket: Socket, next: (err?: Error) => void): Promise<void> => {
         try {
             applyHandshakeClientMetadata(socket);
 
@@ -84,26 +64,14 @@ export function apiKeyAuthMiddleware() {
         } catch {
             next(new Error("unauthorized"));
         }
-    };
+    });
 }
 
-/**
- * Middleware for /viewer, /terminal, and /hub namespaces.
- *
- * Extracts the session cookie from `socket.handshake.headers.cookie`,
- * validates the session via better-auth's `getSession()`, and sets
- * `socket.data.userId` and `socket.data.userName`.
- *
- * Rejects with `next(new Error("unauthorized"))` if no valid session exists.
- */
-export function sessionCookieAuthMiddleware() {
-    return async (socket: Socket, next: (err?: Error) => void): Promise<void> => {
+export function sessionCookieAuthMiddleware(context: AuthContext) {
+    return bindAuthContext(context, async (socket: Socket, next: (err?: Error) => void): Promise<void> => {
         try {
             applyHandshakeClientMetadata(socket);
 
-            // Validate Origin header to prevent Cross-Site WebSocket Hijacking (CSWSH).
-            // Browser WebSocket connections always include an Origin header; if the origin
-            // is not in our trusted list, reject the connection before processing cookies.
             const origin = socket.handshake.headers.origin;
             if (origin && !getTrustedOrigins().includes(origin)) {
                 return next(new Error("forbidden: untrusted origin"));
@@ -128,5 +96,5 @@ export function sessionCookieAuthMiddleware() {
         } catch {
             next(new Error("unauthorized"));
         }
-    };
+    });
 }

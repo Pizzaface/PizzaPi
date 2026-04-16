@@ -2,10 +2,9 @@
  * Test server factory — creates a real PizzaPi server on an ephemeral port
  * with SQLite + Redis + Socket.IO for integration testing.
  *
- * IMPORTANT: createTestServer() uses module-level singletons from auth.ts and
- * sio-state.ts. Only ONE active test server is supported at a time — creating
- * a second server overwrites the singletons that the first server's
- * handleFetch() depends on. Always call cleanup() before creating a new one.
+ * IMPORTANT: createTestServer() still uses a process-level Redis/state harness,
+ * so only ONE active test server is supported at a time. Always call cleanup()
+ * before creating a second server.
  */
 
 import { mkdtempSync, rmSync } from "node:fs";
@@ -18,10 +17,10 @@ import { createAdapter } from "@socket.io/redis-adapter";
 // Type-only import — erased at compile time, no runtime module registry lookup.
 import type { RedisClientType } from "redis";
 
-import { initTestAuth, getKysely, getTrustedOrigins } from "../../src/auth.js";
+import { createTestAuthContext, runWithAuthContext } from "../../src/auth.js";
 import { runAllMigrations } from "../../src/migrations.js";
-import { ensureBetterAuthCoreTables } from "./ensure-auth-tables.js";
 import { handleFetch } from "../../src/handler.js";
+import { ensureBetterAuthCoreTables } from "./ensure-auth-tables.js";
 import { initStateRedis, closeStateRedis } from "../../src/ws/sio-state/index.js";
 import { serverHealth } from "../../src/health.js";
 import { initSioRegistry } from "../../src/ws/sio-registry.js";
@@ -41,9 +40,8 @@ function getRedisUrl(): string {
 }
 
 // ── Active-server guard ──────────────────────────────────────────────────────
-// Module-level singletons (auth, sio-state) mean only one test server can be
-// active at a time. This flag prevents accidental concurrent creation which
-// would silently corrupt the first server's behavior.
+// The harness still shares process-level Redis/state plumbing, so only one
+// active test server is supported at a time.
 let _activeServer = false;
 
 // ── Unique IP generator ──────────────────────────────────────────────────────
@@ -144,9 +142,8 @@ async function sendFetchResponse(res: ServerResponse, response: Response): Promi
  *
  * Always call `cleanup()` when done to release all resources.
  *
- * NOTE: Uses module-level singletons (auth, sio-state). Only one active
- * server is allowed at a time — an error is thrown if you try to create
- * a second without cleaning up the first.
+ * NOTE: Only one active server is allowed at a time — an error is thrown if
+ * you try to create a second without cleaning up the first.
  */
 export async function createTestServer(opts?: TestServerOptions): Promise<TestServer> {
     if (_activeServer) {
@@ -176,9 +173,9 @@ export async function createTestServer(opts?: TestServerOptions): Promise<TestSe
         }
     }
 
-    // We need a placeholder baseURL for initAuth. We'll use a temp placeholder
-    // that better-auth uses only for cookie domain (not for actual listening).
-    // Using http://127.0.0.1 avoids port-0 issues and works for cookie matching.
+    // Use a placeholder baseURL for auth. Better Auth only needs a stable
+    // origin for cookie handling; we can add the real ephemeral port to the
+    // trusted-origins list after the server starts listening.
     const placeholderBase = opts?.baseUrl ?? "http://127.0.0.1";
 
     // Retrieve the real Redis createClient captured by the test preload
@@ -195,27 +192,21 @@ export async function createTestServer(opts?: TestServerOptions): Promise<TestSe
     // Hoisted so the catch block can close them if setup fails after connect.
     let pubClient: RedisClientType | null = null;
     let subClient: RedisClientType | null = null;
-    let currentBaseUrl = placeholderBase;
-
-    function pinHarnessAuth(): void {
-        initTestAuth({
-            dbPath,
-            baseURL: currentBaseUrl,
-            secret: "test-secret-for-harness-at-least-32-chars-long!!",
-            disableSignupAfterFirstUser: opts?.disableSignupAfterFirstUser ?? true,
-            extraOrigins: opts?.trustedOrigins,
-        });
-    }
 
     try {
 
     // 3. Init auth with temp DB
-    pinHarnessAuth();
+    const authContext = createTestAuthContext({
+        dbPath,
+        baseURL: placeholderBase,
+        secret: "test-secret-for-harness-at-least-32-chars-long!!",
+        disableSignupAfterFirstUser: opts?.disableSignupAfterFirstUser ?? true,
+        extraOrigins: opts?.trustedOrigins,
+    });
 
     // 4. Run DB migrations
-    await runAllMigrations();
-    // Defensive fallback — see ensure-auth-tables.ts for details.
-    await ensureBetterAuthCoreTables(getKysely());
+    await runAllMigrations(authContext);
+    await ensureBetterAuthCoreTables(authContext.db);
 
     // 5. Create Redis pub/sub clients and connect them
     pubClient = createClient({ url: getRedisUrl() }) as RedisClientType;
@@ -229,9 +220,8 @@ export async function createTestServer(opts?: TestServerOptions): Promise<TestSe
     // Create the HTTP server with the handleFetch handler
     const httpServer = createServer(async (req: IncomingMessage, res: ServerResponse) => {
         try {
-            pinHarnessAuth();
             const fetchReq = await nodeReqToFetchRequest(req, resolvedPort);
-            const fetchRes = await handleFetch(fetchReq);
+            const fetchRes = await handleFetch(fetchReq, authContext);
             await sendFetchResponse(res, fetchRes);
         } catch (e) {
             console.error("[test-harness] Unhandled error:", e);
@@ -245,7 +235,7 @@ export async function createTestServer(opts?: TestServerOptions): Promise<TestSe
     // 7. Create Socket.IO server with Redis adapter
     const io = new SocketIOServer(httpServer, {
         cors: {
-            origin: getTrustedOrigins(),
+            origin: authContext.trustedOrigins,
             credentials: true,
         },
         maxHttpBufferSize: 100 * 1024 * 1024,
@@ -262,20 +252,19 @@ export async function createTestServer(opts?: TestServerOptions): Promise<TestSe
     initSioRegistry(io);
 
     // 10. Register all namespaces
-    registerNamespaces(io);
+    registerNamespaces(io, authContext);
     serverHealth.socketio = true;
 
     // 10b. Init tunnel relay so mock runners can connect via /_tunnel WS
-    initTunnelRelay();
+    initTunnelRelay(authContext);
 
     // 10c. Intercept WebSocket upgrades: tunnel relay first, then tunnel WS
     //      proxy, then fall through to Socket.IO (mirrors src/index.ts).
     const existingUpgradeListeners = httpServer.listeners("upgrade").slice();
     httpServer.removeAllListeners("upgrade");
     httpServer.on("upgrade", (req, socket, head) => {
-        pinHarnessAuth();
-        if (handleTunnelRelayUpgrade(req, socket, head)) return;
-        if (handleTunnelWsUpgrade(req, socket, head)) return;
+        if (runWithAuthContext(authContext, () => handleTunnelRelayUpgrade(req, socket, head))) return;
+        if (runWithAuthContext(authContext, () => handleTunnelWsUpgrade(req, socket, head))) return;
         for (const listener of existingUpgradeListeners) {
             (listener as Function).call(httpServer, req, socket, head);
         }
@@ -293,14 +282,12 @@ export async function createTestServer(opts?: TestServerOptions): Promise<TestSe
 
     // Use 127.0.0.1 explicitly (not localhost) to avoid IPv6 resolution on macOS
     const baseUrl = opts?.baseUrl ?? `http://127.0.0.1:${resolvedPort}`;
-    currentBaseUrl = baseUrl;
-    pinHarnessAuth();
 
     // Add the resolved baseUrl to better-auth's trusted origins so that
     // browser requests from the ephemeral port are accepted (not rejected
-    // as "Invalid origin"). initAuth() runs before we know the port, so
-    // the origin can't be included at init time.
-    const origins = getTrustedOrigins();
+    // as "Invalid origin"). The auth context was created before we knew the
+    // port, so the origin can't be included up front.
+    const origins = authContext.trustedOrigins;
     if (!origins.includes(baseUrl)) {
         origins.push(baseUrl);
     }

@@ -2,7 +2,7 @@ import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
 import { TunnelRelay } from "@pizzapi/tunnel";
 import { WebSocketServer, type WebSocket as NodeWebSocket, type RawData } from "ws";
-import { getAuth } from "./auth.js";
+import { bindAuthContext, getAuth, type AuthContext } from "./auth.js";
 
 let relay: TunnelRelay | null = null;
 let wss: WebSocketServer | null = null;
@@ -66,18 +66,18 @@ function adaptWs(ws: NodeWebSocket): BrowserCompatibleWebSocket {
     };
 }
 
-export function initTunnelRelay(): TunnelRelay {
+export function initTunnelRelay(context: AuthContext): TunnelRelay {
     if (relay && wss) return relay;
 
     relay = new TunnelRelay({
-        apiKeys: async (key: string): Promise<boolean> => {
+        apiKeys: bindAuthContext(context, async (key: string): Promise<boolean> => {
             try {
                 const result = await getAuth().api.verifyApiKey({ body: { key } });
                 return !!(result.valid && result.key?.userId);
             } catch {
                 return false;
             }
-        },
+        }),
         log: {
             info: (...args) => console.log("[tunnel-relay]", ...args),
             debug: (...args) => {

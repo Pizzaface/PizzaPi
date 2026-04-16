@@ -13,10 +13,13 @@ import {
     _injectRedisForTesting,
     _resetRedisForTesting,
 } from "./runner-trigger-listener-store.js";
-import { initTestAuth, getKysely } from "../auth.js";
+import { createTestAuthContext, getKysely, runWithAuthContext } from "../auth.js";
 
 const tmpDir = mkdtempSync(join(tmpdir(), "pizzapi-runner-trigger-listeners-"));
 const dbPath = join(tmpDir, "test.db");
+const authContext = createTestAuthContext({ dbPath });
+const withAuth = <T>(fn: () => T): T => runWithAuthContext(authContext, fn);
+const authTest = (name: string, fn: () => Promise<void> | void) => test(name, () => withAuth(fn));
 
 const hashes = new Map<string, Map<string, string>>();
 const mockRedisClient = {
@@ -37,19 +40,16 @@ const mockRedisClient = {
 function resetState() {
     hashes.clear();
     _injectRedisForTesting(mockRedisClient);
-    initTestAuth({ dbPath });
 }
 
 beforeAll(async () => {
-    initTestAuth({ dbPath });
     _injectRedisForTesting(mockRedisClient);
-    await ensureRunnerTriggerListenersTable();
+    await withAuth(() => ensureRunnerTriggerListenersTable());
 });
 
 beforeEach(async () => {
     resetState();
-    initTestAuth({ dbPath });
-    await getKysely().deleteFrom("runner_trigger_listener").execute();
+    await withAuth(() => getKysely().deleteFrom("runner_trigger_listener").execute());
 });
 
 afterAll(() => {
@@ -58,9 +58,10 @@ afterAll(() => {
 });
 
 const isCI = !!process.env.CI;
+const maybeAuthTest = isCI ? test.skip : authTest;
 
 describe("runner trigger listener store", () => {
-    (isCI ? test.skip : test)("persists listeners in SQLite so they survive Redis reset", async () => {
+    maybeAuthTest("persists listeners in SQLite so they survive Redis reset", async () => {
         await addRunnerTriggerListener("runner-1", "svc:event", {
             cwd: "/code",
             prompt: "spawn it",
@@ -93,7 +94,7 @@ describe("runner trigger listener store", () => {
         expect(dbRow).toBeTruthy();
     });
 
-    (isCI ? test.skip : test)("updates persisted listeners without losing createdAt", async () => {
+    maybeAuthTest("updates persisted listeners without losing createdAt", async () => {
         await addRunnerTriggerListener("runner-1", "svc:event", {
             prompt: "initial",
         });
@@ -117,7 +118,7 @@ describe("runner trigger listener store", () => {
         expect(updated?.createdAt).toBe(initial?.createdAt);
     });
 
-    (isCI ? test.skip : test)("removes listeners from both SQLite and Redis", async () => {
+    maybeAuthTest("removes listeners from both SQLite and Redis", async () => {
         await addRunnerTriggerListener("runner-1", "svc:event", { prompt: "spawn it" });
         const removed = await removeRunnerTriggerListener("runner-1", "svc:event");
         expect(removed).toBe(true);
@@ -135,7 +136,7 @@ describe("runner trigger listener store", () => {
         expect(dbRow).toBeUndefined();
     });
 
-    (isCI ? test.skip : test)("supports multiple listeners for the same trigger type with distinct listener ids", async () => {
+    maybeAuthTest("supports multiple listeners for the same trigger type with distinct listener ids", async () => {
         const first = await addRunnerTriggerListener("runner-1", "svc:event", { prompt: "first" });
         const second = await addRunnerTriggerListener("runner-1", "svc:event", { prompt: "second", cwd: "/workspace" });
 
@@ -146,7 +147,7 @@ describe("runner trigger listener store", () => {
         expect(second).toBeString();
     });
 
-    (isCI ? test.skip : test)("updates and removes a listener by listenerId without affecting siblings", async () => {
+    maybeAuthTest("updates and removes a listener by listenerId without affecting siblings", async () => {
         const first = await addRunnerTriggerListener("runner-1", "svc:event", { prompt: "first" });
         const second = await addRunnerTriggerListener("runner-1", "svc:event", { prompt: "second" });
 
@@ -165,7 +166,7 @@ describe("runner trigger listener store", () => {
         expect(listeners[0].listenerId).toBe(second);
     });
 
-    (isCI ? test.skip : test)("legacy remove by triggerType removes all listeners for that type", async () => {
+    maybeAuthTest("legacy remove by triggerType removes all listeners for that type", async () => {
         await addRunnerTriggerListener("runner-1", "svc:event", { prompt: "first" });
         await addRunnerTriggerListener("runner-1", "svc:event", { prompt: "second" });
 
@@ -174,7 +175,7 @@ describe("runner trigger listener store", () => {
         expect(await listRunnerTriggerListeners("runner-1")).toEqual([]);
     });
 
-    (isCI ? test.skip : test)("backfills legacy Redis-only listeners into SQLite on read", async () => {
+    maybeAuthTest("backfills legacy Redis-only listeners into SQLite on read", async () => {
         const legacyListener = {
             triggerType: "svc:legacy",
             prompt: "legacy prompt",
@@ -196,7 +197,7 @@ describe("runner trigger listener store", () => {
         expect(dbRow).toBeTruthy();
     });
 
-    (isCI ? test.skip : test)("removes legacy rows with JSON-array composite key IDs", async () => {
+    maybeAuthTest("removes legacy rows with JSON-array composite key IDs", async () => {
         // Simulate a legacy row: id is a JSON array like '["runnerId","triggerType"]'
         const legacyId = JSON.stringify(["runner-1", "svc:legacy-del"]);
         const listenerJson = JSON.stringify({
@@ -231,7 +232,7 @@ describe("runner trigger listener store", () => {
         expect(after.find((l) => l.triggerType === "svc:legacy-del")).toBeUndefined();
     });
 
-    (isCI ? test.skip : test)("persists and updates autoClose flag", async () => {
+    maybeAuthTest("persists and updates autoClose flag", async () => {
         const listenerId = await addRunnerTriggerListener("runner-1", "svc:auto", {
             prompt: "auto close test",
             autoClose: true,
@@ -251,7 +252,7 @@ describe("runner trigger listener store", () => {
         expect(updated?.autoClose).toBe(false);
     });
 
-    (isCI ? test.skip : test)("returns trigger types for listener lookup", async () => {
+    maybeAuthTest("returns trigger types for listener lookup", async () => {
         await addRunnerTriggerListener("runner-1", "svc:one", { prompt: "one" });
         await addRunnerTriggerListener("runner-1", "svc:two", { prompt: "two" });
         const types = await getRunnerListenerTypes("runner-1");

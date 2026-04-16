@@ -1,4 +1,4 @@
-import { getTrustedOrigins } from "./auth.js";
+import { createAuthContext, runWithAuthContext } from "./auth.js";
 import { handleFetch } from "./handler.js";
 import {
     getEphemeralSweepIntervalMs,
@@ -98,13 +98,15 @@ const healthLog = createLogger("health");
 const socketIoLog = createLogger("Socket.IO");
 const shutdownLog = createLogger("shutdown");
 
-await runAllMigrations();
+const authContext = createAuthContext();
+
+await runAllMigrations(authContext);
 void initializeRelayRedisCache();
 
 // Rehydrate extracted image attachments from SQLite so URLs in persisted
 // session state survive server restarts.
 try {
-    const count = await rehydrateExtractedAttachments();
+    const count = await runWithAuthContext(authContext, () => rehydrateExtractedAttachments());
     if (count > 0) startupLog.info(`Rehydrated ${count} extracted image attachment(s) from database.`);
 } catch (err) {
     startupLog.error("Failed to rehydrate extracted attachments:", err);
@@ -193,7 +195,7 @@ const httpServer = createServer(async (req, res) => {
     // to the fetch API and run through the existing REST + auth handlers.
     try {
         const fetchReq = nodeReqToFetchRequest(req);
-        const fetchRes = await handleFetch(fetchReq);
+        const fetchRes = await handleFetch(fetchReq, authContext);
         await sendFetchResponse(res, fetchRes);
     } catch (e) {
         httpLog.error("Unhandled error:", e);
@@ -297,7 +299,7 @@ try {
     try {
         io = new SocketIOServer(httpServer, {
             cors: {
-                origin: getTrustedOrigins(),
+                origin: authContext.trustedOrigins,
                 credentials: true,
             },
             // Socket.IO default maxHttpBufferSize is 1 MB, which silently drops
@@ -324,7 +326,7 @@ try {
         await initStateRedis();
         initSioRegistry(io);
 
-        registerNamespaces(io);
+        registerNamespaces(io, authContext);
 
         // Mark Socket.IO as initialized so the Redis event listeners above
         // can also flip serverHealth.socketio on future reconnects/disconnects.
@@ -339,7 +341,7 @@ try {
     socketIoLog.error("The server will continue without Redis and Socket.IO support.");
 }
 
-initTunnelRelay();
+initTunnelRelay(authContext);
 
 // ── WebSocket upgrade interception ───────────────────────────────────────
 // Socket.IO attaches its own 'upgrade' listener to httpServer.
@@ -349,11 +351,11 @@ const existingUpgradeListeners = httpServer.listeners("upgrade").slice();
 httpServer.removeAllListeners("upgrade");
 
 httpServer.on("upgrade", (req, socket, head) => {
-    if (handleTunnelRelayUpgrade(req, socket, head)) {
+    if (runWithAuthContext(authContext, () => handleTunnelRelayUpgrade(req, socket, head))) {
         return;
     }
 
-    if (handleTunnelWsUpgrade(req, socket, head)) {
+    if (runWithAuthContext(authContext, () => handleTunnelWsUpgrade(req, socket, head))) {
         return;
     }
 
@@ -370,16 +372,18 @@ httpServer.listen(PORT, () => {
 
 const sweepMs = getEphemeralSweepIntervalMs();
 setInterval(() => {
-    void sweepExpiredSessions();
-    void sweepExpiredAttachments();
-    void pruneExpiredRelaySessions()
-        .then((expiredIds) => {
-            if (expiredIds.length === 0) return;
-            return deleteRelayEventCaches(expiredIds);
-        })
-        .catch((error) => {
-            log.error("Failed to prune expired relay sessions", error);
-        });
+    void runWithAuthContext(authContext, async () => {
+        void sweepExpiredSessions();
+        void sweepExpiredAttachments();
+        void pruneExpiredRelaySessions()
+            .then((expiredIds) => {
+                if (expiredIds.length === 0) return;
+                return deleteRelayEventCaches(expiredIds);
+            })
+            .catch((error) => {
+                log.error("Failed to prune expired relay sessions", error);
+            });
+    });
 }, sweepMs);
 
 log.info(`Relay session maintenance enabled (every ${Math.round(sweepMs / 1000)}s).`);
@@ -392,7 +396,7 @@ log.info(`Relay session maintenance enabled (every ${Math.round(sweepMs / 1000)}
 // then prune any that didn't.
 const RUNNER_RECONNECT_GRACE_MS = 90_000;
 setTimeout(() => {
-    void sweepOrphanedRunners().catch((err) => {
+    void runWithAuthContext(authContext, () => sweepOrphanedRunners()).catch((err) => {
         startupLog.error("Failed to sweep orphaned runners:", err);
     });
 }, RUNNER_RECONNECT_GRACE_MS);
