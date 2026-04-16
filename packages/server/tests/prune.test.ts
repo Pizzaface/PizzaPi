@@ -3,23 +3,21 @@ import { randomUUID } from "crypto";
 import { mkdtempSync, rmSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
-import { getKysely, createTestDatabase, _setKyselyForTest } from "../src/auth.js";
+import { getKysely, initTestAuth } from "../src/auth.js";
 import { ensureRelaySessionTables, recordRelaySessionStart, pruneExpiredRelaySessions, recordRelaySessionState } from "../src/sessions/store.js";
 
 // Own temp DB — immune to other test files clobbering the auth singleton.
-// Only pins _kysely; does NOT call initAuth() to avoid poisoning the auth
-// singleton that e2e tests (signup.test.ts) depend on.
 const tmpDir = mkdtempSync(join(tmpdir(), "prune-test-"));
-const testDb = createTestDatabase(join(tmpDir, "test.db"));
+const dbPath = join(tmpDir, "test.db");
 
 beforeAll(async () => {
-    _setKyselyForTest(testDb);
+    initTestAuth({ dbPath });
     await ensureRelaySessionTables();
 });
 
-// Re-pin before every test in case another file overwrote the singleton.
+// Re-pin before every test in case another file overwrote the auth singleton.
 beforeEach(() => {
-    _setKyselyForTest(testDb);
+    initTestAuth({ dbPath });
 });
 
 afterAll(() => {

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, beforeEach, afterAll, afterEach } from "bun:test";
-import { getKysely, createTestDatabase, _setKyselyForTest } from "./auth.js";
+import { getKysely, initTestAuth } from "./auth.js";
 import { unsubscribePush, updateSuppressChildNotifications, getSubscriptionsForUser, isValidPushEndpoint } from "./push.js";
 import { mkdtempSync, rmSync } from "fs";
 import { join } from "path";
@@ -9,11 +9,8 @@ import { tmpdir } from "os";
 const tmpDir = mkdtempSync(join(tmpdir(), "push-test-"));
 const tmpDbPath = join(tmpDir, "test.db");
 
-// Own Kysely instance — immune to other test files clobbering the singleton.
-const testDb = createTestDatabase(tmpDbPath);
-
 beforeAll(async () => {
-    _setKyselyForTest(testDb);
+    initTestAuth({ dbPath: tmpDbPath });
 
     await getKysely().schema
         .createTable("push_subscription")
@@ -28,9 +25,9 @@ beforeAll(async () => {
         .execute();
 });
 
-// Re-pin before every test — another file's beforeAll may have overwritten _kysely.
+// Re-pin before every test — another file may have overwritten the auth singleton.
 beforeEach(() => {
-    _setKyselyForTest(testDb);
+    initTestAuth({ dbPath: tmpDbPath });
 });
 
 afterEach(async () => {

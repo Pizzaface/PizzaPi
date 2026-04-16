@@ -13,11 +13,10 @@ import {
     _injectRedisForTesting,
     _resetRedisForTesting,
 } from "./runner-trigger-listener-store.js";
-import { createTestDatabase, _setKyselyForTest, getKysely } from "../auth.js";
+import { initTestAuth, getKysely } from "../auth.js";
 
 const tmpDir = mkdtempSync(join(tmpdir(), "pizzapi-runner-trigger-listeners-"));
 const dbPath = join(tmpDir, "test.db");
-const testDb = createTestDatabase(dbPath);
 
 const hashes = new Map<string, Map<string, string>>();
 const mockRedisClient = {
@@ -38,18 +37,18 @@ const mockRedisClient = {
 function resetState() {
     hashes.clear();
     _injectRedisForTesting(mockRedisClient);
-    _setKyselyForTest(testDb);
+    initTestAuth({ dbPath });
 }
 
 beforeAll(async () => {
-    _setKyselyForTest(testDb);
+    initTestAuth({ dbPath });
     _injectRedisForTesting(mockRedisClient);
     await ensureRunnerTriggerListenersTable();
 });
 
 beforeEach(async () => {
     resetState();
-    _setKyselyForTest(testDb);
+    initTestAuth({ dbPath });
     await getKysely().deleteFrom("runner_trigger_listener").execute();
 });
 

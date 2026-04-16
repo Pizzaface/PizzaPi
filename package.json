@@ -30,7 +30,7 @@
     "dev:ui": "cd packages/ui && bun run dev",
     "dev:cli": "bun packages/cli/src/index.ts",
     "dev:runner": "bun packages/cli/src/index.ts runner",
-    "test": "bun test packages/protocol/src packages/tunnel/src packages/server/src packages/server/tests packages/tools/src && cd packages/cli && bun test src && cd ../ui && bun test src",
+    "test": "bun test --max-concurrency=1 packages/protocol/src packages/tunnel/src packages/server/src packages/server/tests packages/tools/src && cd packages/cli && bun test src && cd ../ui && bun test src",
     "typecheck": "bun packages/cli/scripts/compile-prompt.ts && tsc --build && bun run --cwd packages/protocol typecheck:tests && bun run --cwd packages/server typecheck:tests",
     "migrate": "cd packages/server && bun run migrate",
     "clean": "bun -e \"['protocol','tunnel','tools','server','ui','cli','docs'].forEach(p=>{require('fs').rmSync('packages/'+p+'/dist',{recursive:true,force:true});require('fs').rmSync('packages/'+p+'/tsconfig.tsbuildinfo',{force:true})})\"",

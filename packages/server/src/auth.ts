@@ -214,6 +214,25 @@ export interface AuthConfig {
     extraOrigins?: string[];
 }
 
+const TEST_AUTH_SECRET = "test-secret-for-server-tests-at-least-32-chars-long!!";
+
+/**
+ * Initialize auth for server tests while keeping getAuth() and getKysely()
+ * aligned to the same temp database. Use this instead of _setKyselyForTest()
+ * when a test file wants DB isolation; re-pinning only Kysely lets another
+ * file's getAuth() point at a different DB, which causes cross-file flakiness
+ * in Bun's single-process test runner.
+ */
+export function initTestAuth(config: AuthConfig = {}): void {
+    initAuth({
+        baseURL: config.baseURL ?? "http://localhost",
+        secret: config.secret ?? TEST_AUTH_SECRET,
+        disableSignupAfterFirstUser: config.disableSignupAfterFirstUser,
+        extraOrigins: config.extraOrigins,
+        dbPath: config.dbPath,
+    });
+}
+
 // ── Singleton state ───────────────────────────────────────────────────────────
 
 let _kysely: Kysely<DB> | null = null;

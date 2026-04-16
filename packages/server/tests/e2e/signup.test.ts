@@ -8,7 +8,7 @@ import { describe, test, expect, beforeAll, afterAll } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { initAuth, getAuth, getKysely, type AuthConfig } from "../../src/auth.js";
+import { initTestAuth, getAuth, getKysely, type AuthConfig } from "../../src/auth.js";
 import { ensureBetterAuthCoreTables } from "../harness/ensure-auth-tables.js";
 import { runAllMigrations } from "../../src/migrations.js";
 import { handleFetch } from "../../src/handler.js";
@@ -30,8 +30,28 @@ const BASE = "http://localhost:7777";
 // to ensure each request gets a distinct rate-limit key.
 let reqCounter = 0;
 
+const defaultSignupAuthConfig: AuthConfig = {
+    dbPath,
+    baseURL: BASE,
+    secret: "test-secret-for-e2e-at-least-32-chars-long!!",
+    disableSignupAfterFirstUser: false,
+};
+let currentSignupAuthConfig: AuthConfig = { ...defaultSignupAuthConfig };
+
+function setSignupAuthConfig(config: Partial<AuthConfig> = {}): void {
+    currentSignupAuthConfig = { ...defaultSignupAuthConfig, ...config };
+}
+
+function pinSignupAuth(config: Partial<AuthConfig> = {}): void {
+    initTestAuth({ ...currentSignupAuthConfig, ...config });
+}
+
 /** Helper to make requests through the handler */
 async function req(method: string, path: string, body?: any, headers?: Record<string, string>): Promise<Response> {
+    // Re-pin auth before each request so other test files can't clobber the
+    // singleton between requests in this suite.
+    pinSignupAuth();
+
     // Simulate the Node adapter injecting x-pizzapi-client-ip from the TCP socket.
     // Each call gets a unique IP so rate-limiter buckets are independent, matching
     // production behavior where distinct TCP connections get distinct IPs.
@@ -46,12 +66,8 @@ async function req(method: string, path: string, body?: any, headers?: Record<st
 }
 
 beforeAll(async () => {
-    initAuth({
-        dbPath,
-        baseURL: BASE,
-        secret: "test-secret-for-e2e-at-least-32-chars-long!!",
-        disableSignupAfterFirstUser: false,
-    });
+    setSignupAuthConfig();
+    pinSignupAuth();
     await runAllMigrations();
 
     // Defensive: better-auth's runMigrations() can silently skip core table
@@ -142,6 +158,7 @@ describe("E2E: signup → API key → authenticated requests", () => {
     });
 
     test("API key validates via better-auth verifyApiKey", async () => {
+        pinSignupAuth();
         const auth = getAuth();
         const result = await auth.api.verifyApiKey({ body: { key: apiKey } });
         expect(result.valid).toBe(true);
@@ -149,12 +166,14 @@ describe("E2E: signup → API key → authenticated requests", () => {
     });
 
     test("invalid API key fails verification", async () => {
+        pinSignupAuth();
         const auth = getAuth();
         const result = await auth.api.verifyApiKey({ body: { key: "bad-key" } }).catch(() => ({ valid: false }));
         expect(result.valid).toBe(false);
     });
 
     test("API key is stored in DB with correct metadata", async () => {
+        pinSignupAuth();
         const kysely = getKysely();
         const rows = await kysely
             .selectFrom("apikey")
@@ -197,6 +216,7 @@ describe("E2E: key rotation", () => {
         const { key: firstKey } = await res1.json();
 
         // Verify first key works
+        pinSignupAuth();
         const auth = getAuth();
         const check1 = await auth.api.verifyApiKey({ body: { key: firstKey } });
         expect(check1.valid).toBe(true);
@@ -263,12 +283,11 @@ describe.serial("E2E: signup gating (disable after first user)", () => {
         const gatedDbPath = join(gatedDir, "gated.db");
 
         try {
-            initAuth({
+            setSignupAuthConfig({
                 dbPath: gatedDbPath,
-                baseURL: BASE,
-                secret: "test-secret-for-e2e-at-least-32-chars-long!!",
                 disableSignupAfterFirstUser: true, // ← gating enabled
             });
+            pinSignupAuth();
             await runAllMigrations();
 
             // First user signup should succeed
@@ -297,12 +316,8 @@ describe.serial("E2E: signup gating (disable after first user)", () => {
             expect(statusData.signupEnabled).toBe(false);
         } finally {
             // Restore original DB for any subsequent tests
-            initAuth({
-                dbPath,
-                baseURL: BASE,
-                secret: "test-secret-for-e2e-at-least-32-chars-long!!",
-                disableSignupAfterFirstUser: false,
-            });
+            setSignupAuthConfig();
+            pinSignupAuth();
             try { rmSync(gatedDir, { recursive: true, force: true }); } catch {}
         }
     });
@@ -317,12 +332,11 @@ describe.serial("E2E: /api/register does not leak account existence when signups
         const enumDbPath = join(enumDir, "enum.db");
 
         try {
-            initAuth({
+            setSignupAuthConfig({
                 dbPath: enumDbPath,
-                baseURL: BASE,
-                secret: "test-secret-for-e2e-at-least-32-chars-long!!",
                 disableSignupAfterFirstUser: true,
             });
+            pinSignupAuth();
             await runAllMigrations();
 
             // Register first (and only) user — signups now effectively disabled
@@ -358,12 +372,8 @@ describe.serial("E2E: /api/register does not leak account existence when signups
             expect(bodyUnknown.error).toBe("Registration is not available.");
             expect(bodyExisting.error).toBe(bodyUnknown.error);
         } finally {
-            initAuth({
-                dbPath,
-                baseURL: BASE,
-                secret: "test-secret-for-e2e-at-least-32-chars-long!!",
-                disableSignupAfterFirstUser: false,
-            });
+            setSignupAuthConfig();
+            pinSignupAuth();
             try { rmSync(enumDir, { recursive: true, force: true }); } catch {}
         }
     });
@@ -374,12 +384,11 @@ describe.serial("E2E: /api/register does not leak account existence when signups
         const enumDbPath2 = join(enumDir2, "enum2.db");
 
         try {
-            initAuth({
+            setSignupAuthConfig({
                 dbPath: enumDbPath2,
-                baseURL: BASE,
-                secret: "test-secret-for-e2e-at-least-32-chars-long!!",
                 disableSignupAfterFirstUser: true,
             });
+            pinSignupAuth();
             await runAllMigrations();
 
             // Register the first user
@@ -400,12 +409,8 @@ describe.serial("E2E: /api/register does not leak account existence when signups
             expect(data.ok).toBe(true);
             expect(typeof data.key).toBe("string");
         } finally {
-            initAuth({
-                dbPath,
-                baseURL: BASE,
-                secret: "test-secret-for-e2e-at-least-32-chars-long!!",
-                disableSignupAfterFirstUser: false,
-            });
+            setSignupAuthConfig();
+            pinSignupAuth();
             try { rmSync(enumDir2, { recursive: true, force: true }); } catch {}
         }
     });

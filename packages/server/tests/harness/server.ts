@@ -18,7 +18,7 @@ import { createAdapter } from "@socket.io/redis-adapter";
 // Type-only import — erased at compile time, no runtime module registry lookup.
 import type { RedisClientType } from "redis";
 
-import { initAuth, getKysely, getTrustedOrigins } from "../../src/auth.js";
+import { initTestAuth, getKysely, getTrustedOrigins } from "../../src/auth.js";
 import { runAllMigrations } from "../../src/migrations.js";
 import { ensureBetterAuthCoreTables } from "./ensure-auth-tables.js";
 import { handleFetch } from "../../src/handler.js";
@@ -195,17 +195,22 @@ export async function createTestServer(opts?: TestServerOptions): Promise<TestSe
     // Hoisted so the catch block can close them if setup fails after connect.
     let pubClient: RedisClientType | null = null;
     let subClient: RedisClientType | null = null;
+    let currentBaseUrl = placeholderBase;
+
+    function pinHarnessAuth(): void {
+        initTestAuth({
+            dbPath,
+            baseURL: currentBaseUrl,
+            secret: "test-secret-for-harness-at-least-32-chars-long!!",
+            disableSignupAfterFirstUser: opts?.disableSignupAfterFirstUser ?? true,
+            extraOrigins: opts?.trustedOrigins,
+        });
+    }
 
     try {
 
     // 3. Init auth with temp DB
-    initAuth({
-        dbPath,
-        baseURL: placeholderBase,
-        secret: "test-secret-for-harness-at-least-32-chars-long!!",
-        disableSignupAfterFirstUser: opts?.disableSignupAfterFirstUser ?? true,
-        extraOrigins: opts?.trustedOrigins,
-    });
+    pinHarnessAuth();
 
     // 4. Run DB migrations
     await runAllMigrations();
@@ -224,6 +229,7 @@ export async function createTestServer(opts?: TestServerOptions): Promise<TestSe
     // Create the HTTP server with the handleFetch handler
     const httpServer = createServer(async (req: IncomingMessage, res: ServerResponse) => {
         try {
+            pinHarnessAuth();
             const fetchReq = await nodeReqToFetchRequest(req, resolvedPort);
             const fetchRes = await handleFetch(fetchReq);
             await sendFetchResponse(res, fetchRes);
@@ -267,6 +273,7 @@ export async function createTestServer(opts?: TestServerOptions): Promise<TestSe
     const existingUpgradeListeners = httpServer.listeners("upgrade").slice();
     httpServer.removeAllListeners("upgrade");
     httpServer.on("upgrade", (req, socket, head) => {
+        pinHarnessAuth();
         if (handleTunnelRelayUpgrade(req, socket, head)) return;
         if (handleTunnelWsUpgrade(req, socket, head)) return;
         for (const listener of existingUpgradeListeners) {
@@ -286,6 +293,8 @@ export async function createTestServer(opts?: TestServerOptions): Promise<TestSe
 
     // Use 127.0.0.1 explicitly (not localhost) to avoid IPv6 resolution on macOS
     const baseUrl = opts?.baseUrl ?? `http://127.0.0.1:${resolvedPort}`;
+    currentBaseUrl = baseUrl;
+    pinHarnessAuth();
 
     // Add the resolved baseUrl to better-auth's trusted origins so that
     // browser requests from the ephemeral port are accepted (not rejected

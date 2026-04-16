@@ -1,5 +1,5 @@
 import { describe, expect, test, beforeAll, beforeEach, afterAll, spyOn } from "bun:test";
-import { getDisableSignupAfterFirstUser, isSignupAllowed, getKysely, initAuth, createTestDatabase, _setKyselyForTest } from "./auth";
+import { getDisableSignupAfterFirstUser, isSignupAllowed, getKysely, initAuth, initTestAuth } from "./auth";
 import { sql } from "kysely";
 import { mkdtempSync, rmSync } from "fs";
 import { join } from "path";
@@ -9,12 +9,9 @@ import { tmpdir } from "os";
 const tmpDir = mkdtempSync(join(tmpdir(), "auth-test-"));
 const tmpDbPath = join(tmpDir, "test.db");
 
-// Own Kysely instance — immune to other test files clobbering the singleton.
-const testDb = createTestDatabase(tmpDbPath);
-
 // Initialize auth with the temp DB before any tests run
 beforeAll(async () => {
-    _setKyselyForTest(testDb);
+    initTestAuth({ dbPath: tmpDbPath });
 
     // Ensure the user table exists for testing (better-auth normally creates it via migrations)
     await sql`
@@ -30,9 +27,9 @@ beforeAll(async () => {
     `.execute(getKysely());
 });
 
-// Re-pin before every test — secret validation tests and other files may overwrite _kysely.
+// Re-pin before every test — other files may overwrite the auth singleton.
 beforeEach(() => {
-    _setKyselyForTest(testDb);
+    initTestAuth({ dbPath: tmpDbPath });
 });
 
 afterAll(() => {
@@ -125,7 +122,7 @@ describe("secret validation", () => {
 describe("signup gating", () => {
     // Re-pin after secret validation tests which call initAuth() with different temp DBs.
     beforeAll(async () => {
-        _setKyselyForTest(testDb);
+        initTestAuth({ dbPath: tmpDbPath });
     });
 
     test("disableSignupAfterFirstUser defaults to true", () => {

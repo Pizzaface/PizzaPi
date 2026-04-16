@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, beforeEach, afterAll } from "bun:test"
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { createTestDatabase, _setKyselyForTest, getKysely } from "../auth.js";
+import { initTestAuth, getKysely } from "../auth.js";
 import {
     ensureRelaySessionTables,
     pinRelaySession,
@@ -18,7 +18,6 @@ import {
 
 const tmpDir = mkdtempSync(join(tmpdir(), "pizzapi-store-db-isolation-"));
 const dbPath = join(tmpDir, "test.db");
-const testDb = createTestDatabase(dbPath);
 const TEST_USER_ID = "test-user-pin";
 const TEST_USER = "test-user-runner-assoc";
 
@@ -56,12 +55,12 @@ async function insertSession(opts: {
 }
 
 beforeAll(async () => {
-    _setKyselyForTest(testDb);
+    initTestAuth({ dbPath });
     await ensureRelaySessionTables();
 });
 
 beforeEach(async () => {
-    _setKyselyForTest(testDb);
+    initTestAuth({ dbPath });
     await getKysely().deleteFrom("relay_session_state").execute();
     await getKysely().deleteFrom("relay_session").execute();
 });
