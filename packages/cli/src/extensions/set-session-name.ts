@@ -17,7 +17,7 @@ export const setSessionNameExtension: ExtensionFactory = (pi) => {
     pi.on("session_start", () => {
         named = false;
     });
-    pi.on("session_switch", () => {
+    pi.on("session_start", () => {
         named = false;
     });
 

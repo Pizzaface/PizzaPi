@@ -4,19 +4,20 @@ Patches in this directory are applied automatically by Bun via the
 `patchedDependencies` field in the root `package.json`. They are reapplied on
 every `bun install` — no postinstall script is needed.
 
-## @mariozechner/pi-coding-agent@0.63.1
+## @mariozechner/pi-coding-agent@0.66.1
 
-Same changes as 0.58.3 (see below), ported forward, plus one new patch:
+Same changes as 0.63.1 (see below), ported forward to the 0.66.1 refactor.
 
-- **Flat agent directory:** `getAgentDir()` now returns `~/.pizzapi/` instead of
-  `~/.pizzapi/agent/`. PizzaPi uses a flat directory structure where sessions,
-  auth, models, bin, etc. all live directly under `~/.pizzapi/`. A startup
-  migration in the daemon consolidates any data from `~/.pizzapi/agent/`.
-
-The upstream retryable error regex gained several new patterns in this release
-(`provider.?returned.?error`, `network.?error`, `socket hang up`,
-`timed? out`, `timeout`); our `json.?parse.?error` addition is appended
-on top.
+Notable upstream changes in 0.66.1:
+- `ModelRegistry` constructor is now private — use `ModelRegistry.create()`.
+- `AgentSession.newSession()`/`switchSession()`/`fork()` moved to a new
+  `AgentSessionRuntime` class. `InteractiveMode` now takes
+  `AgentSessionRuntime` instead of `AgentSession`.
+- The `session_switch` extension event was removed; `session_before_switch`
+  and `session_start` remain.
+- New `SessionManager.create()` replaces `SessionManager.persistent()`.
+- Upstream retryable error regex added `ended without`; our `json.?parse`
+  addition is appended on top.
 
 **What it changes:**
 
@@ -24,6 +25,7 @@ on top.
 |------|--------|
 | `dist/config.js` — `CONFIG_DIR_NAME` | Hardcodes `".pizzapi"` |
 | `dist/config.js` — `getAgentDir()` | Returns `~/.pizzapi/` instead of `~/.pizzapi/agent/` — PizzaPi uses a flat directory structure |
+| `dist/config.js` — `getChangelogPath()` | Checks `PIZZAPI_CHANGELOG_PATH` env var first |
 | `dist/core/agent-session.js` — `_isRetryableError()` | Adds `json.?parse.?error\|unexpected.?end.?of.?json` |
 | `dist/core/extensions/loader.js` — `createExtensionRuntime()` | Adds `newSession`/`switchSession` stubs |
 | `dist/core/extensions/loader.js` — `createExtensionAPI()` | Adds `newSession`/`switchSession` wrappers |
@@ -32,9 +34,33 @@ on top.
 | `dist/modes/interactive/interactive-mode.js` — `run()` | Removes `checkForNewVersion()` call |
 | `dist/modes/interactive/interactive-mode.js` | Removes `checkForNewVersion()` and `showNewVersionNotification()` methods |
 | `dist/modes/interactive/interactive-mode.js` — login flow | Uses `authStorage.storage?.authPath` instead of `getAuthPath()` |
-| `dist/config.js` — `getChangelogPath()` | Checks `PIZZAPI_CHANGELOG_PATH` env var first, allowing PizzaPi to redirect to its own changelog |
+| `dist/modes/interactive/interactive-mode.js` — section headers | Box-drawing themed headers, compact extension table |
+| `dist/modes/interactive/interactive-mode.js` — diagnostics | Uses themed section headers for skill/prompt/extension/theme issues |
 
-## @mariozechner/pi-ai@0.63.1
+## @mariozechner/pi-ai@0.66.1
+
+Same changes as 0.63.1 (see below), ported forward.
+
+**What it changes:**
+
+| File | Change |
+|------|--------|
+| `dist/providers/anthropic.js` — `convertTools()` | Pass through server-side tools as-is |
+| `dist/providers/anthropic.js` — `buildParams()` | Inject `web_search_20250305` tool when `PIZZAPI_WEB_SEARCH` env var is set |
+| `dist/providers/anthropic.js` — stream handler | Handle `server_tool_use` and `web_search_tool_result` blocks |
+| `dist/providers/anthropic.js` — `convertMessages()` | Round-trip `_serverToolUse` and `_webSearchResult` blocks |
+| `dist/utils/oauth/anthropic.js` — `anthropicOAuthProvider.refreshToken()` | Try Claude Code Keychain (`security find-generic-password`) first, then `~/.claude/.credentials.json`, before API refresh |
+
+## @mariozechner/pi-coding-agent@0.63.1 (replaced by 0.66.1 patch)
+
+Same changes as 0.58.3 (see below), ported forward, plus one new patch:
+
+- **Flat agent directory:** `getAgentDir()` now returns `~/.pizzapi/` instead of
+  `~/.pizzapi/agent/`. PizzaPi uses a flat directory structure where sessions,
+  auth, models, bin, etc. all live directly under `~/.pizzapi/`. A startup
+  migration in the daemon consolidates any data from `~/.pizzapi/agent/`.
+
+## @mariozechner/pi-ai@0.63.1 (replaced by 0.66.1 patch)
 
 Same web search changes as 0.58.3 (see below), ported forward, plus one new
 patch:
@@ -46,16 +72,6 @@ patch:
   directly — avoiding an API round-trip to `platform.claude.com/v1/oauth/token`.
   If the Keychain entry is unavailable (non-macOS, locked keychain, missing
   entry), the patch falls back to reading `~/.claude/.credentials.json`.
-
-**What it changes:**
-
-| File | Change |
-|------|--------|
-| `dist/providers/anthropic.js` — `convertTools()` | Pass through server-side tools as-is |
-| `dist/providers/anthropic.js` — `buildParams()` | Inject `web_search_20250305` tool when `PIZZAPI_WEB_SEARCH` env var is set |
-| `dist/providers/anthropic.js` — stream handler | Handle `server_tool_use` and `web_search_tool_result` blocks |
-| `dist/providers/anthropic.js` — `convertMessages()` | Round-trip `_serverToolUse` and `_webSearchResult` blocks |
-| `dist/utils/oauth/anthropic.js` — `anthropicOAuthProvider.refreshToken()` | Try Claude Code Keychain (`security find-generic-password`) first, then `~/.claude/.credentials.json`, before API refresh |
 
 ## @mariozechner/pi-coding-agent@0.58.3
 

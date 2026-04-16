@@ -2,9 +2,13 @@
 import {
     AuthStorage,
     createAgentSession,
+    createAgentSessionFromServices,
+    createAgentSessionRuntime,
+    createAgentSessionServices,
     DefaultResourceLoader,
     InteractiveMode,
     ModelRegistry,
+    SessionManager,
 } from "@mariozechner/pi-coding-agent";
 import { join } from "path";
 import { buildSystemPrompt, defaultAgentDir, expandHome, loadConfig, resolveSandboxConfig, validateSandboxOverride, applyProviderSettingsEnv } from "./config.js";
@@ -302,7 +306,7 @@ async function main() {
         const agentDir = config.agentDir ? expandHome(config.agentDir) : defaultAgentDir();
 
         const authStorage = AuthStorage.create(join(agentDir, "auth.json"));
-        const modelRegistry = new ModelRegistry(authStorage, join(agentDir, "models.json"));
+        const modelRegistry = ModelRegistry.create(authStorage, join(agentDir, "models.json"));
         const configuredModels = modelRegistry
             .getAvailable()
             .map((model) => ({
@@ -524,14 +528,41 @@ async function main() {
     });
     await loader.reload();
 
-    const { session, modelFallbackMessage } = await createAgentSession({
+    const sessionManager = SessionManager.create(cwd, join(agentDir, "sessions"));
+
+    const createRuntime = async (opts: { cwd: string; agentDir: string; sessionManager: SessionManager }) => {
+        const services = await createAgentSessionServices({
+            cwd: opts.cwd,
+            agentDir: opts.agentDir,
+            resourceLoaderOptions: {
+                extensionFactories: extensionFactories as any,
+                additionalSkillPaths: [
+                    ...buildSkillPaths(opts.cwd, config.skills),
+                    ...(noPlugins ? [] : getPluginSkillPaths(opts.cwd)),
+                ],
+                additionalPromptTemplatePaths: buildPromptTemplatePaths(opts.cwd),
+                ...(config.systemPrompt !== undefined && {
+                    systemPromptOverride: () => config.systemPrompt,
+                }),
+                appendSystemPrompt: [buildSystemPrompt({ cwd: opts.cwd }), config.appendSystemPrompt].filter(Boolean).join("\n\n"),
+                ...(agentsFilesOverride && { agentsFilesOverride }),
+            },
+        });
+        const result = await createAgentSessionFromServices({
+            services,
+            sessionManager: opts.sessionManager,
+        });
+        return { ...result, services, diagnostics: [] as any[] };
+    };
+
+    const runtime = await createAgentSessionRuntime(createRuntime, {
         cwd,
         agentDir,
-        resourceLoader: loader,
+        sessionManager,
     });
 
-    const mode = new InteractiveMode(session, {
-        modelFallbackMessage,
+    const mode = new InteractiveMode(runtime, {
+        modelFallbackMessage: runtime.modelFallbackMessage,
     });
     try {
         await mode.run();

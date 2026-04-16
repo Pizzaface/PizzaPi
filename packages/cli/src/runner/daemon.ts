@@ -1317,7 +1317,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                 const config = loadConfig(process.cwd());
                 const agentDir = config.agentDir ? expandHome(config.agentDir) : defaultAgentDir();
                 const authStorage = AuthStorage.create(join(agentDir, "auth.json"));
-                const modelRegistry = new ModelRegistry(authStorage, join(agentDir, "models.json"));
+                const modelRegistry = ModelRegistry.create(authStorage, join(agentDir, "models.json"));
                 const models = modelRegistry
                     .getAvailable()
                     .map((model: any) => ({

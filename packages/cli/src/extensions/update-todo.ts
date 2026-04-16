@@ -117,7 +117,7 @@ export const updateTodoExtension: ExtensionFactory = (pi) => {
         if (_metaEmit) _metaEmit(currentTodoList);
     });
 
-    pi.on("session_switch", () => {
+    pi.on("session_start", () => {
         currentTodoList = [];
         _onTodoUpdate?.([]);
         if (_metaEmit) _metaEmit(currentTodoList);
