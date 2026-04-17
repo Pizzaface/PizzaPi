@@ -9,6 +9,7 @@
 // ============================================================================
 
 import type { Server as SocketIOServer, Namespace } from "socket.io";
+import { bindAuthContext, type AuthContext } from "../../../auth.js";
 import type {
     RelayClientToServerEvents,
     RelayServerToClientEvents,
@@ -16,6 +17,7 @@ import type {
     RelaySocketData,
 } from "@pizzapi/protocol";
 import { apiKeyAuthMiddleware } from "../auth.js";
+import { bindSocketHandlersToAuthContext } from "../context.js";
 import { registerEventHandler } from "./event-pipeline.js";
 import { registerSessionLifecycleHandlers } from "./session-lifecycle.js";
 import { registerMessagingHandlers } from "./messaging.js";
@@ -28,7 +30,7 @@ export { getPendingChunkedSnapshot } from "./event-pipeline.js";
 
 const log = createLogger("sio/relay");
 
-export function registerRelayNamespace(io: SocketIOServer): void {
+export function registerRelayNamespace(io: SocketIOServer, context: AuthContext): void {
     const relay: Namespace<
         RelayClientToServerEvents,
         RelayServerToClientEvents,
@@ -37,9 +39,10 @@ export function registerRelayNamespace(io: SocketIOServer): void {
     > = io.of("/relay");
 
     // Auth: validate API key from handshake
-    relay.use(apiKeyAuthMiddleware() as Parameters<typeof relay.use>[0]);
+    relay.use(apiKeyAuthMiddleware(context) as Parameters<typeof relay.use>[0]);
 
-    relay.on("connection", (socket) => {
+    relay.on("connection", bindAuthContext(context, (socket) => {
+        bindSocketHandlersToAuthContext(socket, context);
         log.info(`connected: ${socket.id}`);
 
         registerSessionLifecycleHandlers(socket);
@@ -47,5 +50,5 @@ export function registerRelayNamespace(io: SocketIOServer): void {
         registerMessagingHandlers(socket);
         registerChildLifecycleHandlers(socket, io);
         registerServiceMessageHandler(socket);
-    });
+    }));
 }

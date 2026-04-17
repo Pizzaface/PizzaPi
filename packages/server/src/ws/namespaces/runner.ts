@@ -11,6 +11,7 @@
 // ============================================================================
 
 import type { Server as SocketIOServer, Namespace, Socket } from "socket.io";
+import { bindAuthContext, type AuthContext } from "../../auth.js";
 import type {
     RunnerClientToServerEvents,
     RunnerServerToClientEvents,
@@ -23,6 +24,7 @@ import type {
 } from "@pizzapi/protocol";
 import { shouldPreserveOnSocketDisconnect } from "../../health.js";
 import { apiKeyAuthMiddleware } from "./auth.js";
+import { bindSocketHandlersToAuthContext } from "./context.js";
 import { getSubscriptionsForRunnerSessions, nextTriggerSubRevision } from "../../sessions/trigger-subscription-store.js";
 import { listRunnerTriggerListeners } from "../../sessions/runner-trigger-listener-store.js";
 
@@ -302,7 +304,7 @@ export async function seedServiceAnnounceCache(runnerId: string): Promise<void> 
 
 // ── Namespace registration ───────────────────────────────────────────────────
 
-export function registerRunnerNamespace(io: SocketIOServer): void {
+export function registerRunnerNamespace(io: SocketIOServer, context: AuthContext): void {
     const runner: Namespace<
         RunnerClientToServerEvents,
         RunnerServerToClientEvents,
@@ -311,7 +313,7 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
     > = io.of("/runner");
 
     // Auth: validate API key from handshake
-    runner.use(apiKeyAuthMiddleware() as Parameters<typeof runner.use>[0]);
+    runner.use(apiKeyAuthMiddleware(context) as Parameters<typeof runner.use>[0]);
 
     // Wire up the cluster-wide emitToRunnerRoom helper now that we have `io`.
     emitToRunnerRoom = (runnerId: string, event: string, data: unknown) => {
@@ -353,7 +355,8 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
     // rejected when ownership fails or the runner disconnects mid-check.
     const pendingSessionChecks = new Map<string, { promise: Promise<void>; reject: () => void; runnerId: string }>();
 
-    runner.on("connection", (socket) => {
+    runner.on("connection", bindAuthContext(context, (socket) => {
+        bindSocketHandlersToAuthContext(socket, context);
         log.info(`connected: ${socket.id}`);
 
         // ── Periodic Redis TTL refresh ───────────────────────────────────────
@@ -1173,5 +1176,5 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
                 await removeRunner(runnerId);
             }
         });
-    });
+    }));
 }

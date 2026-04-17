@@ -7,6 +7,7 @@
 // ============================================================================
 
 import type { Server as SocketIOServer, Namespace } from "socket.io";
+import { bindAuthContext, type AuthContext } from "../../auth.js";
 import type {
     TerminalClientToServerEvents,
     TerminalServerToClientEvents,
@@ -14,6 +15,7 @@ import type {
     TerminalSocketData,
 } from "@pizzapi/protocol";
 import { sessionCookieAuthMiddleware } from "./auth.js";
+import { bindSocketHandlersToAuthContext } from "./context.js";
 import {
     getTerminalEntry,
     setTerminalViewer,
@@ -25,7 +27,7 @@ import { createLogger } from "@pizzapi/tools";
 
 const log = createLogger("sio/terminal");
 
-export function registerTerminalNamespace(io: SocketIOServer): void {
+export function registerTerminalNamespace(io: SocketIOServer, context: AuthContext): void {
     const terminal: Namespace<
         TerminalClientToServerEvents,
         TerminalServerToClientEvents,
@@ -34,9 +36,10 @@ export function registerTerminalNamespace(io: SocketIOServer): void {
     > = io.of("/terminal");
 
     // Auth: validate session cookie from handshake
-    terminal.use(sessionCookieAuthMiddleware() as Parameters<typeof terminal.use>[0]);
+    terminal.use(sessionCookieAuthMiddleware(context) as Parameters<typeof terminal.use>[0]);
 
-    terminal.on("connection", async (socket) => {
+    terminal.on("connection", bindAuthContext(context, async (socket) => {
+        bindSocketHandlersToAuthContext(socket, context);
         // Extract terminalId from handshake auth or query
         const terminalId =
             (typeof socket.handshake.auth?.terminalId === "string"
@@ -214,5 +217,5 @@ export function registerTerminalNamespace(io: SocketIOServer): void {
                 await removeTerminalViewer(tid, socket);
             }
         });
-    });
+    }));
 }

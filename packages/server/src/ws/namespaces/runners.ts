@@ -7,6 +7,7 @@
 // ============================================================================
 
 import type { Server as SocketIOServer, Namespace } from "socket.io";
+import { bindAuthContext, type AuthContext } from "../../auth.js";
 import type {
     RunnersClientToServerEvents,
     RunnersServerToClientEvents,
@@ -14,12 +15,13 @@ import type {
     RunnersSocketData,
 } from "@pizzapi/protocol";
 import { sessionCookieAuthMiddleware } from "./auth.js";
+import { bindSocketHandlersToAuthContext } from "./context.js";
 import { getRunners, runnersUserRoom } from "../sio-registry.js";
 import { createLogger } from "@pizzapi/tools";
 
 const log = createLogger("sio/runners");
 
-export function registerRunnersNamespace(io: SocketIOServer): void {
+export function registerRunnersNamespace(io: SocketIOServer, context: AuthContext): void {
     const runners: Namespace<
         RunnersClientToServerEvents,
         RunnersServerToClientEvents,
@@ -28,9 +30,10 @@ export function registerRunnersNamespace(io: SocketIOServer): void {
     > = io.of("/runners");
 
     // Auth: validate session cookie from handshake (same as /hub)
-    runners.use(sessionCookieAuthMiddleware() as Parameters<typeof runners.use>[0]);
+    runners.use(sessionCookieAuthMiddleware(context) as Parameters<typeof runners.use>[0]);
 
-    runners.on("connection", async (socket) => {
+    runners.on("connection", bindAuthContext(context, async (socket) => {
+        bindSocketHandlersToAuthContext(socket, context);
         const userId = socket.data.userId ?? "";
 
         log.info(`connected: ${socket.id} userId=${userId}`);
@@ -47,5 +50,5 @@ export function registerRunnersNamespace(io: SocketIOServer): void {
             log.info(`disconnected: ${socket.id} (${reason})`);
             // Socket.IO automatically removes sockets from rooms on disconnect
         });
-    });
+    }));
 }
