@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { buildSystemPrompt, BUILTIN_SYSTEM_PROMPT } from "./system-prompt.js";
+import { buildSystemPrompt, rewriteForClaudeCodeProvider, BUILTIN_SYSTEM_PROMPT } from "./system-prompt.js";
 
 describe("buildSystemPrompt", () => {
     test("returns a non-empty string", () => {
@@ -128,6 +128,70 @@ describe("buildSystemPrompt", () => {
         const result = buildSystemPrompt();
         expect(result).toContain("AskUserQuestion");
         expect(result).not.toContain("{{>");
+    });
+});
+
+describe("rewriteForClaudeCodeProvider", () => {
+    test("rewrites the upstream identity line", () => {
+        const input = "You are an expert coding assistant operating inside pi, a coding agent harness.";
+        const result = rewriteForClaudeCodeProvider(input);
+        expect(result).toContain("You are Claude Code, Anthropic's official CLI for Claude.");
+        expect(result).not.toContain("operating inside pi");
+    });
+
+    test("replaces PizzaPi with Claude Code", () => {
+        const input = "Use PizzaPi relay to proxy. PizzaPi is great.";
+        const result = rewriteForClaudeCodeProvider(input);
+        expect(result).toBe("Use Claude Code relay to proxy. Claude Code is great.");
+    });
+
+    test("replaces ~/.pizzapi/ paths with ~/.claude/", () => {
+        const input = "Config lives at ~/.pizzapi/config.json and ~/.pizzapi/settings.json";
+        const result = rewriteForClaudeCodeProvider(input);
+        expect(result).toContain("~/.claude/config.json");
+        expect(result).toContain("~/.claude/settings.json");
+        expect(result).not.toContain("~/.pizzapi/");
+    });
+
+    test("replaces .pizzapi/ project-local paths with .claude/", () => {
+        const input = "Project hooks in .pizzapi/config.json and .pizzapi/agents/";
+        const result = rewriteForClaudeCodeProvider(input);
+        expect(result).toContain(".claude/config.json");
+        expect(result).toContain(".claude/agents/");
+        expect(result).not.toContain(".pizzapi/");
+    });
+
+    test("replaces standalone Pi followed by documentation keywords", () => {
+        const input = "Pi documentation is at Pi TUI settings";
+        const result = rewriteForClaudeCodeProvider(input);
+        expect(result).toContain("Claude Code documentation");
+        expect(result).toContain("Claude Code TUI");
+    });
+
+    test("replaces 'inside pi' references", () => {
+        const input = "operating inside pi is fun";
+        const result = rewriteForClaudeCodeProvider(input);
+        expect(result).toContain("inside Claude Code");
+    });
+
+    test("replaces pizzapi-configuration section name", () => {
+        const input = 'section name="pizzapi-configuration"';
+        const result = rewriteForClaudeCodeProvider(input);
+        expect(result).toContain('section name="claude-code-configuration"');
+    });
+
+    test("does not break normal words containing 'pi'", () => {
+        const input = "scripts pipeline recipes compile spinner";
+        const result = rewriteForClaudeCodeProvider(input);
+        expect(result).toBe("scripts pipeline recipes compile spinner");
+    });
+
+    test("works on a full system prompt without throwing", () => {
+        const fullPrompt = buildSystemPrompt({ isRunner: true, dateTime: "test" });
+        const result = rewriteForClaudeCodeProvider(fullPrompt);
+        expect(result).not.toContain("PizzaPi");
+        expect(result).toContain("Claude Code");
+        expect(result.length).toBeGreaterThan(0);
     });
 });
 
