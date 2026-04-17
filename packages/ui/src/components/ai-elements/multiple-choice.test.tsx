@@ -35,7 +35,7 @@ describe("MultipleChoiceQuestions", () => {
     const onSubmit = () => true;
     const promptKey = "ask-1";
 
-    const { container, rerender, getByRole, getByText } = render(
+    const { rerender, getByRole, getByText } = render(
       <MultipleChoiceQuestions
         promptKey={promptKey}
         onSubmit={onSubmit}
@@ -46,12 +46,11 @@ describe("MultipleChoiceQuestions", () => {
       />,
     );
 
-    const nextButton = getByRole("button", { name: /next/i });
+    const nextButton = await waitFor(() => getByRole("button", { name: /next/i }));
     expect((nextButton as HTMLButtonElement).disabled).toBe(true);
 
-    const firstOptionLabel = container.querySelector('label[for="mc-q-ask-1-0-opt-0"]');
-    expect(firstOptionLabel).not.toBeNull();
-    fireEvent.click(firstOptionLabel!);
+    const firstOption = await waitFor(() => getByRole("radio", { name: "A" }));
+    fireEvent.click(firstOption);
 
     await waitFor(() => {
       expect((getByRole("button", { name: /next/i }) as HTMLButtonElement).disabled).toBe(false);
