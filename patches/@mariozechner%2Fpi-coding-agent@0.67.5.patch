@@ -1,0 +1,288 @@
+diff --git a/dist/config.js b/dist/config.js
+index 1547f6d8bea59fa837a3a9e74a42ef25a97c5884..1ecff3273510220a526a3af04ff64e4c491c16b9 100644
+--- a/dist/config.js
++++ b/dist/config.js
+@@ -131,6 +131,10 @@ export function getExamplesPath() {
+ }
+ /** Get path to CHANGELOG.md */
+ export function getChangelogPath() {
++    // PATCH(pizzapi): allow PizzaPi to redirect to its own changelog
++    if (process.env.PIZZAPI_CHANGELOG_PATH) {
++        return resolve(process.env.PIZZAPI_CHANGELOG_PATH);
++    }
+     return resolve(join(getPackageDir(), "CHANGELOG.md"));
+ }
+ /**
+@@ -156,7 +160,8 @@ export function getBundledInteractiveAssetPath(name) {
+ // =============================================================================
+ const pkg = JSON.parse(readFileSync(getPackageJsonPath(), "utf-8"));
+ export const APP_NAME = pkg.piConfig?.name || "pi";
+-export const CONFIG_DIR_NAME = pkg.piConfig?.configDir || ".pi";
++// PATCH(pizzapi): override configDir
++export const CONFIG_DIR_NAME = ".pizzapi";
+ export const VERSION = pkg.version;
+ // e.g., PI_CODING_AGENT_DIR or TAU_CODING_AGENT_DIR
+ export const ENV_AGENT_DIR = `${APP_NAME.toUpperCase()}_CODING_AGENT_DIR`;
+@@ -167,20 +172,20 @@ export function getShareViewerUrl(gistId) {
+     return `${baseUrl}#${gistId}`;
+ }
+ // =============================================================================
+-// User Config Paths (~/.pi/agent/*)
++// User Config Paths (~/.pizzapi/*)
+ // =============================================================================
+-/** Get the agent config directory (e.g., ~/.pi/agent/) */
++// PATCH(pizzapi): flat directory structure
++/** Get the agent config directory (e.g., ~/.pizzapi/) */
+ export function getAgentDir() {
+     const envDir = process.env[ENV_AGENT_DIR];
+     if (envDir) {
+-        // Expand tilde to home directory
+         if (envDir === "~")
+             return homedir();
+         if (envDir.startsWith("~/"))
+             return homedir() + envDir.slice(1);
+         return envDir;
+     }
+-    return join(homedir(), CONFIG_DIR_NAME, "agent");
++    return join(homedir(), CONFIG_DIR_NAME);
+ }
+ /** Get path to user's custom themes directory */
+ export function getCustomThemesDir() {
+diff --git a/dist/core/agent-session.js b/dist/core/agent-session.js
+index e50df81743a1a1ba81cb0a0c2cc1d012ac9134e1..44b5eca8d60aeb5f4a34df2aa2297c0b6ef46592 100644
+--- a/dist/core/agent-session.js
++++ b/dist/core/agent-session.js
+@@ -1928,7 +1928,8 @@ export class AgentSession {
+             return false;
+         const err = message.errorMessage;
+         // Match: overloaded_error, provider returned error, rate limit, 429, 500, 502, 503, 504, service unavailable, network/connection errors, fetch failed, request ended without sending chunks, terminated, retry delay exceeded
+-        return /overloaded|provider.?returned.?error|rate.?limit|too many requests|429|500|502|503|504|service.?unavailable|server.?error|internal.?error|network.?error|connection.?error|connection.?refused|other side closed|fetch failed|upstream.?connect|reset before headers|socket hang up|ended without|timed? out|timeout|terminated|retry delay/i.test(err);
++        // PATCH(pizzapi): add JSON parse errors to retryable patterns
++        return /overloaded|provider.?returned.?error|rate.?limit|too many requests|429|500|502|503|504|service.?unavailable|server.?error|internal.?error|network.?error|connection.?error|connection.?refused|other side closed|fetch failed|upstream.?connect|reset before headers|socket hang up|ended without|timed? out|timeout|terminated|retry delay|json.?parse.?error|unexpected.?end.?of.?json/i.test(err);
+     }
+     /**
+      * Handle retryable errors with exponential backoff.
+diff --git a/dist/core/extensions/loader.js b/dist/core/extensions/loader.js
+index efcb7da874223a2537e324494bee307bf59d24e7..46cd68f6ccb48998a2f647315413b56db41ef9b0 100644
+--- a/dist/core/extensions/loader.js
++++ b/dist/core/extensions/loader.js
+@@ -119,6 +119,9 @@ export function createExtensionRuntime() {
+         unregisterProvider: (name) => {
+             runtime.pendingProviderRegistrations = runtime.pendingProviderRegistrations.filter((r) => r.name !== name);
+         },
++        // PATCH(pizzapi): session control for extensions
++        newSession: () => Promise.reject(new Error("Extension runtime not initialized")),
++        switchSession: () => Promise.reject(new Error("Extension runtime not initialized")),
+     };
+     return runtime;
+ }
+@@ -216,6 +219,13 @@ function createExtensionAPI(extension, runtime, cwd, eventBus) {
+         unregisterProvider(name) {
+             runtime.unregisterProvider(name, extension.path);
+         },
++        // PATCH(pizzapi): session control for extensions
++        newSession(options) {
++            return runtime.newSession(options);
++        },
++        switchSession(sessionPath) {
++            return runtime.switchSession(sessionPath);
++        },
+         events: eventBus,
+     };
+     return api;
+diff --git a/dist/core/extensions/runner.js b/dist/core/extensions/runner.js
+index 22f58b0d6f3844fa2375ba615fa97401b04a63fa..d4a003ba3633b2953604a0f5c5cf80e7e8638251 100644
+--- a/dist/core/extensions/runner.js
++++ b/dist/core/extensions/runner.js
+@@ -185,6 +185,9 @@ export class ExtensionRunner {
+             this.navigateTreeHandler = actions.navigateTree;
+             this.switchSessionHandler = actions.switchSession;
+             this.reloadHandler = actions.reload;
++            // PATCH(pizzapi): expose session control on runtime for extension access
++            this.runtime.newSession = (options) => this.newSessionHandler(options);
++            this.runtime.switchSession = (sessionPath) => this.switchSessionHandler(sessionPath);
+             return;
+         }
+         this.waitForIdleFn = async () => { };
+@@ -193,6 +196,9 @@ export class ExtensionRunner {
+         this.navigateTreeHandler = async () => ({ cancelled: false });
+         this.switchSessionHandler = async () => ({ cancelled: false });
+         this.reloadHandler = async () => { };
++        // PATCH(pizzapi): expose session control on runtime for extension access
++        this.runtime.newSession = (options) => this.newSessionHandler(options);
++        this.runtime.switchSession = (sessionPath) => this.switchSessionHandler(sessionPath);
+     }
+     setUIContext(uiContext) {
+         this.uiContext = uiContext ?? noOpUIContext;
+diff --git a/dist/core/resource-loader.js b/dist/core/resource-loader.js
+index 8759667deb515730cd7921da62a46c683dec3f24..0012620669dfdbfa16ba72de62587556464dbea5 100644
+--- a/dist/core/resource-loader.js
++++ b/dist/core/resource-loader.js
+@@ -596,7 +596,9 @@ export class DefaultResourceLoader {
+         const extensions = [];
+         const errors = [];
+         for (const [index, factory] of this.extensionFactories.entries()) {
+-            const extensionPath = `<inline:${index + 1}>`;
++            // PATCH(pizzapi): use factory displayName/name instead of <inline:N>
++            const label = factory.displayName || factory.name || String(index + 1);
++            const extensionPath = `<inline:${label}>`;
+             try {
+                 const extension = await loadExtensionFromFactory(factory, this.cwd, this.eventBus, runtime, extensionPath);
+                 extensions.push(extension);
+diff --git a/dist/modes/interactive/interactive-mode.js b/dist/modes/interactive/interactive-mode.js
+index 5b16880c0675d2c6e27585008b58ab765e0191de..e48a88ffa62589919cbe8e5f88b4d4b6ee828fd9 100644
+--- a/dist/modes/interactive/interactive-mode.js
++++ b/dist/modes/interactive/interactive-mode.js
+@@ -427,12 +427,7 @@ export class InteractiveMode {
+      */
+     async run() {
+         await this.init();
+-        // Start version check asynchronously
+-        this.checkForNewVersion().then((newVersion) => {
+-            if (newVersion) {
+-                this.showNewVersionNotification(newVersion);
+-            }
+-        });
++        // PATCH(pizzapi): version check removed
+         // Start package update check asynchronously
+         this.checkForPackageUpdates().then((updates) => {
+             if (updates.length > 0) {
+@@ -494,26 +489,6 @@ export class InteractiveMode {
+     /**
+      * Check npm registry for a newer version.
+      */
+-    async checkForNewVersion() {
+-        if (process.env.PI_SKIP_VERSION_CHECK || process.env.PI_OFFLINE)
+-            return undefined;
+-        try {
+-            const response = await fetch("https://registry.npmjs.org/@mariozechner/pi-coding-agent/latest", {
+-                signal: AbortSignal.timeout(10000),
+-            });
+-            if (!response.ok)
+-                return undefined;
+-            const data = (await response.json());
+-            const latestVersion = data.version;
+-            if (latestVersion && latestVersion !== this.version) {
+-                return latestVersion;
+-            }
+-            return undefined;
+-        }
+-        catch {
+-            return undefined;
+-        }
+-    }
+     async checkForPackageUpdates() {
+         if (process.env.PI_OFFLINE) {
+             return [];
+@@ -790,7 +765,12 @@ export class InteractiveMode {
+         if (!showListing && !showDiagnostics) {
+             return;
+         }
+-        const sectionHeader = (name, color = "mdHeading") => theme.fg(color, `[${name}]`);
++        // PATCH(pizzapi): themed section headers with box-drawing
++        const sectionHeader = (name, color = "accent") => {
++            const label = ` ${name} `;
++            const line = "─".repeat(Math.max(0, 40 - label.length));
++            return theme.fg(color, `├${label}`) + theme.fg("dim", line);
++        };
+         const skillsResult = this.session.resourceLoader.getSkills();
+         const promptsResult = this.session.resourceLoader.getPrompts();
+         const themesResult = this.session.resourceLoader.getThemes();
+@@ -857,13 +837,31 @@ export class InteractiveMode {
+                 this.chatContainer.addChild(new Text(`${sectionHeader("Prompts")}\n${templateList}`, 0, 0));
+                 this.chatContainer.addChild(new Spacer(1));
+             }
++            // PATCH(pizzapi): display extensions as a compact table
+             if (extensions.length > 0) {
+-                const groups = this.buildScopeGroups(extensions);
+-                const extList = this.formatScopeGroups(groups, {
+-                    formatPath: (item) => this.formatDisplayPath(item.path),
+-                    formatPackagePath: (item) => this.getShortPath(item.path, item.sourceInfo),
+-                });
+-                this.chatContainer.addChild(new Text(`${sectionHeader("Extensions", "mdHeading")}\n${extList}`, 0, 0));
++                const builtIn = extensions.filter(e => !e.path.startsWith("/") && !e.path.startsWith("~") && !e.path.startsWith("."));
++                const fileBased = extensions.filter(e => e.path.startsWith("/") || e.path.startsWith("~") || e.path.startsWith("."));
++                const lines = [];
++                if (builtIn.length > 0) {
++                    const cols = 4;
++                    const colW = 16;
++                    const pad = (s, w) => { const stripped = s.replace(/\x1b\[[0-9;]*m/g, ""); return s + " ".repeat(Math.max(0, w - stripped.length)); };
++                    for (let i = 0; i < builtIn.length; i += cols) {
++                        const row = builtIn.slice(i, i + cols).map(e => {
++                            const name = e.path.startsWith("<inline:") ? e.path.slice(8, -1) : e.path;
++                            return pad(theme.fg("dim", name), colW);
++                        }).join("");
++                        lines.push("  " + row);
++                    }
++                }
++                if (fileBased.length > 0) {
++                    const groups = this.buildScopeGroups(fileBased);
++                    lines.push(this.formatScopeGroups(groups, {
++                        formatPath: (item) => this.formatDisplayPath(item.path),
++                        formatPackagePath: (item) => this.getShortPath(item.path, item.sourceInfo),
++                    }));
++                }
++                this.chatContainer.addChild(new Text(`${sectionHeader("Extensions")}\n${lines.join("\n")}`, 0, 0));
+                 this.chatContainer.addChild(new Spacer(1));
+             }
+             // Show loaded themes (excluding built-in)
+@@ -886,13 +884,13 @@ export class InteractiveMode {
+             const skillDiagnostics = skillsResult.diagnostics;
+             if (skillDiagnostics.length > 0) {
+                 const warningLines = this.formatDiagnostics(skillDiagnostics, sourceInfos);
+-                this.chatContainer.addChild(new Text(`${theme.fg("warning", "[Skill conflicts]")}\n${warningLines}`, 0, 0));
++                this.chatContainer.addChild(new Text(`${sectionHeader("Skill Issues", "warning")}\n${warningLines}`, 0, 0));
+                 this.chatContainer.addChild(new Spacer(1));
+             }
+             const promptDiagnostics = promptsResult.diagnostics;
+             if (promptDiagnostics.length > 0) {
+                 const warningLines = this.formatDiagnostics(promptDiagnostics, sourceInfos);
+-                this.chatContainer.addChild(new Text(`${theme.fg("warning", "[Prompt conflicts]")}\n${warningLines}`, 0, 0));
++                this.chatContainer.addChild(new Text(`${sectionHeader("Prompt Issues", "warning")}\n${warningLines}`, 0, 0));
+                 this.chatContainer.addChild(new Spacer(1));
+             }
+             const extensionDiagnostics = [];
+@@ -909,13 +907,13 @@ export class InteractiveMode {
+             extensionDiagnostics.push(...shortcutDiagnostics);
+             if (extensionDiagnostics.length > 0) {
+                 const warningLines = this.formatDiagnostics(extensionDiagnostics, sourceInfos);
+-                this.chatContainer.addChild(new Text(`${theme.fg("warning", "[Extension issues]")}\n${warningLines}`, 0, 0));
++                this.chatContainer.addChild(new Text(`${sectionHeader("Extension Issues", "warning")}\n${warningLines}`, 0, 0));
+                 this.chatContainer.addChild(new Spacer(1));
+             }
+             const themeDiagnostics = themesResult.diagnostics;
+             if (themeDiagnostics.length > 0) {
+                 const warningLines = this.formatDiagnostics(themeDiagnostics, sourceInfos);
+-                this.chatContainer.addChild(new Text(`${theme.fg("warning", "[Theme conflicts]")}\n${warningLines}`, 0, 0));
++                this.chatContainer.addChild(new Text(`${sectionHeader("Theme Issues", "warning")}\n${warningLines}`, 0, 0));
+                 this.chatContainer.addChild(new Spacer(1));
+             }
+         }
+@@ -2634,17 +2632,6 @@ export class InteractiveMode {
+         this.chatContainer.addChild(new Text(theme.fg("warning", `Warning: ${warningMessage}`), 1, 0));
+         this.ui.requestRender();
+     }
+-    showNewVersionNotification(newVersion) {
+-        const action = theme.fg("accent", getUpdateInstruction("@mariozechner/pi-coding-agent"));
+-        const updateInstruction = theme.fg("muted", `New version ${newVersion} is available. `) + action;
+-        const changelogUrl = theme.fg("accent", "https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/CHANGELOG.md");
+-        const changelogLine = theme.fg("muted", "Changelog: ") + changelogUrl;
+-        this.chatContainer.addChild(new Spacer(1));
+-        this.chatContainer.addChild(new DynamicBorder((text) => theme.fg("warning", text)));
+-        this.chatContainer.addChild(new Text(`${theme.bold(theme.fg("warning", "Update Available"))}\n${updateInstruction}\n${changelogLine}`, 1, 0));
+-        this.chatContainer.addChild(new DynamicBorder((text) => theme.fg("warning", text)));
+-        this.ui.requestRender();
+-    }
+     showPackageUpdateNotification(packages) {
+         const action = theme.fg("accent", `${APP_NAME} update`);
+         const updateInstruction = theme.fg("muted", "Package updates are available. Run ") + action;
+@@ -3424,7 +3411,8 @@ export class InteractiveMode {
+             restoreEditor();
+             this.session.modelRegistry.refresh();
+             await this.updateAvailableProviderCount();
+-            this.showStatus(`Logged in to ${providerName}. Credentials saved to ${getAuthPath()}`);
++            const actualAuthPath = this.session.modelRegistry.authStorage.storage?.authPath ?? getAuthPath();
++            this.showStatus(`Logged in to ${providerName}. Credentials saved to ${actualAuthPath}`);
+         }
+         catch (error) {
+             restoreEditor();

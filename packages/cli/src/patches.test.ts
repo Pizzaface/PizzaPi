@@ -127,7 +127,7 @@ describe("pi-coding-agent patch application", () => {
         // Must NOT append "agent" to the path
         expect(source).toContain('return join(homedir(), CONFIG_DIR_NAME)');
         expect(source).not.toContain('return join(homedir(), CONFIG_DIR_NAME, "agent")');
-        expect(source).toContain("PATCH(pizzapi): drop the /agent/ segment");
+        expect(source).toContain("PATCH(pizzapi): flat directory structure");
     });
 });
 

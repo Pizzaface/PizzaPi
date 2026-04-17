@@ -259,7 +259,7 @@ async function main(): Promise<void> {
         ...(config.systemPrompt !== undefined && {
             systemPromptOverride: () => config.systemPrompt,
         }),
-        appendSystemPrompt: [buildSystemPrompt({ cwd, isRunner: true }), config.appendSystemPrompt, agentSystemPrompt].filter(Boolean).join("\n\n"),
+        appendSystemPrompt: [buildSystemPrompt({ cwd, isRunner: true }), config.appendSystemPrompt, agentSystemPrompt].filter(Boolean) as string[],
         ...(agentsFilesOverride && { agentsFilesOverride }),
     });
     await loader.reload();
@@ -322,27 +322,11 @@ async function main(): Promise<void> {
     await session.bindExtensions({
         commandContextActions: {
             waitForIdle: () => session.agent.waitForIdle(),
-            newSession: async (options) => {
-                const success = await session.newSession(options);
-                return { cancelled: !success };
-            },
-            fork: async (entryId) => {
-                const result = await session.fork(entryId);
-                return { cancelled: result.cancelled };
-            },
-            navigateTree: async (targetId, options) => {
-                const result = await session.navigateTree(targetId, {
-                    summarize: options?.summarize,
-                    customInstructions: options?.customInstructions,
-                    replaceInstructions: options?.replaceInstructions,
-                    label: options?.label,
-                });
-                return { cancelled: result.cancelled };
-            },
-            switchSession: async (sessionPath) => {
-                const success = await session.switchSession(sessionPath);
-                return { cancelled: !success };
-            },
+            // Headless runner sessions don't switch/fork — return cancelled for all
+            newSession: async () => ({ cancelled: true }),
+            fork: async () => ({ cancelled: true }),
+            navigateTree: async () => ({ cancelled: true }),
+            switchSession: async () => ({ cancelled: true }),
             reload: async () => {
                 await session.reload();
             },

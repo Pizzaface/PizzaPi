@@ -511,7 +511,7 @@ After completing a step, include a [DONE:n] tag in your response (e.g. [DONE:1])
         syncModuleState();
     });
 
-    pi.on("session_switch", () => {
+    pi.on("session_start", () => {
         const wasEnabled = planModeEnabled;
         planModeEnabled = false;
         executionMode = false;

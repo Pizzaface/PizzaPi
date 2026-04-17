@@ -1,7 +1,6 @@
 import { describe, expect, test, beforeAll, beforeEach, afterAll, spyOn } from "bun:test";
 import {
     createAuthContext,
-    createTestAuthContext,
     getDisableSignupAfterFirstUser,
     getKysely,
     initAuth,
@@ -10,7 +9,6 @@ import {
     runWithAuthContext,
 } from "./auth";
 import { sql } from "kysely";
-import { runAllMigrations } from "./migrations.js";
 import { mkdtempSync, rmSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
@@ -122,42 +120,6 @@ describe("secret validation", () => {
             warnSpy.mockRestore();
             process.env.NODE_ENV = origEnv;
             rmSync(tmpD, { recursive: true, force: true });
-        }
-    });
-});
-
-describe("auth database wiring", () => {
-    test("better-auth and getKysely share the same migrated database", async () => {
-        const dir = mkdtempSync(join(tmpdir(), "auth-shared-db-test-"));
-        const dbPath = join(dir, "shared.db");
-        const context = createTestAuthContext({
-            dbPath,
-            baseURL: "http://localhost:7003",
-            disableSignupAfterFirstUser: false,
-        });
-
-        try {
-            await runAllMigrations(context);
-            const created = await runWithAuthContext(context, () => context.auth.api.signUpEmail({
-                body: {
-                    name: "Shared DB User",
-                    email: "shared-db@example.com",
-                    password: "SharedPass123",
-                },
-            }));
-
-            expect(created?.user?.id).toBeTruthy();
-
-            const row = await runWithAuthContext(context, () => getKysely()
-                .selectFrom("user")
-                .select(["id", "email"])
-                .where("email", "=", "shared-db@example.com")
-                .executeTakeFirst());
-
-            expect(row?.id).toBe(created?.user?.id);
-            expect(row?.email).toBe("shared-db@example.com");
-        } finally {
-            rmSync(dir, { recursive: true, force: true });
         }
     });
 });

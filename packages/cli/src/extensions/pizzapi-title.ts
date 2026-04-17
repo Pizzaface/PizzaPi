@@ -36,7 +36,7 @@ export const pizzapiTitleExtension: ExtensionFactory = (pi) => {
         updateTitle(ctx);
     });
 
-    pi.on("session_switch", (_event, ctx) => {
+    pi.on("session_start", (_event, ctx) => {
         updateTitle(ctx);
     });
 

@@ -1,0 +1,175 @@
+diff --git a/dist/providers/anthropic.js b/dist/providers/anthropic.js
+index b5be633b5a89515fdb1106a7296ce1e7d1cbfe0d..f6af0d0e85bc590ee40f5651692d8363d8ea5ce7 100644
+--- a/dist/providers/anthropic.js
++++ b/dist/providers/anthropic.js
+@@ -220,6 +220,29 @@ export const streamAnthropic = (model, context, options) => {
+                         output.content.push(block);
+                         stream.push({ type: "toolcall_start", contentIndex: output.content.length - 1, partial: output });
+                     }
++                    // PATCH(pizzapi): handle server_tool_use (web search query)
++                    else if (event.content_block.type === "server_tool_use") {
++                        const block = {
++                            type: "text",
++                            text: "",
++                            partialJson: "",
++                            _serverToolUse: { id: event.content_block.id, name: event.content_block.name, input: event.content_block.input },
++                            index: event.index,
++                        };
++                        output.content.push(block);
++                        stream.push({ type: "text_start", contentIndex: output.content.length - 1, partial: output });
++                    }
++                    // PATCH(pizzapi): handle web_search_tool_result
++                    else if (event.content_block.type === "web_search_tool_result") {
++                        const block = {
++                            type: "text",
++                            text: "",
++                            _webSearchResult: { tool_use_id: event.content_block.tool_use_id, content: event.content_block.content },
++                            index: event.index,
++                        };
++                        output.content.push(block);
++                        stream.push({ type: "text_start", contentIndex: output.content.length - 1, partial: output });
++                    }
+                 }
+                 else if (event.type === "content_block_delta") {
+                     if (event.delta.type === "text_delta") {
+@@ -261,6 +284,10 @@ export const streamAnthropic = (model, context, options) => {
+                                 partial: output,
+                             });
+                         }
++                        // PATCH(pizzapi): accumulate input_json_delta for server_tool_use blocks
++                        else if (block && block._serverToolUse && block.partialJson !== undefined) {
++                            block.partialJson += event.delta.partial_json;
++                        }
+                     }
+                     else if (event.delta.type === "signature_delta") {
+                         const index = blocks.findIndex((b) => b.index === event.index);
+@@ -277,6 +304,15 @@ export const streamAnthropic = (model, context, options) => {
+                     if (block) {
+                         delete block.index;
+                         if (block.type === "text") {
++                            // PATCH(pizzapi): finalize server_tool_use input from accumulated JSON
++                            if (block._serverToolUse && block.partialJson) {
++                                try {
++                                    block._serverToolUse.input = JSON.parse(block.partialJson);
++                                } catch (e) {
++                                    block._serverToolUse.input = parseStreamingJson(block.partialJson);
++                                }
++                            }
++                            delete block.partialJson;
+                             stream.push({
+                                 type: "text_end",
+                                 contentIndex: index,
+@@ -520,6 +556,20 @@ function buildParams(model, context, isOAuthToken, options) {
+     if (context.tools) {
+         params.tools = convertTools(context.tools, isOAuthToken, cacheControl);
+     }
++    // PATCH(pizzapi): inject Anthropic web search tool when PIZZAPI_WEB_SEARCH is set
++    if (typeof process !== "undefined" && process.env.PIZZAPI_WEB_SEARCH && !["0", "false", "no", "off"].includes(process.env.PIZZAPI_WEB_SEARCH.toLowerCase())) {
++        if (!params.tools) params.tools = [];
++        const webSearchTool = { type: "web_search_20250305", name: "web_search" };
++        const maxUses = parseInt(process.env.PIZZAPI_WEB_SEARCH_MAX_USES || "5", 10);
++        if (maxUses > 0) webSearchTool.max_uses = maxUses;
++        if (process.env.PIZZAPI_WEB_SEARCH_ALLOWED_DOMAINS) {
++            webSearchTool.allowed_domains = process.env.PIZZAPI_WEB_SEARCH_ALLOWED_DOMAINS.split(",").map(d => d.trim());
++        }
++        if (process.env.PIZZAPI_WEB_SEARCH_BLOCKED_DOMAINS) {
++            webSearchTool.blocked_domains = process.env.PIZZAPI_WEB_SEARCH_BLOCKED_DOMAINS.split(",").map(d => d.trim());
++        }
++        params.tools.push(webSearchTool);
++    }
+     // Configure thinking mode: adaptive (Opus 4.6 and Sonnet 4.6),
+     // budget-based (older models), or explicitly disabled.
+     if (model.reasoning) {
+@@ -615,7 +665,23 @@ function convertMessages(messages, model, isOAuthToken, cacheControl) {
+         else if (msg.role === "assistant") {
+             const blocks = [];
+             for (const block of msg.content) {
+-                if (block.type === "text") {
++                // PATCH(pizzapi): round-trip server tool use and web search results
++                if (block.type === "text" && block._serverToolUse) {
++                    blocks.push({
++                        type: "server_tool_use",
++                        id: block._serverToolUse.id,
++                        name: block._serverToolUse.name,
++                        input: block._serverToolUse.input,
++                    });
++                }
++                else if (block.type === "text" && block._webSearchResult) {
++                    blocks.push({
++                        type: "web_search_tool_result",
++                        tool_use_id: block._webSearchResult.tool_use_id,
++                        content: block._webSearchResult.content,
++                    });
++                }
++                else if (block.type === "text") {
+                     if (block.text.trim().length === 0)
+                         continue;
+                     blocks.push({
+@@ -726,6 +792,10 @@ function convertTools(tools, isOAuthToken, cacheControl) {
+     if (!tools)
+         return [];
+     return tools.map((tool, index) => {
++        // PATCH(pizzapi): pass through server-side tools (e.g., web_search) as-is
++        if (tool.type && typeof tool.type === "string") {
++            return tool;
++        }
+         const schema = tool.parameters;
+         return {
+             name: isOAuthToken ? toClaudeCodeName(tool.name) : tool.name,
+diff --git a/dist/utils/oauth/anthropic.js b/dist/utils/oauth/anthropic.js
+index ba615d91cf0f91fe23c82c206e4397dd643f202f..f169b7d7b50d5e4a1d5ab3180bc5b0e01024fe09 100644
+--- a/dist/utils/oauth/anthropic.js
++++ b/dist/utils/oauth/anthropic.js
+@@ -313,6 +313,40 @@ export async function refreshAnthropicToken(refreshToken) {
+         expires: Date.now() + data.expires_in * 1000 - 5 * 60 * 1000,
+     };
+ }
++// PATCH(pizzapi): read Claude Code credentials as a refresh fallback.
++async function tryReadClaudeCodeCredentials() {
++    try {
++        if (process.platform === "darwin") {
++            const { execSync } = await import("node:child_process");
++            const raw = execSync(
++                `security find-generic-password -s ${JSON.stringify("Claude Code-credentials")} -w`,
++                { encoding: "utf-8", timeout: 5000, stdio: ["pipe", "pipe", "pipe"] },
++            ).trim();
++            if (raw) {
++                const cc = JSON.parse(raw)?.claudeAiOauth;
++                if (cc?.accessToken && cc?.refreshToken && cc.expiresAt > Date.now() + 60000) {
++                    return { refresh: cc.refreshToken, access: cc.accessToken, expires: cc.expiresAt };
++                }
++            }
++        }
++    }
++    catch {
++    }
++    try {
++        const [{ readFileSync }, { join }, { homedir }] = await Promise.all([
++            import("node:fs"),
++            import("node:path"),
++            import("node:os"),
++        ]);
++        const cc = JSON.parse(readFileSync(join(homedir(), ".claude", ".credentials.json"), "utf-8"))?.claudeAiOauth;
++        if (cc?.accessToken && cc?.refreshToken && cc.expiresAt > Date.now() + 60000) {
++            return { refresh: cc.refreshToken, access: cc.accessToken, expires: cc.expiresAt };
++        }
++    }
++    catch {
++    }
++    return null;
++}
+ export const anthropicOAuthProvider = {
+     id: "anthropic",
+     name: "Anthropic (Claude Pro/Max)",
+@@ -326,6 +360,11 @@ export const anthropicOAuthProvider = {
+         });
+     },
+     async refreshToken(credentials) {
++        // PATCH(pizzapi): try Claude Code credentials first
++        const ccCreds = await tryReadClaudeCodeCredentials();
++        if (ccCreds) {
++            return ccCreds;
++        }
+         return refreshAnthropicToken(credentials.refresh);
+     },
+     getApiKey(credentials) {
