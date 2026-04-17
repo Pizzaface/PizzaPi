@@ -191,7 +191,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
     try { syncKeychainToAuthJsonFile(keychainAuthJsonPath); } catch {}
     const keychainSyncInterval = setInterval(() => {
         try { syncKeychainToAuthJsonFile(keychainAuthJsonPath); } catch {}
-    }, 10 * 60 * 1000); // every 10 minutes
+    }, 2 * 60 * 1000); // every 2 minutes
 
     // Load global config so relayUrl and apiKey can be read from
     // ~/.pizzapi/config.json (important for LaunchAgent contexts where
