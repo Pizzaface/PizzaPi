@@ -225,3 +225,90 @@ describe("respond_to_trigger handling for session_complete", () => {
         expect(conn.emitted.length).toBe(0);
     });
 });
+
+// ============================================================================
+// Built-in sigils & merge logic
+// ============================================================================
+
+import { BUILTIN_SIGIL_DEFS, mergeWithBuiltinSigils } from "./extension.js";
+import type { ServiceSigilDef } from "@pizzapi/protocol";
+
+describe("BUILTIN_SIGIL_DEFS", () => {
+    it("contains the action sigil", () => {
+        const action = BUILTIN_SIGIL_DEFS.find((d) => d.type === "action");
+        expect(action).toBeDefined();
+        expect(action!.label).toBe("Action");
+        expect(action!.description).toContain("confirm");
+        expect(action!.description).toContain("choose");
+        expect(action!.description).toContain("input");
+    });
+
+    it("contains file, status, error, and other utility sigils", () => {
+        const types = BUILTIN_SIGIL_DEFS.map((d) => d.type);
+        for (const expected of ["file", "status", "error", "cost", "duration", "session", "model", "cmd", "tag", "test", "link", "diff"]) {
+            expect(types).toContain(expected);
+        }
+    });
+
+    it("has no duplicate types", () => {
+        const types = BUILTIN_SIGIL_DEFS.map((d) => d.type);
+        expect(new Set(types).size).toBe(types.length);
+    });
+
+    it("every entry has type, label, and icon", () => {
+        for (const def of BUILTIN_SIGIL_DEFS) {
+            expect(def.type).toBeTruthy();
+            expect(def.label).toBeTruthy();
+            expect(def.icon).toBeTruthy();
+        }
+    });
+});
+
+describe("mergeWithBuiltinSigils", () => {
+    it("returns only built-ins when no service defs provided", () => {
+        const result = mergeWithBuiltinSigils([]);
+        expect(result).toHaveLength(BUILTIN_SIGIL_DEFS.length);
+        expect(result.map((d) => d.type)).toEqual(BUILTIN_SIGIL_DEFS.map((d) => d.type));
+    });
+
+    it("service defs appear first, then built-ins", () => {
+        const serviceDef: ServiceSigilDef = { type: "pr", label: "Pull Request", serviceId: "github" };
+        const result = mergeWithBuiltinSigils([serviceDef]);
+        expect(result[0].type).toBe("pr");
+        expect(result[0].serviceId).toBe("github");
+        // Built-ins follow
+        expect(result.slice(1).map((d) => d.type)).toEqual(BUILTIN_SIGIL_DEFS.map((d) => d.type));
+    });
+
+    it("service def overrides a built-in of the same type", () => {
+        const serviceDef: ServiceSigilDef = {
+            type: "file",
+            label: "Custom File",
+            serviceId: "my-service",
+            resolve: "/api/resolve/file/{id}",
+        };
+        const result = mergeWithBuiltinSigils([serviceDef]);
+        const fileDefs = result.filter((d) => d.type === "file");
+        // Only one "file" entry — the service version
+        expect(fileDefs).toHaveLength(1);
+        expect(fileDefs[0].label).toBe("Custom File");
+        expect(fileDefs[0].serviceId).toBe("my-service");
+    });
+
+    it("does not duplicate when service provides multiple overlapping types", () => {
+        const serviceDefs: ServiceSigilDef[] = [
+            { type: "file", label: "Svc File" },
+            { type: "error", label: "Svc Error" },
+            { type: "idea", label: "Idea", serviceId: "godmother" },
+        ];
+        const result = mergeWithBuiltinSigils(serviceDefs);
+        // Total = 3 service + (13 built-in - 2 overridden) = 14
+        const expectedCount = serviceDefs.length + BUILTIN_SIGIL_DEFS.filter(
+            (b) => !serviceDefs.some((s) => s.type === b.type),
+        ).length;
+        expect(result).toHaveLength(expectedCount);
+        // No duplicates
+        const types = result.map((d) => d.type);
+        expect(new Set(types).size).toBe(types.length);
+    });
+});
