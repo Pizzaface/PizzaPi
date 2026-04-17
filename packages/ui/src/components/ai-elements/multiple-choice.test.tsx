@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { Window } from "happy-dom";
-import { render, fireEvent, cleanup } from "@testing-library/react";
+import { render, fireEvent, cleanup, waitFor } from "@testing-library/react";
 import React from "react";
 
 const win = new Window({ url: "http://localhost/" });
@@ -31,11 +31,11 @@ afterEach(() => {
 const { MultipleChoiceQuestions } = await import("./multiple-choice");
 
 describe("MultipleChoiceQuestions", () => {
-  test("does not crash when the current step becomes out of bounds after a prompt update", () => {
+  test("does not crash when the current step becomes out of bounds after a prompt update", async () => {
     const onSubmit = () => true;
     const promptKey = "ask-1";
 
-    const { container, rerender } = render(
+    const { container, rerender, getByRole, getByText } = render(
       <MultipleChoiceQuestions
         promptKey={promptKey}
         onSubmit={onSubmit}
@@ -46,18 +46,23 @@ describe("MultipleChoiceQuestions", () => {
       />,
     );
 
-    const firstOption = container.querySelector('input[type="radio"]') as HTMLInputElement | null;
-    expect(firstOption).not.toBeNull();
-    fireEvent.click(firstOption!);
+    const nextButton = getByRole("button", { name: /next/i });
+    expect((nextButton as HTMLButtonElement).disabled).toBe(true);
 
-    const nextButton = Array.from(container.querySelectorAll("button")).find((button) =>
-      button.textContent?.includes("Next"),
-    ) as HTMLButtonElement | undefined;
-    expect(nextButton).toBeDefined();
-    fireEvent.click(nextButton!);
+    const firstOptionLabel = container.querySelector('label[for="mc-q-ask-1-0-opt-0"]');
+    expect(firstOptionLabel).not.toBeNull();
+    fireEvent.click(firstOptionLabel!);
 
-    expect(container.textContent).toContain("Question 2 of 2");
-    expect(container.textContent).toContain("Second?");
+    await waitFor(() => {
+      expect((getByRole("button", { name: /next/i }) as HTMLButtonElement).disabled).toBe(false);
+    });
+
+    fireEvent.click(getByRole("button", { name: /next/i }));
+
+    await waitFor(() => {
+      expect(getByText("Question 2 of 2")).toBeDefined();
+      expect(getByText("Second?")).toBeDefined();
+    });
 
     rerender(
       <MultipleChoiceQuestions
@@ -69,7 +74,9 @@ describe("MultipleChoiceQuestions", () => {
       />,
     );
 
-    expect(container.textContent).toContain("Question 1 of 1");
-    expect(container.textContent).toContain("First?");
+    await waitFor(() => {
+      expect(getByText("Question 1 of 1")).toBeDefined();
+      expect(getByText("First?")).toBeDefined();
+    });
   });
 });
