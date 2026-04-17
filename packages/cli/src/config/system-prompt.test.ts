@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { buildSystemPrompt, rewriteForClaudeCodeProvider, BUILTIN_SYSTEM_PROMPT } from "./system-prompt.js";
+import { buildSystemPrompt, rewriteForClaudeCodeProvider, buildClaudeCodeProviderPrompt, BUILTIN_SYSTEM_PROMPT } from "./system-prompt.js";
 
 describe("buildSystemPrompt", () => {
     test("returns a non-empty string", () => {
@@ -192,6 +192,96 @@ describe("rewriteForClaudeCodeProvider", () => {
         expect(result).not.toContain("PizzaPi");
         expect(result).toContain("Claude Code");
         expect(result.length).toBeGreaterThan(0);
+    });
+});
+
+describe("buildClaudeCodeProviderPrompt", () => {
+    test("returns a non-empty string", () => {
+        const result = buildClaudeCodeProviderPrompt();
+        expect(typeof result).toBe("string");
+        expect(result.length).toBeGreaterThan(0);
+    });
+
+    test("contains the Claude Code identity line", () => {
+        const result = buildClaudeCodeProviderPrompt();
+        expect(result).toContain("You are Claude Code, Anthropic's official CLI for Claude");
+    });
+
+    test("does NOT contain PizzaPi branding", () => {
+        const result = buildClaudeCodeProviderPrompt();
+        expect(result).not.toContain("PizzaPi");
+        expect(result).not.toContain("pizzapi");
+        expect(result).not.toContain("operating inside pi, a coding agent harness");
+    });
+
+    test("contains the env block with platform info", () => {
+        const result = buildClaudeCodeProviderPrompt({ platform: "darwin", shell: "zsh", osVersion: "Darwin 23.1.0" });
+        expect(result).toContain("<env>");
+        expect(result).toContain("Platform: darwin");
+        expect(result).toContain("Shell: zsh");
+        expect(result).toContain("OS Version: Darwin 23.1.0");
+        expect(result).toContain("</env>");
+    });
+
+    test("includes cwd in env block when provided", () => {
+        const result = buildClaudeCodeProviderPrompt({ cwd: "/Users/dev/project", platform: "linux", shell: "bash", osVersion: "Linux 6.x" });
+        expect(result).toContain("Working directory: /Users/dev/project");
+    });
+
+    test("shows git repo as Yes when gitBranch is provided", () => {
+        const result = buildClaudeCodeProviderPrompt({ gitBranch: "main", platform: "linux", shell: "bash", osVersion: "Linux 6.x" });
+        expect(result).toContain("Is directory a git repo: Yes");
+    });
+
+    test("shows git repo as No when not in a git directory", () => {
+        // Use /tmp as cwd — not a git repo, so auto-detection returns no branch
+        const result = buildClaudeCodeProviderPrompt({ cwd: "/tmp", platform: "linux", shell: "bash", osVersion: "Linux 6.x" });
+        expect(result).toContain("Is directory a git repo: No");
+    });
+
+    test("contains Claude Code-specific sections", () => {
+        const result = buildClaudeCodeProviderPrompt();
+        expect(result).toContain("## Tone and style");
+        expect(result).toContain("## Professional objectivity");
+        expect(result).toContain("## No time estimates");
+        expect(result).toContain("## Task Management");
+        expect(result).toContain("## Doing tasks");
+        expect(result).toContain("## Tool usage policy");
+        expect(result).toContain("## Code References");
+    });
+
+    test("contains git commit and PR instructions", () => {
+        const result = buildClaudeCodeProviderPrompt();
+        expect(result).toContain("### Committing changes with git");
+        expect(result).toContain("### Creating pull requests");
+        expect(result).toContain("Co-Authored-By: Claude");
+    });
+
+    test("contains Claude background info", () => {
+        const result = buildClaudeCodeProviderPrompt();
+        expect(result).toContain("<claude_background_info>");
+        expect(result).toContain("Claude Opus 4.6");
+    });
+
+    test("contains security policy", () => {
+        const result = buildClaudeCodeProviderPrompt();
+        expect(result).toContain("authorized security testing");
+        expect(result).toContain("defensive security");
+    });
+
+    test("does NOT contain tool schema definitions", () => {
+        // Tool schemas are injected separately by the agent SDK
+        const result = buildClaudeCodeProviderPrompt();
+        expect(result).not.toContain('"$schema": "https://json-schema.org');
+        expect(result).not.toContain('"additionalProperties": false');
+    });
+
+    test("auto-detects platform and shell from environment", () => {
+        // When no ctx is provided, it should auto-detect
+        const result = buildClaudeCodeProviderPrompt();
+        expect(result).toContain("Platform:");
+        expect(result).toContain("Shell:");
+        expect(result).toContain("OS Version:");
     });
 });
 

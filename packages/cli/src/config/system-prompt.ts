@@ -1,8 +1,10 @@
 import { execSync } from "node:child_process";
 import { renderSystemPrompt } from "./system-prompt.precompiled.js";
 import type { SystemPromptContext } from "./system-prompt.precompiled.js";
+import { renderClaudeCodeProviderPrompt } from "./claude-code-provider.precompiled.js";
+import type { ClaudeCodeProviderContext } from "./claude-code-provider.precompiled.js";
 
-export type { SystemPromptContext };
+export type { SystemPromptContext, ClaudeCodeProviderContext };
 
 /** Run a git command and return trimmed stdout, or undefined on failure. */
 function git(args: string, cwd?: string): string | undefined {
@@ -96,6 +98,39 @@ export function rewriteForClaudeCodeProvider(prompt: string): string {
         .replace(/(^|[^~\/])\.pizzapi\//gm, "$1.claude/")
         // Config section name
         .replace(/pizzapi-configuration/g, "claude-code-configuration");
+}
+
+/** Detect OS version string for the env block. */
+function getOsVersion(): string {
+    try {
+        return execSync("uname -sr", { encoding: "utf-8", timeout: 3000, stdio: ["ignore", "pipe", "ignore"] }).trim();
+    } catch {
+        return "unknown";
+    }
+}
+
+/** Detect the user's shell. */
+function getShell(): string {
+    return process.env.SHELL?.split("/").pop() ?? "unknown";
+}
+
+/**
+ * Build the Claude Code provider system prompt.
+ *
+ * This replaces the upstream base system prompt entirely with the real
+ * Claude Code system prompt when Claude Code Provider mode is enabled.
+ * The template is precompiled at build time from claude-code-provider.hbs.
+ */
+export function buildClaudeCodeProviderPrompt(ctx?: Partial<ClaudeCodeProviderContext>): string {
+    const gitCtx = gatherGitContext(ctx?.cwd);
+
+    return renderClaudeCodeProviderPrompt({
+        cwd: ctx?.cwd,
+        gitBranch: ctx?.gitBranch ?? gitCtx.gitBranch,
+        platform: ctx?.platform ?? process.platform,
+        shell: ctx?.shell ?? getShell(),
+        osVersion: ctx?.osVersion ?? getOsVersion(),
+    });
 }
 
 /**
