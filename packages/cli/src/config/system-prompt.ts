@@ -103,15 +103,25 @@ export function rewriteForClaudeCodeProvider(prompt: string): string {
 /** Detect OS version string for the env block. */
 function getOsVersion(): string {
     try {
+        if (process.platform === "win32") {
+            // e.g. "Windows 10 Pro 10.0.22631"
+            const ver = execSync("cmd /c ver", { encoding: "utf-8", timeout: 3000, stdio: ["ignore", "pipe", "ignore"] }).trim();
+            return ver || `Windows ${process.version}`;
+        }
         return execSync("uname -sr", { encoding: "utf-8", timeout: 3000, stdio: ["ignore", "pipe", "ignore"] }).trim();
     } catch {
-        return "unknown";
+        return process.platform === "win32" ? "Windows" : "unknown";
     }
 }
 
 /** Detect the user's shell. */
 function getShell(): string {
-    return process.env.SHELL?.split("/").pop() ?? "unknown";
+    // Unix: $SHELL (e.g. /bin/zsh → zsh)
+    if (process.env.SHELL) return process.env.SHELL.split("/").pop() ?? "unknown";
+    // Windows: %ComSpec% (e.g. C:\WINDOWS\system32\cmd.exe → cmd.exe) or PowerShell
+    if (process.env.ComSpec) return process.env.ComSpec.split("\\").pop() ?? "cmd.exe";
+    if (process.env.PSModulePath) return "powershell";
+    return "unknown";
 }
 
 /**
