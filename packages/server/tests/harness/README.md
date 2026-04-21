@@ -200,6 +200,7 @@ const server = await createTestServer(opts?);
 | `userName` | `string` | Display name (`"Test User"`) |
 | `userEmail` | `string` | Email (`"testuser@pizzapi-harness.test"`) |
 | `sessionCookie` | `string` | `Set-Cookie` string for viewer/hub auth |
+| `addTrustedOrigin(origin)` | `void` | Adds a trusted browser origin after startup (useful for Vite/HMR sandbox ports) |
 | `fetch(path, init?)` | `Promise<Response>` | Authenticated HTTP helper (injects API key + cookie) |
 | `cleanup()` | `Promise<void>` | Shuts down Socket.IO, Redis, HTTP, and removes temp DB |
 

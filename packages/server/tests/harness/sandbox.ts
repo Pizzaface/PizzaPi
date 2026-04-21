@@ -25,7 +25,6 @@ import {
     type ConversationTurn,
 } from "./builders.js";
 import { startSandboxApi, type SandboxApi } from "./sandbox-api.js";
-import { addTrustedOrigin } from "../../src/auth.js";
 import { RedisMemoryServer } from "redis-memory-server";
 
 // ── Suppress noisy server logs so the REPL stays clean ───────────────────────
@@ -727,7 +726,7 @@ async function main() {
     }
 
     // Add the Vite dev URL as a trusted origin so auth works from the HMR UI.
-    addTrustedOrigin(`http://127.0.0.1:${vitePort}`);
+    server.addTrustedOrigin(`http://127.0.0.1:${vitePort}`);
 
     // ── Start HTTP control API ────────────────────────────────────────
     const sandboxApi = await startSandboxApi({

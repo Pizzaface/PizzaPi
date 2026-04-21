@@ -30,6 +30,8 @@ export interface TestServer {
     userEmail: string;
     /** Auth session cookie string for viewer/hub namespaces */
     sessionCookie: string;
+    /** Add a trusted origin after startup (e.g. Vite HMR sandbox port) */
+    addTrustedOrigin(origin: string): void;
     /** Helper: make an authenticated REST request */
     fetch(path: string, init?: RequestInit): Promise<Response>;
     /** Shut down everything and clean up */
