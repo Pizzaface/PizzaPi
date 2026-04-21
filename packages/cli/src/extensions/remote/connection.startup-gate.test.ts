@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 
 class FakeSocket {
     handlers = new Map<string, Array<(data: any) => void>>();
@@ -104,6 +104,12 @@ const {
 function sleep(ms: number) {
     return new Promise((resolve) => setTimeout(resolve, ms));
 }
+
+// Restore top-level module mocks after this file so they do not leak into
+// later CLI test files that import the real config/mcp/heartbeat modules.
+afterAll(() => {
+    mock.restore();
+});
 
 describe("remote connection startup gate", () => {
     beforeEach(() => {
