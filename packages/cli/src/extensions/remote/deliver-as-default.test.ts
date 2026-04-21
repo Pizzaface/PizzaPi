@@ -16,7 +16,12 @@
  *   - Otherwise, leave it undefined so idle-agent semantics apply.
  */
 import { describe, expect, test } from "bun:test";
-import { resolveInputDeliverAs } from "./connection.js";
+// Import from the standalone helper module, not connection.js. Importing from
+// connection.js would transitively load socket.io-client into the test
+// process before other test files (connection.startup-gate.test.ts) can
+// mock.module it, silently defeating their mocks and making them depend on
+// test-file ordering in CI.
+import { resolveInputDeliverAs } from "./deliver-as-default.js";
 
 describe("resolveInputDeliverAs", () => {
     test("returns requested mode verbatim when supplied", () => {
