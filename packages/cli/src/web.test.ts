@@ -15,6 +15,7 @@ import {
     shouldRebuildHostUi,
     readBooleanEnv,
     getDockerPlatform,
+    ensureComposeSucceeded,
 } from "./web";
 
 /**
@@ -489,6 +490,27 @@ describe("resolveMissingProxySettings", () => {
             proxyDepth: 2,
             source: "compose",
         });
+    });
+});
+
+describe("ensureComposeSucceeded", () => {
+    test("does nothing for exit code 0", () => {
+        expect(() => ensureComposeSucceeded(0, "starting web")).not.toThrow();
+    });
+
+    test("throws a helpful error for non-zero exit codes", () => {
+        expect(() => ensureComposeSucceeded(18, "starting web")).toThrow(
+            "docker compose failed while starting web (exit code 18)",
+        );
+    });
+
+    test("normalizes null/undefined exit codes to 1", () => {
+        expect(() => ensureComposeSucceeded(null as unknown as number, "pulling ui image")).toThrow(
+            "docker compose failed while pulling ui image (exit code 1)",
+        );
+        expect(() => ensureComposeSucceeded(undefined as unknown as number, "pulling ui image")).toThrow(
+            "docker compose failed while pulling ui image (exit code 1)",
+        );
     });
 });
 

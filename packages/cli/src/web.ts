@@ -852,6 +852,12 @@ async function composeExecAsync(composePath: string, args: string[]): Promise<nu
     });
 }
 
+export function ensureComposeSucceeded(code: number | null | undefined, action: string): void {
+    if (code === 0) return;
+    const exitCode = typeof code === "number" && Number.isFinite(code) ? code : 1;
+    throw new Error(`docker compose failed while ${action} (exit code ${exitCode})`);
+}
+
 // ─── Arg parsing ──────────────────────────────────────────────────────────────
 
 interface ParsedArgs {
@@ -1082,7 +1088,7 @@ export async function runWeb(args: string[]): Promise<void> {
             return;
         }
         log.info("Stopping PizzaPi web...");
-        await composeExecAsync(composePath, ["down"]);
+        ensureComposeSucceeded(await composeExecAsync(composePath, ["down"]), "stopping web");
         return;
     }
 
@@ -1094,7 +1100,7 @@ export async function runWeb(args: string[]): Promise<void> {
             log.info("PizzaPi web is not running.");
             return;
         }
-        await composeExecAsync(composePath, ["logs", "-f", "--tail", "100"]);
+        ensureComposeSucceeded(await composeExecAsync(composePath, ["logs", "-f", "--tail", "100"]), "streaming web logs");
         return;
     }
 
@@ -1106,7 +1112,7 @@ export async function runWeb(args: string[]): Promise<void> {
             log.info("PizzaPi web is not set up. Run `pizza web` to start.");
             return;
         }
-        await composeExecAsync(composePath, ["ps"]);
+        ensureComposeSucceeded(await composeExecAsync(composePath, ["ps"]), "checking web status");
         return;
     }
 
@@ -1200,7 +1206,7 @@ export async function runWeb(args: string[]): Promise<void> {
 
     if (!useDevUi && !parsed.build) {
         log.info(`Pulling UI image ${UI_IMAGE_REPOSITORY}:${parsed.tag}...`);
-        await composeExecAsync(composePath, ["pull", "ui"]);
+        ensureComposeSucceeded(await composeExecAsync(composePath, ["pull", "ui"]), "pulling ui image");
     }
 
     // When the host prebuild actually rebuilt, force-recreate containers so
@@ -1212,13 +1218,13 @@ export async function runWeb(args: string[]): Promise<void> {
     // because `docker compose up` doesn't support --no-cache directly.
     if (parsed.noCache) {
         log.info("Building without cache...");
-        await composeExecAsync(composePath, ["build", "--no-cache"]);
+        ensureComposeSucceeded(await composeExecAsync(composePath, ["build", "--no-cache"]), "building web images without cache");
     }
 
     if (parsed.detach) {
         const upArgs = ["up", "-d", "--build"];
         if (forceRecreate) upArgs.push("--force-recreate");
-        await composeExecAsync(composePath, upArgs);
+        ensureComposeSucceeded(await composeExecAsync(composePath, upArgs), "starting web");
         log.info("");
         log.info(`✅ PizzaPi web is running at http://localhost:${config.port}`);
         if (useDevUi) {
@@ -1232,6 +1238,6 @@ export async function runWeb(args: string[]): Promise<void> {
     } else {
         const upArgs = ["up", "--build"];
         if (forceRecreate) upArgs.push("--force-recreate");
-        await composeExecAsync(composePath, upArgs);
+        ensureComposeSucceeded(await composeExecAsync(composePath, upArgs), "starting web");
     }
 }
