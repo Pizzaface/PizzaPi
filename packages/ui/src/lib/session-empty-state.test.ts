@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { getSessionEmptyStateUi, isSessionHydrating, shouldShowSessionTranscript } from "./session-empty-state";
+import {
+  canSubmitSessionInput,
+  getSessionEmptyStateUi,
+  isSessionHydrating,
+  shouldShowSessionTranscript,
+} from "./session-empty-state";
 
 describe("isSessionHydrating", () => {
   test("returns true for connecting statuses", () => {
@@ -34,6 +39,23 @@ describe("shouldShowSessionTranscript", () => {
   test("never shows transcript without a session id or visible messages", () => {
     expect(shouldShowSessionTranscript(null, "Connected", true)).toBe(false);
     expect(shouldShowSessionTranscript("sess-1", "Connected", false)).toBe(false);
+  });
+});
+
+describe("canSubmitSessionInput", () => {
+  test("blocks composer submission while the session is still hydrating", () => {
+    expect(canSubmitSessionInput("sess-1", "Connecting…", false)).toBe(false);
+    expect(canSubmitSessionInput("sess-1", "Loading session (0 of 10 messages)…", false)).toBe(false);
+  });
+
+  test("blocks submission when no session is selected or compaction is active", () => {
+    expect(canSubmitSessionInput(null, "Connected", false)).toBe(false);
+    expect(canSubmitSessionInput("sess-1", "Connected", true)).toBe(false);
+  });
+
+  test("allows submission once the session is connected and interactive", () => {
+    expect(canSubmitSessionInput("sess-1", "Connected", false)).toBe(true);
+    expect(canSubmitSessionInput("sess-1", "Waiting for session events", false)).toBe(true);
   });
 });
 

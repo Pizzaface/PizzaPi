@@ -30,6 +30,17 @@ export function shouldShowSessionTranscript(
 }
 
 /**
+ * Returns true when the composer should allow sending input to the active session.
+ */
+export function canSubmitSessionInput(
+  sessionId: string | null | undefined,
+  viewerStatus: string | null | undefined,
+  isCompacting: boolean,
+): boolean {
+  return !!sessionId && !isCompacting && !isSessionHydrating(viewerStatus);
+}
+
+/**
  * Copy + animation state for session-specific empty states.
  */
 export function getSessionEmptyStateUi(viewerStatus: string | null | undefined): SessionEmptyStateUi {
