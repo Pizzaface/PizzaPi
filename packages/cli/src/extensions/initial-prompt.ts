@@ -1,6 +1,7 @@
 import type { ExtensionFactory } from "@mariozechner/pi-coding-agent";
 import { createLogger } from "@pizzapi/tools";
 import { waitForRelayRegistration } from "./remote.js";
+import { waitForWorkerStartupComplete } from "./worker-startup-gate.js";
 
 const log = createLogger("worker");
 
@@ -185,14 +186,34 @@ export const initialPromptExtension: ExtensionFactory = (pi) => {
         }
 
         // Send the initial prompt as a user message.
-        // Wait for relay registration so triggers from the first turn
-        // (AskUserQuestion, plan_mode, session_complete) are delivered
-        // to the parent. Falls back after 10s if relay never connects.
+        //
+        // We must wait for BOTH:
+        //  1. The relay to register — so that triggers emitted during the first
+        //     turn (AskUserQuestion, plan_mode, session_complete) are routed to
+        //     the parent session. Falls back after 10s if relay never connects.
+        //  2. Worker startup to finish — so that MCP tools, plugins, and hooks
+        //     are fully loaded before the first agent turn begins.
+        //
+        // Without (2), slow MCP startup + an initial prompt races with any
+        // user input the web UI buffers during boot: the initial prompt can
+        // start streaming before the startup gate releases, then the buffered
+        // user message hits an already-streaming agent with no deliverAs and
+        // is silently dropped. See fix/mcp-startup-session-limbo for context.
         if (initialPrompt) {
-            waitForRelayRegistration(10_000).then(() => {
-                log.info(`pizzapi worker: sending initial prompt (${initialPrompt.length} chars)`);
-                pi.sendUserMessage(initialPrompt);
-            });
+            void (async () => {
+                try {
+                    await Promise.all([
+                        waitForRelayRegistration(10_000),
+                        waitForWorkerStartupComplete(),
+                    ]);
+                    log.info(`pizzapi worker: sending initial prompt (${initialPrompt.length} chars)`);
+                    pi.sendUserMessage(initialPrompt);
+                } catch (err) {
+                    log.warn(
+                        `pizzapi worker: failed to dispatch initial prompt: ${err instanceof Error ? err.message : String(err)}`,
+                    );
+                }
+            })();
         }
     });
 };

@@ -287,4 +287,9 @@ describe("remote connection startup gate", () => {
         await sleep(120);
         expect(sendUserMessage).toHaveBeenCalledTimes(1);
     });
+
+    // NOTE: regression coverage for the "isAgentActive -> default deliverAs"
+    // path lives in deliver-as-default.test.ts as a focused unit test. Adding
+    // it to this file requires fleshing out several more mocks first — see
+    // the preamble comment above. Tracked as a separate cleanup.
 });

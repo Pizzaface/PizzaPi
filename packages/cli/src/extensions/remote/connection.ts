@@ -28,6 +28,7 @@ import { emitSessionActive } from "./chunked-delivery.js";
 import { resetRelayRegistrationGate, signalRelayRegistered } from "./registration-gate.js";
 import { decideRegisteredParentState } from "../remote-registered-parent-state.js";
 import { waitForWorkerStartupComplete } from "../worker-startup-gate.js";
+import { resolveInputDeliverAs } from "./deliver-as-default.js";
 
 // ── Module-level singletons (safe: one relay extension per process) ───────────
 
@@ -390,7 +391,12 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
                 const relaySessionId = rctx.relay?.sessionId;
                 const message = await buildUserMessageFromRemoteInput(inputText, attachments, httpBase, key ?? "", relaySessionId);
                 await waitForWorkerStartupComplete();
-                handlers.sendUserMessage(message, deliverAs ? { deliverAs } : undefined);
+                // Defensive: if the gate was held open by slow MCP startup, the
+                // initial prompt (or another buffered message) may have already
+                // started streaming by the time we resume here. See
+                // resolveInputDeliverAs for the rationale.
+                const effectiveDeliverAs = resolveInputDeliverAs(deliverAs, rctx.isAgentActive === true);
+                handlers.sendUserMessage(message, effectiveDeliverAs ? { deliverAs: effectiveDeliverAs } : undefined);
             } catch (err) {
                 log.error(`pizzapi: failed to deliver remote input: ${err instanceof Error ? err.message : String(err)}`);
             }
