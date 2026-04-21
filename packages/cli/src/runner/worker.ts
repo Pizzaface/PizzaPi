@@ -328,11 +328,141 @@ async function main(): Promise<void> {
     await session.bindExtensions({
         commandContextActions: {
             waitForIdle: () => session.agent.waitForIdle(),
-            // Headless runner sessions don't switch/fork — return cancelled for all
-            newSession: async () => ({ cancelled: true }),
+
+            newSession: async () => {
+                const extensionRunner = session.extensionRunner;
+                const previousSessionFile = session.sessionFile;
+
+                // Let extensions cancel the switch (e.g. unsaved work)
+                if (extensionRunner?.hasHandlers("session_before_switch")) {
+                    const result = await extensionRunner.emit({
+                        type: "session_before_switch",
+                        reason: "new",
+                    });
+                    if ((result as any)?.cancel) {
+                        return { cancelled: true };
+                    }
+                }
+
+                // Stop any running agent turn
+                await session.abort();
+
+                // Reset agent transcript, queues, and runtime flags
+                session.agent.reset();
+
+                // Create a fresh session file
+                session.sessionManager.newSession();
+                session.agent.sessionId = session.sessionManager.getSessionId();
+
+                // Clear AgentSession's private tracking queues so stale steering/
+                // follow-up messages from the old conversation don't leak through.
+                (session as any)._steeringMessages = [];
+                (session as any)._followUpMessages = [];
+                (session as any)._pendingNextTurnMessages = [];
+                (session as any)._lastAssistantMessage = undefined;
+                (session as any)._overflowRecoveryAttempted = false;
+
+                // Persist the current thinking level in the new session header
+                session.sessionManager.appendThinkingLevelChange(session.thinkingLevel);
+
+                // Notify extensions — the remote extension's session_switch handler
+                // cancels pending triggers, delinks children, and pushes the new
+                // (empty) conversation to the web UI via session_active.
+                // NOTE: "session_switch" was removed from the upstream type union in
+                // 0.66.1, but PizzaPi's remote extension still registers a runtime
+                // handler for it. The cast is safe — emit() dispatches by string key.
+                if (extensionRunner) {
+                    await extensionRunner.emit({
+                        type: "session_switch" as any,
+                        reason: "new",
+                        previousSessionFile,
+                    });
+                }
+
+                logInfo("new session created (in-place)");
+                return { cancelled: false };
+            },
+
+            switchSession: async (sessionPath: string) => {
+                const extensionRunner = session.extensionRunner;
+                const previousSessionFile = session.sessionFile;
+
+                // Let extensions cancel
+                if (extensionRunner?.hasHandlers("session_before_switch")) {
+                    const result = await extensionRunner.emit({
+                        type: "session_before_switch",
+                        reason: "resume",
+                        targetSessionFile: sessionPath,
+                    });
+                    if ((result as any)?.cancel) {
+                        return { cancelled: true };
+                    }
+                }
+
+                await session.abort();
+
+                // Clear AgentSession queues
+                (session as any)._steeringMessages = [];
+                (session as any)._followUpMessages = [];
+                (session as any)._pendingNextTurnMessages = [];
+                (session as any)._lastAssistantMessage = undefined;
+                (session as any)._overflowRecoveryAttempted = false;
+
+                // Load the target session file into the existing SessionManager
+                session.sessionManager.setSessionFile(sessionPath);
+                session.agent.sessionId = session.sessionManager.getSessionId();
+
+                // Rebuild messages from the target session
+                const sessionContext = session.sessionManager.buildSessionContext();
+
+                // Notify extensions before we replace messages — the remote
+                // extension's session_switch handler emits session_active which
+                // reads from the (now updated) sessionManager.
+                // NOTE: see newSession comment for why this uses `as any`.
+                if (extensionRunner) {
+                    await extensionRunner.emit({
+                        type: "session_switch" as any,
+                        reason: "resume",
+                        previousSessionFile,
+                    });
+                }
+
+                // Restore the conversation transcript
+                session.agent.state.messages = sessionContext.messages;
+
+                // Restore model if the session had one saved
+                if (sessionContext.model) {
+                    const modelRegistry = (session as any)._modelRegistry;
+                    if (modelRegistry) {
+                        try {
+                            const available = await modelRegistry.getAvailable();
+                            const match = available.find(
+                                (m: any) =>
+                                    m.provider === sessionContext.model!.provider &&
+                                    m.id === sessionContext.model!.modelId,
+                            );
+                            if (match) {
+                                await session.setModel(match);
+                            }
+                        } catch {
+                            // Model restore is best-effort
+                        }
+                    }
+                }
+
+                // Restore thinking level if saved
+                if (sessionContext.thinkingLevel) {
+                    session.setThinkingLevel(sessionContext.thinkingLevel as any);
+                }
+
+                logInfo(`switched to session ${sessionPath}`);
+                return { cancelled: false };
+            },
+
+            // Fork and tree navigation are not supported in headless mode
             fork: async () => ({ cancelled: true }),
             navigateTree: async () => ({ cancelled: true }),
-            switchSession: async () => ({ cancelled: true }),
+
             reload: async () => {
                 await session.reload();
             },
