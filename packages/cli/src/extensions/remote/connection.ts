@@ -77,6 +77,32 @@ export interface ConnectionHandlers {
     getParentSessionIdForRegister: () => string | null | undefined;
 }
 
+// ── deliverAs defaulting ──────────────────────────────────────────────────────
+
+/**
+ * Resolve the effective `deliverAs` for a user input message.
+ *
+ * When the web UI sends a message while it believes the agent is idle, it
+ * intentionally omits `deliverAs`. If the runtime turns out to be streaming
+ * by the time the message is ready to dispatch (typical after a slow MCP
+ * startup where the initial prompt has already started streaming), passing
+ * `undefined` into `prompt()` would throw "Agent is already processing..."
+ * and the message would be silently dropped.
+ *
+ * If no explicit mode was supplied and the agent is currently streaming,
+ * default to `"followUp"` so the message is safely queued.
+ *
+ * Exported for unit testing; consumed by the `input` socket handler.
+ */
+export function resolveInputDeliverAs(
+    requested: "followUp" | "steer" | undefined,
+    isAgentActive: boolean,
+): "followUp" | "steer" | undefined {
+    if (requested) return requested;
+    if (isAgentActive) return "followUp";
+    return undefined;
+}
+
 // ── URL helpers ───────────────────────────────────────────────────────────────
 
 /**
@@ -390,7 +416,12 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
                 const relaySessionId = rctx.relay?.sessionId;
                 const message = await buildUserMessageFromRemoteInput(inputText, attachments, httpBase, key ?? "", relaySessionId);
                 await waitForWorkerStartupComplete();
-                handlers.sendUserMessage(message, deliverAs ? { deliverAs } : undefined);
+                // Defensive: if the gate was held open by slow MCP startup, the
+                // initial prompt (or another buffered message) may have already
+                // started streaming by the time we resume here. See
+                // resolveInputDeliverAs for the rationale.
+                const effectiveDeliverAs = resolveInputDeliverAs(deliverAs, rctx.isAgentActive === true);
+                handlers.sendUserMessage(message, effectiveDeliverAs ? { deliverAs: effectiveDeliverAs } : undefined);
             } catch (err) {
                 log.error(`pizzapi: failed to deliver remote input: ${err instanceof Error ? err.message : String(err)}`);
             }

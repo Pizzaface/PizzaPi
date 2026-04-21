@@ -605,6 +605,15 @@ export function registerLifecycleHandlers(deps: LifecycleHandlersDeps): void {
     pi.events.on("mcp:auth_paste_required", (data: unknown) => rctx.forwardEvent(data));
     pi.events.on("mcp:auth_complete", (data: unknown) => rctx.forwardEvent(data));
 
+    // When a MCP server finishes registering its tools — either during initial
+    // load or after a reload/reconnect — the capabilities snapshot we broadcast
+    // on `registered` may be stale (missing the tools/commands that just
+    // appeared). Re-broadcast capabilities so the web UI's model/command lists
+    // self-heal without requiring the user to navigate away and back.
+    pi.events.on?.("mcp:registry_updated", () => {
+        rctx.forwardEvent(rctx.buildCapabilitiesState());
+    });
+
     pi.events.on("mcp:startup_report", (report: unknown) => {
         if (report && typeof report === "object") {
             const r = report as Record<string, unknown>;
