@@ -284,6 +284,22 @@ describe("child session helpers (sio-state)", () => {
         expect(ttlStore.get("pizzapi:sio:children:parent-rehydrate")).toBe(24 * 60 * 60);
     });
 
+    it("isChildOfParent falls back to linkedParentId when parentSessionId is null during transient offline", async () => {
+        store.set(
+            "__hash__:pizzapi:sio:session:child-linked-fallback",
+            JSON.stringify({
+                sessionId: "child-linked-fallback",
+                parentSessionId: "",
+                linkedParentId: "parent-linked",
+            }),
+        );
+
+        const result = await isChildOfParent("parent-linked", "child-linked-fallback");
+        expect(result).toBe(true);
+        expect(setStore.get("pizzapi:sio:children:parent-linked")?.has("child-linked-fallback")).toBe(true);
+        expect(ttlStore.get("pizzapi:sio:children:parent-linked")).toBe(24 * 60 * 60);
+    });
+
     it("isChildOfParent returns false via fallback when parentSessionId does not match", async () => {
         // The child's hash has a different parentSessionId (e.g. it was re-linked
         // to another parent). The fallback must not grant access.

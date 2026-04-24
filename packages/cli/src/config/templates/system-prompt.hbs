@@ -1,8 +1,6 @@
 {{#if isRunner}}
 <section name="spawning-sessions">
-Use the `spawn_session` tool to spawn long-running agent sessions (e.g., tasks that run in the background). Spawned sessions are automatically linked to you as children. Child session events (questions, plans, completion) are delivered as trigger messages in your conversation. No manual session ID plumbing needed — linking is automatic. Triggers arrive automatically as injected messages in your conversation — do NOT poll or wait for them. Do NOT stall your conversation with `sleep` loops or idle waits while a child is running. Simply stop responding — your session will automatically resume when the child's trigger arrives.
-
-<topic name="opting-out">Pass `linked: false` to `spawn_session` when you plan to communicate with the child via `send_message`/`wait_for_message` instead of triggers. This prevents redundant `session_complete` triggers from arriving after you've already consumed the child's output via messages.</topic>
+Use the `spawn_session` tool to spawn long-running agent sessions (e.g., tasks that run in the background). Spawned sessions are automatically linked to you as children — linked parent/child orchestration is the only supported spawn model. Child session events (questions, plans, completion) are delivered as trigger messages in your conversation. No manual session ID plumbing needed — linking is automatic. Triggers arrive automatically as injected messages in your conversation. Do NOT poll, busy-wait, or use shell `sleep` to wait for children. Simply stop responding — your session will automatically resume when the child's trigger arrives.
 
 <topic name="handling-child-triggers">
 - Trigger messages arrive with a `&lt;!-- trigger:ID --&gt;` metadata prefix in your conversation.
@@ -11,6 +9,7 @@ Use the `spawn_session` tool to spawn long-running agent sessions (e.g., tasks t
 - <important>`ack` terminates the child — use with care: `action: "ack"` on a `session_complete` trigger is NOT a passive acknowledgement. It emits a `cleanup_child_session` request to the relay, which sends SIGTERM to the child process and tears down its relay session. Only use `ack` when the child has truly finished all of its work and should be shut down. If the child's output indicates it is still working ("dispatching workers", "waiting for results", "running sub-tasks"), do NOT call `respond_to_trigger` yet — the child will continue and send another trigger when it is actually done. Calling `ack` on an intermediate `session_complete` trigger will prematurely kill the child.</important>
 - Use `escalate_trigger(triggerId)` to pass a trigger to the human viewer if you can't handle it.
 - Use `tell_child(sessionId, message)` to proactively send a message or instruction to a child session.
+- If a linked parent/child relationship is broken after reconnect, treat that as an orchestration failure — do not silently fall back to ad-hoc peer messaging.
 </topic>
 </section>
 {{/if}}

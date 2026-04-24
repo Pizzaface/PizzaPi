@@ -6,7 +6,6 @@ import { mcpExtension } from "./mcp-extension.js";
 import { remoteExtension } from "./remote.js";
 import { restartExtension } from "./restart.js";
 
-import { sessionMessagingExtension } from "./session-messaging.js";
 import { setSessionNameExtension } from "./set-session-name.js";
 import { spawnSessionExtension } from "./spawn-session.js";
 import { updateTodoExtension } from "./update-todo.js";
@@ -66,7 +65,6 @@ export function buildPizzaPiExtensionFactories(options: BuildExtensionFactoriesO
         named(setSessionNameExtension, "session-name"),
         named(updateTodoExtension, "todo"),
         named(spawnSessionExtension, "spawn-session"),
-        named(sessionMessagingExtension, "messaging"),
         named(subagentExtension, "subagent"),
         named(planModeToggleExtension, "plan-mode"),
         named(sandboxEventsExtension, "sandbox"),

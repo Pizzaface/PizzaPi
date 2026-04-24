@@ -224,7 +224,7 @@ No additional configuration is needed — streaming works automatically when usi
 
 | Feature | `subagent` | `spawn_session` |
 |---------|-----------|----------------|
-| **Communication** | Tool call → result (synchronous) | `send_message` / `wait_for_message` |
+| **Communication** | Tool call → result (synchronous) | Triggers + `tell_child` |
 | **Context** | Isolated in-process session | Fully independent session |
 | **UI** | Inline in parent session | Separate session view |
 | **Overhead** | Near-zero (in-process SDK) | Higher (relay round-trip, new PTY) |

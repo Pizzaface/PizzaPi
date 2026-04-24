@@ -21,7 +21,7 @@ import { cancelPendingPlanMode, consumePendingPlanModeFromWeb } from "../remote-
 import { normalizeRemoteInputAttachments, buildUserMessageFromRemoteInput } from "../remote-input.js";
 import { handleExecFromWeb } from "../remote-exec-handler.js";
 import { renderTrigger, renderTriggerBatch } from "../triggers/registry.js";
-import { trackReceivedTrigger, receivedTriggers } from "../triggers/extension.js";
+import { trackReceivedTrigger, receivedTriggers, sendTriggerResponseWithAck } from "../triggers/extension.js";
 import type { ConversationTrigger } from "../triggers/types.js";
 import type { RelayContext } from "../remote-types.js";
 import { emitSessionActive } from "./chunked-delivery.js";
@@ -503,14 +503,22 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
             return;
         }
 
-        rctx.sioSocket.emit("trigger_response" as any, {
-            token: rctx.relay.token,
+        void sendTriggerResponseWithAck({ socket: rctx.sioSocket, token: rctx.relay.token }, {
             triggerId: data.triggerId,
             response: data.response,
-            ...(data.action ? { action: data.action } : {}),
+            action: data.action,
             targetSessionId: pending.sourceSessionId,
+        }).then((result) => {
+            if (result.ok) {
+                receivedTriggers.delete(data.triggerId);
+                return;
+            }
+            log.info(`pizzapi: failed to deliver trigger response ${data.triggerId}: ${result.error ?? "unknown error"}`);
+            rctx.latestCtx?.ui.notify(
+                `⚠ Failed to deliver trigger response ${data.triggerId}: ${result.error ?? "unknown error"}\n` +
+                "The linked parent/child relationship may be broken or stale. The trigger has been kept so it can be retried or escalated.",
+            );
         });
-        receivedTriggers.delete(data.triggerId);
     });
 
     sock.on("session_expired", (_data: any) => {

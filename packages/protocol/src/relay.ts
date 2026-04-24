@@ -78,7 +78,7 @@ export interface RelayClientToServerEvents {
     response: string;
     action?: string;
     targetSessionId: string;
-  }) => void;
+  }, ack?: (result: { ok: boolean; error?: string }) => void) => void;
 
   /** Parent requests cleanup of a completed child session.
    *  The server validates the parent↔child relationship and tears down the child. */

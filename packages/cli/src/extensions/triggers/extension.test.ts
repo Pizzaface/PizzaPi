@@ -7,26 +7,34 @@
 // ============================================================================
 
 import { describe, it, expect, beforeEach } from "bun:test";
-import { trackReceivedTrigger, receivedTriggers } from "./extension.js";
+import { trackReceivedTrigger, receivedTriggers, sendTriggerResponseWithAck } from "./extension.js";
 
 interface EmittedEvent {
     event: string;
     data: unknown;
 }
 
-function createMockSocket(opts?: { failSessionMessage?: boolean }) {
+function createMockSocket(opts?: { failSessionMessage?: boolean; failTriggerResponse?: boolean }) {
     const emitted: EmittedEvent[] = [];
     const listeners = new Map<string, ((...args: any[]) => void)[]>();
 
     return {
         emitted,
         socket: {
-            emit(event: string, data: any) {
+            emit(event: string, data: any, ack?: (result: { ok: boolean; error?: string }) => void) {
                 emitted.push({ event, data });
                 if (event === "session_message" && opts?.failSessionMessage) {
                     for (const handler of listeners.get("session_message_error") ?? []) {
                         handler({ targetSessionId: data.targetSessionId, error: "Target session not found or not connected" });
                     }
+                }
+                if (event === "trigger_response" && ack) {
+                    ack(opts?.failTriggerResponse
+                        ? { ok: false, error: "Sender is not the parent of the target session (linked relationship is broken or stale)" }
+                        : { ok: true });
+                }
+                if (event === "cleanup_child_session" && ack) {
+                    ack({ ok: true });
                 }
             },
             on(event: string, handler: (...args: any[]) => void) {
@@ -97,13 +105,15 @@ async function simulateRespondToTrigger(
         return { text: `Acknowledged session completion from ${pending.sourceSessionId}` };
     }
 
-    conn.socket.emit("trigger_response", {
-        token: conn.token,
+    const result = await sendTriggerResponseWithAck(conn as any, {
         triggerId: params.triggerId,
         response: params.response,
-        ...(params.action ? { action: params.action } : {}),
+        action: params.action,
         targetSessionId: pending.sourceSessionId,
     });
+    if (!result.ok) {
+        return { text: `Failed to deliver response for trigger ${params.triggerId}: ${result.error ?? "unknown error"}` };
+    }
     receivedTriggers.delete(params.triggerId);
     return { text: `Response sent for trigger ${params.triggerId}` };
 }
@@ -207,6 +217,19 @@ describe("respond_to_trigger handling for session_complete", () => {
             action: "approve",
             targetSessionId: "child-plan",
         });
+    });
+
+    it("non-session_complete preserves trigger when relay rejects delivery", async () => {
+        const conn = createMockSocket({ failTriggerResponse: true });
+        trackReceivedTrigger("trig_plan_fail", "child-plan", "plan_review");
+
+        const result = await simulateRespondToTrigger(
+            { triggerId: "trig_plan_fail", response: "Approved", action: "approve" },
+            conn,
+        );
+
+        expect(result?.text).toContain("Failed to deliver response for trigger trig_plan_fail");
+        expect(receivedTriggers.has("trig_plan_fail")).toBe(true);
     });
 
     it("expired triggers are rejected and removed", async () => {

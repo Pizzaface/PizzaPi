@@ -84,7 +84,9 @@ export async function isChildOfParent(parentSessionId: string, childSessionId: s
     // Fallback: the Redis children set may have expired without an explicit
     // delink.  Verify via the child's durable session hash.
     const childSession = await getSession(childSessionId);
-    if (childSession?.parentSessionId === parentSessionId) {
+    const stillLinked = childSession?.parentSessionId === parentSessionId
+        || childSession?.linkedParentId === parentSessionId;
+    if (stillLinked) {
         // Re-hydrate the children set and reset its TTL so future checks are
         // fast and the delink guard (clearAllChildren / clearParentSessionId)
         // still works correctly.

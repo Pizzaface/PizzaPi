@@ -61,7 +61,7 @@ export function registerMessagingHandlers(socket: RelaySocket): void {
             if (!stillLinked) {
                 socket.emit("session_message_error", {
                     targetSessionId,
-                    error: "Sender is no longer a child of the target session",
+                    error: "Sender is no longer a child of the target session (linked relationship is broken or stale)",
                 });
                 return;
             }
@@ -80,7 +80,7 @@ export function registerMessagingHandlers(socket: RelaySocket): void {
             if (!targetIsChild) {
                 socket.emit("session_message_error", {
                     targetSessionId,
-                    error: "Target session is not a child of the sender",
+                    error: "Target session is not a child of the sender (linked relationship is broken or stale)",
                 });
                 return;
             }
@@ -179,7 +179,7 @@ export function registerMessagingHandlers(socket: RelaySocket): void {
             if (!senderIsChild) {
                 socket.emit("session_message_error", {
                     targetSessionId,
-                    error: "Sender is no longer a child of the target session",
+                    error: "Sender is no longer a child of the target session (linked relationship is broken or stale)",
                 });
                 return;
             }
@@ -298,8 +298,8 @@ export function registerMessagingHandlers(socket: RelaySocket): void {
         const isParentOfTarget = targetSession.parentSessionId === socket.data.sessionId
             || await isChildOfParent(socket.data.sessionId, targetSessionId);
         if (!isParentOfTarget) {
-            socket.emit("error", { message: "Sender is not the parent of the target session" });
-            if (typeof ack === "function") ack({ ok: false, error: "Sender is not the parent of the target session" });
+            socket.emit("error", { message: "Sender is not the parent of the target session (linked relationship is broken or stale)" });
+            if (typeof ack === "function") ack({ ok: false, error: "Sender is not the parent of the target session (linked relationship is broken or stale)" });
             return;
         }
 

@@ -137,6 +137,7 @@ export async function registerTuiSession(
     // Socket.IO reconnects → repeat.
     let existing = await getSession(sessionId);
     const previousParentSessionId = existing?.parentSessionId ?? null;
+    const previousLinkedParentId = existing?.linkedParentId ?? existing?.parentSessionId ?? null;
     if (existing) {
         // Guard against cross-user session ID takeover: if the session is
         // already owned by a different user, do not evict them — instead fall
@@ -348,20 +349,24 @@ export async function registerTuiSession(
 
         // Push a synthetic trigger history entry so the parent's TriggersPanel
         // shows this child immediately (not only after the first real trigger).
-        const linkedTriggerId = `linked_${sessionId.replace(/-/g, "").slice(0, 16)}`;
-        void Promise.resolve(pushTriggerHistory(resolvedParentSessionId, {
-            triggerId: linkedTriggerId,
-            type: "session_linked",
-            source: sessionId,
-            summary: sessionName ?? undefined,
-            payload: {},
-            deliverAs: "followUp",
-            ts: new Date().toISOString(),
-            direction: "inbound",
-        })).catch(() => {});
-        broadcastToSessionViewers(resolvedParentSessionId, "trigger_delivered", {
-            triggerId: linkedTriggerId,
-        });
+        // Skip reconnects that preserved the same durable parent link — otherwise
+        // a flapping child session would spam duplicate session_linked entries.
+        if (previousLinkedParentId !== resolvedParentSessionId) {
+            const linkedTriggerId = `linked_${sessionId.replace(/-/g, "").slice(0, 16)}`;
+            void Promise.resolve(pushTriggerHistory(resolvedParentSessionId, {
+                triggerId: linkedTriggerId,
+                type: "session_linked",
+                source: sessionId,
+                summary: sessionName ?? undefined,
+                payload: {},
+                deliverAs: "followUp",
+                ts: new Date().toISOString(),
+                direction: "inbound",
+            })).catch(() => {});
+            broadcastToSessionViewers(resolvedParentSessionId, "trigger_delivered", {
+                triggerId: linkedTriggerId,
+            });
+        }
     }
 
     // Store local socket reference

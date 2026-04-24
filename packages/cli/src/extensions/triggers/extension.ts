@@ -43,6 +43,40 @@ function isJsonValue(value: unknown): value is JsonValue {
 export const receivedTriggers = new Map<string, { sourceSessionId: string; type: string; trackedAt: number }>();
 
 const TRIGGER_TTL_MS = 10 * 60 * 1000; // 10 minutes
+const TRIGGER_RESPONSE_ACK_TIMEOUT_MS = 10_000;
+
+export async function sendTriggerResponseWithAck(
+    conn: { socket: { emit: (...args: any[]) => void }; token: string },
+    payload: {
+        triggerId: string;
+        response: string;
+        action?: string;
+        targetSessionId: string;
+    },
+): Promise<{ ok: boolean; error?: string }> {
+    return await new Promise<{ ok: boolean; error?: string }>((resolve) => {
+        let settled = false;
+        const finish = (result: { ok: boolean; error?: string }) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timeout);
+            resolve(result);
+        };
+        const timeout = setTimeout(() => {
+            finish({ ok: false, error: `Timed out waiting for relay ack after ${TRIGGER_RESPONSE_ACK_TIMEOUT_MS / 1000} seconds` });
+        }, TRIGGER_RESPONSE_ACK_TIMEOUT_MS);
+
+        conn.socket.emit("trigger_response" as any, {
+            token: conn.token,
+            triggerId: payload.triggerId,
+            response: payload.response,
+            ...(payload.action ? { action: payload.action } : {}),
+            targetSessionId: payload.targetSessionId,
+        }, (result?: { ok: boolean; error?: string }) => {
+            finish(result ?? { ok: true });
+        });
+    });
+}
 
 /** Register a received trigger for response routing. Called by remote.ts on trigger receipt.
  *  If the triggerId is already tracked (e.g. after escalation re-delivers the same trigger),
@@ -312,13 +346,21 @@ export const triggersExtension: ExtensionFactory = (pi) => {
                 return { content: [{ type: "text" as const, text: `Acknowledged session completion from ${pending.sourceSessionId}` }], details: null as any };
             }
 
-            conn.socket.emit("trigger_response" as any, {
-                token: conn.token,
+            const result = await sendTriggerResponseWithAck(conn, {
                 triggerId: params.triggerId,
                 response: params.response,
-                ...(params.action ? { action: params.action } : {}),
+                action: params.action,
                 targetSessionId: pending.sourceSessionId,
             });
+            if (!result.ok) {
+                return {
+                    content: [{
+                        type: "text" as const,
+                        text: `Failed to deliver response for trigger ${params.triggerId}: ${result.error ?? "unknown error"}`,
+                    }],
+                    details: null as any,
+                };
+            }
             receivedTriggers.delete(params.triggerId);
             return { content: [{ type: "text" as const, text: `Response sent for trigger ${params.triggerId}` }], details: null as any };
         },
