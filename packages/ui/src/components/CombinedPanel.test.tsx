@@ -65,7 +65,7 @@ describe("CombinedPanel", () => {
     expect(closed).toBe(1);
   });
 
-  test("renders only the active tab content", () => {
+  test("renders only the active tab content by default", () => {
     const { container, rerender } = render(
       <CombinedPanel
         tabs={[
@@ -95,5 +95,64 @@ describe("CombinedPanel", () => {
 
     expect(container.textContent).not.toContain("Terminal content");
     expect(container.textContent).toContain("Files content");
+  });
+
+  test("can keep specific inactive tabs mounted", () => {
+    const { container, rerender } = render(
+      <CombinedPanel
+        tabs={[
+          {
+            id: "terminal",
+            label: "Terminal",
+            icon: <span>T</span>,
+            keepMountedWhenInactive: true,
+            content: <div>Terminal content</div>,
+          },
+          { id: "files", label: "Files", icon: <span>F</span>, content: <div>Files content</div> },
+          { id: "git", label: "Git", icon: <span>G</span>, content: <div>Git content</div> },
+        ]}
+        activeTabId="files"
+        onActiveTabChange={() => {}}
+        position="center-bottom"
+      />,
+    );
+
+    expect(container.textContent).toContain("Terminal content");
+    expect(container.textContent).toContain("Files content");
+    expect(container.textContent).not.toContain("Git content");
+
+    const layers = Array.from(container.getElementsByTagName("div")).filter((el) => {
+      const className = (el as HTMLElement).className ?? "";
+      return className.includes("absolute") && className.includes("inset-0");
+    }) as HTMLElement[];
+    const hiddenLayer = layers.find((el) => el.textContent?.includes("Terminal content"));
+    const activeLayer = layers.find((el) => el.textContent?.includes("Files content"));
+    expect(hiddenLayer?.className).toContain("hidden");
+    expect(hiddenLayer?.getAttribute("aria-hidden")).toBe("true");
+    expect(activeLayer?.className).not.toContain("hidden");
+    expect(activeLayer?.getAttribute("aria-hidden")).toBe("false");
+
+    rerender(
+      <CombinedPanel
+        tabs={[
+          {
+            id: "terminal",
+            label: "Terminal",
+            icon: <span>T</span>,
+            keepMountedWhenInactive: true,
+            content: <div>Terminal content</div>,
+          },
+          { id: "files", label: "Files", icon: <span>F</span>, content: <div>Files content</div> },
+          { id: "git", label: "Git", icon: <span>G</span>, content: <div>Git content</div> },
+        ]}
+        activeTabId="terminal"
+        onActiveTabChange={() => {}}
+        position="center-bottom"
+      />,
+    );
+
+    expect(container.textContent).toContain("Terminal content");
+    expect(container.textContent).not.toContain("Files content");
+    expect(container.textContent).not.toContain("Git content");
   });
 });
