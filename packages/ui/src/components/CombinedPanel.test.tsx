@@ -1,4 +1,4 @@
-import { afterEach, describe, test, expect } from "bun:test";
+import { afterAll, afterEach, describe, test, expect, mock } from "bun:test";
 import { Window } from "happy-dom";
 import { render, fireEvent, cleanup } from "@testing-library/react";
 import React from "react";
@@ -18,7 +18,13 @@ const win = new Window({ url: "http://localhost/" });
 (globalThis as any).getComputedStyle = win.getComputedStyle.bind(win);
 /* eslint-enable @typescript-eslint/no-explicit-any */
 
+mock.module("@/lib/utils", () => ({
+  cn: (...classes: (string | undefined | null | false)[]) => classes.filter(Boolean).join(" "),
+}));
+
 const { CombinedPanel } = await import("./CombinedPanel");
+
+afterAll(() => mock.restore());
 
 afterEach(() => {
   cleanup();
@@ -44,7 +50,7 @@ describe("CombinedPanel", () => {
         ]}
         activeTabId="tunnels"
         onActiveTabChange={() => {}}
-        position="right"
+        position="right-middle"
       />,
     );
 
@@ -57,5 +63,37 @@ describe("CombinedPanel", () => {
     fireEvent.click(closeButton!);
 
     expect(closed).toBe(1);
+  });
+
+  test("renders only the active tab content", () => {
+    const { container, rerender } = render(
+      <CombinedPanel
+        tabs={[
+          { id: "terminal", label: "Terminal", icon: <span>T</span>, content: <div>Terminal content</div> },
+          { id: "files", label: "Files", icon: <span>F</span>, content: <div>Files content</div> },
+        ]}
+        activeTabId="terminal"
+        onActiveTabChange={() => {}}
+        position="center-bottom"
+      />,
+    );
+
+    expect(container.textContent).toContain("Terminal content");
+    expect(container.textContent).not.toContain("Files content");
+
+    rerender(
+      <CombinedPanel
+        tabs={[
+          { id: "terminal", label: "Terminal", icon: <span>T</span>, content: <div>Terminal content</div> },
+          { id: "files", label: "Files", icon: <span>F</span>, content: <div>Files content</div> },
+        ]}
+        activeTabId="files"
+        onActiveTabChange={() => {}}
+        position="center-bottom"
+      />,
+    );
+
+    expect(container.textContent).not.toContain("Terminal content");
+    expect(container.textContent).toContain("Files content");
   });
 });

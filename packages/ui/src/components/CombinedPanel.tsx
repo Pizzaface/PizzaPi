@@ -264,7 +264,7 @@ export function CombinedPanel({
     activated: boolean;
   } | null>(null);
 
-  const activeTab = tabs.find((t) => t.id === activeTabId);
+  const activeTab = tabs.find((t) => t.id === activeTabId) ?? tabs[0] ?? null;
 
   return (
     <div className={cn("flex flex-col bg-background text-foreground", className)}>
@@ -362,19 +362,14 @@ export function CombinedPanel({
         </div>
       </div>
 
-      {/* Content — all panels stay mounted, only active one is visible */}
+      {/* Content — only the active panel stays mounted so hidden tabs do not
+          continue reacting to viewport/layout changes (e.g. DevTools resize). */}
       <div className="flex-1 min-h-0 relative">
-        {tabs.map((tab) => (
-          <div
-            key={tab.id}
-            className={cn(
-              "absolute inset-0",
-              activeTabId === tab.id ? "z-10 visible" : "z-0 invisible",
-            )}
-          >
-            {tab.content}
+        {activeTab && (
+          <div key={activeTab.id} className="absolute inset-0">
+            {activeTab.content}
           </div>
-        ))}
+        )}
       </div>
     </div>
   );
