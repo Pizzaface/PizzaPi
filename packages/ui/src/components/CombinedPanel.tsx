@@ -229,6 +229,8 @@ export interface CombinedPanelTab {
   onClose?: () => void;
   /** When provided, dragging the tab triggers panel repositioning instead of tab switching */
   onDragStart?: (e: React.PointerEvent) => void;
+  /** Keep this tab mounted even while inactive (e.g. to preserve terminal connections). */
+  keepMountedWhenInactive?: boolean;
   content: React.ReactNode;
 }
 
@@ -264,7 +266,8 @@ export function CombinedPanel({
     activated: boolean;
   } | null>(null);
 
-  const activeTab = tabs.find((t) => t.id === activeTabId);
+  const activeTab = tabs.find((t) => t.id === activeTabId) ?? tabs[0] ?? null;
+  const mountedTabs = tabs.filter((tab) => tab.id === activeTab?.id || tab.keepMountedWhenInactive);
 
   return (
     <div className={cn("flex flex-col bg-background text-foreground", className)}>
@@ -362,19 +365,22 @@ export function CombinedPanel({
         </div>
       </div>
 
-      {/* Content — all panels stay mounted, only active one is visible */}
+      {/* Content — inactive panels unmount by default so hidden tabs do not
+          continue reacting to viewport/layout changes (e.g. DevTools resize).
+          Specific tabs can opt into staying mounted while hidden. */}
       <div className="flex-1 min-h-0 relative">
-        {tabs.map((tab) => (
-          <div
-            key={tab.id}
-            className={cn(
-              "absolute inset-0",
-              activeTabId === tab.id ? "z-10 visible" : "z-0 invisible",
-            )}
-          >
-            {tab.content}
-          </div>
-        ))}
+        {mountedTabs.map((tab) => {
+          const isActive = tab.id === activeTab?.id;
+          return (
+            <div
+              key={tab.id}
+              className={cn("absolute inset-0", !isActive && "hidden")}
+              aria-hidden={!isActive}
+            >
+              {tab.content}
+            </div>
+          );
+        })}
       </div>
     </div>
   );

@@ -4107,6 +4107,7 @@ export function App() {
     icon: <TerminalIcon className="size-3.5" />,
     onClose: () => setShowTerminal(false),
     onDragStart: (e) => startPanelDragWith(e, handleTerminalPositionChange),
+    keepMountedWhenInactive: true,
     content: (
       <TerminalManager
         className="h-full"
