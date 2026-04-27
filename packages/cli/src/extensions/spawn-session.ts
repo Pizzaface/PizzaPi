@@ -61,10 +61,10 @@ export const spawnSessionExtension: ExtensionFactory = (pi) => {
         name: "spawn_session",
         label: "Spawn Session",
         description:
-            "Spawn a new independent agent session on the runner. The new session runs in " +
-            "parallel and can be monitored through the PizzaPi web UI. Use this to delegate " +
-            "work to a separate agent session, optionally specifying a model and working directory. " +
-            "Returns the session ID and share URL of the spawned session.",
+            "Spawn a new independent linked child session on the runner. The new session runs in " +
+            "parallel and can be monitored through the PizzaPi web UI. Child questions, plans, errors, " +
+            "and completion flow back to the parent as triggers. Use this to delegate work to a separate " +
+            "agent session, optionally specifying a model and working directory. Returns the session ID and share URL of the spawned session.",
         parameters: {
             type: "object",
             properties: {
@@ -94,14 +94,6 @@ export const spawnSessionExtension: ExtensionFactory = (pi) => {
                     description:
                         "Working directory for the new session. Defaults to the current session's working directory.",
                 },
-                linked: {
-                    type: "boolean",
-                    description:
-                        "Whether to auto-link the new session as a child (enables triggers like session_complete, " +
-                        "plan_review, ask_user_question). Defaults to true. Set to false when using send_message/" +
-                        "wait_for_message for communication instead of triggers — this avoids redundant session_complete " +
-                        "triggers arriving after you've already consumed the child's output via messages.",
-                },
                 runnerId: {
                     type: "string",
                     description:
@@ -116,7 +108,6 @@ export const spawnSessionExtension: ExtensionFactory = (pi) => {
                 prompt: string;
                 model?: { provider: string; id: string };
                 cwd?: string;
-                linked?: boolean;
                 runnerId?: string;
             };
 
@@ -155,18 +146,18 @@ export const spawnSessionExtension: ExtensionFactory = (pi) => {
                 prompt,
             };
 
-            // Automatically link parent→child sessions for the trigger system
-            // unless the caller explicitly opted out with linked: false.
+            // Linked parent→child orchestration is mandatory.
             // Prefer the relay session ID (available for both runner-spawned and
             // standalone CLI sessions) over the env var, which is only set for
             // runner-spawned workers.
-            const linked = params.linked !== false; // default true
-            if (linked) {
-                const ownSessionId = getRelaySessionId();
-                if (ownSessionId) {
-                    body.parentSessionId = ownSessionId;
-                }
+            const ownSessionId = getRelaySessionId();
+            if (!ownSessionId) {
+                return ok(
+                    "Error: This session is not registered with the relay yet, so a linked child relationship cannot be established. Reconnect to the relay and retry.",
+                    { error: "No linked parent session available" },
+                );
             }
+            body.parentSessionId = ownSessionId;
 
             if (params.model) {
                 // Note: hidden-model enforcement is done server-side (runners.ts).

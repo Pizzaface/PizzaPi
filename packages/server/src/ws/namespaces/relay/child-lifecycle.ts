@@ -110,8 +110,8 @@ export function registerChildLifecycleHandlers(socket: RelaySocket, io: SocketIO
         const isParentOfChild = childSession.parentSessionId === sessionId
             || await isChildOfParent(sessionId, childSessionId);
         if (!isParentOfChild) {
-            socket.emit("error", { message: "Sender is not the parent of the target session" });
-            if (typeof ack === "function") ack({ ok: false, error: "Sender is not the parent of the target session" });
+            socket.emit("error", { message: "Sender is not the parent of the target session (linked relationship is broken or stale)" });
+            if (typeof ack === "function") ack({ ok: false, error: "Sender is not the parent of the target session (linked relationship is broken or stale)" });
             return;
         }
 

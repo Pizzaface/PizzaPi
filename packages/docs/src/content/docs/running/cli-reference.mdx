@@ -411,12 +411,8 @@ PizzaPi registers several tools that are available in every agent session:
 
 | Tool | Description |
 |------|-------------|
-| `spawn_session` | Spawn an independent agent session on the runner |
+| `spawn_session` | Spawn an independent linked child session on the runner |
 | `list_models` | List available models and providers |
-| `send_message` | Send a message to another agent session |
-| `wait_for_message` | Wait for a message from another session |
-| `check_messages` | Non-blocking check for pending messages |
-| `get_session_id` | Get this session's ID |
 | `set_session_name` | Set the session display name |
 | `update_todo` | Update the session's todo list |
 | `subagent` | Delegate tasks to specialized subagents with isolated context |

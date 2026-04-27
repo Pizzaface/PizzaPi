@@ -103,6 +103,14 @@ describe("buildSystemPrompt", () => {
         expect(result).toContain("list_available_sigils");
     });
 
+    test("describes spawn_session as linked-only and does not teach message-bus opt-out", () => {
+        const result = buildSystemPrompt({ isRunner: true });
+        expect(result).toContain("Spawned sessions are automatically linked to you as children");
+        expect(result).not.toContain("linked: false");
+        expect(result).not.toContain("wait_for_message");
+        expect(result).not.toContain("send_message");
+    });
+
     test("describes id-based trigger CRUD for multi-subscription support", () => {
         const result = buildSystemPrompt({ isRunner: true });
         expect(result).toContain("subscriptionId");

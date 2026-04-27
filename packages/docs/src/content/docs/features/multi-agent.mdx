@@ -3,9 +3,9 @@ title: Multi-Agent Sessions
 description: Spawn child sessions, communicate via triggers and messages, and orchestrate multi-agent workflows.
 ---
 
-import { Aside, Steps, Tabs, TabItem } from "@astrojs/starlight/components";
+import { Aside, Steps } from "@astrojs/starlight/components";
 
-PizzaPi supports multiple agent sessions running in parallel, communicating through two complementary systems: **triggers** (automatic parent↔child events) and **messages** (explicit inter-session messaging). This guide covers all multi-agent communication primitives and when to use each.
+PizzaPi supports multiple agent sessions running in parallel through a single orchestration model: **linked parent/child sessions**. Linked children communicate upward through triggers, and parents communicate downward through `respond_to_trigger` and `tell_child`.
 
 ---
 
@@ -15,7 +15,7 @@ PizzaPi supports multiple agent sessions running in parallel, communicating thro
 ┌─────────────────────────────────────────────────────┐
 │  Parent Session                                     │
 │                                                     │
-│  spawn_session(prompt, linked: true)                │
+│  spawn_session(prompt)                              │
 │       │                                             │
 │       │ ◄── ask_user_question trigger ──┐           │
 │       │ ◄── plan_review trigger ────────┤           │
@@ -33,9 +33,7 @@ PizzaPi supports multiple agent sessions running in parallel, communicating thro
 └─────────────────────────────────────────────────────┘
 ```
 
-**Linked sessions** use triggers — structured events that arrive automatically in the parent's conversation. The parent responds with `respond_to_trigger`, `tell_child`, or `escalate_trigger`.
-
-**Unlinked sessions** use the message bus — explicit `send_message` / `wait_for_message` calls between any two sessions, regardless of parent-child relationship.
+Spawned sessions are always **linked**. Child events arrive automatically in the parent's conversation as triggers, and the parent responds with `respond_to_trigger`, `tell_child`, or `escalate_trigger`.
 
 ---
 
@@ -50,42 +48,25 @@ Spawn a new independent agent session on the runner. The new session runs in par
 | `prompt` | `string` | ✅ | — | Initial prompt for the new session. Must be self-contained — the child has no context from the parent. |
 | `model` | `{ provider, id }` | | Runner default | Model to use. Call `list_models` to discover available values. |
 | `cwd` | `string` | | Parent's cwd | Working directory for the new session. |
-| `linked` | `boolean` | | `true` | Whether to auto-link as a child session (enables trigger system). |
 | `runnerId` | `string` | | Current runner | Target runner ID. Usually not needed. |
 
 ### Return value
 
 On success, returns the session ID, runner ID, working directory, status (`Pending` or `Ready`), and a web UI share URL.
 
-### Linked vs. unlinked
+### Linked child sessions
 
-<Tabs>
-  <TabItem label="Linked (default)">
-    ```json
-    {
-      "prompt": "Refactor the auth module to use JWTs",
-      "model": { "provider": "anthropic", "id": "claude-sonnet-4-20250514" }
-    }
-    ```
+```json
+{
+  "prompt": "Refactor the auth module to use JWTs",
+  "model": { "provider": "anthropic", "id": "claude-sonnet-4-20250514" }
+}
+```
 
-    - `linked` defaults to `true`
-    - Parent's session ID is sent as `parentSessionId`
-    - Child events (questions, plans, completion, errors) arrive as triggers in the parent's conversation
-    - No manual polling needed — triggers are injected automatically
-  </TabItem>
-  <TabItem label="Unlinked">
-    ```json
-    {
-      "prompt": "Run the test suite and report results",
-      "linked": false
-    }
-    ```
-
-    - No trigger system — use `send_message` / `wait_for_message` for communication
-    - Avoids redundant `session_complete` triggers when you're already consuming output via messages
-    - Useful for peer-to-peer session communication patterns
-  </TabItem>
-</Tabs>
+- Parent's session ID is sent as `parentSessionId`
+- Child events (questions, plans, completion, errors) arrive as triggers in the parent's conversation
+- No manual polling needed — triggers are injected automatically
+- If the linked relationship cannot be restored after a reconnect, the harness surfaces that as an orchestration failure instead of silently degrading into peer messaging
 
 <Aside type="caution">
   **Don't stall while waiting for children.** Triggers arrive automatically as injected messages — do not use `sleep` loops or idle waits. Simply stop responding and your session will resume when the child's trigger arrives.
@@ -230,59 +211,13 @@ Proactively send a message to a linked child session. Unlike `respond_to_trigger
 
 ---
 
-## Manual messaging: `send_message`, `wait_for_message`, `check_messages`
+## Relationship durability
 
-For **unlinked sessions** or peer-to-peer communication, use the message bus. These tools work between any two sessions — no parent-child relationship required.
+Linked parent/child relationships are durable across transient relay outages:
 
-### `send_message`
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `sessionId` | `string` | ✅ | Target session ID |
-| `message` | `string` | ✅ | Message text |
-
-Sends a message to the target session's message queue. The recipient reads it with `wait_for_message` or `check_messages`.
-
-### `wait_for_message`
-
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
-| `fromSessionId` | `string` | | Any session | Only accept messages from this sender |
-| `timeout` | `number` | | `120` | Max wait time in seconds |
-
-**Blocking.** Waits until a message arrives or the timeout expires. If a matching message is already queued, it resolves immediately.
-
-### `check_messages`
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `fromSessionId` | `string` | | Only check messages from this sender |
-
-**Non-blocking.** Drains all pending messages from the queue and returns them. Returns an empty list if no messages are waiting. Useful for polling between other work.
-
-### `get_session_id`
-
-Takes no parameters. Returns this session's own session ID — useful when you need to tell another agent your ID so they can send messages to you.
-
-### Example: two-session ping-pong
-
-```
-// Session A (spawner)
-spawn_session({ prompt: "...", linked: false })
-// → gets back sessionId: "child-xyz"
-
-send_message({ sessionId: "child-xyz", message: "Here's the data you need: ..." })
-response = wait_for_message({ fromSessionId: "child-xyz", timeout: 300 })
-```
-
-```
-// Session B (spawned with linked: false)
-myId = get_session_id()
-// wait for parent to send data
-data = wait_for_message({ timeout: 300 })
-// ... do work ...
-send_message({ sessionId: data.fromSessionId, message: "Results: ..." })
-```
+- The server preserves durable linkage metadata even when a reconnect temporarily clears `parentSessionId`
+- Trigger and follow-up routing falls back to durable linkage checks instead of treating the child as unrelated
+- If the harness cannot prove the relationship after reconnect, it surfaces an explicit broken-link/orchestration error instead of timing out silently
 
 ---
 
@@ -311,17 +246,17 @@ Fire a trigger into **any** session — not just children. This enables peer-to-
 
 ## Pattern comparison
 
-| | `subagent` tool | `spawn_session` (linked) | `spawn_session` (unlinked) + messages |
-|---|---|---|---|
-| **Communication** | Tool call → result (synchronous) | Triggers (automatic) | `send_message` / `wait_for_message` (manual) |
-| **Blocking** | Yes — parent waits for result | No — parent continues, triggers arrive async | Depends on `wait_for_message` usage |
-| **Context** | Isolated in-process session | Fully independent session + process | Fully independent session + process |
-| **UI** | Inline card in parent session | Separate session in web UI | Separate session in web UI |
-| **Overhead** | Near-zero (in-process SDK) | Higher (relay round-trip, new PTY) | Higher + manual coordination |
-| **Model selection** | Via agent definition `model` field | Via `model` parameter | Via `model` parameter |
-| **Best for** | Quick tasks: research, review, refactor | Long-running parallel work, background tasks | Peer-to-peer coordination, custom protocols |
-| **Agent definitions** | File-based (`~/.pizzapi/agents/`) | Prompt-based (inline) | Prompt-based (inline) |
-| **Modes** | Single, parallel, chain | One session per call | One session per call |
+| | `subagent` tool | `spawn_session` (linked child) |
+|---|---|---|
+| **Communication** | Tool call → result (synchronous) | Triggers + `tell_child` |
+| **Blocking** | Yes — parent waits for result | No — parent continues, triggers arrive async |
+| **Context** | Isolated in-process session | Fully independent session + process |
+| **UI** | Inline card in parent session | Separate session in web UI |
+| **Overhead** | Near-zero (in-process SDK) | Higher (relay round-trip, new PTY) |
+| **Model selection** | Via agent definition `model` field | Via `model` parameter |
+| **Best for** | Quick tasks: research, review, refactor | Long-running parallel work, background tasks |
+| **Agent definitions** | File-based (`~/.pizzapi/agents/`) | Prompt-based (inline) |
+| **Modes** | Single, parallel, chain | One session per call |
 
 <Aside type="tip">
   **Prefer `subagent` for most delegation.** It's simpler, manages context isolation automatically, and returns results inline. Use `spawn_session` only when you need independent lifecycle, background execution, or async trigger-based coordination. See the [Subagents guide](/PizzaPi/customization/subagents/) for full details.
