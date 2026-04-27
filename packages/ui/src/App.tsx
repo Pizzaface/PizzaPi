@@ -70,6 +70,7 @@ import { ViewerSocketContext } from "@/lib/viewer-socket-context";
 import { HubSocketContext } from "@/lib/hub-socket-context";
 import { shouldStopViewerReconnect } from "@/lib/viewer-connection";
 import { mapUserError } from "@/lib/user-error-message";
+import { canSubmitSessionInput, isSessionHydrating } from "@/lib/session-empty-state";
 import { getConfirmedMetaSubscriptionTargets } from "@/lib/meta-subscriptions";
 import { evaluateVersionNegotiation } from "@/lib/version-negotiation";
 import { useRunnerServices, attachServiceAnnounceListener, seedServiceCache, setViewerSwitchGeneration } from "@/hooks/useRunnerServices";
@@ -3150,7 +3151,21 @@ export function App() {
   const sendSessionInput = React.useCallback(async (message: { text: string; files?: Array<{ file?: File; mediaType?: string; filename?: string; url?: string }>; deliverAs?: "steer" | "followUp" } | string) => {
     const socket = viewerWsRef.current;
     const sessionId = activeSessionRef.current;
-    if (!socket || !socket.connected || !sessionId) {
+    if (!sessionId) {
+      setViewerStatus("Not connected to a live session");
+      return false;
+    }
+    if (isCompacting) {
+      setViewerStatus("Compacting…");
+      return false;
+    }
+    if (awaitingSnapshotRef.current || !canSubmitSessionInput(sessionId, viewerStatus, isCompacting)) {
+      if (isSessionHydrating(viewerStatus) || awaitingSnapshotRef.current) {
+        setViewerStatus("Connecting…");
+      }
+      return false;
+    }
+    if (!socket || !socket.connected) {
       setViewerStatus("Not connected to a live session");
       return false;
     }
@@ -3306,7 +3321,7 @@ export function App() {
       failCurrentAttempt();
       return false;
     }
-  }, [patchSessionCache]);
+  }, [isCompacting, patchSessionCache, viewerStatus]);
 
   const sendRemoteExec = React.useCallback((payload: any) => {
     const socket = viewerWsRef.current;

@@ -361,6 +361,13 @@ export async function createTestServer(opts?: TestServerOptions): Promise<TestSe
 
     // ── Helpers ──────────────────────────────────────────────────────────────
 
+    function addTrustedOrigin(origin: string): void {
+        const origins = authContext.trustedOrigins;
+        if (!origins.includes(origin)) {
+            origins.push(origin);
+        }
+    }
+
     async function testFetch(path: string, init?: RequestInit): Promise<Response> {
         const url = `${baseUrl}${path}`;
         const headers = new Headers(init?.headers);
@@ -425,6 +432,7 @@ export async function createTestServer(opts?: TestServerOptions): Promise<TestSe
         userName: testUserName,
         userEmail: testUserEmail,
         sessionCookie,
+        addTrustedOrigin,
         fetch: testFetch,
         cleanup,
     };

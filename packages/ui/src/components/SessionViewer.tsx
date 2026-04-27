@@ -35,7 +35,12 @@ import {
 } from "@/components/ui/command";
 import { cn } from "@/lib/utils";
 import { PizzaLogo } from "@/components/PizzaLogo";
-import { getSessionEmptyStateUi, shouldShowSessionTranscript } from "@/lib/session-empty-state";
+import {
+  canSubmitSessionInput,
+  getSessionEmptyStateUi,
+  isSessionHydrating,
+  shouldShowSessionTranscript,
+} from "@/lib/session-empty-state";
 import { formatPathTail } from "@/lib/path";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { MultipleChoiceQuestions } from "@/components/ai-elements/multiple-choice";
@@ -395,13 +400,20 @@ export function SessionViewer({
     commandHighlightedIndex,
   ]);
 
+  const composerReady = canSubmitSessionInput(sessionId, viewerStatus, !!isCompacting);
+
   // ── handleSubmit ──────────────────────────────────────────────────────────
   const handleSubmit = React.useCallback(
     (message: PromptInputMessage) => {
-      if (isCompacting) return;
+      if (!composerReady) {
+        if (isSessionHydrating(viewerStatus)) {
+          setComposerError("Session is still connecting — wait a moment and try again.");
+        }
+        return;
+      }
       const text = message.text.trim();
       const hasAttachments = Array.isArray(message.files) && message.files.length > 0;
-      if ((!text && !hasAttachments) || !sessionId) return;
+      if (!text && !hasAttachments) return;
 
       setComposerError(null);
       if (text && executeSlashCommand(text)) return;
@@ -431,7 +443,7 @@ export function SessionViewer({
         })
         .catch(() => { setComposerError("Failed to send message."); });
     },
-    [executeSlashCommand, onSendInput, sessionId, agentActive, isCompacting, deliveryMode, setInput, setCommandOpen, setCommandQuery, sessionIdRef, inputRef],
+    [composerReady, viewerStatus, executeSlashCommand, onSendInput, agentActive, deliveryMode, setInput, setCommandOpen, setCommandQuery, sessionIdRef, inputRef],
   );
 
   // ── Render ────────────────────────────────────────────────────────────────
@@ -1169,7 +1181,7 @@ export function SessionViewer({
               onSubmit={handleSubmit}
               maxFiles={8}
               maxFileSize={30 * 1024 * 1024}
-              disabled={!sessionId || isCompacting}
+              disabled={!composerReady}
               onError={(err) => { setComposerError(err.message); }}
               className={(pendingQuestion && pendingQuestion.questions.length > 0) || pendingPlan ? "hidden" : undefined}
             >
@@ -1451,7 +1463,7 @@ export function SessionViewer({
                       if (!trimmedVal.startsWith("/")) return;
                       if (executeSlashCommand(trimmedVal)) { event.preventDefault(); }
                     }}
-                    disabled={!sessionId || isCompacting}
+                    disabled={!composerReady}
                     submitOnEnter={!isTouchDevice}
                     placeholder={
                       sessionId

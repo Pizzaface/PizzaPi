@@ -9,7 +9,9 @@
  */
 
 import { describe, test, expect } from "bun:test";
+import { io as clientIo } from "socket.io-client";
 import { createTestServer } from "./server.js";
+import type { TestServer } from "./types.js";
 
 // Skip in CI — createTestServer() uses module-level singletons that race
 // when Bun runs test files in parallel (single-threaded, shared process).
@@ -17,6 +19,76 @@ const isCI = !!process.env.CI;
 
 // Tests spin up real servers + Redis + Socket.IO, so we need a generous timeout.
 const TEST_TIMEOUT_MS = 30_000;
+
+async function registerTestSession(server: TestServer): Promise<{ sessionId: string; relay: ReturnType<typeof clientIo> }> {
+    const relay = clientIo(`${server.baseUrl}/relay`, {
+        auth: { apiKey: server.apiKey },
+        transports: ["websocket"],
+        forceNew: true,
+        reconnection: false,
+    });
+
+    return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+            relay.disconnect();
+            reject(new Error("registerTestSession: timeout waiting for registered event"));
+        }, 8_000);
+
+        relay.once("registered", (data: { sessionId: string }) => {
+            clearTimeout(timer);
+            resolve({ sessionId: data.sessionId, relay });
+        });
+
+        relay.once("connect_error", (err: Error) => {
+            clearTimeout(timer);
+            relay.disconnect();
+            reject(new Error(`registerTestSession: connect_error: ${err.message}`));
+        });
+
+        relay.emit("register", { cwd: "/tmp/test", ephemeral: true });
+    });
+}
+
+async function connectViewerWithOrigin(
+    server: TestServer,
+    sessionId: string,
+    origin: string,
+): Promise<{ socket: ReturnType<typeof clientIo>; error?: string }> {
+    const socket = clientIo(`${server.baseUrl}/viewer`, {
+        extraHeaders: {
+            cookie: server.sessionCookie,
+            origin,
+        },
+        query: { sessionId },
+        transports: ["websocket"],
+        autoConnect: false,
+        forceNew: true,
+        reconnection: false,
+    });
+
+    return new Promise((resolve) => {
+        const timer = setTimeout(() => {
+            socket.disconnect();
+            resolve({ socket, error: "timeout" });
+        }, 8_000);
+
+        socket.once("connect_error", (err: Error) => {
+            clearTimeout(timer);
+            socket.disconnect();
+            resolve({ socket, error: err.message });
+        });
+
+        socket.once("connected", () => {
+            clearTimeout(timer);
+            resolve({ socket });
+        });
+
+        socket.connect();
+        socket.once("connect", () => {
+            socket.emit("connected", {});
+        });
+    });
+}
 
 (isCI ? describe.skip : describe)("createTestServer", () => {
     test("creates server and responds to health check", async () => {
@@ -70,6 +142,27 @@ const TEST_TIMEOUT_MS = 30_000;
             );
         } finally {
             await s1.cleanup();
+        }
+    }, TEST_TIMEOUT_MS);
+
+    test("allows dynamic trusted origins to be added after server startup", async () => {
+        const server = await createTestServer();
+        const trustedOrigin = "http://127.0.0.1:4175";
+        const { sessionId, relay } = await registerTestSession(server);
+
+        try {
+            const before = await connectViewerWithOrigin(server, sessionId, trustedOrigin);
+            expect(before.error).toBe("forbidden: untrusted origin");
+
+            server.addTrustedOrigin(trustedOrigin);
+
+            const after = await connectViewerWithOrigin(server, sessionId, trustedOrigin);
+            expect(after.error).toBeUndefined();
+            expect(after.socket.connected).toBe(true);
+            await after.socket.disconnect();
+        } finally {
+            relay.disconnect();
+            await server.cleanup();
         }
     }, TEST_TIMEOUT_MS);
 
