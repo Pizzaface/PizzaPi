@@ -16,6 +16,8 @@ mock.module("../middleware.js", () => ({
 const mockGetRunnerData = mock((_runnerId: string) => Promise.resolve({ userId: "user-1", runnerId: "runner-A" } as any));
 const mockGetRunners = mock((_userId: string) => Promise.resolve([] as any[]));
 const mockGetLocalRunnerSocket = mock((_runnerId: string) => null as any);
+const mockGetLocalTuiSocket = mock((_sessionId: string) => undefined as any);
+const mockGetConnectedSessionsForRunner = mock((_runnerId: string) => Promise.resolve([] as Array<{ sessionId: string; cwd: string }>));
 const mockLinkSessionToRunner = mock((_runnerId: string, _sessionId: string) => Promise.resolve());
 const mockRecordRunnerSession = mock((_runnerId: string, _sessionId: string) => Promise.resolve());
 const mockRegisterTerminal = mock((_terminalId: string, _runnerId: string, _userId: string, _opts: any) => Promise.resolve());
@@ -23,6 +25,8 @@ mock.module("../ws/sio-registry.js", () => ({
     getRunnerData: mockGetRunnerData,
     getRunners: mockGetRunners,
     getLocalRunnerSocket: mockGetLocalRunnerSocket,
+    getLocalTuiSocket: mockGetLocalTuiSocket,
+    getConnectedSessionsForRunner: mockGetConnectedSessionsForRunner,
     linkSessionToRunner: mockLinkSessionToRunner,
     recordRunnerSession: mockRecordRunnerSession,
     registerTerminal: mockRegisterTerminal,
@@ -92,6 +96,9 @@ describe("runner trigger listener routes", () => {
         mockUpdateRunnerTriggerListener.mockReset();
         mockUpdateRunnerTriggerListener.mockReturnValue(Promise.resolve({ updated: false }));
         mockGetLocalRunnerSocket.mockReset();
+        mockGetLocalTuiSocket.mockReset();
+        mockGetConnectedSessionsForRunner.mockReset();
+        mockGetConnectedSessionsForRunner.mockReturnValue(Promise.resolve([]));
         mockEmitTriggerSubscriptionDelta.mockReset();
         mockEmitTriggerSubscriptionDelta.mockReturnValue(Promise.resolve());
     });
@@ -191,5 +198,77 @@ describe("runner trigger listener routes", () => {
         expect(body.ok).toBe(true);
         expect(body.triggerType).toBe("svc:event");
         expect(body.removed).toBe(2);
+    });
+});
+
+describe("runner MCP reload route", () => {
+    beforeEach(() => {
+        mockRequireSession.mockReset();
+        mockRequireSession.mockReturnValue(Promise.resolve({ userId: "user-1", userName: "TestUser" } as any));
+        mockGetRunnerData.mockReset();
+        mockGetRunnerData.mockReturnValue(Promise.resolve({ userId: "user-1", runnerId: "runner-A" } as any));
+        mockGetConnectedSessionsForRunner.mockReset();
+        mockGetLocalTuiSocket.mockReset();
+    });
+
+    test("POST reloads MCP for each connected runner session", async () => {
+        const emitA = mock(() => {});
+        const emitB = mock(() => {});
+        mockGetConnectedSessionsForRunner.mockReturnValue(Promise.resolve([
+            { sessionId: "sess-1", cwd: "/tmp/a" },
+            { sessionId: "sess-2", cwd: "/tmp/b" },
+        ]));
+        mockGetLocalTuiSocket.mockImplementation((sessionId: string) => {
+            if (sessionId === "sess-1") return { emit: emitA } as any;
+            if (sessionId === "sess-2") return { emit: emitB } as any;
+            return undefined;
+        });
+
+        const [req, url] = makeReq("POST", "/api/runners/runner-A/mcp/reload");
+        const res = await handleRunnersRoute(req, url);
+        expect(res!.status).toBe(200);
+        const body = await res!.json();
+        expect(body.ok).toBe(true);
+        expect(body.reloaded).toBe(2);
+        expect(body.failed).toBe(0);
+        expect(emitA).toHaveBeenCalledWith("exec", expect.objectContaining({ command: "mcp", action: "reload" }));
+        expect(emitB).toHaveBeenCalledWith("exec", expect.objectContaining({ command: "mcp", action: "reload" }));
+    });
+
+    test("POST reports sessions that could not be reloaded", async () => {
+        const emitA = mock(() => {});
+        mockGetConnectedSessionsForRunner.mockReturnValue(Promise.resolve([
+            { sessionId: "sess-1", cwd: "/tmp/a" },
+            { sessionId: "sess-2", cwd: "/tmp/b" },
+        ]));
+        mockGetLocalTuiSocket.mockImplementation((sessionId: string) => (
+            sessionId === "sess-1" ? { emit: emitA } as any : undefined
+        ));
+
+        const [req, url] = makeReq("POST", "/api/runners/runner-A/mcp/reload");
+        const res = await handleRunnersRoute(req, url);
+        expect(res!.status).toBe(200);
+        const body = await res!.json();
+        expect(body.reloaded).toBe(1);
+        expect(body.failed).toBe(1);
+        expect(body.sessionIds).toEqual(["sess-1"]);
+        expect(body.failedSessionIds).toEqual(["sess-2"]);
+    });
+
+    test("POST reports when all active sessions fail to reload", async () => {
+        mockGetConnectedSessionsForRunner.mockReturnValue(Promise.resolve([
+            { sessionId: "sess-1", cwd: "/tmp/a" },
+            { sessionId: "sess-2", cwd: "/tmp/b" },
+        ]));
+        mockGetLocalTuiSocket.mockReturnValue(undefined as any);
+
+        const [req, url] = makeReq("POST", "/api/runners/runner-A/mcp/reload");
+        const res = await handleRunnersRoute(req, url);
+        expect(res!.status).toBe(200);
+        const body = await res!.json();
+        expect(body.reloaded).toBe(0);
+        expect(body.failed).toBe(2);
+        expect(body.sessionIds).toEqual([]);
+        expect(body.failedSessionIds).toEqual(["sess-1", "sess-2"]);
     });
 });

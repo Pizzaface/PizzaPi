@@ -51,6 +51,15 @@ Enable Tool Search in `~/.pizzapi/config.json`:
 | `maxResults` | `number` | `5` | Maximum number of tools returned per `search_tools` call. |
 | `keepLoadedTools` | `boolean` | `true` | When `true`, discovered tools stay active for the rest of the session. When `false`, tools are deactivated after each agent turn — useful for very large tool sets where you want minimal context at all times. |
 
+## Web UI controls
+
+You can configure Tool Search from the PizzaPi web UI:
+
+- **Runner Settings → Tool Search** — edit the global `enabled`, `tokenThreshold`, `maxResults`, and `keepLoadedTools` settings.
+- **Runner → MCP Servers** — set each server's deferred-loading override to **Inherit**, **Always defer**, or **Never defer**.
+
+After saving either area, the UI also offers a **Reload MCP** button so active sessions can pick up the new Tool Search / MCP settings immediately without typing `/mcp reload` manually.
+
 ## Per-server `deferLoading` override
 
 You can force individual MCP servers to always defer (or never defer) their tools, regardless of whether the global threshold is exceeded:

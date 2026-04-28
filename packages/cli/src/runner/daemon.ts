@@ -1481,6 +1481,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                         hooks: "hooks",
                         sandbox: "sandbox",
                         webSearch: "providerSettings",
+                        toolSearch: "toolSearch",
                         security: "_security",        // virtual — handled specially
                         envVars: "_envVars",          // virtual — handled specially
                         systemPrompt: "_systemPrompt", // virtual — handled specially
@@ -1525,6 +1526,51 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                             ps.anthropic = { ...ps.anthropic, webSearch: v.anthropic.webSearch };
                         }
                         saveGlobal({ providerSettings: ps } as any);
+                    } else if (section === "toolSearch") {
+                        if (value != null && (typeof value !== "object" || Array.isArray(value))) {
+                            socket.emit("file_result", {
+                                requestId,
+                                ok: false,
+                                message: "toolSearch must be a JSON object",
+                            });
+                            return;
+                        }
+
+                        const toolSearch = (value ?? {}) as Record<string, unknown>;
+                        const errors: string[] = [];
+                        const enabled = toolSearch.enabled;
+                        const tokenThreshold = toolSearch.tokenThreshold;
+                        const maxResults = toolSearch.maxResults;
+                        const keepLoadedTools = toolSearch.keepLoadedTools;
+
+                        if (enabled !== undefined && typeof enabled !== "boolean") {
+                            errors.push('"enabled" must be a boolean');
+                        }
+                        if (
+                            tokenThreshold !== undefined &&
+                            (typeof tokenThreshold !== "number" || !Number.isFinite(tokenThreshold) || tokenThreshold < 0)
+                        ) {
+                            errors.push('"tokenThreshold" must be a finite number >= 0');
+                        }
+                        if (
+                            maxResults !== undefined &&
+                            (typeof maxResults !== "number" || !Number.isFinite(maxResults) || maxResults < 1)
+                        ) {
+                            errors.push('"maxResults" must be a finite number >= 1');
+                        }
+                        if (keepLoadedTools !== undefined && typeof keepLoadedTools !== "boolean") {
+                            errors.push('"keepLoadedTools" must be a boolean');
+                        }
+                        if (errors.length > 0) {
+                            socket.emit("file_result", {
+                                requestId,
+                                ok: false,
+                                message: `Invalid Tool Search config:\n${errors.join("\n")}`,
+                            });
+                            return;
+                        }
+
+                        saveGlobal({ toolSearch: value as any });
                     } else if (section === "mcpServers") {
                         // Validate MCP server config before saving
                         if (value != null && (typeof value !== "object" || Array.isArray(value))) {
@@ -1627,7 +1673,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
 
                     // Reload and return the updated config — mask secrets before sending to browser
                     const updatedConfig = sanitizeConfigForUI(loadGlobal() as Record<string, unknown>);
-                    const isMcpSection = section === "mcpServers" || section === "mcp";
+                    const isMcpSection = section === "mcpServers" || section === "mcp" || section === "toolSearch";
                     const reloadHint = isMcpSection
                         ? "MCP server config saved. Active sessions can run /mcp reload to pick up changes."
                         : "Settings saved. Changes apply on next session start.";

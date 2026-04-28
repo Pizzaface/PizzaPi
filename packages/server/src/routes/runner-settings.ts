@@ -17,9 +17,11 @@ const SETTINGS_RE = /^\/api\/runners\/([^/]+)\/settings$/;
 const VALID_SECTIONS = new Set([
     "models",
     "mcpServers",
+    "mcp",
     "hooks",
     "sandbox",
     "webSearch",
+    "toolSearch",
     "security",
     "envVars",
     "systemPrompt",

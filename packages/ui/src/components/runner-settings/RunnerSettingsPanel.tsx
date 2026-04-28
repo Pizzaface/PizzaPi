@@ -8,6 +8,7 @@ import { cn } from "@/lib/utils";
 // Sub-tab components — lazy loaded
 const ModelsSettings = React.lazy(() => import("./ModelsSettings"));
 const WebSearchSettings = React.lazy(() => import("./WebSearchSettings"));
+const ToolSearchSettings = React.lazy(() => import("./ToolSearchSettings"));
 const EnvVarsSettings = React.lazy(() => import("./EnvVarsSettings"));
 const SystemPromptSettings = React.lazy(() => import("./SystemPromptSettings"));
 const TuiPrefsSettings = React.lazy(() => import("./TuiPrefsSettings"));
@@ -17,6 +18,7 @@ const TuiPrefsSettings = React.lazy(() => import("./TuiPrefsSettings"));
 export type SettingsSection =
     | "models"
     | "webSearch"
+    | "toolSearch"
     | "envVars"
     | "systemPrompt"
     | "tuiPreferences";
@@ -43,6 +45,7 @@ export interface SectionProps {
 const SETTINGS_TABS: { key: SettingsSection; label: string }[] = [
     { key: "models", label: "Models" },
     { key: "webSearch", label: "Web Search" },
+    { key: "toolSearch", label: "Tool Search" },
     { key: "envVars", label: "Env Vars" },
     { key: "systemPrompt", label: "System Prompt" },
     { key: "tuiPreferences", label: "TUI Prefs" },
@@ -148,6 +151,9 @@ export function RunnerSettingsPanel({ runnerId }: RunnerSettingsPanelProps) {
             break;
         case "webSearch":
             content = <WebSearchSettings {...sectionProps} />;
+            break;
+        case "toolSearch":
+            content = <ToolSearchSettings {...sectionProps} />;
             break;
         case "envVars":
             content = <EnvVarsSettings {...sectionProps} />;

@@ -16,6 +16,7 @@ import {
     CheckCircle,
     Loader2,
     RotateCcw,
+    RefreshCw,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -25,6 +26,9 @@ import { Badge } from "@/components/ui/badge";
 import { ErrorAlert } from "@/components/ui/error-alert";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { applyDeferLoadingMode, deferLoadingValueToMode, type DeferLoadingMode } from "@/components/mcp-server-defer-loading";
+import { formatMcpReloadMessage } from "@/components/mcp-reload-status";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -37,9 +41,12 @@ interface McpServerEntry {
     command?: string;
     args?: string[];
     url?: string;
+    type?: string;
+    transport?: string;
     env?: Record<string, string>;
     cwd?: string;
     disabled?: boolean;
+    deferLoading?: boolean;
 }
 
 type ServersMap = Record<string, McpServerEntry>;
@@ -82,6 +89,9 @@ export function McpServersManager({ runnerId, bare }: McpServersManagerProps) {
     const [saving, setSaving] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [saveMessage, setSaveMessage] = useState<string | null>(null);
+    const [reloading, setReloading] = useState(false);
+    const [reloadMessage, setReloadMessage] = useState<string | null>(null);
+    const [hasPreferredFormatConfig, setHasPreferredFormatConfig] = useState(false);
 
     // Expand/delete state
     const [expandedServer, setExpandedServer] = useState<string | null>(null);
@@ -111,6 +121,8 @@ export function McpServersManager({ runnerId, bare }: McpServersManagerProps) {
             const raw = cfg.mcpServers;
             const parsed: ServersMap =
                 raw != null && typeof raw === "object" && !Array.isArray(raw) ? { ...raw } : {};
+            const preferredServers = Array.isArray(cfg.mcp?.servers) ? cfg.mcp.servers : [];
+            setHasPreferredFormatConfig(preferredServers.length > 0);
             setServers(parsed);
             setSavedServers(parsed);
         } catch (err) {
@@ -129,6 +141,7 @@ export function McpServersManager({ runnerId, bare }: McpServersManagerProps) {
     const handleSave = async () => {
         setSaving(true);
         setSaveMessage(null);
+        setReloadMessage(null);
         setError(null);
         try {
             const res = await fetch(`/api/runners/${encodeURIComponent(runnerId)}/settings`, {
@@ -142,7 +155,7 @@ export function McpServersManager({ runnerId, bare }: McpServersManagerProps) {
             }
             setSavedServers({ ...servers });
             setSaveMessage(
-                "MCP server config saved. Active sessions can run /mcp reload to pick up changes.",
+                "MCP server config saved. Reload MCP in active sessions to apply changes immediately.",
             );
         } catch (err) {
             setError(err instanceof Error ? err.message : String(err));
@@ -158,6 +171,13 @@ export function McpServersManager({ runnerId, bare }: McpServersManagerProps) {
 
     function updateServer(name: string, patch: Partial<McpServerEntry>) {
         setServers((prev) => ({ ...prev, [name]: { ...prev[name], ...patch } }));
+    }
+
+    function updateDeferLoading(name: string, mode: DeferLoadingMode) {
+        setServers((prev) => ({
+            ...prev,
+            [name]: applyDeferLoadingMode(prev[name] ?? {}, mode),
+        }));
     }
 
     function toggleDisabled(name: string) {
@@ -183,6 +203,7 @@ export function McpServersManager({ runnerId, bare }: McpServersManagerProps) {
             entry.args = parseArgs(newArgs);
         } else {
             entry.url = newUrl.trim();
+            entry.type = "http";
         }
         setServers((prev) => ({ ...prev, [name]: entry }));
         setNewName("");
@@ -191,6 +212,28 @@ export function McpServersManager({ runnerId, bare }: McpServersManagerProps) {
         setNewUrl("");
         setShowAdd(false);
         setExpandedServer(name);
+    }
+
+    async function reloadActiveSessions() {
+        setReloadMessage(null);
+        setError(null);
+        setReloading(true);
+        try {
+            const res = await fetch(`/api/runners/${encodeURIComponent(runnerId)}/mcp/reload`, {
+                method: "POST",
+                credentials: "include",
+            });
+            if (!res.ok) {
+                const body = await res.json().catch(() => ({}));
+                throw new Error(body.error ?? `HTTP ${res.status}`);
+            }
+            const body = await res.json() as { reloaded: number; failed: number };
+            setReloadMessage(formatMcpReloadMessage(body));
+        } catch (err) {
+            setError(err instanceof Error ? err.message : String(err));
+        } finally {
+            setReloading(false);
+        }
     }
 
     // ── Loading / error ───────────────────────────────────────────────────────
@@ -248,14 +291,21 @@ export function McpServersManager({ runnerId, bare }: McpServersManagerProps) {
                     size="sm"
                     className="gap-1.5"
                     onClick={() => setShowAdd(!showAdd)}
+                    disabled={hasPreferredFormatConfig}
                 >
                     <Plus className="h-3.5 w-3.5" />
                     Add Server
                 </Button>
             </div>
 
+            {hasPreferredFormatConfig && (
+                <div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-4 py-3 text-sm text-amber-300">
+                    This runner is configured with the <code>mcp.servers[]</code> format. The web MCP editor currently supports only <code>mcpServers</code>, so editing is disabled here to avoid writing a conflicting config shape.
+                </div>
+            )}
+
             {/* Add new server form */}
-            {showAdd && (
+            {!hasPreferredFormatConfig && showAdd && (
                 <div className="rounded-md border border-border bg-card p-4 flex flex-col gap-3">
                     <p className="text-sm font-medium">New MCP Server</p>
 
@@ -361,7 +411,7 @@ export function McpServersManager({ runnerId, bare }: McpServersManagerProps) {
             )}
 
             {/* Server list */}
-            {serverNames.length === 0 && !showAdd && (
+            {!hasPreferredFormatConfig && serverNames.length === 0 && !showAdd && (
                 <div className="flex flex-col items-center justify-center py-10 gap-2 text-center">
                     <Server className="h-8 w-8 text-muted-foreground/40" />
                     <p className="text-sm text-muted-foreground">No MCP servers configured.</p>
@@ -371,7 +421,7 @@ export function McpServersManager({ runnerId, bare }: McpServersManagerProps) {
                 </div>
             )}
 
-            {serverNames.map((name) => {
+            {!hasPreferredFormatConfig && serverNames.map((name) => {
                 const server = servers[name];
                 const expanded = expandedServer === name;
                 const serverIsStdio = isStdio(server);
@@ -446,6 +496,27 @@ export function McpServersManager({ runnerId, bare }: McpServersManagerProps) {
                                             checked={!server.disabled}
                                             onCheckedChange={() => toggleDisabled(name)}
                                         />
+                                    </div>
+
+                                    {/* Deferred loading override */}
+                                    <div className="flex flex-col gap-1.5">
+                                        <Label className="text-xs">Deferred Loading</Label>
+                                        <Select
+                                            value={deferLoadingValueToMode(server.deferLoading)}
+                                            onValueChange={(value) => updateDeferLoading(name, value as DeferLoadingMode)}
+                                        >
+                                            <SelectTrigger className="w-full max-w-xs text-sm">
+                                                <SelectValue />
+                                            </SelectTrigger>
+                                            <SelectContent>
+                                                <SelectItem value="inherit">Inherit global behavior</SelectItem>
+                                                <SelectItem value="always">Always defer</SelectItem>
+                                                <SelectItem value="never">Never defer</SelectItem>
+                                            </SelectContent>
+                                        </Select>
+                                        <p className="text-xs text-muted-foreground">
+                                            Overrides Tool Search for this server only.
+                                        </p>
                                     </div>
 
                                     {serverIsStdio ? (
@@ -574,23 +645,37 @@ export function McpServersManager({ runnerId, bare }: McpServersManagerProps) {
             })}
 
             {/* Success message */}
-            {saveMessage && (
+            {!hasPreferredFormatConfig && saveMessage && (
                 <div className="flex items-start gap-2 rounded-md border border-green-500/30 bg-green-500/5 px-4 py-3 text-sm text-green-400">
                     <CheckCircle className="mt-0.5 size-4 shrink-0" />
                     <span>{saveMessage}</span>
                 </div>
             )}
 
+            {!hasPreferredFormatConfig && reloadMessage && (
+                <div className="rounded-md border border-blue-500/30 bg-blue-500/5 px-4 py-3 text-sm text-blue-300">
+                    {reloadMessage}
+                </div>
+            )}
+
             {/* Footer */}
-            <div className="flex items-center justify-between pt-2">
-                <p className="text-xs text-muted-foreground italic">
-                    Active sessions can run /mcp reload to pick up changes.
-                </p>
-                <Button onClick={handleSave} disabled={saving} size="sm" className="gap-1.5">
-                    <Save className="h-3.5 w-3.5" />
-                    {saving ? "Saving…" : "Save"}
-                </Button>
-            </div>
+            {!hasPreferredFormatConfig && (
+                <div className="flex items-center justify-between pt-2 gap-3">
+                    <p className="text-xs text-muted-foreground italic">
+                        Save updates config. Reload MCP applies changes to active sessions now.
+                    </p>
+                    <div className="flex items-center gap-2">
+                        <Button variant="outline" onClick={reloadActiveSessions} disabled={reloading} size="sm" className="gap-1.5">
+                            {reloading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+                            Reload MCP
+                        </Button>
+                        <Button onClick={handleSave} disabled={saving} size="sm" className="gap-1.5">
+                            <Save className="h-3.5 w-3.5" />
+                            {saving ? "Saving…" : "Save"}
+                        </Button>
+                    </div>
+                </div>
+            )}
         </div>
     );
 }
