@@ -8,9 +8,8 @@
 //   4. Calls onConfirmed when the server acks the cancel (at-least-once delivery)
 // ============================================================================
 
-import { afterAll, describe, it, expect, beforeEach, mock } from "bun:test";
+import { describe, it, expect, beforeEach, mock } from "bun:test";
 import * as actualRemote from "../remote.js";
-import { trackReceivedTrigger, receivedTriggers, clearAndCancelPendingTriggers } from "./extension.js";
 
 // ── Mock the relay socket used by clearAndCancelPendingTriggers ──────────────
 // The function calls getRelaySocket() from ../remote.js. We mock at the module
@@ -25,7 +24,7 @@ let mockSocket: {
 
 let mockToken = "test-token-123";
 
-// Mock getRelaySocket to return our mock
+// Mock getRelaySocket to return our mock.
 mock.module("../remote.js", () => ({
     ...actualRemote,
     getRelaySocket: () =>
@@ -35,9 +34,15 @@ mock.module("../remote.js", () => ({
     getRelaySessionId: () => "parent-session-1",
 }));
 
-// Restore all module mocks after this file so they don't bleed into other
-// test files running in the same worker process.
-afterAll(() => mock.restore());
+const {
+    trackReceivedTrigger,
+    receivedTriggers,
+    clearAndCancelPendingTriggers,
+} = await import("./extension.js");
+
+// extension.js has already captured the mocked remote helpers; restore the
+// global mock registry immediately so later test files resolve the real module.
+mock.restore();
 
 describe("clearAndCancelPendingTriggers", () => {
     beforeEach(() => {

@@ -1,25 +1,56 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { _setGlobalConfigDir } from "../config.js";
+import { setMcpBridge } from "./mcp-bridge.js";
 
 type EventHandler = (event?: unknown, ctx?: unknown) => unknown;
 
 describe("toolSearchExtension lifecycle sync", () => {
   let snapshot: { serverTools?: Record<string, string[]> };
-  let config: Record<string, unknown>;
+  let tempRoot: string;
+  let globalConfigDir: string;
+  let projectDir: string;
+  let originalCwd: string;
 
   beforeEach(() => {
     snapshot = { serverTools: {} };
-    config = {
-      toolSearch: {
-        enabled: true,
-        tokenThreshold: 0,
-        maxResults: 5,
-        keepLoadedTools: true,
-      },
-      mcpServers: {},
-    };
+    originalCwd = process.cwd();
+    tempRoot = mkdtempSync(join(tmpdir(), "tool-search-lifecycle-"));
+    globalConfigDir = join(tempRoot, "global");
+    projectDir = join(tempRoot, "project");
+
+    mkdirSync(globalConfigDir, { recursive: true });
+    mkdirSync(join(projectDir, ".pizzapi"), { recursive: true });
+    writeFileSync(join(globalConfigDir, "config.json"), JSON.stringify({}), "utf-8");
+    writeFileSync(
+      join(projectDir, ".pizzapi", "config.json"),
+      JSON.stringify({
+        toolSearch: {
+          enabled: true,
+          tokenThreshold: 0,
+          maxResults: 5,
+          keepLoadedTools: true,
+        },
+        mcpServers: {},
+      }),
+      "utf-8",
+    );
+
+    _setGlobalConfigDir(globalConfigDir);
+    process.chdir(projectDir);
+    setMcpBridge({
+      status: () => snapshot,
+      reload: async () => null,
+    });
   });
 
   afterEach(() => {
+    setMcpBridge(null);
+    _setGlobalConfigDir(null);
+    process.chdir(originalCwd);
+    rmSync(tempRoot, { recursive: true, force: true });
     mock.restore();
   });
 
@@ -72,21 +103,7 @@ describe("toolSearchExtension lifecycle sync", () => {
   }
 
   async function loadExtension() {
-    mock.module("../config.js", () => ({
-      loadConfig: mock(() => config),
-    }));
-    mock.module("./mcp-bridge.js", () => ({
-      getMcpBridge: mock(() => ({ status: () => snapshot })),
-    }));
-
-    const mod = await import("./tool-search.js");
-
-    // Restore immediately after import so the captured module graph keeps the
-    // mocked dependencies, but unrelated test files in the same worker resolve
-    // the real config/mcp-bridge modules.
-    mock.restore();
-
-    return mod;
+    return await import("./tool-search.js");
   }
 
   test("re-evaluates when MCP tools appear after startup", async () => {
