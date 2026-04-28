@@ -41,6 +41,7 @@ function isJsonValue(value: unknown): value is JsonValue {
 
 /** Tracks triggers this session has received (as parent) for response routing. */
 export const receivedTriggers = new Map<string, { sourceSessionId: string; type: string; trackedAt: number }>();
+const handledTriggerTombstones = new Map<string, number>();
 
 const TRIGGER_TTL_MS = 10 * 60 * 1000; // 10 minutes
 const TRIGGER_RESPONSE_ACK_TIMEOUT_MS = 10_000;
@@ -134,14 +135,28 @@ export function clearAndCancelPendingTriggers(
     return { cancelled: count, sent, failed };
 }
 
-export function trackReceivedTrigger(triggerId: string, sourceSessionId: string, type: string): void {
-    if (receivedTriggers.has(triggerId)) return; // preserve original source on re-delivery
-    receivedTriggers.set(triggerId, { sourceSessionId, type, trackedAt: Date.now() });
-    // Prune stale entries to prevent unbounded growth
-    const now = Date.now();
+function pruneTriggerTracking(now: number): void {
     for (const [id, entry] of receivedTriggers) {
         if (now - entry.trackedAt > TRIGGER_TTL_MS) receivedTriggers.delete(id);
     }
+    for (const [id, handledAt] of handledTriggerTombstones) {
+        if (now - handledAt > TRIGGER_TTL_MS) handledTriggerTombstones.delete(id);
+    }
+}
+
+export function markTriggerHandled(triggerId: string): void {
+    const now = Date.now();
+    handledTriggerTombstones.set(triggerId, now);
+    receivedTriggers.delete(triggerId);
+    pruneTriggerTracking(now);
+}
+
+export function trackReceivedTrigger(triggerId: string, sourceSessionId: string, type: string): boolean {
+    const now = Date.now();
+    pruneTriggerTracking(now);
+    if (receivedTriggers.has(triggerId) || handledTriggerTombstones.has(triggerId)) return false;
+    receivedTriggers.set(triggerId, { sourceSessionId, type, trackedAt: now });
+    return true;
 }
 
 // ── Built-in sigils ──────────────────────────────────────────────────────────
@@ -318,7 +333,7 @@ export const triggersExtension: ExtensionFactory = (pi) => {
                         });
                     });
                     if (result.ok) {
-                        receivedTriggers.delete(params.triggerId);
+                        markTriggerHandled(params.triggerId);
                     }
                     return { content: [{ type: "text" as const, text: result.text }], details: null as any };
                 }
@@ -342,7 +357,7 @@ export const triggersExtension: ExtensionFactory = (pi) => {
                     // Don't delete the trigger — agent can retry
                     return { content: [{ type: "text" as const, text: `Failed to clean up child session ${pending.sourceSessionId}: ${cleanupResult.error ?? "unknown error"}` }], details: null as any };
                 }
-                receivedTriggers.delete(params.triggerId);
+                markTriggerHandled(params.triggerId);
                 return { content: [{ type: "text" as const, text: `Acknowledged session completion from ${pending.sourceSessionId}` }], details: null as any };
             }
 
@@ -361,7 +376,7 @@ export const triggersExtension: ExtensionFactory = (pi) => {
                     details: null as any,
                 };
             }
-            receivedTriggers.delete(params.triggerId);
+            markTriggerHandled(params.triggerId);
             return { content: [{ type: "text" as const, text: `Response sent for trigger ${params.triggerId}` }], details: null as any };
         },
         renderCall: (args: any, theme: any) => {

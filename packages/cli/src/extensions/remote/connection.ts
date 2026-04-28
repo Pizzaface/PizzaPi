@@ -21,7 +21,7 @@ import { cancelPendingPlanMode, consumePendingPlanModeFromWeb } from "../remote-
 import { normalizeRemoteInputAttachments, buildUserMessageFromRemoteInput } from "../remote-input.js";
 import { handleExecFromWeb } from "../remote-exec-handler.js";
 import { renderTrigger, renderTriggerBatch } from "../triggers/registry.js";
-import { trackReceivedTrigger, receivedTriggers, sendTriggerResponseWithAck } from "../triggers/extension.js";
+import { trackReceivedTrigger, receivedTriggers, sendTriggerResponseWithAck, markTriggerHandled } from "../triggers/extension.js";
 import type { ConversationTrigger } from "../triggers/types.js";
 import type { RelayContext } from "../remote-types.js";
 import { emitSessionActive } from "./chunked-delivery.js";
@@ -29,6 +29,7 @@ import { resetRelayRegistrationGate, signalRelayRegistered } from "./registratio
 import { decideRegisteredParentState } from "../remote-registered-parent-state.js";
 import { waitForWorkerStartupComplete } from "../worker-startup-gate.js";
 import { resolveInputDeliverAs } from "./deliver-as-default.js";
+import { sendSessionCompleteFollowUp } from "./session-complete-followup.js";
 
 // ── Module-level singletons (safe: one relay extension per process) ───────────
 
@@ -291,6 +292,7 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
         if (typeof data.serverTime === "number") {
             handlers.setServerClockOffset(data.serverTime - Date.now());
         }
+        rctx.supportsSessionTriggerAck = data.supportsSessionTriggerAck === true;
 
         messageBus.setOwnSessionId(rctx.relaySessionId);
         messageBus.setSendFn((targetSessionId: string, message: string) => {
@@ -450,7 +452,11 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
         // completion — suppressing session_complete after any bus consumption
         // would cause the parent to miss the final completion signal. If a
         // parent doesn't want triggers, it should spawn with linked: false.
-        trackReceivedTrigger(trigger.triggerId, trigger.sourceSessionId, trigger.type);
+        const tracked = trackReceivedTrigger(trigger.triggerId, trigger.sourceSessionId, trigger.type);
+        if (!tracked) {
+            log.info(`dropping duplicate session_trigger (${trigger.type}) ${trigger.triggerId}`);
+            return;
+        }
         const rendered = renderTrigger(trigger);
         const deliverAs = trigger.deliverAs === "followUp" ? "followUp" as const : "steer" as const;
 
@@ -470,33 +476,23 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
             const action = data.action ?? "ack";
             if (action === "followUp") {
                 const childId = pending.sourceSessionId;
-                let failed = false;
-                const onError = (err: { targetSessionId: string; error: string }) => {
-                    if (err.targetSessionId === childId) {
-                        failed = true;
-                        rctx.sioSocket!.off("session_message_error" as any, onError);
-                    }
-                };
-                rctx.sioSocket.on("session_message_error" as any, onError);
-                rctx.sioSocket.emit("session_message", {
+                void sendSessionCompleteFollowUp({
+                    socket: rctx.sioSocket,
                     token: rctx.relay.token,
-                    targetSessionId: childId,
+                    childSessionId: childId,
                     message: data.response,
-                    deliverAs: "input",
-                });
-                setTimeout(() => {
-                    rctx.sioSocket?.off("session_message_error" as any, onError);
-                    if (!failed) {
-                        receivedTriggers.delete(data.triggerId);
+                }).then((result) => {
+                    if (result.ok) {
+                        markTriggerHandled(data.triggerId);
                     }
-                }, 3000);
+                });
             } else {
                 rctx.sioSocket.emit("cleanup_child_session", {
                     token: rctx.relay.token,
                     childSessionId: pending.sourceSessionId,
                 }, (result: { ok: boolean; error?: string }) => {
                     if (result?.ok) {
-                        receivedTriggers.delete(data.triggerId);
+                        markTriggerHandled(data.triggerId);
                     }
                 });
             }
@@ -510,7 +506,7 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
             targetSessionId: pending.sourceSessionId,
         }).then((result) => {
             if (result.ok) {
-                receivedTriggers.delete(data.triggerId);
+                markTriggerHandled(data.triggerId);
                 return;
             }
             log.info(`pizzapi: failed to deliver trigger response ${data.triggerId}: ${result.error ?? "unknown error"}`);

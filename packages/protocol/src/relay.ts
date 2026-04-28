@@ -69,7 +69,7 @@ export interface RelayClientToServerEvents {
       timeoutMs?: number;
       ts: string;
     };
-  }) => void;
+  }, ack?: (result: { ok: boolean; error?: string }) => void) => void;
 
   /** Parent sends a trigger response back to the child */
   trigger_response: (data: {
@@ -127,6 +127,8 @@ export interface RelayServerToClientEvents {
     parentSessionId?: string | null;
     /** Server wall-clock time (ms since epoch) for clock-offset calculation. */
     serverTime?: number;
+    /** True when the relay supports ack callbacks for session_trigger delivery. */
+    supportsSessionTriggerAck?: boolean;
     /**
      * True when parentSessionId is null because the parent explicitly delinked
      * this child (ran /new). Absent or false for transient parent-offline cases.
@@ -176,6 +178,7 @@ export interface RelayServerToClientEvents {
   session_message_error: (data: {
     targetSessionId: string;
     error: string;
+    triggerId?: string;
   }) => void;
 
   /** Delivers a trigger from a child to the target session */

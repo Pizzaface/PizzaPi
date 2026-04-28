@@ -158,6 +158,14 @@ describe("relay — RelayClientToServerEvents payloads", () => {
     expect(followUp.deliverAs).toBe("followUp");
   });
 
+  test("session_trigger supports an optional delivery ack callback", () => {
+    type Ack = Parameters<RelayClientToServerEvents["session_trigger"]>[1];
+    const ack: Ack = (result) => {
+      expect(result).toEqual({ ok: true });
+    };
+    ack?.({ ok: true });
+  });
+
   test("trigger_response carries token, triggerId, response, targetSessionId", () => {
     type Payload = Parameters<RelayClientToServerEvents["trigger_response"]>[0];
 
@@ -221,8 +229,10 @@ describe("relay — RelayServerToClientEvents payloads", () => {
     const withParent: Payload = {
       ...minimal,
       parentSessionId: "parent-sess",
+      supportsSessionTriggerAck: true,
     };
     expect(withParent.parentSessionId).toBe("parent-sess");
+    expect(withParent.supportsSessionTriggerAck).toBe(true);
   });
 
   test("registered parentSessionId can be null", () => {
@@ -303,14 +313,16 @@ describe("relay — RelayServerToClientEvents payloads", () => {
     expect(typeof p.ts).toBe("string");
   });
 
-  test("session_message_error carries targetSessionId and error", () => {
+  test("session_message_error carries targetSessionId, error, and optional triggerId", () => {
     type Payload = Parameters<RelayServerToClientEvents["session_message_error"]>[0];
     const p: Payload = {
       targetSessionId: "sess-gone",
       error: "Session not found",
+      triggerId: "trigger-1",
     };
     expect(typeof p.targetSessionId).toBe("string");
     expect(typeof p.error).toBe("string");
+    expect(p.triggerId).toBe("trigger-1");
   });
 
   test("session_trigger carries a full trigger payload", () => {

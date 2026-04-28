@@ -112,6 +112,18 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         sessionCompleteFired: false,
         followUpGraceTimer: null as ReturnType<typeof setTimeout> | null,
         followUpGraceShutdown: null as (() => void) | null,
+        sessionCompleteGeneration: 0,
+        sessionCompleteTransportGeneration: 0,
+        sessionCompleteRetryTimer: null as ReturnType<typeof setTimeout> | null,
+        pendingSessionCompleteDelivery: null as Promise<{ ok: boolean; error?: string }> | null,
+        pendingSessionCompleteSocket: null,
+        pendingSessionCompleteTransportGeneration: null as number | null,
+        lastSessionCompletePayload: null as {
+            triggerId: string;
+            summary: string;
+            fullOutputPath?: string;
+            exitReason: "completed" | "killed" | "error";
+        } | null,
         // Session name sync state
         sessionNameSyncTimer: null as ReturnType<typeof setInterval> | null,
         lastBroadcastSessionName: null as string | null,

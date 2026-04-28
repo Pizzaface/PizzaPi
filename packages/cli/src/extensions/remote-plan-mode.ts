@@ -453,7 +453,19 @@ export function registerPlanModeTool(rctx: RelayContext) {
                     ts: new Date().toISOString(),
                 };
 
-                rctx.emitTrigger(trigger as any);
+                const deliveryResult = await rctx.emitTriggerWithAck(trigger as any);
+                if (!deliveryResult.ok) {
+                    return {
+                        content: [{ type: "text", text: `Plan cancelled: Trigger delivery failed: ${deliveryResult.error ?? "unknown error"}` }],
+                        details: {
+                            title,
+                            description,
+                            steps,
+                            action: "cancel" as PlanModeAction,
+                            editSuggestion: null,
+                        } satisfies PlanModeDetails,
+                    };
+                }
 
                 const triggerResult = await rctx.waitForTriggerResponse(triggerId, trigger.timeoutMs, signal);
 

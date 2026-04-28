@@ -455,7 +455,21 @@ export function registerAskUserTool(rctx: RelayContext) {
                     ts: new Date().toISOString(),
                 };
 
-                rctx.emitTrigger(trigger as any);
+                const deliveryResult = await rctx.emitTriggerWithAck(trigger as any);
+                if (!deliveryResult.ok) {
+                    const responseText = `Trigger delivery failed: ${deliveryResult.error ?? "unknown error"}`;
+                    return {
+                        content: [{ type: "text", text: responseText }],
+                        details: {
+                            questions,
+                            display,
+                            answers: null,
+                            answer: null,
+                            source: "parent_trigger" as any,
+                            cancelled: true,
+                        } satisfies AskUserQuestionDetails,
+                    };
+                }
 
                 const triggerResult = await rctx.waitForTriggerResponse(triggerId, trigger.timeoutMs, signal);
 
