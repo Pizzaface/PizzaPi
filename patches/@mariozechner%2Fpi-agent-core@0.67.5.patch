@@ -1,0 +1,24 @@
+--- a/dist/agent.js
++++ b/dist/agent.js
+@@ -269,6 +269,9 @@
+             systemPrompt: this._state.systemPrompt,
+             messages: this._state.messages.slice(),
+             tools: this._state.tools.slice(),
++            // PATCH(pizzapi): allow the agent loop to refresh dynamic tool/prompt state
++            __getLatestSystemPrompt: () => this._state.systemPrompt,
++            __getLatestTools: () => this._state.tools.slice(),
+         };
+     }
+     createLoopConfig(options = {}) {
+--- a/dist/agent-loop.js
++++ b/dist/agent-loop.js
+@@ -99,6 +99,9 @@
+                 }
+                 pendingMessages = [];
+             }
++            // PATCH(pizzapi): refresh dynamic tool/prompt state before each assistant response
++            currentContext.systemPrompt = currentContext.__getLatestSystemPrompt?.() ?? currentContext.systemPrompt;
++            currentContext.tools = currentContext.__getLatestTools?.() ?? currentContext.tools;
+             // Stream assistant response
+             const message = await streamAssistantResponse(currentContext, config, signal, emit, streamFn);
+             newMessages.push(message);

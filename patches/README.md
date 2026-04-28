@@ -4,6 +4,26 @@ Patches in this directory are applied automatically by Bun via the
 `patchedDependencies` field in the root `package.json`. They are reapplied on
 every `bun install` — no postinstall script is needed.
 
+## @mariozechner/pi-agent-core@0.67.5
+
+Adds one PizzaPi-specific runtime fix:
+
+- **Dynamic tool refresh between assistant responses:** when a tool changes the
+  active tool set mid-run (for example `search_tools` loading deferred tools),
+  the next assistant response now sees the refreshed tools and system prompt
+  instead of the stale turn-start snapshot. This fixes same-turn Tool Deferral
+  flows where the model successfully loads a tool and then immediately gets
+  `Unknown tool` / `tool isn't loaded` errors trying to call it.
+
+**What it changes:**
+
+| File | Change |
+|------|--------|
+| `dist/agent.js` — `createContextSnapshot()` | Exposes internal callbacks that return the latest tool set and system prompt |
+| `dist/agent-loop.js` — `runLoop()` | Refreshes `currentContext.tools` and `currentContext.systemPrompt` before each assistant response |
+
+**Tests:** `packages/cli/src/patches.test.ts` verifies the regression behavior with a live `Agent` instance.
+
 ## @mariozechner/pi-coding-agent@0.67.5
 
 Same changes as 0.66.1, ported forward. The upstream 0.67.x series changed
