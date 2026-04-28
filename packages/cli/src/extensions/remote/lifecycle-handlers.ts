@@ -93,6 +93,18 @@ export interface LifecycleHandlerState {
     pendingCancellations: Array<{ triggerId: string; childSessionId: string }>;
     // Grace (session_complete fired flag)
     sessionCompleteFired: boolean;
+    sessionCompleteGeneration: number;
+    sessionCompleteTransportGeneration: number;
+    sessionCompleteRetryTimer: ReturnType<typeof setTimeout> | null;
+    pendingSessionCompleteDelivery: Promise<{ ok: boolean; error?: string }> | null;
+    pendingSessionCompleteSocket: RelayContext["sioSocket"] | null;
+    pendingSessionCompleteTransportGeneration: number | null;
+    lastSessionCompletePayload: {
+        triggerId: string;
+        summary: string;
+        fullOutputPath?: string;
+        exitReason: "completed" | "killed" | "error";
+    } | null;
 }
 
 export interface LifecycleHandlersDeps {
@@ -273,6 +285,11 @@ export function registerLifecycleHandlers(deps: LifecycleHandlersDeps): void {
         }
 
         state.sessionCompleteFired = false;
+        state.sessionCompleteGeneration += 1;
+        state.pendingSessionCompleteDelivery = null;
+        state.pendingSessionCompleteSocket = null;
+        state.pendingSessionCompleteTransportGeneration = null;
+        state.lastSessionCompletePayload = null;
 
         installFooter(rctx, ctx);
         startSessionNameSync();
@@ -300,20 +317,25 @@ export function registerLifecycleHandlers(deps: LifecycleHandlersDeps): void {
 
     pi.on("turn_start", (event: any) => {
         state.sessionCompleteFired = false;
+        state.sessionCompleteGeneration += 1;
+        state.pendingSessionCompleteDelivery = null;
+        state.pendingSessionCompleteSocket = null;
+        state.pendingSessionCompleteTransportGeneration = null;
+        state.lastSessionCompletePayload = null;
         sessionErrorFired = false;
         rctx.wasAborted = false;
         followUpGrace.clearFollowUpGrace();
         rctx.forwardEvent(event);
     });
 
-    pi.on("session_shutdown", () => {
+    pi.on("session_shutdown", async () => {
         rctx.shuttingDown = true;
         followUpGrace.clearFollowUpGrace();
         stopHeartbeat();
         stopSessionNameSync();
         clearCtx();
         const shutdownExitReason = rctx.wasAborted ? "killed" : rctx.lastRetryableError ? "error" : "completed";
-        followUpGrace.fireSessionComplete(undefined, undefined, shutdownExitReason);
+        await followUpGrace.fireSessionComplete(undefined, undefined, shutdownExitReason);
         doDisconnect();
     });
 
@@ -373,7 +395,7 @@ export function registerLifecycleHandlers(deps: LifecycleHandlersDeps): void {
             }
 
             const exitReason = rctx.wasAborted ? "killed" : lastError ? "error" : "completed";
-            followUpGrace.fireSessionComplete(summary, fullOutputPath, exitReason);
+            void followUpGrace.fireSessionComplete(summary, fullOutputPath, exitReason);
 
             // Fire session_error for terminal usage-limit errors (one-shot, only at agent_end).
             if (

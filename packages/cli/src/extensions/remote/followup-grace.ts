@@ -13,8 +13,10 @@
 
 import { createLogger } from "@pizzapi/tools";
 import type { RelayContext } from "../remote-types.js";
+import { emitSessionCompleteWithAck } from "./session-complete-delivery.js";
 
 const FOLLOWUP_GRACE_MS = 10 * 60 * 1_000;
+const SESSION_COMPLETE_RETRY_MS = 3_000;
 const log = createLogger("remote");
 
 export interface FollowUpGraceState {
@@ -22,6 +24,20 @@ export interface FollowUpGraceState {
     sessionCompleteFired: boolean;
     followUpGraceTimer: ReturnType<typeof setTimeout> | null;
     followUpGraceShutdown: (() => void) | null;
+    /** Increments on each new turn/session so stale completion promises can be ignored. */
+    sessionCompleteGeneration: number;
+    /** Increments on relay disconnect so in-flight sends on the old transport are not reused after reconnect. */
+    sessionCompleteTransportGeneration: number;
+    sessionCompleteRetryTimer: ReturnType<typeof setTimeout> | null;
+    pendingSessionCompleteDelivery: Promise<{ ok: boolean; error?: string }> | null;
+    pendingSessionCompleteSocket: RelayContext["sioSocket"] | null;
+    pendingSessionCompleteTransportGeneration: number | null;
+    lastSessionCompletePayload: {
+        triggerId: string;
+        summary: string;
+        fullOutputPath?: string;
+        exitReason: "completed" | "killed" | "error";
+    } | null;
 }
 
 /**
@@ -35,6 +51,10 @@ export function createFollowUpGrace(rctx: RelayContext, state: FollowUpGraceStat
         if (state.followUpGraceTimer !== null) {
             clearTimeout(state.followUpGraceTimer);
             state.followUpGraceTimer = null;
+        }
+        if (state.sessionCompleteRetryTimer !== null) {
+            clearTimeout(state.sessionCompleteRetryTimer);
+            state.sessionCompleteRetryTimer = null;
         }
         state.followUpGraceShutdown = null;
     }
@@ -74,35 +94,102 @@ export function createFollowUpGrace(rctx: RelayContext, state: FollowUpGraceStat
 
     /**
      * Emit a session_complete trigger to the parent session.  Idempotent —
-     * subsequent calls after the first are silently ignored.
+     * subsequent calls after the first successful delivery are silently ignored.
      */
-    function fireSessionComplete(
+    async function fireSessionComplete(
         summary?: string,
         fullOutputPath?: string,
         exitReason?: "completed" | "killed" | "error",
-    ): void {
-        if (state.sessionCompleteFired) return;
-        if (!rctx.isChildSession || !rctx.parentSessionId || !rctx.relay || !rctx.sioSocket?.connected) return;
-        state.sessionCompleteFired = true;
-        rctx.sioSocket.emit("session_trigger" as any, {
+    ): Promise<{ ok: boolean; error?: string }> {
+        if (state.sessionCompleteFired) return { ok: true };
+
+        if (summary !== undefined || fullOutputPath !== undefined || state.lastSessionCompletePayload === null) {
+            state.lastSessionCompletePayload = {
+                triggerId: state.lastSessionCompletePayload?.triggerId ?? crypto.randomUUID(),
+                summary: summary ?? state.lastSessionCompletePayload?.summary ?? "Session completed",
+                fullOutputPath: fullOutputPath ?? state.lastSessionCompletePayload?.fullOutputPath,
+                exitReason: exitReason ?? state.lastSessionCompletePayload?.exitReason ?? "completed",
+            };
+        }
+
+        if (!rctx.isChildSession || !rctx.parentSessionId || !rctx.relay || !rctx.sioSocket?.connected) {
+            return { ok: false, error: "Child session is not connected to a linked parent" };
+        }
+
+        const payload = state.lastSessionCompletePayload ?? {
+            summary: "Session completed",
+            triggerId: crypto.randomUUID(),
+            fullOutputPath: undefined,
+            exitReason: exitReason ?? "completed",
+        };
+
+        if (
+            state.pendingSessionCompleteDelivery &&
+            state.pendingSessionCompleteSocket === rctx.sioSocket &&
+            state.pendingSessionCompleteTransportGeneration === state.sessionCompleteTransportGeneration
+        ) {
+            return await state.pendingSessionCompleteDelivery;
+        }
+
+        const generation = state.sessionCompleteGeneration;
+        const transportGeneration = state.sessionCompleteTransportGeneration;
+        const activeSocket = rctx.sioSocket;
+        const scheduleRetry = () => {
+            if (state.sessionCompleteRetryTimer !== null || state.sessionCompleteFired || !state.lastSessionCompletePayload) return;
+            state.sessionCompleteRetryTimer = setTimeout(() => {
+                state.sessionCompleteRetryTimer = null;
+                void fireSessionComplete();
+            }, SESSION_COMPLETE_RETRY_MS);
+            if (
+                state.sessionCompleteRetryTimer &&
+                typeof state.sessionCompleteRetryTimer === "object" &&
+                "unref" in state.sessionCompleteRetryTimer
+            ) {
+                (state.sessionCompleteRetryTimer as NodeJS.Timeout).unref();
+            }
+        };
+
+        const deliveryPromise = emitSessionCompleteWithAck({
+            socket: rctx.sioSocket,
             token: rctx.relay.token,
-            trigger: {
-                type: "session_complete",
-                sourceSessionId: rctx.relay.sessionId,
-                sourceSessionName: undefined,
-                targetSessionId: rctx.parentSessionId,
-                payload: {
-                    summary: summary ?? "Session completed",
-                    exitCode: exitReason === "killed" ? 130 : exitReason === "error" ? 1 : 0,
-                    exitReason: exitReason ?? "completed",
-                    ...(fullOutputPath ? { fullOutputPath } : {}),
-                },
-                deliverAs: "followUp" as const,
-                expectsResponse: true,
-                triggerId: crypto.randomUUID(),
-                ts: new Date().toISOString(),
-            },
+            sourceSessionId: rctx.relay.sessionId,
+            targetSessionId: rctx.parentSessionId,
+            triggerId: payload.triggerId,
+            summary: payload.summary,
+            fullOutputPath: payload.fullOutputPath,
+            exitReason: payload.exitReason,
+            assumeSuccessOnAckTimeout: !rctx.supportsSessionTriggerAck,
+        }).then((result) => {
+            if (state.sessionCompleteGeneration !== generation || state.sessionCompleteTransportGeneration !== transportGeneration) {
+                return result;
+            }
+            if (result.ok) {
+                state.sessionCompleteFired = true;
+                if (state.sessionCompleteRetryTimer !== null) {
+                    clearTimeout(state.sessionCompleteRetryTimer);
+                    state.sessionCompleteRetryTimer = null;
+                }
+            } else {
+                log.info(`pizzapi: session_complete delivery failed — ${result.error ?? "unknown error"}`);
+                scheduleRetry();
+            }
+            return result;
+        }).finally(() => {
+            if (
+                state.sessionCompleteGeneration === generation &&
+                state.sessionCompleteTransportGeneration === transportGeneration &&
+                state.pendingSessionCompleteDelivery === deliveryPromise
+            ) {
+                state.pendingSessionCompleteDelivery = null;
+                state.pendingSessionCompleteSocket = null;
+                state.pendingSessionCompleteTransportGeneration = null;
+            }
         });
+
+        state.pendingSessionCompleteDelivery = deliveryPromise;
+        state.pendingSessionCompleteSocket = activeSocket;
+        state.pendingSessionCompleteTransportGeneration = transportGeneration;
+        return await deliveryPromise;
     }
 
     return {

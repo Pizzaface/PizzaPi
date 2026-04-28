@@ -201,6 +201,7 @@ export interface RelayContext {
     parentSessionId: string | null;
     isChildSession: boolean;
     relaySessionId: string;
+    supportsSessionTriggerAck: boolean;
 
     // Pending interaction state
     pendingAskUserQuestion: PendingAskUserQuestion | null;

@@ -28,6 +28,18 @@ export interface ConnectionHandlerState {
     pendingDelink: boolean;
     pendingDelinkEpoch: number | null;
     pendingCancellations: Array<{ triggerId: string; childSessionId: string }>;
+    sessionCompleteFired: boolean;
+    sessionCompleteTransportGeneration: number;
+    pendingSessionCompleteDelivery: Promise<{ ok: boolean; error?: string }> | null;
+    pendingSessionCompleteSocket: RelayContext["sioSocket"] | null;
+    pendingSessionCompleteTransportGeneration: number | null;
+    sessionCompleteRetryTimer: ReturnType<typeof setTimeout> | null;
+    lastSessionCompletePayload: {
+        triggerId: string;
+        summary: string;
+        fullOutputPath?: string;
+        exitReason: "completed" | "killed" | "error";
+    } | null;
 }
 
 export interface ConnectionHandlersDeps {
@@ -116,12 +128,20 @@ export function createConnectionHandlers(deps: ConnectionHandlersDeps) {
                 cancellationManager.startPendingCancellationRetryLoop();
                 cancellationManager.retryPendingTriggerCancellations("registered");
             }
+            if (!state.sessionCompleteFired && state.lastSessionCompletePayload && rctx.isChildSession && rctx.sioSocket?.connected) {
+                void followUpGrace.fireSessionComplete();
+                log.info("pizzapi: retried buffered session_complete after reconnect");
+            }
         },
 
         onDelinkDisconnect: () => {
             cancellationManager.stopPendingCancellationRetryLoop();
             delinkManager.clearPendingDelinkRetryTimer();
             delinkManager.clearPendingDelinkOwnParentRetryTimer();
+            state.sessionCompleteTransportGeneration += 1;
+            state.pendingSessionCompleteDelivery = null;
+            state.pendingSessionCompleteSocket = null;
+            state.pendingSessionCompleteTransportGeneration = null;
         },
 
         onSocketTeardown: () => {

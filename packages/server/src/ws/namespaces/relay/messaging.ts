@@ -129,16 +129,18 @@ export function registerMessagingHandlers(socket: RelaySocket): void {
     });
 
     // ── session_trigger — child-to-parent trigger routing ────────────────
-    socket.on("session_trigger", async (data) => {
+    socket.on("session_trigger", async (data, ack?: (result: { ok: boolean; error?: string }) => void) => {
         const sessionId = socket.data.sessionId;
         if (!sessionId || data?.token !== socket.data.token) {
             socket.emit("error", { message: "Invalid token" });
+            ack?.({ ok: false, error: "Invalid token" });
             return;
         }
 
         const trigger = data?.trigger;
         if (!trigger?.targetSessionId || !trigger?.triggerId) {
             socket.emit("error", { message: "session_trigger requires trigger with targetSessionId and triggerId" });
+            ack?.({ ok: false, error: "session_trigger requires trigger with targetSessionId and triggerId" });
             return;
         }
 
@@ -147,10 +149,13 @@ export function registerMessagingHandlers(socket: RelaySocket): void {
         // Find the target session's relay socket and validate ownership
         const targetSession = await getSharedSession(targetSessionId);
         if (!targetSession) {
+            const error = `Target session ${targetSessionId} is not connected`;
             socket.emit("session_message_error", {
                 targetSessionId,
-                error: `Target session ${targetSessionId} is not connected`,
+                error,
+                triggerId: trigger.triggerId,
             });
+            ack?.({ ok: false, error });
             return;
         }
 
@@ -158,14 +163,18 @@ export function registerMessagingHandlers(socket: RelaySocket): void {
         const senderSession = await getSharedSession(sessionId);
         if (!senderSession?.userId || senderSession.userId !== targetSession.userId) {
             socket.emit("error", { message: "Target session belongs to a different user" });
+            ack?.({ ok: false, error: "Target session belongs to a different user" });
             return;
         }
 
         if (targetSessionId !== sessionId && await isPendingParentDelinkChild(targetSessionId, sessionId)) {
+            const error = "Sender is currently being delinked from the target session";
             socket.emit("session_message_error", {
                 targetSessionId,
-                error: "Sender is currently being delinked from the target session",
+                error,
+                triggerId: trigger.triggerId,
             });
+            ack?.({ ok: false, error });
             return;
         }
 
@@ -177,10 +186,13 @@ export function registerMessagingHandlers(socket: RelaySocket): void {
         if (targetSessionId !== sessionId) {
             const senderIsChild = await isChildOfParent(targetSessionId, sessionId);
             if (!senderIsChild) {
+                const error = "Sender is no longer a child of the target session (linked relationship is broken or stale)";
                 socket.emit("session_message_error", {
                     targetSessionId,
-                    error: "Sender is no longer a child of the target session (linked relationship is broken or stale)",
+                    error,
+                    triggerId: trigger.triggerId,
                 });
+                ack?.({ ok: false, error });
                 return;
             }
             await refreshChildSessionsTTL(targetSessionId);
@@ -203,20 +215,28 @@ export function registerMessagingHandlers(socket: RelaySocket): void {
                 targetSocket.emit("session_trigger" as any, { trigger });
                 delivered = true;
             } catch {
+                const error = "Failed to deliver trigger to target session";
                 socket.emit("session_message_error", {
                     targetSessionId,
-                    error: "Failed to deliver trigger to target session",
+                    error,
+                    triggerId: trigger.triggerId,
                 });
+                ack?.({ ok: false, error });
+                return;
             }
         } else if (await emitToRelaySessionVerified(targetSessionId, "session_trigger", { trigger })) {
             delivered = true;
         } else {
             // Cross-node fallback: target TUI socket is on a different server node.
             // emitToRelaySessionVerified returns false when no relay recipient is present.
+            const error = `Target session ${targetSessionId} is not connected`;
             socket.emit("session_message_error", {
                 targetSessionId,
-                error: `Target session ${targetSessionId} is not connected`,
+                error,
+                triggerId: trigger.triggerId,
             });
+            ack?.({ ok: false, error });
+            return;
         }
 
         // Record in trigger history so the history API and linked-sessions
@@ -238,6 +258,7 @@ export function registerMessagingHandlers(socket: RelaySocket): void {
                 triggerId: trigger.triggerId,
             });
         }
+        ack?.({ ok: true });
     });
 
     // ── trigger_response — parent-to-child response routing ────────────

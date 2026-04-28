@@ -1,11 +1,13 @@
 import { describe, it, expect } from "bun:test";
+import { sendSessionCompleteFollowUp } from "./remote/session-complete-followup.js";
 
-function simulateViewerSessionCompleteFollowUp(opts: { deliveryFails: boolean }) {
+async function simulateViewerSessionCompleteFollowUp(opts: { deliveryFails: boolean; disconnects?: boolean }) {
     const receivedTriggers = new Map<string, { sourceSessionId: string; type: string }>();
     receivedTriggers.set("trigger-1", { sourceSessionId: "child-1", type: "session_complete" });
 
     const listeners = new Map<string, Array<(data: any) => void>>();
     const socket = {
+        connected: true,
         on(event: string, handler: (data: any) => void) {
             const handlers = listeners.get(event) ?? [];
             handlers.push(handler);
@@ -20,30 +22,27 @@ function simulateViewerSessionCompleteFollowUp(opts: { deliveryFails: boolean })
                     handler({ targetSessionId: data.targetSessionId, error: "Target session not found or not connected" });
                 }
             }
+            if (event === "session_message" && opts.disconnects) {
+                socket.connected = false;
+                for (const handler of listeners.get("disconnect") ?? []) {
+                    handler(undefined);
+                }
+            }
         },
     };
 
     const pending = receivedTriggers.get("trigger-1");
     if (!pending) throw new Error("missing pending trigger");
 
-    const childId = pending.sourceSessionId;
-    let failed = false;
-    const onError = (err: { targetSessionId: string; error: string }) => {
-        if (err.targetSessionId === childId) {
-            failed = true;
-            socket.off("session_message_error", onError);
-        }
-    };
-
-    socket.on("session_message_error", onError);
-    socket.emit("session_message", {
-        targetSessionId: childId,
+    const result = await sendSessionCompleteFollowUp({
+        socket: socket as any,
+        token: "relay-token",
+        childSessionId: pending.sourceSessionId,
         message: "Please continue",
-        deliverAs: "input",
+        timeoutMs: 5,
     });
 
-    socket.off("session_message_error", onError);
-    if (!failed) {
+    if (result.ok) {
         receivedTriggers.delete("trigger-1");
     }
 
@@ -51,13 +50,18 @@ function simulateViewerSessionCompleteFollowUp(opts: { deliveryFails: boolean })
 }
 
 describe("remote escalated session_complete follow-up delivery", () => {
-    it("keeps the trigger pending when delivery fails", () => {
-        const receivedTriggers = simulateViewerSessionCompleteFollowUp({ deliveryFails: true });
+    it("keeps the trigger pending when delivery fails", async () => {
+        const receivedTriggers = await simulateViewerSessionCompleteFollowUp({ deliveryFails: true });
         expect(receivedTriggers.has("trigger-1")).toBe(true);
     });
 
-    it("clears the trigger when delivery succeeds", () => {
-        const receivedTriggers = simulateViewerSessionCompleteFollowUp({ deliveryFails: false });
+    it("clears the trigger when delivery succeeds", async () => {
+        const receivedTriggers = await simulateViewerSessionCompleteFollowUp({ deliveryFails: false });
         expect(receivedTriggers.has("trigger-1")).toBe(false);
+    });
+
+    it("keeps the trigger pending when the relay disconnects before delivery settles", async () => {
+        const receivedTriggers = await simulateViewerSessionCompleteFollowUp({ deliveryFails: false, disconnects: true });
+        expect(receivedTriggers.has("trigger-1")).toBe(true);
     });
 });

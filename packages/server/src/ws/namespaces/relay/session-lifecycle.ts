@@ -53,6 +53,7 @@ export function registerSessionLifecycleHandlers(socket: RelaySocket): void {
             // Server wall-clock time — lets the client compute
             // clock offset for accurate epoch-based delink filtering.
             serverTime: Date.now(),
+            supportsSessionTriggerAck: true,
             // Only include wasDelinked when it is true to keep the payload
             // minimal for non-child or non-delinked sessions.
             ...(wasDelinked ? { wasDelinked: true } : {}),
