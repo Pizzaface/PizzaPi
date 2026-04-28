@@ -48,6 +48,32 @@ export interface McpError {
   error: string;
 }
 
+export interface McpToolStateEntry {
+  name: string;
+  serverName: string;
+  state: "loaded" | "deferred" | "loaded_on_demand";
+}
+
+export interface McpServerStateEntry {
+  name: string;
+  transport: string;
+  scope: string;
+  sourcePath?: string;
+  state: "loaded" | "deferred" | "disabled" | "partial";
+  totalToolCount: number;
+  loadedToolCount: number;
+  deferredToolCount: number;
+  loadedOnDemandToolCount: number;
+}
+
+export interface McpStatusCounts {
+  totalTools: number;
+  loadedTools: number;
+  deferredTools: number;
+  loadedOnDemandTools: number;
+  disabledServers: number;
+}
+
 export interface McpResultData {
   kind: "mcp";
   action: "status" | "reload";
@@ -61,6 +87,9 @@ export interface McpResultData {
   loadedAt?: string;
   /** Server names currently disabled via config */
   disabledServers?: string[];
+  counts?: McpStatusCounts;
+  serverStates?: McpServerStateEntry[];
+  toolStates?: McpToolStateEntry[];
 }
 
 // ── Plugins ───────────────────────────────────────────────────────────────────
@@ -122,19 +151,50 @@ export interface SandboxResultData {
 
 // ── Card Renderers ────────────────────────────────────────────────────────────
 
+function formatMcpStateLabel(state: "loaded" | "deferred" | "loaded_on_demand" | "disabled" | "partial") {
+  switch (state) {
+    case "loaded_on_demand":
+      return "loaded on-demand";
+    default:
+      return state;
+  }
+}
+
 /** Collapsible per-server tool group */
-function ServerToolGroup({ serverName, tools, transport, scope, defaultOpen, disabled, onToggle }: {
+function ServerToolGroup({
+  serverName,
+  tools,
+  transport,
+  scope,
+  defaultOpen,
+  state = "loaded",
+  loadedToolCount,
+  deferredToolCount,
+  loadedOnDemandToolCount,
+  onToggle,
+}: {
   serverName: string;
-  tools: string[];
+  tools: Array<{ name: string; state: "loaded" | "deferred" | "loaded_on_demand" }>;
   transport?: string;
   scope?: string;
   defaultOpen: boolean;
-  /** Whether this server is currently disabled */
-  disabled?: boolean;
+  state?: "loaded" | "deferred" | "disabled" | "partial";
+  loadedToolCount?: number;
+  deferredToolCount?: number;
+  loadedOnDemandToolCount?: number;
   /** Callback to toggle enabled/disabled state */
   onToggle?: (serverName: string, disabled: boolean) => void;
 }) {
+  const disabled = state === "disabled";
   const [open, setOpen] = React.useState(defaultOpen && !disabled);
+
+  const countBits: string[] = [];
+  if (!disabled) {
+    if (typeof loadedToolCount === "number" && loadedToolCount > 0) countBits.push(`${loadedToolCount} loaded`);
+    if (typeof loadedOnDemandToolCount === "number" && loadedOnDemandToolCount > 0) countBits.push(`${loadedOnDemandToolCount} loaded on-demand`);
+    if (typeof deferredToolCount === "number" && deferredToolCount > 0) countBits.push(`${deferredToolCount} deferred`);
+    if (countBits.length === 0) countBits.push(`${tools.length} tool${tools.length !== 1 ? "s" : ""}`);
+  }
 
   return (
     <div className={cn("border-b border-zinc-800/60 last:border-b-0", disabled && "opacity-50")}>
@@ -160,11 +220,14 @@ function ServerToolGroup({ serverName, tools, transport, scope, defaultOpen, dis
               {transport}
             </Badge>
           )}
+          <Badge variant="outline" className="h-3.5 px-1 text-[9px] font-mono border-zinc-700 text-zinc-400 capitalize">
+            {formatMcpStateLabel(state)}
+          </Badge>
           {disabled ? (
             <span className="text-[10px] text-zinc-600 tabular-nums ml-auto shrink-0">disabled</span>
           ) : (
             <span className="text-[10px] text-zinc-600 tabular-nums ml-auto shrink-0">
-              {tools.length} tool{tools.length !== 1 ? "s" : ""}
+              {countBits.join(" · ")}
               {scope && <span className="ml-1.5 text-zinc-600/70">{scope}</span>}
             </span>
           )}
@@ -186,9 +249,10 @@ function ServerToolGroup({ serverName, tools, transport, scope, defaultOpen, dis
       </div>
       {open && !disabled && tools.length > 0 && (
         <div className="px-4 pb-2.5 pt-0.5 flex flex-wrap gap-1">
-          {tools.map((name) => (
-            <span key={name} className="inline-block rounded bg-zinc-800/80 px-1.5 py-0.5 text-[10px] font-mono text-zinc-400">
-              {name}
+          {tools.map((tool) => (
+            <span key={tool.name} className="inline-flex items-center gap-1 rounded bg-zinc-800/80 px-1.5 py-0.5 text-[10px] font-mono text-zinc-400">
+              <span>{tool.name}</span>
+              <span className="text-zinc-500">{formatMcpStateLabel(tool.state)}</span>
             </span>
           ))}
         </div>
@@ -199,7 +263,6 @@ function ServerToolGroup({ serverName, tools, transport, scope, defaultOpen, dis
 
 function McpCard({ data }: { data: McpResultData }) {
   const hasErrors = data.errors.length > 0;
-  const hasServerTools = Object.keys(data.serverTools ?? {}).length > 0;
   const disabledSet = React.useMemo(() => new Set(data.disabledServers ?? []), [data.disabledServers]);
   const mcpToggle = useMcpToggle();
 
@@ -210,12 +273,84 @@ function McpCard({ data }: { data: McpResultData }) {
     return map;
   }, [data.servers]);
 
-  // Disabled servers that aren't already shown in serverTools (they were skipped)
-  const disabledOnlyServers = React.useMemo(() => {
-    return [...disabledSet].filter((name) => !data.serverTools[name]);
-  }, [disabledSet, data.serverTools]);
+  const toolStateMap = React.useMemo(() => {
+    const map = new Map<string, McpToolStateEntry[]>();
+    for (const tool of data.toolStates ?? []) {
+      const list = map.get(tool.serverName) ?? [];
+      list.push(tool);
+      map.set(tool.serverName, list);
+    }
+    return map;
+  }, [data.toolStates]);
 
-  const disabledCount = disabledSet.size;
+  const renderedServers = React.useMemo(() => {
+    const entries: Array<{
+      name: string;
+      transport?: string;
+      scope?: string;
+      state: "loaded" | "deferred" | "disabled" | "partial";
+      tools: Array<{ name: string; state: "loaded" | "deferred" | "loaded_on_demand" }>;
+      loadedToolCount?: number;
+      deferredToolCount?: number;
+      loadedOnDemandToolCount?: number;
+    }> = [];
+    const seen = new Set<string>();
+
+    for (const server of data.serverStates ?? []) {
+      seen.add(server.name);
+      entries.push({
+        name: server.name,
+        transport: server.transport,
+        scope: server.scope,
+        state: server.state,
+        tools: toolStateMap.get(server.name) ?? (data.serverTools[server.name] ?? []).map((name) => ({ name, state: "loaded" as const })),
+        loadedToolCount: server.loadedToolCount,
+        deferredToolCount: server.deferredToolCount,
+        loadedOnDemandToolCount: server.loadedOnDemandToolCount,
+      });
+    }
+
+    for (const server of data.servers) {
+      if (seen.has(server.name)) continue;
+      seen.add(server.name);
+      const toolNames = data.serverTools[server.name] ?? [];
+      const state = disabledSet.has(server.name) ? "disabled" as const : "loaded" as const;
+      entries.push({
+        name: server.name,
+        transport: server.transport,
+        scope: server.scope,
+        state,
+        tools: toolNames.map((name) => ({ name, state: "loaded" as const })),
+        loadedToolCount: state === "disabled" ? 0 : toolNames.length,
+        deferredToolCount: 0,
+        loadedOnDemandToolCount: 0,
+      });
+    }
+
+    for (const [serverName, toolNames] of Object.entries(data.serverTools)) {
+      if (seen.has(serverName)) continue;
+      entries.push({
+        name: serverName,
+        transport: serverConfigMap.get(serverName)?.transport,
+        scope: serverConfigMap.get(serverName)?.scope,
+        state: disabledSet.has(serverName) ? "disabled" as const : "loaded" as const,
+        tools: toolStateMap.get(serverName) ?? toolNames.map((name) => ({ name, state: "loaded" as const })),
+        loadedToolCount: disabledSet.has(serverName) ? 0 : toolNames.length,
+        deferredToolCount: 0,
+        loadedOnDemandToolCount: 0,
+      });
+    }
+
+    return entries;
+  }, [data.serverStates, data.servers, data.serverTools, disabledSet, toolStateMap, serverConfigMap]);
+
+  const counts = data.counts ?? {
+    totalTools: data.toolCount,
+    loadedTools: data.toolCount,
+    deferredTools: 0,
+    loadedOnDemandTools: 0,
+    disabledServers: disabledSet.size,
+  };
 
   return (
     <ToolCardShell>
@@ -235,13 +370,23 @@ function McpCard({ data }: { data: McpResultData }) {
               {data.errors.length} error{data.errors.length > 1 ? "s" : ""}
             </StatusPill>
           )}
-          {disabledCount > 0 && (
+          {counts.disabledServers > 0 && (
             <StatusPill variant="neutral">
-              {disabledCount} disabled
+              {counts.disabledServers} disabled
             </StatusPill>
           )}
-          <StatusPill variant={data.toolCount > 0 ? "success" : "neutral"}>
-            {data.toolCount} tool{data.toolCount !== 1 ? "s" : ""}
+          {counts.deferredTools > 0 && (
+            <StatusPill variant="neutral">
+              {counts.deferredTools} deferred
+            </StatusPill>
+          )}
+          {counts.loadedOnDemandTools > 0 && (
+            <StatusPill variant="neutral">
+              {counts.loadedOnDemandTools} loaded on-demand
+            </StatusPill>
+          )}
+          <StatusPill variant={counts.loadedTools > 0 || counts.loadedOnDemandTools > 0 ? "success" : "neutral"}>
+            {counts.totalTools} tool{counts.totalTools !== 1 ? "s" : ""}
           </StatusPill>
         </div>
       </ToolCardHeader>
@@ -264,49 +409,32 @@ function McpCard({ data }: { data: McpResultData }) {
         </div>
       )}
 
-      {/* Tools grouped by server (active servers) */}
-      {hasServerTools && (
-        Object.entries(data.serverTools).map(([serverName, tools]) => {
-          const config = serverConfigMap.get(serverName);
-          return (
-            <ServerToolGroup
-              key={serverName}
-              serverName={serverName}
-              tools={tools}
-              transport={config?.transport}
-              scope={config?.scope}
-              defaultOpen={Object.keys(data.serverTools).length <= 3}
-              disabled={disabledSet.has(serverName)}
-              onToggle={mcpToggle ?? undefined}
-            />
-          );
-        })
-      )}
-
-      {/* Disabled servers that weren't in serverTools (skipped during init) */}
-      {disabledOnlyServers.map((name) => {
-        const config = serverConfigMap.get(name);
-        return (
+      {/* Tools grouped by server */}
+      {renderedServers.length > 0 && (
+        renderedServers.map((server) => (
           <ServerToolGroup
-            key={name}
-            serverName={name}
-            tools={[]}
-            transport={config?.transport}
-            scope={config?.scope}
-            defaultOpen={false}
-            disabled={true}
+            key={server.name}
+            serverName={server.name}
+            tools={server.tools}
+            transport={server.transport}
+            scope={server.scope}
+            defaultOpen={renderedServers.length <= 3}
+            state={server.state}
+            loadedToolCount={server.loadedToolCount}
+            deferredToolCount={server.deferredToolCount}
+            loadedOnDemandToolCount={server.loadedOnDemandToolCount}
             onToggle={mcpToggle ?? undefined}
           />
-        );
-      })}
+        ))
+      )}
 
-      {/* Fallback: flat tool list if no serverTools grouping available (old CLI) */}
-      {!hasServerTools && data.toolNames.length > 0 && (
+      {/* Fallback: flat tool list if no server grouping available (old CLI) */}
+      {renderedServers.length === 0 && data.toolNames.length > 0 && (
         <FlatToolList toolNames={data.toolNames} />
       )}
 
       {/* No servers configured */}
-      {data.servers.length === 0 && data.toolCount === 0 && !hasErrors && disabledCount === 0 && (
+      {data.servers.length === 0 && counts.totalTools === 0 && !hasErrors && counts.disabledServers === 0 && (
         <div className="px-4 py-3 text-xs text-zinc-500 text-center">
           No MCP servers configured.
         </div>

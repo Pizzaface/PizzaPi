@@ -1981,6 +1981,35 @@ export function App() {
         const disabledServersForMcp = Array.isArray(mcpConfig?.disabledServers)
           ? (mcpConfig.disabledServers as unknown[]).filter((s: unknown): s is string => typeof s === "string")
           : [];
+        const counts = result?.counts && typeof result.counts === "object"
+          ? result.counts as {
+            totalTools: number;
+            loadedTools: number;
+            deferredTools: number;
+            loadedOnDemandTools: number;
+            disabledServers: number;
+          }
+          : undefined;
+        const serverStates = Array.isArray(result?.serverStates)
+          ? result.serverStates as Array<{
+            name: string;
+            transport: string;
+            scope: string;
+            sourcePath?: string;
+            state: "loaded" | "deferred" | "disabled" | "partial";
+            totalToolCount: number;
+            loadedToolCount: number;
+            deferredToolCount: number;
+            loadedOnDemandToolCount: number;
+          }>
+          : undefined;
+        const toolStates = Array.isArray(result?.toolStates)
+          ? result.toolStates as Array<{
+            name: string;
+            serverName: string;
+            state: "loaded" | "deferred" | "loaded_on_demand";
+          }>
+          : undefined;
 
         appendLocalSystemMessage({
           kind: "mcp",
@@ -1992,6 +2021,9 @@ export function App() {
           errors,
           serverTools,
           disabledServers: disabledServersForMcp,
+          counts,
+          serverStates,
+          toolStates,
           loadedAt: typeof result?.loadedAt === "string" ? result.loadedAt : undefined,
         });
 
@@ -2019,6 +2051,35 @@ export function App() {
         const disabledServers = Array.isArray(toggleConfig?.disabledServers)
           ? (toggleConfig.disabledServers as unknown[]).filter((s: unknown): s is string => typeof s === "string")
           : [];
+        const counts = result?.counts && typeof result.counts === "object"
+          ? result.counts as {
+            totalTools: number;
+            loadedTools: number;
+            deferredTools: number;
+            loadedOnDemandTools: number;
+            disabledServers: number;
+          }
+          : undefined;
+        const serverStates = Array.isArray(result?.serverStates)
+          ? result.serverStates as Array<{
+            name: string;
+            transport: string;
+            scope: string;
+            sourcePath?: string;
+            state: "loaded" | "deferred" | "disabled" | "partial";
+            totalToolCount: number;
+            loadedToolCount: number;
+            deferredToolCount: number;
+            loadedOnDemandToolCount: number;
+          }>
+          : undefined;
+        const toolStates = Array.isArray(result?.toolStates)
+          ? result.toolStates as Array<{
+            name: string;
+            serverName: string;
+            state: "loaded" | "deferred" | "loaded_on_demand";
+          }>
+          : undefined;
         const toggledServer = typeof result?.toggledServer === "string" ? result.toggledServer : "";
         const disabled = result?.disabled === true;
 
@@ -2032,6 +2093,9 @@ export function App() {
           errors,
           serverTools,
           disabledServers,
+          counts,
+          serverStates,
+          toolStates,
           loadedAt: typeof result?.loadedAt === "string" ? result.loadedAt : undefined,
         });
 
