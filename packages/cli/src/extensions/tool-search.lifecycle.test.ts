@@ -79,7 +79,14 @@ describe("toolSearchExtension lifecycle sync", () => {
       getMcpBridge: mock(() => ({ status: () => snapshot })),
     }));
 
-    return await import("./tool-search.js");
+    const mod = await import("./tool-search.js");
+
+    // Restore immediately after import so the captured module graph keeps the
+    // mocked dependencies, but unrelated test files in the same worker resolve
+    // the real config/mcp-bridge modules.
+    mock.restore();
+
+    return mod;
   }
 
   test("re-evaluates when MCP tools appear after startup", async () => {
