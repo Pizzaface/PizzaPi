@@ -102,6 +102,7 @@ function makeContext(opts: {
 
         // Triggers
         emitTrigger: () => {},
+        emitTriggerWithAck: async () => ({ ok: true }),
         waitForTriggerResponse: async () => ({ response: "" }),
 
         // Session name sync

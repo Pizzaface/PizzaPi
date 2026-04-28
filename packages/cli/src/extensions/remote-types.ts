@@ -237,6 +237,7 @@ export interface RelayContext {
 
     // Trigger helpers (for child session trigger pattern)
     emitTrigger(trigger: ConversationTrigger): void;
+    emitTriggerWithAck(trigger: ConversationTrigger): Promise<{ ok: boolean; error?: string }>;
     waitForTriggerResponse(triggerId: string, timeoutMs: number, signal?: AbortSignal): Promise<TriggerResponse>;
 
     // Session name sync

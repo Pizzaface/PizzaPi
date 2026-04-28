@@ -20,6 +20,7 @@ import type { ConversationTrigger } from "../triggers/types.js";
 import { isCancelTriggerAction } from "../remote-trigger-response.js";
 import type { TriggerWaitManager } from "../trigger-wait-manager.js";
 import { emitSessionActive } from "./chunked-delivery.js";
+import { emitSessionTriggerWithAck } from "./session-complete-delivery.js";
 
 const RELAY_DEFAULT = "ws://localhost:7492";
 const RELAY_STATUS_KEY = "relay";
@@ -223,13 +224,24 @@ export function createRelayContext(
             });
         },
 
+        emitTriggerWithAck(trigger: ConversationTrigger) {
+            if (!rctx.relay || !rctx.sioSocket?.connected) {
+                return Promise.resolve({ ok: false, error: "Not connected to relay" });
+            }
+            return emitSessionTriggerWithAck({
+                socket: rctx.sioSocket,
+                token: rctx.relay.token,
+                trigger,
+                assumeSuccessOnAckTimeout: !rctx.supportsSessionTriggerAck,
+            });
+        },
+
         waitForTriggerResponse(
             triggerId: string,
             timeoutMs: number,
             signal?: AbortSignal,
         ): Promise<TriggerResponse> {
             return new Promise<TriggerResponse>((resolve) => {
-                const expectedParentSessionId = rctx.parentSessionId;
                 let settled = false;
                 let unregisterWait = () => {};
 
@@ -257,8 +269,8 @@ export function createRelayContext(
                     }
                 };
 
-                const errorHandler = (data: { targetSessionId: string; error: string }) => {
-                    if (expectedParentSessionId && data.targetSessionId === expectedParentSessionId) {
+                const errorHandler = (data: { targetSessionId: string; error: string; triggerId?: string }) => {
+                    if (data.triggerId === triggerId) {
                         finish({
                             response: `Trigger delivery failed: ${data.error}`,
                             cancelled: true,

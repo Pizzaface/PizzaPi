@@ -1,11 +1,20 @@
 import type { Socket } from "socket.io-client";
 import type { RelayClientToServerEvents, RelayServerToClientEvents } from "@pizzapi/protocol";
+import type { ConversationTrigger } from "../triggers/types.js";
 
 const DEFAULT_SESSION_COMPLETE_ACK_TIMEOUT_MS = 3_000;
 
 type RelayTriggerSocket = Pick<Socket<RelayServerToClientEvents, RelayClientToServerEvents>, "emit" | "on" | "off"> & {
     connected?: boolean;
 };
+
+export interface EmitSessionTriggerWithAckOptions {
+    socket: RelayTriggerSocket;
+    token: string;
+    trigger: ConversationTrigger;
+    timeoutMs?: number;
+    assumeSuccessOnAckTimeout?: boolean;
+}
 
 export interface EmitSessionCompleteWithAckOptions {
     socket: RelayTriggerSocket;
@@ -22,7 +31,7 @@ export interface EmitSessionCompleteWithAckOptions {
 
 function buildSessionCompleteTrigger(
     opts: EmitSessionCompleteWithAckOptions,
-): Parameters<RelayClientToServerEvents["session_trigger"]>[0]["trigger"] {
+): ConversationTrigger {
     return {
         type: "session_complete",
         sourceSessionId: opts.sourceSessionId,
@@ -41,18 +50,17 @@ function buildSessionCompleteTrigger(
     };
 }
 
-export async function emitSessionCompleteWithAck(
-    opts: EmitSessionCompleteWithAckOptions,
+export async function emitSessionTriggerWithAck(
+    opts: EmitSessionTriggerWithAckOptions,
 ): Promise<{ ok: boolean; error?: string }> {
     const timeoutMs = opts.timeoutMs ?? DEFAULT_SESSION_COMPLETE_ACK_TIMEOUT_MS;
 
     return await new Promise<{ ok: boolean; error?: string }>((resolve) => {
-        const trigger = buildSessionCompleteTrigger(opts);
         let settled = false;
         let sawDisconnect = false;
         const errorHandler = (data: { targetSessionId: string; error: string; triggerId?: string }) => {
-            if (data?.targetSessionId !== opts.targetSessionId) return;
-            if (data.triggerId === trigger.triggerId) {
+            if (data?.targetSessionId !== opts.trigger.targetSessionId) return;
+            if (data.triggerId === opts.trigger.triggerId) {
                 finish({ ok: false, error: data.error });
                 return;
             }
@@ -73,11 +81,6 @@ export async function emitSessionCompleteWithAck(
         };
 
         const timeout = setTimeout(() => {
-            // Backward compatibility: older relay servers deliver session_trigger
-            // fire-and-forget and never invoke the ack callback. If no explicit
-            // delivery error arrived within the timeout window, treat the emit as
-            // successful — but only if the socket stayed connected throughout the
-            // wait. A disconnect means the relay may never have accepted the trigger.
             if (sawDisconnect || opts.socket.connected === false) {
                 finish({ ok: false, error: "Socket disconnected before relay ack" });
                 return;
@@ -95,7 +98,7 @@ export async function emitSessionCompleteWithAck(
         try {
             opts.socket.emit(
                 "session_trigger" as any,
-                { token: opts.token, trigger },
+                { token: opts.token, trigger: opts.trigger },
                 (result?: { ok: boolean; error?: string }) => {
                     finish(result ?? { ok: true });
                 },
@@ -103,5 +106,17 @@ export async function emitSessionCompleteWithAck(
         } catch (err) {
             finish({ ok: false, error: err instanceof Error ? err.message : String(err) });
         }
+    });
+}
+
+export async function emitSessionCompleteWithAck(
+    opts: EmitSessionCompleteWithAckOptions,
+): Promise<{ ok: boolean; error?: string }> {
+    return await emitSessionTriggerWithAck({
+        socket: opts.socket,
+        token: opts.token,
+        trigger: buildSessionCompleteTrigger(opts),
+        timeoutMs: opts.timeoutMs,
+        assumeSuccessOnAckTimeout: opts.assumeSuccessOnAckTimeout,
     });
 }
