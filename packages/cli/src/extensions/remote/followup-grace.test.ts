@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, describe, expect, mock, test } from "bun:test";
+import { beforeEach, describe, expect, mock, test } from "bun:test";
 
 const mockEmitSessionCompleteWithAck = mock(async (_opts: any) => ({ ok: true }));
 
@@ -17,7 +17,10 @@ mock.module("@pizzapi/tools", () => ({
 
 import { createFollowUpGrace, type FollowUpGraceState } from "./followup-grace.js";
 
-afterAll(() => mock.restore());
+// Restore the global module registry immediately after importing the system under test.
+// followup-grace.js has already captured the mocked dependencies, but later test files
+// should still see the real session-complete-delivery/logger modules.
+mock.restore();
 
 function makeState(): FollowUpGraceState {
     return {
