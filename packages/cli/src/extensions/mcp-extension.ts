@@ -460,6 +460,31 @@ function buildMcpSummary(counts: McpStatusCounts): string {
   return parts.join(", ");
 }
 
+export function reconcileMcpActiveTools(input: {
+  currentActive: Iterable<string>;
+  previousMcpToolNames: Iterable<string>;
+  newMcpToolNames: Iterable<string>;
+  deferredToolNames?: Iterable<string>;
+}): string[] {
+  const currentActive = new Set(input.currentActive);
+  const previousMcpToolNames = new Set(input.previousMcpToolNames);
+  const newMcpToolNames = new Set(input.newMcpToolNames);
+  const deferredToolNames = new Set(input.deferredToolNames ?? []);
+
+  for (const old of previousMcpToolNames) {
+    if (!newMcpToolNames.has(old)) {
+      currentActive.delete(old);
+    }
+  }
+
+  for (const name of newMcpToolNames) {
+    if (deferredToolNames.has(name)) continue;
+    currentActive.add(name);
+  }
+
+  return [...currentActive];
+}
+
 export function decorateMcpSnapshotWithToolSearchState(
   snapshot: McpSnapshot,
   toolSearch?: ToolSearchSnapshot | null,
@@ -697,20 +722,14 @@ export const mcpExtension: ExtensionFactory = async (pi: any) => {
     //
     // Fix: after all registerTool() calls, explicitly set active tools —
     // removing stale MCP tools and ensuring new/re-enabled ones are included.
-    const newMcpToolNames = new Set(res.toolNames);
-    const currentActive = new Set(pi.getActiveTools() as string[]);
-
-    // Remove tools from disabled/removed servers
-    for (const old of previousMcpToolNames) {
-      if (!newMcpToolNames.has(old)) {
-        currentActive.delete(old);
-      }
-    }
-    // Ensure all current MCP tools are active (handles re-enable after disable)
-    for (const name of newMcpToolNames) {
-      currentActive.add(name);
-    }
-    pi.setActiveTools([...currentActive]);
+    const toolSearchSnapshot = getToolSearchBridge()?.status() ?? null;
+    const nextActiveTools = reconcileMcpActiveTools({
+      currentActive: pi.getActiveTools() as string[],
+      previousMcpToolNames,
+      newMcpToolNames: res.toolNames,
+      deferredToolNames: toolSearchSnapshot?.deferredTools.map((tool) => tool.name) ?? [],
+    });
+    pi.setActiveTools(nextActiveTools);
 
     const loadedAt = new Date().toISOString();
 
@@ -734,7 +753,7 @@ export const mcpExtension: ExtensionFactory = async (pi: any) => {
       },
       serverTimings: res.serverTimings,
       totalDurationMs: res.totalDurationMs,
-    }, getToolSearchBridge()?.status() ?? null);
+    }, toolSearchSnapshot);
 
     return lastSnapshot;
   }
@@ -793,6 +812,8 @@ export const mcpExtension: ExtensionFactory = async (pi: any) => {
           provider.relayContext = currentRelayContext;
         }
       }
+      const report = buildStartupReport();
+      if (report) pi.events?.emit?.("mcp:startup_report", report);
       return snapshot;
     },
 
@@ -997,9 +1018,6 @@ export const mcpExtension: ExtensionFactory = async (pi: any) => {
           // breaking web-based MCP OAuth for remote sessions.
           const snapshot = await bridge.reload();
           ctx?.ui?.notify?.(snapshot.lines.join("\n"));
-          // Emit report so web UI can update
-          const report = buildStartupReport();
-          if (report) pi.events?.emit?.("mcp:startup_report", report);
         } catch (err) {
           ctx?.ui?.notify?.(`MCP reload failed: ${err instanceof Error ? err.message : String(err)}`, "error");
         }
@@ -1024,8 +1042,6 @@ export const mcpExtension: ExtensionFactory = async (pi: any) => {
             `✓ MCP server "${serverName}" disabled. ${snapshot.toolCount} tools loaded.\n` +
             `Use /mcp enable ${serverName} to re-enable.`,
           );
-          const report = buildStartupReport();
-          if (report) pi.events?.emit?.("mcp:startup_report", report);
         } catch (err) {
           ctx?.ui?.notify?.(`Config updated but MCP reload failed: ${err instanceof Error ? err.message : String(err)}`, "error");
         }
@@ -1057,8 +1073,6 @@ export const mcpExtension: ExtensionFactory = async (pi: any) => {
           ctx?.ui?.notify?.(
             `✓ MCP server "${serverName}" enabled. ${snapshot.toolCount} tools loaded.`,
           );
-          const report = buildStartupReport();
-          if (report) pi.events?.emit?.("mcp:startup_report", report);
         } catch (err) {
           ctx?.ui?.notify?.(`Config updated but MCP reload failed: ${err instanceof Error ? err.message : String(err)}`, "error");
         }

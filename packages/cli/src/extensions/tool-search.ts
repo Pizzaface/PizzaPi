@@ -213,7 +213,7 @@ export const toolSearchExtension: ExtensionFactory = (pi: any) => {
 
     if (!snapshot?.serverTools) {
       log.info("No MCP tools found, tool search not needed");
-      clearState({ restoreActiveTools: true });
+      clearState();
       return;
     }
 
@@ -267,7 +267,7 @@ export const toolSearchExtension: ExtensionFactory = (pi: any) => {
 
     if (toolsToDefer.length === 0) {
       log.info(`Tool search: no tools to defer (${totalMcpChars} chars, threshold ${threshold})`);
-      clearState({ restoreActiveTools: true });
+      clearState({ restoreActiveTools: mcpTools.length > 0 });
       return;
     }
 

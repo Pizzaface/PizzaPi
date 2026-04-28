@@ -108,6 +108,80 @@ describe("toolSearchExtension lifecycle sync", () => {
     return await import("./tool-search.js");
   }
 
+  test("always-deferral still defers when total chars stay under the threshold", async () => {
+    writeFileSync(
+      join(projectDir, ".pizzapi", "config.json"),
+      JSON.stringify({
+        toolSearch: {
+          enabled: true,
+          tokenThreshold: 999999,
+          maxResults: 5,
+          keepLoadedTools: true,
+        },
+        mcpServers: {
+          github: { deferLoading: true },
+        },
+      }),
+      "utf-8",
+    );
+
+    snapshot = { serverTools: { github: ["mcp_github_create_issue"] } };
+    const { toolSearchExtension } = await loadExtension();
+    const { pi, registeredCommands, activeTools } = createHarness();
+
+    toolSearchExtension(pi as any);
+
+    const sessionStart = pi.on.mock.calls.find(([event]) => event === "session_start")?.[1] as EventHandler | undefined;
+    expect(sessionStart).toBeDefined();
+    await sessionStart!(undefined, undefined);
+
+    const statusCommand = registeredCommands.get("tool-search");
+    const notes: string[] = [];
+    statusCommand.handler("status", { ui: { notify: (msg: string) => notes.push(msg) } });
+
+    expect(notes.at(-1)).toContain("Tool search: active");
+    expect(notes.at(-1)).toContain("Deferred tools: 1");
+    expect(activeTools.has("mcp_github_create_issue")).toBe(false);
+  });
+
+  test("always-deferral also works for preferred mcp.servers config under the threshold", async () => {
+    writeFileSync(
+      join(projectDir, ".pizzapi", "config.json"),
+      JSON.stringify({
+        toolSearch: {
+          enabled: true,
+          tokenThreshold: 999999,
+          maxResults: 5,
+          keepLoadedTools: true,
+        },
+        mcp: {
+          servers: [
+            { name: "github", transport: "stdio", command: "noop", deferLoading: true },
+          ],
+        },
+      }),
+      "utf-8",
+    );
+
+    snapshot = { serverTools: { github: ["mcp_github_create_issue"] } };
+    const { toolSearchExtension } = await loadExtension();
+    const { pi, registeredCommands, activeTools } = createHarness();
+
+    toolSearchExtension(pi as any);
+
+    const sessionStart = pi.on.mock.calls.find(([event]) => event === "session_start")?.[1] as EventHandler | undefined;
+    expect(sessionStart).toBeDefined();
+    await sessionStart!(undefined, undefined);
+
+    const statusCommand = registeredCommands.get("tool-search");
+    const notes: string[] = [];
+    statusCommand.handler("status", { ui: { notify: (msg: string) => notes.push(msg) } });
+
+    expect(notes.at(-1)).toContain("Tool search: active");
+    expect(notes.at(-1)).toContain("Deferred tools: 1");
+    expect(activeTools.has("mcp_github_create_issue")).toBe(false);
+  });
+
   test("re-evaluates when MCP tools appear after startup", async () => {
     snapshot = { serverTools: {} };
     const { toolSearchExtension } = await loadExtension();
@@ -193,7 +267,7 @@ describe("toolSearchExtension lifecycle sync", () => {
     expect(clearedNotes.at(-1)).toContain("Tool search: inactive");
     expect(clearedNotes.at(-1)).toContain("Deferred tools: 0");
     expect(clearedNotes.at(-1)).toContain("Loaded on-demand: 0");
-    expect(activeTools.has("mcp_github_create_issue")).toBe(true);
+    expect(activeTools.has("mcp_github_create_issue")).toBe(false);
   });
 
   test("session shutdown clears loaded-on-demand state before the next session", async () => {

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { buildMcpStatusModel, decorateMcpSnapshotWithToolSearchState } from "./mcp-extension.js";
+import { buildMcpStatusModel, decorateMcpSnapshotWithToolSearchState, reconcileMcpActiveTools } from "./mcp-extension.js";
 
 describe("buildMcpStatusModel", () => {
   test("classifies loaded, deferred, partial, and disabled MCP state", () => {
@@ -108,6 +108,19 @@ describe("buildMcpStatusModel", () => {
       expect.objectContaining({ name: "mcp_github_create_issue", state: "loaded_on_demand" }),
       expect.objectContaining({ name: "mcp_github_create_pr", state: "deferred" }),
     ]);
+  });
+
+  test("reconcileMcpActiveTools does not re-activate tools that are still deferred after reload", () => {
+    const result = reconcileMcpActiveTools({
+      currentActive: ["search_tools"],
+      previousMcpToolNames: ["mcp_github_create_issue"],
+      newMcpToolNames: ["mcp_github_create_issue", "mcp_github_create_pr"],
+      deferredToolNames: ["mcp_github_create_pr"],
+    });
+
+    expect(result).toContain("search_tools");
+    expect(result).toContain("mcp_github_create_issue");
+    expect(result).not.toContain("mcp_github_create_pr");
   });
 
   test("decorates cached snapshots with current tool-search state", () => {
