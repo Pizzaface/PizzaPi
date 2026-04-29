@@ -16,6 +16,7 @@ export {
     getSharedSession,
     getSharedSessionSummary,
     updateSessionState,
+    patchSessionSnapshotState,
     getSessionState,
     touchSessionActivity,
     broadcastSessionEventToViewers,

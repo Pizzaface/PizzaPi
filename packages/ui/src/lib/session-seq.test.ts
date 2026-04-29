@@ -4,6 +4,7 @@ import {
   canFinalizeChunkHydration,
   mergeConnectedSeq,
   registerChunkIndex,
+  shouldAllowOutOfOrderSnapshotDuringHydration,
   shouldDeferEventForHydration,
 } from "./session-seq";
 
@@ -111,6 +112,20 @@ describe("chunk index tracking", () => {
     // Arrival order [2, 0, 1] must NOT be reflected in the final transcript
     expect(assembled[0]).toBe("msg-c0-a");
     expect(assembled[assembled.length - 1]).toBe("msg-c2-b");
+  });
+});
+
+describe("shouldAllowOutOfOrderSnapshotDuringHydration", () => {
+  test("allows an older snapshot seq after pre-snapshot metadata advanced the cursor", () => {
+    expect(shouldAllowOutOfOrderSnapshotDuringHydration("session_active", true, 11, 10)).toBe(true);
+    expect(shouldAllowOutOfOrderSnapshotDuringHydration("agent_end", true, 11, 10)).toBe(true);
+  });
+
+  test("rejects non-snapshot or non-hydration cases", () => {
+    expect(shouldAllowOutOfOrderSnapshotDuringHydration("heartbeat", true, 11, 10)).toBe(false);
+    expect(shouldAllowOutOfOrderSnapshotDuringHydration("session_active", false, 11, 10)).toBe(false);
+    expect(shouldAllowOutOfOrderSnapshotDuringHydration("session_active", true, null, 10)).toBe(false);
+    expect(shouldAllowOutOfOrderSnapshotDuringHydration("session_active", true, 10, 11)).toBe(false);
   });
 });
 

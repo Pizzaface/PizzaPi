@@ -337,7 +337,7 @@ export async function updateRelaySessionRunner(
  */
 export async function updateRelaySessionName(
     sessionId: string,
-    sessionName: string,
+    sessionName: string | null,
 ): Promise<void> {
     await getKysely()
         .updateTable("relay_session")
