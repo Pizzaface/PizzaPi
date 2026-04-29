@@ -14,6 +14,7 @@ import {
 import { setMcpBridge } from "./mcp-bridge.js";
 import type { RelayContext } from "./mcp-oauth.js";
 import { waitForRelayRegistration } from "./remote.js";
+import { getToolSearchBridge, type ToolSearchSnapshot } from "./tool-search-bridge.js";
 import { createLogger } from "@pizzapi/tools";
 
 const log = createLogger("mcp");
@@ -51,6 +52,41 @@ type McpConfigInspection = {
   disabledServers: string[];
 };
 
+export type McpToolRuntimeState = "loaded" | "deferred" | "loaded_on_demand";
+export type McpServerRuntimeState = "loaded" | "deferred" | "disabled" | "partial";
+
+export type McpToolStatus = {
+  name: string;
+  serverName: string;
+  state: McpToolRuntimeState;
+};
+
+export type McpServerStatus = {
+  name: string;
+  transport: string;
+  scope: string;
+  sourcePath: string;
+  state: McpServerRuntimeState;
+  totalToolCount: number;
+  loadedToolCount: number;
+  deferredToolCount: number;
+  loadedOnDemandToolCount: number;
+};
+
+export type McpStatusCounts = {
+  totalTools: number;
+  loadedTools: number;
+  deferredTools: number;
+  loadedOnDemandTools: number;
+  disabledServers: number;
+};
+
+export type McpStatusModel = {
+  serverStates: McpServerStatus[];
+  toolStates: McpToolStatus[];
+  counts: McpStatusCounts;
+};
+
 type McpSnapshot = {
   toolCount: number;
   toolNames: string[];
@@ -61,11 +97,144 @@ type McpSnapshot = {
   config: McpConfigInspection;
   summary: string;
   lines: string[];
+  serverStates: McpServerStatus[];
+  toolStates: McpToolStatus[];
+  counts: McpStatusCounts;
   /** Per-server init timing breakdown (available after first load). */
   serverTimings: McpServerInitResult[];
   /** Total wall-clock MCP initialization time (ms). */
   totalDurationMs: number;
 };
+
+export function buildMcpStatusModel(input: {
+  effectiveServers: EffectiveMcpServer[];
+  disabledServers: string[];
+  serverTools: Record<string, string[]>;
+  toolSearch?: ToolSearchSnapshot | null;
+}): McpStatusModel {
+  const disabledSet = new Set(input.disabledServers);
+  const deferredSet = new Set((input.toolSearch?.deferredTools ?? []).map((tool) => tool.name));
+  const loadedOnDemandSet = new Set((input.toolSearch?.loadedOnDemandTools ?? []).map((tool) => tool.name));
+
+  const toolStates: McpToolStatus[] = [];
+  const serverStates: McpServerStatus[] = [];
+  let loadedTools = 0;
+  let deferredTools = 0;
+  let loadedOnDemandTools = 0;
+
+  const seenServers = new Set<string>();
+  for (const server of input.effectiveServers) {
+    seenServers.add(server.name);
+    if (disabledSet.has(server.name)) {
+      serverStates.push({
+        name: server.name,
+        transport: server.transport,
+        scope: server.scope,
+        sourcePath: server.sourcePath,
+        state: "disabled",
+        totalToolCount: 0,
+        loadedToolCount: 0,
+        deferredToolCount: 0,
+        loadedOnDemandToolCount: 0,
+      });
+      continue;
+    }
+
+    const tools = input.serverTools[server.name] ?? [];
+    let serverLoaded = 0;
+    let serverDeferred = 0;
+    let serverLoadedOnDemand = 0;
+
+    for (const toolName of tools) {
+      let state: McpToolRuntimeState = "loaded";
+      if (loadedOnDemandSet.has(toolName)) {
+        state = "loaded_on_demand";
+        serverLoadedOnDemand++;
+        loadedOnDemandTools++;
+      } else if (deferredSet.has(toolName)) {
+        state = "deferred";
+        serverDeferred++;
+        deferredTools++;
+      } else {
+        serverLoaded++;
+        loadedTools++;
+      }
+      toolStates.push({ name: toolName, serverName: server.name, state });
+    }
+
+    const activeLoaded = serverLoaded + serverLoadedOnDemand;
+    const serverState: McpServerRuntimeState = tools.length === 0
+      ? "loaded"
+      : serverDeferred === tools.length
+        ? "deferred"
+        : activeLoaded === tools.length
+          ? "loaded"
+          : "partial";
+
+    serverStates.push({
+      name: server.name,
+      transport: server.transport,
+      scope: server.scope,
+      sourcePath: server.sourcePath,
+      state: serverState,
+      totalToolCount: tools.length,
+      loadedToolCount: serverLoaded,
+      deferredToolCount: serverDeferred,
+      loadedOnDemandToolCount: serverLoadedOnDemand,
+    });
+  }
+
+  for (const [serverName, tools] of Object.entries(input.serverTools)) {
+    if (seenServers.has(serverName) || disabledSet.has(serverName)) continue;
+    let serverLoaded = 0;
+    let serverDeferred = 0;
+    let serverLoadedOnDemand = 0;
+    for (const toolName of tools) {
+      let state: McpToolRuntimeState = "loaded";
+      if (loadedOnDemandSet.has(toolName)) {
+        state = "loaded_on_demand";
+        serverLoadedOnDemand++;
+        loadedOnDemandTools++;
+      } else if (deferredSet.has(toolName)) {
+        state = "deferred";
+        serverDeferred++;
+        deferredTools++;
+      } else {
+        serverLoaded++;
+        loadedTools++;
+      }
+      toolStates.push({ name: toolName, serverName, state });
+    }
+    const activeLoaded = serverLoaded + serverLoadedOnDemand;
+    serverStates.push({
+      name: serverName,
+      transport: "unknown",
+      scope: "unknown",
+      sourcePath: "",
+      state: serverDeferred === tools.length && tools.length > 0
+        ? "deferred"
+        : activeLoaded === tools.length
+          ? "loaded"
+          : "partial",
+      totalToolCount: tools.length,
+      loadedToolCount: serverLoaded,
+      deferredToolCount: serverDeferred,
+      loadedOnDemandToolCount: serverLoadedOnDemand,
+    });
+  }
+
+  return {
+    serverStates,
+    toolStates,
+    counts: {
+      totalTools: toolStates.length,
+      loadedTools,
+      deferredTools,
+      loadedOnDemandTools,
+      disabledServers: disabledSet.size,
+    },
+  };
+}
 
 type McpBridge = {
   status: () => McpSnapshot;
@@ -266,16 +435,100 @@ function formatFileState(file: McpConfigFileState): string {
   return `${file.scope}: ${file.path} (ok)`;
 }
 
+function formatToolState(state: McpToolRuntimeState): string {
+  switch (state) {
+    case "loaded_on_demand":
+      return "LOADED_ON_DEMAND";
+    case "deferred":
+      return "DEFERRED";
+    default:
+      return "LOADED";
+  }
+}
+
+function buildMcpSummary(counts: McpStatusCounts): string {
+  const parts = [`MCP tools: ${counts.loadedTools} loaded`];
+  if (counts.loadedOnDemandTools > 0) {
+    parts.push(`${counts.loadedOnDemandTools} loaded on-demand`);
+  }
+  if (counts.deferredTools > 0) {
+    parts.push(`${counts.deferredTools} deferred`);
+  }
+  if (counts.disabledServers > 0) {
+    parts.push(`${counts.disabledServers} disabled server${counts.disabledServers !== 1 ? "s" : ""}`);
+  }
+  return parts.join(", ");
+}
+
+export function reconcileMcpActiveTools(input: {
+  currentActive: Iterable<string>;
+  previousMcpToolNames: Iterable<string>;
+  newMcpToolNames: Iterable<string>;
+  deferredToolNames?: Iterable<string>;
+}): string[] {
+  const currentActive = new Set(input.currentActive);
+  const previousMcpToolNames = new Set(input.previousMcpToolNames);
+  const newMcpToolNames = new Set(input.newMcpToolNames);
+  const deferredToolNames = new Set(input.deferredToolNames ?? []);
+
+  for (const old of previousMcpToolNames) {
+    if (!newMcpToolNames.has(old)) {
+      currentActive.delete(old);
+    }
+  }
+
+  for (const name of newMcpToolNames) {
+    if (deferredToolNames.has(name)) continue;
+    currentActive.add(name);
+  }
+
+  return [...currentActive];
+}
+
+export function decorateMcpSnapshotWithToolSearchState(
+  snapshot: McpSnapshot,
+  toolSearch?: ToolSearchSnapshot | null,
+): McpSnapshot {
+  const statusModel = buildMcpStatusModel({
+    effectiveServers: snapshot.config.effectiveServers,
+    disabledServers: snapshot.config.disabledServers,
+    serverTools: snapshot.serverTools,
+    toolSearch,
+  });
+  const next: McpSnapshot = {
+    ...snapshot,
+    summary: buildMcpSummary(statusModel.counts),
+    serverStates: statusModel.serverStates,
+    toolStates: statusModel.toolStates,
+    counts: statusModel.counts,
+    lines: [],
+  };
+  next.lines = buildStatusLines(next);
+  return next;
+}
+
 function buildStatusLines(snapshot: McpSnapshot): string[] {
   const lines: string[] = [];
-  lines.push(`MCP tools loaded: ${snapshot.toolCount}`);
+  lines.push(buildMcpSummary(snapshot.counts));
   lines.push(`Configured MCP server entries: ${snapshot.config.effectiveServers.length}`);
+  lines.push(`Known MCP tools: ${snapshot.counts.totalTools}`);
 
-  if (snapshot.toolNames.length > 0) {
+  if (snapshot.serverStates.length > 0) {
     lines.push("");
-    lines.push("Tools:");
-    for (const name of snapshot.toolNames.slice(0, 50)) lines.push(`- ${name}`);
-    if (snapshot.toolNames.length > 50) lines.push(`…and ${snapshot.toolNames.length - 50} more`);
+    lines.push("Server/tool state:");
+    for (const server of snapshot.serverStates) {
+      const counts = [];
+      if (server.totalToolCount > 0) {
+        if (server.loadedToolCount > 0) counts.push(`${server.loadedToolCount} loaded`);
+        if (server.loadedOnDemandToolCount > 0) counts.push(`${server.loadedOnDemandToolCount} on-demand`);
+        if (server.deferredToolCount > 0) counts.push(`${server.deferredToolCount} deferred`);
+      }
+      const detail = counts.length > 0 ? ` — ${counts.join(", ")}` : "";
+      lines.push(`- ${server.name} [${server.transport}] [${server.state.toUpperCase()}] from ${server.scope}${detail}`);
+      for (const tool of snapshot.toolStates.filter((entry) => entry.serverName === server.name)) {
+        lines.push(`  - ${tool.name} [${formatToolState(tool.state)}]`);
+      }
+    }
   }
 
   if (snapshot.errors.length > 0) {
@@ -294,15 +547,7 @@ function buildStatusLines(snapshot: McpSnapshot): string[] {
   lines.push(`- mcp.servers: ${snapshot.config.effectivePreferredSource}`);
   lines.push(`- mcpServers: ${snapshot.config.effectiveCompatibilitySource}`);
 
-  if (snapshot.config.effectiveServers.length > 0) {
-    lines.push("");
-    lines.push("Effective server entries:");
-    const disabledSet = new Set(snapshot.config.disabledServers);
-    for (const server of snapshot.config.effectiveServers) {
-      const disabledTag = disabledSet.has(server.name) ? " [DISABLED]" : "";
-      lines.push(`- ${server.name} [${server.transport}]${disabledTag} from ${server.scope} (${server.sourcePath} :: ${server.keyPath})`);
-    }
-  } else {
+  if (snapshot.config.effectiveServers.length === 0) {
     lines.push("");
     lines.push("No MCP server entries are currently configured.");
   }
@@ -385,8 +630,29 @@ export const mcpExtension: ExtensionFactory = async (pi: any) => {
     errors: [],
     loadedAt: new Date(0).toISOString(),
     config: inspectMcpConfig(process.cwd()),
-    summary: "MCP tools loaded: 0",
-    lines: ["MCP tools loaded: 0"],
+    summary: buildMcpSummary({
+      totalTools: 0,
+      loadedTools: 0,
+      deferredTools: 0,
+      loadedOnDemandTools: 0,
+      disabledServers: 0,
+    }),
+    lines: [buildMcpSummary({
+      totalTools: 0,
+      loadedTools: 0,
+      deferredTools: 0,
+      loadedOnDemandTools: 0,
+      disabledServers: 0,
+    })],
+    serverStates: [],
+    toolStates: [],
+    counts: {
+      totalTools: 0,
+      loadedTools: 0,
+      deferredTools: 0,
+      loadedOnDemandTools: 0,
+      disabledServers: 0,
+    },
     serverTimings: [],
     totalDurationMs: 0,
   };
@@ -456,38 +722,38 @@ export const mcpExtension: ExtensionFactory = async (pi: any) => {
     //
     // Fix: after all registerTool() calls, explicitly set active tools —
     // removing stale MCP tools and ensuring new/re-enabled ones are included.
-    const newMcpToolNames = new Set(res.toolNames);
-    const currentActive = new Set(pi.getActiveTools() as string[]);
-
-    // Remove tools from disabled/removed servers
-    for (const old of previousMcpToolNames) {
-      if (!newMcpToolNames.has(old)) {
-        currentActive.delete(old);
-      }
-    }
-    // Ensure all current MCP tools are active (handles re-enable after disable)
-    for (const name of newMcpToolNames) {
-      currentActive.add(name);
-    }
-    pi.setActiveTools([...currentActive]);
+    const toolSearchSnapshot = getToolSearchBridge()?.status() ?? null;
+    const nextActiveTools = reconcileMcpActiveTools({
+      currentActive: pi.getActiveTools() as string[],
+      previousMcpToolNames,
+      newMcpToolNames: res.toolNames,
+      deferredToolNames: toolSearchSnapshot?.deferredTools.map((tool) => tool.name) ?? [],
+    });
+    pi.setActiveTools(nextActiveTools);
 
     const loadedAt = new Date().toISOString();
 
-    const summary = `MCP tools loaded: ${res.toolCount}`;
-
-    lastSnapshot = {
+    lastSnapshot = decorateMcpSnapshotWithToolSearchState({
       toolCount: res.toolCount,
       toolNames: res.toolNames,
       serverTools: res.serverTools,
       errors: res.errors,
       loadedAt,
       config: inspection,
-      summary,
+      summary: "",
       lines: [],
+      serverStates: [],
+      toolStates: [],
+      counts: {
+        totalTools: 0,
+        loadedTools: 0,
+        deferredTools: 0,
+        loadedOnDemandTools: 0,
+        disabledServers: inspection.disabledServers.length,
+      },
       serverTimings: res.serverTimings,
       totalDurationMs: res.totalDurationMs,
-    };
-    lastSnapshot.lines = buildStatusLines(lastSnapshot);
+    }, toolSearchSnapshot);
 
     return lastSnapshot;
   }
@@ -525,7 +791,7 @@ export const mcpExtension: ExtensionFactory = async (pi: any) => {
   let currentRelayContext: RelayContext | null = null;
 
   const bridge: McpBridge = {
-    status: () => lastSnapshot,
+    status: () => decorateMcpSnapshotWithToolSearchState(lastSnapshot, getToolSearchBridge()?.status() ?? null),
     async reload() {
       // Cancel any in-flight eager/background load so it can't finish after
       // this reload, tear down our freshly loaded clients, and restore stale
@@ -546,6 +812,8 @@ export const mcpExtension: ExtensionFactory = async (pi: any) => {
           provider.relayContext = currentRelayContext;
         }
       }
+      const report = buildStartupReport();
+      if (report) pi.events?.emit?.("mcp:startup_report", report);
       return snapshot;
     },
 
@@ -566,6 +834,27 @@ export const mcpExtension: ExtensionFactory = async (pi: any) => {
     },
   };
   setMcpBridge(bridge);
+
+  pi.events?.on?.("mcp:registry_updated", (payload: any) => {
+    const server = typeof payload?.server === "string" ? payload.server : null;
+    const toolNames = Array.isArray(payload?.toolNames)
+      ? payload.toolNames.filter((name: unknown): name is string => typeof name === "string")
+      : null;
+    if (!server || !toolNames) return;
+
+    const mergedServerTools = { ...lastSnapshot.serverTools, [server]: toolNames };
+    const mergedToolNames = [...new Set(
+      Object.values(mergedServerTools)
+        .flat()
+        .filter((name): name is string => typeof name === "string"),
+    )];
+    lastSnapshot = decorateMcpSnapshotWithToolSearchState({
+      ...lastSnapshot,
+      toolCount: mergedToolNames.length,
+      toolNames: mergedToolNames,
+      serverTools: mergedServerTools,
+    }, getToolSearchBridge()?.status() ?? null);
+  });
 
   // Expose the callback-wait function so OAuth providers can use it
   // (relay context's waitForCallback delegates here).
@@ -729,9 +1018,6 @@ export const mcpExtension: ExtensionFactory = async (pi: any) => {
           // breaking web-based MCP OAuth for remote sessions.
           const snapshot = await bridge.reload();
           ctx?.ui?.notify?.(snapshot.lines.join("\n"));
-          // Emit report so web UI can update
-          const report = buildStartupReport();
-          if (report) pi.events?.emit?.("mcp:startup_report", report);
         } catch (err) {
           ctx?.ui?.notify?.(`MCP reload failed: ${err instanceof Error ? err.message : String(err)}`, "error");
         }
@@ -756,8 +1042,6 @@ export const mcpExtension: ExtensionFactory = async (pi: any) => {
             `✓ MCP server "${serverName}" disabled. ${snapshot.toolCount} tools loaded.\n` +
             `Use /mcp enable ${serverName} to re-enable.`,
           );
-          const report = buildStartupReport();
-          if (report) pi.events?.emit?.("mcp:startup_report", report);
         } catch (err) {
           ctx?.ui?.notify?.(`Config updated but MCP reload failed: ${err instanceof Error ? err.message : String(err)}`, "error");
         }
@@ -789,15 +1073,13 @@ export const mcpExtension: ExtensionFactory = async (pi: any) => {
           ctx?.ui?.notify?.(
             `✓ MCP server "${serverName}" enabled. ${snapshot.toolCount} tools loaded.`,
           );
-          const report = buildStartupReport();
-          if (report) pi.events?.emit?.("mcp:startup_report", report);
         } catch (err) {
           ctx?.ui?.notify?.(`Config updated but MCP reload failed: ${err instanceof Error ? err.message : String(err)}`, "error");
         }
         return;
       }
 
-      const snapshot = lastSnapshot;
+      const snapshot = bridge.status();
       ctx?.ui?.notify?.(snapshot.lines.join("\n"));
     },
   });

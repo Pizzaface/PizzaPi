@@ -65,21 +65,48 @@ mock.module("../session-message-bus.js", () => ({
         receive: mock(() => {}),
     },
 }));
-mock.module("../remote-provider-usage.js", () => ({ refreshAllUsage: mock(async () => {}) }));
-mock.module("../remote-heartbeat.js", () => ({ startHeartbeat: mock(() => {}), stopHeartbeat: mock(() => {}) }));
-mock.module("../remote-meta-events.js", () => ({
-    emitAuthSourceChanged: mock(() => {}),
-    emitThinkingLevelChanged: mock(() => {}),
-    emitMcpStartupReport: mock(() => {}),
+mock.module("../remote-provider-usage.js", () => ({
+    getOAuthToken: mock(() => null),
+    refreshAllUsage: mock(async () => {}),
+    buildProviderUsage: mock(() => ({})),
 }));
-mock.module("../remote-auth-source.js", () => ({ getAuthSource: mock(() => null) }));
+mock.module("../remote-heartbeat.js", () => ({
+    startHeartbeat: mock(() => {}),
+    stopHeartbeat: mock(() => {}),
+    buildHeartbeat: mock(() => ({ type: "heartbeat" })),
+    buildTokenUsage: mock(() => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: null })),
+}));
+mock.module("../remote-meta-events.js", () => ({
+    emitTodoUpdated: mock(() => {}),
+    emitQuestionPending: mock(() => {}),
+    emitQuestionCleared: mock(() => {}),
+    emitPlanPending: mock(() => {}),
+    emitPlanCleared: mock(() => {}),
+    emitPlanModeToggled: mock(() => {}),
+    emitCompactStarted: mock(() => {}),
+    emitCompactEnded: mock(() => {}),
+    emitRetryStateChanged: mock(() => {}),
+    emitPluginTrustRequired: mock(() => {}),
+    emitPluginTrustResolved: mock(() => {}),
+    emitMcpStartupReport: mock(() => {}),
+    emitTokenUsageUpdated: mock(() => {}),
+    emitThinkingLevelChanged: mock(() => {}),
+    emitAuthSourceChanged: mock(() => {}),
+    emitModelChanged: mock(() => {}),
+}));
+mock.module("../remote-auth-source.js", () => ({
+    getAuthSource: mock(() => null),
+    authSourceLabel: mock(() => ""),
+}));
 mock.module("../remote-ask-user.js", () => ({
     cancelPendingAskUserQuestion: mock(() => {}),
     consumePendingAskUserQuestionFromWeb: mock(() => false),
+    registerAskUserTool: mock(() => {}),
 }));
 mock.module("../remote-plan-mode.js", () => ({
     cancelPendingPlanMode: mock(() => {}),
     consumePendingPlanModeFromWeb: mock(() => false),
+    registerPlanModeTool: mock(() => {}),
 }));
 mock.module("../remote-input.js", () => ({
     normalizeRemoteInputAttachments: mock(() => []),
@@ -89,6 +116,7 @@ mock.module("../remote-exec-handler.js", () => ({ handleExecFromWeb: mock(async 
 mock.module("./registration-gate.js", () => ({
     resetRelayRegistrationGate: mock(() => {}),
     signalRelayRegistered: mock(() => {}),
+    waitForRelayRegistrationGated: mock(async () => {}),
 }));
 mock.module("../remote-registered-parent-state.js", () => ({
     decideRegisteredParentState: mock(() => ({ kind: "no_change" })),
@@ -101,15 +129,14 @@ const {
     _resetWorkerStartupGateForTesting,
 } = await import("../worker-startup-gate.js");
 
+// Restore the global module registry immediately after importing the system under test.
+// connection.js has already captured the mocked dependencies, but later test files
+// should still resolve the real config/heartbeat/etc modules.
+mock.restore();
+
 function sleep(ms: number) {
     return new Promise((resolve) => setTimeout(resolve, ms));
 }
-
-// Restore top-level module mocks after this file so they do not leak into
-// later CLI test files that import the real config/mcp/heartbeat modules.
-afterAll(() => {
-    mock.restore();
-});
 
 describe("remote connection startup gate", () => {
     beforeEach(() => {

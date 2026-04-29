@@ -34,6 +34,16 @@ function piAiPath(subpath: string): string {
     return resolve(pkgRoot, subpath);
 }
 
+/**
+ * Resolve a deep path inside @mariozechner/pi-agent-core.
+ */
+function piAgentCorePath(subpath: string): string {
+    const pkgMainUrl = import.meta.resolve("@mariozechner/pi-agent-core");
+    const pkgMain = fileURLToPath(pkgMainUrl);
+    const pkgRoot = resolve(dirname(pkgMain), "..");
+    return resolve(pkgRoot, subpath);
+}
+
 // ===========================================================================
 // pi-coding-agent patches
 // ===========================================================================
@@ -272,6 +282,143 @@ describe("pi-coding-agent API surface compatibility", () => {
     test("buildSessionContext is exported", async () => {
         const mod = await import("@mariozechner/pi-coding-agent");
         expect(typeof mod.buildSessionContext).toBe("function");
+    });
+});
+
+describe("pi-agent-core dynamic tool refresh", () => {
+    test("tools loaded during a tool call are visible to the very next assistant response", async () => {
+        const { Agent } = await import("@mariozechner/pi-agent-core");
+
+        const usage = {
+            input: 0,
+            output: 0,
+            cacheRead: 0,
+            cacheWrite: 0,
+            totalTokens: 0,
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+        };
+        const model = {
+            id: "test-model",
+            name: "Test Model",
+            api: "test-api",
+            provider: "test-provider",
+            baseUrl: "http://localhost",
+            reasoning: false,
+            input: ["text"],
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+            contextWindow: 128000,
+            maxTokens: 4096,
+        };
+
+        const seenToolSets: string[][] = [];
+        const responses = [
+            {
+                role: "assistant",
+                content: [{ type: "toolCall", id: "tc-search", name: "search_tools", arguments: { query: "load dynamic tool" } }],
+                api: model.api,
+                provider: model.provider,
+                model: model.id,
+                usage,
+                stopReason: "stop",
+                timestamp: Date.now(),
+            },
+            {
+                role: "assistant",
+                content: [{ type: "toolCall", id: "tc-dynamic", name: "dynamic_tool", arguments: {} }],
+                api: model.api,
+                provider: model.provider,
+                model: model.id,
+                usage,
+                stopReason: "stop",
+                timestamp: Date.now(),
+            },
+            {
+                role: "assistant",
+                content: [{ type: "text", text: "done" }],
+                api: model.api,
+                provider: model.provider,
+                model: model.id,
+                usage,
+                stopReason: "stop",
+                timestamp: Date.now(),
+            },
+        ];
+
+        const streamFn = async (_model: unknown, context: { tools?: Array<{ name: string }> }) => {
+            seenToolSets.push((context.tools ?? []).map((tool) => tool.name));
+            const message = responses.shift();
+            if (!message) throw new Error("No more responses queued");
+            return {
+                async *[Symbol.asyncIterator]() {
+                    yield { type: "done" } as const;
+                },
+                async result() {
+                    return message;
+                },
+            };
+        };
+
+        let agent: InstanceType<typeof Agent>;
+        const dynamicTool = {
+            name: "dynamic_tool",
+            label: "Dynamic Tool",
+            description: "Loaded on demand",
+            parameters: { type: "object", properties: {} },
+            async execute() {
+                return { content: [{ type: "text" as const, text: "dynamic ok" }], details: {} };
+            },
+        };
+        const searchTool = {
+            name: "search_tools",
+            label: "Search Tools",
+            description: "Loads the deferred tool",
+            parameters: {
+                type: "object",
+                properties: { query: { type: "string" } },
+                required: ["query"],
+            },
+            async execute() {
+                agent.state.tools = [searchTool, dynamicTool];
+                return { content: [{ type: "text" as const, text: "loaded dynamic_tool" }], details: {} };
+            },
+        };
+
+        agent = new Agent({
+            initialState: {
+                model: model as any,
+                systemPrompt: "test",
+                tools: [searchTool as any],
+            },
+            streamFn: streamFn as any,
+            toolExecution: "sequential",
+        });
+
+        await agent.prompt("go");
+
+        expect(seenToolSets).toHaveLength(3);
+        expect(seenToolSets[0]).toEqual(["search_tools"]);
+        expect(seenToolSets[1]).toContain("dynamic_tool");
+
+        const dynamicToolResult = agent.state.messages.find(
+            (message: any) => message.role === "toolResult" && message.toolName === "dynamic_tool",
+        ) as any;
+        expect(dynamicToolResult).toBeDefined();
+        expect(dynamicToolResult.isError).toBe(false);
+        expect(dynamicToolResult.content).toEqual([{ type: "text", text: "dynamic ok" }]);
+    });
+});
+
+describe("pi-agent-core patch application", () => {
+    test("agent.js + agent-loop.js include dynamic tool refresh patch markers", async () => {
+        const agentSource = await Bun.file(
+            piAgentCorePath("dist/agent.js"),
+        ).text();
+        const loopSource = await Bun.file(
+            piAgentCorePath("dist/agent-loop.js"),
+        ).text();
+
+        expect(agentSource).toContain("PATCH(pizzapi): allow the agent loop to refresh dynamic tool/prompt state");
+        expect(loopSource).toContain("PATCH(pizzapi): refresh dynamic tool/prompt state before each assistant response");
     });
 });
 

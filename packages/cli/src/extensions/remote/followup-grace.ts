@@ -46,7 +46,17 @@ export interface FollowUpGraceState {
  * @param rctx  Relay context (for relay / sioSocket / isChildSession access).
  * @param state Mutable grace-period state.
  */
-export function createFollowUpGrace(rctx: RelayContext, state: FollowUpGraceState) {
+export function createFollowUpGrace(
+    rctx: RelayContext,
+    state: FollowUpGraceState,
+    deps?: {
+        emitSessionCompleteWithAck?: typeof emitSessionCompleteWithAck;
+        logger?: Pick<typeof log, "info">;
+    },
+) {
+    const emitSessionComplete = deps?.emitSessionCompleteWithAck ?? emitSessionCompleteWithAck;
+    const logger = deps?.logger ?? log;
+
     function clearFollowUpGrace(): void {
         if (state.followUpGraceTimer !== null) {
             clearTimeout(state.followUpGraceTimer);
@@ -64,7 +74,7 @@ export function createFollowUpGrace(rctx: RelayContext, state: FollowUpGraceStat
         if (state.followUpGraceShutdown) {
             const shutdown = state.followUpGraceShutdown;
             clearFollowUpGrace();
-            log.info("parent delinked while follow-up grace active — shutting down immediately");
+            logger.info("parent delinked while follow-up grace active — shutting down immediately");
             shutdown();
         }
     }
@@ -76,11 +86,11 @@ export function createFollowUpGrace(rctx: RelayContext, state: FollowUpGraceStat
     function startFollowUpGrace(ctx: { shutdown: () => void }): void {
         clearFollowUpGrace();
         state.followUpGraceShutdown = ctx.shutdown;
-        log.info(`pizzapi: waiting ${FOLLOWUP_GRACE_MS / 1_000}s for parent follow-up before shutting down`);
+        logger.info(`pizzapi: waiting ${FOLLOWUP_GRACE_MS / 1_000}s for parent follow-up before shutting down`);
         state.followUpGraceTimer = setTimeout(() => {
             state.followUpGraceTimer = null;
             state.followUpGraceShutdown = null;
-            log.info("pizzapi: follow-up grace period expired — shutting down");
+            logger.info("pizzapi: follow-up grace period expired — shutting down");
             ctx.shutdown();
         }, FOLLOWUP_GRACE_MS);
         if (
@@ -149,7 +159,7 @@ export function createFollowUpGrace(rctx: RelayContext, state: FollowUpGraceStat
             }
         };
 
-        const deliveryPromise = emitSessionCompleteWithAck({
+        const deliveryPromise = emitSessionComplete({
             socket: rctx.sioSocket,
             token: rctx.relay.token,
             sourceSessionId: rctx.relay.sessionId,
@@ -170,7 +180,7 @@ export function createFollowUpGrace(rctx: RelayContext, state: FollowUpGraceStat
                     state.sessionCompleteRetryTimer = null;
                 }
             } else {
-                log.info(`pizzapi: session_complete delivery failed — ${result.error ?? "unknown error"}`);
+                logger.info(`pizzapi: session_complete delivery failed — ${result.error ?? "unknown error"}`);
                 scheduleRetry();
             }
             return result;

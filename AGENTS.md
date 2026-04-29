@@ -99,6 +99,7 @@ bun run clean
 - **Build order**: `tools` must be built before `server` or `cli`; `ui` can be built in parallel with `server`.
 - **TypeScript**: run `bun run typecheck` to check all packages at once.
 - **Patches**: Never edit files inside `node_modules` directly — changes go in `patches/` and are applied via `bun install`.
+- **Turn/lifecycle semantics matter**: When changing tools, prompts, models, or other agent capabilities at runtime, verify exactly *when* the change becomes visible to the next assistant response. Do not assume a setter like `setActiveTools()` is immediate inside the current loop — add an integration test that crosses the boundary you are changing.
 - **Redis** is required for the server. For local dev without Docker: `redis-server` or `docker compose up redis`.
 - **Do not repoint sandbox/test harnesses at an existing user or production Redis instance** (for example `redis://127.0.0.1:6379`) without explicit user permission. Sandboxes must use their own isolated Redis and must not assume the user's local Redis is safe to reuse.
 - **Database migrations**: run `bun run migrate` after schema changes. DB file is `packages/server/auth.db`.
@@ -108,7 +109,11 @@ bun run clean
 
 ## Upstream Patches
 
-PizzaPi patches two upstream pi packages via `patchedDependencies` in the root `package.json`. Patches live in `patches/` and are auto-applied on `bun install`. See `patches/README.md` for full details.
+PizzaPi patches three upstream pi packages via `patchedDependencies` in the root `package.json`. Patches live in `patches/` and are auto-applied on `bun install`. See `patches/README.md` for full details.
+
+### @mariozechner/pi-agent-core
+
+- **Dynamic tool refresh:** When a tool changes the active tool set mid-run (for example Tool Deferral loading a deferred tool), the next assistant response now sees the refreshed tools/system prompt instead of the stale turn-start snapshot.
 
 ### @mariozechner/pi-coding-agent
 
@@ -186,6 +191,7 @@ cd packages/cli && bun test src/patches.test.ts
 - **Run `bun run test` before committing.** Tests are part of the quality gates in session completion.
 - **Test pure logic first.** Validation, parsing, transforms, and utility functions should have thorough unit tests.
 - **Keep tests fast.** Avoid real network/Redis/DB calls in unit tests — mock or use in-memory alternatives.
+- **Test lifecycle boundaries explicitly.** If a bug depends on "next turn", "after tool call", startup sequencing, reloads, or streamed state, add a regression test that crosses that boundary. Snapshot/timing bugs are easy to miss with pure unit tests.
 
 ---
 

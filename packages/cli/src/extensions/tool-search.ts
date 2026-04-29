@@ -16,6 +16,7 @@ import type { ExtensionFactory } from "@mariozechner/pi-coding-agent";
 import { loadConfig, type PizzaPiConfig } from "../config.js";
 import { getMcpBridge } from "./mcp-bridge.js";
 import type { McpConfig } from "./mcp/registry.js";
+import { setToolSearchBridge } from "./tool-search-bridge.js";
 import { createLogger } from "@pizzapi/tools";
 
 const log = createLogger("tool-search");
@@ -42,7 +43,7 @@ type ToolSearchState = {
   /** Tools that have been deferred (removed from active set). */
   deferredTools: Map<string, ToolInfo>;
   /** Tools that have been loaded on-demand via search. */
-  loadedTools: Set<string>;
+  loadedTools: Map<string, ToolInfo>;
   /** Whether tool search is actively managing tools this session. */
   active: boolean;
 };
@@ -158,15 +159,33 @@ function getServerDeferConfig(config: PizzaPiConfig & McpConfig): Map<string, bo
 export const toolSearchExtension: ExtensionFactory = (pi: any) => {
   const state: ToolSearchState = {
     deferredTools: new Map(),
-    loadedTools: new Set(),
+    loadedTools: new Map(),
     active: false,
   };
 
-  function clearState(): void {
+  function restoreManagedTools(): void {
+    const currentActive = new Set(pi.getActiveTools() as string[]);
+    for (const name of state.deferredTools.keys()) currentActive.add(name);
+    for (const name of state.loadedTools.keys()) currentActive.add(name);
+    pi.setActiveTools([...currentActive]);
+  }
+
+  function clearState(options?: { restoreActiveTools?: boolean }): void {
+    if (options?.restoreActiveTools) {
+      restoreManagedTools();
+    }
     state.deferredTools.clear();
     state.loadedTools.clear();
     state.active = false;
   }
+
+  setToolSearchBridge({
+    status: () => ({
+      active: state.active,
+      deferredTools: [...state.deferredTools.values()],
+      loadedOnDemandTools: [...state.loadedTools.values()],
+    }),
+  });
 
   /**
    * Evaluate whether tool search should activate, and if so, which tools to defer.
@@ -177,7 +196,7 @@ export const toolSearchExtension: ExtensionFactory = (pi: any) => {
     const tsConfig = config.toolSearch;
 
     if (!tsConfig?.enabled) {
-      clearState();
+      clearState({ restoreActiveTools: true });
       return;
     }
 
@@ -248,11 +267,11 @@ export const toolSearchExtension: ExtensionFactory = (pi: any) => {
 
     if (toolsToDefer.length === 0) {
       log.info(`Tool search: no tools to defer (${totalMcpChars} chars, threshold ${threshold})`);
-      clearState();
+      clearState({ restoreActiveTools: mcpTools.length > 0 });
       return;
     }
 
-    const previousLoadedTools = new Set(state.loadedTools);
+    const previousLoadedTools = new Map(state.loadedTools);
 
     // Build deferred tool info map
     state.deferredTools.clear();
@@ -272,14 +291,20 @@ export const toolSearchExtension: ExtensionFactory = (pi: any) => {
     // Preserve any tools that were previously loaded on-demand and are still active.
     const currentActive = new Set(pi.getActiveTools() as string[]);
     state.loadedTools.clear();
-    for (const name of previousLoadedTools) {
+    for (const [name, info] of previousLoadedTools) {
       if (currentActive.has(name)) {
-        state.loadedTools.add(name);
+        state.loadedTools.set(name, info);
       }
+    }
+
+    const loadedOnDemandNames = new Set(state.loadedTools.keys());
+    for (const name of loadedOnDemandNames) {
+      state.deferredTools.delete(name);
     }
 
     // Deactivate deferred tools
     for (const name of toolsToDefer) {
+      if (loadedOnDemandNames.has(name)) continue;
       currentActive.delete(name);
     }
     // Ensure search_tools stays active
@@ -361,13 +386,9 @@ export const toolSearchExtension: ExtensionFactory = (pi: any) => {
         if (!currentActive.has(match.name)) {
           currentActive.add(match.name);
           newlyLoaded.push(match.name);
-          if (keepLoaded) {
-            state.loadedTools.add(match.name);
-          }
-          // Remove from deferred since they're now loaded
-          if (keepLoaded) {
-            state.deferredTools.delete(match.name);
-          }
+          state.loadedTools.set(match.name, match);
+          // Remove from deferred while loaded, even if keepLoadedTools=false.
+          state.deferredTools.delete(match.name);
         }
       }
 
@@ -441,8 +462,8 @@ export const toolSearchExtension: ExtensionFactory = (pi: any) => {
       if (state.loadedTools.size > 0) {
         lines.push("");
         lines.push("Loaded on-demand:");
-        for (const name of state.loadedTools) {
-          lines.push(`  - ${name}`);
+        for (const tool of state.loadedTools.values()) {
+          lines.push(`  - ${tool.name}`);
         }
       }
 
@@ -479,10 +500,16 @@ export const toolSearchExtension: ExtensionFactory = (pi: any) => {
 
     // Re-defer tools that were loaded on-demand
     const currentActive = new Set(pi.getActiveTools() as string[]);
-    for (const name of state.loadedTools) {
+    for (const [name, info] of state.loadedTools) {
       currentActive.delete(name);
+      state.deferredTools.set(name, info);
     }
     pi.setActiveTools([...currentActive]);
     state.loadedTools.clear();
+  });
+
+  pi.on?.("session_shutdown", async () => {
+    clearState();
+    setToolSearchBridge(null);
   });
 };

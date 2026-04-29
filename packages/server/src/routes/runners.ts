@@ -10,6 +10,8 @@ import {
     getRunnerData,
     getRunners,
     getLocalRunnerSocket,
+    getLocalTuiSocket,
+    getConnectedSessionsForRunner,
     linkSessionToRunner,
     recordRunnerSession,
     registerTerminal,
@@ -53,6 +55,8 @@ function runnerListenerAsSubscription(runnerId: string, listener: {
         ...(listener.params ? { params: listener.params as Record<string, string | number | boolean | Array<string | number | boolean>> } : {}),
     };
 }
+
+const RUNNER_MCP_RELOAD_RE = /^\/api\/runners\/([^/]+)\/mcp\/reload$/;
 
 export const handleRunnersRoute: RouteHandler = async (req, url) => {
     // ── List runners ───────────────────────────────────────────────────
@@ -210,6 +214,51 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
         }
 
         return Response.json({ ok: true, runnerId, sessionId, pending: (ack as any).timeout === true });
+    }
+
+    // ── Reload MCP in active sessions for a runner ─────────────────────
+    {
+        const match = url.pathname.match(RUNNER_MCP_RELOAD_RE);
+        if (match && req.method === "POST") {
+            const identity = await requireSession(req);
+            if (identity instanceof Response) return identity;
+
+            const runnerId = decodeURIComponent(match[1]);
+            const runner = await getRunnerData(runnerId);
+            if (!runner) return Response.json({ error: "Runner not found" }, { status: 404 });
+            if (runner.userId !== identity.userId) return Response.json({ error: "Forbidden" }, { status: 403 });
+
+            const connectedSessions = await getConnectedSessionsForRunner(runnerId);
+            const reloadedSessionIds: string[] = [];
+            const failedSessionIds: string[] = [];
+
+            for (const { sessionId } of connectedSessions) {
+                const tuiSocket = getLocalTuiSocket(sessionId);
+                if (!tuiSocket) {
+                    failedSessionIds.push(sessionId);
+                    continue;
+                }
+                try {
+                    tuiSocket.emit("exec" as string, {
+                        type: "exec",
+                        id: crypto.randomUUID(),
+                        command: "mcp",
+                        action: "reload",
+                    });
+                    reloadedSessionIds.push(sessionId);
+                } catch {
+                    failedSessionIds.push(sessionId);
+                }
+            }
+
+            return Response.json({
+                ok: true,
+                reloaded: reloadedSessionIds.length,
+                failed: failedSessionIds.length,
+                sessionIds: reloadedSessionIds,
+                failedSessionIds,
+            });
+        }
     }
 
     // ── Restart runner ─────────────────────────────────────────────────

@@ -580,6 +580,7 @@ export async function registerMcpTools(
           // resync against late or background MCP completion.
           pi.events?.emit?.("mcp:registry_updated", {
             server: client.name,
+            toolNames: serverToolList,
             toolCount: serverToolList.length,
             totalToolCount: toolCount,
           });

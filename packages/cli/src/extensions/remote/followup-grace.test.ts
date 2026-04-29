@@ -1,23 +1,10 @@
-import { afterAll, beforeEach, describe, expect, mock, test } from "bun:test";
-
-const mockEmitSessionCompleteWithAck = mock(async (_opts: any) => ({ ok: true }));
-
-mock.module("./session-complete-delivery.js", () => ({
-    emitSessionCompleteWithAck: mockEmitSessionCompleteWithAck,
-}));
-
-mock.module("@pizzapi/tools", () => ({
-    createLogger: () => ({
-        info: () => {},
-        warn: () => {},
-        error: () => {},
-        debug: () => {},
-    }),
-}));
-
+import { beforeEach, describe, expect, mock, test } from "bun:test";
 import { createFollowUpGrace, type FollowUpGraceState } from "./followup-grace.js";
 
-afterAll(() => mock.restore());
+const mockEmitSessionCompleteWithAck = mock(async (_opts: any) => ({ ok: true }));
+const mockLogger = {
+    info: mock((_message: string) => {}),
+};
 
 function makeState(): FollowUpGraceState {
     return {
@@ -46,6 +33,8 @@ function makeRelayContext() {
 describe("createFollowUpGrace fireSessionComplete", () => {
     beforeEach(() => {
         mockEmitSessionCompleteWithAck.mockReset();
+        mockEmitSessionCompleteWithAck.mockImplementation(async (_opts: any) => ({ ok: true }));
+        mockLogger.info.mockReset();
     });
 
     test("reuses the in-flight completion delivery promise instead of emitting twice", async () => {
@@ -56,7 +45,10 @@ describe("createFollowUpGrace fireSessionComplete", () => {
             }),
         );
 
-        const followUpGrace = createFollowUpGrace(makeRelayContext(), makeState());
+        const followUpGrace = createFollowUpGrace(makeRelayContext(), makeState(), {
+            emitSessionCompleteWithAck: mockEmitSessionCompleteWithAck,
+            logger: mockLogger,
+        });
         const first = followUpGrace.fireSessionComplete("Done", "/tmp/out.md", "completed");
         const second = followUpGrace.fireSessionComplete(undefined, undefined, "completed");
 
@@ -73,7 +65,10 @@ describe("createFollowUpGrace fireSessionComplete", () => {
             .mockImplementationOnce(async () => ({ ok: false, error: "Target session parent-1 is not connected" } as { ok: boolean; error?: string }))
             .mockImplementationOnce(async () => ({ ok: true } as { ok: boolean; error?: string }));
 
-        const followUpGrace = createFollowUpGrace(makeRelayContext(), makeState());
+        const followUpGrace = createFollowUpGrace(makeRelayContext(), makeState(), {
+            emitSessionCompleteWithAck: mockEmitSessionCompleteWithAck,
+            logger: mockLogger,
+        });
 
         const first = await followUpGrace.fireSessionComplete("Rich summary", "/tmp/out.md", "completed");
         const second = await followUpGrace.fireSessionComplete(undefined, undefined, "completed");
@@ -101,7 +96,10 @@ describe("createFollowUpGrace fireSessionComplete", () => {
         mockEmitSessionCompleteWithAck.mockImplementationOnce(async () => ({ ok: true }));
 
         const state = makeState();
-        const followUpGrace = createFollowUpGrace(makeRelayContext(), state);
+        const followUpGrace = createFollowUpGrace(makeRelayContext(), state, {
+            emitSessionCompleteWithAck: mockEmitSessionCompleteWithAck,
+            logger: mockLogger,
+        });
 
         const first = followUpGrace.fireSessionComplete("First turn", undefined, "completed");
         expect(mockEmitSessionCompleteWithAck).toHaveBeenCalledTimes(1);
@@ -130,7 +128,10 @@ describe("createFollowUpGrace fireSessionComplete", () => {
         const disconnected = makeRelayContext();
         disconnected.sioSocket = { connected: false };
         const state = makeState();
-        const followUpGrace = createFollowUpGrace(disconnected, state);
+        const followUpGrace = createFollowUpGrace(disconnected, state, {
+            emitSessionCompleteWithAck: mockEmitSessionCompleteWithAck,
+            logger: mockLogger,
+        });
 
         const first = await followUpGrace.fireSessionComplete("Buffered summary", "/tmp/buffered.md", "completed");
         expect(first).toEqual({ ok: false, error: "Child session is not connected to a linked parent" });
@@ -153,7 +154,10 @@ describe("createFollowUpGrace fireSessionComplete", () => {
             .mockImplementationOnce(async () => ({ ok: false, error: "relay down" } as { ok: boolean; error?: string }))
             .mockImplementationOnce(async () => ({ ok: true } as { ok: boolean; error?: string }));
 
-        const followUpGrace = createFollowUpGrace(makeRelayContext(), makeState());
+        const followUpGrace = createFollowUpGrace(makeRelayContext(), makeState(), {
+            emitSessionCompleteWithAck: mockEmitSessionCompleteWithAck,
+            logger: mockLogger,
+        });
 
         const first = await followUpGrace.fireSessionComplete("Errored summary", "/tmp/error.md", "error");
         const second = await followUpGrace.fireSessionComplete(undefined, undefined, "completed");

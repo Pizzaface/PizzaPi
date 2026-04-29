@@ -1,25 +1,58 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { _setGlobalConfigDir } from "../config.js";
+import { setMcpBridge } from "./mcp-bridge.js";
+import { getToolSearchBridge, setToolSearchBridge } from "./tool-search-bridge.js";
 
 type EventHandler = (event?: unknown, ctx?: unknown) => unknown;
 
 describe("toolSearchExtension lifecycle sync", () => {
   let snapshot: { serverTools?: Record<string, string[]> };
-  let config: Record<string, unknown>;
+  let tempRoot: string;
+  let globalConfigDir: string;
+  let projectDir: string;
+  let originalCwd: string;
 
   beforeEach(() => {
     snapshot = { serverTools: {} };
-    config = {
-      toolSearch: {
-        enabled: true,
-        tokenThreshold: 0,
-        maxResults: 5,
-        keepLoadedTools: true,
-      },
-      mcpServers: {},
-    };
+    originalCwd = process.cwd();
+    tempRoot = mkdtempSync(join(tmpdir(), "tool-search-lifecycle-"));
+    globalConfigDir = join(tempRoot, "global");
+    projectDir = join(tempRoot, "project");
+
+    mkdirSync(globalConfigDir, { recursive: true });
+    mkdirSync(join(projectDir, ".pizzapi"), { recursive: true });
+    writeFileSync(join(globalConfigDir, "config.json"), JSON.stringify({}), "utf-8");
+    writeFileSync(
+      join(projectDir, ".pizzapi", "config.json"),
+      JSON.stringify({
+        toolSearch: {
+          enabled: true,
+          tokenThreshold: 0,
+          maxResults: 5,
+          keepLoadedTools: true,
+        },
+        mcpServers: {},
+      }),
+      "utf-8",
+    );
+
+    _setGlobalConfigDir(globalConfigDir);
+    process.chdir(projectDir);
+    setMcpBridge({
+      status: () => snapshot,
+      reload: async () => null,
+    });
   });
 
   afterEach(() => {
+    setMcpBridge(null);
+    setToolSearchBridge(null);
+    _setGlobalConfigDir(null);
+    process.chdir(originalCwd);
+    rmSync(tempRoot, { recursive: true, force: true });
     mock.restore();
   });
 
@@ -72,15 +105,82 @@ describe("toolSearchExtension lifecycle sync", () => {
   }
 
   async function loadExtension() {
-    mock.module("../config.js", () => ({
-      loadConfig: mock(() => config),
-    }));
-    mock.module("./mcp-bridge.js", () => ({
-      getMcpBridge: mock(() => ({ status: () => snapshot })),
-    }));
-
     return await import("./tool-search.js");
   }
+
+  test("always-deferral still defers when total chars stay under the threshold", async () => {
+    writeFileSync(
+      join(projectDir, ".pizzapi", "config.json"),
+      JSON.stringify({
+        toolSearch: {
+          enabled: true,
+          tokenThreshold: 999999,
+          maxResults: 5,
+          keepLoadedTools: true,
+        },
+        mcpServers: {
+          github: { deferLoading: true },
+        },
+      }),
+      "utf-8",
+    );
+
+    snapshot = { serverTools: { github: ["mcp_github_create_issue"] } };
+    const { toolSearchExtension } = await loadExtension();
+    const { pi, registeredCommands, activeTools } = createHarness();
+
+    toolSearchExtension(pi as any);
+
+    const sessionStart = pi.on.mock.calls.find(([event]) => event === "session_start")?.[1] as EventHandler | undefined;
+    expect(sessionStart).toBeDefined();
+    await sessionStart!(undefined, undefined);
+
+    const statusCommand = registeredCommands.get("tool-search");
+    const notes: string[] = [];
+    statusCommand.handler("status", { ui: { notify: (msg: string) => notes.push(msg) } });
+
+    expect(notes.at(-1)).toContain("Tool search: active");
+    expect(notes.at(-1)).toContain("Deferred tools: 1");
+    expect(activeTools.has("mcp_github_create_issue")).toBe(false);
+  });
+
+  test("always-deferral also works for preferred mcp.servers config under the threshold", async () => {
+    writeFileSync(
+      join(projectDir, ".pizzapi", "config.json"),
+      JSON.stringify({
+        toolSearch: {
+          enabled: true,
+          tokenThreshold: 999999,
+          maxResults: 5,
+          keepLoadedTools: true,
+        },
+        mcp: {
+          servers: [
+            { name: "github", transport: "stdio", command: "noop", deferLoading: true },
+          ],
+        },
+      }),
+      "utf-8",
+    );
+
+    snapshot = { serverTools: { github: ["mcp_github_create_issue"] } };
+    const { toolSearchExtension } = await loadExtension();
+    const { pi, registeredCommands, activeTools } = createHarness();
+
+    toolSearchExtension(pi as any);
+
+    const sessionStart = pi.on.mock.calls.find(([event]) => event === "session_start")?.[1] as EventHandler | undefined;
+    expect(sessionStart).toBeDefined();
+    await sessionStart!(undefined, undefined);
+
+    const statusCommand = registeredCommands.get("tool-search");
+    const notes: string[] = [];
+    statusCommand.handler("status", { ui: { notify: (msg: string) => notes.push(msg) } });
+
+    expect(notes.at(-1)).toContain("Tool search: active");
+    expect(notes.at(-1)).toContain("Deferred tools: 1");
+    expect(activeTools.has("mcp_github_create_issue")).toBe(false);
+  });
 
   test("re-evaluates when MCP tools appear after startup", async () => {
     snapshot = { serverTools: {} };
@@ -111,16 +211,39 @@ describe("toolSearchExtension lifecycle sync", () => {
     expect(activeTools.has("search_tools")).toBe(true);
     expect(activeTools.has("mcp_github_create_issue")).toBe(false);
 
+    const bridge = getToolSearchBridge();
+    expect(bridge).toBeDefined();
+    expect(bridge?.status()).toMatchObject({
+      active: true,
+      deferredTools: [
+        expect.objectContaining({
+          name: "mcp_github_create_issue",
+          serverName: "github",
+        }),
+      ],
+      loadedOnDemandTools: [],
+    });
+
     const searchTool = registeredTools.get("search_tools");
     const result = await searchTool.execute("tool-call-1", { query: "github issue" }, undefined);
     const text = result.content?.[0]?.text ?? "";
     expect(text).toContain("mcp_github_create_issue");
+    expect(bridge?.status()).toMatchObject({
+      active: true,
+      deferredTools: [],
+      loadedOnDemandTools: [
+        expect.objectContaining({
+          name: "mcp_github_create_issue",
+          serverName: "github",
+        }),
+      ],
+    });
   });
 
   test("clears stale state when the MCP snapshot disappears", async () => {
     snapshot = { serverTools: { github: ["mcp_github_create_issue"] } };
     const { toolSearchExtension } = await loadExtension();
-    const { pi, registeredCommands } = createHarness();
+    const { pi, registeredCommands, activeTools } = createHarness();
 
     toolSearchExtension(pi as any);
 
@@ -144,5 +267,37 @@ describe("toolSearchExtension lifecycle sync", () => {
     expect(clearedNotes.at(-1)).toContain("Tool search: inactive");
     expect(clearedNotes.at(-1)).toContain("Deferred tools: 0");
     expect(clearedNotes.at(-1)).toContain("Loaded on-demand: 0");
+    expect(activeTools.has("mcp_github_create_issue")).toBe(false);
+  });
+
+  test("session shutdown clears loaded-on-demand state before the next session", async () => {
+    snapshot = { serverTools: { github: ["mcp_github_create_issue"] } };
+    const { toolSearchExtension } = await loadExtension();
+    const { pi, registeredTools, registeredCommands } = createHarness();
+
+    toolSearchExtension(pi as any);
+
+    const sessionStart = pi.on.mock.calls.find(([event]) => event === "session_start")?.[1] as EventHandler | undefined;
+    const sessionShutdown = pi.on.mock.calls.find(([event]) => event === "session_shutdown")?.[1] as EventHandler | undefined;
+    expect(sessionStart).toBeDefined();
+    expect(sessionShutdown).toBeDefined();
+
+    await sessionStart!(undefined, undefined);
+
+    const searchTool = registeredTools.get("search_tools");
+    await searchTool.execute("tool-call-1", { query: "github issue" }, undefined);
+
+    const activeNotes: string[] = [];
+    const statusCommand = registeredCommands.get("tool-search");
+    statusCommand.handler("status", { ui: { notify: (msg: string) => activeNotes.push(msg) } });
+    expect(activeNotes.at(-1)).toContain("Loaded on-demand: 1");
+
+    await sessionShutdown!(undefined, undefined);
+    await sessionStart!(undefined, undefined);
+
+    const nextSessionNotes: string[] = [];
+    statusCommand.handler("status", { ui: { notify: (msg: string) => nextSessionNotes.push(msg) } });
+    expect(nextSessionNotes.at(-1)).toContain("Deferred tools: 1");
+    expect(nextSessionNotes.at(-1)).toContain("Loaded on-demand: 0");
   });
 });
