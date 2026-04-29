@@ -5,6 +5,7 @@
 
 import {
     updateSessionState,
+    patchSessionSnapshotState,
     touchSessionActivity,
     updateSessionHeartbeat,
     getSharedSession,
@@ -15,6 +16,7 @@ import {
 import { appendRelayEventToCache } from "../../../sessions/redis.js";
 import { storeAndReplaceImagesInEvent, stripImagesFromPipelineEvent } from "../../strip-images.js";
 import { updateSessionMetaState, broadcastToSessionMeta, getSessionMetaState } from "../../sio-registry/meta.js";
+import { buildSnapshotPatchFromCapabilities, buildSnapshotPatchFromMetadata } from "../../sio-registry/snapshot-state.js";
 import { isMetaRelayEvent, metaEventToPatch, type MetaRelayEvent, type SessionMetaState } from "@pizzapi/protocol";
 import { updateSessionFields } from "../../sio-state/index.js";
 import { updateRelaySessionName } from "../../../sessions/store.js";
@@ -52,6 +54,13 @@ export function applyChunkToPendingState(
 ): boolean {
     const { chunkIndex, chunkMessages, totalChunks, isFinalChunk } = update;
 
+    if (pending.receivedChunkIndexes.has(chunkIndex)) {
+        if (isFinalChunk) {
+            pending.finalChunkSeen = true;
+        }
+        return false;
+    }
+
     if (Number.isInteger(totalChunks) && totalChunks > 0) {
         pending.totalChunks = totalChunks;
     }
@@ -60,13 +69,17 @@ export function applyChunkToPendingState(
         pending.finalChunkSeen = true;
     }
 
-    if (pending.receivedChunkIndexes.has(chunkIndex)) {
-        return false;
-    }
-
     pending.receivedChunkIndexes.add(chunkIndex);
     pending.chunks[chunkIndex] = chunkMessages;
     return true;
+}
+
+export function applySnapshotPatchToPendingState(
+    pending: ChunkedSessionState | null | undefined,
+    patch: Record<string, unknown>,
+): void {
+    if (!pending || Object.keys(patch).length === 0) return;
+    pending.metadata = { ...pending.metadata, ...patch };
 }
 
 export function hasAllChunkIndexes(pending: ChunkedSessionState): boolean {
@@ -284,9 +297,12 @@ export function registerEventHandler(socket: RelaySocket): void {
                 });
 
                 if (canFinalizeChunkedSnapshot(pending)) {
-                    // All chunks received — assemble and persist the full state
-                    pendingChunkedStates.delete(sessionId);
+                    // All chunks received — assemble and persist the full state.
+                    // Only clear the pending entry after finalization succeeds
+                    // so a transient failure can still be retried by later
+                    // chunk retransmits.
                     await finalizeChunkedSnapshot(sessionId, pending);
+                    pendingChunkedStates.delete(sessionId);
                 } else {
                     await touchSessionActivity(sessionId);
                 }
@@ -298,27 +314,23 @@ export function registerEventHandler(socket: RelaySocket): void {
             await updateSessionHeartbeat(sessionId, event);
         } else if (event.type === "session_metadata_update") {
             // Lightweight metadata-only heartbeat: touch activity but do NOT
-            // update lastState or append to the Redis event cache.  The full
-            // message history hasn't changed — viewers get the metadata delta
-            // via the broadcast below, and the existing lastState in Redis
-            // remains the authoritative snapshot for reconnecting viewers.
-            //
-            // We DO persist the metadata fields so reconnecting viewers get
-            // current values (model, sessionName, thinkingLevel, todoList)
-            // from the session hash rather than stale data from the last
-            // full session_active.
+            // append to the Redis event cache. The full message history hasn't
+            // changed, but we still merge reconnect-relevant metadata into the
+            // durable snapshot so late viewers don't stay stuck on a stale
+            // pre-MCP `session_active` until a manual session switch.
             await touchSessionActivity(sessionId);
             const meta = (event as any).metadata;
             if (meta && typeof meta === "object") {
                 const patch: Partial<SessionMetaState> = {};
+                let mergedModel: SessionMetaState["model"] | undefined;
                 if (meta.model && typeof meta.model === "object") {
                     // Merge with existing model to preserve fields (like contextWindow)
                     // that the lightweight metadata update may not include.
                     const existing = await getSessionMetaState(sessionId);
-                    const merged = existing?.model
+                    mergedModel = existing?.model
                         ? { ...existing.model, ...meta.model }
                         : meta.model;
-                    patch.model = merged;
+                    patch.model = mergedModel;
                 }
                 if (Object.prototype.hasOwnProperty.call(meta, "thinkingLevel")) {
                     patch.thinkingLevel = typeof meta.thinkingLevel === "string" ? meta.thinkingLevel : null;
@@ -327,14 +339,32 @@ export function registerEventHandler(socket: RelaySocket): void {
                 if (Object.keys(patch).length > 0) {
                     await updateSessionMetaState(sessionId, patch);
                 }
-                // sessionName lives in the session hash (not metaState).
-                if (Object.prototype.hasOwnProperty.call(meta, "sessionName") &&
-                    typeof meta.sessionName === "string" && meta.sessionName.trim()) {
-                    const trimmedName = meta.sessionName.trim();
-                    await updateSessionFields(sessionId, { sessionName: trimmedName });
-                    // Also persist to SQLite so historical session listings show names.
-                    void updateRelaySessionName(sessionId, trimmedName).catch(() => {});
+
+                const snapshotPatch = buildSnapshotPatchFromMetadata(meta as Record<string, unknown>);
+                if (mergedModel) {
+                    snapshotPatch.model = mergedModel;
                 }
+                if (Object.keys(snapshotPatch).length > 0) {
+                    applySnapshotPatchToPendingState(pendingChunkedStates.get(sessionId), snapshotPatch);
+                    await patchSessionSnapshotState(sessionId, snapshotPatch);
+                }
+
+                // sessionName lives in the session hash (not metaState).
+                if (Object.prototype.hasOwnProperty.call(meta, "sessionName")) {
+                    const normalizedSessionName = typeof meta.sessionName === "string" && meta.sessionName.trim()
+                        ? meta.sessionName.trim()
+                        : null;
+                    await updateSessionFields(sessionId, { sessionName: normalizedSessionName });
+                    // Also persist to SQLite so historical session listings show names.
+                    void updateRelaySessionName(sessionId, normalizedSessionName).catch(() => {});
+                }
+            }
+        } else if (event.type === "capabilities") {
+            await touchSessionActivity(sessionId);
+            const snapshotPatch = buildSnapshotPatchFromCapabilities(event as Record<string, unknown>);
+            if (Object.keys(snapshotPatch).length > 0) {
+                applySnapshotPatchToPendingState(pendingChunkedStates.get(sessionId), snapshotPatch);
+                await patchSessionSnapshotState(sessionId, snapshotPatch);
             }
         } else if (isMetaRelayEvent(event as { type?: unknown }) &&
                    // Old CLI emits mcp_startup_report in a flat format without
@@ -395,10 +425,7 @@ export function registerEventHandler(socket: RelaySocket): void {
             // Reconnecting viewers will get the full lastState snapshot instead.
             const isMetadataOnlyUpdate = event.type === "session_metadata_update";
             if (event.type === "session_messages_chunk" || isChunkedSessionActive || isMetadataOnlyUpdate) {
-                const viewerEvent = isMetadataOnlyUpdate && eventToPublish && typeof eventToPublish === "object"
-                    ? { ...(eventToPublish as Record<string, unknown>), _metaChannel: "hub" as const }
-                    : eventToPublish;
-                await broadcastSessionEventToViewers(sessionId, viewerEvent);
+                await broadcastSessionEventToViewers(sessionId, eventToPublish);
             } else {
                 // Publish to viewers via Redis cache + Socket.IO rooms
                 await publishSessionEvent(sessionId, eventToPublish);

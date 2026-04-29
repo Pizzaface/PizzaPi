@@ -38,6 +38,19 @@ export function shouldDeferEventForHydration(
   return false;
 }
 
+export function shouldAllowOutOfOrderSnapshotDuringHydration(
+  eventType: string,
+  awaitingSnapshot: boolean,
+  currentSeq: number | null,
+  incomingSeq: number,
+): boolean {
+  if (!awaitingSnapshot) return false;
+  if (eventType !== "session_active" && eventType !== "agent_end") return false;
+  if (currentSeq === null) return false;
+  if (!Number.isFinite(incomingSeq)) return false;
+  return incomingSeq < currentSeq;
+}
+
 export function registerChunkIndex(seenChunkIndexes: Set<number>, chunkIndex: number): boolean {
   if (seenChunkIndexes.has(chunkIndex)) {
     return false;

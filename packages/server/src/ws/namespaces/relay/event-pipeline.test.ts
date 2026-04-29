@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import {
     applyChunkToPendingState,
+    applySnapshotPatchToPendingState,
     canFinalizeChunkedSnapshot,
     enqueueSessionEvent,
     finalizeChunkedSnapshot,
@@ -76,14 +77,16 @@ describe("chunked snapshot assembly", () => {
         const duplicateInsert = applyChunkToPendingState(pending, {
             chunkIndex: 0,
             chunkMessages: [{ id: "m1-duplicate" }],
-            totalChunks: 2,
-            isFinalChunk: false,
+            totalChunks: 99,
+            isFinalChunk: true,
         });
 
         expect(firstInsert).toBe(true);
         expect(duplicateInsert).toBe(false);
         expect(Array.from(pending.receivedChunkIndexes)).toEqual([0]);
         expect(pending.chunks[0]).toEqual([{ id: "m1" }]);
+        expect(pending.totalChunks).toBe(2);
+        expect(pending.finalChunkSeen).toBe(true);
         expect(canFinalizeChunkedSnapshot(pending)).toBe(false);
     });
 
@@ -185,10 +188,13 @@ describe("chunked snapshot assembly", () => {
         expect(assembled).toEqual(["c0", "c1", "c2"]);
     });
 
-    test("chunked finalization consumes and clears the recovery flag", async () => {
+    test("metadata patches update pending chunked snapshots before finalization", async () => {
         const pending: ChunkedSessionState = {
             snapshotId: "snap-recovery",
-            metadata: { sessionName: "Recovered" },
+            metadata: {
+                sessionName: "Recovered",
+                availableCommands: [],
+            },
             chunks: [[{ id: "m1" }], [{ id: "m2" }]],
             totalChunks: 2,
             receivedChunkIndexes: new Set<number>([0, 1]),
@@ -207,6 +213,10 @@ describe("chunked snapshot assembly", () => {
             appendRelayEventToCache: async () => {},
         }, "appendRelayEventToCache");
 
+        applySnapshotPatchToPendingState(pending, {
+            sessionName: "Updated",
+            availableCommands: [{ name: "search_tools" }],
+        });
         markPendingRecovery("sess-chunked-recovery");
 
         const fullState = await finalizeChunkedSnapshot("sess-chunked-recovery", pending, {
@@ -218,7 +228,8 @@ describe("chunked snapshot assembly", () => {
         });
 
         expect(fullState).toEqual({
-            sessionName: "Recovered",
+            sessionName: "Updated",
+            availableCommands: [{ name: "search_tools" }],
             messages: [{ id: "m1" }, { id: "m2" }],
         });
         expect(updateSessionState).toHaveBeenCalledWith(

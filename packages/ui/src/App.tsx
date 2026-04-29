@@ -110,6 +110,7 @@ import {
 import { parsePendingQuestionDisplayMode, parsePendingQuestions, type QuestionDisplayMode, type QuestionType } from "@/lib/ask-user-questions";
 import type { TodoItem, TokenUsage, ConfiguredModelInfo, ResumeSessionOption, QueuedMessage, SessionUiCacheEntry } from "@/lib/types";
 import { metaEventToStatePatch, type MetaStatePatch } from "@/lib/meta-state-apply";
+import { deriveSessionMetadataUpdatePatch } from "@/lib/session-metadata-update";
 import { usePanelLayout } from "@/hooks/usePanelLayout";
 import { useTriggerCount } from "@/hooks/useTriggerCount";
 // Attention store: AttentionProvider is mounted in main.ts around <App/>
@@ -133,6 +134,7 @@ import {
   canFinalizeChunkHydration,
   mergeConnectedSeq,
   registerChunkIndex,
+  shouldAllowOutOfOrderSnapshotDuringHydration,
   shouldDeferEventForHydration,
 } from "@/lib/session-seq";
 import { createLogger } from "@pizzapi/tools";
@@ -1535,53 +1537,42 @@ export function App() {
 
     if (type === "session_metadata_update") {
       // Lightweight metadata-only heartbeat — messages haven't changed.
-      // Update metadata state without touching the messages array.
+      // These updates are delivered live on the viewer channel, so apply the
+      // full patch directly rather than treating hub meta as authoritative.
       const meta = (evt.metadata ?? {}) as Record<string, unknown>;
-      const metaChannelHub = evt._metaChannel === "hub";
-      if (metaChannelHub) {
-        metaSourceHubRef.current = true;
-      }
-      if (metaSourceHubRef.current || metaChannelHub) {
-        return;
-      }
+      const derived = deriveSessionMetadataUpdatePatch({
+        metadata: meta,
+        currentActiveModel: activeModel,
+      });
       const cachePatch: Partial<SessionUiCacheEntry> = {};
 
-      const metaModel = normalizeModel(meta.model);
-      if (metaModel) {
-        setActiveModel(metaModel);
-        cachePatch.activeModel = metaModel;
+      if (Object.prototype.hasOwnProperty.call(derived, "activeModel")) {
+        setActiveModel(derived.activeModel ?? null);
+        cachePatch.activeModel = derived.activeModel ?? null;
       }
 
-      const metaModels = Array.isArray(meta.availableModels)
-        ? normalizeModelList(meta.availableModels as unknown[])
-        : null;
-      if (metaModels) {
-        setAvailableModels(metaModels);
-        cachePatch.availableModels = metaModels;
+      if (Object.prototype.hasOwnProperty.call(derived, "availableModels")) {
+        setAvailableModels(derived.availableModels ?? []);
+        cachePatch.availableModels = derived.availableModels ?? [];
       }
 
-      const metaCommands = Array.isArray(meta.availableCommands)
-        ? normalizeCommandList(meta.availableCommands as unknown[])
-        : null;
-      if (metaCommands) {
-        setAvailableCommands(metaCommands);
-        cachePatch.availableCommands = metaCommands;
+      if (Object.prototype.hasOwnProperty.call(derived, "availableCommands")) {
+        setAvailableCommands(derived.availableCommands ?? []);
+        cachePatch.availableCommands = derived.availableCommands ?? [];
       }
 
-      if (Object.prototype.hasOwnProperty.call(meta, "sessionName")) {
-        const nextName = normalizeSessionName(meta.sessionName);
-        setSessionName(nextName);
-        cachePatch.sessionName = nextName;
+      if (Object.prototype.hasOwnProperty.call(derived, "sessionName")) {
+        setSessionName(derived.sessionName ?? null);
+        cachePatch.sessionName = derived.sessionName ?? null;
       }
 
-      if (Object.prototype.hasOwnProperty.call(meta, "thinkingLevel")) {
-        const level = typeof meta.thinkingLevel === "string" ? meta.thinkingLevel : null;
-        setEffortLevel(level);
-        cachePatch.effortLevel = level;
+      if (Object.prototype.hasOwnProperty.call(derived, "thinkingLevel")) {
+        setEffortLevel(derived.thinkingLevel ?? null);
+        cachePatch.effortLevel = derived.thinkingLevel ?? null;
       }
 
-      if (Array.isArray(meta.todoList)) {
-        const todos = meta.todoList as TodoItem[];
+      if (Object.prototype.hasOwnProperty.call(derived, "todoList")) {
+        const todos = derived.todoList ?? [];
         setTodoList(todos);
         cachePatch.todoList = todos;
       }
@@ -1629,10 +1620,11 @@ export function App() {
 
       // Extract commands from session_active state so cache-first hydration
       // (which only replays snapshot events) populates the command picker.
+      const hasStateCommands = !!state && Object.prototype.hasOwnProperty.call(state, "availableCommands");
       const stateCommands = Array.isArray(state?.availableCommands)
         ? normalizeCommandList(state.availableCommands as unknown[])
         : [];
-      if (stateCommands.length > 0) {
+      if (hasStateCommands) {
         setAvailableCommands(stateCommands);
       }
 
@@ -1712,7 +1704,7 @@ export function App() {
           activeModel: stateModel,
           ...(hasSessionName ? { sessionName: nextSessionName } : {}),
           availableModels: stateModels,
-          ...(stateCommands.length > 0 ? { availableCommands: stateCommands } : {}),
+          ...(hasStateCommands ? { availableCommands: stateCommands } : {}),
           effortLevel: thinkingLevel,
           todoList: stateTodos,
         });
@@ -1720,7 +1712,7 @@ export function App() {
         patchSessionCache({
           messages: normalizedMessages,
           availableModels: stateModels,
-          ...(stateCommands.length > 0 ? { availableCommands: stateCommands } : {}),
+          ...(hasStateCommands ? { availableCommands: stateCommands } : {}),
         });
       }
       return;
@@ -2620,6 +2612,7 @@ export function App() {
     getFallbackPromptKey,
     patchSessionCache,
     removeQueuedMessageByContent,
+    activeModel,
   ]);
 
   React.useEffect(() => {
@@ -3016,17 +3009,25 @@ export function App() {
           if (data.deltaReplay === true) {
             lastSeqRef.current = seq;
           } else {
-            const decision = analyzeIncomingSeq(lastSeqRef.current, seq);
-            if (!decision.accept) {
-              return;
+            const allowOutOfOrderHydrationSnapshot = shouldAllowOutOfOrderSnapshotDuringHydration(
+              eventType,
+              awaitingSnapshotRef.current,
+              lastSeqRef.current,
+              seq,
+            );
+            if (!allowOutOfOrderHydrationSnapshot) {
+              const decision = analyzeIncomingSeq(lastSeqRef.current, seq);
+              if (!decision.accept) {
+                return;
+              }
+              if (decision.gap && decision.expected !== null) {
+                log.warn(`Sequence gap: expected ${decision.expected}, got ${seq}. Requesting resync.`);
+                nextSocket.emit("resync", {
+                  lastSeq: lastSeqRef.current ?? undefined,
+                });
+              }
+              lastSeqRef.current = decision.nextSeq;
             }
-            if (decision.gap && decision.expected !== null) {
-              log.warn(`Sequence gap: expected ${decision.expected}, got ${seq}. Requesting resync.`);
-              nextSocket.emit("resync", {
-                lastSeq: lastSeqRef.current ?? undefined,
-              });
-            }
-            lastSeqRef.current = decision.nextSeq;
           }
         }
 
