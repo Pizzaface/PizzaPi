@@ -395,6 +395,8 @@ export function App() {
   // which would otherwise be called speculatively in React concurrent mode.
   const messagesRef = React.useRef<RelayMessage[]>(messages);
   React.useLayoutEffect(() => { messagesRef.current = messages; }, [messages]);
+  const activeModelRef = React.useRef<ConfiguredModelInfo | null>(activeModel);
+  React.useLayoutEffect(() => { activeModelRef.current = activeModel; }, [activeModel]);
   const [relayStatus, setRelayStatus] = React.useState<DotState>("connecting");
   const [versionBanner, setVersionBanner] = React.useState<{ message: string | null; protocolCompatible: boolean }>({
     message: null,
@@ -1543,7 +1545,7 @@ export function App() {
       const meta = (evt.metadata ?? {}) as Record<string, unknown>;
       const derived = deriveSessionMetadataUpdatePatch({
         metadata: meta,
-        currentActiveModel: activeModel,
+        currentActiveModel: activeModelRef.current,
       });
       const cachePatch: Partial<SessionUiCacheEntry> = {};
 

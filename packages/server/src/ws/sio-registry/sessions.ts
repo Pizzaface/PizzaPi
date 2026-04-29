@@ -48,7 +48,7 @@ import {
 import { appendRelayEventToCache } from "../../sessions/redis.js";
 import { storeAndReplaceImages, storeAndReplaceImagesInEvent } from "../strip-images.js";
 import { extractMetaFromHeartbeat } from "./meta.js";
-import { mergeSnapshotStatePatch } from "./snapshot-state.js";
+import { mergeSnapshotStatePatch, shouldPersistSnapshotPatch } from "./snapshot-state.js";
 import { severStaleParentLink } from "../stale-parent-link.js";
 import type { SessionInfo } from "@pizzapi/protocol";
 import {
@@ -567,10 +567,12 @@ export async function patchSessionSnapshotState(
     await updateSessionFields(sessionId, fields);
 
     const now = Date.now();
-    const stateMessages = Array.isArray(mergedState.messages) ? mergedState.messages : null;
-    const shouldPersistState =
-        stateMessages !== null && stateMessages.length > 0 ||
-        now - (lastRelaySessionStateWriteTimes.get(sessionId) ?? 0) >= SQLITE_STATE_WRITE_THROTTLE_MS;
+    const shouldPersistState = shouldPersistSnapshotPatch({
+        patch,
+        lastWriteAt: lastRelaySessionStateWriteTimes.get(sessionId) ?? 0,
+        now,
+        throttleMs: SQLITE_STATE_WRITE_THROTTLE_MS,
+    });
 
     if (shouldPersistState) {
         lastRelaySessionStateWriteTimes.set(sessionId, now);

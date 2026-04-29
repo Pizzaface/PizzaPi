@@ -3,6 +3,7 @@ import {
     buildSnapshotPatchFromCapabilities,
     buildSnapshotPatchFromMetadata,
     mergeSnapshotStatePatch,
+    shouldPersistSnapshotPatch,
 } from "./snapshot-state.js";
 
 describe("buildSnapshotPatchFromMetadata", () => {
@@ -113,5 +114,34 @@ describe("mergeSnapshotStatePatch", () => {
     test("returns null when there is no existing snapshot state to patch", () => {
         expect(mergeSnapshotStatePatch(null, { availableCommands: [] })).toBeNull();
         expect(mergeSnapshotStatePatch("not json", { availableCommands: [] })).toBeNull();
+    });
+});
+
+describe("shouldPersistSnapshotPatch", () => {
+    test("throttles metadata-only patches even when the merged snapshot already has messages", () => {
+        expect(shouldPersistSnapshotPatch({
+            patch: { availableCommands: [{ name: "search_tools" }] },
+            lastWriteAt: 1_000,
+            now: 5_000,
+            throttleMs: 30_000,
+        })).toBe(false);
+    });
+
+    test("allows metadata-only patches through once the throttle window expires", () => {
+        expect(shouldPersistSnapshotPatch({
+            patch: { availableCommands: [{ name: "search_tools" }] },
+            lastWriteAt: 1_000,
+            now: 40_000,
+            throttleMs: 30_000,
+        })).toBe(true);
+    });
+
+    test("persists patches that explicitly update messages immediately", () => {
+        expect(shouldPersistSnapshotPatch({
+            patch: { messages: [{ role: "user", content: "hi" }] },
+            lastWriteAt: 39_000,
+            now: 40_000,
+            throttleMs: 30_000,
+        })).toBe(true);
     });
 });

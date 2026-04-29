@@ -59,6 +59,19 @@ export function buildSnapshotPatchFromCapabilities(event: Record<string, unknown
     return patch;
 }
 
+export function shouldPersistSnapshotPatch(input: {
+    patch: Record<string, unknown>;
+    lastWriteAt: number;
+    now: number;
+    throttleMs: number;
+}): boolean {
+    const { patch, lastWriteAt, now, throttleMs } = input;
+    if (Object.prototype.hasOwnProperty.call(patch, "messages")) {
+        return true;
+    }
+    return now - lastWriteAt >= throttleMs;
+}
+
 export function mergeSnapshotStatePatch(
     rawLastState: string | null | undefined,
     patch: Record<string, unknown>,
