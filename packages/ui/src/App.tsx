@@ -129,6 +129,7 @@ import {
   mergeChunkSnapshot,
 } from "@/lib/message-helpers";
 import { evictLruIfNeeded, touchSessionCache, MAX_SESSION_UI_CACHE_SIZE } from "@/lib/session-ui-cache";
+import { removeMessagesByStableKey, replaceMessageByStableKey } from "@/lib/mcp-auth-banners";
 import {
   analyzeIncomingSeq,
   canFinalizeChunkHydration,
@@ -2242,16 +2243,11 @@ export function App() {
         // Store in ref so it survives wholesale setMessages replacements.
         // Upsert: replace existing message for this server (URL/state may
         // have changed on retry), or append if first time.
-        const idx = injectedMessagesRef.current.findIndex((m) => m.key === stableKey);
-        if (idx >= 0) {
-          injectedMessagesRef.current = injectedMessagesRef.current.map((m) => m.key === stableKey ? message : m);
-          setMessages((prev) => prev.map((m) => m.key === stableKey ? message : m));
-        } else {
-          injectedMessagesRef.current = [...injectedMessagesRef.current, message];
-          const next = [...messagesRef.current, message];
-          setMessages(next);
-          patchSessionCache({ messages: next });
-        }
+        const nextInjected = replaceMessageByStableKey(injectedMessagesRef.current, stableKey, message);
+        injectedMessagesRef.current = nextInjected;
+        const nextMessages = replaceMessageByStableKey(messagesRef.current, stableKey, message);
+        setMessages(nextMessages);
+        patchSessionCache({ messages: nextMessages });
       }
       return;
     }
@@ -2275,16 +2271,11 @@ export function App() {
           isError: false,
         };
         // Upsert: replace existing message (nonce/URL may change on retry)
-        const idx = injectedMessagesRef.current.findIndex((m) => m.key === stableKey);
-        if (idx >= 0) {
-          injectedMessagesRef.current = injectedMessagesRef.current.map((m) => m.key === stableKey ? message : m);
-          setMessages((prev) => prev.map((m) => m.key === stableKey ? message : m));
-        } else {
-          injectedMessagesRef.current = [...injectedMessagesRef.current, message];
-          const next = [...messagesRef.current, message];
-          setMessages(next);
-          patchSessionCache({ messages: next });
-        }
+        const nextInjected = replaceMessageByStableKey(injectedMessagesRef.current, stableKey, message);
+        injectedMessagesRef.current = nextInjected;
+        const nextMessages = replaceMessageByStableKey(messagesRef.current, stableKey, message);
+        setMessages(nextMessages);
+        patchSessionCache({ messages: nextMessages });
         // Add/update pending paste prompt (always update nonce/authUrl)
         setMcpOAuthPastes((prev) => [
           ...prev.filter((p) => p.serverName !== serverName),
@@ -2298,13 +2289,9 @@ export function App() {
       const serverName = typeof evt.serverName === "string" ? evt.serverName : "MCP server";
       const stableKey = `mcp_auth:${serverName}`;
       // Remove the auth banner for this server — auth succeeded
-      injectedMessagesRef.current = injectedMessagesRef.current.filter(
-        (m) => m.key !== stableKey && !m.key.startsWith(`${stableKey}:`),
-      );
+      injectedMessagesRef.current = removeMessagesByStableKey(injectedMessagesRef.current, stableKey);
       // Also remove from rendered messages
-      const filteredNext = messagesRef.current.filter(
-        (m) => m.key !== stableKey && !m.key.startsWith(`${stableKey}:`),
-      );
+      const filteredNext = removeMessagesByStableKey(messagesRef.current, stableKey);
       if (filteredNext.length !== messagesRef.current.length) {
         setMessages(filteredNext);
         patchSessionCache({ messages: filteredNext });
@@ -4835,23 +4822,18 @@ export function App() {
                         onMcpOAuthPasteDismiss={(serverName) => {
                           setMcpOAuthPastes((prev) => prev.filter((p) => p.serverName !== serverName));
                           const stableKey = `mcp_auth:${serverName}`;
-                          injectedMessagesRef.current = injectedMessagesRef.current.filter(
-                            (m) => m.key !== stableKey && !m.key.startsWith(`${stableKey}:`),
-                          );
-                          setMessages((prev) => {
-                            const next = prev.filter((m) => m.key !== stableKey && !m.key.startsWith(`${stableKey}:`));
-                            return next.length !== prev.length ? next : prev;
-                          });
+                          injectedMessagesRef.current = removeMessagesByStableKey(injectedMessagesRef.current, stableKey);
+                          const next = removeMessagesByStableKey(messagesRef.current, stableKey);
+                          if (next.length !== messagesRef.current.length) {
+                            setMessages(next);
+                            patchSessionCache({ messages: next });
+                          }
                         }}
                         onMcpServerDisable={(serverName) => {
                           setMcpOAuthPastes((prev) => prev.filter((p) => p.serverName !== serverName));
                           const stableKey = `mcp_auth:${serverName}`;
-                          injectedMessagesRef.current = injectedMessagesRef.current.filter(
-                            (m) => m.key !== stableKey && !m.key.startsWith(`${stableKey}:`),
-                          );
-                          const disableNext = messagesRef.current.filter(
-                            (m) => m.key !== stableKey && !m.key.startsWith(`${stableKey}:`),
-                          );
+                          injectedMessagesRef.current = removeMessagesByStableKey(injectedMessagesRef.current, stableKey);
+                          const disableNext = removeMessagesByStableKey(messagesRef.current, stableKey);
                           if (disableNext.length !== messagesRef.current.length) {
                             setMessages(disableNext);
                             patchSessionCache({ messages: disableNext });
