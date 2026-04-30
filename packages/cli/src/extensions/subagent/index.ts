@@ -387,5 +387,5 @@ export const subagentExtension = (pi: ExtensionAPI) => {
 
 export * from "./types.js";
 export * from "./format.js";
-export { runSingleAgent, resolveTools, mapWithConcurrencyLimit, BUILTIN_TOOLS, parseModelString, type ModelOverride } from "./engine.js";
+export { runSingleAgent, resolveTools, mapWithConcurrencyLimit, BUILTIN_TOOLS, parseModelString, selectLightweightModel, type ModelOverride, type ModelRegistryLike } from "./engine.js";
 export { renderSubagentCall, renderSubagentResult } from "./render.js";

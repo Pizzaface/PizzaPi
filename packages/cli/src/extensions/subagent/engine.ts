@@ -116,6 +116,33 @@ export function parseModelString(model: string): ModelOverride | undefined {
     return { provider: "anthropic", id: trimmed };
 }
 
+/** Narrow interface for the model registry — only what the engine needs. */
+export interface ModelRegistryLike {
+    find: (provider: string, modelId: string) => Model<any> | undefined;
+    getAvailable: () => Model<any>[];
+}
+
+/**
+ * Select the cheapest available model from the registry.
+ *
+ * When no model is explicitly specified (neither by the caller nor the agent
+ * frontmatter), subagents should use the most cost-effective model rather
+ * than inheriting the parent's (potentially expensive) default.
+ *
+ * Selection strategy:
+ *   1. Among available models, sort by output costascending.
+ *   2. Pick the cheapest model that has credentials configured.
+ *   3. If no available models, return undefined (fall back to default).
+ */
+export function selectLightweightModel(registry: ModelRegistryLike): Model<any> | undefined {
+    const available = registry.getAvailable();
+    if (available.length === 0) return undefined;
+
+    // Sort by output token cost ascending — cheapest first
+    const sorted = [...available].sort((a, b) => a.cost.output - b.cost.output);
+    return sorted[0];
+}
+
 export async function runSingleAgent(
     defaultCwd: string,
     agents: AgentConfig[],
@@ -127,7 +154,7 @@ export async function runSingleAgent(
     onUpdate: OnUpdateCallback | undefined,
     makeDetails: (results: SingleResult[]) => SubagentDetails,
     modelOverride?: ModelOverride,
-    modelRegistry?: { find: (provider: string, modelId: string) => Model<any> | undefined },
+    modelRegistry?: ModelRegistryLike,
 ): Promise<SingleResult> {
     const agent = agents.find((a) => a.name === agentName);
 
@@ -230,16 +257,22 @@ export async function runSingleAgent(
         });
         await loader.reload();
 
-        // Resolve model: tool parameter > agent frontmatter > default (unset)
+        // Resolve model: tool parameter > agent frontmatter > auto-select cheapest > inherit parent default
         let resolvedModel: Model<any> | undefined;
         const modelSpec = modelOverride ?? (agent.model ? parseModelString(agent.model) : undefined);
         if (modelSpec && modelRegistry) {
+            // Explicit model specified — look it up
             resolvedModel = modelRegistry.find(modelSpec.provider, modelSpec.id);
             if (!resolvedModel) {
                 currentResult.exitCode = 1;
                 currentResult.stderr = `Model not found: ${modelSpec.provider}/${modelSpec.id}. Use the \`models\` command to see available models.`;
                 return currentResult;
             }
+        } else if (modelRegistry) {
+            // No explicit model — auto-select the cheapest available model
+            resolvedModel = selectLightweightModel(modelRegistry);
+            // If no available models at all, resolvedModel stays undefined and
+            // createAgentSession will fall back to its own default selection.
         }
 
         const { session } = await createAgentSession({

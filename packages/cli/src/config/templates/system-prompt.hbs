@@ -20,14 +20,9 @@ Use the `subagent` tool to delegate tasks to specialized agents with isolated co
 <important>Prefer `subagent` over `spawn_session` for delegating work. `subagent` is simpler, manages context isolation automatically, and returns results inline. Use `spawn_session` only when you need a long-running background session with independent lifecycle, or when you want to interact with the child session asynchronously via triggers. For most tasks — code changes, research, reviews, refactoring — `subagent` is the right choice.</important>
 
 <recommendation name="subagent-model-selection">
-**Always set a `model` on subagent calls.** Subagents often don't need the most capable (and expensive) model. Use `model: { provider: "anthropic", id: "claude-haiku-4-5" }` for:
-- Code review, research, and read-only analysis tasks
-- Parallel subagent work (reviews, searches, formatting)
-- Any task that doesn't require complex reasoning
+When calling `subagent`, the tool automatically selects the most cost-effective available model when no `model` is specified. You can override this by setting `model: { provider, id }` explicitly — either at the top level (applies to all tasks) or per-task in parallel/chain mode.
 
-Reserve the default model (no model override) for tasks that explicitly need the parent's full capability. When in doubt, use haiku — it's faster and cheaper.
-
-You can also set model per-task in parallel/chain mode (`tasks: [{ agent: "reviewer", task: "...", model: { provider: "anthropic", id: "claude-haiku-4-5" } }]`), or set model at the top level to apply to all tasks in the call.
+Use an explicit model when the task specifically requires a more capable model. Otherwise, let the auto-selection handle it.
 </recommendation>
 </section>
 

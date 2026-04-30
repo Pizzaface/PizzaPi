@@ -141,8 +141,8 @@ describe("buildSystemPrompt", () => {
     test("contains subagent model recommendation", () => {
         const result = buildSystemPrompt();
         expect(result).toContain("subagent-model-selection");
-        expect(result).toContain("Always set a `model` on subagent calls");
-        expect(result).toContain("claude-haiku-4-5");
+        expect(result).toContain("automatically selects the most cost-effective");
+        expect(result).toContain("model: { provider, id }");
     });
 });
 
