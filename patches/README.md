@@ -50,7 +50,7 @@ Same Anthropic web-search and Claude Code credential fallback changes as 0.67.5,
 | `dist/providers/anthropic.js` | Preserves PizzaPi's Anthropic web-search patch |
 | `dist/utils/oauth/anthropic.js` | Preserves Claude Code Keychain / credential-file fallback |
 | `dist/env-api-keys.js` | Recognizes `OLLAMA_API_KEY` for provider `ollama-cloud` |
-| `dist/models.generated.js` | Adds bundled `ollama-cloud` provider models targeting `https://ollama.com/v1` with OpenAI-compatible defaults |
+| `dist/models.generated.js` / `dist/models.generated.d.ts` / `dist/types.d.ts` | Adds typed bundled `ollama-cloud` provider models targeting `https://ollama.com/v1` with conservative OpenAI-compatible defaults and context windows scraped from Ollama's cloud model tables |
 
 ## @mariozechner/pi-coding-agent@0.66.1 (replaced by 0.67.5 patch)
 
