@@ -329,7 +329,8 @@ export const toolSearchExtension: ExtensionFactory = (pi: any) => {
       evaluateAndDeferImpl();
     } catch (err) {
       if (isExtensionRuntimeNotInitializedError(err)) {
-        log.info("Tool search: runtime not initialized yet; skipping MCP registry sync");
+        // MCP can publish registry updates before pi binds runtime action methods.
+        // This is expected during startup; session_start/next registry update resyncs.
         return;
       }
       throw err;

@@ -1,8 +1,7 @@
-import * as React from "react";
 import { cn } from "@/lib/utils";
 
 import { RiClaudeFill, RiRobot2Fill } from "react-icons/ri";
-import { SiAmazon, SiGithub, SiGoogle, SiNvidia, SiOpenai } from "react-icons/si";
+import { SiAmazon, SiGithub, SiGoogle, SiNvidia, SiOllama, SiOpenai } from "react-icons/si";
 
 export interface ProviderIconProps {
   provider: string;
@@ -16,6 +15,7 @@ function pickIcon(provider: string) {
   // Common providers we support in PizzaPi
   if (p.includes("anthropic") || p.includes("claude")) return RiClaudeFill;
   if (p.includes("openai")) return SiOpenai;
+  if (p.includes("ollama")) return SiOllama;
   if (p.startsWith("google")) return SiGoogle;
   if (p.includes("github")) return SiGithub;
   if (p.includes("amazon") || p.includes("bedrock")) return SiAmazon;
@@ -25,12 +25,15 @@ function pickIcon(provider: string) {
 }
 
 export function ProviderIcon({ provider, className, title }: ProviderIconProps) {
-  const Icon = React.useMemo(() => pickIcon(provider), [provider]);
+  const Icon = pickIcon(provider);
+  const accessibilityProps = title
+    ? { title, "aria-label": title, role: "img" as const }
+    : { "aria-hidden": true as const };
+
   return (
     <Icon
       className={cn("shrink-0", className)}
-      title={title ?? provider}
-      aria-label={title ?? provider}
+      {...accessibilityProps}
     />
   );
 }

@@ -14,18 +14,44 @@ function piCodingAgentPath(subpath: string): string {
 describe("Ollama built-in provider", () => {
   test("pi-ai exposes bundled Ollama Cloud models with cloud base URL", async () => {
     const { getModels } = await import("@mariozechner/pi-ai");
-    const models = (getModels as (provider: string) => Array<any>)("ollama-cloud");
+    const models = getModels("ollama-cloud");
+    const modelRecords = models as Array<any>;
 
-    expect(models.length).toBeGreaterThan(0);
+    expect(modelRecords.length).toBeGreaterThan(0);
     for (const id of ["glm-5.1", "gpt-oss:20b", "kimi-k2.6", "qwen3-coder-next", "deepseek-v4-pro"]) {
-      expect(models.some((m) => m.id === id)).toBe(true);
+      expect(modelRecords.some((m) => m.id === id)).toBe(true);
     }
 
-    const glm = models.find((m) => m.id === "glm-5.1");
+    const glm = modelRecords.find((m) => m.id === "glm-5.1");
     expect(glm).toBeDefined();
     expect(glm?.provider).toBe("ollama-cloud");
     expect(glm?.baseUrl).toBe("https://ollama.com/v1");
     expect(glm?.api).toBe("openai-completions");
+    expect(glm?.compat).toMatchObject({
+      supportsStore: false,
+      supportsDeveloperRole: false,
+      supportsReasoningEffort: false,
+      supportsUsageInStreaming: false,
+      supportsLongCacheRetention: false,
+      supportsStrictMode: false,
+      maxTokensField: "max_tokens",
+    });
+  });
+
+  test("pi-ai exposes Ollama Cloud models with scraped context windows", async () => {
+    const { getModels } = await import("@mariozechner/pi-ai");
+    const models = getModels("ollama-cloud");
+    const contextById = new Map((models as Array<any>).map((model) => [model.id, model.contextWindow]));
+
+    expect(contextById.get("deepseek-v4-pro")).toBe(1048576);
+    expect(contextById.get("deepseek-v4-flash")).toBe(1048576);
+    expect(contextById.get("nemotron-3-nano:30b")).toBe(1048576);
+    expect(contextById.get("rnj-1:8b")).toBe(32768);
+    expect(contextById.get("ministral-3:8b")).toBe(262144);
+    expect(contextById.get("minimax-m2.7")).toBe(204800);
+    expect(contextById.get("gemma3:12b")).toBe(32768);
+    expect(contextById.get("mistral-large-3:675b")).toBe(262144);
+    expect(contextById.get("devstral-small-2:24b")).toBe(262144);
   });
 
   test("pi-ai resolves OLLAMA_API_KEY from environment for ollama-cloud", async () => {
@@ -33,7 +59,7 @@ describe("Ollama built-in provider", () => {
     const prev = process.env.OLLAMA_API_KEY;
     process.env.OLLAMA_API_KEY = "test-ollama-key";
     try {
-      expect((getEnvApiKey as (provider: string) => string | undefined)("ollama-cloud")).toBe("test-ollama-key");
+      expect(getEnvApiKey("ollama-cloud")).toBe("test-ollama-key");
     } finally {
       if (prev === undefined) delete process.env.OLLAMA_API_KEY;
       else process.env.OLLAMA_API_KEY = prev;
