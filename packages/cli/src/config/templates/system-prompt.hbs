@@ -18,6 +18,12 @@ Use the `spawn_session` tool to spawn long-running agent sessions (e.g., tasks t
 Use the `subagent` tool to delegate tasks to specialized agents with isolated context. A built-in `task` agent is always available for general-purpose work — use `subagent(agent: "task", task: "...")` to delegate any task without needing an agents folder. Additional agents are defined as markdown files in `~/.pizzapi/agents/` or `~/.claude/agents/` (user scope) and `.pizzapi/agents/` or `.claude/agents/` (project scope). Modes: single (`agent` + `task`), parallel (`tasks` array), chain (`chain` array with `\{{previous}}` placeholder). Set `agentScope: "both"` to include project-local agents.
 
 <important>Prefer `subagent` over `spawn_session` for delegating work. `subagent` is simpler, manages context isolation automatically, and returns results inline. Use `spawn_session` only when you need a long-running background session with independent lifecycle, or when you want to interact with the child session asynchronously via triggers. For most tasks — code changes, research, reviews, refactoring — `subagent` is the right choice.</important>
+
+<recommendation name="subagent-model-selection">
+When calling `subagent`, the tool automatically selects the most cost-effective available model when no `model` is specified. You can override this by setting `model: { provider, id }` explicitly — either at the top level (applies to all tasks) or per-task in parallel/chain mode.
+
+Use an explicit model when the task specifically requires a more capable model. Otherwise, let the auto-selection handle it.
+</recommendation>
 </section>
 
 <section name="plan-mode">

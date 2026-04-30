@@ -11,6 +11,8 @@ import {
     shouldSpillParallelOutput,
     summarizeResultForStreaming,
     summarizeResultsForStreaming,
+    parseModelString,
+    selectLightweightModel,
 } from "./subagent.js";
 import { _setGlobalConfigDir, loadConfig, loadGlobalConfig } from "../config.js";
 
@@ -341,5 +343,96 @@ describe("subagent config", () => {
         const mergedConfig = loadConfig(projectDir);
         expect(mergedConfig.subagent?.maxParallelTasks).toBe(100); // project wins in merged
         _setGlobalConfigDir(null);
+    });
+});
+
+describe("parseModelString", () => {
+    test("resolves 'haiku' alias", () => {
+        expect(parseModelString("haiku")).toEqual({ provider: "anthropic", id: "claude-haiku-4-5" });
+    });
+
+    test("resolves 'sonnet' alias", () => {
+        expect(parseModelString("sonnet")).toEqual({ provider: "anthropic", id: "claude-sonnet-4-20250514" });
+    });
+
+    test("resolves 'opus' alias", () => {
+        expect(parseModelString("opus")).toEqual({ provider: "anthropic", id: "claude-opus-4-5" });
+    });
+
+    test("resolves aliases case-insensitively", () => {
+        expect(parseModelString("Haiku")).toEqual({ provider: "anthropic", id: "claude-haiku-4-5" });
+        expect(parseModelString("SONNET")).toEqual({ provider: "anthropic", id: "claude-sonnet-4-20250514" });
+    });
+
+    test("resolves 'provider/id' format", () => {
+        expect(parseModelString("google/gemini-2.5-pro")).toEqual({ provider: "google", id: "gemini-2.5-pro" });
+    });
+
+    test("resolves bare model ID (assumes anthropic)", () => {
+        expect(parseModelString("claude-haiku-4-5")).toEqual({ provider: "anthropic", id: "claude-haiku-4-5" });
+    });
+
+    test("returns undefined for 'inherit'", () => {
+        expect(parseModelString("inherit")).toBeUndefined();
+    });
+
+    test("returns undefined for empty string", () => {
+        expect(parseModelString("")).toBeUndefined();
+    });
+
+    test("trims whitespace", () => {
+        expect(parseModelString("  haiku  ")).toEqual({ provider: "anthropic", id: "claude-haiku-4-5" });
+    });
+});
+
+describe("selectLightweightModel", () => {
+    const makeRegistry = (models: Array<{ provider: string; id: string; cost: { input: number; output: number; cacheRead: number; cacheWrite: number } }>) => ({
+        find: (provider: string, modelId: string) => models.find(m => m.provider === provider && m.id === modelId) as any,
+        getAvailable: () => models as any[],
+    });
+
+    test("selects the cheapest model by output cost", () => {
+        const registry = makeRegistry([
+            { provider: "anthropic", id: "claude-opus-4-5", cost: { input: 15, output: 75, cacheRead: 1.5, cacheWrite: 18.75 } },
+            { provider: "anthropic", id: "claude-sonnet-4", cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 } },
+            { provider: "anthropic", id: "claude-haiku-4-5", cost: { input: 0.8, output: 4, cacheRead: 0.08, cacheWrite: 1 } },
+        ]);
+        const selected = selectLightweightModel(registry);
+        expect(selected).toBeDefined();
+        expect(selected!.id).toBe("claude-haiku-4-5");
+    });
+
+    test("returns undefined when no models are available", () => {
+        const registry = makeRegistry([]);
+        expect(selectLightweightModel(registry)).toBeUndefined();
+    });
+
+    test("returns the only model if just one is available", () => {
+        const registry = makeRegistry([
+            { provider: "google", id: "gemini-2.5-pro", cost: { input: 1.25, output: 10, cacheRead: 0, cacheWrite: 0 } },
+        ]);
+        const selected = selectLightweightModel(registry);
+        expect(selected).toBeDefined();
+        expect(selected!.id).toBe("gemini-2.5-pro");
+    });
+
+    test("selects across providers when multiple are available", () => {
+        const registry = makeRegistry([
+            { provider: "anthropic", id: "claude-opus-4-5", cost: { input: 15, output: 75, cacheRead: 0, cacheWrite: 0 } },
+            { provider: "google", id: "gemini-2.5-flash", cost: { input: 0.15, output: 0.6, cacheRead: 0, cacheWrite: 0 } },
+            { provider: "anthropic", id: "claude-haiku-4-5", cost: { input: 0.8, output: 4, cacheRead: 0, cacheWrite: 0 } },
+        ]);
+        const selected = selectLightweightModel(registry);
+        expect(selected!.id).toBe("gemini-2.5-flash");
+    });
+
+    test("does not mutate the registry's model array", () => {
+        const models = [
+            { provider: "anthropic", id: "opus", cost: { input: 15, output: 75, cacheRead: 0, cacheWrite: 0 } },
+            { provider: "anthropic", id: "haiku", cost: { input: 0.8, output: 4, cacheRead: 0, cacheWrite: 0 } },
+        ];
+        const registry = makeRegistry(models);
+        selectLightweightModel(registry);
+        expect(models[0].id).toBe("opus"); // not reordered
     });
 });

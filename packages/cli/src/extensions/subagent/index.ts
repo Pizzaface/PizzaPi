@@ -40,10 +40,20 @@ import {
     type SubagentDetails,
     type SingleResult,
 } from "./types.js";
-import { runSingleAgent, mapWithConcurrencyLimit } from "./engine.js";
+import { runSingleAgent, mapWithConcurrencyLimit, type ModelOverride } from "./engine.js";
 import { renderSubagentCall, renderSubagentResult } from "./render.js";
 
 // ── Tool parameter schemas (JSON Schema) ───────────────────────────────
+
+const ModelSchema = {
+    type: "object",
+    description: "Model override for the subagent session. If omitted, uses the agent definition's model or falls back to the default model.",
+    properties: {
+        provider: { type: "string", description: "Model provider (e.g., 'anthropic', 'google', 'openai')" },
+        id: { type: "string", description: "Model ID (e.g., 'claude-haiku-4-5', 'gemini-2.5-pro')" },
+    },
+    required: ["provider", "id"],
+} as const;
 
 const TaskItemSchema = {
     type: "object",
@@ -51,6 +61,7 @@ const TaskItemSchema = {
         agent: { type: "string", description: "Name of the agent to invoke" },
         task: { type: "string", description: "Task to delegate to the agent" },
         cwd: { type: "string", description: "Working directory for the agent process" },
+        model: ModelSchema,
     },
     required: ["agent", "task"],
 } as const;
@@ -61,6 +72,7 @@ const ChainItemSchema = {
         agent: { type: "string", description: "Name of the agent to invoke" },
         task: { type: "string", description: "Task with optional {previous} placeholder for prior output" },
         cwd: { type: "string", description: "Working directory for the agent process" },
+        model: ModelSchema,
     },
     required: ["agent", "task"],
 } as const;
@@ -92,6 +104,7 @@ const SubagentParams = {
             default: true,
         },
         cwd: { type: "string", description: "Working directory for the agent process (single mode)" },
+        model: ModelSchema,
     },
 } as const;
 
@@ -106,6 +119,7 @@ export const subagentExtension = (pi: ExtensionAPI) => {
             "Modes: single (agent + task), parallel (tasks array), chain (sequential with {previous} placeholder).",
             'Default agent scope is "user" (from ~/.pizzapi/agents and ~/.claude/agents).',
             'To enable project-local agents in .pizzapi/agents or .claude/agents, set agentScope: "both" (or "project").',
+            "Set `model: { provider, id }` to override the model for the subagent session (recommended: use haiku for most tasks).",
             "Compatible with Claude Code agent definition files.",
         ].join(" "),
         parameters: SubagentParams as any,
@@ -120,11 +134,12 @@ export const subagentExtension = (pi: ExtensionAPI) => {
             const params = (rawParams ?? {}) as {
                 agent?: string;
                 task?: string;
-                tasks?: Array<{ agent: string; task: string; cwd?: string }>;
-                chain?: Array<{ agent: string; task: string; cwd?: string }>;
+                tasks?: Array<{ agent: string; task: string; cwd?: string; model?: { provider: string; id: string } }>;
+                chain?: Array<{ agent: string; task: string; cwd?: string; model?: { provider: string; id: string } }>;
                 agentScope?: AgentScope;
                 confirmProjectAgents?: boolean;
                 cwd?: string;
+                model?: { provider: string; id: string };
             };
             const agentScope: AgentScope = params.agentScope ?? "user";
             const pluginAgentDirs = getPluginAgentPaths(ctx.cwd);
@@ -223,6 +238,7 @@ export const subagentExtension = (pi: ExtensionAPI) => {
                     const result = await runSingleAgent(
                         ctx.cwd, agents, step.agent, taskWithContext,
                         step.cwd, i + 1, signal, chainUpdate, makeDetails("chain"),
+                        step.model ?? params.model, ctx.modelRegistry,
                     );
                     results.push(result);
 
@@ -286,6 +302,7 @@ export const subagentExtension = (pi: ExtensionAPI) => {
                             }
                         },
                         makeDetails("parallel"),
+                        t.model ?? params.model, ctx.modelRegistry,
                     );
                     allResults[index] = summarizeResultForStreaming(result);
                     emitParallelUpdate();
@@ -333,6 +350,7 @@ export const subagentExtension = (pi: ExtensionAPI) => {
                 const result = await runSingleAgent(
                     ctx.cwd, agents, params.agent, params.task,
                     params.cwd, undefined, signal, onUpdate, makeDetails("single"),
+                    params.model, ctx.modelRegistry,
                 );
                 if (isFailed(result)) {
                     const errorMsg = result.errorMessage || result.stderr || getFinalOutput(result.messages) || "(no output)";
@@ -369,5 +387,5 @@ export const subagentExtension = (pi: ExtensionAPI) => {
 
 export * from "./types.js";
 export * from "./format.js";
-export { runSingleAgent, resolveTools, mapWithConcurrencyLimit, BUILTIN_TOOLS } from "./engine.js";
+export { runSingleAgent, resolveTools, mapWithConcurrencyLimit, BUILTIN_TOOLS, parseModelString, selectLightweightModel, type ModelOverride, type ModelRegistryLike } from "./engine.js";
 export { renderSubagentCall, renderSubagentResult } from "./render.js";

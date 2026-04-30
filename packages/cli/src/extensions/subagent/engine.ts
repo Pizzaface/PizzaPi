@@ -13,6 +13,7 @@ import {
     createReadOnlyTools,
 } from "@mariozechner/pi-coding-agent";
 import type { AgentConfig } from "../subagent-agents.js";
+import type { Model } from "@mariozechner/pi-ai";
 import { defaultAgentDir } from "../../config.js";
 import type { SingleResult, SubagentDetails, OnUpdateCallback } from "./types.js";
 import { getFinalOutput, summarizeResultForStreaming } from "./types.js";
@@ -74,6 +75,74 @@ export async function mapWithConcurrencyLimit<TIn, TOut>(
 
 // ── Single-agent runner ────────────────────────────────────────────────
 
+export interface ModelOverride {
+    provider: string;
+    id: string;
+}
+
+// ── Model resolution helpers ───────────────────────────────────────────
+
+/** Common model shorthand aliases. */
+const MODEL_ALIASES: Record<string, { provider: string; id: string }> = {
+    haiku: { provider: "anthropic", id: "claude-haiku-4-5" },
+    sonnet: { provider: "anthropic", id: "claude-sonnet-4-20250514" },
+    opus: { provider: "anthropic", id: "claude-opus-4-5" },
+};
+
+/**
+ * Parse a model string from agent frontmatter into a {provider, id} pair.
+ *
+ * Accepts:
+ *   - Shorthand aliases: "haiku", "sonnet", "opus" → resolves to Anthropic model IDs
+ *   - Provider/id format: "anthropic/claude-haiku-4-5" → { provider: "anthropic", id: "claude-haiku-4-5" }
+ *   - Bare model ID (assumes Anthropic): "claude-haiku-4-5" → { provider: "anthropic", id: "claude-haiku-4-5" }
+ *   - "inherit" or empty string → undefined (use default)
+ */
+export function parseModelString(model: string): ModelOverride | undefined {
+    const trimmed = model.trim();
+    if (!trimmed || trimmed === "inherit") return undefined;
+
+    // Check alias map first
+    const alias = MODEL_ALIASES[trimmed.toLowerCase()];
+    if (alias) return alias;
+
+    // provider/id format
+    const slashIdx = trimmed.indexOf("/");
+    if (slashIdx > 0) {
+        return { provider: trimmed.slice(0, slashIdx), id: trimmed.slice(slashIdx + 1) };
+    }
+
+    // Bare model ID — assume anthropic
+    return { provider: "anthropic", id: trimmed };
+}
+
+/** Narrow interface for the model registry — only what the engine needs. */
+export interface ModelRegistryLike {
+    find: (provider: string, modelId: string) => Model<any> | undefined;
+    getAvailable: () => Model<any>[];
+}
+
+/**
+ * Select the cheapest available model from the registry.
+ *
+ * When no model is explicitly specified (neither by the caller nor the agent
+ * frontmatter), subagents should use the most cost-effective model rather
+ * than inheriting the parent's (potentially expensive) default.
+ *
+ * Selection strategy:
+ *   1. Among available models, sort by output costascending.
+ *   2. Pick the cheapest model that has credentials configured.
+ *   3. If no available models, return undefined (fall back to default).
+ */
+export function selectLightweightModel(registry: ModelRegistryLike): Model<any> | undefined {
+    const available = registry.getAvailable();
+    if (available.length === 0) return undefined;
+
+    // Sort by output token cost ascending — cheapest first
+    const sorted = [...available].sort((a, b) => a.cost.output - b.cost.output);
+    return sorted[0];
+}
+
 export async function runSingleAgent(
     defaultCwd: string,
     agents: AgentConfig[],
@@ -84,6 +153,8 @@ export async function runSingleAgent(
     signal: AbortSignal | undefined,
     onUpdate: OnUpdateCallback | undefined,
     makeDetails: (results: SingleResult[]) => SubagentDetails,
+    modelOverride?: ModelOverride,
+    modelRegistry?: ModelRegistryLike,
 ): Promise<SingleResult> {
     const agent = agents.find((a) => a.name === agentName);
 
@@ -186,11 +257,30 @@ export async function runSingleAgent(
         });
         await loader.reload();
 
+        // Resolve model: tool parameter > agent frontmatter > auto-select cheapest > inherit parent default
+        let resolvedModel: Model<any> | undefined;
+        const modelSpec = modelOverride ?? (agent.model ? parseModelString(agent.model) : undefined);
+        if (modelSpec && modelRegistry) {
+            // Explicit model specified — look it up
+            resolvedModel = modelRegistry.find(modelSpec.provider, modelSpec.id);
+            if (!resolvedModel) {
+                currentResult.exitCode = 1;
+                currentResult.stderr = `Model not found: ${modelSpec.provider}/${modelSpec.id}. Use the \`models\` command to see available models.`;
+                return currentResult;
+            }
+        } else if (modelRegistry) {
+            // No explicit model — auto-select the cheapest available model
+            resolvedModel = selectLightweightModel(modelRegistry);
+            // If no available models at all, resolvedModel stays undefined and
+            // createAgentSession will fall back to its own default selection.
+        }
+
         const { session } = await createAgentSession({
             cwd: sessionCwd,
             agentDir: defaultAgentDir(),
             tools,
             resourceLoader: loader,
+            ...(resolvedModel && { model: resolvedModel }),
         });
 
         // Subscribe to events to track messages and usage

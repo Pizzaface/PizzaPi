@@ -137,6 +137,13 @@ describe("buildSystemPrompt", () => {
         expect(result).toContain("AskUserQuestion");
         expect(result).not.toContain("{{>");
     });
+
+    test("contains subagent model recommendation", () => {
+        const result = buildSystemPrompt();
+        expect(result).toContain("subagent-model-selection");
+        expect(result).toContain("automatically selects the most cost-effective");
+        expect(result).toContain("model: { provider, id }");
+    });
 });
 
 describe("rewriteForClaudeCodeProvider", () => {
