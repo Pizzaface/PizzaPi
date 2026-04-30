@@ -460,6 +460,13 @@ function buildMcpSummary(counts: McpStatusCounts): string {
   return parts.join(", ");
 }
 
+export function shouldLogMcpEagerInitFailure(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  if (/aborted/i.test(msg)) return false;
+  if (/Extension runtime not initialized/i.test(msg)) return false;
+  return true;
+}
+
 export function reconcileMcpActiveTools(input: {
   currentActive: Iterable<string>;
   previousMcpToolNames: Iterable<string>;
@@ -879,7 +886,7 @@ export const mcpExtension: ExtensionFactory = async (pi: any) => {
       // Don't crash the factory — session_start will handle diagnostics.
       // Ignore expected aborts when session lifecycle changes.
       const msg = err instanceof Error ? err.message : String(err);
-      if (!/aborted/i.test(msg)) {
+      if (shouldLogMcpEagerInitFailure(err)) {
         log.warn(`pizzapi: MCP eager init failed, will retry in session_start: ${msg}`);
       }
       return null;

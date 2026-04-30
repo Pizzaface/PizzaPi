@@ -270,7 +270,15 @@ describe("toolSearchExtension lifecycle sync", () => {
     const statusCommand = registeredCommands.get("tool-search");
     expect(statusCommand).toBeDefined();
 
-    expect(() => pi.events.emit("mcp:registry_updated", { server: "github" })).not.toThrow();
+    const originalLog = console.log;
+    const log = mock((..._args: unknown[]) => undefined);
+    console.log = log as unknown as typeof console.log;
+    try {
+      expect(() => pi.events.emit("mcp:registry_updated", { server: "github" })).not.toThrow();
+    } finally {
+      console.log = originalLog;
+    }
+    expect(log).not.toHaveBeenCalled();
 
     const skippedNotes: string[] = [];
     statusCommand.handler("status", { ui: { notify: (msg: string) => skippedNotes.push(msg) } });

@@ -13,6 +13,14 @@ import { mergeSandboxConfig } from "./sandbox.js";
 import { createLogger } from "@pizzapi/tools";
 
 const log = createLogger("hooks");
+const emittedLoadConfigWarnings = new Set<string>();
+
+function warnLoadConfigOnce(projectPath: string, code: string, message: string): void {
+    const key = `${projectPath}:${code}:${message}`;
+    if (emittedLoadConfigWarnings.has(key)) return;
+    emittedLoadConfigWarnings.add(key);
+    log.warn(message);
+}
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
@@ -130,7 +138,9 @@ export function loadConfig(cwd: string = process.cwd()): PizzaPiConfig {
     const projectHooksTrusted = isProjectHooksTrusted(global);
     const projectHooks = projectHooksTrusted ? project.hooks : undefined;
     if (project.hooks && !projectHooksTrusted) {
-        log.warn(
+        warnLoadConfigOnce(
+            projectPath,
+            "project-hooks-untrusted",
             "Project hooks found in .pizzapi/config.json but not trusted. " +
                 'Set "allowProjectHooks": true in ~/.pizzapi/config.json or ' +
                 "PIZZAPI_ALLOW_PROJECT_HOOKS=1 to enable.",
@@ -147,14 +157,18 @@ export function loadConfig(cwd: string = process.cwd()): PizzaPiConfig {
     // per-project relay configs are legitimate, but users should be aware.
     if ("apiKey" in project) {
         if (global.apiKey !== undefined) {
-            log.warn(
+            warnLoadConfigOnce(
+                projectPath,
+                "project-apiKey-global-wins",
                 "Project config .pizzapi/config.json contains 'apiKey' — " +
                     "global config value will be used instead. " +
                     "Set it in ~/.pizzapi/config.json only.",
             );
             config.apiKey = global.apiKey;
         } else {
-            log.warn(
+            warnLoadConfigOnce(
+                projectPath,
+                "project-apiKey-only",
                 "Project config .pizzapi/config.json contains 'apiKey' — " +
                     "consider moving this to ~/.pizzapi/config.json for better security.",
             );
@@ -168,14 +182,18 @@ export function loadConfig(cwd: string = process.cwd()): PizzaPiConfig {
 
     if ("relayUrl" in project) {
         if (global.relayUrl !== undefined) {
-            log.warn(
+            warnLoadConfigOnce(
+                projectPath,
+                "project-relayUrl-global-wins",
                 "Project config .pizzapi/config.json contains 'relayUrl' — " +
                     "global config value will be used instead. " +
                     "Set it in ~/.pizzapi/config.json only.",
             );
             config.relayUrl = global.relayUrl;
         } else {
-            log.warn(
+            warnLoadConfigOnce(
+                projectPath,
+                "project-relayUrl-only",
                 "Project config .pizzapi/config.json contains 'relayUrl' — " +
                     "consider moving this to ~/.pizzapi/config.json for better security.",
             );
@@ -220,7 +238,9 @@ export function loadConfig(cwd: string = process.cwd()): PizzaPiConfig {
     // P0 fix: warn-and-load by default. allowProjectMcp/PIZZAPI_ALLOW_PROJECT_MCP silences
     // the warning rather than being required to enable loading.
     if (hasProjectMcp && !projectMcpTrusted) {
-        log.warn(
+        warnLoadConfigOnce(
+            projectPath,
+            "project-mcp-untrusted",
             "Project MCP servers found in .pizzapi/config.json. " +
                 'Set "allowProjectMcp": true in ~/.pizzapi/config.json or ' +
                 "PIZZAPI_ALLOW_PROJECT_MCP=1 to suppress this warning.",

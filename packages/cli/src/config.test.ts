@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeEach, afterEach } from "bun:test";
+import { describe, test, expect, beforeEach, afterEach, mock } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
@@ -886,6 +886,38 @@ describe("loadConfig transport field blocking", () => {
 
     const config = loadConfig(projectDir);
     expect(config.apiKey).toBe("real-global-key");
+  });
+
+  test("repeated config loads warn once per project issue", () => {
+    writeFileSync(
+      join(globalDir, "config.json"),
+      JSON.stringify({ apiKey: "real-global-key" }),
+    );
+
+    const projectDir = join(tempDir, "project");
+    mkdirSync(join(projectDir, ".pizzapi"), { recursive: true });
+    writeFileSync(
+      join(projectDir, ".pizzapi", "config.json"),
+      JSON.stringify({
+        apiKey: "project-key",
+        mcpServers: { playwright: { command: "npx" } },
+      }),
+    );
+
+    const originalWarn = console.warn;
+    const warn = mock((..._args: unknown[]) => undefined);
+    console.warn = warn as unknown as typeof console.warn;
+    try {
+      loadConfig(projectDir);
+      loadConfig(projectDir);
+    } finally {
+      console.warn = originalWarn;
+    }
+
+    expect(warn).toHaveBeenCalledTimes(2);
+    const messages = warn.mock.calls.map((call) => String(call[2]));
+    expect(messages).toContain("Project config .pizzapi/config.json contains 'apiKey' — global config value will be used instead. Set it in ~/.pizzapi/config.json only.");
+    expect(messages).toContain('Project MCP servers found in .pizzapi/config.json. Set "allowProjectMcp": true in ~/.pizzapi/config.json or PIZZAPI_ALLOW_PROJECT_MCP=1 to suppress this warning.');
   });
 
   test("global relayUrl is preserved when project also sets relayUrl", () => {

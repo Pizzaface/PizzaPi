@@ -1,5 +1,17 @@
 import { describe, expect, test } from "bun:test";
-import { buildMcpStatusModel, decorateMcpSnapshotWithToolSearchState, reconcileMcpActiveTools } from "./mcp-extension.js";
+import { buildMcpStatusModel, decorateMcpSnapshotWithToolSearchState, reconcileMcpActiveTools, shouldLogMcpEagerInitFailure } from "./mcp-extension.js";
+
+describe("shouldLogMcpEagerInitFailure", () => {
+  test("suppresses expected pre-runtime and abort eager init failures", () => {
+    expect(shouldLogMcpEagerInitFailure(new Error("Extension runtime not initialized. Action methods cannot be called during extension loading."))).toBe(false);
+    expect(shouldLogMcpEagerInitFailure(new Error("operation aborted"))).toBe(false);
+  });
+
+  test("keeps unexpected eager init failures visible", () => {
+    expect(shouldLogMcpEagerInitFailure(new Error("stdio handshake failed"))).toBe(true);
+    expect(shouldLogMcpEagerInitFailure("stdio handshake failed")).toBe(true);
+  });
+});
 
 describe("buildMcpStatusModel", () => {
   test("classifies loaded, deferred, partial, and disabled MCP state", () => {
