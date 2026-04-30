@@ -156,6 +156,10 @@ function getServerDeferConfig(config: PizzaPiConfig & McpConfig): Map<string, bo
 
 // ── Extension ───────────────────────────────────────────────────────────────
 
+function isExtensionRuntimeNotInitializedError(err: unknown): boolean {
+  return err instanceof Error && /Extension runtime not initialized/i.test(err.message);
+}
+
 export const toolSearchExtension: ExtensionFactory = (pi: any) => {
   const state: ToolSearchState = {
     deferredTools: new Map(),
@@ -187,11 +191,7 @@ export const toolSearchExtension: ExtensionFactory = (pi: any) => {
     }),
   });
 
-  /**
-   * Evaluate whether tool search should activate, and if so, which tools to defer.
-   * Called after MCP tools are loaded (on session_start, after MCP extension runs).
-   */
-  function evaluateAndDefer(): void {
+  function evaluateAndDeferImpl(): void {
     const config = loadConfig(process.cwd());
     const tsConfig = config.toolSearch;
 
@@ -316,6 +316,24 @@ export const toolSearchExtension: ExtensionFactory = (pi: any) => {
       `Tool search active: deferred ${state.deferredTools.size} tools ` +
       `(${totalMcpChars} chars, threshold ${threshold})`
     );
+  }
+
+  /**
+   * Evaluate whether tool search should activate, and if so, which tools to defer.
+   * MCP eager loading can emit `mcp:registry_updated` before Runner.bindCore()
+   * wires real action methods into the shared extension runtime, so we ignore
+   * those pre-bind events and wait for a later lifecycle event to resync.
+   */
+  function evaluateAndDefer(): void {
+    try {
+      evaluateAndDeferImpl();
+    } catch (err) {
+      if (isExtensionRuntimeNotInitializedError(err)) {
+        log.info("Tool search: runtime not initialized yet; skipping MCP registry sync");
+        return;
+      }
+      throw err;
+    }
   }
 
   // ── Register the search_tools tool ──────────────────────────────────────

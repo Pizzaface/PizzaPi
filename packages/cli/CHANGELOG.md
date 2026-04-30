@@ -6,6 +6,20 @@ ships with — this is how the TUI detects "what's new" on startup.
 
 ## [Unreleased]
 
+## [0.70.6] - 2026-04-30
+
+### Upstream (pi 0.67.5 → 0.70.6)
+
+- Refreshed PizzaPi's upstream package set to `@mariozechner/pi-*` `0.70.6`
+- Re-ported PizzaPi's existing patches for config-dir flattening, extension session control, retryable JSON stream errors, Anthropic web search, and Claude Code credential fallback
+- Added built-in Ollama Cloud provider wiring to the patched upstream packages
+
+### PizzaPi
+
+- **First-party Ollama Cloud provider** — built-in `ollama-cloud` models now target `https://ollama.com/v1` and use `OLLAMA_API_KEY`
+- **Bundled Ollama model catalog** — PizzaPi ships a broad initial Ollama Cloud model list, including `glm-5.1`, `gpt-oss`, `kimi`, `qwen`, `deepseek`, `gemma`, and `devstral` families
+- **Docs refresh** — installation, getting started, environment-variable, and CLI reference docs now cover Ollama Cloud setup
+
 ## [0.63.1] - 2026-03-27
 
 ### Upstream (pi 0.58.3 → 0.63.1)

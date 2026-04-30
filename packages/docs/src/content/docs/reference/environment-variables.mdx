@@ -69,6 +69,18 @@ These variables control Anthropic's server-side web search tool. They can also b
 | `PIZZAPI_WEB_SEARCH_ALLOWED_DOMAINS` | Comma-separated list of domains to restrict search results to. | — |
 | `PIZZAPI_WEB_SEARCH_BLOCKED_DOMAINS` | Comma-separated list of domains to exclude from search results. | — |
 
+### Provider Authentication Variables
+
+These variables are read by the underlying `pi` model providers. Set them in the same environment as `pizzapi` or the runner daemon.
+
+| Variable | Description | Default |
+|---|---|---|
+| `OLLAMA_API_KEY` | API key for the built-in Ollama Cloud provider (`https://ollama.com/v1`). Required to use Ollama Cloud models without entering the key manually through `/login`. | — |
+
+<Aside type="note">
+  If you run PizzaPi as a background runner service, export provider variables like <code>OLLAMA_API_KEY</code> in the service environment too — setting them only in your interactive shell is not enough for spawned worker sessions.
+</Aside>
+
 ### Worker Safe-Mode Variables
 
 These variables control which subsystems are loaded by runner-spawned worker sessions. They're equivalent to the CLI's `--no-*` flags. See [Safe Mode & Startup Performance](/PizzaPi/security/sandbox/) for details.
