@@ -139,6 +139,18 @@ describe("pi-coding-agent patch application", () => {
         expect(source).not.toContain('return join(homedir(), CONFIG_DIR_NAME, "agent")');
         expect(source).toContain("PATCH(pizzapi): flat directory structure");
     });
+
+    test("config.js: getChangelogPath honors PIZZAPI_CHANGELOG_PATH", async () => {
+        const { getChangelogPath } = await import(piCodingAgentPath("dist/config.js"));
+        const prev = process.env.PIZZAPI_CHANGELOG_PATH;
+        process.env.PIZZAPI_CHANGELOG_PATH = "/tmp/pizzapi-changelog-test.md";
+        try {
+            expect(getChangelogPath()).toBe("/tmp/pizzapi-changelog-test.md");
+        } finally {
+            if (prev === undefined) delete process.env.PIZZAPI_CHANGELOG_PATH;
+            else process.env.PIZZAPI_CHANGELOG_PATH = prev;
+        }
+    });
 });
 
 // ---------------------------------------------------------------------------

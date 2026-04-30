@@ -1,0 +1,197 @@
+diff --git a/dist/config.js b/dist/config.js
+--- a/dist/config.js
++++ b/dist/config.js
+@@ -243,6 +243,10 @@
+ }
+ /** Get path to CHANGELOG.md */
+ export function getChangelogPath() {
++    // PATCH(pizzapi): allow PizzaPi to redirect to its own changelog
++    if (process.env.PIZZAPI_CHANGELOG_PATH) {
++        return resolve(process.env.PIZZAPI_CHANGELOG_PATH);
++    }
+     return resolve(join(getPackageDir(), "CHANGELOG.md"));
+ }
+ /**
+@@ -268,7 +272,8 @@
+ export const PACKAGE_NAME = pkg.name || "@mariozechner/pi-coding-agent";
+ export const APP_NAME = piConfigName || "pi";
+ export const APP_TITLE = piConfigName ? APP_NAME : "π";
+-export const CONFIG_DIR_NAME = pkg.piConfig?.configDir || ".pi";
++// PATCH(pizzapi): override configDir
++export const CONFIG_DIR_NAME = ".pizzapi";
+ export const VERSION = pkg.version || "0.0.0";
+ // e.g., PI_CODING_AGENT_DIR or TAU_CODING_AGENT_DIR
+ export const ENV_AGENT_DIR = `${APP_NAME.toUpperCase()}_CODING_AGENT_DIR`;
+@@ -279,20 +284,20 @@
+     return `${baseUrl}#${gistId}`;
+ }
+ // =============================================================================
+-// User Config Paths (~/.pi/agent/*)
++// User Config Paths (~/.pizzapi/*)
+ // =============================================================================
+-/** Get the agent config directory (e.g., ~/.pi/agent/) */
++// PATCH(pizzapi): flat directory structure
++/** Get the agent config directory (e.g., ~/.pizzapi/) */
+ export function getAgentDir() {
+     const envDir = process.env[ENV_AGENT_DIR];
+     if (envDir) {
+-        // Expand tilde to home directory
+         if (envDir === "~")
+             return homedir();
+         if (envDir.startsWith("~/"))
+             return homedir() + envDir.slice(1);
+         return envDir;
+     }
+-    return join(homedir(), CONFIG_DIR_NAME, "agent");
++    return join(homedir(), CONFIG_DIR_NAME);
+ }
+ /** Get path to user's custom themes directory */
+ export function getCustomThemesDir() {
+diff --git a/dist/core/agent-session.js b/dist/core/agent-session.js
+--- a/dist/core/agent-session.js
++++ b/dist/core/agent-session.js
+@@ -1927,7 +1927,8 @@
+             return false;
+         const err = message.errorMessage;
+         // Match: overloaded_error, provider returned error, rate limit, 429, 500, 502, 503, 504, service unavailable, network/connection errors (including connection lost), fetch failed, request ended without sending chunks, HTTP/2 closed before response, terminated, retry delay exceeded
+-        return /overloaded|provider.?returned.?error|rate.?limit|too many requests|429|500|502|503|504|service.?unavailable|server.?error|internal.?error|network.?error|connection.?error|connection.?refused|connection.?lost|other side closed|fetch failed|upstream.?connect|reset before headers|socket hang up|ended without|http2 request did not get a response|timed? out|timeout|terminated|retry delay/i.test(err);
++        // PATCH(pizzapi): add JSON parse errors to retryable patterns
++        return /overloaded|provider.?returned.?error|rate.?limit|too many requests|429|500|502|503|504|service.?unavailable|server.?error|internal.?error|network.?error|connection.?error|connection.?refused|connection.?lost|other side closed|fetch failed|upstream.?connect|reset before headers|socket hang up|ended without|http2 request did not get a response|timed? out|timeout|terminated|retry delay|json.?parse.?error|unexpected.?end.?of.?json/i.test(err);
+     }
+     /**
+      * Handle retryable errors with exponential backoff.
+diff --git a/dist/core/extensions/loader.js b/dist/core/extensions/loader.js
+--- a/dist/core/extensions/loader.js
++++ b/dist/core/extensions/loader.js
+@@ -119,6 +119,9 @@
+         setSessionName: notInitialized,
+         getSessionName: notInitialized,
+         setLabel: notInitialized,
++        // PATCH(pizzapi): session control for extensions
++        newSession: () => Promise.reject(new Error("Extension runtime not initialized")),
++        switchSession: () => Promise.reject(new Error("Extension runtime not initialized")),
+         getActiveTools: notInitialized,
+         getAllTools: notInitialized,
+         setActiveTools: notInitialized,
+@@ -215,6 +218,13 @@
+         setSessionName(name) {
+             runtime.assertActive();
+             runtime.setSessionName(name);
++        },
++        // PATCH(pizzapi): session control for extensions
++        newSession(options) {
++            return runtime.newSession(options);
++        },
++        switchSession(sessionPath) {
++            return runtime.switchSession(sessionPath);
+         },
+         getSessionName() {
+             runtime.assertActive();
+diff --git a/dist/core/extensions/runner.js b/dist/core/extensions/runner.js
+--- a/dist/core/extensions/runner.js
++++ b/dist/core/extensions/runner.js
+@@ -192,6 +192,9 @@
+             this.navigateTreeHandler = actions.navigateTree;
+             this.switchSessionHandler = actions.switchSession;
+             this.reloadHandler = actions.reload;
++            // PATCH(pizzapi): expose session control on runtime for extension access
++            this.runtime.newSession = (options) => this.newSessionHandler(options);
++            this.runtime.switchSession = (sessionPath) => this.switchSessionHandler(sessionPath);
+             return;
+         }
+         this.waitForIdleFn = async () => { };
+@@ -200,6 +203,9 @@
+         this.navigateTreeHandler = async () => ({ cancelled: false });
+         this.switchSessionHandler = async () => ({ cancelled: false });
+         this.reloadHandler = async () => { };
++        // PATCH(pizzapi): expose session control on runtime for extension access
++        this.runtime.newSession = (options) => this.newSessionHandler(options);
++        this.runtime.switchSession = (sessionPath) => this.switchSessionHandler(sessionPath);
+     }
+     setUIContext(uiContext) {
+         this.uiContext = uiContext ?? noOpUIContext;
+diff --git a/dist/core/resource-loader.js b/dist/core/resource-loader.js
+--- a/dist/core/resource-loader.js
++++ b/dist/core/resource-loader.js
+@@ -597,7 +597,9 @@
+         const extensions = [];
+         const errors = [];
+         for (const [index, factory] of this.extensionFactories.entries()) {
+-            const extensionPath = `<inline:${index + 1}>`;
++            // PATCH(pizzapi): use factory displayName/name instead of <inline:N>
++            const label = factory.displayName || factory.name || String(index + 1);
++            const extensionPath = `<inline:${label}>`;
+             try {
+                 const extension = await loadExtensionFromFactory(factory, this.cwd, this.eventBus, runtime, extensionPath);
+                 extensions.push(extension);
+diff --git a/dist/core/model-resolver.js b/dist/core/model-resolver.js
+--- a/dist/core/model-resolver.js
++++ b/dist/core/model-resolver.js
+@@ -20,6 +20,7 @@
+     "google-vertex": "gemini-3.1-pro-preview",
+     "github-copilot": "gpt-5.4",
+     openrouter: "moonshotai/kimi-k2.6",
++    "ollama-cloud": "glm-5.1",
+     "vercel-ai-gateway": "zai/glm-5.1",
+     xai: "grok-4.20-0309-reasoning",
+     groq: "openai/gpt-oss-120b",
+diff --git a/dist/modes/interactive/interactive-mode.js b/dist/modes/interactive/interactive-mode.js
+--- a/dist/modes/interactive/interactive-mode.js
++++ b/dist/modes/interactive/interactive-mode.js
+@@ -104,6 +104,7 @@
+     "opencode-go": "OpenCode Go",
+     openai: "OpenAI",
+     openrouter: "OpenRouter",
++    "ollama-cloud": "Ollama Cloud",
+     "vercel-ai-gateway": "Vercel AI Gateway",
+     xai: "xAI",
+     zai: "ZAI",
+@@ -504,12 +505,7 @@
+      */
+     async run() {
+         await this.init();
+-        // Start version check asynchronously
+-        checkForNewPiVersion(this.version).then((newVersion) => {
+-            if (newVersion) {
+-                this.showNewVersionNotification(newVersion);
+-            }
+-        });
++        // PATCH(pizzapi): version check removed
+         // Start package update check asynchronously
+         this.checkForPackageUpdates().then((updates) => {
+             if (updates.length > 0) {
+@@ -2873,17 +2869,6 @@
+     showWarning(warningMessage) {
+         this.chatContainer.addChild(new Spacer(1));
+         this.chatContainer.addChild(new Text(theme.fg("warning", `Warning: ${warningMessage}`), 1, 0));
+-        this.ui.requestRender();
+-    }
+-    showNewVersionNotification(newVersion) {
+-        const action = theme.fg("accent", `${APP_NAME} update`);
+-        const updateInstruction = theme.fg("muted", `New version ${newVersion} is available. Run `) + action;
+-        const changelogUrl = theme.fg("accent", "https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/CHANGELOG.md");
+-        const changelogLine = theme.fg("muted", "Changelog: ") + changelogUrl;
+-        this.chatContainer.addChild(new Spacer(1));
+-        this.chatContainer.addChild(new DynamicBorder((text) => theme.fg("warning", text)));
+-        this.chatContainer.addChild(new Text(`${theme.bold(theme.fg("warning", "Update Available"))}\n${updateInstruction}\n${changelogLine}`, 1, 0));
+-        this.chatContainer.addChild(new DynamicBorder((text) => theme.fg("warning", text)));
+         this.ui.requestRender();
+     }
+     showPackageUpdateNotification(packages) {
+@@ -3764,13 +3749,14 @@
+         await this.updateAvailableProviderCount();
+         this.footer.invalidate();
+         this.updateEditorBorderColor();
++        const actualAuthPath = this.session.modelRegistry.authStorage.storage?.authPath ?? getAuthPath();
+         if (selectedModel) {
+-            this.showStatus(`${actionLabel}. Selected ${selectedModel.id}. Credentials saved to ${getAuthPath()}`);
++            this.showStatus(`${actionLabel}. Selected ${selectedModel.id}. Credentials saved to ${actualAuthPath}`);
+             void this.maybeWarnAboutAnthropicSubscriptionAuth(selectedModel);
+             this.checkDaxnutsEasterEgg(selectedModel);
+         }
+         else {
+-            this.showStatus(`${actionLabel}. Credentials saved to ${getAuthPath()}`);
++            this.showStatus(`${actionLabel}. Credentials saved to ${actualAuthPath}`);
+             if (selectionError) {
+                 this.showError(selectionError);
+             }

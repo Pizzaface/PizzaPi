@@ -96,6 +96,19 @@ pizzapi models
 pizzapi usage
 ```
 
+### Quick start with Ollama Cloud
+
+PizzaPi now recognizes **Ollama Cloud** as a built-in API-key provider. Set `OLLAMA_API_KEY`, then open PizzaPi and select an Ollama Cloud model from `/model` (provider ID: `ollama-cloud`):
+
+```bash
+export OLLAMA_API_KEY=your_ollama_api_key
+pizzapi
+```
+
+The built-in provider targets the OpenAI-compatible Ollama Cloud endpoint at `https://ollama.com/v1`.
+
+If you already use local or self-hosted Ollama via `~/.pizzapi/models.json` under provider ID `ollama`, keep that config as-is — the built-in cloud provider is separate and shows up as `ollama-cloud`.
+
 ---
 
 ## Updating
@@ -116,7 +129,7 @@ PizzaPi stores all its data under `~/.pizzapi/`. Here's what each file is for:
 |------|-----------|---------|
 | `~/.pizzapi/config.json` | `pizzapi setup` / manual | CLI config: API key, relay URL, skills, hooks |
 | `~/.pizzapi/auth.json` | `/login` inside a session | AI provider credentials (OAuth tokens, API keys) |
-| `~/.pizzapi/models.json` | first session start | Cached model registry |
+| `~/.pizzapi/models.json` | manual / custom setup | Optional custom model + provider config (for local Ollama, proxies, vLLM, etc.). Built-in providers still work without this file. |
 | `~/.pizzapi/runner.json` | `pizzapi runner` (first start) | Runner identity, name, and PID tracking (auto-generated) |
 | `~/.pizzapi/usage-cache.json` | `pizzapi runner` | Shared provider quota cache (written by daemon, read by workers) |
 | `~/.pizzapi/logs/` | macOS LaunchAgent setup | Log files for runner stdout/stderr |
@@ -189,10 +202,11 @@ To log out of all AI providers and start fresh with `/login`:
 
 ```bash
 rm ~/.pizzapi/auth.json
-rm ~/.pizzapi/models.json
 ```
 
-Next time you start `pizzapi`, you'll see "No models available" and can run `/login` to re-authenticate.
+If you also use custom model/provider definitions in `~/.pizzapi/models.json` (for example local Ollama, LM Studio, or proxy endpoints), **do not delete that file** unless you intentionally want to remove those custom models too.
+
+Next time you start `pizzapi`, built-in providers will still be available via environment variables or `/login`, and any custom providers in `models.json` will remain intact.
 
 ### Reset runner identity
 

@@ -4,7 +4,7 @@ Patches in this directory are applied automatically by Bun via the
 `patchedDependencies` field in the root `package.json`. They are reapplied on
 every `bun install` — no postinstall script is needed.
 
-## @mariozechner/pi-agent-core@0.67.5
+## @mariozechner/pi-agent-core@0.70.6
 
 Adds one PizzaPi-specific runtime fix:
 
@@ -24,14 +24,33 @@ Adds one PizzaPi-specific runtime fix:
 
 **Tests:** `packages/cli/src/patches.test.ts` verifies the regression behavior with a live `Agent` instance.
 
-## @mariozechner/pi-coding-agent@0.67.5
+## @mariozechner/pi-coding-agent@0.70.6
 
-Same changes as 0.66.1, ported forward. The upstream 0.67.x series changed
-`appendSystemPrompt` from `string` to `string[]` in `DefaultResourceLoaderOptions`.
+Same core PizzaPi integration changes as 0.67.5, ported forward to the 0.70.x upstream layout, plus one Ollama-first-party addition.
 
-## @mariozechner/pi-ai@0.67.5
+**What it changes:**
 
-Same changes as 0.66.1, ported forward. This version adds `claude-opus-4-7`.
+| File | Change |
+|------|--------|
+| `dist/config.js` | Hardcodes `".pizzapi"`, flattens `getAgentDir()`, and honors `PIZZAPI_CHANGELOG_PATH` |
+| `dist/core/agent-session.js` | Retries transient JSON parse stream failures |
+| `dist/core/extensions/loader.js` / `runner.js` | Exposes `newSession` / `switchSession` to extensions |
+| `dist/core/resource-loader.js` | Uses inline extension factory names for display |
+| `dist/core/model-resolver.js` | Adds built-in default model selection for `ollama-cloud` (`glm-5.1`) |
+| `dist/modes/interactive/interactive-mode.js` | Removes upstream version-notification UI, shows actual auth path, and exposes `ollama-cloud` in API-key login labels |
+
+## @mariozechner/pi-ai@0.70.6
+
+Same Anthropic web-search and Claude Code credential fallback changes as 0.67.5, ported forward, plus built-in **Ollama Cloud** provider support.
+
+**What it changes:**
+
+| File | Change |
+|------|--------|
+| `dist/providers/anthropic.js` | Preserves PizzaPi's Anthropic web-search patch |
+| `dist/utils/oauth/anthropic.js` | Preserves Claude Code Keychain / credential-file fallback |
+| `dist/env-api-keys.js` | Recognizes `OLLAMA_API_KEY` for provider `ollama-cloud` |
+| `dist/models.generated.js` | Adds bundled `ollama-cloud` provider models targeting `https://ollama.com/v1` with OpenAI-compatible defaults |
 
 ## @mariozechner/pi-coding-agent@0.66.1 (replaced by 0.67.5 patch)
 

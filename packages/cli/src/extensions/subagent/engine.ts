@@ -9,15 +9,8 @@ import type { AssistantMessage, Message } from "@mariozechner/pi-ai";
 import {
     createAgentSession,
     DefaultResourceLoader,
-    codingTools,
-    readOnlyTools,
-    bashTool,
-    readTool,
-    editTool,
-    writeTool,
-    grepTool,
-    findTool,
-    lsTool,
+    createCodingTools,
+    createReadOnlyTools,
 } from "@mariozechner/pi-coding-agent";
 import type { AgentConfig } from "../subagent-agents.js";
 import { defaultAgentDir } from "../../config.js";
@@ -26,26 +19,25 @@ import { getFinalOutput, summarizeResultForStreaming } from "./types.js";
 
 // ── Built-in tool registry ─────────────────────────────────────────────
 
-/** Map of all built-in tool names → tool objects. */
-export const BUILTIN_TOOLS: Record<string, (typeof codingTools)[number]> = {
-    bash: bashTool,
-    read: readTool,
-    edit: editTool,
-    write: writeTool,
-    grep: grepTool,
-    find: findTool,
-    ls: lsTool,
-};
+export const BUILTIN_TOOLS = {
+    bash: true,
+    read: true,
+    edit: true,
+    write: true,
+    grep: true,
+    find: true,
+    ls: true,
+} as const;
 
 /**
- * Resolve agent tool names to actual Tool objects from the built-in set.
+ * Resolve agent tool names to built-in tool names.
  * Returns null if any requested tool name is unknown (fail-closed).
  */
-export function resolveTools(toolNames: string[]): { tools: (typeof codingTools)[number][] } | { error: string } {
-    const resolved: (typeof codingTools)[number][] = [];
+export function resolveTools(toolNames: string[]): { tools: string[] } | { error: string } {
+    const resolved: string[] = [];
     const unknown: string[] = [];
     for (const name of toolNames) {
-        if (BUILTIN_TOOLS[name]) resolved.push(BUILTIN_TOOLS[name]);
+        if (name in BUILTIN_TOOLS) resolved.push(name);
         else unknown.push(name);
     }
     if (unknown.length > 0) {
@@ -157,10 +149,11 @@ export async function runSingleAgent(
         const isPlanMode = agent.permissionMode === "plan";
 
         // Build session options — resolve tools fail-closed
-        let tools: (typeof codingTools)[number][];
+        const sessionCwd = cwd ?? defaultCwd;
+        let tools: string[];
         if (isPlanMode) {
             // Plan mode: restrict to read-only tools regardless of agent config
-            tools = [...readOnlyTools];
+            tools = createReadOnlyTools(sessionCwd).map((tool) => tool.name);
         } else if (effectiveToolNames) {
             const resolved = resolveTools(effectiveToolNames);
             if ("error" in resolved) {
@@ -177,14 +170,14 @@ export async function runSingleAgent(
             }
             tools = resolved.tools;
         } else {
-            tools = [...codingTools];
+            tools = createCodingTools(sessionCwd).map((tool) => tool.name);
         }
-        const sessionCwd = cwd ?? defaultCwd;
 
         // Use a lightweight resource loader — no extensions, skills, themes, etc.
         // Just the system prompt from the agent definition.
         const loader = new DefaultResourceLoader({
             cwd: sessionCwd,
+            agentDir: defaultAgentDir(),
             noExtensions: true,
             noSkills: true,
             noPromptTemplates: true,

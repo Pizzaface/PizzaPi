@@ -39,8 +39,9 @@ export const setSessionNameExtension: ExtensionFactory = (pi) => {
             required: ["name"],
         } as any,
         execute: async (_toolCallId, params) => {
-            if (!named && !pi.getSessionName()) {
-                pi.setSessionName(params.name.trim());
+            const parsed = params as { name?: string };
+            if (!named && !pi.getSessionName() && parsed.name?.trim()) {
+                pi.setSessionName(parsed.name.trim());
                 named = true;
             }
             return {

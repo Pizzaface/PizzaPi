@@ -1,0 +1,265 @@
+diff --git a/dist/providers/anthropic.js b/dist/providers/anthropic.js
+--- a/dist/providers/anthropic.js
++++ b/dist/providers/anthropic.js
+@@ -373,7 +373,30 @@
+                         };
+                         output.content.push(block);
+                         stream.push({ type: "toolcall_start", contentIndex: output.content.length - 1, partial: output });
++                    }
++                    // PATCH(pizzapi): handle server_tool_use (web search query)
++                    else if (event.content_block.type === "server_tool_use") {
++                        const block = {
++                            type: "text",
++                            text: "",
++                            partialJson: "",
++                            _serverToolUse: { id: event.content_block.id, name: event.content_block.name, input: event.content_block.input },
++                            index: event.index,
++                        };
++                        output.content.push(block);
++                        stream.push({ type: "text_start", contentIndex: output.content.length - 1, partial: output });
+                     }
++                    // PATCH(pizzapi): handle web_search_tool_result
++                    else if (event.content_block.type === "web_search_tool_result") {
++                        const block = {
++                            type: "text",
++                            text: "",
++                            _webSearchResult: { tool_use_id: event.content_block.tool_use_id, content: event.content_block.content },
++                            index: event.index,
++                        };
++                        output.content.push(block);
++                        stream.push({ type: "text_start", contentIndex: output.content.length - 1, partial: output });
++                    }
+                 }
+                 else if (event.type === "content_block_delta") {
+                     if (event.delta.type === "text_delta") {
+@@ -415,6 +438,10 @@
+                                 partial: output,
+                             });
+                         }
++                        // PATCH(pizzapi): accumulate input_json_delta for server_tool_use blocks
++                        else if (block && block._serverToolUse && block.partialJson !== undefined) {
++                            block.partialJson += event.delta.partial_json;
++                        }
+                     }
+                     else if (event.delta.type === "signature_delta") {
+                         const index = blocks.findIndex((b) => b.index === event.index);
+@@ -431,6 +458,16 @@
+                     if (block) {
+                         delete block.index;
+                         if (block.type === "text") {
++                            // PATCH(pizzapi): finalize server_tool_use input from accumulated JSON
++                            if (block._serverToolUse && block.partialJson) {
++                                try {
++                                    block._serverToolUse.input = JSON.parse(block.partialJson);
++                                }
++                                catch (e) {
++                                    block._serverToolUse.input = parseStreamingJson(block.partialJson);
++                                }
++                            }
++                            delete block.partialJson;
+                             stream.push({
+                                 type: "text_end",
+                                 contentIndex: index,
+@@ -680,6 +717,22 @@
+     if (context.tools && context.tools.length > 0) {
+         params.tools = convertTools(context.tools, isOAuthToken, getAnthropicCompat(model).supportsEagerToolInputStreaming, cacheControl);
+     }
++    // PATCH(pizzapi): inject Anthropic web search tool when PIZZAPI_WEB_SEARCH is set
++    if (typeof process !== "undefined" && process.env.PIZZAPI_WEB_SEARCH && !["0", "false", "no", "off"].includes(process.env.PIZZAPI_WEB_SEARCH.toLowerCase())) {
++        if (!params.tools)
++            params.tools = [];
++        const webSearchTool = { type: "web_search_20250305", name: "web_search" };
++        const maxUses = parseInt(process.env.PIZZAPI_WEB_SEARCH_MAX_USES || "5", 10);
++        if (maxUses > 0)
++            webSearchTool.max_uses = maxUses;
++        if (process.env.PIZZAPI_WEB_SEARCH_ALLOWED_DOMAINS) {
++            webSearchTool.allowed_domains = process.env.PIZZAPI_WEB_SEARCH_ALLOWED_DOMAINS.split(",").map((d) => d.trim());
++        }
++        if (process.env.PIZZAPI_WEB_SEARCH_BLOCKED_DOMAINS) {
++            webSearchTool.blocked_domains = process.env.PIZZAPI_WEB_SEARCH_BLOCKED_DOMAINS.split(",").map((d) => d.trim());
++        }
++        params.tools.push(webSearchTool);
++    }
+     // Configure thinking mode: adaptive (Opus 4.6+ and Sonnet 4.6),
+     // budget-based (older models), or explicitly disabled.
+     if (model.reasoning) {
+@@ -782,7 +835,23 @@
+         else if (msg.role === "assistant") {
+             const blocks = [];
+             for (const block of msg.content) {
+-                if (block.type === "text") {
++                // PATCH(pizzapi): round-trip server tool use and web search results
++                if (block.type === "text" && block._serverToolUse) {
++                    blocks.push({
++                        type: "server_tool_use",
++                        id: block._serverToolUse.id,
++                        name: block._serverToolUse.name,
++                        input: block._serverToolUse.input,
++                    });
++                }
++                else if (block.type === "text" && block._webSearchResult) {
++                    blocks.push({
++                        type: "web_search_tool_result",
++                        tool_use_id: block._webSearchResult.tool_use_id,
++                        content: block._webSearchResult.content,
++                    });
++                }
++                else if (block.type === "text") {
+                     if (block.text.trim().length === 0)
+                         continue;
+                     blocks.push({
+@@ -896,6 +965,10 @@
+     if (!tools)
+         return [];
+     return tools.map((tool, index) => {
++        // PATCH(pizzapi): pass through server-side tools (e.g., web_search) as-is
++        if (tool.type && typeof tool.type === "string") {
++            return tool;
++        }
+         const schema = tool.parameters;
+         return {
+             name: isOAuthToken ? toClaudeCodeName(tool.name) : tool.name,
+diff --git a/dist/utils/oauth/anthropic.js b/dist/utils/oauth/anthropic.js
+--- a/dist/utils/oauth/anthropic.js
++++ b/dist/utils/oauth/anthropic.js
+@@ -313,6 +313,40 @@
+         expires: Date.now() + data.expires_in * 1000 - 5 * 60 * 1000,
+     };
+ }
++// PATCH(pizzapi): read Claude Code credentials as a refresh fallback.
++async function tryReadClaudeCodeCredentials() {
++    try {
++        if (process.platform === "darwin") {
++            const { execSync } = await import("node:child_process");
++            const raw = execSync(
++                `security find-generic-password -s ${JSON.stringify("Claude Code-credentials")} -w`,
++                { encoding: "utf-8", timeout: 5000, stdio: ["pipe", "pipe", "pipe"] },
++            ).trim();
++            if (raw) {
++                const cc = JSON.parse(raw)?.claudeAiOauth;
++                if (cc?.accessToken && cc?.refreshToken && cc.expiresAt > Date.now() + 60000) {
++                    return { refresh: cc.refreshToken, access: cc.accessToken, expires: cc.expiresAt };
++                }
++            }
++        }
++    }
++    catch {
++    }
++    try {
++        const [{ readFileSync }, { join }, { homedir }] = await Promise.all([
++            import("node:fs"),
++            import("node:path"),
++            import("node:os"),
++        ]);
++        const cc = JSON.parse(readFileSync(join(homedir(), ".claude", ".credentials.json"), "utf-8"))?.claudeAiOauth;
++        if (cc?.accessToken && cc?.refreshToken && cc.expiresAt > Date.now() + 60000) {
++            return { refresh: cc.refreshToken, access: cc.accessToken, expires: cc.expiresAt };
++        }
++    }
++    catch {
++    }
++    return null;
++}
+ export const anthropicOAuthProvider = {
+     id: "anthropic",
+     name: "Anthropic (Claude Pro/Max)",
+@@ -326,6 +360,11 @@
+         });
+     },
+     async refreshToken(credentials) {
++        // PATCH(pizzapi): try Claude Code credentials first
++        const ccCreds = await tryReadClaudeCodeCredentials();
++        if (ccCreds) {
++            return ccCreds;
++        }
+         return refreshAnthropicToken(credentials.refresh);
+     },
+     getApiKey(credentials) {
+diff --git a/dist/env-api-keys.js b/dist/env-api-keys.js
+--- a/dist/env-api-keys.js
++++ b/dist/env-api-keys.js
+@@ -94,6 +94,7 @@
+         cerebras: "CEREBRAS_API_KEY",
+         xai: "XAI_API_KEY",
+         openrouter: "OPENROUTER_API_KEY",
++        "ollama-cloud": "OLLAMA_API_KEY",
+         "vercel-ai-gateway": "AI_GATEWAY_API_KEY",
+         zai: "ZAI_API_KEY",
+         mistral: "MISTRAL_API_KEY",
+diff --git a/dist/models.generated.js b/dist/models.generated.js
+--- a/dist/models.generated.js
++++ b/dist/models.generated.js
+@@ -1,5 +1,25 @@
+ // This file is auto-generated by scripts/generate-models.ts
+ // Do not edit manually - run 'npm run generate-models' to update
++const OLLAMA_BASE_URL = "https://ollama.com/v1";
++// Ollama Cloud currently documents plan-based usage tiers rather than stable per-token rates.
++// Keep cost metadata at zero until Ollama publishes machine-usable model pricing.
++const OLLAMA_ZERO_COST = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
++const OLLAMA_COMPAT = { supportsDeveloperRole: false, supportsReasoningEffort: false, maxTokensField: "max_tokens" };
++function createOllamaModel(id, name, { reasoning = false, input = ["text"], contextWindow = 128000, maxTokens = 16384 } = {}) {
++    return {
++        id,
++        name,
++        api: "openai-completions",
++        provider: "ollama-cloud",
++        baseUrl: OLLAMA_BASE_URL,
++        compat: OLLAMA_COMPAT,
++        reasoning,
++        input,
++        cost: OLLAMA_ZERO_COST,
++        contextWindow,
++        maxTokens,
++    };
++}
+ export const MODELS = {
+     "amazon-bedrock": {
+         "amazon.nova-2-lite-v1:0": {
+@@ -15585,5 +15605,46 @@
+             maxTokens: 131072,
+         },
+     },
++    "ollama-cloud": {
++        "gpt-oss:120b": createOllamaModel("gpt-oss:120b", "GPT-OSS 120B", { reasoning: true, input: ["text"], contextWindow: 131072, maxTokens: 16384 }),
++        "ministral-3:8b": createOllamaModel("ministral-3:8b", "Ministral 3 8B", { reasoning: false, input: ["text"], contextWindow: 128000, maxTokens: 16384 }),
++        "ministral-3:14b": createOllamaModel("ministral-3:14b", "Ministral 3 14B", { reasoning: false, input: ["text"], contextWindow: 128000, maxTokens: 16384 }),
++        "gemini-3-flash-preview": createOllamaModel("gemini-3-flash-preview", "Gemini 3 Flash Preview", { reasoning: true, input: ["text", "image"], contextWindow: 1048576, maxTokens: 65536 }),
++        "qwen3.5:397b": createOllamaModel("qwen3.5:397b", "Qwen 3.5 397B", { reasoning: true, input: ["text"], contextWindow: 262144, maxTokens: 32768 }),
++        "glm-5.1": createOllamaModel("glm-5.1", "GLM 5.1", { reasoning: true, input: ["text"], contextWindow: 202752, maxTokens: 131072 }),
++        "kimi-k2-thinking": createOllamaModel("kimi-k2-thinking", "Kimi K2 Thinking", { reasoning: true, input: ["text"], contextWindow: 256000, maxTokens: 32768 }),
++        "qwen3-coder:480b": createOllamaModel("qwen3-coder:480b", "Qwen 3 Coder 480B", { reasoning: true, input: ["text"], contextWindow: 262144, maxTokens: 32768 }),
++        "gpt-oss:20b": createOllamaModel("gpt-oss:20b", "GPT-OSS 20B", { reasoning: true, input: ["text"], contextWindow: 131072, maxTokens: 16384 }),
++        "minimax-m2.1": createOllamaModel("minimax-m2.1", "MiniMax M2.1", { reasoning: true, input: ["text"], contextWindow: 128000, maxTokens: 32768 }),
++        "minimax-m2.7": createOllamaModel("minimax-m2.7", "MiniMax M2.7", { reasoning: true, input: ["text"], contextWindow: 128000, maxTokens: 32768 }),
++        "kimi-k2:1t": createOllamaModel("kimi-k2:1t", "Kimi K2 1T", { reasoning: true, input: ["text"], contextWindow: 256000, maxTokens: 32768 }),
++        "kimi-k2.6": createOllamaModel("kimi-k2.6", "Kimi K2.6", { reasoning: true, input: ["text"], contextWindow: 256000, maxTokens: 32768 }),
++        "gemma4:31b": createOllamaModel("gemma4:31b", "Gemma 4 31B", { reasoning: true, input: ["text", "image"], contextWindow: 262144, maxTokens: 16384 }),
++        "qwen3-vl:235b": createOllamaModel("qwen3-vl:235b", "Qwen 3 VL 235B", { reasoning: true, input: ["text", "image"], contextWindow: 262144, maxTokens: 32768 }),
++        "mistral-large-3:675b": createOllamaModel("mistral-large-3:675b", "Mistral Large 3 675B", { reasoning: true, input: ["text"], contextWindow: 128000, maxTokens: 32768 }),
++        "gemma3:12b": createOllamaModel("gemma3:12b", "Gemma 3 12B", { reasoning: false, input: ["text", "image"], contextWindow: 131072, maxTokens: 16384 }),
++        "kimi-k2.5": createOllamaModel("kimi-k2.5", "Kimi K2.5", { reasoning: true, input: ["text"], contextWindow: 256000, maxTokens: 32768 }),
++        "deepseek-v3.2": createOllamaModel("deepseek-v3.2", "DeepSeek V3.2", { reasoning: true, input: ["text"], contextWindow: 128000, maxTokens: 32768 }),
++        "deepseek-v3.1:671b": createOllamaModel("deepseek-v3.1:671b", "DeepSeek V3.1 671B", { reasoning: true, input: ["text"], contextWindow: 128000, maxTokens: 32768 }),
++        "ministral-3:3b": createOllamaModel("ministral-3:3b", "Ministral 3 3B", { reasoning: false, input: ["text"], contextWindow: 128000, maxTokens: 16384 }),
++        "gemma3:4b": createOllamaModel("gemma3:4b", "Gemma 3 4B", { reasoning: false, input: ["text", "image"], contextWindow: 131072, maxTokens: 16384 }),
++        "gemma3:27b": createOllamaModel("gemma3:27b", "Gemma 3 27B", { reasoning: false, input: ["text", "image"], contextWindow: 131072, maxTokens: 16384 }),
++        "glm-4.6": createOllamaModel("glm-4.6", "GLM 4.6", { reasoning: true, input: ["text"], contextWindow: 202752, maxTokens: 65536 }),
++        "deepseek-v4-flash": createOllamaModel("deepseek-v4-flash", "DeepSeek V4 Flash", { reasoning: true, input: ["text"], contextWindow: 128000, maxTokens: 32768 }),
++        "minimax-m2.5": createOllamaModel("minimax-m2.5", "MiniMax M2.5", { reasoning: true, input: ["text"], contextWindow: 128000, maxTokens: 32768 }),
++        "glm-4.7": createOllamaModel("glm-4.7", "GLM 4.7", { reasoning: true, input: ["text"], contextWindow: 202752, maxTokens: 65536 }),
++        "deepseek-v4-pro": createOllamaModel("deepseek-v4-pro", "DeepSeek V4 Pro", { reasoning: true, input: ["text"], contextWindow: 128000, maxTokens: 32768 }),
++        "devstral-2:123b": createOllamaModel("devstral-2:123b", "Devstral 2 123B", { reasoning: true, input: ["text"], contextWindow: 128000, maxTokens: 32768 }),
++        "rnj-1:8b": createOllamaModel("rnj-1:8b", "RNJ 1 8B", { reasoning: false, input: ["text"], contextWindow: 128000, maxTokens: 16384 }),
++        "nemotron-3-super": createOllamaModel("nemotron-3-super", "Nemotron 3 Super", { reasoning: true, input: ["text"], contextWindow: 128000, maxTokens: 32768 }),
++        "cogito-2.1:671b": createOllamaModel("cogito-2.1:671b", "Cogito 2.1 671B", { reasoning: true, input: ["text"], contextWindow: 128000, maxTokens: 32768 }),
++        "glm-5": createOllamaModel("glm-5", "GLM 5", { reasoning: true, input: ["text"], contextWindow: 202752, maxTokens: 131072 }),
++        "qwen3-next:80b": createOllamaModel("qwen3-next:80b", "Qwen 3 Next 80B", { reasoning: true, input: ["text"], contextWindow: 262144, maxTokens: 32768 }),
++        "nemotron-3-nano:30b": createOllamaModel("nemotron-3-nano:30b", "Nemotron 3 Nano 30B", { reasoning: true, input: ["text"], contextWindow: 128000, maxTokens: 32768 }),
++        "qwen3-vl:235b-instruct": createOllamaModel("qwen3-vl:235b-instruct", "Qwen 3 VL 235B Instruct", { reasoning: true, input: ["text", "image"], contextWindow: 262144, maxTokens: 32768 }),
++        "minimax-m2": createOllamaModel("minimax-m2", "MiniMax M2", { reasoning: true, input: ["text"], contextWindow: 128000, maxTokens: 32768 }),
++        "devstral-small-2:24b": createOllamaModel("devstral-small-2:24b", "Devstral Small 2 24B", { reasoning: true, input: ["text"], contextWindow: 128000, maxTokens: 32768 }),
++        "qwen3-coder-next": createOllamaModel("qwen3-coder-next", "Qwen 3 Coder Next", { reasoning: true, input: ["text"], contextWindow: 262144, maxTokens: 32768 }),
++    },
+ };
+ //# sourceMappingURL=models.generated.js.map
+\ No newline at end of file
