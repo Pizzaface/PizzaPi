@@ -56,11 +56,15 @@ describe("toolSearchExtension lifecycle sync", () => {
     mock.restore();
   });
 
-  function createHarness() {
+  function createHarness(options?: { runtimeReady?: boolean }) {
     const handlers = new Map<string, EventHandler[]>();
     const activeTools = new Set<string>(["mcp_github_create_issue", "search_tools"]);
     const registeredTools = new Map<string, any>();
     const registeredCommands = new Map<string, any>();
+    let runtimeReady = options?.runtimeReady ?? true;
+    const notInitialized = () => {
+      throw new Error("Extension runtime not initialized. Action methods cannot be called during extension loading.");
+    };
 
     const pi = {
       on: mock((event: string, handler: EventHandler) => {
@@ -86,22 +90,38 @@ describe("toolSearchExtension lifecycle sync", () => {
       registerCommand: mock((name: string, command: any) => {
         registeredCommands.set(name, command);
       }),
-      getAllTools: mock(() => ([
-        {
-          name: "mcp_github_create_issue",
-          description: "Create an issue in GitHub",
-          parameters: { type: "object", properties: { owner: { type: "string" }, repo: { type: "string" } } },
-          sourceInfo: undefined,
-        },
-      ])),
-      getActiveTools: mock(() => [...activeTools]),
+      getAllTools: mock(() => {
+        if (!runtimeReady) notInitialized();
+        return [
+          {
+            name: "mcp_github_create_issue",
+            description: "Create an issue in GitHub",
+            parameters: { type: "object", properties: { owner: { type: "string" }, repo: { type: "string" } } },
+            sourceInfo: undefined,
+          },
+        ];
+      }),
+      getActiveTools: mock(() => {
+        if (!runtimeReady) notInitialized();
+        return [...activeTools];
+      }),
       setActiveTools: mock((tools: string[]) => {
+        if (!runtimeReady) notInitialized();
         activeTools.clear();
         for (const tool of tools) activeTools.add(tool);
       }),
     };
 
-    return { pi, handlers, registeredTools, registeredCommands, activeTools };
+    return {
+      pi,
+      handlers,
+      registeredTools,
+      registeredCommands,
+      activeTools,
+      setRuntimeReady: (ready: boolean) => {
+        runtimeReady = ready;
+      },
+    };
   }
 
   async function loadExtension() {
@@ -238,6 +258,33 @@ describe("toolSearchExtension lifecycle sync", () => {
         }),
       ],
     });
+  });
+
+  test("ignores registry updates until runtime action methods are bound", async () => {
+    snapshot = { serverTools: { github: ["mcp_github_create_issue"] } };
+    const { toolSearchExtension } = await loadExtension();
+    const { pi, registeredCommands, activeTools, setRuntimeReady } = createHarness({ runtimeReady: false });
+
+    toolSearchExtension(pi as any);
+
+    const statusCommand = registeredCommands.get("tool-search");
+    expect(statusCommand).toBeDefined();
+
+    expect(() => pi.events.emit("mcp:registry_updated", { server: "github" })).not.toThrow();
+
+    const skippedNotes: string[] = [];
+    statusCommand.handler("status", { ui: { notify: (msg: string) => skippedNotes.push(msg) } });
+    expect(skippedNotes.at(-1)).toContain("Tool search: inactive");
+    expect(activeTools.has("mcp_github_create_issue")).toBe(true);
+
+    setRuntimeReady(true);
+    pi.events.emit("mcp:registry_updated", { server: "github" });
+
+    const refreshedNotes: string[] = [];
+    statusCommand.handler("status", { ui: { notify: (msg: string) => refreshedNotes.push(msg) } });
+    expect(refreshedNotes.at(-1)).toContain("Tool search: active");
+    expect(refreshedNotes.at(-1)).toContain("Deferred tools: 1");
+    expect(activeTools.has("mcp_github_create_issue")).toBe(false);
   });
 
   test("clears stale state when the MCP snapshot disappears", async () => {
