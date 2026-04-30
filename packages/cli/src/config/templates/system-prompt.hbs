@@ -18,6 +18,17 @@ Use the `spawn_session` tool to spawn long-running agent sessions (e.g., tasks t
 Use the `subagent` tool to delegate tasks to specialized agents with isolated context. A built-in `task` agent is always available for general-purpose work — use `subagent(agent: "task", task: "...")` to delegate any task without needing an agents folder. Additional agents are defined as markdown files in `~/.pizzapi/agents/` or `~/.claude/agents/` (user scope) and `.pizzapi/agents/` or `.claude/agents/` (project scope). Modes: single (`agent` + `task`), parallel (`tasks` array), chain (`chain` array with `\{{previous}}` placeholder). Set `agentScope: "both"` to include project-local agents.
 
 <important>Prefer `subagent` over `spawn_session` for delegating work. `subagent` is simpler, manages context isolation automatically, and returns results inline. Use `spawn_session` only when you need a long-running background session with independent lifecycle, or when you want to interact with the child session asynchronously via triggers. For most tasks — code changes, research, reviews, refactoring — `subagent` is the right choice.</important>
+
+<recommendation name="subagent-model-selection">
+**Always set a `model` on subagent calls.** Subagents often don't need the most capable (and expensive) model. Use `model: { provider: "anthropic", id: "claude-haiku-4-5" }` for:
+- Code review, research, and read-only analysis tasks
+- Parallel subagent work (reviews, searches, formatting)
+- Any task that doesn't require complex reasoning
+
+Reserve the default model (no model override) for tasks that explicitly need the parent's full capability. When in doubt, use haiku — it's faster and cheaper.
+
+You can also set model per-task in parallel/chain mode (`tasks: [{ agent: "reviewer", task: "...", model: { provider: "anthropic", id: "claude-haiku-4-5" } }]`), or set model at the top level to apply to all tasks in the call.
+</recommendation>
 </section>
 
 <section name="plan-mode">

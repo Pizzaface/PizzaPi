@@ -13,6 +13,7 @@ import {
     createReadOnlyTools,
 } from "@mariozechner/pi-coding-agent";
 import type { AgentConfig } from "../subagent-agents.js";
+import type { Model } from "@mariozechner/pi-ai";
 import { defaultAgentDir } from "../../config.js";
 import type { SingleResult, SubagentDetails, OnUpdateCallback } from "./types.js";
 import { getFinalOutput, summarizeResultForStreaming } from "./types.js";
@@ -74,6 +75,47 @@ export async function mapWithConcurrencyLimit<TIn, TOut>(
 
 // ── Single-agent runner ────────────────────────────────────────────────
 
+export interface ModelOverride {
+    provider: string;
+    id: string;
+}
+
+// ── Model resolution helpers ───────────────────────────────────────────
+
+/** Common model shorthand aliases. */
+const MODEL_ALIASES: Record<string, { provider: string; id: string }> = {
+    haiku: { provider: "anthropic", id: "claude-haiku-4-5" },
+    sonnet: { provider: "anthropic", id: "claude-sonnet-4-20250514" },
+    opus: { provider: "anthropic", id: "claude-opus-4-5" },
+};
+
+/**
+ * Parse a model string from agent frontmatter into a {provider, id} pair.
+ *
+ * Accepts:
+ *   - Shorthand aliases: "haiku", "sonnet", "opus" → resolves to Anthropic model IDs
+ *   - Provider/id format: "anthropic/claude-haiku-4-5" → { provider: "anthropic", id: "claude-haiku-4-5" }
+ *   - Bare model ID (assumes Anthropic): "claude-haiku-4-5" → { provider: "anthropic", id: "claude-haiku-4-5" }
+ *   - "inherit" or empty string → undefined (use default)
+ */
+export function parseModelString(model: string): ModelOverride | undefined {
+    const trimmed = model.trim();
+    if (!trimmed || trimmed === "inherit") return undefined;
+
+    // Check alias map first
+    const alias = MODEL_ALIASES[trimmed.toLowerCase()];
+    if (alias) return alias;
+
+    // provider/id format
+    const slashIdx = trimmed.indexOf("/");
+    if (slashIdx > 0) {
+        return { provider: trimmed.slice(0, slashIdx), id: trimmed.slice(slashIdx + 1) };
+    }
+
+    // Bare model ID — assume anthropic
+    return { provider: "anthropic", id: trimmed };
+}
+
 export async function runSingleAgent(
     defaultCwd: string,
     agents: AgentConfig[],
@@ -84,6 +126,8 @@ export async function runSingleAgent(
     signal: AbortSignal | undefined,
     onUpdate: OnUpdateCallback | undefined,
     makeDetails: (results: SingleResult[]) => SubagentDetails,
+    modelOverride?: ModelOverride,
+    modelRegistry?: { find: (provider: string, modelId: string) => Model<any> | undefined },
 ): Promise<SingleResult> {
     const agent = agents.find((a) => a.name === agentName);
 
@@ -186,11 +230,24 @@ export async function runSingleAgent(
         });
         await loader.reload();
 
+        // Resolve model: tool parameter > agent frontmatter > default (unset)
+        let resolvedModel: Model<any> | undefined;
+        const modelSpec = modelOverride ?? (agent.model ? parseModelString(agent.model) : undefined);
+        if (modelSpec && modelRegistry) {
+            resolvedModel = modelRegistry.find(modelSpec.provider, modelSpec.id);
+            if (!resolvedModel) {
+                currentResult.exitCode = 1;
+                currentResult.stderr = `Model not found: ${modelSpec.provider}/${modelSpec.id}. Use the \`models\` command to see available models.`;
+                return currentResult;
+            }
+        }
+
         const { session } = await createAgentSession({
             cwd: sessionCwd,
             agentDir: defaultAgentDir(),
             tools,
             resourceLoader: loader,
+            ...(resolvedModel && { model: resolvedModel }),
         });
 
         // Subscribe to events to track messages and usage

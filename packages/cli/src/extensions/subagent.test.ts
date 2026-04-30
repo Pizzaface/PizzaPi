@@ -11,6 +11,7 @@ import {
     shouldSpillParallelOutput,
     summarizeResultForStreaming,
     summarizeResultsForStreaming,
+    parseModelString,
 } from "./subagent.js";
 import { _setGlobalConfigDir, loadConfig, loadGlobalConfig } from "../config.js";
 
@@ -341,5 +342,44 @@ describe("subagent config", () => {
         const mergedConfig = loadConfig(projectDir);
         expect(mergedConfig.subagent?.maxParallelTasks).toBe(100); // project wins in merged
         _setGlobalConfigDir(null);
+    });
+});
+
+describe("parseModelString", () => {
+    test("resolves 'haiku' alias", () => {
+        expect(parseModelString("haiku")).toEqual({ provider: "anthropic", id: "claude-haiku-4-5" });
+    });
+
+    test("resolves 'sonnet' alias", () => {
+        expect(parseModelString("sonnet")).toEqual({ provider: "anthropic", id: "claude-sonnet-4-20250514" });
+    });
+
+    test("resolves 'opus' alias", () => {
+        expect(parseModelString("opus")).toEqual({ provider: "anthropic", id: "claude-opus-4-5" });
+    });
+
+    test("resolves aliases case-insensitively", () => {
+        expect(parseModelString("Haiku")).toEqual({ provider: "anthropic", id: "claude-haiku-4-5" });
+        expect(parseModelString("SONNET")).toEqual({ provider: "anthropic", id: "claude-sonnet-4-20250514" });
+    });
+
+    test("resolves 'provider/id' format", () => {
+        expect(parseModelString("google/gemini-2.5-pro")).toEqual({ provider: "google", id: "gemini-2.5-pro" });
+    });
+
+    test("resolves bare model ID (assumes anthropic)", () => {
+        expect(parseModelString("claude-haiku-4-5")).toEqual({ provider: "anthropic", id: "claude-haiku-4-5" });
+    });
+
+    test("returns undefined for 'inherit'", () => {
+        expect(parseModelString("inherit")).toBeUndefined();
+    });
+
+    test("returns undefined for empty string", () => {
+        expect(parseModelString("")).toBeUndefined();
+    });
+
+    test("trims whitespace", () => {
+        expect(parseModelString("  haiku  ")).toEqual({ provider: "anthropic", id: "claude-haiku-4-5" });
     });
 });
