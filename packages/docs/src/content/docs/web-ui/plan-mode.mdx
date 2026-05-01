@@ -1,0 +1,138 @@
+---
+title: Plan Mode
+description: Explore the codebase safely and review plans before the agent makes changes. Plan mode blocks all write operations until you approve.
+---
+
+import { Aside } from "@astrojs/starlight/components";
+
+Plan mode is a two-phase agent workflow: **exploration** (read-only) followed by **review** (approve, edit, or reject a plan). When plan mode is active, the agent is blocked from writing files, editing files, running destructive bash commands, and spawning sessions — enforced at the OS sandbox level when a sandbox is active, and at the tool level otherwise.
+
+Use plan mode when you want the agent to **think before it acts** — explore an unfamiliar codebase, plan multi-step changes, or gate the agent before it modifies anything.
+
+<Aside type="tip">
+For the full technical details on how plan mode works (tool blocking, bash restrictions, sandbox enforcement), see the [Plan Mode](/features/plan-mode/) feature doc. This page covers how to use plan mode from the PizzaPi web UI.
+</Aside>
+
+## Activating plan mode
+
+There are two ways to turn plan mode on from the web UI:
+
+| Method | How |
+|--------|-----|
+| **Slash command** | Type `/plan` in the chat input — toggles plan mode on or off |
+| **Agent-initiated** | The agent calls the `toggle_plan_mode` tool directly |
+
+When plan mode activates, a notification appears in the conversation confirming that read-only exploration is enabled. The session toolbar also shows a **"Plan Mode"** status indicator so you can see at a glance that writes are blocked.
+
+Type `/plan` again to manually exit plan mode and restore full tool access.
+
+<Aside type="note">
+The agent can also call the `plan_mode` tool to submit a plan for review, which is separate from toggling plan mode on/off. See [The plan review flow](#the-plan-review-flow) below.
+</Aside>
+
+## The plan review flow
+
+When the agent finishes exploring and is ready to make changes, it calls the `plan_mode` tool to submit a structured plan. The web UI replaces the chat input with an interactive **plan review panel**:
+
+1. **The agent explores** — reads files, searches code, runs read-only commands.
+2. **The agent submits a plan** — a plan review panel appears in the composer area with a title, optional description, and numbered steps.
+3. **You review the plan** — expand steps to read descriptions, then choose an action.
+4. **The agent executes** — once approved, plan mode exits automatically and the agent proceeds with full write access.
+
+### Plan review panel
+
+The panel shows:
+
+- A **title** and optional **description** summarizing the plan
+- **Numbered steps** — each step has a title and an optional description with more detail
+- Steps auto-collapse when there are more than 5 (click the step count to expand)
+
+The panel scrolls internally and is capped at 50% viewport height (60% on desktop) so it never blocks the full screen.
+
+### Action buttons
+
+Four buttons at the bottom of the panel control what happens next:
+
+| Button | Effect |
+|--------|--------|
+| **Clear Context & Begin** | Approves the plan **and** strips accumulated context — the agent starts fresh with only the approved plan. Useful when the exploration phase filled up the context window. |
+| **Begin** | Approves the plan and keeps the existing conversation context intact. |
+| **Suggest Edit** | Reveals an inline text input — type your feedback and press <kbd>Enter</kbd> or click **Send** to return the plan to the agent for revision. |
+| **Cancel** | Rejects the plan entirely. The agent is told not to proceed. |
+
+<Aside type="tip">
+**Clear Context & Begin** is especially useful for long exploration sessions. Let the agent spend its context window on thorough analysis, then start execution with a clean slate focused on the approved plan.
+</Aside>
+
+After approval, plan mode exits automatically and the agent begins executing with full tool access. If the agent calls `plan_mode` again during execution, a new plan review panel appears.
+
+### Suggesting edits
+
+When you click **Suggest Edit**, an inline text input appears at the bottom of the panel:
+
+- Type your feedback (e.g., *"Step 2 should also update the test fixtures"*) and press <kbd>Enter</kbd> or click **Send**
+- Press <kbd>Escape</kbd> to dismiss the edit input without sending
+- The agent receives your feedback and should resubmit an updated plan
+
+## Parent-child plan reviews
+
+When a parent agent spawns a child session via `spawn_session`, the child can also present plans for review. Instead of waiting for a human, the child fires a `plan_review` **trigger** to the parent session.
+
+The parent sees a trigger message in its conversation showing the child's plan title, steps, and a trigger ID. The parent can then:
+
+- **Approve** — `respond_to_trigger(triggerId, "approve")` — the child proceeds
+- **Reject** — `respond_to_trigger(triggerId, "cancel")` — the child stops
+- **Request edits** — `respond_to_trigger(triggerId, "Your feedback", { action: "edit" })` — the child revises
+- **Escalate** — `escalate_trigger(triggerId)` — passes the decision to you (the human viewer)
+
+<Aside type="caution">
+Plan review triggers have a **5-minute timeout**. If the parent doesn't respond within 5 minutes, the child treats it as a cancellation.
+</Aside>
+
+For more on inter-agent communication and triggers, see [Subagents](/customization/subagents/).
+
+## Plan cards in the conversation
+
+After you respond to a plan, it remains in the conversation as a **styled card** — not just a text message. Cards show:
+
+- The plan **title** and **numbered steps**
+- A **status pill** indicating what happened: *Begin*, *Clear Context & Begin*, *Edit Suggested*, or *Cancelled*
+- If you suggested an edit, your feedback is shown below the steps
+
+Pending (unresolved) plans are visually distinct — they display a waiting indicator while the plan review panel is active in the composer area. Once resolved, the card updates with the final action.
+
+Plan cards are stored in the session history and survive page reloads.
+
+## Write-blocking enforcement
+
+Plan mode blocks writes through two layers:
+
+| Layer | How it works |
+|-------|-------------|
+| **OS sandbox overlay** | When a [sandbox](/security/sandbox/) is active, plan mode activates an OS-level read-only filesystem overlay. Even if a command bypasses the tool-level checks, the OS blocks the write. |
+| **Tool-level blocking** | Write and edit tools are disabled. Bash commands go through a destructive-command detector that blocks `rm`, `mv`, `npm install`, `git commit`, output redirection (`>` / `>>`), and more. |
+
+If no sandbox is active, plan mode falls back to tool-level and regex-based command blocking — but it cannot enforce at the OS level. The session toolbar always shows plan mode status when active, regardless of sandbox state.
+
+<Aside type="caution">
+Without a sandbox, tool-level blocking is the only defense. A determined command could potentially bypass regex checks. For full enforcement, run the agent with the sandbox enabled.
+</Aside>
+
+## Best practices
+
+**Use plan mode when:**
+- You're exploring a new or unfamiliar codebase
+- The task touches many files and you want to verify the approach before changes begin
+- The change is risky or hard to reverse (database migrations, config changes, refactors)
+- You're using a multi-agent setup and want parent approval before child agents make changes
+
+**Skip plan mode when:**
+- The task is simple and well-defined (fix a typo, add a log line)
+- You've already described the exact changes you want
+- Speed matters more than review — you can always undo with git
+
+**Tips:**
+- Review each step in the plan — the agent won't deviate without asking
+- Combine with **Clear Context & Begin** when the exploration phase has bloated the context window
+- You can toggle plan mode off manually with `/plan` at any time, even before the agent submits a plan
+- If the agent calls `plan_mode` again mid-execution, treat it as a checkpoint — review the new plan before continuing

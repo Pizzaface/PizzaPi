@@ -1,0 +1,99 @@
+---
+title: Slash Commands
+description: Quick-access keyboard commands for session control, model selection, MCP management, and more — all from the browser chat input.
+---
+
+import { Aside } from "@astrojs/starlight/components";
+
+Slash commands give you quick access to session control, model switching, MCP management, and other actions directly from the chat input. Type `/` and a command picker pops up — no mouse or toolbar hunting required.
+
+## Triggering the picker
+
+Type **`/`** in the chat input to open the slash command picker popover. The picker shows a scrollable list of available commands, grouped by type.
+
+- **Filter in real time** — keep typing after the `/` to narrow the list. For example, `/re` filters to `/resume`.
+- **Keyboard navigation** — press <kbd>↑</kbd> / <kbd>↓</kbd> to move through suggestions, then <kbd>Enter</kbd> to execute the highlighted command.
+- **Mouse** — click any command in the list to execute it.
+- **Dismiss** — press <kbd>Escape</kbd> or click outside the picker to close it without running anything.
+
+## Core commands
+
+The following commands are always available in the chat input:
+
+| Command | Description |
+|---------|-------------|
+| `/new` | Start a new conversation. If there are active linked child sessions, a confirmation dialog appears first. |
+| `/resume [query]` | Resume a previous session. Without a query, resumes the most recent session. With a query, opens a fuzzy-search picker matching against session names, IDs, paths, and first messages. |
+| `/plan` | Toggle plan mode on/off. In plan mode, the agent can only read files and run safe commands — useful for exploring the codebase before making changes. |
+| `/model` or `/cycle_model` | Open the model selector to switch to a different AI model mid-session. |
+| `/effort` or `/cycle_effort` | Cycle through reasoning effort levels (extended thinking). |
+| `/compact [instructions]` | Compact the context window. Optionally provides custom instructions for what to preserve. Shows a spinner while compacting. |
+| `/name <name>` | Set the session display name shown in the sidebar. |
+| `/copy` | Copy the last assistant message to clipboard. |
+| `/stop` | Abort the currently running agent generation. |
+| `/restart` | Restart the underlying CLI process — useful if the agent is stuck or needs a fresh start. |
+| `/sandbox` | Show current sandbox status (mode, platform, recent violations) if a runner is connected. |
+| `/skills` | Display available skills loaded on the runner. |
+| `/plugins` | List all loaded plugins with their commands, hooks, skills, agents, rules, and MCP integrations. |
+| `/agents [name]` | Spawn a new session as a named agent. Without a name, opens a picker showing available agents from the runner. With a name, dispatches immediately. |
+| `/mcp [status\|reload\|disable <name>\|enable <name>]` | MCP server management. See [MCP sub-commands](#mcp-sub-commands) below. |
+
+<Aside type="tip">
+You can also trigger context compaction by clicking the **context donut** in the session toolbar — it opens a confirmation dialog with the same effect as `/compact`. See [Web UI Overview](/web-ui/overview/#context-window-donut) for details.
+</Aside>
+
+### MCP sub-commands
+
+The `/mcp` command supports four sub-commands:
+
+| Sub-command | Description |
+|-------------|-------------|
+| `/mcp status` | Show all connected MCP servers and their current status. |
+| `/mcp reload` | Reconnect all MCP servers. |
+| `/mcp disable <name>` | Disable a specific MCP server by name. |
+| `/mcp enable <name>` | Enable a previously disabled MCP server by name. |
+
+## Sub-command mode
+
+For commands that accept sub-commands (like `/mcp`), typing the command name followed by a space enters **sub-command mode**. The picker filters to show only the sub-commands for that parent command.
+
+For example, typing `/mcp ` (note the space) narrows the picker to `status`, `reload`, `disable <server-name>`, and `enable <server-name>`.
+
+This also applies to plugin-provided extension commands and skill commands — any command that defines its own sub-command structure.
+
+## Pickers that stay open
+
+Some commands keep the picker open after you execute them because they're inherently interactive:
+
+- **`/resume`** — the session picker stays open so you can browse and select a session.
+- **`/agents`** — the agent picker stays open for selection.
+- **Any command with sub-commands** — the picker stays open in sub-command mode.
+
+You can continue filtering and selecting without re-triggering the picker. Press <kbd>Escape</kbd> when you're done to close it.
+
+## Dynamic commands
+
+Beyond the core commands, three categories of commands are loaded dynamically from the connected runner:
+
+### Skill commands
+
+One command per available skill. Skill commands are dispatched to the CLI for execution. For example, if you have a `typescript` skill configured, you'll see a `/typescript` command in the picker.
+
+### Plugin/extension commands
+
+Commands registered by Claude Code plugins. These may define their own sub-commands and appear in the picker alongside core commands. Plugin commands are grouped separately in the picker for easy identification.
+
+### Prompt template commands
+
+Commands for prompt templates defined in `~/.pizzapi/prompts/`. Each template file becomes a slash command you can invoke to inject that prompt into the conversation.
+
+<Aside type="note">
+All dynamic commands appear in the picker alongside core commands and support the same real-time filtering. They are only available when a runner is connected.
+</Aside>
+
+## Notes & limitations
+
+- **Chat input only** — slash commands work in the browser chat input, not in the [Web Terminal](/web-ui/terminal/).
+- **Runner required for full functionality** — commands like `/plugins`, `/skills`, `/sandbox`, and `/agents` require a connected runner. If no runner is available, they show an appropriate message indicating the runner is disconnected.
+- **Dynamic commands depend on runner state** — skill, plugin, and prompt template commands are loaded from the runner at session start. Changes to your configuration (adding a new skill, enabling a plugin) won't appear until the session reconnects or the runner refreshes.
+- **`/stop` vs `/restart`** — `/stop` aborts the current generation but keeps the CLI process alive. `/restart` kills and restarts the CLI process entirely. Use `/stop` for a stuck generation; use `/restart` only when the process itself is unresponsive.
