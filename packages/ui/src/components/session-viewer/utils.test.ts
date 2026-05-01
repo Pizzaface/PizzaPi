@@ -166,6 +166,27 @@ describe("hasVisibleContent", () => {
             { type: "text", text: "visible" },
         ])).toBe(true);
     });
+
+    test("returns true for array with _serverToolUse metadata (web search query)", () => {
+        expect(hasVisibleContent([
+            { type: "text", text: "", _serverToolUse: { id: "tool_123", name: "web_search", input: { query: "test" } } },
+            { type: "text", text: "" },
+        ])).toBe(true);
+    });
+
+    test("returns true for array with _webSearchResult metadata (web search results)", () => {
+        expect(hasVisibleContent([
+            { type: "text", text: "" },
+            { type: "text", text: "", _webSearchResult: { tool_use_id: "tool_123", content: [{ type: "web_search_result", title: "Test", url: "https://test.com" }] } },
+        ])).toBe(true);
+    });
+
+    test("returns false for array with only empty text blocks and no server tool metadata", () => {
+        expect(hasVisibleContent([
+            { type: "text", text: "" },
+            { type: "text", text: "" },
+        ])).toBe(false);
+    });
 });
 
 // ── tryParseJsonObject ──────────────────────────────────────────────────────

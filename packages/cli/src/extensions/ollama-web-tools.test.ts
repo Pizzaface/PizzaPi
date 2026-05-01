@@ -43,8 +43,17 @@ describe("Ollama web tools", () => {
     expect(calls[0].init.method).toBe("POST");
     expect((calls[0].init.headers as Record<string, string>).Authorization).toBe("Bearer ollama-key");
     expect(JSON.parse(String(calls[0].init.body))).toEqual({ query: "what is ollama", max_results: 10 });
+    expect(result.content).toHaveLength(2);
     expect(result.content[0].type).toBe("text");
-    expect(textOf(result)).toContain("Cloud models are available.");
+    const serverToolUse = (result.content[0] as any)._serverToolUse;
+    expect(serverToolUse).toBeDefined();
+    expect(serverToolUse.name).toBe("web_search");
+    expect(serverToolUse.input.query).toBe("what is ollama");
+    const webSearchResult = (result.content[1] as any)._webSearchResult;
+    expect(webSearchResult).toBeDefined();
+    expect(webSearchResult.content).toBeArrayOfSize(1);
+    expect(webSearchResult.content[0].title).toBe("Ollama");
+    expect(webSearchResult.content[0].url).toBe("https://ollama.com/");
     expect(result.details).toEqual({ type: "web_search", query: "what is ollama", maxResults: 10, resultCount: 1 });
   });
 

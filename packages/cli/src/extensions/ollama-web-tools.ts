@@ -121,10 +121,20 @@ export function createOllamaWebTools(deps: OllamaWebToolDeps = {}): { webSearch:
 
       try {
         const result = await postJson(fetchFn, OLLAMA_WEB_SEARCH_URL, apiKey, { query, max_results: maxResults });
-        const resultCount = Array.isArray((result as any)?.results) ? (result as any).results.length : undefined;
+        const rawResults = Array.isArray((result as any)?.results) ? (result as any).results : [];
+        const webResults = rawResults
+          .map((r: any) => ({
+            type: "web_search_result",
+            title: typeof r.title === "string" ? r.title : (typeof r.url === "string" ? r.url : "Untitled"),
+            url: typeof r.url === "string" ? r.url : "",
+          }))
+          .filter((r: any) => r.url);
         return {
-          content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
-          details: { type: "web_search", query, maxResults, resultCount },
+          content: [
+            { type: "text" as const, text: "", _serverToolUse: { id: _toolCallId, name: "web_search", input: { query } } },
+            { type: "text" as const, text: "", _webSearchResult: { tool_use_id: _toolCallId, content: webResults } },
+          ],
+          details: { type: "web_search", query, maxResults, resultCount: webResults.length },
         };
       } catch (error) {
         return errorResult("web_search", error, { query, maxResults });
