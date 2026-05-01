@@ -1525,6 +1525,9 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                         if (v?.anthropic?.webSearch) {
                             ps.anthropic = { ...ps.anthropic, webSearch: v.anthropic.webSearch };
                         }
+                        if (v?.["ollama-cloud"]?.webSearch) {
+                            ps["ollama-cloud"] = { ...ps["ollama-cloud"], webSearch: v["ollama-cloud"].webSearch };
+                        }
                         saveGlobal({ providerSettings: ps } as any);
                     } else if (section === "toolSearch") {
                         if (value != null && (typeof value !== "object" || Array.isArray(value))) {
