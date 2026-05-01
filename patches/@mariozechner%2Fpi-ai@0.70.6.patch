@@ -214,7 +214,7 @@ diff --git a/dist/models.generated.d.ts b/dist/models.generated.d.ts
 +            supportsStore: false;
 +            supportsDeveloperRole: false;
 +            supportsReasoningEffort: false;
-+            supportsUsageInStreaming: false;
++            supportsUsageInStreaming: true;
 +            supportsLongCacheRetention: false;
 +            supportsStrictMode: false;
 +            maxTokensField: "max_tokens";
@@ -242,7 +242,7 @@ diff --git a/dist/models.generated.js b/dist/models.generated.js
 +// Ollama Cloud currently documents plan-based usage tiers rather than stable per-token rates.
 +// Keep cost metadata at zero until Ollama publishes machine-usable model pricing.
 +const OLLAMA_ZERO_COST = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
-+const OLLAMA_COMPAT = { supportsStore: false, supportsDeveloperRole: false, supportsReasoningEffort: false, supportsUsageInStreaming: false, supportsLongCacheRetention: false, supportsStrictMode: false, maxTokensField: "max_tokens" };
++const OLLAMA_COMPAT = { supportsStore: false, supportsDeveloperRole: false, supportsReasoningEffort: false, supportsUsageInStreaming: true, supportsLongCacheRetention: false, supportsStrictMode: false, maxTokensField: "max_tokens" };
 +function createOllamaModel(id, name, { reasoning = false, input = ["text"], contextWindow = 128000, maxTokens = 16384 } = {}) {
 +    return {
 +        id,

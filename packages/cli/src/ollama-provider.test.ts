@@ -31,7 +31,7 @@ describe("Ollama built-in provider", () => {
       supportsStore: false,
       supportsDeveloperRole: false,
       supportsReasoningEffort: false,
-      supportsUsageInStreaming: false,
+      supportsUsageInStreaming: true,
       supportsLongCacheRetention: false,
       supportsStrictMode: false,
       maxTokensField: "max_tokens",
@@ -63,6 +63,54 @@ describe("Ollama built-in provider", () => {
     } finally {
       if (prev === undefined) delete process.env.OLLAMA_API_KEY;
       else process.env.OLLAMA_API_KEY = prev;
+    }
+  });
+
+  test("pi-ai requests streaming usage for Ollama Cloud so tokens are counted", async () => {
+    const { complete, getModels } = await import("@mariozechner/pi-ai");
+    const model = (getModels("ollama-cloud") as Array<any>).find((m) => m.id === "glm-5.1");
+    expect(model).toBeDefined();
+
+    const prevFetch = globalThis.fetch;
+    const prevKey = process.env.OLLAMA_API_KEY;
+    process.env.OLLAMA_API_KEY = "test-ollama-key";
+    let requestPayload: any;
+
+    globalThis.fetch = (async (_input: string | URL | Request, init?: RequestInit) => {
+      requestPayload = JSON.parse(String(init?.body));
+      const body = [
+        `data: ${JSON.stringify({
+          id: "chatcmpl-test",
+          object: "chat.completion.chunk",
+          choices: [{ index: 0, delta: { content: "hi" }, finish_reason: null }],
+        })}`,
+        `data: ${JSON.stringify({
+          id: "chatcmpl-test",
+          object: "chat.completion.chunk",
+          choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+          usage: { prompt_tokens: 123, completion_tokens: 45, total_tokens: 168 },
+        })}`,
+        "data: [DONE]",
+        "",
+      ].join("\n\n");
+      return new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } });
+    }) as unknown as typeof fetch;
+
+    try {
+      const response = await complete(
+        model,
+        { messages: [{ role: "user", content: "hello", timestamp: Date.now() }] },
+        { maxRetries: 0 },
+      );
+
+      expect(requestPayload.stream_options).toEqual({ include_usage: true });
+      expect(response.usage.input).toBe(123);
+      expect(response.usage.output).toBe(45);
+      expect(response.usage.totalTokens).toBe(168);
+    } finally {
+      globalThis.fetch = prevFetch;
+      if (prevKey === undefined) delete process.env.OLLAMA_API_KEY;
+      else process.env.OLLAMA_API_KEY = prevKey;
     }
   });
 
