@@ -258,7 +258,6 @@ export function AtMentionPopover({
     highlightedIndex: allItems.findIndex((item) => item.value === highlightedValue),
     setHighlightedIndex: updateHighlightedItemByIndex,
     popoverSelector: "[role='listbox'][aria-label='Mentions']",
-    ignoreTargetSelector: "[data-pp-prompt]",
   });
 
   // Keyboard navigation
@@ -308,7 +307,15 @@ export function AtMentionPopover({
       role="listbox"
       aria-label="Mentions"
     >
-      <Command className="w-full" shouldFilter={false}>
+      <Command
+        className="w-full"
+        shouldFilter={false}
+        value={highlightedValue}
+        onValueChange={(value) => {
+          const index = allItems.findIndex((item) => item.value === value);
+          if (index !== -1) updateHighlightedItemByIndex(index);
+        }}
+      >
         {/* Breadcrumb header */}
         <div className="flex items-center gap-2 px-3 py-2 border-b border-border/50 text-xs">
           {!isAtRoot && !isSearchMode && (

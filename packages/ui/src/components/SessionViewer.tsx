@@ -1319,15 +1319,6 @@ export function SessionViewer({
                         return;
                       }
 
-                      if (atMentionOpen && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
-                        event.preventDefault();
-                        const popoverEl = document.querySelector<HTMLElement>("[role='listbox'][aria-label='Mentions']");
-                        if (popoverEl) {
-                          popoverEl.dispatchEvent(new KeyboardEvent("keydown", { key: event.key, bubbles: true, cancelable: true }));
-                        }
-                        return;
-                      }
-
                       if (atMentionOpen && event.key === "Enter" && !event.shiftKey) {
                         if (atMentionHighlightedAgent) {
                           event.preventDefault();
