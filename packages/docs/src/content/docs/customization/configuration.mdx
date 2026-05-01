@@ -123,7 +123,10 @@ You can also override any setting with **environment variables**.
 
 ## Web Search
 
-PizzaPi can inject Anthropic's server-side web search tool into requests, giving the agent the ability to search the web during conversations. This uses Anthropic's `web_search_20250305` tool type.
+PizzaPi can add web search tools to supported providers, giving the agent the ability to search the web during conversations.
+
+- **Anthropic** uses Anthropic's server-side `web_search_20250305` tool type.
+- **Ollama Cloud** registers `web_search` and `web_fetch` tools that call Ollama's REST APIs with your Ollama Cloud credentials.
 
 ### Configuration
 
@@ -152,6 +155,27 @@ Add a `providerSettings` block to `~/.pizzapi/config.json`:
 | `allowedDomains` | `string[]` | — | Only return results from these domains. |
 | `blockedDomains` | `string[]` | — | Never return results from these domains. |
 
+For Ollama Cloud, enable web search under `providerSettings["ollama-cloud"].webSearch`:
+
+```jsonc
+// ~/.pizzapi/config.json
+{
+  "providerSettings": {
+    "ollama-cloud": {
+      "webSearch": {
+        "enabled": true,
+        "maxResults": 5
+      }
+    }
+  }
+}
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | `boolean` | `false` | Register Ollama `web_search` and `web_fetch` tools. |
+| `maxResults` | `number` | `5` | Default number of search results to request from Ollama (`1`–`10`). |
+
 ### Environment Variables
 
 You can also enable web search via environment variables (these take precedence if the config values are not already set):
@@ -162,9 +186,11 @@ You can also enable web search via environment variables (these take precedence 
 | `PIZZAPI_WEB_SEARCH_MAX_USES` | Max searches per request (default: `5`). |
 | `PIZZAPI_WEB_SEARCH_ALLOWED_DOMAINS` | Comma-separated list of allowed domains. |
 | `PIZZAPI_WEB_SEARCH_BLOCKED_DOMAINS` | Comma-separated list of blocked domains. |
+| `PIZZAPI_OLLAMA_WEB_SEARCH` | Set to `1` to enable Ollama Cloud web tools. |
+| `PIZZAPI_OLLAMA_WEB_SEARCH_MAX_RESULTS` | Default Ollama search results per request (`1`–`10`, default: `5`). |
 
 <Aside type="note">
-  Web search works with both API key and OAuth authentication.
+  Anthropic web search works with both API key and OAuth authentication. Ollama web search uses your stored <code>ollama-cloud</code> credentials from <code>/login</code>, or <code>OLLAMA_API_KEY</code> if set.
 </Aside>
 
 <Aside type="tip" title="Built-in Ollama Cloud auth uses an environment variable">

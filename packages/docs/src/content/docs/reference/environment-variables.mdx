@@ -60,14 +60,16 @@ These variables control the [Agent Sandbox](/PizzaPi/security/sandbox/) behavior
 
 ### Web Search Variables
 
-These variables control Anthropic's server-side web search tool. They can also be configured via `providerSettings.anthropic.webSearch` in `config.json`. See [Configuration → Web Search](/PizzaPi/customization/configuration/#web-search) for details.
+These variables control provider web search tools. They can also be configured via `providerSettings.<provider>.webSearch` in `config.json`. See [Configuration → Web Search](/PizzaPi/customization/configuration/#web-search) for details.
 
 | Variable | Description | Default |
 |---|---|---|
 | `PIZZAPI_WEB_SEARCH` | Set to `1` to enable Anthropic web search. | — |
 | `PIZZAPI_WEB_SEARCH_MAX_USES` | Maximum number of web searches per request. | `5` |
 | `PIZZAPI_WEB_SEARCH_ALLOWED_DOMAINS` | Comma-separated list of domains to restrict search results to. | — |
-| `PIZZAPI_WEB_SEARCH_BLOCKED_DOMAINS` | Comma-separated list of domains to exclude from search results. | — |
+| `PIZZAPI_WEB_SEARCH_BLOCKED_DOMAINS` | Comma-separated list of domains to exclude from Anthropic search results. | — |
+| `PIZZAPI_OLLAMA_WEB_SEARCH` | Set to `1` to register Ollama Cloud `web_search` and `web_fetch` tools. Uses stored `ollama-cloud` credentials or `OLLAMA_API_KEY`. | — |
+| `PIZZAPI_OLLAMA_WEB_SEARCH_MAX_RESULTS` | Default number of Ollama search results per request (`1`–`10`). | `5` |
 
 ### Provider Authentication Variables
 

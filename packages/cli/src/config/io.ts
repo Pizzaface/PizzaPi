@@ -394,6 +394,14 @@ export function applyProviderSettingsEnv(config: PizzaPiConfig): void {
     if (ws?.blockedDomains?.length && !process.env.PIZZAPI_WEB_SEARCH_BLOCKED_DOMAINS) {
         process.env.PIZZAPI_WEB_SEARCH_BLOCKED_DOMAINS = ws.blockedDomains.join(",");
     }
+
+    const ollamaWs = config.providerSettings?.["ollama-cloud"]?.webSearch;
+    if (ollamaWs?.enabled && !process.env.PIZZAPI_OLLAMA_WEB_SEARCH) {
+        process.env.PIZZAPI_OLLAMA_WEB_SEARCH = "1";
+    }
+    if (ollamaWs?.maxResults != null && !process.env.PIZZAPI_OLLAMA_WEB_SEARCH_MAX_RESULTS) {
+        process.env.PIZZAPI_OLLAMA_WEB_SEARCH_MAX_RESULTS = String(ollamaWs.maxResults);
+    }
 }
 
 // ── Config saving ─────────────────────────────────────────────────────────────

@@ -237,6 +237,8 @@ export interface WebSearchConfig {
     enabled?: boolean;
     /** Maximum number of searches per request. Default: 5. */
     maxUses?: number;
+    /** Maximum search results per request for provider APIs that expose result count. Default: 5. */
+    maxResults?: number;
     /** Only include results from these domains. */
     allowedDomains?: string[];
     /** Never include results from these domains. */
@@ -248,7 +250,7 @@ export interface WebSearchConfig {
  */
 export interface ProviderSettings {
     [provider: string]: {
-        /** Web search configuration (Anthropic only). */
+        /** Web search configuration. */
         webSearch?: WebSearchConfig;
     };
 }
