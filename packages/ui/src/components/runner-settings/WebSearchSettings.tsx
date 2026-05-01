@@ -37,6 +37,12 @@ export default function WebSearchSettings({ config, onSave, saving }: SectionPro
     const [ollamaMaxResults, setOllamaMaxResults] = useState<number>(
         typeof ollamaWs.maxResults === "number" ? ollamaWs.maxResults : 5,
     );
+    const [ollamaMaxContentChars, setOllamaMaxContentChars] = useState<number>(
+        typeof ollamaWs.maxContentChars === "number" ? ollamaWs.maxContentChars : 8000,
+    );
+    const [ollamaMaxLinks, setOllamaMaxLinks] = useState<number>(
+        typeof ollamaWs.maxLinks === "number" ? ollamaWs.maxLinks : 100,
+    );
 
     // Inputs for adding domains
     const [allowedInput, setAllowedInput] = useState("");
@@ -85,6 +91,8 @@ export default function WebSearchSettings({ config, onSave, saving }: SectionPro
                 webSearch: {
                     enabled: ollamaEnabled,
                     maxResults: ollamaMaxResults,
+                    maxContentChars: ollamaMaxContentChars,
+                    maxLinks: ollamaMaxLinks,
                 },
             },
         });
@@ -212,6 +220,52 @@ export default function WebSearchSettings({ config, onSave, saving }: SectionPro
                             if (!isNaN(v)) setOllamaMaxResults(Math.max(1, Math.min(10, v)));
                         }}
                         className="w-24"
+                        disabled={!ollamaEnabled}
+                    />
+                </div>
+
+                {/* Max content chars (web fetch) */}
+                <div className="flex flex-col gap-2 rounded-md border border-border bg-card p-4">
+                    <Label htmlFor="ollama-ws-max-content-chars" className="text-sm font-medium">
+                        Web Fetch — Max Content Chars
+                    </Label>
+                    <p className="text-xs text-muted-foreground">
+                        Truncate fetched page content to this many characters (1–100,000).
+                    </p>
+                    <Input
+                        id="ollama-ws-max-content-chars"
+                        type="number"
+                        min={1}
+                        max={100000}
+                        value={ollamaMaxContentChars}
+                        onChange={(e) => {
+                            const v = parseInt(e.target.value, 10);
+                            if (!isNaN(v)) setOllamaMaxContentChars(Math.max(1, Math.min(100000, v)));
+                        }}
+                        className="w-28"
+                        disabled={!ollamaEnabled}
+                    />
+                </div>
+
+                {/* Max links (web fetch) */}
+                <div className="flex flex-col gap-2 rounded-md border border-border bg-card p-4">
+                    <Label htmlFor="ollama-ws-max-links" className="text-sm font-medium">
+                        Web Fetch — Max Links
+                    </Label>
+                    <p className="text-xs text-muted-foreground">
+                        Truncate fetched page links to this many entries (1–1,000).
+                    </p>
+                    <Input
+                        id="ollama-ws-max-links"
+                        type="number"
+                        min={1}
+                        max={1000}
+                        value={ollamaMaxLinks}
+                        onChange={(e) => {
+                            const v = parseInt(e.target.value, 10);
+                            if (!isNaN(v)) setOllamaMaxLinks(Math.max(1, Math.min(1000, v)));
+                        }}
+                        className="w-28"
                         disabled={!ollamaEnabled}
                     />
                 </div>

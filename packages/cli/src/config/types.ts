@@ -243,6 +243,10 @@ export interface WebSearchConfig {
     allowedDomains?: string[];
     /** Never include results from these domains. */
     blockedDomains?: string[];
+    /** Truncate fetched web content to this many characters (Ollama Cloud). Default: 8000. */
+    maxContentChars?: number;
+    /** Truncate fetched page links to this many entries (Ollama Cloud). Default: 100. */
+    maxLinks?: number;
 }
 
 /**

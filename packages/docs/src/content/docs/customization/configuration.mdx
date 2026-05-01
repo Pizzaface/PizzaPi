@@ -164,7 +164,9 @@ For Ollama Cloud, enable web search under `providerSettings["ollama-cloud"].webS
     "ollama-cloud": {
       "webSearch": {
         "enabled": true,
-        "maxResults": 5
+        "maxResults": 5,
+        "maxContentChars": 8000,
+        "maxLinks": 100
       }
     }
   }
@@ -175,6 +177,8 @@ For Ollama Cloud, enable web search under `providerSettings["ollama-cloud"].webS
 |-----|------|---------|-------------|
 | `enabled` | `boolean` | `false` | Register Ollama `web_search` and `web_fetch` tools. |
 | `maxResults` | `number` | `5` | Default number of search results to request from Ollama (`1`–`10`). |
+| `maxContentChars` | `number` | `8000` | Truncate fetched page content to this many characters (`1`–`100000`). |
+| `maxLinks` | `number` | `100` | Truncate fetched page links to this many entries (`1`–`1000`). |
 
 ### Environment Variables
 
@@ -188,6 +192,8 @@ You can also enable web search via environment variables (these take precedence 
 | `PIZZAPI_WEB_SEARCH_BLOCKED_DOMAINS` | Comma-separated list of blocked domains. |
 | `PIZZAPI_OLLAMA_WEB_SEARCH` | Set to `1` to enable Ollama Cloud web tools. |
 | `PIZZAPI_OLLAMA_WEB_SEARCH_MAX_RESULTS` | Default Ollama search results per request (`1`–`10`, default: `5`). |
+| `PIZZAPI_OLLAMA_WEB_FETCH_MAX_CONTENT_CHARS` | Max chars for fetched page content (`1`–`100000`, default: `8000`). |
+| `PIZZAPI_OLLAMA_WEB_FETCH_MAX_LINKS` | Max links from fetched pages (`1`–`1000`, default: `100`). |
 
 <Aside type="note">
   Anthropic web search works with both API key and OAuth authentication. Ollama web search uses your stored <code>ollama-cloud</code> credentials from <code>/login</code>, or <code>OLLAMA_API_KEY</code> if set.

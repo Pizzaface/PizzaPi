@@ -43,6 +43,14 @@ function envDefaultMaxResults(env: NodeJS.ProcessEnv = process.env): number {
   return clampInteger(env.PIZZAPI_OLLAMA_WEB_SEARCH_MAX_RESULTS, DEFAULT_MAX_RESULTS, 1, 10);
 }
 
+function envMaxContentChars(env: NodeJS.ProcessEnv = process.env): number {
+  return clampInteger(env.PIZZAPI_OLLAMA_WEB_FETCH_MAX_CONTENT_CHARS, DEFAULT_MAX_CONTENT_CHARS, 1, 100_000);
+}
+
+function envMaxLinks(env: NodeJS.ProcessEnv = process.env): number {
+  return clampInteger(env.PIZZAPI_OLLAMA_WEB_FETCH_MAX_LINKS, DEFAULT_MAX_LINKS, 1, 1_000);
+}
+
 export function isOllamaWebSearchEnabled(env: Record<string, string | undefined> = process.env): boolean {
   const raw = env.PIZZAPI_OLLAMA_WEB_SEARCH?.trim().toLowerCase();
   if (!raw) return false;
@@ -181,6 +189,8 @@ export const ollamaWebToolsExtension: ExtensionFactory = (pi) => {
   const auth = createOllamaAuthStorage();
   const tools = createOllamaWebTools({
     defaultMaxResults: envDefaultMaxResults(),
+    maxContentChars: envMaxContentChars(),
+    maxLinks: envMaxLinks(),
     apiKeyProvider: () => auth.getApiKey("ollama-cloud"),
   });
   pi.registerTool(tools.webSearch as any);
