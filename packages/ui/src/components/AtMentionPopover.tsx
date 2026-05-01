@@ -11,6 +11,7 @@ import { useAtMentionFiles, type Entry } from "@/hooks/useAtMentionFiles";
 import { useAtMentionSearch } from "@/hooks/useAtMentionSearch";
 import { Bot, ChevronLeft, File, Folder, Search, X } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useDocumentPopoverKeyboardNavigation } from "@/components/session-viewer/popover-keyboard";
 
 // ── Icons ─────────────────────────────────────────────────────────────────────
 
@@ -211,6 +212,18 @@ export function AtMentionPopover({
   // Track the currently highlighted value for keyboard navigation
   const [highlightedValue, setHighlightedValue] = React.useState<string>("");
 
+  const updateHighlightedItemByIndex = React.useCallback(
+    (newIndex: number) => {
+      const newItem = allItems[newIndex];
+      if (!newItem) return;
+      setHighlightedValue(newItem.value);
+      onHighlightedIndexChange?.(newIndex);
+      onHighlightedEntryChange?.(newItem.kind === "file" ? newItem.entry : null);
+      onHighlightedAgentChange?.(newItem.kind === "agent" ? newItem.agent.name : null);
+    },
+    [allItems, onHighlightedIndexChange, onHighlightedEntryChange, onHighlightedAgentChange],
+  );
+
   // Reset highlighted index when items change
   React.useEffect(() => {
     if (allItems.length > 0) {
@@ -239,6 +252,15 @@ export function AtMentionPopover({
     });
   }, [highlightedValue]);
 
+  useDocumentPopoverKeyboardNavigation({
+    open,
+    totalItems: allItems.length,
+    highlightedIndex: allItems.findIndex((item) => item.value === highlightedValue),
+    setHighlightedIndex: updateHighlightedItemByIndex,
+    popoverSelector: "[role='listbox'][aria-label='Mentions']",
+    ignoreTargetSelector: "[data-pp-prompt]",
+  });
+
   // Keyboard navigation
   const handleKeyDown = React.useCallback(
     (e: React.KeyboardEvent) => {
@@ -260,23 +282,16 @@ export function AtMentionPopover({
           onDrillInto(newPath);
         }
       } else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        e.preventDefault();
+        e.stopPropagation();
         const currentIndex = allItems.findIndex(i => i.value === highlightedValue);
-        let newIndex: number;
-        if (e.key === "ArrowDown") {
-          newIndex = currentIndex < allItems.length - 1 ? currentIndex + 1 : 0;
-        } else {
-          newIndex = currentIndex > 0 ? currentIndex - 1 : allItems.length - 1;
-        }
-        const newItem = allItems[newIndex];
-        if (newItem) {
-          setHighlightedValue(newItem.value);
-          onHighlightedIndexChange?.(newIndex);
-          onHighlightedEntryChange?.(newItem.kind === "file" ? newItem.entry : null);
-          onHighlightedAgentChange?.(newItem.kind === "agent" ? newItem.agent.name : null);
-        }
+        const newIndex = e.key === "ArrowDown"
+          ? (currentIndex < allItems.length - 1 ? currentIndex + 1 : 0)
+          : (currentIndex > 0 ? currentIndex - 1 : allItems.length - 1);
+        updateHighlightedItemByIndex(newIndex);
       }
     },
-    [onClose, query, path, handleBack, allItems, highlightedValue, onDrillInto, onHighlightedIndexChange, onHighlightedEntryChange]
+    [onClose, query, path, handleBack, allItems, highlightedValue, onDrillInto, updateHighlightedItemByIndex]
   );
 
   if (!open) return null;
