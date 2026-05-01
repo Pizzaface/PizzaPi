@@ -74,6 +74,7 @@ import { McpToggleContext } from "@/components/session-viewer/McpToggleContext";
 import { SessionActionsProvider } from "@/components/session-viewer/session-actions-context";
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 import { type IncompleteTriggerItem } from "@/components/TriggersPanel";
+import { useDocumentPopoverKeyboardNavigation } from "@/components/session-viewer/popover-keyboard";
 import { resolveCommandPopoverState } from "@/components/session-viewer/utils";
 
 import { ContextDonut } from "@/components/session-viewer/rendering";
@@ -399,6 +400,34 @@ export function SessionViewer({
     skillSuggestions,
     commandHighlightedIndex,
   ]);
+
+  const commandOptionCount = React.useMemo(() => {
+    if (!commandOpen) return 0;
+    if (isResumeMode) return resumeCandidates.length;
+    if (isAgentMode) return agentCandidates.length;
+    if (subCommandMode.active) return subCommandMode.filtered.length;
+    return commandSuggestions.length + extensionSuggestions.length + promptSuggestions.length + skillSuggestions.length;
+  }, [
+    commandOpen,
+    isResumeMode,
+    resumeCandidates.length,
+    isAgentMode,
+    agentCandidates.length,
+    subCommandMode,
+    commandSuggestions.length,
+    extensionSuggestions.length,
+    promptSuggestions.length,
+    skillSuggestions.length,
+  ]);
+
+  useDocumentPopoverKeyboardNavigation({
+    open: commandOpen && !isTouchDevice,
+    totalItems: commandOptionCount,
+    highlightedIndex: commandHighlightedIndex,
+    setHighlightedIndex: setCommandHighlightedIndex,
+    popoverSelector: "[data-pp-command-popover]",
+    ignoreTargetSelector: "[data-pp-prompt]",
+  });
 
   const composerReady = canSubmitSessionInput(sessionId, viewerStatus, !!isCompacting);
 
@@ -929,7 +958,7 @@ export function SessionViewer({
 
             {/* Command picker */}
             {sessionId && commandOpen && (
-              <div className="mb-2 rounded-md border border-border bg-popover text-popover-foreground shadow-sm">
+              <div className="mb-2 rounded-md border border-border bg-popover text-popover-foreground shadow-sm" data-pp-command-popover="">
                 <Command
                   shouldFilter={false}
                   className="w-full"
@@ -1287,15 +1316,6 @@ export function SessionViewer({
                         event.stopPropagation();
                         const newPath = atMentionPath ? `${atMentionPath}${atMentionHighlightedEntry.name}/` : `${atMentionHighlightedEntry.name}/`;
                         handleAtMentionDrillInto(newPath);
-                        return;
-                      }
-
-                      if (atMentionOpen && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
-                        event.preventDefault();
-                        const popoverEl = document.querySelector<HTMLElement>("[role='listbox'][aria-label='Mentions']");
-                        if (popoverEl) {
-                          popoverEl.dispatchEvent(new KeyboardEvent("keydown", { key: event.key, bubbles: true, cancelable: true }));
-                        }
                         return;
                       }
 
