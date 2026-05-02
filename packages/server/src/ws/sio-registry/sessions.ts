@@ -725,16 +725,17 @@ export async function publishSessionEvent(sessionId: string, event: unknown): Pr
         seq,
     });
 
-    // Truncate session_active state for viewer broadcast so initial page
-    // load / reconnect only sends the tail.  The full state is already cached
-    // above for replay and load_messages pagination.
-    const broadcastEvent = prepareBroadcastEvent(strippedEvent);
-
-    // Broadcast to all viewer sockets in the session room
+    // Broadcast to all viewer sockets in the session room.
+    // NOTE: Do NOT truncate session_active here.  This is the live broadcast
+    // path — already-connected viewers need the full state to preserve any
+    // older history they've loaded (the UI replaces the transcript on each
+    // session_active, so truncation here would repeatedly erase paged-up
+    // context).  Truncation is applied only in sendSnapshotToViewer() for
+    // the initial reconnect/hydration delivery.
     try {
         io.of("/viewer")
             .to(viewerSessionRoom(sessionId))
-            .emit("event", { event: broadcastEvent, seq });
+            .emit("event", { event: strippedEvent, seq });
     } catch (err) {
         // Redis adapter throws EPIPE when the Redis connection drops mid-broadcast.
         // Fall back to local-only delivery so viewers on this server still receive
@@ -745,7 +746,7 @@ export async function publishSessionEvent(sessionId: string, event: unknown): Pr
             io.of("/viewer")
                 .local
                 .to(viewerSessionRoom(sessionId))
-                .emit("event", { event: broadcastEvent, seq });
+                .emit("event", { event: strippedEvent, seq });
         } catch {
             // Local delivery also failed — event may be lost for connected viewers,
             // but it's in the cache (if Redis accepted it) for future replay.
@@ -856,7 +857,11 @@ export async function sendSnapshotToViewer(sessionId: string, socket: Socket): P
     }
     if (session.lastState) {
         const state = safeJsonParse(session.lastState);
-        socket.emit("event", { event: { type: "session_active", state }, seq });
+        // Truncate session_active state for reconnect/hydration delivery so
+        // initial page load / reconnect only sends the tail.  Full state
+        // is available via load_messages pagination.
+        const hydratedEvent = prepareBroadcastEvent({ type: "session_active", state });
+        socket.emit("event", { event: hydratedEvent, seq });
     }
 }
 
