@@ -38,7 +38,8 @@ const gitState = {
     loading: false,
     error: null,
     operationInProgress: null as string | null,
-    lastOperationResult: null,
+    lastOperationResult: null as any,
+    lastConflictType: null as string | null,
     fetchStatus: mock(() => {}),
     fetchWorktrees: mock(() => {}),
     fetchDiff: mock(async () => ""),
@@ -53,6 +54,12 @@ const gitState = {
     pull: mock(() => {}),
     setUpstream: mock(() => {}),
     merge: mock(() => {}),
+    mergeAbort: mock(() => {}),
+    rebase: mock(() => {}),
+    rebaseAbort: mock(() => {}),
+    rebaseContinue: mock(() => {}),
+    addWorktree: mock(() => {}),
+    removeWorktree: mock(() => {}),
     clearOperationResult: mock(() => {}),
 };
 
@@ -120,5 +127,16 @@ describe("GitPanel", () => {
         expect((getByText("Pull").closest("button") as HTMLButtonElement).disabled).toBe(true);
         expect((getByText("Push").closest("button") as HTMLButtonElement).disabled).toBe(true);
         expect((getByText("Sync").closest("button") as HTMLButtonElement).disabled).toBe(true);
+    });
+
+    test("shows rebase conflict resolution bar when last operation returned a conflict", () => {
+        gitState.operationInProgress = null;
+        gitState.lastOperationResult = { ok: false, reason: "conflict", message: "Conflicts" };
+
+        const { getByText } = render(<GitPanel cwd="/repo" />);
+
+        expect(getByText("Conflicts detected. Resolve them to continue.")).toBeTruthy();
+        expect(getByText("Continue")).toBeTruthy();
+        expect(getByText("Abort")).toBeTruthy();
     });
 });

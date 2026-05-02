@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { watch } from "node:fs";
 import { promisify } from "node:util";
-import { isAbsolute, normalize, resolve } from "node:path";
+import { isAbsolute, join, normalize, resolve } from "node:path";
 import type { Socket } from "socket.io-client";
 import type { ServiceHandler, ServiceInitOptions, ServiceEnvelope } from "../service-handler.js";
 import { isCwdAllowed } from "../workspace.js";
@@ -17,7 +17,7 @@ type ClearTimeoutFn = (timeout: ReturnType<typeof setTimeout>) => void;
 
 type GitExec = (
     args: string[],
-    options: { cwd: string; timeout: number },
+    options: { cwd: string; timeout: number; env?: Record<string, string> },
 ) => Promise<{ stdout: string; stderr: string }>;
 
 type GitStatusResultPayload = {
@@ -147,6 +147,15 @@ export class GitService implements ServiceHandler {
     private readonly _cwdSubscribers = new Map<string, Set<string>>();
     private readonly _sessionCwd = new Map<string, string>();
     private readonly _repoWatchers = new Map<string, RepoWatchState>();
+    /**
+     * Mutation lock map: repoRoot → mutation token.
+     *
+     * Only used for operations that genuinely conflict with each other
+     * (checkout, commit, push, pull, merge, rebase, set-upstream).
+     * Stage/unstage are NOT locked here — git's own index lock serializes
+     * concurrent `git add`/`git restore --staged` safely, and the UI
+     * already disables buttons while an operation is in-flight.
+     */
     private readonly _activeRepoMutations = new Map<string, string>();
 
     constructor(options?: {
@@ -209,11 +218,29 @@ export class GitService implements ServiceHandler {
                 case "git_merge":
                     void this.handleMerge(payload, requestId, sessionId);
                     break;
+                case "git_merge_abort":
+                    void this.handleMergeAbort(payload, requestId, sessionId);
+                    break;
                 case "git_set_upstream":
                     void this.handleSetUpstream(payload, requestId, sessionId);
                     break;
                 case "git_worktrees":
                     void this.handleWorktrees(payload, requestId, sessionId);
+                    break;
+                case "git_rebase":
+                    void this.handleRebase(payload, requestId, sessionId);
+                    break;
+                case "git_rebase_abort":
+                    void this.handleRebaseAbort(payload, requestId, sessionId);
+                    break;
+                case "git_rebase_continue":
+                    void this.handleRebaseContinue(payload, requestId, sessionId);
+                    break;
+                case "git_worktree_add":
+                    void this.handleWorktreeAdd(payload, requestId, sessionId);
+                    break;
+                case "git_worktree_remove":
+                    void this.handleWorktreeRemove(payload, requestId, sessionId);
                     break;
             }
         };
@@ -257,22 +284,41 @@ export class GitService implements ServiceHandler {
         this.emit(type, { ok: false, message }, requestId, sessionId);
     }
 
+    /**
+     * Acquire a repo-level mutation lock.
+     *
+     * Uses the cached repo root when available (avoids an async `git rev-parse`
+     * per call). If the repo root is not cached yet, resolves and caches it.
+     *
+     * When the repo is already locked, waits up to `waitMs` for the lock to
+     * be released instead of immediately rejecting. This eliminates the
+     * "Another git operation is already running" error for brief overlaps.
+     */
     private async beginRepoMutation(
         cwd: string,
         type: string,
         mutationName: string,
         requestId?: string,
         sessionId?: string,
+        { waitMs = 5000 }: { waitMs?: number } = {},
     ): Promise<{ key: string; token: string } | null> {
-        const key = await this.resolveRepoRoot(cwd);
-        const activeMutation = this._activeRepoMutations.get(key);
-        if (activeMutation) {
-            this.emit(type, {
-                ok: false,
-                reason: "busy",
-                message: `Another git operation (${activeMutation}) is already running for this repository. Wait for it to finish and try again.`,
-            }, requestId, sessionId);
-            return null;
+        const key = this._cwdRepoRoot.get(cwd) ?? await this.resolveRepoRoot(cwd);
+        // Cache for future calls
+        if (!this._cwdRepoRoot.has(cwd)) this._cwdRepoRoot.set(cwd, key);
+
+        // Wait for existing mutation to complete (with timeout)
+        const deadline = this._now() + waitMs;
+        while (this._activeRepoMutations.has(key)) {
+            if (this._now() >= deadline) {
+                const activeMutation = this._activeRepoMutations.get(key) ?? "unknown";
+                this.emit(type, {
+                    ok: false,
+                    reason: "busy",
+                    message: `Another git operation (${activeMutation}) is still running after ${waitMs / 1000}s. Try again.`,
+                }, requestId, sessionId);
+                return null;
+            }
+            await new Promise<void>((resolve) => this._setTimeout(resolve, 50));
         }
 
         const token = `${mutationName}:${requestId ?? `${Date.now()}`}`;
@@ -708,9 +754,8 @@ export class GitService implements ServiceHandler {
         try {
             // Resolve repo root — paths from git status are repo-root-relative,
             // so diff must run from repo root for paths to resolve correctly.
-            const { stdout: toplevel } = await this._execGit(["rev-parse", "--show-toplevel"], { cwd, timeout: 5000 },
-            );
-            const repoRoot = toplevel.trim() || cwd;
+            const repoRoot = this._cwdRepoRoot.get(cwd) ?? (await this.resolveRepoRoot(cwd));
+            if (!this._cwdRepoRoot.has(cwd)) this._cwdRepoRoot.set(cwd, repoRoot);
 
             const args = staged
                 ? ["diff", "--cached", "--", filePath]
@@ -952,15 +997,11 @@ export class GitService implements ServiceHandler {
             }
         }
 
-        const mutation = await this.beginRepoMutation(cwd, "git_stage_result", "stage", requestId, sessionId);
-        if (!mutation) return;
-
         try {
             // Resolve repo root — paths from git status are repo-root-relative,
             // so operations must run from repo root for paths to resolve correctly.
-            const { stdout: toplevel } = await this._execGit(["rev-parse", "--show-toplevel"], { cwd, timeout: 5000 },
-            );
-            const repoRoot = toplevel.trim() || cwd;
+            const repoRoot = this._cwdRepoRoot.get(cwd) ?? (await this.resolveRepoRoot(cwd));
+            if (!this._cwdRepoRoot.has(cwd)) this._cwdRepoRoot.set(cwd, repoRoot);
 
             const args = all ? ["add", "--all"] : ["add", "--", ...paths];
             await this._execGit(args, { cwd: repoRoot, timeout: 15000 });
@@ -968,8 +1009,6 @@ export class GitService implements ServiceHandler {
             this.emit("git_stage_result", { ok: true }, requestId, sessionId);
         } catch (err) {
             this.emitError("git_stage_result", err instanceof Error ? err.message : String(err), requestId, sessionId);
-        } finally {
-            this.endRepoMutation(mutation);
         }
     }
 
@@ -1000,16 +1039,12 @@ export class GitService implements ServiceHandler {
             }
         }
 
-        const mutation = await this.beginRepoMutation(cwd, "git_unstage_result", "unstage", requestId, sessionId);
-        if (!mutation) return;
-
         try {
             // Resolve repo root — run from there so repo-root-relative paths work.
             // For unstage-all, use ":/" pathspec (magic "repo root") instead of "."
             // which would only cover the cwd subtree.
-            const { stdout: toplevel } = await this._execGit(["rev-parse", "--show-toplevel"], { cwd, timeout: 5000 },
-            );
-            const repoRoot = toplevel.trim() || cwd;
+            const repoRoot = this._cwdRepoRoot.get(cwd) ?? (await this.resolveRepoRoot(cwd));
+            if (!this._cwdRepoRoot.has(cwd)) this._cwdRepoRoot.set(cwd, repoRoot);
 
             const args = all
                 ? ["restore", "--staged", ":/"]
@@ -1019,8 +1054,6 @@ export class GitService implements ServiceHandler {
             this.emit("git_unstage_result", { ok: true }, requestId, sessionId);
         } catch (err) {
             this.emitError("git_unstage_result", err instanceof Error ? err.message : String(err), requestId, sessionId);
-        } finally {
-            this.endRepoMutation(mutation);
         }
     }
 
@@ -1067,9 +1100,8 @@ export class GitService implements ServiceHandler {
 
     private async collectWorktrees(cwd: string): Promise<GitWorktreeResultPayload> {
         // Get repo root so we can show relative paths
-        const { stdout: toplevel } = await this._execGit(["rev-parse", "--show-toplevel"], { cwd, timeout: 5000 },
-        );
-        const repoRoot = toplevel.trim();
+        const repoRoot = this._cwdRepoRoot.get(cwd) ?? (await this.resolveRepoRoot(cwd));
+        if (!this._cwdRepoRoot.has(cwd)) this._cwdRepoRoot.set(cwd, repoRoot);
 
         // Parse porcelain output — each worktree block is separated by a blank line
         const { stdout: listOutput } = await this._execGit(["worktree", "list", "--porcelain"],
@@ -1262,16 +1294,23 @@ export class GitService implements ServiceHandler {
         };
     }
 
-    private classifySyncFailure(message: string): { reason?: "conflict"; message: string } {
+    private classifySyncFailure(message: string): { reason?: "conflict" | "nonFastForward"; message: string } {
         if (
             message.includes("CONFLICT")
             || message.includes("Resolve all conflicts manually")
             || message.includes("could not apply")
-            || message.includes("Not possible to fast-forward")
+            || message.includes("unmerged")
+            || message.includes("unresolved conflict")
         ) {
             return {
                 reason: "conflict",
                 message: "Sync stopped because of conflicts. Resolve them in git, then try again.",
+            };
+        }
+        if (message.includes("Not possible to fast-forward")) {
+            return {
+                reason: "nonFastForward",
+                message: "Cannot fast-forward. Rebase or merge explicitly to integrate remote changes.",
             };
         }
         return { message };
@@ -1447,6 +1486,33 @@ export class GitService implements ServiceHandler {
         }
     }
 
+    // ── git merge --abort ──────────────────────────────────────────────
+
+    private async handleMergeAbort(
+        payload: Record<string, unknown>,
+        requestId?: string,
+        sessionId?: string,
+    ): Promise<void> {
+        const cwd = this.validateCwd(payload.cwd, "git_merge_abort_result", requestId, sessionId);
+        if (!cwd) return;
+
+        const mutation = await this.beginRepoMutation(cwd, "git_merge_abort_result", "merge-abort", requestId, sessionId);
+        if (!mutation) return;
+
+        try {
+            await this._execGit(["merge", "--abort"], { cwd, timeout: 30000 });
+            await this.invalidateStatusCacheFamily(cwd);
+            this.emit("git_merge_abort_result", { ok: true }, requestId, sessionId);
+        } catch (err) {
+            this.emit("git_merge_abort_result", {
+                ok: false,
+                message: err instanceof Error ? err.message : String(err),
+            }, requestId, sessionId);
+        } finally {
+            this.endRepoMutation(mutation);
+        }
+    }
+
     // ── git push ────────────────────────────────────────────────────────
 
     private async handlePush(
@@ -1511,6 +1577,226 @@ export class GitService implements ServiceHandler {
                 message,
                 noUpstream,
             }, requestId, sessionId);
+        } finally {
+            this.endRepoMutation(mutation);
+        }
+    }
+
+    // ── git rebase ────────────────────────────────────────────────────────
+
+    private async handleRebase(
+        payload: Record<string, unknown>,
+        requestId?: string,
+        sessionId?: string,
+    ): Promise<void> {
+        const cwd = this.validateCwd(payload.cwd, "git_rebase_result", requestId, sessionId);
+        if (!cwd) return;
+
+        const branch = typeof payload.branch === "string" ? payload.branch.trim() : "";
+        if (!branch || !isValidBranchName(branch)) {
+            this.emitError("git_rebase_result", "Invalid branch name for rebase", requestId, sessionId);
+            return;
+        }
+
+        const mutation = await this.beginRepoMutation(cwd, "git_rebase_result", "rebase", requestId, sessionId);
+        if (!mutation) return;
+
+        try {
+            const result = await this._execGit(["rebase", "--", branch], { cwd, timeout: 60000 });
+            const output = (result.stdout + "\n" + result.stderr).trim();
+            await this.invalidateStatusCacheFamily(cwd);
+            this.emit("git_rebase_result", { ok: true, output }, requestId, sessionId);
+        } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            const classified = this.classifySyncFailure(message);
+            if (classified.reason === "conflict") {
+                await this.invalidateStatusCacheFamily(cwd);
+            }
+            this.emit("git_rebase_result", {
+                ok: false,
+                reason: classified.reason,
+                message: classified.message,
+                output: message,
+            }, requestId, sessionId);
+        } finally {
+            this.endRepoMutation(mutation);
+        }
+    }
+
+    private async handleRebaseAbort(
+        payload: Record<string, unknown>,
+        requestId?: string,
+        sessionId?: string,
+    ): Promise<void> {
+        const cwd = this.validateCwd(payload.cwd, "git_rebase_abort_result", requestId, sessionId);
+        if (!cwd) return;
+
+        const mutation = await this.beginRepoMutation(cwd, "git_rebase_abort_result", "rebase-abort", requestId, sessionId);
+        if (!mutation) return;
+
+        try {
+            const result = await this._execGit(["rebase", "--abort"], { cwd, timeout: 30000 });
+            const output = (result.stdout + "\n" + result.stderr).trim();
+            await this.invalidateStatusCacheFamily(cwd);
+            this.emit("git_rebase_abort_result", { ok: true, output }, requestId, sessionId);
+        } catch (err) {
+            this.emitError("git_rebase_abort_result", err instanceof Error ? err.message : String(err), requestId, sessionId);
+        } finally {
+            this.endRepoMutation(mutation);
+        }
+    }
+
+    private async handleRebaseContinue(
+        payload: Record<string, unknown>,
+        requestId?: string,
+        sessionId?: string,
+    ): Promise<void> {
+        const cwd = this.validateCwd(payload.cwd, "git_rebase_continue_result", requestId, sessionId);
+        if (!cwd) return;
+
+        const mutation = await this.beginRepoMutation(cwd, "git_rebase_continue_result", "rebase-continue", requestId, sessionId);
+        if (!mutation) return;
+
+        try {
+            // Use GIT_EDITOR=true so the headless runner doesn't fail when git
+            // tries to open an editor for the rebase todo/commit message.
+            const result = await this._execGit(
+                ["rebase", "--continue"],
+                { cwd, timeout: 60000, env: { ...process.env, GIT_EDITOR: "true" } },
+            );
+            const output = (result.stdout + "\n" + result.stderr).trim();
+            await this.invalidateStatusCacheFamily(cwd);
+            this.emit("git_rebase_continue_result", { ok: true, output }, requestId, sessionId);
+        } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            const classified = this.classifySyncFailure(message);
+            if (classified.reason === "conflict") {
+                await this.invalidateStatusCacheFamily(cwd);
+            }
+            this.emit("git_rebase_continue_result", {
+                ok: false,
+                reason: classified.reason,
+                message: classified.message,
+                output: message,
+            }, requestId, sessionId);
+        } finally {
+            this.endRepoMutation(mutation);
+        }
+    }
+
+    // ── git worktree add/remove ───────────────────────────────────────────
+
+    private async handleWorktreeAdd(
+        payload: Record<string, unknown>,
+        requestId?: string,
+        sessionId?: string,
+    ): Promise<void> {
+        const cwd = this.validateCwd(payload.cwd, "git_worktree_add_result", requestId, sessionId);
+        if (!cwd) return;
+
+        const branch = typeof payload.branch === "string" ? payload.branch.trim() : "";
+        const path = typeof payload.path === "string" ? payload.path.trim() : "";
+
+        if (!branch || !isValidBranchName(branch)) {
+            this.emitError("git_worktree_add_result", "Invalid branch name", requestId, sessionId);
+            return;
+        }
+        if (!path) {
+            this.emitError("git_worktree_add_result", "Missing worktree path", requestId, sessionId);
+            return;
+        }
+
+        // Validate the resolved worktree path is within allowed roots
+        const resolvedPath = path.startsWith("/") ? path : join(cwd, path);
+        if (!isCwdAllowed(resolvedPath)) {
+            this.emitError("git_worktree_add_result", "Worktree path outside allowed roots", requestId, sessionId);
+            return;
+        }
+
+        const mutation = await this.beginRepoMutation(cwd, "git_worktree_add_result", "worktree-add", requestId, sessionId);
+        if (!mutation) return;
+
+        try {
+            // Use -b to create a new branch at the worktree. If the branch already
+            // exists locally, just check it out in the new worktree.
+            const branchExists = await this._execGit(
+                ["rev-parse", "--verify", `refs/heads/${branch}`],
+                { cwd, timeout: 5000 },
+            ).then(
+                (r) => r.stdout.trim(),
+                () => "",
+            );
+
+            const args = branchExists
+                ? ["worktree", "add", "--", path, branch]
+                : ["worktree", "add", "-b", branch, "--", path];
+            await this._execGit(args, { cwd, timeout: 30000 });
+            await this.invalidateStatusCacheFamily(cwd);
+            this.emit("git_worktree_add_result", {
+                ok: true,
+                branch,
+                path,
+            }, requestId, sessionId);
+        } catch (err) {
+            this.emitError("git_worktree_add_result", err instanceof Error ? err.message : String(err), requestId, sessionId);
+        } finally {
+            this.endRepoMutation(mutation);
+        }
+    }
+
+    private async handleWorktreeRemove(
+        payload: Record<string, unknown>,
+        requestId?: string,
+        sessionId?: string,
+    ): Promise<void> {
+        const cwd = this.validateCwd(payload.cwd, "git_worktree_remove_result", requestId, sessionId);
+        if (!cwd) return;
+
+        const worktreePath = typeof payload.path === "string" ? payload.path.trim() : "";
+        const force = payload.force === true;
+
+        if (!worktreePath) {
+            this.emitError("git_worktree_remove_result", "Missing worktree path", requestId, sessionId);
+            return;
+        }
+
+        // Validate the resolved worktree path is within allowed roots
+        const resolvedPath = worktreePath.startsWith("/") ? worktreePath : join(cwd, worktreePath);
+        if (!isCwdAllowed(resolvedPath)) {
+            this.emitError("git_worktree_remove_result", "Worktree path outside allowed roots", requestId, sessionId);
+            return;
+        }
+
+        // Validate that the path is a known worktree to prevent arbitrary deletion
+        try {
+            const { stdout: listOutput } = await this._execGit(
+                ["worktree", "list", "--porcelain"],
+                { cwd, timeout: 10000 },
+            );
+            const knownPaths = listOutput.split("\n")
+                .filter((line) => line.startsWith("worktree "))
+                .map((line) => line.substring(9));
+            if (!knownPaths.includes(worktreePath)) {
+                this.emitError("git_worktree_remove_result", "Path is not a known git worktree", requestId, sessionId);
+                return;
+            }
+        } catch (err) {
+            this.emitError("git_worktree_remove_result", err instanceof Error ? err.message : String(err), requestId, sessionId);
+            return;
+        }
+
+        const mutation = await this.beginRepoMutation(cwd, "git_worktree_remove_result", "worktree-remove", requestId, sessionId);
+        if (!mutation) return;
+
+        try {
+            const args = force
+                ? ["worktree", "remove", "--force", "--", worktreePath]
+                : ["worktree", "remove", "--", worktreePath];
+            await this._execGit(args, { cwd, timeout: 30000 });
+            await this.invalidateStatusCacheFamily(cwd);
+            this.emit("git_worktree_remove_result", { ok: true, path: worktreePath }, requestId, sessionId);
+        } catch (err) {
+            this.emitError("git_worktree_remove_result", err instanceof Error ? err.message : String(err), requestId, sessionId);
         } finally {
             this.endRepoMutation(mutation);
         }

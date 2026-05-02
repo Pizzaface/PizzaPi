@@ -3,7 +3,7 @@ import type { GitOperationResult } from "@/hooks/useGitService";
 export type GitToastAction = "setUpstream";
 
 export interface GitOperationFeedback {
-    type: "success" | "error";
+    type: "success" | "error" | "warning";
     message: string;
     action?: GitToastAction;
 }
@@ -62,6 +62,21 @@ export function getGitOperationFeedback(result: GitOperationResult): GitOperatio
         return {
             type: "error",
             message: (result.message as string) ?? "Sync stopped because of conflicts.",
+        };
+    }
+
+    if (result.reason === "nonFastForward") {
+        return {
+            type: "warning",
+            message: (result.message as string) ?? "Cannot fast-forward. Rebase or merge explicitly.",
+        };
+    }
+
+    // Rebase-specific feedback
+    if (result.reason === "rebaseConflicts") {
+        return {
+            type: "error",
+            message: "Rebase has conflicts. Resolve them, then continue or abort the rebase.",
         };
     }
 

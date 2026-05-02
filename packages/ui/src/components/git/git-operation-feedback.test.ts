@@ -25,6 +25,27 @@ describe("git-operation-feedback", () => {
         });
     });
 
+    test("maps conflict to a resolution message", () => {
+        expect(getGitOperationFeedback({ ok: false, reason: "conflict", message: "Merge conflicts" })).toEqual({
+            type: "error",
+            message: "Merge conflicts",
+        });
+    });
+
+    test("maps nonFastForward to a warning message", () => {
+        expect(getGitOperationFeedback({ ok: false, reason: "nonFastForward", message: "Cannot fast-forward" })).toEqual({
+            type: "warning",
+            message: "Cannot fast-forward",
+        });
+    });
+
+    test("maps rebaseConflicts to a rebase resolution message", () => {
+        expect(getGitOperationFeedback({ ok: false, reason: "rebaseConflicts" })).toEqual({
+            type: "error",
+            message: "Rebase has conflicts. Resolve them, then continue or abort the rebase.",
+        });
+    });
+
     test("parses remote/branch upstream refs", () => {
         expect(parseUpstreamRef("origin/feature/test")).toEqual({ remote: "origin", branch: "feature/test" });
         expect(parseUpstreamRef("origin")).toBeNull();
