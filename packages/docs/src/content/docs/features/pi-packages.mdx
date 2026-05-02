@@ -1,0 +1,176 @@
+---
+title: Pi Packages
+description: Install, manage, and create community packages that add extensions, skills, prompt templates, and themes to PizzaPi.
+---
+
+import { Aside } from "@astrojs/starlight/components";
+
+**Pi packages** bundle extensions, skills, prompt templates, and themes into installable packages shared via npm or git. PizzaPi inherits full support for pi's package system — install community packages to extend your agent's capabilities without writing code.
+
+<Aside type="caution">
+  Pi packages run with **full system access**. Extensions execute arbitrary code, and skills can instruct the model to perform any action. Always review source code before installing third-party packages.
+</Aside>
+
+---
+
+## Installing Packages
+
+Use `pi install` from the terminal (not from within a PizzaPi session):
+
+```bash
+# From npm
+pi install npm:@foo/pi-tools
+pi install npm:@foo/pi-tools@1.2.3      # pinned version
+
+# From git (multiple URL formats)
+pi install git:github.com/user/repo
+pi install git:github.com/user/repo@v1  # tag or commit
+pi install https://github.com/user/repo
+pi install ssh://git@github.com/user/repo
+
+# From local path
+pi install /path/to/package
+pi install ./relative/path
+```
+
+By default, packages install globally (`~/.pi/agent/settings.json`). Use `-l` for project-local installs (`.pi/settings.json`) — these can be shared with your team, and pi auto-installs missing packages on startup.
+
+### Try Without Installing
+
+Load a package for a single session without persisting it:
+
+```bash
+pi -e npm:@foo/bar
+pi -e git:github.com/user/repo
+```
+
+---
+
+## Managing Packages
+
+```bash
+pi list                    # Show installed packages
+pi update                  # Update all non-pinned packages
+pi remove npm:@foo/bar     # Remove a package
+pi config                  # Enable/disable specific resources
+```
+
+<Aside type="tip">
+  Packages with a pinned version (e.g., `npm:@foo/bar@1.2.3` or `git:...@v1`) are skipped by `pi update`. Remove the version pin to allow automatic updates.
+</Aside>
+
+---
+
+## Package Sources
+
+### npm Packages
+
+```
+npm:@scope/package
+npm:package@1.2.3
+```
+
+- Global installs use `npm install -g`
+- Project-local installs go under `.pi/npm/`
+- If you use a Node version manager, set `npmCommand` in settings:
+  ```json
+  { "npmCommand": ["mise", "exec", "node@20", "--", "npm"] }
+  ```
+
+### Git Repositories
+
+```
+git:github.com/user/repo@v1
+git:git@github.com:user/repo
+https://github.com/user/repo@v1
+ssh://git@github.com/user/repo
+```
+
+- Cloned to `~/.pi/agent/git/<host>/<path>` (global) or `.pi/git/<host>/<path>` (project)
+- Runs `npm install` after clone/pull if `package.json` exists
+- SSH URLs use your configured SSH keys automatically
+
+---
+
+## Package Filtering
+
+Control which resources load from a package using the object form in settings:
+
+```json
+{
+  "packages": [
+    "npm:simple-pkg",
+    {
+      "source": "npm:my-package",
+      "extensions": ["extensions/*.ts", "!extensions/legacy.ts"],
+      "skills": [],
+      "prompts": ["prompts/review.md"]
+    }
+  ]
+}
+```
+
+- Omit a key to load **all** of that type
+- Use `[]` to load **none** of that type
+- `!pattern` excludes matches
+
+Use `pi config` to interactively enable or disable resources from installed packages.
+
+---
+
+## Finding Packages
+
+- Browse the [Pi Package Gallery](https://shittycodingagent.ai/packages) — packages tagged with `pi-package` on npm
+- Search npm: [`npm search keywords:pi-package`](https://www.npmjs.com/search?q=keywords%3Api-package)
+- Check the [Pi Discord](https://discord.com/invite/3cU7Bz4UPx) community channel for recommendations
+
+---
+
+## Creating a Package
+
+To create your own package, add a `pi` manifest to `package.json`:
+
+```json
+{
+  "name": "my-pi-package",
+  "keywords": ["pi-package"],
+  "pi": {
+    "extensions": ["./extensions"],
+    "skills": ["./skills"],
+    "prompts": ["./prompts"],
+    "themes": ["./themes"]
+  }
+}
+```
+
+Without a `pi` manifest, pi auto-discovers resources from conventional directories: `extensions/`, `skills/`, `prompts/`, `themes/`.
+
+### Package Structure
+
+```
+my-pi-package/
+├── package.json           # With "pi" manifest
+├── extensions/            # TypeScript extension files
+│   └── my-extension.ts
+├── skills/                # Skill directories with SKILL.md
+│   └── my-skill/
+│       └── SKILL.md
+├── prompts/               # Prompt template .md files
+│   └── review.md
+└── themes/                # Theme .json files
+    └── my-theme.json
+```
+
+### Publishing
+
+Publish to npm with the `pi-package` keyword for gallery visibility:
+
+```bash
+npm publish
+```
+
+Or share via a git repository — users install with:
+
+```bash
+pi install git:github.com/you/my-pi-package
+```

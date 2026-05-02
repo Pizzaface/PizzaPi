@@ -48,6 +48,14 @@ If a sub-command requires an argument (like `/mcp disable`), selecting it fills 
 | `/resume [query]` | Resume a previous session. Opens a session picker showing recent sessions with name, date, and path. Type to fuzzy-search by session name, ID, path, or first message. |
 | `/stop` | Abort the current generation. |
 | `/restart` | Restart the underlying CLI process. |
+| `/session` | Show session info — file path, token usage, and cost. |
+
+### Session history
+
+| Command | Description |
+|---------|-------------|
+| `/tree` | Open tree-based session navigator. Browse all branches, jump to any point in the conversation, and optionally summarize the branch you're leaving. See [Sessions & Context](/PizzaPi/features/sessions/) for details. |
+| `/fork` | Fork the current session into a new session file. Opens a selector to choose a point — history is copied up to that point into a new, independent session. |
 
 <Aside type="tip">
   `/resume` keeps the picker open so you can browse and filter sessions interactively. Select a session with <kbd>Enter</kbd> or click/tap it.
@@ -66,8 +74,9 @@ If a sub-command requires an argument (like `/mcp disable`), selecting it fills 
 
 | Command | Description |
 |---------|-------------|
-| `/compact [instructions]` | Compact the conversation context. Optionally pass custom instructions to guide summarization, e.g. `/compact focus on the auth module`. |
+| `/compact [instructions]` | Compact the conversation context. Optionally pass custom instructions to guide summarization, e.g. `/compact focus on the auth module`. See [Sessions & Context](/PizzaPi/features/sessions/#compaction) for how compaction works. |
 | `/plan` | Toggle plan mode. In plan mode, the agent explores and plans without making changes (read-only). |
+| `/reload` | Reload keybindings, extensions, skills, prompt templates, and context files without restarting. |
 
 ### Session display
 
@@ -75,6 +84,15 @@ If a sub-command requires an argument (like `/mcp disable`), selecting it fills 
 |---------|-------------|
 | `/name <name>` | Set a display name for the current session, e.g. `/name auth-refactor`. |
 | `/copy` | Copy the last assistant message to your clipboard. |
+| `/export [file]` | Export the current session to an HTML file. |
+| `/share` | Upload as a private GitHub gist with a shareable HTML link. |
+
+### Authentication
+
+| Command | Description |
+|---------|-------------|
+| `/login` | Authenticate with a subscription provider (Claude Pro/Max, ChatGPT Plus/Pro, GitHub Copilot, Google Gemini). Opens an OAuth flow in your browser. See [Providers & Models](/PizzaPi/features/providers-and-models/) for details. |
+| `/logout` | Clear stored credentials for a provider. |
 
 ### Introspection
 
@@ -132,12 +150,19 @@ Prompt templates from your configuration appear in the **Prompts** group. Select
 ```
 /new                          # Start a fresh session
 /resume auth                  # Find and resume a session matching "auth"
+/tree                         # Browse session history tree
+/fork                         # Fork session into new file
 /compact focus on API routes  # Compact context with custom instructions
 /name deploy-fix              # Name the current session
+/login                        # Authenticate with a subscription provider
+/model                        # Switch to a different model
+/effort                       # Cycle to the next reasoning effort level
+/plan                         # Toggle read-only plan mode
+/export report.html           # Export session as HTML
+/share                        # Upload as private gist
+/copy                         # Copy last response to clipboard
 /mcp status                   # Check MCP server health
 /mcp disable filesystem       # Disable the "filesystem" MCP server
 /agents reviewer              # Start a session as the "reviewer" agent
-/effort                       # Cycle to the next reasoning effort level
-/plan                         # Toggle read-only plan mode
-/copy                         # Copy last response to clipboard
+/reload                       # Reload extensions, skills, prompts
 ```
