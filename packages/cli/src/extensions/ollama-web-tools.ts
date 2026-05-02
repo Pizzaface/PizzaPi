@@ -203,6 +203,15 @@ export const ollamaWebToolsExtension: ExtensionFactory = (pi) => {
     maxLinks: envMaxLinks(),
     apiKeyProvider: () => auth.getApiKey("ollama-cloud"),
   });
-  pi.registerTool(tools.webSearch as any);
+  // Only register web_search when Anthropic server-side web search isn't active.
+  // When Anthropic web search is enabled (PIZZAPI_WEB_SEARCH=1), the provider
+  // patch injects its own server-side web_search tool — registering both would
+  // cause a "Tool names must be unique" API error.
+  const anthropicWsEnabled = typeof process !== "undefined" &&
+    process.env.PIZZAPI_WEB_SEARCH &&
+    !["0", "false", "no", "off"].includes(process.env.PIZZAPI_WEB_SEARCH.toLowerCase());
+  if (!anthropicWsEnabled) {
+    pi.registerTool(tools.webSearch as any);
+  }
   pi.registerTool(tools.webFetch as any);
 };
