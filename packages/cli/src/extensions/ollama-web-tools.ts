@@ -1,4 +1,6 @@
 import { join } from "node:path";
+import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { AuthStorage, type ExtensionFactory } from "@mariozechner/pi-coding-agent";
 import type { AgentTool } from "@mariozechner/pi-agent-core";
 import { Type } from "@mariozechner/pi-ai";
@@ -203,14 +205,24 @@ export const ollamaWebToolsExtension: ExtensionFactory = (pi) => {
     maxLinks: envMaxLinks(),
     apiKeyProvider: () => auth.getApiKey("ollama-cloud"),
   });
-  // Only register web_search when Anthropic server-side web search isn't active.
-  // When Anthropic web search is enabled (PIZZAPI_WEB_SEARCH=1), the provider
-  // patch injects its own server-side web_search tool — registering both would
-  // cause a "Tool names must be unique" API error.
+  // Only skip registering web_search when the default provider is Anthropic
+  // AND Anthropic server-side web search is enabled (PIZZAPI_WEB_SEARCH=1).
+  // In that case the provider patch injects its own native web_search tool —
+  // registering both would cause a "Tool names must be unique" API error.
+  // For other providers (Ollama, Google, etc.), web_search is always registered.
   const anthropicWsEnabled = typeof process !== "undefined" &&
     process.env.PIZZAPI_WEB_SEARCH &&
     !["0", "false", "no", "off"].includes(process.env.PIZZAPI_WEB_SEARCH.toLowerCase());
-  if (!anthropicWsEnabled) {
+  let isAnthropicDefault = false;
+  if (anthropicWsEnabled) {
+    try {
+      const settings = JSON.parse(readFileSync(join(homedir(), ".pizzapi", "settings.json"), "utf-8"));
+      isAnthropicDefault = settings?.defaultProvider === "anthropic";
+    } catch {
+      // If we can't read settings, err on the side of registering the tool
+    }
+  }
+  if (!(isAnthropicDefault && anthropicWsEnabled)) {
     pi.registerTool(tools.webSearch as any);
   }
   pi.registerTool(tools.webFetch as any);
