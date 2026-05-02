@@ -20,7 +20,7 @@
     },
     "packages/cli": {
       "name": "@pizzapi/cli",
-      "version": "0.5.2-dev.6",
+      "version": "0.5.22",
       "bin": {
         "pizza": "src/index.ts",
         "pizzapi": "src/index.ts",
@@ -170,6 +170,7 @@
     },
   },
   "patchedDependencies": {
+    "@mariozechner/pi-tui@0.70.6": "patches/@mariozechner%2Fpi-tui@0.70.6.patch",
     "@mariozechner/pi-agent-core@0.70.6": "patches/@mariozechner%2Fpi-agent-core@0.70.6.patch",
     "@mariozechner/pi-ai@0.70.6": "patches/@mariozechner%2Fpi-ai@0.70.6.patch",
     "@mariozechner/pi-coding-agent@0.70.6": "patches/@mariozechner%2Fpi-coding-agent@0.70.6.patch",

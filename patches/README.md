@@ -85,6 +85,23 @@ Notable upstream changes in 0.66.1:
 | `dist/modes/interactive/interactive-mode.js` — section headers | Box-drawing themed headers, compact extension table |
 | `dist/modes/interactive/interactive-mode.js` — diagnostics | Uses themed section headers for skill/prompt/extension/theme issues |
 
+## @mariozechner/pi-tui@0.70.6
+
+Adds Windows console output lifecycle management so Unicode glyphs render
+reliably on Windows terminals.
+
+**What it changes:**
+
+| File | Change |
+|------|--------|
+| `dist/terminal.js` — `ProcessTerminal.start()` | Calls `setupWindowsConsole()` after VT-input setup to enable VT output and UTF-8 code pages |
+| `dist/terminal.js` — `setupWindowsConsole()` | Creates and activates a Windows console lifecycle that configures stdout/stderr for VT processing and UTF-8 |
+| `dist/terminal.js` — `ProcessTerminal.stop()` | Restores saved console modes and code pages, then clears the global capability signal |
+| `dist/terminal.js` — `createWindowsConsoleLifecycle()` | Exported helper that returns `{ activate, restore }`; publishes `globalThis.__PI_WINDOWS_CONSOLE_CAPS__` with `stdoutMode`/`stderrMode` classification |
+
+**Tests:** `packages/cli/src/patches.test.ts` verifies patch markers, source wiring,
+behavioral contract, and cross-platform safety.
+
 ## @mariozechner/pi-ai@0.66.1 (replaced by 0.67.5 patch)
 
 Same changes as 0.63.1 (see below), ported forward.
