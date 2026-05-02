@@ -48,7 +48,41 @@ import {
 import { appendRelayEventToCache } from "../../sessions/redis.js";
 import { storeAndReplaceImages, storeAndReplaceImagesInEvent } from "../strip-images.js";
 import { extractMetaFromHeartbeat } from "./meta.js";
+import { truncateSnapshotMessages } from "../namespaces/snapshot-provider.js";
 import { mergeSnapshotStatePatch, shouldPersistSnapshotPatch } from "./snapshot-state.js";
+
+/**
+ * Prepare an event for broadcast to viewers.
+ *
+ * For session_active events with a non-chunked state containing more than
+ * MESSAGE_TAIL_SIZE messages, the state is truncated to the last
+ * MESSAGE_TAIL_SIZE messages with hasMore / oldestLoadedIndex pagination
+ * markers.  The full state should have already been cached via
+ * appendRelayEventToCache before calling this function.
+ *
+ * Exported for unit testing.
+ */
+export function prepareBroadcastEvent(event: unknown): unknown {
+    if (
+        typeof event === "object" &&
+        event !== null &&
+        (event as Record<string, unknown>).type === "session_active"
+    ) {
+        const sa = event as { type: "session_active"; state: unknown };
+        if (
+            sa.state &&
+            typeof sa.state === "object" &&
+            !Array.isArray(sa.state) &&
+            !(sa.state as Record<string, unknown>).chunked
+        ) {
+            return {
+                ...sa,
+                state: truncateSnapshotMessages(sa.state as Record<string, unknown>),
+            };
+        }
+    }
+    return event;
+}
 import { severStaleParentLink } from "../stale-parent-link.js";
 import type { SessionInfo } from "@pizzapi/protocol";
 import {
@@ -691,7 +725,13 @@ export async function publishSessionEvent(sessionId: string, event: unknown): Pr
         seq,
     });
 
-    // Broadcast to all viewer sockets in the session room
+    // Broadcast to all viewer sockets in the session room.
+    // NOTE: Do NOT truncate session_active here.  This is the live broadcast
+    // path — already-connected viewers need the full state to preserve any
+    // older history they've loaded (the UI replaces the transcript on each
+    // session_active, so truncation here would repeatedly erase paged-up
+    // context).  Truncation is applied only in sendSnapshotToViewer() for
+    // the initial reconnect/hydration delivery.
     try {
         io.of("/viewer")
             .to(viewerSessionRoom(sessionId))
@@ -817,7 +857,11 @@ export async function sendSnapshotToViewer(sessionId: string, socket: Socket): P
     }
     if (session.lastState) {
         const state = safeJsonParse(session.lastState);
-        socket.emit("event", { event: { type: "session_active", state }, seq });
+        // Truncate session_active state for reconnect/hydration delivery so
+        // initial page load / reconnect only sends the tail.  Full state
+        // is available via load_messages pagination.
+        const hydratedEvent = prepareBroadcastEvent({ type: "session_active", state });
+        socket.emit("event", { event: hydratedEvent, seq });
     }
 }
 
