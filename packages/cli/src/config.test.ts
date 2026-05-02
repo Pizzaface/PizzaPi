@@ -732,6 +732,8 @@ describe("applyProviderSettingsEnv", () => {
     "PIZZAPI_WEB_SEARCH_MAX_USES",
     "PIZZAPI_WEB_SEARCH_ALLOWED_DOMAINS",
     "PIZZAPI_WEB_SEARCH_BLOCKED_DOMAINS",
+    "PIZZAPI_OLLAMA_WEB_SEARCH",
+    "PIZZAPI_OLLAMA_WEB_SEARCH_MAX_RESULTS",
   ];
 
   beforeEach(() => {
@@ -790,6 +792,35 @@ describe("applyProviderSettingsEnv", () => {
     // Should NOT overwrite
     expect(process.env.PIZZAPI_WEB_SEARCH).toBe("already-set");
     expect(process.env.PIZZAPI_WEB_SEARCH_MAX_USES).toBe("99");
+  });
+
+  test("sets Ollama web search env vars when ollama-cloud webSearch is enabled", () => {
+    applyProviderSettingsEnv({
+      providerSettings: {
+        "ollama-cloud": {
+          webSearch: { enabled: true, maxResults: 8 },
+        },
+      },
+    } as PizzaPiConfig);
+
+    expect(process.env.PIZZAPI_OLLAMA_WEB_SEARCH).toBe("1");
+    expect(process.env.PIZZAPI_OLLAMA_WEB_SEARCH_MAX_RESULTS).toBe("8");
+  });
+
+  test("does not overwrite Ollama web search env vars", () => {
+    process.env.PIZZAPI_OLLAMA_WEB_SEARCH = "already-set";
+    process.env.PIZZAPI_OLLAMA_WEB_SEARCH_MAX_RESULTS = "9";
+
+    applyProviderSettingsEnv({
+      providerSettings: {
+        "ollama-cloud": {
+          webSearch: { enabled: true, maxResults: 4 },
+        },
+      },
+    } as PizzaPiConfig);
+
+    expect(process.env.PIZZAPI_OLLAMA_WEB_SEARCH).toBe("already-set");
+    expect(process.env.PIZZAPI_OLLAMA_WEB_SEARCH_MAX_RESULTS).toBe("9");
   });
 });
 

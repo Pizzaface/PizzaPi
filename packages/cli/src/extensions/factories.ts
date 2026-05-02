@@ -18,6 +18,7 @@ import { sandboxEventsExtension } from "./sandbox-events.js";
 import { pizzapiTitleExtension } from "./pizzapi-title.js";
 import { pizzapiHeaderExtension } from "./pizzapi-header.js";
 import { toolSearchExtension } from "./tool-search.js";
+import { ollamaWebToolsExtension } from "./ollama-web-tools.js";
 
 export interface BuildExtensionFactoriesOptions {
     cwd: string;
@@ -59,6 +60,8 @@ export function buildPizzaPiExtensionFactories(options: BuildExtensionFactoriesO
         // Tool search must come after MCP so it can see registered MCP tools
         factories.push(named(toolSearchExtension, "tool-search"));
     }
+
+    factories.push(named(ollamaWebToolsExtension, "ollama-web-tools"));
 
     factories.push(
         named(restartExtension, "restart"),

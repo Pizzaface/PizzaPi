@@ -37,7 +37,7 @@ import {
   parseToolInputArgs,
   tryParseJsonObject,
 } from "@/components/session-viewer/utils";
-import { ChevronDownIcon, WrenchIcon, Loader2Icon, XCircleIcon as XCircleIcon2, SquareIcon } from "lucide-react";
+import { ChevronDownIcon, WrenchIcon, Loader2Icon, XCircleIcon as XCircleIcon2, SquareIcon, GlobeIcon } from "lucide-react";
 import { useSessionActions } from "@/components/session-viewer/session-actions-context";
 import {
   ToolCardShell,
@@ -67,6 +67,11 @@ import { AskUserQuestionCard } from "@/components/session-viewer/cards/AskUserQu
 import { PlanModeCard } from "@/components/session-viewer/cards/PlanModeCard";
 import { TogglePlanModeCard } from "@/components/session-viewer/cards/TogglePlanModeCard";
 import { SubagentResultCard } from "@/components/session-viewer/cards/SubagentResultCard";
+import {
+  WebSearchQueryCard,
+  WebSearchResultsCard,
+  type WebSearchResult,
+} from "@/components/session-viewer/cards/WebSearchCard";
 
 export function extToLang(path: string): BundledLanguage {
   const ext = path.split(".").pop()?.toLowerCase() ?? "";
@@ -272,6 +277,40 @@ export function renderToolResult(content: unknown, toolName?: string, isError?: 
 
   if (normalizedToolName === "read" || normalizedToolName.endsWith(".read")) {
     return renderReadToolResult(content, isError);
+  }
+
+  if (normalizedToolName === "web_search" || normalizedToolName.endsWith(".web_search")) {
+    // Ollama web search: content blocks carry _serverToolUse / _webSearchResult metadata
+    const blocks = Array.isArray(content) ? content : undefined;
+    const cards: React.ReactNode[] = [];
+    const results: WebSearchResult[] = [];
+
+    if (blocks) {
+      for (let i = 0; i < blocks.length; i++) {
+        const b = blocks[i];
+        if (!b || typeof b !== "object") continue;
+        const block = b as Record<string, unknown>;
+        if (block._serverToolUse) {
+          const meta = block._serverToolUse as { id?: string; name?: string; input?: { query?: string } };
+          const q = meta.input?.query ?? "";
+          if (q) cards.push(<WebSearchQueryCard key={`q-${i}`} query={q} />);
+        }
+        if (block._webSearchResult) {
+          const meta = block._webSearchResult as { tool_use_id?: string; content?: Array<{ type?: string; title?: string; url?: string }> };
+          const rawContent = Array.isArray(meta.content) ? meta.content : [];
+          for (const r of rawContent) {
+            if (r && typeof r === "object" && r.type === "web_search_result" && typeof r.title === "string" && typeof r.url === "string") {
+              results.push({ title: r.title, url: r.url });
+            }
+          }
+        }
+      }
+    }
+    if (results.length > 0) {
+      cards.push(<WebSearchResultsCard key="results" results={results} />);
+    }
+    if (cards.length > 0) return <div className="flex flex-col gap-2">{cards}</div>;
+    // Fall through to text-based rendering
   }
 
   const text = extractTextFromToolContent(content);
@@ -831,6 +870,118 @@ export function renderGroupedToolExecution(
     const inputArgs = parseToolInputArgs(toolInput);
     const enabled = inputArgs.enabled === true;
     card = <TogglePlanModeCard enabled={enabled} />;
+  } else if (norm === "web_search" || norm.endsWith(".web_search")) {
+    // Ollama web search: content blocks may carry _serverToolUse / _webSearchResult
+    // metadata (Anthropic-style server tools). Extract and render rich cards.
+    const blocks = Array.isArray(content) ? content : undefined;
+    const queryFromInput = (parseToolInputArgs(toolInput) as Record<string, unknown>)?.query;
+    const query = typeof queryFromInput === "string" ? queryFromInput : "";
+    const results: WebSearchResult[] = [];
+    let hasQueryCard = false;
+    const cards: React.ReactNode[] = [];
+
+    if (blocks) {
+      for (let i = 0; i < blocks.length; i++) {
+        const b = blocks[i];
+        if (!b || typeof b !== "object") continue;
+        const block = b as Record<string, unknown>;
+
+        // Check for _serverToolUse metadata (shows the search query)
+        if (block._serverToolUse) {
+          const meta = block._serverToolUse as { id?: string; name?: string; input?: { query?: string } };
+          const q = meta.input?.query ?? "";
+          if (q) {
+            cards.push(<WebSearchQueryCard key={`q-${i}`} query={q} />);
+            hasQueryCard = true;
+          }
+        }
+
+        // Check for _webSearchResult metadata (shows the result links)
+        if (block._webSearchResult) {
+          const meta = block._webSearchResult as { tool_use_id?: string; content?: Array<{ type?: string; title?: string; url?: string }> };
+          const rawContent = Array.isArray(meta.content) ? meta.content : [];
+          for (const r of rawContent) {
+            if (r && typeof r === "object" && r.type === "web_search_result" && typeof r.title === "string" && typeof r.url === "string") {
+              results.push({ title: r.title, url: r.url });
+            }
+          }
+        }
+      }
+    }
+
+    // Fall back to query from tool input if not found in metadata
+    if (!hasQueryCard && query) {
+      cards.unshift(<WebSearchQueryCard key="q-input" query={query} />);
+    }
+
+    if (results.length > 0) {
+      cards.push(<WebSearchResultsCard key="results" results={results} />);
+    }
+
+    if (cards.length > 0) {
+      card = <div className="flex flex-col gap-2">{cards}</div>;
+    } else {
+      // No metadata found — fall through to generic card
+      const outputText = hasOutput ? extractTextFromToolContent(content) : null;
+      if (outputText) {
+        card = (
+          <CopyableCodeBlock
+            code={outputText}
+            language="markdown"
+            className="border-0 rounded-none"
+          />
+        );
+      } else {
+        card = null;
+      }
+    }
+  } else if (norm === "web_fetch" || norm.endsWith(".web_fetch")) {
+    // Ollama web fetch: renders a simple summary card
+    const inputArgs = parseToolInputArgs(toolInput);
+    const fetchUrl = typeof inputArgs.url === "string" ? inputArgs.url : "";
+    const outputText = hasOutput ? extractTextFromToolContent(content) : null;
+
+    if (fetchUrl) {
+      card = (
+        <ToolCardShell>
+          <ToolCardHeader className="py-2">
+            <ToolCardTitle icon={<GlobeIcon className="size-3.5 shrink-0 text-blue-400" />}>
+              <span className="text-sm font-medium text-zinc-300">Fetched page</span>
+            </ToolCardTitle>
+            <ToolCardActions>
+              <StatusPill variant={isError ? "error" : "success"}>
+                {isError ? "Error" : "Done"}
+              </StatusPill>
+            </ToolCardActions>
+          </ToolCardHeader>
+          {outputText && (
+            <details open className="group/output">
+              <summary className="cursor-pointer list-none">
+                <div className="flex items-center justify-between gap-2 px-4 py-1.5 hover:bg-zinc-900 transition-colors">
+                  <span className="text-[11px] text-zinc-500 select-none">Content</span>
+                  <ChevronDownIcon className="size-3 text-zinc-600 transition-transform group-open/output:rotate-180" />
+                </div>
+              </summary>
+              <CopyableCodeBlock
+                code={outputText}
+                language="markdown"
+                className="border-0 rounded-none"
+              />
+            </details>
+          )}
+        </ToolCardShell>
+      );
+    } else if (outputText) {
+      card = (
+        <CopyableCodeBlock
+          code={outputText}
+          language="markdown"
+          className="border-0 rounded-none"
+        />
+      );
+    } else {
+      card = null;
+    }
   } else {
     // Default / Generic tool card
     const outputText = hasOutput ? extractTextFromToolContent(content) : null;

@@ -38,6 +38,9 @@ export function hasVisibleContent(content: unknown): boolean {
     return content.some((block) => {
       if (!block || typeof block !== "object") return false;
       const b = block as Record<string, unknown>;
+      // Server tool metadata blocks (web search, etc.) are visible even when
+      // their .text is empty — they carry structured data in _serverToolUse / _webSearchResult.
+      if (b._serverToolUse || b._webSearchResult) return true;
       if (b.type === "text")
         return typeof b.text === "string" && b.text.trim() !== "";
       if (b.type === "thinking")

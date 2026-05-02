@@ -1,5 +1,5 @@
 import { useState, type KeyboardEvent } from "react";
-import { Globe, Plus, Save, X } from "lucide-react";
+import { Globe, Bolt, Plus, Save, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -19,15 +19,29 @@ function dig(obj: Record<string, any>, path: string[], fallback: any): any {
 }
 
 export default function WebSearchSettings({ config, onSave, saving }: SectionProps) {
-    const ws = dig(config, ["providerSettings", "anthropic", "webSearch"], {});
+    const anthropicWs = dig(config, ["providerSettings", "anthropic", "webSearch"], {});
+    const ollamaWs = dig(config, ["providerSettings", "ollama-cloud", "webSearch"], {});
 
-    const [enabled, setEnabled] = useState<boolean>(ws.enabled === true);
-    const [maxUses, setMaxUses] = useState<number>(typeof ws.maxUses === "number" ? ws.maxUses : 5);
+    // ── Anthropic state ──────────────────────────────────────────────────
+    const [enabled, setEnabled] = useState<boolean>(anthropicWs.enabled === true);
+    const [maxUses, setMaxUses] = useState<number>(typeof anthropicWs.maxUses === "number" ? anthropicWs.maxUses : 5);
     const [allowedDomains, setAllowedDomains] = useState<string[]>(
-        Array.isArray(ws.allowedDomains) ? ws.allowedDomains : [],
+        Array.isArray(anthropicWs.allowedDomains) ? anthropicWs.allowedDomains : [],
     );
     const [blockedDomains, setBlockedDomains] = useState<string[]>(
-        Array.isArray(ws.blockedDomains) ? ws.blockedDomains : [],
+        Array.isArray(anthropicWs.blockedDomains) ? anthropicWs.blockedDomains : [],
+    );
+
+    // ── Ollama Cloud state ────────────────────────────────────────────────
+    const [ollamaEnabled, setOllamaEnabled] = useState<boolean>(ollamaWs.enabled === true);
+    const [ollamaMaxResults, setOllamaMaxResults] = useState<number>(
+        typeof ollamaWs.maxResults === "number" ? ollamaWs.maxResults : 5,
+    );
+    const [ollamaMaxContentChars, setOllamaMaxContentChars] = useState<number>(
+        typeof ollamaWs.maxContentChars === "number" ? ollamaWs.maxContentChars : 8000,
+    );
+    const [ollamaMaxLinks, setOllamaMaxLinks] = useState<number>(
+        typeof ollamaWs.maxLinks === "number" ? ollamaWs.maxLinks : 100,
     );
 
     // Inputs for adding domains
@@ -73,86 +87,189 @@ export default function WebSearchSettings({ config, onSave, saving }: SectionPro
                     blockedDomains,
                 },
             },
+            "ollama-cloud": {
+                webSearch: {
+                    enabled: ollamaEnabled,
+                    maxResults: ollamaMaxResults,
+                    maxContentChars: ollamaMaxContentChars,
+                    maxLinks: ollamaMaxLinks,
+                },
+            },
         });
     }
 
     return (
         <div className="flex flex-col gap-6">
-            {/* Header */}
-            <div className="flex items-center gap-2">
-                <Globe className="h-5 w-5 text-muted-foreground" />
-                <h3 className="text-sm font-medium">Anthropic Web Search</h3>
-            </div>
+            {/* ── Anthropic section ─────────────────────────────────────── */}
+            <div className="flex flex-col gap-4">
+                <div className="flex items-center gap-2">
+                    <Globe className="h-5 w-5 text-muted-foreground" />
+                    <h3 className="text-sm font-medium">Anthropic</h3>
+                </div>
 
-            {/* Enable toggle */}
-            <div className="flex items-center justify-between rounded-md border border-border bg-card p-4">
-                <div className="flex flex-col gap-1">
-                    <Label htmlFor="ws-enabled" className="text-sm font-medium">
-                        Enable Web Search
+                {/* Enable toggle */}
+                <div className="flex items-center justify-between rounded-md border border-border bg-card p-4">
+                    <div className="flex flex-col gap-1">
+                        <Label htmlFor="ws-enabled" className="text-sm font-medium">
+                            Enable Web Search
+                        </Label>
+                        <p className="text-xs text-muted-foreground">
+                            Allow the agent to search the web using Anthropic's built-in web search tool.
+                        </p>
+                    </div>
+                    <Switch id="ws-enabled" checked={enabled} onCheckedChange={setEnabled} />
+                </div>
+
+                {/* Max uses */}
+                <div className="flex flex-col gap-2 rounded-md border border-border bg-card p-4">
+                    <Label htmlFor="ws-max-uses" className="text-sm font-medium">
+                        Max Uses Per Turn
                     </Label>
                     <p className="text-xs text-muted-foreground">
-                        Allow the agent to search the web during sessions using Anthropic's built-in web search tool.
+                        Maximum number of web searches per conversation turn (1–20).
                     </p>
+                    <Input
+                        id="ws-max-uses"
+                        type="number"
+                        min={1}
+                        max={20}
+                        value={maxUses}
+                        onChange={(e) => {
+                            const v = parseInt(e.target.value, 10);
+                            if (!isNaN(v)) setMaxUses(Math.max(1, Math.min(20, v)));
+                        }}
+                        className="w-24"
+                        disabled={!enabled}
+                    />
                 </div>
-                <Switch id="ws-enabled" checked={enabled} onCheckedChange={setEnabled} />
-            </div>
 
-            {/* Max uses */}
-            <div className="flex flex-col gap-2 rounded-md border border-border bg-card p-4">
-                <Label htmlFor="ws-max-uses" className="text-sm font-medium">
-                    Max Uses Per Turn
-                </Label>
-                <p className="text-xs text-muted-foreground">
-                    Maximum number of web searches the agent can perform in a single conversation turn (1–20).
-                </p>
-                <Input
-                    id="ws-max-uses"
-                    type="number"
-                    min={1}
-                    max={20}
-                    value={maxUses}
-                    onChange={(e) => {
-                        const v = parseInt(e.target.value, 10);
-                        if (!isNaN(v)) setMaxUses(Math.max(1, Math.min(20, v)));
-                    }}
-                    className="w-24"
+                {/* Allowed domains */}
+                <DomainListField
+                    id="allowed"
+                    label="Allowed Domains"
+                    description="Restrict searches to only these domains. Leave empty to allow all domains."
+                    domains={allowedDomains}
+                    inputValue={allowedInput}
+                    onInputChange={setAllowedInput}
+                    onAdd={() => addDomain(allowedInput, allowedDomains, setAllowedDomains, setAllowedInput)}
+                    onRemove={(i) => removeDomain(i, allowedDomains, setAllowedDomains)}
+                    onKeyDown={(e) =>
+                        handleKeyDown(e, allowedInput, allowedDomains, setAllowedDomains, setAllowedInput)
+                    }
                     disabled={!enabled}
+                    placeholder="e.g. docs.anthropic.com"
+                />
+
+                {/* Blocked domains */}
+                <DomainListField
+                    id="blocked"
+                    label="Blocked Domains"
+                    description="Exclude these domains from search results."
+                    domains={blockedDomains}
+                    inputValue={blockedInput}
+                    onInputChange={setBlockedInput}
+                    onAdd={() => addDomain(blockedInput, blockedDomains, setBlockedDomains, setBlockedInput)}
+                    onRemove={(i) => removeDomain(i, blockedDomains, setBlockedDomains)}
+                    onKeyDown={(e) =>
+                        handleKeyDown(e, blockedInput, blockedDomains, setBlockedDomains, setBlockedInput)
+                    }
+                    disabled={!enabled}
+                    placeholder="e.g. reddit.com"
                 />
             </div>
 
-            {/* Allowed domains */}
-            <DomainListField
-                id="allowed"
-                label="Allowed Domains"
-                description="Restrict searches to only these domains. Leave empty to allow all domains."
-                domains={allowedDomains}
-                inputValue={allowedInput}
-                onInputChange={setAllowedInput}
-                onAdd={() => addDomain(allowedInput, allowedDomains, setAllowedDomains, setAllowedInput)}
-                onRemove={(i) => removeDomain(i, allowedDomains, setAllowedDomains)}
-                onKeyDown={(e) =>
-                    handleKeyDown(e, allowedInput, allowedDomains, setAllowedDomains, setAllowedInput)
-                }
-                disabled={!enabled}
-                placeholder="e.g. docs.anthropic.com"
-            />
+            {/* Divider */}
+            <div className="border-t border-border" />
 
-            {/* Blocked domains */}
-            <DomainListField
-                id="blocked"
-                label="Blocked Domains"
-                description="Exclude these domains from search results."
-                domains={blockedDomains}
-                inputValue={blockedInput}
-                onInputChange={setBlockedInput}
-                onAdd={() => addDomain(blockedInput, blockedDomains, setBlockedDomains, setBlockedInput)}
-                onRemove={(i) => removeDomain(i, blockedDomains, setBlockedDomains)}
-                onKeyDown={(e) =>
-                    handleKeyDown(e, blockedInput, blockedDomains, setBlockedDomains, setBlockedInput)
-                }
-                disabled={!enabled}
-                placeholder="e.g. reddit.com"
-            />
+            {/* ── Ollama Cloud section ──────────────────────────────────── */}
+            <div className="flex flex-col gap-4">
+                <div className="flex items-center gap-2">
+                    <Bolt className="h-5 w-5 text-muted-foreground" />
+                    <h3 className="text-sm font-medium">Ollama Cloud</h3>
+                </div>
+
+                {/* Enable toggle */}
+                <div className="flex items-center justify-between rounded-md border border-border bg-card p-4">
+                    <div className="flex flex-col gap-1">
+                        <Label htmlFor="ollama-ws-enabled" className="text-sm font-medium">
+                            Enable Web Search
+                        </Label>
+                        <p className="text-xs text-muted-foreground">
+                            Register Ollama Cloud web search and web fetch tools. Requires an Ollama Cloud API key.
+                        </p>
+                    </div>
+                    <Switch id="ollama-ws-enabled" checked={ollamaEnabled} onCheckedChange={setOllamaEnabled} />
+                </div>
+
+                {/* Max results */}
+                <div className="flex flex-col gap-2 rounded-md border border-border bg-card p-4">
+                    <Label htmlFor="ollama-ws-max-results" className="text-sm font-medium">
+                        Max Results Per Search
+                    </Label>
+                    <p className="text-xs text-muted-foreground">
+                        Maximum number of search results returned per query (1–10).
+                    </p>
+                    <Input
+                        id="ollama-ws-max-results"
+                        type="number"
+                        min={1}
+                        max={10}
+                        value={ollamaMaxResults}
+                        onChange={(e) => {
+                            const v = parseInt(e.target.value, 10);
+                            if (!isNaN(v)) setOllamaMaxResults(Math.max(1, Math.min(10, v)));
+                        }}
+                        className="w-24"
+                        disabled={!ollamaEnabled}
+                    />
+                </div>
+
+                {/* Max content chars (web fetch) */}
+                <div className="flex flex-col gap-2 rounded-md border border-border bg-card p-4">
+                    <Label htmlFor="ollama-ws-max-content-chars" className="text-sm font-medium">
+                        Web Fetch — Max Content Chars
+                    </Label>
+                    <p className="text-xs text-muted-foreground">
+                        Truncate fetched page content to this many characters (1–100,000).
+                    </p>
+                    <Input
+                        id="ollama-ws-max-content-chars"
+                        type="number"
+                        min={1}
+                        max={100000}
+                        value={ollamaMaxContentChars}
+                        onChange={(e) => {
+                            const v = parseInt(e.target.value, 10);
+                            if (!isNaN(v)) setOllamaMaxContentChars(Math.max(1, Math.min(100000, v)));
+                        }}
+                        className="w-28"
+                        disabled={!ollamaEnabled}
+                    />
+                </div>
+
+                {/* Max links (web fetch) */}
+                <div className="flex flex-col gap-2 rounded-md border border-border bg-card p-4">
+                    <Label htmlFor="ollama-ws-max-links" className="text-sm font-medium">
+                        Web Fetch — Max Links
+                    </Label>
+                    <p className="text-xs text-muted-foreground">
+                        Truncate fetched page links to this many entries (1–1,000).
+                    </p>
+                    <Input
+                        id="ollama-ws-max-links"
+                        type="number"
+                        min={1}
+                        max={1000}
+                        value={ollamaMaxLinks}
+                        onChange={(e) => {
+                            const v = parseInt(e.target.value, 10);
+                            if (!isNaN(v)) setOllamaMaxLinks(Math.max(1, Math.min(1000, v)));
+                        }}
+                        className="w-28"
+                        disabled={!ollamaEnabled}
+                    />
+                </div>
+            </div>
 
             {/* Footer */}
             <div className="flex items-center justify-between pt-2">

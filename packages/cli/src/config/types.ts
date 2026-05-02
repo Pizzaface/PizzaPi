@@ -237,10 +237,16 @@ export interface WebSearchConfig {
     enabled?: boolean;
     /** Maximum number of searches per request. Default: 5. */
     maxUses?: number;
+    /** Maximum search results per request for provider APIs that expose result count. Default: 5. */
+    maxResults?: number;
     /** Only include results from these domains. */
     allowedDomains?: string[];
     /** Never include results from these domains. */
     blockedDomains?: string[];
+    /** Truncate fetched web content to this many characters (Ollama Cloud). Default: 8000. */
+    maxContentChars?: number;
+    /** Truncate fetched page links to this many entries (Ollama Cloud). Default: 100. */
+    maxLinks?: number;
 }
 
 /**
@@ -248,7 +254,7 @@ export interface WebSearchConfig {
  */
 export interface ProviderSettings {
     [provider: string]: {
-        /** Web search configuration (Anthropic only). */
+        /** Web search configuration. */
         webSearch?: WebSearchConfig;
     };
 }
