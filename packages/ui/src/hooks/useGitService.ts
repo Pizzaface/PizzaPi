@@ -97,6 +97,11 @@ export interface UseGitServiceReturn {
     pull: (rebase?: boolean) => void;
     setUpstream: (remote: string, branch: string) => void;
     merge: (branch: string) => void;
+    rebase: (branch: string) => void;
+    rebaseAbort: () => void;
+    rebaseContinue: () => void;
+    addWorktree: (branch: string, path: string) => void;
+    removeWorktree: (path: string, force?: boolean) => void;
     clearOperationResult: () => void;
 }
 
@@ -382,7 +387,12 @@ export function useGitService(cwd: string): UseGitServiceReturn {
                 case "git_push_result":
                 case "git_pull_result":
                 case "git_merge_result":
-                case "git_set_upstream_result": {
+                case "git_set_upstream_result":
+                case "git_rebase_result":
+                case "git_rebase_abort_result":
+                case "git_rebase_continue_result":
+                case "git_worktree_add_result":
+                case "git_worktree_remove_result": {
                     if (!isRequestCurrentGeneration(requestId)) break;
                     setOperationInProgress(null);
                     setLastOperationResult(payload as GitOperationResult);
@@ -596,6 +606,51 @@ export function useGitService(cwd: string): UseGitServiceReturn {
         send("git_merge", { cwd, branch }, requestId);
     }, [available, send, cwd, makeRequestId, registerRequestGeneration]);
 
+    const rebase = useCallback((branch: string) => {
+        if (!available || !branch) return;
+        const requestId = makeRequestId();
+        registerRequestGeneration(requestId);
+        setOperationInProgress("rebase");
+        setLastOperationResult(null);
+        send("git_rebase", { cwd, branch }, requestId);
+    }, [available, send, cwd, makeRequestId, registerRequestGeneration]);
+
+    const rebaseAbort = useCallback(() => {
+        if (!available) return;
+        const requestId = makeRequestId();
+        registerRequestGeneration(requestId);
+        setOperationInProgress("rebase-abort");
+        setLastOperationResult(null);
+        send("git_rebase_abort", { cwd }, requestId);
+    }, [available, send, cwd, makeRequestId, registerRequestGeneration]);
+
+    const rebaseContinue = useCallback(() => {
+        if (!available) return;
+        const requestId = makeRequestId();
+        registerRequestGeneration(requestId);
+        setOperationInProgress("rebase-continue");
+        setLastOperationResult(null);
+        send("git_rebase_continue", { cwd }, requestId);
+    }, [available, send, cwd, makeRequestId, registerRequestGeneration]);
+
+    const addWorktree = useCallback((branch: string, path: string) => {
+        if (!available || !branch || !path) return;
+        const requestId = makeRequestId();
+        registerRequestGeneration(requestId);
+        setOperationInProgress("worktree-add");
+        setLastOperationResult(null);
+        send("git_worktree_add", { cwd, branch, path }, requestId);
+    }, [available, send, cwd, makeRequestId, registerRequestGeneration]);
+
+    const removeWorktree = useCallback((path: string, force = false) => {
+        if (!available || !path) return;
+        const requestId = makeRequestId();
+        registerRequestGeneration(requestId);
+        setOperationInProgress("worktree-remove");
+        setLastOperationResult(null);
+        send("git_worktree_remove", { cwd, path, force }, requestId);
+    }, [available, send, cwd, makeRequestId, registerRequestGeneration]);
+
     const clearOperationResult = useCallback(() => {
         setLastOperationResult(null);
     }, []);
@@ -669,6 +724,11 @@ export function useGitService(cwd: string): UseGitServiceReturn {
         pull,
         setUpstream,
         merge,
+        rebase,
+        rebaseAbort,
+        rebaseContinue,
+        addWorktree,
+        removeWorktree,
         clearOperationResult,
     };
 }

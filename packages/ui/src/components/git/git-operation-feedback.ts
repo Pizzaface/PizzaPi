@@ -65,6 +65,14 @@ export function getGitOperationFeedback(result: GitOperationResult): GitOperatio
         };
     }
 
+    // Rebase-specific feedback
+    if (result.reason === "rebaseConflicts") {
+        return {
+            type: "error",
+            message: "Rebase has conflicts. Resolve them, then continue or abort the rebase.",
+        };
+    }
+
     return {
         type: "error",
         message: (result.message as string) ?? "Operation failed",

@@ -905,7 +905,7 @@ describe("GitService pull/merge", () => {
         expect(result.payload).toMatchObject({ ok: false, reason: "conflict" });
     });
 
-    test("rejects overlapping repo mutations with a busy error even across different cwd values in the same repo", async () => {
+    test("overlapping repo mutations wait for the lock, then time out with busy if the conflicting operation doesn't finish", async () => {
         let checkoutStarted = false;
         let releaseCheckout: () => void = () => {
             throw new Error("Expected checkout release function");
@@ -914,6 +914,8 @@ describe("GitService pull/merge", () => {
             releaseCheckout = resolve;
         });
 
+        // Advance simulated time rapidly so the wait loop times out quickly
+        let fakeNow = 0;
         const service = new GitService({
             execGit: async (args, options) => {
                 const cmd = args[0];
@@ -934,6 +936,13 @@ describe("GitService pull/merge", () => {
                 if (cmd === "rebase") return { stdout: "", stderr: "" };
                 throw new Error(`Unexpected git args: ${args.join(" ")}`);
             },
+            setTimeoutFn: (cb, ms) => {
+                // Advance fake time by the wait amount (simulates time passing)
+                fakeNow += ms;
+                return setTimeout(cb, 0);
+            },
+            clearTimeoutFn: clearTimeout,
+            now: () => fakeNow,
         });
 
         const socket = createMockSocket();
@@ -955,6 +964,7 @@ describe("GitService pull/merge", () => {
             payload: { cwd: "/tmp/pizzapi-test" },
         });
         const busyResult = await waitForResult(socket, "pull-busy-1", "git_pull_result");
+        // Should eventually get busy error after waiting times out
         expect(busyResult.payload).toMatchObject({ ok: false, reason: "busy" });
 
         releaseCheckout();
@@ -991,5 +1001,246 @@ describe("GitService pull/merge", () => {
         const r = await waitForResult(socket, "merge-1", "git_merge_result");
         expect((r.payload as any).ok).toBe(true);
         expect(gitCalls.some((c) => c[0] === "merge" && c[1] === "--" && c[2] === "feature-sync-menu")).toBe(true);
+    });
+});
+
+describe("GitService rebase", () => {
+    test("rebase onto a branch", async () => {
+        const gitCalls: string[][] = [];
+
+        const service = new GitService({
+            execGit: async (args) => {
+                gitCalls.push([...args]);
+                const cmd = args[0];
+                if (cmd === "rebase" && args[1] === "--") return { stdout: "Rebased onto main\n", stderr: "" };
+                if (cmd === "rev-parse") return { stdout: "/tmp/pizzapi-test\n", stderr: "" };
+                if (cmd === "status") return { stdout: "", stderr: "" };
+                if (cmd === "diff") return { stdout: "", stderr: "" };
+                if (cmd === "rev-list") return { stdout: "0 0\n", stderr: "" };
+                throw new Error(`Unexpected git args: ${args.join(" ")}`);
+            },
+        });
+
+        const socket = createMockSocket();
+        service.init(socket as any, { isShuttingDown: () => false });
+
+        dispatchServiceMessage(socket, {
+            serviceId: "git",
+            type: "git_rebase",
+            requestId: "rebase-1",
+            payload: { cwd: "/tmp/pizzapi-test", branch: "main" },
+        });
+        const r = await waitForResult(socket, "rebase-1", "git_rebase_result");
+        expect((r.payload as any).ok).toBe(true);
+        expect(gitCalls.some((c) => c[0] === "rebase" && c[1] === "--" && c[2] === "main")).toBe(true);
+    });
+
+    test("rebase conflict returns structured reason", async () => {
+        const service = new GitService({
+            execGit: async (args) => {
+                const cmd = args[0];
+                if (cmd === "rebase") throw new Error("CONFLICT (content): Merge conflict in file.ts");
+                if (cmd === "rev-parse") return { stdout: "/tmp/pizzapi-test\n", stderr: "" };
+                if (cmd === "status") return { stdout: "", stderr: "" };
+                if (cmd === "diff") return { stdout: "", stderr: "" };
+                if (cmd === "rev-list") return { stdout: "0 0\n", stderr: "" };
+                throw new Error(`Unexpected git args: ${args.join(" ")}`);
+            },
+        });
+
+        const socket = createMockSocket();
+        service.init(socket as any, { isShuttingDown: () => false });
+
+        dispatchServiceMessage(socket, {
+            serviceId: "git",
+            type: "git_rebase",
+            requestId: "rebase-conflict-1",
+            payload: { cwd: "/tmp/pizzapi-test", branch: "main" },
+        });
+        const r = await waitForResult(socket, "rebase-conflict-1", "git_rebase_result");
+        expect((r.payload as any).ok).toBe(false);
+        expect((r.payload as any).reason).toBe("conflict");
+    });
+
+    test("rebase abort", async () => {
+        const gitCalls: string[][] = [];
+
+        const service = new GitService({
+            execGit: async (args) => {
+                gitCalls.push([...args]);
+                const cmd = args[0];
+                if (cmd === "rebase" && args[1] === "--abort") return { stdout: "", stderr: "" };
+                if (cmd === "rev-parse") return { stdout: "/tmp/pizzapi-test\n", stderr: "" };
+                if (cmd === "status") return { stdout: "", stderr: "" };
+                if (cmd === "diff") return { stdout: "", stderr: "" };
+                if (cmd === "rev-list") return { stdout: "0 0\n", stderr: "" };
+                throw new Error(`Unexpected git args: ${args.join(" ")}`);
+            },
+        });
+
+        const socket = createMockSocket();
+        service.init(socket as any, { isShuttingDown: () => false });
+
+        dispatchServiceMessage(socket, {
+            serviceId: "git",
+            type: "git_rebase_abort",
+            requestId: "rebase-abort-1",
+            payload: { cwd: "/tmp/pizzapi-test" },
+        });
+        const r = await waitForResult(socket, "rebase-abort-1", "git_rebase_abort_result");
+        expect((r.payload as any).ok).toBe(true);
+        expect(gitCalls.some((c) => c[0] === "rebase" && c[1] === "--abort")).toBe(true);
+    });
+
+    test("rebase continue", async () => {
+        const gitCalls: string[][] = [];
+
+        const service = new GitService({
+            execGit: async (args) => {
+                gitCalls.push([...args]);
+                const cmd = args[0];
+                if (cmd === "rebase" && args[1] === "--continue") return { stdout: "", stderr: "" };
+                if (cmd === "rev-parse") return { stdout: "/tmp/pizzapi-test\n", stderr: "" };
+                if (cmd === "status") return { stdout: "", stderr: "" };
+                if (cmd === "diff") return { stdout: "", stderr: "" };
+                if (cmd === "rev-list") return { stdout: "0 0\n", stderr: "" };
+                throw new Error(`Unexpected git args: ${args.join(" ")}`);
+            },
+        });
+
+        const socket = createMockSocket();
+        service.init(socket as any, { isShuttingDown: () => false });
+
+        dispatchServiceMessage(socket, {
+            serviceId: "git",
+            type: "git_rebase_continue",
+            requestId: "rebase-continue-1",
+            payload: { cwd: "/tmp/pizzapi-test" },
+        });
+        const r = await waitForResult(socket, "rebase-continue-1", "git_rebase_continue_result");
+        expect((r.payload as any).ok).toBe(true);
+        expect(gitCalls.some((c) => c[0] === "rebase" && c[1] === "--continue")).toBe(true);
+    });
+});
+
+describe("GitService worktree add/remove", () => {
+    test("worktree add with new branch", async () => {
+        const gitCalls: string[][] = [];
+
+        const service = new GitService({
+            execGit: async (args) => {
+                gitCalls.push([...args]);
+                const cmd = args[0];
+                if (cmd === "rev-parse" && args[1] === "--verify") throw new Error("not found");
+                if (cmd === "worktree" && args[1] === "add") return { stdout: "", stderr: "" };
+                if (cmd === "rev-parse") return { stdout: "/tmp/pizzapi-test\n", stderr: "" };
+                if (cmd === "status") return { stdout: "", stderr: "" };
+                if (cmd === "diff") return { stdout: "", stderr: "" };
+                if (cmd === "rev-list") return { stdout: "0 0\n", stderr: "" };
+                throw new Error(`Unexpected git args: ${args.join(" ")}`);
+            },
+        });
+
+        const socket = createMockSocket();
+        service.init(socket as any, { isShuttingDown: () => false });
+
+        dispatchServiceMessage(socket, {
+            serviceId: "git",
+            type: "git_worktree_add",
+            requestId: "wt-add-1",
+            payload: { cwd: "/tmp/pizzapi-test", branch: "feat/new-thing", path: ".worktrees/new-thing" },
+        });
+        const r = await waitForResult(socket, "wt-add-1", "git_worktree_add_result");
+        expect((r.payload as any).ok).toBe(true);
+        expect((r.payload as any).branch).toBe("feat/new-thing");
+        // Should use -b since branch doesn't exist yet
+        expect(gitCalls.some((c) => c[0] === "worktree" && c[1] === "add" && c[2] === "-b")).toBe(true);
+    });
+
+    test("worktree add with existing branch", async () => {
+        const gitCalls: string[][] = [];
+
+        const service = new GitService({
+            execGit: async (args) => {
+                gitCalls.push([...args]);
+                const cmd = args[0];
+                if (cmd === "rev-parse" && args[1] === "--verify") return { stdout: "abc123\n", stderr: "" };
+                if (cmd === "worktree" && args[1] === "add") return { stdout: "", stderr: "" };
+                if (cmd === "rev-parse") return { stdout: "/tmp/pizzapi-test\n", stderr: "" };
+                if (cmd === "status") return { stdout: "", stderr: "" };
+                if (cmd === "diff") return { stdout: "", stderr: "" };
+                if (cmd === "rev-list") return { stdout: "0 0\n", stderr: "" };
+                throw new Error(`Unexpected git args: ${args.join(" ")}`);
+            },
+        });
+
+        const socket = createMockSocket();
+        service.init(socket as any, { isShuttingDown: () => false });
+
+        dispatchServiceMessage(socket, {
+            serviceId: "git",
+            type: "git_worktree_add",
+            requestId: "wt-add-2",
+            payload: { cwd: "/tmp/pizzapi-test", branch: "main", path: ".worktrees/main" },
+        });
+        const r = await waitForResult(socket, "wt-add-2", "git_worktree_add_result");
+        expect((r.payload as any).ok).toBe(true);
+        // Should NOT use -b since branch already exists
+        expect(gitCalls.some((c) => c[0] === "worktree" && c[1] === "add" && c[2] === "-b")).toBe(false);
+    });
+
+    test("worktree remove", async () => {
+        const gitCalls: string[][] = [];
+
+        const service = new GitService({
+            execGit: async (args) => {
+                gitCalls.push([...args]);
+                const cmd = args[0];
+                if (cmd === "worktree" && args[1] === "list") return { stdout: "worktree /tmp/pizzapi-test\nHEAD abc\nbranch refs/heads/main\n\nworktree /tmp/pizzapi-test/.worktrees/feat\nHEAD def\nbranch refs/heads/feat\n", stderr: "" };
+                if (cmd === "worktree" && args[1] === "remove") return { stdout: "", stderr: "" };
+                if (cmd === "rev-parse") return { stdout: "/tmp/pizzapi-test\n", stderr: "" };
+                if (cmd === "status") return { stdout: "", stderr: "" };
+                if (cmd === "diff") return { stdout: "", stderr: "" };
+                if (cmd === "rev-list") return { stdout: "0 0\n", stderr: "" };
+                throw new Error(`Unexpected git args: ${args.join(" ")}`);
+            },
+        });
+
+        const socket = createMockSocket();
+        service.init(socket as any, { isShuttingDown: () => false });
+
+        dispatchServiceMessage(socket, {
+            serviceId: "git",
+            type: "git_worktree_remove",
+            requestId: "wt-remove-1",
+            payload: { cwd: "/tmp/pizzapi-test", path: "/tmp/pizzapi-test/.worktrees/feat" },
+        });
+        const r = await waitForResult(socket, "wt-remove-1", "git_worktree_remove_result");
+        expect((r.payload as any).ok).toBe(true);
+        expect(gitCalls.some((c) => c[0] === "worktree" && c[1] === "remove")).toBe(true);
+    });
+
+    test("worktree remove rejects unknown paths", async () => {
+        const service = new GitService({
+            execGit: async (args) => {
+                const cmd = args[0];
+                if (cmd === "worktree" && args[1] === "list") return { stdout: "worktree /tmp/pizzapi-test\nHEAD abc\nbranch refs/heads/main\n", stderr: "" };
+                if (cmd === "rev-parse") return { stdout: "/tmp/pizzapi-test\n", stderr: "" };
+                throw new Error(`Unexpected git args: ${args.join(" ")}`);
+            },
+        });
+
+        const socket = createMockSocket();
+        service.init(socket as any, { isShuttingDown: () => false });
+
+        dispatchServiceMessage(socket, {
+            serviceId: "git",
+            type: "git_worktree_remove",
+            requestId: "wt-remove-2",
+            payload: { cwd: "/tmp/pizzapi-test", path: "/unknown/path" },
+        });
+        const r = await waitForResult(socket, "wt-remove-2", "git_worktree_remove_result");
+        expect((r.payload as any).ok).toBe(false);
+        expect((r.payload as any).message).toContain("not a known git worktree");
     });
 });

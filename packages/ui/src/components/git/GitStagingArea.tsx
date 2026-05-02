@@ -1,6 +1,8 @@
+import { useState } from "react";
 import { cn } from "@/lib/utils";
-import { Plus, Minus, Edit3, FileQuestion, HelpCircle, File, ChevronUp, ChevronDown } from "lucide-react";
+import { Plus, Minus, Edit3, FileQuestion, HelpCircle, File, ChevronUp, ChevronDown, List, FolderTree } from "lucide-react";
 import type { GitChange } from "@/hooks/useGitService";
+import { GitChangesTree } from "./GitChangesTree";
 
 // ── Status helpers ──────────────────────────────────────────────────────────
 
@@ -76,27 +78,47 @@ export function GitStagingArea({
 }: GitStagingAreaProps) {
     const { staged, unstaged } = partitionChanges(changes);
     const isBusy = operationInProgress !== null;
+    const [viewMode, setViewMode] = useState<"list" | "tree">("list");
+
+    // Build set of staged paths for tree view
+    const stagedPathSet = new Set(staged.map((c) => c.path));
+
+    // Combined changes for tree view (both staged + unstaged)
+    const combinedChanges = [...staged, ...unstaged];
 
     return (
         <div className="py-1">
-            {/* Staged changes */}
+            {/* View mode toggle in staged header */}
             {staged.length > 0 && (
-                <div className="mb-1">
-                    <div className="flex items-center px-3 py-1.5">
-                        <span className="text-[0.65rem] font-semibold uppercase tracking-wider text-muted-foreground flex-1">
-                            Staged Changes ({staged.length})
-                        </span>
-                        <button
-                            type="button"
-                            onClick={onUnstageAll}
-                            disabled={isBusy}
-                            className="text-[0.6rem] text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50 flex items-center gap-0.5"
-                            title="Unstage all"
-                        >
-                            <ChevronDown className="size-3" /> Unstage All
-                        </button>
-                    </div>
-                    {staged.map((change) => {
+                <div className="flex items-center px-3 py-1.5">
+                    <span className="text-[0.65rem] font-semibold uppercase tracking-wider text-muted-foreground flex-1">
+                        Staged Changes ({staged.length})
+                    </span>
+                    <button
+                        type="button"
+                        onClick={onUnstageAll}
+                        disabled={isBusy}
+                        className="text-[0.6rem] text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50 flex items-center gap-0.5"
+                        title="Unstage all"
+                    >
+                        <ChevronDown className="size-3" /> Unstage All
+                    </button>
+                </div>
+            )}
+
+            {viewMode === "tree" ? (
+                <GitChangesTree
+                    changes={combinedChanges}
+                    stagedPaths={stagedPathSet}
+                    onViewDiff={onViewDiff}
+                    onStage={onStage}
+                    onUnstage={onUnstage}
+                    operationInProgress={operationInProgress}
+                />
+            ) : (
+                <>
+                    {/* Staged changes */}
+                    {staged.length > 0 && staged.map((change) => {
                         const info = gitStatusLabel(change.status[0]);
                         return (
                             <div
@@ -124,63 +146,89 @@ export function GitStagingArea({
                             </div>
                         );
                     })}
-                </div>
-            )}
 
-            {/* Unstaged/untracked changes */}
-            {unstaged.length > 0 && (
-                <div>
-                    <div className="flex items-center px-3 py-1.5">
-                        <span className="text-[0.65rem] font-semibold uppercase tracking-wider text-muted-foreground flex-1">
-                            Changes ({unstaged.length})
-                        </span>
-                        <button
-                            type="button"
-                            onClick={onStageAll}
-                            disabled={isBusy}
-                            className="text-[0.6rem] text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50 flex items-center gap-0.5"
-                            title="Stage all"
-                        >
-                            <ChevronUp className="size-3" /> Stage All
-                        </button>
-                    </div>
-                    {unstaged.map((change) => {
-                        const displayStatus = change.status === "??" ? "??" : change.status.length === 2 ? change.status[1] : change.status;
-                        const info = gitStatusLabel(displayStatus);
-                        const isUntracked = change.status === "??";
-                        return (
-                            <div
-                                key={`unstaged-${change.path}`}
-                                className="flex items-center gap-1 w-full px-3 py-1 text-sm group"
-                            >
+                    {/* Unstaged/untracked changes */}
+                    {unstaged.length > 0 && (
+                        <div>
+                            <div className="flex items-center px-3 py-1.5">
+                                <span className="text-[0.65rem] font-semibold uppercase tracking-wider text-muted-foreground flex-1">
+                                    Changes ({unstaged.length})
+                                </span>
                                 <button
                                     type="button"
-                                    onClick={() => onStage([change.path])}
+                                    onClick={onStageAll}
                                     disabled={isBusy}
-                                    className="flex-shrink-0 p-0.5 rounded text-muted-foreground hover:text-foreground hover:bg-accent transition-colors disabled:opacity-50"
-                                    title={`Stage ${change.path}`}
+                                    className="text-[0.6rem] text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50 flex items-center gap-0.5"
+                                    title="Stage all"
                                 >
-                                    <Plus className="size-3" />
-                                </button>
-                                <button
-                                    type="button"
-                                    onClick={() => !isUntracked && onViewDiff(change.path)}
-                                    disabled={isUntracked}
-                                    className={cn(
-                                        "flex items-center gap-2 flex-1 min-w-0 text-left rounded px-1 py-0.5 transition-colors",
-                                        !isUntracked && "hover:bg-accent/40",
-                                        isUntracked && "cursor-default",
-                                    )}
-                                >
-                                    <span className={cn("flex-shrink-0", info.color)} title={info.label}>{info.icon}</span>
-                                    <span className="truncate flex-1 font-mono text-xs text-foreground/80">{change.path}</span>
-                                    <span className={cn("text-[0.6rem] flex-shrink-0", info.color)}>{displayStatus}</span>
+                                    <ChevronUp className="size-3" /> Stage All
                                 </button>
                             </div>
-                        );
-                    })}
-                </div>
+                            {unstaged.map((change) => {
+                                const displayStatus = change.status === "??" ? "??" : change.status.length === 2 ? change.status[1] : change.status;
+                                const info = gitStatusLabel(displayStatus);
+                                const isUntracked = change.status === "??";
+                                return (
+                                    <div
+                                        key={`unstaged-${change.path}`}
+                                        className="flex items-center gap-1 w-full px-3 py-1 text-sm group"
+                                    >
+                                        <button
+                                            type="button"
+                                            onClick={() => onStage([change.path])}
+                                            disabled={isBusy}
+                                            className="flex-shrink-0 p-0.5 rounded text-muted-foreground hover:text-foreground hover:bg-accent transition-colors disabled:opacity-50"
+                                            title={`Stage ${change.path}`}
+                                        >
+                                            <Plus className="size-3" />
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={() => !isUntracked && onViewDiff(change.path)}
+                                            disabled={isUntracked}
+                                            className={cn(
+                                                "flex items-center gap-2 flex-1 min-w-0 text-left rounded px-1 py-0.5 transition-colors",
+                                                !isUntracked && "hover:bg-accent/40",
+                                                isUntracked && "cursor-default",
+                                            )}
+                                        >
+                                            <span className={cn("flex-shrink-0", info.color)} title={info.label}>{info.icon}</span>
+                                            <span className="truncate flex-1 font-mono text-xs text-foreground/80">{change.path}</span>
+                                            <span className={cn("text-[0.6rem] flex-shrink-0", info.color)}>{displayStatus}</span>
+                                        </button>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    )}
+                </>
             )}
+
+            {/* View mode toggle at bottom */}
+            <div className="flex items-center justify-end gap-1 px-3 pt-1">
+                <button
+                    type="button"
+                    onClick={() => setViewMode("list")}
+                    className={cn(
+                        "p-1 rounded transition-colors",
+                        viewMode === "list" ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground",
+                    )}
+                    title="List view"
+                >
+                    <List className="size-3" />
+                </button>
+                <button
+                    type="button"
+                    onClick={() => setViewMode("tree")}
+                    className={cn(
+                        "p-1 rounded transition-colors",
+                        viewMode === "tree" ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground",
+                    )}
+                    title="Tree view"
+                >
+                    <FolderTree className="size-3" />
+                </button>
+            </div>
         </div>
     );
 }

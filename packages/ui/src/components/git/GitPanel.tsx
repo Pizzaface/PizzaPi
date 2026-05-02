@@ -19,6 +19,9 @@ import {
     AlertCircle,
     MoreHorizontal,
     GitMerge,
+    ArrowRightLeft,
+    StopCircle,
+    Play,
 } from "lucide-react";
 import { Spinner } from "@/components/ui/spinner";
 import { Button } from "@/components/ui/button";
@@ -123,6 +126,17 @@ export function GitPanel({ cwd, className }: GitPanelProps) {
             return;
         }
         git.merge(branchName);
+    }, [git, setToast]);
+
+    const handleRebase = useCallback(() => {
+        const current = git.status?.branch ?? "";
+        const branchName = window.prompt("Rebase current branch onto which branch?", "main");
+        if (!branchName) return;
+        if (branchName === current) {
+            setToast({ type: "error", message: "Cannot rebase onto the current branch." });
+            return;
+        }
+        git.rebase(branchName);
     }, [git, setToast]);
 
     // Intercept Escape in diff view
@@ -303,6 +317,17 @@ export function GitPanel({ cwd, className }: GitPanelProps) {
                             >
                                 <div className="flex items-center gap-2"><GitMerge className="size-3" /> Merge into current…</div>
                             </button>
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    setSyncMenuOpen(false);
+                                    handleRebase();
+                                }}
+                                className="w-full text-left px-3 py-2 hover:bg-accent/50 disabled:opacity-50"
+                                disabled={git.operationInProgress !== null}
+                            >
+                                <div className="flex items-center gap-2"><ArrowRightLeft className="size-3" /> Rebase onto…</div>
+                            </button>
                         </div>,
                         document.body,
                     )}
@@ -388,6 +413,35 @@ export function GitPanel({ cwd, className }: GitPanelProps) {
                 </div>
             )}
 
+            {/* Rebase conflict resolution bar */}
+            {git.lastOperationResult && !git.lastOperationResult.ok && git.lastOperationResult.reason === "conflict" && (
+                git.operationInProgress === null
+            ) && (
+                <div className="flex items-center gap-2 px-3 py-2 text-xs border-b bg-amber-500/10 border-amber-500/20 text-amber-600 dark:text-amber-400"
+                >
+                    <AlertCircle className="size-3 shrink-0" />
+                    <span className="truncate flex-1">Conflicts detected. Resolve them to continue.</span>
+                    <button
+                        type="button"
+                        onClick={() => git.rebaseContinue()}
+                        disabled={git.operationInProgress !== null}
+                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-green-600/20 text-green-600 dark:text-green-400 hover:bg-green-600/30 disabled:opacity-50"
+                        title="Continue rebase after resolving conflicts"
+                    >
+                        <Play className="size-3" /> Continue
+                    </button>
+                    <button
+                        type="button"
+                        onClick={() => git.rebaseAbort()}
+                        disabled={git.operationInProgress !== null}
+                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-red-500/20 text-red-500 dark:text-red-400 hover:bg-red-500/30 disabled:opacity-50"
+                        title="Abort the rebase"
+                    >
+                        <StopCircle className="size-3" /> Abort
+                    </button>
+                </div>
+            )}
+
             {/* Content area */}
             <div className="flex-1 overflow-auto">
                 {!hasChanges ? (
@@ -412,6 +466,9 @@ export function GitPanel({ cwd, className }: GitPanelProps) {
             <GitWorktreeList
                 worktrees={git.worktrees}
                 onOpen={git.fetchWorktrees}
+                onAdd={git.addWorktree}
+                onRemove={git.removeWorktree}
+                operationInProgress={git.operationInProgress}
             />
 
             {/* Commit form — always visible at bottom when there are changes */}
