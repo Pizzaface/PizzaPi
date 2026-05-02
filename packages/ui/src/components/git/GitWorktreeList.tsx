@@ -17,7 +17,6 @@ import {
     Star,
     Plus,
     Trash2,
-    ExternalLink,
 } from "lucide-react";
 import type { GitWorktree } from "@/hooks/useGitService";
 
@@ -231,30 +230,17 @@ function WorktreeRow({ worktree: wt, onRemove, isBusy }: { worktree: GitWorktree
                 )}
             </div>
 
-            {/* Actions: remove, open */}
-            {showActions && !wt.isMain && (
+            {/* Actions: remove */}
+            {showActions && !wt.isMain && onRemove && (
                 <div className="flex items-center gap-1 shrink-0">
-                    {onRemove && (
-                        <button
-                            type="button"
-                            onClick={handleRemove}
-                            disabled={isBusy}
-                            className="p-0.5 rounded text-muted-foreground/60 hover:text-red-500 dark:hover:text-red-400 transition-colors disabled:opacity-50"
-                            title={`Remove worktree ${wt.branch}`}
-                        >
-                            <Trash2 className="size-3" />
-                        </button>
-                    )}
                     <button
                         type="button"
-                        onClick={() => {
-                            // Open the worktree path in system file manager
-                            // This is a no-op for web UI — the path is informational
-                        }}
-                        className="p-0.5 rounded text-muted-foreground/60 hover:text-foreground transition-colors"
-                        title={wt.path}
+                        onClick={handleRemove}
+                        disabled={isBusy}
+                        className="p-0.5 rounded text-muted-foreground/60 hover:text-red-500 dark:hover:text-red-400 transition-colors disabled:opacity-50"
+                        title={`Remove worktree ${wt.branch}`}
                     >
-                        <ExternalLink className="size-3" />
+                        <Trash2 className="size-3" />
                     </button>
                 </div>
             )}

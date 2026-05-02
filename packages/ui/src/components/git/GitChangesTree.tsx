@@ -39,13 +39,17 @@ type TreeNode = DirectoryNode | FileNode;
 
 // ── Build tree from flat changes ────────────────────────────────────────────
 
+interface StagedChange {
+    change: GitChange;
+    isStaged: boolean;
+}
+
 function buildTree(
-    changes: GitChange[],
-    stagedSet: Set<string>,
+    changes: StagedChange[],
 ): DirectoryNode {
     const root: DirectoryNode = { type: "directory", name: "", fullPath: "", children: [] };
 
-    for (const change of changes) {
+    for (const { change, isStaged } of changes) {
         const parts = change.path.split("/");
         let current = root;
 
@@ -64,9 +68,9 @@ function buildTree(
             current = child;
         }
 
-        // Add file leaf
+        // Add file leaf — use a stable key (path + staged side) so partially
+        // staged files (MM) appear as two distinct nodes.
         const fileName = parts[parts.length - 1];
-        const isStaged = stagedSet.has(change.path);
         current.children.push({
             type: "file",
             name: fileName,
@@ -120,8 +124,7 @@ function statusIcon(status: string, staged: boolean) {
 // ── Props ───────────────────────────────────────────────────────────────────
 
 interface GitChangesTreeProps {
-    changes: GitChange[];
-    stagedPaths: Set<string>;
+    changes: StagedChange[];
     onViewDiff: (path: string, staged?: boolean) => void;
     onStage: (paths: string[]) => void;
     onUnstage: (paths: string[]) => void;
@@ -132,7 +135,6 @@ interface GitChangesTreeProps {
 
 export function GitChangesTree({
     changes,
-    stagedPaths,
     onViewDiff,
     onStage,
     onUnstage,
@@ -142,10 +144,10 @@ export function GitChangesTree({
     const isBusy = operationInProgress !== null;
 
     const tree = useMemo(() => {
-        const root = buildTree(changes, stagedPaths);
+        const root = buildTree(changes);
         sortTree(root);
         return root;
-    }, [changes, stagedPaths]);
+    }, [changes]);
 
     const toggleExpand = useCallback((path: string) => {
         setExpandedPaths((prev) => {
@@ -163,7 +165,7 @@ export function GitChangesTree({
             ) : (
                 tree.children.map((child) => (
                     <TreeNodeComponent
-                        key={child.type === "directory" ? `dir-${child.fullPath}` : `file-${child.fullPath}`}
+                        key={child.type === "directory" ? `dir-${child.fullPath}` : `file-${child.fullPath}-${(child as FileNode).staged ?? ""}`}
                         node={child}
                         depth={0}
                         expandedPaths={expandedPaths}
@@ -205,21 +207,20 @@ function TreeNodeComponent({
     if (node.type === "directory") {
         const isExpanded = expandedPaths.has(node.fullPath);
 
-        // Collect all file paths under this directory for directory-level stage/unstage
-        const collectFilePaths = (dir: DirectoryNode): string[] => {
-            const paths: string[] = [];
+        // Collect all file nodes under this directory for directory-level stage/unstage
+        const collectFileNodes = (dir: DirectoryNode): FileNode[] => {
+            const files: FileNode[] = [];
             for (const child of dir.children) {
-                if (child.type === "file") paths.push(child.fullPath);
-                else paths.push(...collectFilePaths(child));
+                if (child.type === "file") files.push(child);
+                else files.push(...collectFileNodes(child));
             }
-            return paths;
+            return files;
         };
 
-        const allFilePaths = collectFilePaths(node);
-        const allStaged = allFilePaths.length > 0 && allFilePaths.every((p) => node.children.some(
-            (c) => c.type === "file" && c.fullPath === p && c.staged,
-        ));
-        const hasUnstaged = allFilePaths.some((p) => !allStaged);
+        const allFileNodes = collectFileNodes(node);
+        const allStaged = allFileNodes.length > 0 && allFileNodes.every((f) => f.staged);
+        const hasUnstaged = allFileNodes.some((f) => !f.staged);
+        const allFilePaths = allFileNodes.map((f) => f.fullPath);
 
         return (
             <div>
@@ -269,7 +270,7 @@ function TreeNodeComponent({
 
                 {isExpanded && node.children.map((child) => (
                     <TreeNodeComponent
-                        key={child.type === "directory" ? `dir-${child.fullPath}` : `file-${child.fullPath}`}
+                        key={child.type === "directory" ? `dir-${child.fullPath}` : `file-${child.fullPath}-${(child as FileNode).staged ?? ""}`}
                         node={child}
                         depth={depth + 1}
                         expandedPaths={expandedPaths}

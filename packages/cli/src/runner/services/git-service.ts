@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { watch } from "node:fs";
 import { promisify } from "node:util";
-import { isAbsolute, normalize, resolve } from "node:path";
+import { isAbsolute, join, normalize, resolve } from "node:path";
 import type { Socket } from "socket.io-client";
 import type { ServiceHandler, ServiceInitOptions, ServiceEnvelope } from "../service-handler.js";
 import { isCwdAllowed } from "../workspace.js";
@@ -217,6 +217,9 @@ export class GitService implements ServiceHandler {
                     break;
                 case "git_merge":
                     void this.handleMerge(payload, requestId, sessionId);
+                    break;
+                case "git_merge_abort":
+                    void this.handleMergeAbort(payload, requestId, sessionId);
                     break;
                 case "git_set_upstream":
                     void this.handleSetUpstream(payload, requestId, sessionId);
@@ -1291,16 +1294,21 @@ export class GitService implements ServiceHandler {
         };
     }
 
-    private classifySyncFailure(message: string): { reason?: "conflict"; message: string } {
+    private classifySyncFailure(message: string): { reason?: "conflict" | "nonFastForward"; message: string } {
         if (
             message.includes("CONFLICT")
             || message.includes("Resolve all conflicts manually")
             || message.includes("could not apply")
-            || message.includes("Not possible to fast-forward")
         ) {
             return {
                 reason: "conflict",
                 message: "Sync stopped because of conflicts. Resolve them in git, then try again.",
+            };
+        }
+        if (message.includes("Not possible to fast-forward")) {
+            return {
+                reason: "nonFastForward",
+                message: "Cannot fast-forward. Rebase or merge explicitly to integrate remote changes.",
             };
         }
         return { message };
@@ -1470,6 +1478,33 @@ export class GitService implements ServiceHandler {
                 reason: classified.reason,
                 message: classified.message,
                 output: message,
+            }, requestId, sessionId);
+        } finally {
+            this.endRepoMutation(mutation);
+        }
+    }
+
+    // ── git merge --abort ──────────────────────────────────────────────
+
+    private async handleMergeAbort(
+        payload: Record<string, unknown>,
+        requestId?: string,
+        sessionId?: string,
+    ): Promise<void> {
+        const cwd = this.validateCwd(payload.cwd, "git_merge_abort_result", requestId, sessionId);
+        if (!cwd) return;
+
+        const mutation = await this.beginRepoMutation(cwd, "git_merge_abort_result", "merge-abort", requestId, sessionId);
+        if (!mutation) return;
+
+        try {
+            await this._execGit(["merge", "--abort"], { cwd, timeout: 30000 });
+            await this.invalidateStatusCacheFamily(cwd);
+            this.emit("git_merge_abort_result", { ok: true }, requestId, sessionId);
+        } catch (err) {
+            this.emit("git_merge_abort_result", {
+                ok: false,
+                message: err instanceof Error ? err.message : String(err),
             }, requestId, sessionId);
         } finally {
             this.endRepoMutation(mutation);
@@ -1661,6 +1696,13 @@ export class GitService implements ServiceHandler {
         }
         if (!path) {
             this.emitError("git_worktree_add_result", "Missing worktree path", requestId, sessionId);
+            return;
+        }
+
+        // Validate the resolved worktree path is within allowed roots
+        const resolvedPath = path.startsWith("/") ? path : join(cwd, path);
+        if (!isCwdAllowed(resolvedPath)) {
+            this.emitError("git_worktree_add_result", "Worktree path outside allowed roots", requestId, sessionId);
             return;
         }
 

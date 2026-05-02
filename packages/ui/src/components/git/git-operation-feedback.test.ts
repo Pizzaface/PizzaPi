@@ -32,6 +32,13 @@ describe("git-operation-feedback", () => {
         });
     });
 
+    test("maps nonFastForward to a warning message", () => {
+        expect(getGitOperationFeedback({ ok: false, reason: "nonFastForward", message: "Cannot fast-forward" })).toEqual({
+            type: "warning",
+            message: "Cannot fast-forward",
+        });
+    });
+
     test("maps rebaseConflicts to a rebase resolution message", () => {
         expect(getGitOperationFeedback({ ok: false, reason: "rebaseConflicts" })).toEqual({
             type: "error",

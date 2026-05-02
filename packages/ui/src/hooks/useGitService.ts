@@ -81,6 +81,8 @@ export interface UseGitServiceReturn {
     // Operation feedback
     operationInProgress: string | null;
     lastOperationResult: GitOperationResult | null;
+    /** Set when a conflict is detected — null if last operation was not a conflict */
+    lastConflictType: string | null;
 
     // Actions
     fetchStatus: () => void;
@@ -97,6 +99,7 @@ export interface UseGitServiceReturn {
     pull: (rebase?: boolean) => void;
     setUpstream: (remote: string, branch: string) => void;
     merge: (branch: string) => void;
+    mergeAbort: () => void;
     rebase: (branch: string) => void;
     rebaseAbort: () => void;
     rebaseContinue: () => void;
@@ -117,6 +120,7 @@ export function useGitService(cwd: string): UseGitServiceReturn {
     const [error, setError] = useState<string | null>(null);
     const [operationInProgress, setOperationInProgress] = useState<string | null>(null);
     const [lastOperationResult, setLastOperationResult] = useState<GitOperationResult | null>(null);
+    const [lastConflictType, setLastConflictType] = useState<string | null>(null);
 
     // Track pending diff requests: requestId → resolve callback
     const pendingDiffsRef = useRef(new Map<string, (diff: string) => void>());
@@ -387,6 +391,7 @@ export function useGitService(cwd: string): UseGitServiceReturn {
                 case "git_push_result":
                 case "git_pull_result":
                 case "git_merge_result":
+                case "git_merge_abort_result":
                 case "git_set_upstream_result":
                 case "git_rebase_result":
                 case "git_rebase_abort_result":
@@ -396,12 +401,17 @@ export function useGitService(cwd: string): UseGitServiceReturn {
                     if (!isRequestCurrentGeneration(requestId)) break;
                     setOperationInProgress(null);
                     setLastOperationResult(payload as GitOperationResult);
+                    if (payload.reason === "conflict") {
+                        setLastConflictType(type);
+                    } else if (payload.ok) {
+                        setLastConflictType(null);
+                    }
                     // Auto-refresh after successful mutating operations, and
                     // after pull/merge conflicts because rebase/merge may have
                     // changed the worktree/index even though the operation failed.
                     if (
                         payload.ok
-                        || ((type === "git_pull_result" || type === "git_merge_result") && payload.reason === "conflict")
+                        || ((type === "git_pull_result" || type === "git_merge_result" || type === "git_rebase_result") && payload.reason === "conflict")
                     ) {
                         postMutationRefreshSchedulerRef.current.schedule();
                     }
@@ -606,6 +616,15 @@ export function useGitService(cwd: string): UseGitServiceReturn {
         send("git_merge", { cwd, branch }, requestId);
     }, [available, send, cwd, makeRequestId, registerRequestGeneration]);
 
+    const mergeAbort = useCallback(() => {
+        if (!available) return;
+        const requestId = makeRequestId();
+        registerRequestGeneration(requestId);
+        setOperationInProgress("merge-abort");
+        setLastOperationResult(null);
+        send("git_merge_abort", { cwd }, requestId);
+    }, [available, send, cwd, makeRequestId, registerRequestGeneration]);
+
     const rebase = useCallback((branch: string) => {
         if (!available || !branch) return;
         const requestId = makeRequestId();
@@ -671,6 +690,7 @@ export function useGitService(cwd: string): UseGitServiceReturn {
         setError(null);
         setOperationInProgress(null);
         setLastOperationResult(null);
+        setLastConflictType(null);
         clearPendingDiffs("(diff request cancelled)");
         requestGenerationRef.current.clear();
         pendingFullStatusRequestRef.current = null;
@@ -710,6 +730,7 @@ export function useGitService(cwd: string): UseGitServiceReturn {
         error,
         operationInProgress,
         lastOperationResult,
+        lastConflictType,
         fetchStatus,
         fetchDiff,
         fetchBranches,
@@ -724,6 +745,7 @@ export function useGitService(cwd: string): UseGitServiceReturn {
         pull,
         setUpstream,
         merge,
+        mergeAbort,
         rebase,
         rebaseAbort,
         rebaseContinue,

@@ -31,7 +31,7 @@ import { GitStagingArea, partitionChanges } from "./GitStagingArea";
 import { GitCommitForm } from "./GitCommitForm";
 import { GitDiffView } from "./GitDiffView";
 import { GitWorktreeList } from "./GitWorktreeList";
-import { getGitOperationFeedback, parseUpstreamRef } from "./git-operation-feedback";
+import { getGitOperationFeedback, parseUpstreamRef, type GitOperationFeedback } from "./git-operation-feedback";
 
 // ── Props ───────────────────────────────────────────────────────────────────
 
@@ -51,11 +51,7 @@ export function GitPanel({ cwd, className }: GitPanelProps) {
     const diffContainerRef = useRef<HTMLDivElement>(null);
 
     // Toast-style feedback for operations
-    const [toast, setToast] = useState<{
-        type: "success" | "error";
-        message: string;
-        action?: "setUpstream";
-    } | null>(null);
+    const [toast, setToast] = useState<GitOperationFeedback | null>(null);
     const [syncMenuOpen, setSyncMenuOpen] = useState(false);
     const syncMenuRef = useRef<HTMLDivElement>(null);
     const syncMenuContentRef = useRef<HTMLDivElement>(null);
@@ -413,7 +409,7 @@ export function GitPanel({ cwd, className }: GitPanelProps) {
                 </div>
             )}
 
-            {/* Rebase conflict resolution bar */}
+            {/* Conflict resolution bar */}
             {git.lastOperationResult && !git.lastOperationResult.ok && git.lastOperationResult.reason === "conflict" && (
                 git.operationInProgress === null
             ) && (
@@ -421,24 +417,38 @@ export function GitPanel({ cwd, className }: GitPanelProps) {
                 >
                     <AlertCircle className="size-3 shrink-0" />
                     <span className="truncate flex-1">Conflicts detected. Resolve them to continue.</span>
-                    <button
-                        type="button"
-                        onClick={() => git.rebaseContinue()}
-                        disabled={git.operationInProgress !== null}
-                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-green-600/20 text-green-600 dark:text-green-400 hover:bg-green-600/30 disabled:opacity-50"
-                        title="Continue rebase after resolving conflicts"
-                    >
-                        <Play className="size-3" /> Continue
-                    </button>
-                    <button
-                        type="button"
-                        onClick={() => git.rebaseAbort()}
-                        disabled={git.operationInProgress !== null}
-                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-red-500/20 text-red-500 dark:text-red-400 hover:bg-red-500/30 disabled:opacity-50"
-                        title="Abort the rebase"
-                    >
-                        <StopCircle className="size-3" /> Abort
-                    </button>
+                    {git.lastConflictType === "git_merge_result" ? (
+                        <button
+                            type="button"
+                            onClick={() => git.mergeAbort()}
+                            disabled={git.operationInProgress !== null}
+                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-red-500/20 text-red-500 dark:text-red-400 hover:bg-red-500/30 disabled:opacity-50"
+                            title="Abort the merge"
+                        >
+                            <StopCircle className="size-3" /> Abort Merge
+                        </button>
+                    ) : (
+                        <>
+                            <button
+                                type="button"
+                                onClick={() => git.rebaseContinue()}
+                                disabled={git.operationInProgress !== null}
+                                className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-green-600/20 text-green-600 dark:text-green-400 hover:bg-green-600/30 disabled:opacity-50"
+                                title="Continue rebase after resolving conflicts"
+                            >
+                                <Play className="size-3" /> Continue
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => git.rebaseAbort()}
+                                disabled={git.operationInProgress !== null}
+                                className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-red-500/20 text-red-500 dark:text-red-400 hover:bg-red-500/30 disabled:opacity-50"
+                                title="Abort the rebase"
+                            >
+                                <StopCircle className="size-3" /> Abort
+                            </button>
+                        </>
+                    )}
                 </div>
             )}
 

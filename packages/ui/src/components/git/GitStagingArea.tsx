@@ -80,11 +80,11 @@ export function GitStagingArea({
     const isBusy = operationInProgress !== null;
     const [viewMode, setViewMode] = useState<"list" | "tree">("list");
 
-    // Build set of staged paths for tree view
-    const stagedPathSet = new Set(staged.map((c) => c.path));
-
-    // Combined changes for tree view (both staged + unstaged)
-    const combinedChanges = [...staged, ...unstaged];
+    // Build StagedChange[] for tree view — each entry carries its own staging flag
+    const treeChanges = [
+        ...staged.map((c) => ({ change: c, isStaged: true })),
+        ...unstaged.map((c) => ({ change: c, isStaged: false })),
+    ];
 
     return (
         <div className="py-1">
@@ -108,8 +108,7 @@ export function GitStagingArea({
 
             {viewMode === "tree" ? (
                 <GitChangesTree
-                    changes={combinedChanges}
-                    stagedPaths={stagedPathSet}
+                    changes={treeChanges}
                     onViewDiff={onViewDiff}
                     onStage={onStage}
                     onUnstage={onUnstage}
