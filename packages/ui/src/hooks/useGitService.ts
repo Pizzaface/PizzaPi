@@ -132,6 +132,7 @@ export function useGitService(cwd: string): UseGitServiceReturn {
     const optimisticSnapshotsRef = useRef(new Map<string, GitStatus | null>());
     const requestGenerationRef = useRef(new Map<string, number>());
     const lastBranchFetchRef = useRef(0);
+    const conflictActiveRef = useRef(false);
 
     // Generation counter — incremented on cwd change. Responses from stale
     // generations are discarded so a slow response from the old cwd doesn't
@@ -403,15 +404,17 @@ export function useGitService(cwd: string): UseGitServiceReturn {
                     setLastOperationResult(payload as GitOperationResult);
                     if (payload.reason === "conflict") {
                         setLastConflictType(type);
+                        conflictActiveRef.current = true;
                     } else if (payload.ok) {
                         setLastConflictType(null);
+                        conflictActiveRef.current = false;
                     }
                     // Auto-refresh after successful mutating operations, and
                     // after pull/merge conflicts because rebase/merge may have
                     // changed the worktree/index even though the operation failed.
                     if (
                         payload.ok
-                        || ((type === "git_pull_result" || type === "git_merge_result" || type === "git_rebase_result") && payload.reason === "conflict")
+                        || ((type === "git_pull_result" || type === "git_merge_result" || type === "git_rebase_result" || type === "git_rebase_continue_result") && payload.reason === "conflict")
                     ) {
                         postMutationRefreshSchedulerRef.current.schedule();
                     }
@@ -421,13 +424,19 @@ export function useGitService(cwd: string): UseGitServiceReturn {
                 case "git_unstage_result": {
                     if (!isRequestCurrentGeneration(requestId)) break;
                     setOperationInProgress(null);
-                    setLastOperationResult(payload as GitOperationResult);
 
                     consumeRollbackSnapshot(
                         optimisticSnapshotsRef.current,
                         requestId,
                         payload.ok === true,
                     );
+
+                    // Don't overwrite lastOperationResult during stage/unstage if
+                    // a conflict is active — the conflict bar must stay visible
+                    // until the user explicitly continues or aborts.
+                    if (!conflictActiveRef.current) {
+                        setLastOperationResult(payload as GitOperationResult);
+                    }
 
                     if (payload.ok) {
                         postMutationRefreshSchedulerRef.current.schedule();
@@ -691,6 +700,7 @@ export function useGitService(cwd: string): UseGitServiceReturn {
         setOperationInProgress(null);
         setLastOperationResult(null);
         setLastConflictType(null);
+        conflictActiveRef.current = false;
         clearPendingDiffs("(diff request cancelled)");
         requestGenerationRef.current.clear();
         pendingFullStatusRequestRef.current = null;

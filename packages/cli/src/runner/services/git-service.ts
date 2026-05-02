@@ -1299,6 +1299,8 @@ export class GitService implements ServiceHandler {
             message.includes("CONFLICT")
             || message.includes("Resolve all conflicts manually")
             || message.includes("could not apply")
+            || message.includes("unmerged")
+            || message.includes("unresolved conflict")
         ) {
             return {
                 reason: "conflict",
