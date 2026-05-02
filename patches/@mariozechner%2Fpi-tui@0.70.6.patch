@@ -57,8 +57,8 @@ index 59dd49b6de6ed0f591e794a3ffdba759f72bc850..b245fac2af9cfa9ef9799b2115bffcec
 +                SetConsoleOutputCP(65001);
 +                return { handleModes, inputCP, outputCP };
 +            });
-+            const stdoutOk = state?.handleModes?.stdout !== undefined;
-+            const stderrOk = state?.handleModes?.stderr !== undefined;
++            const stdoutOk = result?.handleModes?.stdout !== undefined;
++            const stderrOk = result?.handleModes?.stderr !== undefined;
 +            const caps = {
 +                stdoutMode: stdoutOk ? "unicode" : "ascii",
 +                stderrMode: stderrOk ? "unicode" : "ascii",
