@@ -17,7 +17,7 @@ type ClearTimeoutFn = (timeout: ReturnType<typeof setTimeout>) => void;
 
 type GitExec = (
     args: string[],
-    options: { cwd: string; timeout: number },
+    options: { cwd: string; timeout: number; env?: Record<string, string> },
 ) => Promise<{ stdout: string; stderr: string }>;
 
 type GitStatusResultPayload = {
@@ -1658,7 +1658,12 @@ export class GitService implements ServiceHandler {
         if (!mutation) return;
 
         try {
-            const result = await this._execGit(["rebase", "--continue"], { cwd, timeout: 60000 });
+            // Use GIT_EDITOR=true so the headless runner doesn't fail when git
+            // tries to open an editor for the rebase todo/commit message.
+            const result = await this._execGit(
+                ["rebase", "--continue"],
+                { cwd, timeout: 60000, env: { ...process.env, GIT_EDITOR: "true" } },
+            );
             const output = (result.stdout + "\n" + result.stderr).trim();
             await this.invalidateStatusCacheFamily(cwd);
             this.emit("git_rebase_continue_result", { ok: true, output }, requestId, sessionId);
