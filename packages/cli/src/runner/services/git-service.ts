@@ -1753,6 +1753,13 @@ export class GitService implements ServiceHandler {
             return;
         }
 
+        // Validate the resolved worktree path is within allowed roots
+        const resolvedPath = worktreePath.startsWith("/") ? worktreePath : join(cwd, worktreePath);
+        if (!isCwdAllowed(resolvedPath)) {
+            this.emitError("git_worktree_remove_result", "Worktree path outside allowed roots", requestId, sessionId);
+            return;
+        }
+
         // Validate that the path is a known worktree to prevent arbitrary deletion
         try {
             const { stdout: listOutput } = await this._execGit(
