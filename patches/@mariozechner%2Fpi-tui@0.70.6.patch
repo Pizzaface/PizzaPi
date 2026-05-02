@@ -1,0 +1,175 @@
+diff --git a/dist/terminal.js b/dist/terminal.js
+index 59dd49b6de6ed0f591e794a3ffdba759f72bc850..b245fac2af9cfa9ef9799b2115bffcec1c54ed1b 100644
+--- a/dist/terminal.js
++++ b/dist/terminal.js
+@@ -4,6 +4,100 @@ import * as path from "node:path";
+ import { setKittyProtocolActive } from "./keys.js";
+ import { StdinBuffer } from "./stdin-buffer.js";
+ const cjsRequire = createRequire(import.meta.url);
++// PATCH(pizzapi): Windows console output lifecycle helpers
++function safeWindowsCall(fn) {
++    try {
++        return fn();
++    }
++    catch {
++        return undefined;
++    }
++}
++/**
++ * Create a Windows console lifecycle helper that enables VT output and UTF-8
++ * code pages on activation, and restores the original state on teardown.
++ */
++export function createWindowsConsoleLifecycle() {
++    let state = undefined;
++    return {
++        activate() {
++            if (process.platform !== "win32") {
++                return { stdoutMode: "unknown", stderrMode: "unknown", source: "pi-tui" };
++            }
++            const result = safeWindowsCall(() => {
++                const koffi = cjsRequire("koffi");
++                const k32 = koffi.load("kernel32.dll");
++                const GetStdHandle = k32.func("void* __stdcall GetStdHandle(int)");
++                const GetConsoleMode = k32.func("bool __stdcall GetConsoleMode(void*, _Out_ uint32_t*)");
++                const SetConsoleMode = k32.func("bool __stdcall SetConsoleMode(void*, uint32_t)");
++                const GetConsoleCP = k32.func("uint32_t __stdcall GetConsoleCP()");
++                const SetConsoleCP = k32.func("bool __stdcall SetConsoleCP(uint32_t)");
++                const GetConsoleOutputCP = k32.func("uint32_t __stdcall GetConsoleOutputCP()");
++                const SetConsoleOutputCP = k32.func("bool __stdcall SetConsoleOutputCP(uint32_t)");
++                const STD_OUTPUT_HANDLE = -11;
++                const STD_ERROR_HANDLE = -12;
++                const ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004;
++                const handleModes = { stdout: undefined, stderr: undefined };
++                for (const { key, n } of [
++                    { key: "stdout", n: STD_OUTPUT_HANDLE },
++                    { key: "stderr", n: STD_ERROR_HANDLE },
++                ]) {
++                    const handle = GetStdHandle(n);
++                    const mode = new Uint32Array(1);
++                    if (GetConsoleMode(handle, mode)) {
++                        handleModes[key] = mode[0];
++                        SetConsoleMode(handle, mode[0] | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
++                    }
++                }
++                const inputCP = GetConsoleCP();
++                const outputCP = GetConsoleOutputCP();
++                SetConsoleCP(65001);
++                SetConsoleOutputCP(65001);
++                return { handleModes, inputCP, outputCP };
++            });
++            const stdoutOk = result?.handleModes?.stdout !== undefined;
++            const stderrOk = result?.handleModes?.stderr !== undefined;
++            const caps = {
++                stdoutMode: stdoutOk ? "unicode" : "ascii",
++                stderrMode: stderrOk ? "unicode" : "ascii",
++                source: "pi-tui",
++            };
++            state = result ?? undefined;
++            return caps;
++        },
++        restore() {
++            if (!state || process.platform !== "win32")
++                return;
++            safeWindowsCall(() => {
++                const koffi = cjsRequire("koffi");
++                const k32 = koffi.load("kernel32.dll");
++                const GetStdHandle = k32.func("void* __stdcall GetStdHandle(int)");
++                const SetConsoleMode = k32.func("bool __stdcall SetConsoleMode(void*, uint32_t)");
++                const SetConsoleCP = k32.func("bool __stdcall SetConsoleCP(uint32_t)");
++                const SetConsoleOutputCP = k32.func("bool __stdcall SetConsoleOutputCP(uint32_t)");
++                const STD_OUTPUT_HANDLE = -11;
++                const STD_ERROR_HANDLE = -12;
++                for (const { key, n } of [
++                    { key: "stdout", n: STD_OUTPUT_HANDLE },
++                    { key: "stderr", n: STD_ERROR_HANDLE },
++                ]) {
++                    const handle = GetStdHandle(n);
++                    const mode = state.handleModes[key];
++                    if (mode !== undefined) {
++                        SetConsoleMode(handle, mode);
++                    }
++                }
++                if (state.inputCP !== undefined) {
++                    SetConsoleCP(state.inputCP);
++                }
++                if (state.outputCP !== undefined) {
++                    SetConsoleOutputCP(state.outputCP);
++                }
++            });
++            state = undefined;
++        },
++    };
++}
+ const TERMINAL_PROGRESS_KEEPALIVE_MS = 1000;
+ const TERMINAL_PROGRESS_ACTIVE_SEQUENCE = "\x1b]9;4;3\x07";
+ const TERMINAL_PROGRESS_CLEAR_SEQUENCE = "\x1b]9;4;0;\x07";
+@@ -19,6 +113,7 @@ export class ProcessTerminal {
+     stdinBuffer;
+     stdinDataHandler;
+     progressInterval;
++    windowsConsoleLifecycle;
+     writeLogPath = (() => {
+         const env = process.env.PI_TUI_WRITE_LOG || "";
+         if (!env)
+@@ -62,11 +157,30 @@ export class ProcessTerminal {
+         // events that lose modifier information. Must run AFTER setRawMode(true)
+         // since that resets console mode flags.
+         this.enableWindowsVTInput();
++        // PATCH(pizzapi): Windows console output lifecycle
++        this.setupWindowsConsole();
+         // Query and enable Kitty keyboard protocol
+         // The query handler intercepts input temporarily, then installs the user's handler
+         // See: https://sw.kovidgoyal.net/kitty/keyboard-protocol/
+         this.queryAndEnableKittyProtocol();
+     }
++    /**
++     * On Windows, set up VT output and UTF-8 code page for Unicode rendering,
++     * and publish a capability signal for downstream renderers.
++     */
++    setupWindowsConsole() {
++        if (process.platform !== "win32")
++            return;
++        try {
++            this.windowsConsoleLifecycle = createWindowsConsoleLifecycle();
++            const result = this.windowsConsoleLifecycle.activate();
++            const globalObj = globalThis;
++            globalObj.__PI_WINDOWS_CONSOLE_CAPS__ = result;
++        }
++        catch {
++            // Best-effort: if console API setup fails, leave it alone
++        }
++    }
+     /**
+      * Set up StdinBuffer to split batched input into individual sequences.
+      * This ensures components receive single events, making matchesKey/isKeyRelease work correctly.
+@@ -165,6 +279,12 @@ export class ProcessTerminal {
+             // koffi not available — Shift+Tab won't be distinguishable from Tab
+         }
+     }
++    /**
++     * On Windows, enable ENABLE_VIRTUAL_TERMINAL_PROCESSING (0x0004) on the
++     * stdout and stderr console handles so VT escape sequences are interpreted
++     * for styling and cursor movement. Also switch to UTF-8 code page (65001)
++     * for Unicode glyph support and save original state for restoration.
++     */
+     async drainInput(maxMs = 1000, idleMs = 50) {
+         if (this._kittyProtocolActive) {
+             // Disable Kitty keyboard protocol first so any late key releases
+@@ -232,6 +352,17 @@ export class ProcessTerminal {
+             process.stdout.removeListener("resize", this.resizeHandler);
+             this.resizeHandler = undefined;
+         }
++        // PATCH(pizzapi): restore Windows console state
++        if (this.windowsConsoleLifecycle) {
++            try {
++                this.windowsConsoleLifecycle.restore();
++            }
++            catch {
++                // Best-effort restore
++            }
++            this.windowsConsoleLifecycle = undefined;
++            delete globalThis.__PI_WINDOWS_CONSOLE_CAPS__;
++        }
+         // Pause stdin to prevent any buffered input (e.g., Ctrl+D) from being
+         // re-interpreted after raw mode is disabled. This fixes a race condition
+         // where Ctrl+D could close the parent shell over SSH.

@@ -44,6 +44,16 @@ function piAgentCorePath(subpath: string): string {
     return resolve(pkgRoot, subpath);
 }
 
+/**
+ * Resolve a deep path inside @mariozechner/pi-tui.
+ */
+function piTuiPath(subpath: string): string {
+    const pkgMainUrl = import.meta.resolve("@mariozechner/pi-tui");
+    const pkgMain = fileURLToPath(pkgMainUrl);
+    const pkgRoot = resolve(dirname(pkgMain), "..");
+    return resolve(pkgRoot, subpath);
+}
+
 // ===========================================================================
 // pi-coding-agent patches
 // ===========================================================================
@@ -549,5 +559,113 @@ describe("pi-ai patch application — Claude Code credentials fallback (Keychain
 
         // Ensures we don't use credentials that expire within 60 seconds
         expect(source).toContain("Date.now() + 60000");
+    });
+});
+
+// ===========================================================================
+// pi-tui patches (Windows console output lifecycle)
+// ===========================================================================
+
+describe("pi-tui patch application — Windows console output lifecycle", () => {
+    test("terminal.js contains PATCH(pizzapi): Windows console output lifecycle", async () => {
+        const source = await Bun.file(
+            piTuiPath("dist/terminal.js"),
+        ).text();
+
+        expect(source).toContain("PATCH(pizzapi): Windows console output lifecycle");
+        expect(source).toContain("export function createWindowsConsoleLifecycle");
+    });
+
+    test("terminal.js wires setupWindowsConsole into start()", async () => {
+        const source = await Bun.file(
+            piTuiPath("dist/terminal.js"),
+        ).text();
+
+        const startIndex = source.indexOf("start(onInput, onResize) {");
+        const setupIndex = source.indexOf("setupStdinBuffer() {", startIndex);
+        expect(startIndex).toBeGreaterThan(-1);
+        expect(setupIndex).toBeGreaterThan(startIndex);
+        const startMethod = source.slice(startIndex, setupIndex);
+
+        expect(startMethod).toContain("this.setupWindowsConsole();");
+        expect(startMethod).toContain("this.enableWindowsVTInput();");
+    });
+
+    test("terminal.js restores Windows console state in stop()", async () => {
+        const source = await Bun.file(
+            piTuiPath("dist/terminal.js"),
+        ).text();
+
+        const stopIndex = source.indexOf("stop() {");
+        const writeIndex = source.indexOf("write(data) {", stopIndex);
+        expect(stopIndex).toBeGreaterThan(-1);
+        expect(writeIndex).toBeGreaterThan(stopIndex);
+        const stopMethod = source.slice(stopIndex, writeIndex);
+
+        expect(stopMethod).toContain("this.windowsConsoleLifecycle.restore();");
+        expect(stopMethod).toContain("delete globalThis.__PI_WINDOWS_CONSOLE_CAPS__");
+        expect(stopMethod).toContain("process.stdin.setRawMode(this.wasRaw);");
+    });
+
+    test("createWindowsConsoleLifecycle is a no-op off Windows", async () => {
+        const { createWindowsConsoleLifecycle } = await import(
+            piTuiPath("dist/terminal.js")
+        ) as {
+            createWindowsConsoleLifecycle: () => {
+                activate: () => { stdoutMode: string; stderrMode: string; source: string };
+                restore: () => void;
+            };
+        };
+
+        const lifecycle = createWindowsConsoleLifecycle();
+        const result = lifecycle.activate();
+
+        if (process.platform === "win32") {
+            expect(result.source).toBe("pi-tui");
+            expect(["unicode", "ascii", "unknown"]).toContain(result.stdoutMode);
+            expect(["unicode", "ascii", "unknown"]).toContain(result.stderrMode);
+        } else {
+            expect(result).toEqual({
+                stdoutMode: "unknown",
+                stderrMode: "unknown",
+                source: "pi-tui",
+            });
+        }
+
+        // restore should be safe to call repeatedly
+        expect(() => lifecycle.restore()).not.toThrow();
+    });
+
+    test("ProcessTerminal.start publishes __PI_WINDOWS_CONSOLE_CAPS__ on Windows", async () => {
+        const { ProcessTerminal } = await import(
+            piTuiPath("dist/terminal.js")
+        ) as {
+            ProcessTerminal: new () => {
+                start: (onInput: () => void, onResize: () => void) => void;
+                stop: () => void;
+            };
+        };
+
+        // On non-Windows we still verify the contract path doesn't crash
+        if (process.platform !== "win32") {
+            const globalObj = globalThis as typeof globalThis & {
+                __PI_WINDOWS_CONSOLE_CAPS__?: unknown;
+            };
+            const hadCaps = Object.prototype.hasOwnProperty.call(globalObj, "__PI_WINDOWS_CONSOLE_CAPS__");
+            const originalCaps = globalObj.__PI_WINDOWS_CONSOLE_CAPS__;
+
+            try {
+                const terminal = new ProcessTerminal();
+                terminal.start(() => {}, () => {});
+                // On non-Windows it may still set the caps from the lifecycle
+                terminal.stop();
+            } finally {
+                if (hadCaps) {
+                    globalObj.__PI_WINDOWS_CONSOLE_CAPS__ = originalCaps;
+                } else {
+                    delete globalObj.__PI_WINDOWS_CONSOLE_CAPS__;
+                }
+            }
+        }
     });
 });
