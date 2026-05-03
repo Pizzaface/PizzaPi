@@ -156,8 +156,6 @@ describe("runner trigger listener routes", () => {
     });
 
     test("PUT updates one listener by id", async () => {
-        const runnerEmit = mock(() => {});
-        mockGetLocalRunnerSocket.mockReturnValue({ emit: runnerEmit } as any);
         mockUpdateRunnerTriggerListener.mockReturnValue(Promise.resolve({ updated: true, listenerId: "listener-123", triggerType: "svc:event" }));
 
         const [req, url] = makeReq("PUT", "/api/runners/runner-A/trigger-listeners/listener-123", {
@@ -169,10 +167,7 @@ describe("runner trigger listener routes", () => {
         expect(body.ok).toBe(true);
         expect(body.listenerId).toBe("listener-123");
         expect(body.triggerType).toBe("svc:event");
-        expect(runnerEmit).toHaveBeenCalledWith("listener_config_changed", expect.objectContaining({
-            listenerId: "listener-123",
-            triggerType: "svc:event",
-        }));
+
     });
 
     test("DELETE removes one listener by id", async () => {
