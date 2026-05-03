@@ -2062,18 +2062,19 @@ export function TriggersPanel({ sessionId, triggerDefs = [], viewerSocket }: Tri
   }, [fetchTriggers]);
 
   // Tab state: "history" or "catalog"
+  // Default to "history" when there are trigger history items (they may need attention),
+  // falling back to "catalog" only when history is empty.
   const hasCatalog = triggerDefs.length > 0 || subscriptions.length > 0;
-  const [activeTab, setActiveTab] = React.useState<"history" | "catalog">(hasCatalog ? "catalog" : "history");
+  const userSelectedTabRef = React.useRef(false);
+  const [activeTab, setActiveTab] = React.useState<"history" | "catalog">("history");
 
-  // Auto-switch to catalog only on the first transition from no-catalog to catalog.
-  // Once catalog data has appeared (or user has interacted), don't override their tab choice.
-  const catalogSeenRef = React.useRef(false);
+  // Auto-switch to catalog when history is empty and catalog is available,
+  // but only if the user hasn't manually selected a tab yet.
   React.useEffect(() => {
-    if (hasCatalog && !catalogSeenRef.current) {
-      catalogSeenRef.current = true;
+    if (!userSelectedTabRef.current && triggers.length === 0 && hasCatalog) {
       setActiveTab("catalog");
     }
-  }, [hasCatalog]);
+  }, [triggers.length, hasCatalog]);
 
   // Count for badges
   const pendingCount = pendingGroups.length;
@@ -2086,7 +2087,7 @@ export function TriggersPanel({ sessionId, triggerDefs = [], viewerSocket }: Tri
         <div className="flex items-center flex-1 min-w-0 gap-0">
           <button
             type="button"
-            onClick={() => { catalogSeenRef.current = true; setActiveTab("history"); }}
+            onClick={() => { userSelectedTabRef.current = true; setActiveTab("history"); }}
             className={cn(
               "flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium transition-colors border-b-2",
               activeTab === "history"
@@ -2106,7 +2107,7 @@ export function TriggersPanel({ sessionId, triggerDefs = [], viewerSocket }: Tri
           {hasCatalog && (
             <button
               type="button"
-              onClick={() => { catalogSeenRef.current = true; setActiveTab("catalog"); }}
+              onClick={() => { userSelectedTabRef.current = true; setActiveTab("catalog"); }}
               className={cn(
                 "flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium transition-colors border-b-2",
                 activeTab === "catalog"
