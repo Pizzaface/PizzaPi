@@ -131,9 +131,17 @@ export function createOllamaWebTools(deps: OllamaWebToolDeps = {}): { webSearch:
             url: typeof r.url === "string" ? r.url : "",
           }))
           .filter((r: any) => r.url);
+
+        // Build readable text content so agents can see results inline
+        const textContent = webResults.length === 0
+          ? `No results found for "${query}".`
+          : webResults
+              .map((r: any, i: number) => `${i + 1}. **${r.title}**\n   ${r.url}`)
+              .join("\n\n");
+
         return {
           content: [
-            { type: "text" as const, text: "", _serverToolUse: { id: _toolCallId, name: "web_search", input: { query } } },
+            { type: "text" as const, text: textContent, _serverToolUse: { id: _toolCallId, name: "web_search", input: { query } } },
             { type: "text" as const, text: "", _webSearchResult: { tool_use_id: _toolCallId, content: webResults } },
           ],
           details: { type: "web_search", query, maxResults, resultCount: webResults.length },
