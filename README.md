@@ -1,6 +1,6 @@
 <img width="1280" height="575" alt="PizzaPi-Header" src="https://github.com/user-attachments/assets/a362a452-9b09-49c4-896e-424a6325317e" />
 
-A self-hosted web interface and relay server for the [pi coding agent]([https://github.com/badlogic/pi-mono](https://github.com/badlogic/pi-mono)). Stream live AI coding sessions to any browser and interact remotely from mobile or desktop — no terminal required.
+A self-hosted web interface and relay server for the [pi coding agent](https://github.com/badlogic/pi-mono). Stream live AI coding sessions to any browser and interact remotely from mobile or desktop — no terminal required.
 
 ## Quick Start
 
