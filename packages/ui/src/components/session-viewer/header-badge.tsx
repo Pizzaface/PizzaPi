@@ -84,10 +84,15 @@ export function ComposerAttachmentMeta({
       setSizeLabel("");
       return;
     }
-    fetch(url)
-      .then((res) => res.blob())
-      .then((blob) => {
-        if (!cancelled) setSizeLabel(formatFileSize(blob.size));
+    fetch(url, { method: "HEAD" })
+      .then((res) => {
+        const contentLength = res.headers.get("Content-Length");
+        if (contentLength != null) return parseInt(contentLength, 10);
+        // Fall back to full blob download if Content-Length is unavailable
+        return fetch(url).then((r) => r.blob()).then((b) => b.size);
+      })
+      .then((size) => {
+        if (!cancelled) setSizeLabel(formatFileSize(size));
       })
       .catch(() => {
         if (!cancelled) setSizeLabel("");
