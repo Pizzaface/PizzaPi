@@ -1,4 +1,4 @@
-# PizzaPi
+<img width="1280" height="575" alt="PizzaPi-Header" src="https://github.com/user-attachments/assets/a362a452-9b09-49c4-896e-424a6325317e" />
 
 A self-hosted web interface and relay server for the [pi coding agent](https://github.com/badlogic/pi-mono). Stream live AI coding sessions to any browser and interact remotely from mobile or desktop — no terminal required.
 
@@ -35,6 +35,14 @@ Full docs are at **[pizzaface.github.io/PizzaPi](https://pizzaface.github.io/Piz
 - **[Runner Daemon](https://pizzaface.github.io/PizzaPi/running/runner-daemon/)** — headless agent sessions from the web UI
 - **[Development](https://pizzaface.github.io/PizzaPi/reference/development/)** — local dev setup, testing, and contributing
 - **[Architecture](https://pizzaface.github.io/PizzaPi/reference/architecture/)** — relay protocol, event flow, and component design
+
+
+# Screenshots:
+<img width="2558" height="1275" alt="An image of the PizzaPi UI" src="https://github.com/user-attachments/assets/9797d3bc-8dcf-4bb2-af71-3bfce8a6a222" />
+
+
+<img width="2556" height="666" alt="An image of one of the runner configuration panes" src="https://github.com/user-attachments/assets/494aad7d-9ffe-4a82-847f-c7379e4c17ce" />
+
 
 ## License
 
