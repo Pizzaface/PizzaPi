@@ -1094,16 +1094,6 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                         >
                             <Plus className="h-4 w-4" />
                         </Button>
-                        <Button
-                            variant="ghost"
-                            size="icon"
-                            className="h-8 w-8 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent"
-                            onClick={onClose}
-                            aria-label="Clear selected session"
-                            title="Clear selected session"
-                        >
-                            <X className="h-4 w-4" />
-                        </Button>
                     </div>
                 </div>
             )}
