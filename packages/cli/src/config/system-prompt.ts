@@ -1,10 +1,8 @@
 import { execSync } from "node:child_process";
 import { renderSystemPrompt } from "./system-prompt.precompiled.js";
 import type { SystemPromptContext } from "./system-prompt.precompiled.js";
-import { renderClaudeCodeProviderPrompt } from "./claude-code-provider.precompiled.js";
-import type { ClaudeCodeProviderContext } from "./claude-code-provider.precompiled.js";
 
-export type { SystemPromptContext, ClaudeCodeProviderContext };
+export type { SystemPromptContext };
 
 /** Run a git command and return trimmed stdout, or undefined on failure. */
 function git(args: string, cwd?: string): string | undefined {
@@ -60,86 +58,6 @@ export function buildSystemPrompt(ctx?: Partial<SystemPromptContext>): string {
         gitWorktree: ctx?.gitWorktree ?? gitCtx.gitWorktree,
         cwd: ctx?.cwd,
         isRunner: ctx?.isRunner,
-    });
-}
-
-/**
- * Rewrite a system prompt to use "Claude Code" branding instead of "pi" / "PizzaPi".
- *
- * Applies targeted string replacements so the prompt looks like it originates from
- * the official Claude Code CLI. Useful for Anthropic Max subscriptions where the
- * server-side detection pattern-matches system prompt content.
- *
- * Safe to call on both the upstream base prompt (identity line) and the PizzaPi
- * appendSystemPrompt content.
- */
-export function rewriteForClaudeCodeProvider(prompt: string): string {
-    return prompt
-        // Identity line from upstream pi-coding-agent
-        .replace(
-            /You are an expert coding assistant operating inside pi, a coding agent harness\./g,
-            "You are Claude Code, Anthropic's official CLI for Claude.",
-        )
-        // "PizzaPi" as a product name → "Claude Code"
-        .replace(/PizzaPi/g, "Claude Code")
-        // Standalone "Pi " at word boundary (e.g. "Pi documentation", "Pi TUI")
-        .replace(/\bPi\b(?=\s+(?:documentation|TUI|packages|topics|\.md))/g, "Claude Code")
-        // "operating inside pi" (if phrased differently)
-        .replace(/\binside pi\b/g, "inside Claude Code")
-        // "pi itself" / "pi topics" / "pi, a coding"
-        .replace(/\bpi\b(?=\s+(?:itself|topics|packages|coding))/g, "Claude Code")
-        // "about pi" at word boundary
-        .replace(/\babout pi\b/g, "about Claude Code")
-        // "pi but" (as in "built on top of pi but")
-        .replace(/\bpi but\b/g, "Claude Code but")
-        // Path references: ~/.pizzapi/ → ~/.claude/
-        .replace(/~\/\.pizzapi\//g, "~/.claude/")
-        // Path references: .pizzapi/ (project-local) → .claude/
-        .replace(/(^|[^~\/])\.pizzapi\//gm, "$1.claude/")
-        // Config section name
-        .replace(/pizzapi-configuration/g, "claude-code-configuration");
-}
-
-/** Detect OS version string for the env block. */
-function getOsVersion(): string {
-    try {
-        if (process.platform === "win32") {
-            // e.g. "Windows 10 Pro 10.0.22631"
-            const ver = execSync("cmd /c ver", { encoding: "utf-8", timeout: 3000, stdio: ["ignore", "pipe", "ignore"] }).trim();
-            return ver || `Windows ${process.version}`;
-        }
-        return execSync("uname -sr", { encoding: "utf-8", timeout: 3000, stdio: ["ignore", "pipe", "ignore"] }).trim();
-    } catch {
-        return process.platform === "win32" ? "Windows" : "unknown";
-    }
-}
-
-/** Detect the user's shell. */
-function getShell(): string {
-    // Unix: $SHELL (e.g. /bin/zsh → zsh)
-    if (process.env.SHELL) return process.env.SHELL.split("/").pop() ?? "unknown";
-    // Windows: %ComSpec% (e.g. C:\WINDOWS\system32\cmd.exe → cmd.exe) or PowerShell
-    if (process.env.ComSpec) return process.env.ComSpec.split("\\").pop() ?? "cmd.exe";
-    if (process.env.PSModulePath) return "powershell";
-    return "unknown";
-}
-
-/**
- * Build the Claude Code provider system prompt.
- *
- * This replaces the upstream base system prompt entirely with the real
- * Claude Code system prompt when Claude Code Provider mode is enabled.
- * The template is precompiled at build time from claude-code-provider.hbs.
- */
-export function buildClaudeCodeProviderPrompt(ctx?: Partial<ClaudeCodeProviderContext>): string {
-    const gitCtx = gatherGitContext(ctx?.cwd);
-
-    return renderClaudeCodeProviderPrompt({
-        cwd: ctx?.cwd,
-        gitBranch: ctx?.gitBranch ?? gitCtx.gitBranch,
-        platform: ctx?.platform ?? process.platform,
-        shell: ctx?.shell ?? getShell(),
-        osVersion: ctx?.osVersion ?? getOsVersion(),
     });
 }
 
