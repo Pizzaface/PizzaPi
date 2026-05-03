@@ -465,17 +465,4 @@ export interface PizzaPiConfig {
      * Also supports per-server `deferLoading: true` in mcpServers entries.
      */
     toolSearch?: ToolSearchConfig;
-
-    /**
-     * Rewrite the system prompt to use "Claude Code" branding instead of
-     * "pi" / "PizzaPi".  When enabled, the identity line and all PizzaPi-specific
-     * references in the system prompt are replaced so the request looks like it
-     * originates from the official Claude Code CLI.
-     *
-     * This is useful for Anthropic Max subscriptions where the server-side
-     * detection checks the system prompt content.
-     *
-     * Default: false.
-     */
-    claudeCodeProvider?: boolean;
 }

@@ -11,7 +11,7 @@ import {
     SessionManager,
 } from "@mariozechner/pi-coding-agent";
 import { join } from "path";
-import { buildSystemPrompt, rewriteForClaudeCodeProvider, buildClaudeCodeProviderPrompt, defaultAgentDir, expandHome, loadConfig, resolveSandboxConfig, validateSandboxOverride, applyProviderSettingsEnv } from "./config.js";
+import { buildSystemPrompt, defaultAgentDir, expandHome, loadConfig, resolveSandboxConfig, validateSandboxOverride, applyProviderSettingsEnv } from "./config.js";
 import { c, usageBar, colorPct, colorRemaining } from "./cli-colors.js";
 import { buildSkillPaths, buildPromptTemplatePaths, createAgentsFilesOverride } from "./skills.js";
 import { getPluginSkillPaths } from "./extensions/claude-plugins.js";
@@ -522,19 +522,9 @@ async function main() {
         additionalPromptTemplatePaths: buildPromptTemplatePaths(cwd),
         ...(config.systemPrompt !== undefined
             ? { systemPromptOverride: () => config.systemPrompt }
-            : config.claudeCodeProvider
-                ? { systemPromptOverride: () => buildClaudeCodeProviderPrompt({ cwd }) }
-                : {}
+            : {}
         ),
         appendSystemPrompt: (() => {
-            if (config.claudeCodeProvider) {
-                // Gist-style bypass: drop PizzaPi's builtin agent instructions entirely.
-                // Anthropic's server-side detector only checks the "static" portion of the
-                // system prompt (the base prompt, already replaced via systemPromptOverride).
-                // Runtime content (user customizations) passes through fine.
-                const parts = [config.appendSystemPrompt].filter(Boolean) as string[];
-                return parts.map(rewriteForClaudeCodeProvider);
-            }
             const parts = [buildSystemPrompt({ cwd }), config.appendSystemPrompt].filter(Boolean) as string[];
             return parts;
         })(),

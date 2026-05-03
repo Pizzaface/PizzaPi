@@ -1501,7 +1501,6 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                         const updates: Record<string, any> = {};
                         if (v?.appendSystemPrompt !== undefined) updates.appendSystemPrompt = v.appendSystemPrompt;
                         if (v?.skills !== undefined) updates.skills = v.skills;
-                        if (v?.claudeCodeProvider !== undefined) updates.claudeCodeProvider = v.claudeCodeProvider;
                         saveGlobal(updates);
                     } else if (section === "envVars") {
                         // Env vars are stored in a custom key in config.json.
