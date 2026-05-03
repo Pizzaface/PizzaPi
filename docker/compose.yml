@@ -1,7 +1,18 @@
 services:
   redis:
     image: redis:7-alpine
+    # By default, Redis runs in ephemeral mode — all data is lost on container restart.
+    # This is fine for stateless relay use where sessions are transient.
+    #
+    # To persist Redis data across restarts, uncomment the persistence command
+    # and volume mount below:
+    #   --save 900 1  → RDB snapshot every 15 min if at least 1 key changed
+    #   --save 300 10 → RDB snapshot every 5 min if at least 10 keys changed
+    #   --appendonly yes → AOF log for durability between snapshots
     command: ["redis-server", "--save", "", "--appendonly", "no"]
+    # command: ["redis-server", "--save", "900", "1", "--save", "300", "10", "--appendonly", "yes"]
+    # volumes:
+    #   - redis_data:/data
     # Redis is only accessed by the server container on the Docker network.
     # Uncomment the ports mapping below if you need direct host access.
     # ports:
@@ -82,3 +93,4 @@ services:
 volumes:
   pizzapi-data:
   ui-dist:
+  # redis_data:
