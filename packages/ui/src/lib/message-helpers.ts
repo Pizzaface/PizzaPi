@@ -161,6 +161,48 @@ export function mergeChunkSnapshot(
   return preserved.length > 0 ? [...snapshotMessages, ...preserved] : snapshotMessages;
 }
 
+/**
+ * Build a synthetic streaming-partial `RelayMessage` from a `tool_execution_update`
+ * event's `partialResult`. The shape produced here MUST match the shape of the
+ * final tool result delivered via `message_end` so the rendering pipeline
+ * (extractTextFromToolContent / hasVisibleContent / BashToolCard) handles it
+ * identically:
+ *
+ *   - `content`  — the raw content array/string from `partialResult.content`
+ *                  (NOT wrapped in `{ content, details }`)
+ *   - `details`  — the structured details object as a sibling field
+ *
+ * Bundling `{ content, details }` into the `content` field would hide the
+ * partial text from `extractTextFromToolContent` (which only unwraps an
+ * object's `.content` when it is a string, not an array), causing the Terminal
+ * pane in `BashToolCard` to render an empty pane until `tool_execution_end`
+ * delivers the final result — i.e. no live streaming output.
+ */
+export function buildStreamingPartialMessage(input: {
+  toolCallId: string;
+  toolName: string;
+  partialResult: unknown;
+}): RelayMessage {
+  const partial =
+    input.partialResult && typeof input.partialResult === "object"
+      ? (input.partialResult as Record<string, unknown>)
+      : null;
+  const content = partial ? partial.content : undefined;
+  const details = partial ? partial.details : undefined;
+  return {
+    key: `tool-call:${input.toolCallId}`,
+    role: "toolResult",
+    toolCallId: input.toolCallId,
+    toolName: input.toolName,
+    content,
+    details,
+    isError: false,
+    // Mark as a streaming partial so deduplication logic does not treat it as
+    // a terminal tool result (the tool is still in-flight).
+    isStreamingPartial: true,
+  };
+}
+
 export function normalizeMessages(rawMessages: unknown[], keyOffset = 0): RelayMessage[] {
   const all = rawMessages
     .map((m, i) => toRelayMessage(m, `snapshot-${keyOffset + i}`))
