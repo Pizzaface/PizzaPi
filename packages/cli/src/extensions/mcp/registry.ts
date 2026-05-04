@@ -9,7 +9,7 @@
  *  - Registering MCP tools with the pi tool provider
  */
 
-import { type PizzaPiConfig } from "../../config.js";
+import { type PizzaPiConfig, expandVars, expandVarsDeep } from "../../config.js";
 import { PizzaPiOAuthProvider, type RelayContext } from "../mcp-oauth.js";
 import { createLogger, isSandboxActive, getResolvedConfig } from "@pizzapi/tools";
 import { createStdioMcpClient } from "./transport-stdio.js";
@@ -185,22 +185,26 @@ export async function createMcpClientsFromConfig(config: PizzaPiConfig & McpConf
       }
     } else if (s.transport === "http") {
       if (!isMcpDomainAllowed(s.url, s.name)) continue;
+      const url = expandVars(s.url);
+      const headers = s.headers ? expandVarsDeep(s.headers) as Record<string, string> : undefined;
       clients.push(
         createHttpMcpClient({
           name: s.name,
-          url: s.url,
-          headers: s.headers,
+          url,
+          headers,
         }),
       );
     } else if (s.transport === "streamable") {
       if (!isMcpDomainAllowed(s.url, s.name)) continue;
+      const url = expandVars(s.url);
+      const headers = s.headers ? expandVarsDeep(s.headers) as Record<string, string> : undefined;
       // Per-server clientId/clientSecret are a pair: if per-server clientId is set,
       // use its paired secret (even if undefined) — don't leak the global secret
       // to a server with a different client identity.
       const sClientId = s.oauthClientId ?? oauthClientId;
       const sClientSecret = s.oauthClientId !== undefined ? s.oauthClientSecret : oauthClientSecret;
       const provider = new PizzaPiOAuthProvider({
-        serverUrl: s.url,
+        serverUrl: url,
         serverName: s.name,
         clientName: s.oauthClientName || oauthClientName,
         clientId: sClientId,
@@ -247,8 +251,12 @@ export async function createMcpClientsFromConfig(config: PizzaPiConfig & McpConf
     if ("url" in def && typeof (def as any).url === "string") {
       const d = def as { url: string; transport?: string; type?: string; headers?: Record<string, string>; oauthClientName?: string; oauthClientId?: string; oauthClientSecret?: string; oauthCallbackPort?: number };
 
+      // Expand @VARNAME@ tokens in url and headers
+      const url = expandVars(d.url);
+      const headers = d.headers ? expandVarsDeep(d.headers) as Record<string, string> : undefined;
+
       // Domain gating for URL-based MCP servers
-      if (!isMcpDomainAllowed(d.url, name)) continue;
+      if (!isMcpDomainAllowed(url, name)) continue;
 
       // Determine transport mode:
       //  - "transport" field (our format): "streamable" → streamable, else plain HTTP
@@ -262,7 +270,7 @@ export async function createMcpClientsFromConfig(config: PizzaPiConfig & McpConf
         const dClientId = d.oauthClientId ?? oauthClientId;
         const dClientSecret = d.oauthClientId !== undefined ? d.oauthClientSecret : oauthClientSecret;
         const provider = new PizzaPiOAuthProvider({
-          serverUrl: d.url,
+          serverUrl: url,
           serverName: name,
           clientName: d.oauthClientName || oauthClientName,
           clientId: dClientId,
@@ -273,12 +281,12 @@ export async function createMcpClientsFromConfig(config: PizzaPiConfig & McpConf
         activeOAuthProviders.push(provider);
         clients.push(createStreamableMcpClient({
           name,
-          url: d.url,
-          headers: d.headers,
+          url,
+          headers,
           oauthProvider: provider,
         }));
       } else {
-        clients.push(createHttpMcpClient({ name, url: d.url, headers: d.headers }));
+        clients.push(createHttpMcpClient({ name, url, headers }));
       }
     }
   }

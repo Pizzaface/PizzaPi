@@ -18,6 +18,7 @@ import { homedir } from "node:os";
 import { basename, extname, join, resolve } from "node:path";
 import type { ServiceHandler } from "./service-handler.js";
 import type { JsonValue, ServiceTriggerDef, ServiceTriggerParamDef, ServiceSigilDef } from "@pizzapi/protocol";
+import { expandVars } from "../config/io.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -454,9 +455,9 @@ function parseServiceManifest(manifestPath: string): ServiceManifest {
         id: raw.id,
         label: raw.label,
         icon: typeof raw.icon === "string" ? raw.icon : "square",
-        entry: typeof raw.entry === "string" ? raw.entry : undefined,
+        entry: typeof raw.entry === "string" ? expandVars(raw.entry) : undefined,
         panel: raw.panel && typeof raw.panel === "object"
-            ? { dir: typeof raw.panel.dir === "string" ? raw.panel.dir : undefined }
+            ? { dir: typeof raw.panel.dir === "string" ? expandVars(raw.panel.dir) : undefined }
             : undefined,
         triggers: triggers.length > 0 ? triggers : undefined,
         sigils: sigils.length > 0 ? sigils : undefined,

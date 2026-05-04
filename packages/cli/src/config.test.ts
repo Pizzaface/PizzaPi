@@ -2,7 +2,7 @@ import { describe, test, expect, beforeEach, afterEach, mock } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
-import { toggleMcpServer, loadConfig, _setGlobalConfigDir, resolveSandboxConfig, validateSandboxOverride, saveGlobalConfig, applyProviderSettingsEnv, isProjectMcpTrusted, type PizzaPiConfig } from "./config.js";
+import { toggleMcpServer, loadConfig, _setGlobalConfigDir, resolveSandboxConfig, validateSandboxOverride, saveGlobalConfig, applyProviderSettingsEnv, isProjectMcpTrusted, expandVars, expandVarsDeep, resolvePizzaPiVar, PIZZAPI_VARS_HELP, type PizzaPiConfig } from "./config.js";
 
 describe("toggleMcpServer", () => {
   let tempDir: string;
@@ -996,5 +996,155 @@ describe("loadConfig transport field blocking", () => {
     expect(config.mcpTimeout).toBe(9999);
     // Project apiKey loads with a warning (not stripped) when global has no apiKey
     expect(config.apiKey).toBe("project-key");
+  });
+});
+
+describe("expandVars", () => {
+  const originalEnv = { ...process.env };
+  const originalCwd = process.cwd;
+
+  beforeEach(() => {
+    process.env.PIZZAPI_SESSION_ID = "test-session-abc";
+    process.env.PIZZAPI_PROJECT_DIR = "/custom/project";
+    process.env.USER = "testuser";
+    process.env.USERNAME = "testuser-win";
+  });
+
+  afterEach(() => {
+    process.env.PIZZAPI_SESSION_ID = originalEnv.PIZZAPI_SESSION_ID;
+    process.env.PIZZAPI_PROJECT_DIR = originalEnv.PIZZAPI_PROJECT_DIR;
+    process.env.USER = originalEnv.USER;
+    process.env.USERNAME = originalEnv.USERNAME;
+  });
+
+  describe("resolvePizzaPiVar", () => {
+    test("resolves PWD", () => {
+      expect(resolvePizzaPiVar("PWD")).toBe(process.cwd());
+    });
+
+    test("resolves SESSION_ID from env", () => {
+      expect(resolvePizzaPiVar("SESSION_ID")).toBe("test-session-abc");
+    });
+
+    test("resolves SESSION_ID to empty when not set", () => {
+      delete process.env.PIZZAPI_SESSION_ID;
+      expect(resolvePizzaPiVar("SESSION_ID")).toBe("");
+    });
+
+    test("resolves HOME", () => {
+      expect(resolvePizzaPiVar("HOME")).toBe(require("os").homedir());
+    });
+
+    test("resolves USER from env", () => {
+      expect(resolvePizzaPiVar("USER")).toBe("testuser");
+    });
+
+    test("resolves USER to empty when not set", () => {
+      delete process.env.USER;
+      delete process.env.USERNAME;
+      expect(resolvePizzaPiVar("USER")).toBe("");
+    });
+
+    test("resolves PROJECT_DIR from env", () => {
+      expect(resolvePizzaPiVar("PROJECT_DIR")).toBe("/custom/project");
+    });
+
+    test("resolves PROJECT_DIR to cwd fallback when not set", () => {
+      delete process.env.PIZZAPI_PROJECT_DIR;
+      expect(resolvePizzaPiVar("PROJECT_DIR")).toBe(process.cwd());
+    });
+
+    test("returns empty string for unknown variable", () => {
+      expect(resolvePizzaPiVar("UNKNOWN")).toBe("");
+    });
+  });
+
+  describe("expandVars", () => {
+    test("replaces a single variable", () => {
+      const result = expandVars("@PWD@/some/path");
+      expect(result).toBe(`${process.cwd()}/some/path`);
+    });
+
+    test("replaces multiple variables in one string", () => {
+      const result = expandVars("session=@SESSION_ID@, pwd=@PWD@");
+      expect(result).toBe(`session=test-session-abc, pwd=${process.cwd()}`);
+    });
+
+    test("leaves unknown variables untouched", () => {
+      const result = expandVars("@UNKNOWN@/path");
+      expect(result).toBe("@UNKNOWN@/path");
+    });
+
+    test("returns input unchanged if no variables", () => {
+      const result = expandVars("just a plain string");
+      expect(result).toBe("just a plain string");
+    });
+
+    test("handles empty string", () => {
+      const result = expandVars("");
+      expect(result).toBe("");
+    });
+  });
+
+  describe("expandVarsDeep", () => {
+    test("expands a plain string", () => {
+      const result = expandVarsDeep("session: @SESSION_ID@");
+      expect(result).toBe("session: test-session-abc");
+    });
+
+    test("expands an array of strings", () => {
+      const result = expandVarsDeep(["@PWD@", "@SESSION_ID@", "untouched"]);
+      expect(result).toEqual([process.cwd(), "test-session-abc", "untouched"]);
+    });
+
+    test("expands an object's string values", () => {
+      const result = expandVarsDeep({
+        url: "@PWD@/api",
+        token: "bearer-@SESSION_ID@",
+        count: 42,
+        flag: true,
+      });
+      expect(result).toEqual({
+        url: `${process.cwd()}/api`,
+        token: "bearer-test-session-abc",
+        count: 42,
+        flag: true,
+      });
+    });
+
+    test("expands nested objects", () => {
+      const result = expandVarsDeep({
+        server: {
+          url: "@PWD@/mcp",
+          headers: { "X-Session": "@SESSION_ID@" },
+        },
+      });
+      expect(result).toEqual({
+        server: {
+          url: `${process.cwd()}/mcp`,
+          headers: { "X-Session": "test-session-abc" },
+        },
+      });
+    });
+
+    test("passes through non-string scalars unchanged", () => {
+      const result = expandVarsDeep(42);
+      expect(result).toBe(42);
+    });
+
+    test("passes through null unchanged", () => {
+      const result = expandVarsDeep(null);
+      expect(result).toBe(null);
+    });
+  });
+
+  describe("PIZZAPI_VARS_HELP", () => {
+    test("contains all variable names", () => {
+      expect(PIZZAPI_VARS_HELP).toContain("@PWD@");
+      expect(PIZZAPI_VARS_HELP).toContain("@SESSION_ID@");
+      expect(PIZZAPI_VARS_HELP).toContain("@HOME@");
+      expect(PIZZAPI_VARS_HELP).toContain("@USER@");
+      expect(PIZZAPI_VARS_HELP).toContain("@PROJECT_DIR@");
+    });
   });
 });

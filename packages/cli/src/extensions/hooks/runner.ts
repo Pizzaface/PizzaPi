@@ -2,6 +2,7 @@ import { execSync } from "child_process";
 import { existsSync } from "fs";
 import { join } from "path";
 import type { HookEntry } from "../../config.js";
+import { expandVars } from "../../config.js";
 import type { HookOutput, HookResult } from "./types.js";
 
 /**
@@ -115,7 +116,7 @@ export async function runHook(
     let timer: ReturnType<typeof setTimeout> | undefined;
 
     try {
-        const proc = spawnFn([shell, flag, entry.command], {
+        const proc = spawnFn([shell, flag, expandVars(entry.command)], {
             cwd,
             stdin: "pipe",
             stdout: "pipe",

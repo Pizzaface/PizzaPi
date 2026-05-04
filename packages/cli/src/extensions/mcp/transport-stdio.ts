@@ -6,7 +6,7 @@
  */
 
 import { spawn, type ChildProcessWithoutNullStreams } from "child_process";
-import { expandHome } from "../../config.js";
+import { expandHome, expandVars, expandVarsDeep } from "../../config.js";
 import {
   MCP_PROTOCOL_VERSION,
   MCP_SUPPORTED_VERSIONS,
@@ -24,7 +24,12 @@ export async function createStdioMcpClient(opts: {
   env?: Record<string, string>;
   cwd?: string;
 }): Promise<McpClient> {
-  const mergedEnv = { ...process.env, ...(opts.env ?? {}) };
+  // Expand @VARNAME@ tokens in command, args, cwd, and env values
+  const command = expandVars(expandHome(opts.command));
+  const args = (opts.args ?? []).map((a) => expandVars(expandHome(a)));
+  const cwd = opts.cwd ? expandVars(expandHome(opts.cwd)) : undefined;
+  const env = opts.env ? expandVarsDeep({ ...opts.env }) as Record<string, string> : undefined;
+  const mergedEnv = { ...process.env, ...(env ?? {}) };
 
   // STDIO MCP servers are trusted local processes spawned from the user's
   // config — NOT agent-generated commands. We do NOT wrap them with the
@@ -34,9 +39,7 @@ export async function createStdioMcpClient(opts: {
   // Expand ~ in command, args, and cwd so paths resolve correctly even when
   // launched by macOS launchd (LaunchAgent/LaunchDaemon) where shell tilde
   // expansion doesn't occur.
-  const command = expandHome(opts.command);
-  const args = (opts.args ?? []).map(expandHome);
-  const cwd = opts.cwd ? expandHome(opts.cwd) : undefined;
+
 
   const child: ChildProcessWithoutNullStreams = spawn(command, args, {
     stdio: "pipe",
