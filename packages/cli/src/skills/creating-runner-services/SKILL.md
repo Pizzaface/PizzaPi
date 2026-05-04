@@ -315,7 +315,15 @@ class MyService {
                 const url = new URL(req.url);
 
                 if (url.pathname.endsWith("/api/data")) {
-                    return Response.json({ hello: "world" }, {
+                    // Read panel context from query params (from panel.requires)
+                    const projectDir = url.searchParams.get("projectDir") || "unknown";
+                    const sessionId = url.searchParams.get("sessionId") || "unknown";
+
+                    return Response.json({
+                        hello: "world",
+                        projectDir,
+                        sessionId,
+                    }, {
                         headers: { "Access-Control-Allow-Origin": "*" },
                     });
                 }
@@ -417,6 +425,22 @@ The panel renders inside a 280px-tall iframe. Key constraints:
 - **Relative API URLs** — use `./api/data` (the tunnel proxy preserves the path)
 - **Polling** — use `setInterval` + `fetch` for live data (typically 3–5s)
 - **No external dependencies** — the iframe is sandboxed; CDN scripts may be blocked
+
+**Reading panel.requires query params** — if your manifest declares `panel.requires`, the UI appends them to the iframe URL as query params. Read them in the panel:
+
+```html
+<script>
+  // Values injected as query params from panel.requires
+  const params = new URLSearchParams(location.search);
+  const projectDir = params.get("projectDir"); // from requires: ["PROJECT_DIR"]
+  const sessionId = params.get("sessionId");   // from requires: ["SESSION_ID"]
+
+  // Pass them along to API calls so the backend also has context
+  fetch(`./api/state?${params.toString()}`)
+    .then(r => r.json())
+    .then(data => console.log(data));
+</script>
+```
 
 ## Services Without Panels
 
