@@ -80,6 +80,33 @@ Runner services are background processes on the runner daemon. They can:
 | `triggers` | No | `[]` | Array of trigger type definitions (see below). Can also live in `triggers.json`. |
 | `sigils` | No | `[]` | Array of sigil type definitions (see below). Can also live in `sigils.json`. |
 
+### Variable Substitution
+
+The `entry` and `panel.dir` fields support `@VARIABLE@` tokens that are expanded at load time. This lets services reference paths relative to the session, project, or home directory without hardcoding absolute paths.
+
+| Variable | Resolves to |
+|----------|-------------|
+| `@PWD@` | Current working directory |
+| `@SESSION_ID@` | Current session ID (`PIZZAPI_SESSION_ID` env var) |
+| `@HOME@` | User home directory (`$HOME`) |
+| `@USER@` | Current username (`$USER`) |
+| `@PROJECT_DIR@` | Project directory (`PIZZAPI_PROJECT_DIR` env var, falls back to cwd) |
+
+**Example — project-relative entry point:**
+
+```json
+{
+  "id": "project-watcher",
+  "label": "Project Watcher",
+  "entry": "@PROJECT_DIR@/scripts/watcher.ts",
+  "panel": {
+    "dir": "@HOME@/.pizzapi/services/project-watcher/panel"
+  }
+}
+```
+
+Unknown variables are left as-is (not replaced). These same variables are available across MCP server configs and hooks as well.
+
 ### Trigger Definitions
 
 Each entry in `triggers` declares a trigger type this service can emit:
