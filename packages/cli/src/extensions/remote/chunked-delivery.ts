@@ -223,11 +223,9 @@ function sendChunkedMessages(rctx: RelayContext, rawMessages: unknown[], snapsho
 let activeChunkedSnapshotId: string | null = null;
 
 // ── Message-state tracking for lightweight heartbeat emissions ────────────────
-// We compare the current messages array length and leaf ID against the last
-// emitted snapshot to decide whether to send a full session_active or a
-// cheaper session_metadata_update.
+// We track the last emitted leafId to decide whether to send a full
+// session_active or a cheaper session_metadata_update.
 interface LastEmittedMessageState {
-    length: number;
     leafId: string | null;
 }
 let lastEmittedMessageState: LastEmittedMessageState | null = null;
@@ -261,9 +259,8 @@ function getLiveModel(rctx: RelayContext, fallback: unknown) {
  * Record the current message state as "last emitted" after a full session_active.
  * Exported for unit testing.
  */
-export function recordEmittedMessageState(rctx: RelayContext, messages: unknown[]): void {
+export function recordEmittedMessageState(rctx: RelayContext): void {
     lastEmittedMessageState = {
-        length: messages.length,
         leafId: rctx.latestCtx?.sessionManager.getLeafId() ?? null,
     };
 }
@@ -272,15 +269,17 @@ export function recordEmittedMessageState(rctx: RelayContext, messages: unknown[
  * Returns true when the messages array has changed since the last full
  * session_active emission (or when no emission has been recorded yet).
  *
+ * Checks only leafId — a cheap O(1) operation.  The leafId changes on every
+ * new entry added (new turn, compaction), which covers the common cases.
+ * In-place streaming updates are handled by explicit emitSessionActive calls
+ * from the exec handler, not the periodic heartbeat.
+ *
  * Exported for unit testing.
  */
-export function messagesChangedSinceLastEmit(rctx: RelayContext, messages: unknown[]): boolean {
+export function messagesChangedSinceLastEmit(rctx: RelayContext): boolean {
     if (!lastEmittedMessageState) return true; // no baseline yet
     const currentLeafId = rctx.latestCtx?.sessionManager.getLeafId() ?? null;
-    return (
-        messages.length !== lastEmittedMessageState.length ||
-        currentLeafId !== lastEmittedMessageState.leafId
-    );
+    return currentLeafId !== lastEmittedMessageState.leafId;
 }
 
 /**
@@ -327,7 +326,7 @@ export function emitSessionActive(rctx: RelayContext): void {
                 totalMessages: messages.length,
             },
         });
-        recordEmittedMessageState(rctx, messages);
+        recordEmittedMessageState(rctx);
         sendChunkedMessages(rctx, messages, snapshotId);
     } else {
         // Small session — single event (original path).
@@ -341,7 +340,7 @@ export function emitSessionActive(rctx: RelayContext): void {
                 messages: capOversizedMessages(messages),
             },
         });
-        recordEmittedMessageState(rctx, messages);
+        recordEmittedMessageState(rctx);
     }
 }
 
@@ -358,18 +357,18 @@ export function emitSessionActive(rctx: RelayContext): void {
 export function emitSessionMetadataUpdate(rctx: RelayContext): void {
     if (!rctx.latestCtx) return;
 
-    const { messages, model } = buildSessionContext(
-        rctx.latestCtx.sessionManager.getEntries(),
-        rctx.latestCtx.sessionManager.getLeafId(),
-    );
-
-    if (messagesChangedSinceLastEmit(rctx, messages)) {
+    // Check leafId first — a cheap O(1) operation.  Only build the full
+    // messages array (expensive for large sessions) when we know we need it.
+    if (messagesChangedSinceLastEmit(rctx)) {
         // Messages changed since last full snapshot — send a complete session_active.
         emitSessionActive(rctx);
         return;
     }
 
     // Messages unchanged — send lightweight metadata-only update.
+    // We don't need buildSessionContext at all here.  getLiveModel prefers
+    // the live model from rctx.latestCtx.model, so we can pass null as the
+    // fallback (it'll never be reached when latestCtx.model exists).
     // Note: cwd is intentionally omitted — the UI does not read it from
     // session_metadata_update events, and omitting it saves bytes on every
     // heartbeat tick.
@@ -377,7 +376,7 @@ export function emitSessionMetadataUpdate(rctx: RelayContext): void {
     rctx.forwardEvent({
         type: "session_metadata_update",
         metadata: {
-            model: getLiveModel(rctx, model),
+            model: getLiveModel(rctx, null),
             thinkingLevel: rctx.getCurrentThinkingLevel(),
             sessionName: rctx.getCurrentSessionName(),
             availableModels: rctx.getConfiguredModels(),
