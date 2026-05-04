@@ -25,12 +25,14 @@ export function IframeServicePanel({ sessionId, port, query, fragment, panelPara
     const src = useMemo(() => {
         let url = `/api/tunnel/${sessionId}/${port}/`;
         const params = new URLSearchParams();
-        // Panel requires params first
+        // Daemon-resolved panelParams first (HOME, USER, etc.)
         if (panelParams) {
             for (const [key, value] of Object.entries(panelParams)) {
                 params.set(key, value);
             }
         }
+        // Always include sessionId — UI has it, takes precedence over daemon-resolved
+        params.set("sessionId", sessionId);
         // Then existing query params from deep link (takes precedence)
         if (query) {
             const existing = new URLSearchParams(query);
