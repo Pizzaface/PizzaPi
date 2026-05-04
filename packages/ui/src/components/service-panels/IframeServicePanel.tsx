@@ -17,15 +17,32 @@ interface IframeServicePanelProps {
     query?: string;
     /** Hash fragment (without leading "#") forwarded from a deep link. */
     fragment?: string;
+    /** Resolved panelParams from service requires — appended as query params. */
+    panelParams?: Record<string, string>;
 }
 
-export function IframeServicePanel({ sessionId, port, query, fragment }: IframeServicePanelProps) {
+export function IframeServicePanel({ sessionId, port, query, fragment, panelParams }: IframeServicePanelProps) {
     const src = useMemo(() => {
         let url = `/api/tunnel/${sessionId}/${port}/`;
-        if (query) url += `?${query}`;
+        const params = new URLSearchParams();
+        // Panel requires params first
+        if (panelParams) {
+            for (const [key, value] of Object.entries(panelParams)) {
+                params.set(key, value);
+            }
+        }
+        // Then existing query params from deep link (takes precedence)
+        if (query) {
+            const existing = new URLSearchParams(query);
+            for (const [key, value] of existing) {
+                params.set(key, value);
+            }
+        }
+        const qs = params.toString();
+        if (qs) url += `?${qs}`;
         if (fragment) url += `#${fragment}`;
         return url;
-    }, [sessionId, port, query, fragment]);
+    }, [sessionId, port, query, fragment, panelParams]);
 
     return (
         <iframe

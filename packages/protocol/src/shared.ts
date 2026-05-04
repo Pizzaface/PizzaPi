@@ -136,6 +136,12 @@ export interface ServicePanelInfo {
   label: string;
   /** Lucide icon name (e.g. "activity", "cpu"). */
   icon: string;
+  /**
+   * Resolved key-value pairs for variables the panel requires.
+   * The daemon resolves variables declared in manifest panel.requires
+   * and passes the resolved values here. Keys are camelCase (e.g. "projectDir", "sessionId").
+   */
+  panelParams?: Record<string, string>;
 }
 
 // ── Service trigger types ─────────────────────────────────────────────────────

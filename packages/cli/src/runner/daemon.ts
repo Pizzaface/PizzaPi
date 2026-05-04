@@ -8,6 +8,8 @@ import { ServiceRegistry } from "./service-handler.js";
 import { TerminalService } from "./services/terminal-service.js";
 import { FileExplorerService } from "./services/file-explorer-service.js";
 import { GitService } from "./services/git-service.js";
+// Resolves @VARIABLE@ tokens used in service panel requires
+import { resolvePizzaPiVar } from "../config/io.js";
 import { TunnelService } from "./services/tunnel-service.js";
 import { TimeService, TIME_TRIGGER_DEFS, TIME_SIGIL_DEFS } from "./services/time-service.js";
 import { discoverServices } from "./service-loader.js";
@@ -61,6 +63,25 @@ import type { UsageRange } from "../usage/types.js";
 
 // Re-export migration from shared module — used on daemon startup
 import { migrateAgentDir } from "../migrations.js";
+
+/** Map variable name (e.g. "PROJECT_DIR") to camelCase query param key. */
+const VAR_TO_PARAM: Record<string, string> = {
+    PWD: "pwd",
+    SESSION_ID: "sessionId",
+    HOME: "home",
+    USER: "user",
+    PROJECT_DIR: "projectDir",
+};
+
+/** Resolve a requires[] array into a panelParams record for the UI. */
+function resolveRequires(requires: string[]): Record<string, string> {
+    const params: Record<string, string> = {};
+    for (const name of requires) {
+        const key = VAR_TO_PARAM[name];
+        if (key) params[key] = resolvePizzaPiVar(name);
+    }
+    return params;
+}
 
 /**
  * Read the `relayUrl` from ~/.pizzapi/config.json, returning undefined
@@ -332,6 +353,11 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
              * Defaults to true for plugin-provided services with a panel manifest.
              */
             hasPanel?: boolean;
+            /**
+             * Variable names the panel requires. The UI resolves these and appends
+             * them as query params to the iframe src.
+             */
+            requires?: string[];
         };
         const panelEntries = new Map<string, PanelEntry>();
 
@@ -356,8 +382,16 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
         /** Emit service_announce with current service IDs, panel metadata, and trigger defs. */
         const emitServiceAnnounce = () => {
             const allServiceIds = registry.getAll().map((s) => s.id);
+            // Map panel entries to ServicePanelInfo, resolving requires → panelParams
             const panels = Array.from(panelEntries.values())
-                .filter((p): p is PanelEntry & { port: number } => p.port != null && p.hasPanel !== false);
+                .filter((p): p is PanelEntry & { port: number } => p.port != null && p.hasPanel !== false)
+                .map((p) => ({
+                    serviceId: p.serviceId,
+                    port: p.port,
+                    label: p.label,
+                    icon: p.icon,
+                    ...(p.requires ? { panelParams: resolveRequires(p.requires) } : {}),
+                }));
             // Collect all trigger defs and sigil defs across all services with manifests
             const allTriggerDefs: ServiceTriggerDef[] = [];
             const allSigilDefs: ServiceSigilDef[] = [];
@@ -409,6 +443,9 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                                 : {}),
                             ...(manifest.sigils && manifest.sigils.length > 0
                                 ? { sigils: manifest.sigils }
+                                : {}),
+                            ...(manifest.panel?.requires
+                                ? { requires: manifest.panel.requires }
                                 : {}),
                         });
                     }

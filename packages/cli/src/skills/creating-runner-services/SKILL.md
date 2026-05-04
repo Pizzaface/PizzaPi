@@ -34,7 +34,8 @@ Runner services are background processes on the runner daemon. They can:
   "icon": "activity",
   "entry": "./index.ts",
   "panel": {
-    "dir": "./panel"
+    "dir": "./panel",
+    "requires": ["PROJECT_DIR", "SESSION_ID"]
   },
   "triggers": [
     {
@@ -77,12 +78,15 @@ Runner services are background processes on the runner daemon. They can:
 | `icon` | No | `"square"` | [Lucide](https://lucide.dev/icons) icon name (kebab-case) |
 | `entry` | No | `./index.ts` | Service module path relative to folder |
 | `panel.dir` | No | `./panel` | Panel static files directory (omit if no panel) |
+| `panel.requires` | No | `[]` | Variable names the panel needs resolved as query params (e.g. `["PROJECT_DIR", "SESSION_ID"]`) |
 | `triggers` | No | `[]` | Array of trigger type definitions (see below). Can also live in `triggers.json`. |
 | `sigils` | No | `[]` | Array of sigil type definitions (see below). Can also live in `sigils.json`. |
 
 ### Variable Substitution
 
 The `entry` and `panel.dir` fields support `@VARIABLE@` tokens that are expanded at load time. This lets services reference paths relative to the session, project, or home directory without hardcoding absolute paths.
+
+Additionally, `panel.requires` declares which variables the panel needs at **runtime**. The daemon resolves these values and passes them as query parameters to the panel's iframe URL (e.g., `?projectDir=/path&sessionId=abc`). This is the recommended way to pass session context to panels — prefer it over `@VARIABLE@` in static file paths when the value changes per session.
 
 | Variable | Resolves to |
 |----------|-------------|
