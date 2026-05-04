@@ -30,6 +30,10 @@ function makeContext(opts: {
         reasoning?: boolean;
         contextWindow?: number;
     } | null;
+    transcriptModel?: {
+        provider: string;
+        modelId: string;
+    } | null;
 } = {}): RelayContext & { emitted: unknown[] } {
     const leafId = opts.leafId ?? "leaf-1";
     const messages = opts.messages ?? [];
@@ -39,9 +43,15 @@ function makeContext(opts: {
     const sessionManager = {
         getLeafId: () => leafId,
         getEntries: () => {
-            // buildSessionContext returns { messages, model } from entries.
-            // We mock at a higher level via the forwardEvent capture below.
-            return [];
+            if (!opts.transcriptModel || !leafId) return [];
+            return [{
+                id: leafId,
+                parentId: null,
+                timestamp: new Date(0).toISOString(),
+                type: "model_change",
+                provider: opts.transcriptModel.provider,
+                modelId: opts.transcriptModel.modelId,
+            }];
         },
     };
 
@@ -123,88 +133,48 @@ describe("messagesChangedSinceLastEmit", () => {
     });
 
     test("returns true when no baseline has been recorded yet", () => {
-        // Create a fresh context whose leafId has not been recorded
         const ctx = makeContext({ leafId: "unique-fresh-leaf-xyz" });
-        // Reset baseline to null by using a leafId that has never been emitted.
-        // We can't directly reset the module state, but we can verify the
-        // function returns true before any recordEmittedMessageState call.
-        //
-        // Record a different session state first to ensure the stored baseline
-        // won't match, then test with mismatched messages.
-        const result = messagesChangedSinceLastEmit(ctx, [{ id: 1 }, { id: 2 }]);
-        // Either there's no baseline (true) or the current state differs (true).
+        const result = messagesChangedSinceLastEmit(ctx);
         expect(result).toBe(true);
     });
 
-    test("returns false when length and leafId match the last emitted state", () => {
+    test("returns false when leafId matches the last emitted state", () => {
         const ctx = makeContext({ leafId: "leaf-stable" });
-        const messages = [{ id: 1 }, { id: 2 }];
 
         // Record the baseline
-        recordEmittedMessageState(ctx, messages);
+        recordEmittedMessageState(ctx);
 
-        // Same length + same leafId → no change
-        expect(messagesChangedSinceLastEmit(ctx, messages)).toBe(false);
+        // Same leafId → no change
+        expect(messagesChangedSinceLastEmit(ctx)).toBe(false);
     });
 
-    test("returns false for a copy of the messages array (length + leafId are same)", () => {
-        const ctx = makeContext({ leafId: "leaf-copy" });
-        const messages = [{ id: "a" }, { id: "b" }, { id: "c" }];
-
-        recordEmittedMessageState(ctx, messages);
-
-        // Different array reference but same length + leafId
-        const copy = [...messages];
-        expect(messagesChangedSinceLastEmit(ctx, copy)).toBe(false);
-    });
-
-    test("returns true when message count increases", () => {
-        const ctx = makeContext({ leafId: "leaf-grow" });
-        const original = [{ id: 1 }];
-        recordEmittedMessageState(ctx, original);
-
-        const extended = [{ id: 1 }, { id: 2 }];
-        expect(messagesChangedSinceLastEmit(ctx, extended)).toBe(true);
-    });
-
-    test("returns true when message count decreases", () => {
-        const ctx = makeContext({ leafId: "leaf-shrink" });
-        const original = [{ id: 1 }, { id: 2 }];
-        recordEmittedMessageState(ctx, original);
-
-        const shorter = [{ id: 1 }];
-        expect(messagesChangedSinceLastEmit(ctx, shorter)).toBe(true);
-    });
-
-    test("returns true when leafId changes even if length is the same", () => {
+    test("returns true when leafId changes", () => {
         const baseCtx = makeContext({ leafId: "leaf-before" });
-        const messages = [{ id: 1 }];
-        recordEmittedMessageState(baseCtx, messages);
+        recordEmittedMessageState(baseCtx);
 
-        // Same messages but different leafId (different context)
+        // Different leafId
         const newCtx = makeContext({ leafId: "leaf-after" });
-        expect(messagesChangedSinceLastEmit(newCtx, messages)).toBe(true);
+        expect(messagesChangedSinceLastEmit(newCtx)).toBe(true);
     });
 
-    test("returns false for empty messages when baseline is also empty", () => {
-        const ctx = makeContext({ leafId: "leaf-empty" });
-        recordEmittedMessageState(ctx, []);
-        expect(messagesChangedSinceLastEmit(ctx, [])).toBe(false);
+    test("returns false for same leafId after multiple calls", () => {
+        const ctx = makeContext({ leafId: "leaf-repeat" });
+        recordEmittedMessageState(ctx);
+
+        expect(messagesChangedSinceLastEmit(ctx)).toBe(false);
+        expect(messagesChangedSinceLastEmit(ctx)).toBe(false);
+        expect(messagesChangedSinceLastEmit(ctx)).toBe(false);
     });
 });
 
 // ── emitSessionMetadataUpdate ─────────────────────────────────────────────────
 
 describe("emitSessionMetadataUpdate", () => {
-    test("emits session_metadata_update when messages have not changed", () => {
-        // We need buildSessionContext to return the same messages.
-        // emitSessionMetadataUpdate calls buildSessionContext(entries, leafId).
-        // With empty entries the result is { messages: [], model: ... }.
-        // We record a baseline with empty messages + same leafId.
+    test("emits session_metadata_update when leafId has not changed", () => {
         const ctx = makeContext({ leafId: "leaf-meta", sessionName: "Test Session", thinkingLevel: "high" });
 
-        // Record a baseline with 0 messages (matching what buildSessionContext returns for empty entries)
-        recordEmittedMessageState(ctx, []);
+        // Record a baseline with same leafId
+        recordEmittedMessageState(ctx);
 
         // Call the function under test
         emitSessionMetadataUpdate(ctx);
@@ -214,20 +184,19 @@ describe("emitSessionMetadataUpdate", () => {
         const evt = ctx.emitted[0] as any;
         expect(evt.type).toBe("session_metadata_update");
         expect(evt.metadata).toBeDefined();
-        // cwd must NOT be present (P3 fix)
+        // cwd must NOT be present
         expect(Object.prototype.hasOwnProperty.call(evt.metadata, "cwd")).toBe(false);
     });
 
-    test("emits session_active when messages have changed", () => {
-        // Record a baseline with 2 messages, but buildSessionContext will return 0
+    test("emits session_active when leafId has changed", () => {
+        // Record baseline with leafId "leaf-before"
+        const beforeCtx = makeContext({ leafId: "leaf-before" });
+        recordEmittedMessageState(beforeCtx);
+
+        // Now test with a different leafId
         const ctx = makeContext({ leafId: "leaf-changed" });
 
-        // Record baseline saying 3 messages were last emitted
-        // but buildSessionContext (with empty entries) returns 0 — so they differ
-        const fakeMessages = [{ id: 1 }, { id: 2 }, { id: 3 }];
-        recordEmittedMessageState(ctx, fakeMessages);
-
-        // Call — messages now come from buildSessionContext([], leafId) = [] (length 0 ≠ 3)
+        // LeafId differs from baseline → should emit session_active
         emitSessionMetadataUpdate(ctx);
 
         // Should fall through to emitSessionActive() which emits session_active
@@ -238,7 +207,7 @@ describe("emitSessionMetadataUpdate", () => {
 
     test("session_metadata_update payload does not include cwd", () => {
         const ctx = makeContext({ leafId: "leaf-nocwd" });
-        recordEmittedMessageState(ctx, []);
+        recordEmittedMessageState(ctx);
 
         emitSessionMetadataUpdate(ctx);
 
@@ -260,7 +229,7 @@ describe("emitSessionMetadataUpdate", () => {
                 contextWindow: 200000,
             },
         });
-        recordEmittedMessageState(ctx, []);
+        recordEmittedMessageState(ctx);
 
         emitSessionMetadataUpdate(ctx);
 
@@ -280,6 +249,27 @@ describe("emitSessionMetadataUpdate", () => {
         expect(keys).toContain("todoList");
         expect(keys).toContain("availableModels");
         expect(keys).toContain("availableCommands");
+    });
+
+    test("session_metadata_update falls back to transcript model when no live model exists", () => {
+        const ctx = makeContext({
+            leafId: "leaf-transcript-fallback",
+            transcriptModel: {
+                provider: "anthropic",
+                modelId: "claude-opus-4",
+            },
+        });
+        recordEmittedMessageState(ctx);
+
+        emitSessionMetadataUpdate(ctx);
+
+        const evt = ctx.emitted[0] as any;
+        expect(evt.type).toBe("session_metadata_update");
+        expect(evt.metadata.model).toEqual({
+            provider: "anthropic",
+            id: "claude-opus-4",
+            contextWindow: undefined,
+        });
     });
 
     test("session_active prefers the live current model over transcript-derived state", () => {
@@ -303,6 +293,26 @@ describe("emitSessionMetadataUpdate", () => {
             name: "Gemini 2.5 Pro",
             reasoning: undefined,
             contextWindow: 1000000,
+        });
+    });
+
+    test("session_active falls back to transcript model when no live model exists", () => {
+        const ctx = makeContext({
+            leafId: "leaf-active-transcript-fallback",
+            transcriptModel: {
+                provider: "openai",
+                modelId: "gpt-4.1",
+            },
+        });
+
+        emitSessionActive(ctx);
+
+        const evt = ctx.emitted[0] as any;
+        expect(evt.type).toBe("session_active");
+        expect(evt.state.model).toEqual({
+            provider: "openai",
+            id: "gpt-4.1",
+            contextWindow: undefined,
         });
     });
 
