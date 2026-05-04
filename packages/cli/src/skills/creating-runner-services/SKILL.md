@@ -34,7 +34,8 @@ Runner services are background processes on the runner daemon. They can:
   "icon": "activity",
   "entry": "./index.ts",
   "panel": {
-    "dir": "./panel"
+    "dir": "./panel",
+    "requires": ["PROJECT_DIR", "SESSION_ID"]
   },
   "triggers": [
     {
@@ -77,8 +78,38 @@ Runner services are background processes on the runner daemon. They can:
 | `icon` | No | `"square"` | [Lucide](https://lucide.dev/icons) icon name (kebab-case) |
 | `entry` | No | `./index.ts` | Service module path relative to folder |
 | `panel.dir` | No | `./panel` | Panel static files directory (omit if no panel) |
+| `panel.requires` | No | `[]` | Variable names the panel needs resolved as query params (e.g. `["PROJECT_DIR", "SESSION_ID"]`) |
 | `triggers` | No | `[]` | Array of trigger type definitions (see below). Can also live in `triggers.json`. |
 | `sigils` | No | `[]` | Array of sigil type definitions (see below). Can also live in `sigils.json`. |
+
+### Variable Substitution
+
+The `entry` and `panel.dir` fields support `@VARIABLE@` tokens that are expanded at load time. This lets services reference paths relative to the session, project, or home directory without hardcoding absolute paths.
+
+Additionally, `panel.requires` declares which variables the panel needs at **runtime**. The daemon resolves these values and passes them as query parameters to the panel's iframe URL (e.g., `?projectDir=/path&sessionId=abc`). This is the recommended way to pass session context to panels — prefer it over `@VARIABLE@` in static file paths when the value changes per session.
+
+| Variable | Resolves to |
+|----------|-------------|
+| `@PWD@` | Current working directory |
+| `@SESSION_ID@` | Current session ID (`PIZZAPI_SESSION_ID` env var) |
+| `@HOME@` | User home directory (`$HOME`) |
+| `@USER@` | Current username (`$USER`) |
+| `@PROJECT_DIR@` | Project directory (`PIZZAPI_PROJECT_DIR` env var, falls back to cwd) |
+
+**Example — project-relative entry point:**
+
+```json
+{
+  "id": "project-watcher",
+  "label": "Project Watcher",
+  "entry": "@PROJECT_DIR@/scripts/watcher.ts",
+  "panel": {
+    "dir": "@HOME@/.pizzapi/services/project-watcher/panel"
+  }
+}
+```
+
+Unknown variables are left as-is (not replaced). These same variables are available across MCP server configs and hooks as well.
 
 ### Trigger Definitions
 
@@ -284,7 +315,15 @@ class MyService {
                 const url = new URL(req.url);
 
                 if (url.pathname.endsWith("/api/data")) {
-                    return Response.json({ hello: "world" }, {
+                    // Read panel context from query params (from panel.requires)
+                    const projectDir = url.searchParams.get("projectDir") || "unknown";
+                    const sessionId = url.searchParams.get("sessionId") || "unknown";
+
+                    return Response.json({
+                        hello: "world",
+                        projectDir,
+                        sessionId,
+                    }, {
                         headers: { "Access-Control-Allow-Origin": "*" },
                     });
                 }
@@ -386,6 +425,22 @@ The panel renders inside a 280px-tall iframe. Key constraints:
 - **Relative API URLs** — use `./api/data` (the tunnel proxy preserves the path)
 - **Polling** — use `setInterval` + `fetch` for live data (typically 3–5s)
 - **No external dependencies** — the iframe is sandboxed; CDN scripts may be blocked
+
+**Reading panel.requires query params** — if your manifest declares `panel.requires`, the UI appends them to the iframe URL as query params. Read them in the panel:
+
+```html
+<script>
+  // Values injected as query params from panel.requires
+  const params = new URLSearchParams(location.search);
+  const projectDir = params.get("projectDir"); // from requires: ["PROJECT_DIR"]
+  const sessionId = params.get("sessionId");   // from requires: ["SESSION_ID"]
+
+  // Pass them along to API calls so the backend also has context
+  fetch(`./api/state?${params.toString()}`)
+    .then(r => r.json())
+    .then(data => console.log(data));
+</script>
+```
 
 ## Services Without Panels
 

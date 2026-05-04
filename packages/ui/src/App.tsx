@@ -4256,7 +4256,7 @@ export function App() {
       const navParams = getServicePanelNavParams(serviceId);
       const content = staticDef
         ? <staticDef.component sessionId={effectiveSessionId} runnerId={activeSessionInfo?.runnerId ?? undefined} />
-        : <IframeServicePanel sessionId={effectiveSessionId} port={dynamicDef!.port} query={navParams?.query} fragment={navParams?.fragment} />;
+        : <IframeServicePanel sessionId={effectiveSessionId} port={dynamicDef!.port} query={navParams?.query} fragment={navParams?.fragment} panelParams={dynamicDef!.panelParams} cwd={activeSessionInfo?.cwd ?? undefined} />;
 
       tabs.push({
         id: serviceId,

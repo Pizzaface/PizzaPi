@@ -147,7 +147,7 @@ export function ServicePanelContainer({
                 {staticDef ? (
                     <staticDef.component sessionId={sessionId} runnerId={runnerId} />
                 ) : (
-                    <IframeServicePanel sessionId={sessionId} port={dynamicDef!.port} />
+                    <IframeServicePanel sessionId={sessionId} port={dynamicDef!.port} panelParams={dynamicDef!.panelParams} />
                 )}
             </div>
         </div>

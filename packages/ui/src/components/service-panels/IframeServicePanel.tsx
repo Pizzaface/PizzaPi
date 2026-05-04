@@ -17,15 +17,37 @@ interface IframeServicePanelProps {
     query?: string;
     /** Hash fragment (without leading "#") forwarded from a deep link. */
     fragment?: string;
+    /** Resolved panelParams from service requires — appended as query params. */
+    panelParams?: Record<string, string>;
+    /** Session working directory — injected as projectDir query param. */
+    cwd?: string;
 }
 
-export function IframeServicePanel({ sessionId, port, query, fragment }: IframeServicePanelProps) {
+export function IframeServicePanel({ sessionId, port, query, fragment, panelParams, cwd }: IframeServicePanelProps) {
     const src = useMemo(() => {
         let url = `/api/tunnel/${sessionId}/${port}/`;
-        if (query) url += `?${query}`;
+        const params = new URLSearchParams();
+        // Daemon-resolved panelParams first (HOME, USER, etc.)
+        if (panelParams) {
+            for (const [key, value] of Object.entries(panelParams)) {
+                params.set(key, value);
+            }
+        }
+        // Session-level vars from UI (takes precedence)
+        params.set("sessionId", sessionId);
+        if (cwd) params.set("projectDir", cwd);
+        // Then existing query params from deep link (takes precedence)
+        if (query) {
+            const existing = new URLSearchParams(query);
+            for (const [key, value] of existing) {
+                params.set(key, value);
+            }
+        }
+        const qs = params.toString();
+        if (qs) url += `?${qs}`;
         if (fragment) url += `#${fragment}`;
         return url;
-    }, [sessionId, port, query, fragment]);
+    }, [sessionId, port, query, fragment, panelParams, cwd]);
 
     return (
         <iframe

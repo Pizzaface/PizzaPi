@@ -308,6 +308,68 @@ export function defaultAgentDir(): string {
     return join(homedir(), ".pizzapi");
 }
 
+// ── Session info variable substitution ─────────────────────────────────────────
+
+const VARIABLE_RE = /@(PWD|SESSION_ID|HOME|USER|PROJECT_DIR)@/g;
+
+/**
+ * Available variable names and the values they resolve to.
+ * @internal
+ */
+export function resolvePizzaPiVar(name: string): string {
+    switch (name) {
+        case "PWD":
+            return process.cwd();
+        case "SESSION_ID":
+            return process.env.PIZZAPI_SESSION_ID ?? "";
+        case "HOME":
+            return homedir();
+        case "USER":
+            return process.env.USER ?? process.env.USERNAME ?? "";
+        case "PROJECT_DIR":
+            return process.env.PIZZAPI_PROJECT_DIR ?? process.cwd();
+        default:
+            return "";
+    }
+}
+
+/**
+ * Substitutes `@VARNAME@` tokens in a single string with their current values.
+ * Unknown variables are left as-is (not replaced).
+ */
+export function expandVars(value: string): string {
+    return value.replace(VARIABLE_RE, (_, name) => resolvePizzaPiVar(name));
+}
+
+/**
+ * Recursively expand `@VARNAME@` tokens in a config value.
+ * For objects, walks all string values. For arrays, walks all string elements.
+ * Scalars returned as-is.
+ */
+export function expandVarsDeep<T>(value: T): T {
+    if (typeof value === "string") {
+        return expandVars(value) as T;
+    }
+    if (Array.isArray(value)) {
+        return value.map((item) => expandVarsDeep(item)) as T;
+    }
+    if (value && typeof value === "object") {
+        const result: Record<string, unknown> = {};
+        for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+            result[k] = expandVarsDeep(v);
+        }
+        return result as T;
+    }
+    return value;
+}
+
+/**
+ * Human-readable list of available variables for error messages and docs.
+ * @internal
+ */
+export const PIZZAPI_VARS_HELP =
+    "Available variables: @PWD@, @SESSION_ID@, @HOME@, @USER@, @PROJECT_DIR@";
+
 // ── Changelog path ────────────────────────────────────────────────────────────
 
 /**

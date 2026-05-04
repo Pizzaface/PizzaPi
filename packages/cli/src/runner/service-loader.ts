@@ -18,6 +18,7 @@ import { homedir } from "node:os";
 import { basename, extname, join, resolve } from "node:path";
 import type { ServiceHandler } from "./service-handler.js";
 import type { JsonValue, ServiceTriggerDef, ServiceTriggerParamDef, ServiceSigilDef } from "@pizzapi/protocol";
+import { expandVars } from "../config/io.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -29,6 +30,8 @@ export interface ServiceManifest {
     entry?: string;
     panel?: {
         dir?: string;
+        /** Variable names the panel requires. UI resolves and passes as query params. */
+        requires?: string[];
     };
     /** Trigger types this service can emit. Declared in triggers.json or manifest.json. */
     triggers?: ServiceTriggerDef[];
@@ -435,6 +438,15 @@ function parseSigils(raw: unknown): ServiceSigilDef[] {
     return sigils;
 }
 
+/** Valid variable names for panel requires. */
+const VALID_REQUIRES = new Set(["PWD", "SESSION_ID", "HOME", "USER", "PROJECT_DIR"]);
+
+function parseRequires(raw: unknown): string[] | undefined {
+    if (!Array.isArray(raw)) return undefined;
+    const valid = raw.filter((v) => typeof v === "string" && VALID_REQUIRES.has(v)) as string[];
+    return valid.length > 0 ? [...new Set(valid)] : undefined;
+}
+
 function parseServiceManifest(manifestPath: string): ServiceManifest {
     const raw = JSON.parse(readFileSync(manifestPath, "utf-8"));
     if (!raw || typeof raw !== "object") {
@@ -454,9 +466,12 @@ function parseServiceManifest(manifestPath: string): ServiceManifest {
         id: raw.id,
         label: raw.label,
         icon: typeof raw.icon === "string" ? raw.icon : "square",
-        entry: typeof raw.entry === "string" ? raw.entry : undefined,
+        entry: typeof raw.entry === "string" ? expandVars(raw.entry) : undefined,
         panel: raw.panel && typeof raw.panel === "object"
-            ? { dir: typeof raw.panel.dir === "string" ? raw.panel.dir : undefined }
+            ? {
+                dir: typeof raw.panel.dir === "string" ? expandVars(raw.panel.dir) : undefined,
+                requires: parseRequires(raw.panel.requires),
+            }
             : undefined,
         triggers: triggers.length > 0 ? triggers : undefined,
         sigils: sigils.length > 0 ? sigils : undefined,

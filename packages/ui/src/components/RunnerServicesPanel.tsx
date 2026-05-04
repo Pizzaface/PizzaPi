@@ -60,6 +60,7 @@ interface ServicePanel {
   port: number;
   label: string;
   icon: string;
+  panelParams?: Record<string, string>;
 }
 
 interface TriggerDef {
