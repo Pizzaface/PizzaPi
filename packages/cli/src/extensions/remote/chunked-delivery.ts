@@ -230,7 +230,7 @@ interface LastEmittedMessageState {
 }
 let lastEmittedMessageState: LastEmittedMessageState | null = null;
 
-function getLiveModel(rctx: RelayContext, fallback: unknown) {
+function getLiveModel(rctx: RelayContext, fallback: unknown | (() => unknown)) {
     const liveModel = rctx.latestCtx?.model;
     if (liveModel && typeof liveModel.provider === "string" && typeof liveModel.id === "string") {
         return {
@@ -242,16 +242,27 @@ function getLiveModel(rctx: RelayContext, fallback: unknown) {
         };
     }
 
-    const transcriptModel = fallback && typeof fallback === "object"
-        ? fallback as Record<string, unknown>
+    const fallbackValue = typeof fallback === "function" ? fallback() : fallback;
+    const transcriptModel = fallbackValue && typeof fallbackValue === "object"
+        ? fallbackValue as Record<string, unknown>
         : null;
-    if (!transcriptModel || typeof transcriptModel.provider !== "string" || typeof transcriptModel.id !== "string") {
+    const transcriptId = typeof transcriptModel?.id === "string"
+        ? transcriptModel.id
+        : typeof transcriptModel?.modelId === "string"
+            ? transcriptModel.modelId
+            : null;
+    if (!transcriptModel || typeof transcriptModel.provider !== "string" || !transcriptId) {
         return null;
     }
 
     return {
-        ...transcriptModel,
-        contextWindow: rctx.latestCtx?.model?.contextWindow,
+        provider: transcriptModel.provider,
+        id: transcriptId,
+        name: typeof transcriptModel.name === "string" ? transcriptModel.name : undefined,
+        reasoning: typeof transcriptModel.reasoning === "boolean" ? transcriptModel.reasoning : undefined,
+        contextWindow: typeof transcriptModel.contextWindow === "number"
+            ? transcriptModel.contextWindow
+            : rctx.latestCtx?.model?.contextWindow,
     };
 }
 
@@ -376,7 +387,10 @@ export function emitSessionMetadataUpdate(rctx: RelayContext): void {
     rctx.forwardEvent({
         type: "session_metadata_update",
         metadata: {
-            model: getLiveModel(rctx, null),
+            model: getLiveModel(rctx, () => buildSessionContext(
+                rctx.latestCtx!.sessionManager.getEntries(),
+                rctx.latestCtx!.sessionManager.getLeafId(),
+            ).model),
             thinkingLevel: rctx.getCurrentThinkingLevel(),
             sessionName: rctx.getCurrentSessionName(),
             availableModels: rctx.getConfiguredModels(),

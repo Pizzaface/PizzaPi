@@ -30,6 +30,10 @@ function makeContext(opts: {
         reasoning?: boolean;
         contextWindow?: number;
     } | null;
+    transcriptModel?: {
+        provider: string;
+        modelId: string;
+    } | null;
 } = {}): RelayContext & { emitted: unknown[] } {
     const leafId = opts.leafId ?? "leaf-1";
     const messages = opts.messages ?? [];
@@ -39,9 +43,15 @@ function makeContext(opts: {
     const sessionManager = {
         getLeafId: () => leafId,
         getEntries: () => {
-            // buildSessionContext returns { messages, model } from entries.
-            // We mock at a higher level via the forwardEvent capture below.
-            return [];
+            if (!opts.transcriptModel || !leafId) return [];
+            return [{
+                id: leafId,
+                parentId: null,
+                timestamp: new Date(0).toISOString(),
+                type: "model_change",
+                provider: opts.transcriptModel.provider,
+                modelId: opts.transcriptModel.modelId,
+            }];
         },
     };
 
@@ -241,6 +251,27 @@ describe("emitSessionMetadataUpdate", () => {
         expect(keys).toContain("availableCommands");
     });
 
+    test("session_metadata_update falls back to transcript model when no live model exists", () => {
+        const ctx = makeContext({
+            leafId: "leaf-transcript-fallback",
+            transcriptModel: {
+                provider: "anthropic",
+                modelId: "claude-opus-4",
+            },
+        });
+        recordEmittedMessageState(ctx);
+
+        emitSessionMetadataUpdate(ctx);
+
+        const evt = ctx.emitted[0] as any;
+        expect(evt.type).toBe("session_metadata_update");
+        expect(evt.metadata.model).toEqual({
+            provider: "anthropic",
+            id: "claude-opus-4",
+            contextWindow: undefined,
+        });
+    });
+
     test("session_active prefers the live current model over transcript-derived state", () => {
         const ctx = makeContext({
             leafId: "leaf-live-model",
@@ -262,6 +293,26 @@ describe("emitSessionMetadataUpdate", () => {
             name: "Gemini 2.5 Pro",
             reasoning: undefined,
             contextWindow: 1000000,
+        });
+    });
+
+    test("session_active falls back to transcript model when no live model exists", () => {
+        const ctx = makeContext({
+            leafId: "leaf-active-transcript-fallback",
+            transcriptModel: {
+                provider: "openai",
+                modelId: "gpt-4.1",
+            },
+        });
+
+        emitSessionActive(ctx);
+
+        const evt = ctx.emitted[0] as any;
+        expect(evt.type).toBe("session_active");
+        expect(evt.state.model).toEqual({
+            provider: "openai",
+            id: "gpt-4.1",
+            contextWindow: undefined,
         });
     });
 
