@@ -9,7 +9,9 @@ import {
   normalizeModelList,
   normalizeCommandList,
   mergeChunkSnapshot,
+  buildStreamingPartialMessage,
 } from "./message-helpers";
+import { extractTextFromToolContent, hasVisibleContent } from "@/components/session-viewer/utils";
 import type { RelayMessage } from "@/components/session-viewer/types";
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -535,5 +537,94 @@ describe("mergeChunkSnapshot", () => {
     // Storing finalMessages directly in the cache would silently drop them.
     expect(finalMessages.find((m) => m.key === "mcp_startup:1700000000000")).toBeUndefined();
     expect(finalMessages.find((m) => m.key === "trigger:abc123")).toBeUndefined();
+  });
+});
+
+describe("buildStreamingPartialMessage", () => {
+  // Regression test for live tool output (e.g. bash) appearing only at end of
+  // command instead of streaming as `tool_execution_update` events arrive.
+  //
+  // Symptom: Terminal pane in the BashToolCard showed only a blinking cursor
+  // until `tool_execution_end` landed, even though the WS frames were arriving
+  // every ~500ms.
+  //
+  // Root cause: the synthetic streaming-partial RelayMessage built from each
+  // `tool_execution_update` was wrapping `partialResult.content` and
+  // `partialResult.details` together inside the message's `content` field as
+  // `{ content, details }`. Because `extractTextFromToolContent` only unwraps
+  // an object's `.content` when it's a string (not an array), this returned
+  // null and the Terminal rendered an empty string.
+  //
+  // The shape produced here MUST match the final `message_end` shape:
+  // `content` and `details` as separate sibling fields on the RelayMessage.
+  test("places content and details as sibling fields, not wrapped inside content", () => {
+    const partialResult = {
+      content: [{ type: "text", text: "line 1\nline 2\nline 3" }],
+      details: { fullOutputPath: "/tmp/bash-out-abc.log" },
+    };
+
+    const msg = buildStreamingPartialMessage({
+      toolCallId: "toolu_01abc",
+      toolName: "bash",
+      partialResult,
+    });
+
+    expect(msg.role).toBe("toolResult");
+    expect(msg.toolCallId).toBe("toolu_01abc");
+    expect(msg.toolName).toBe("bash");
+    expect(msg.isStreamingPartial).toBe(true);
+    expect(msg.isError).toBe(false);
+
+    // Critical: content is the raw block array, NOT a wrapper object.
+    expect(Array.isArray(msg.content)).toBe(true);
+    expect(msg.content).toEqual(partialResult.content);
+
+    // details is a sibling field on the RelayMessage.
+    expect(msg.details).toEqual(partialResult.details);
+
+    // The text must be extractable by the same function the BashToolCard /
+    // Terminal use; otherwise the pane renders empty during streaming.
+    expect(extractTextFromToolContent(msg.content)).toBe("line 1\nline 2\nline 3");
+    expect(hasVisibleContent(msg.content)).toBe(true);
+  });
+
+  test("derives a stable key from toolCallId so subsequent partials upsert in place", () => {
+    const first = buildStreamingPartialMessage({
+      toolCallId: "toolu_01abc",
+      toolName: "bash",
+      partialResult: { content: [{ type: "text", text: "line 1\n" }], details: {} },
+    });
+    const second = buildStreamingPartialMessage({
+      toolCallId: "toolu_01abc",
+      toolName: "bash",
+      partialResult: { content: [{ type: "text", text: "line 1\nline 2\n" }], details: {} },
+    });
+
+    expect(first.key).toBe("tool-call:toolu_01abc");
+    expect(second.key).toBe(first.key);
+  });
+
+  test("handles a partialResult without details (no wrapper drift)", () => {
+    const msg = buildStreamingPartialMessage({
+      toolCallId: "tc1",
+      toolName: "bash",
+      partialResult: { content: [{ type: "text", text: "hello" }] },
+    });
+
+    expect(msg.content).toEqual([{ type: "text", text: "hello" }]);
+    expect(msg.details).toBeUndefined();
+    expect(extractTextFromToolContent(msg.content)).toBe("hello");
+  });
+
+  test("tolerates a non-object partialResult without throwing", () => {
+    const msg = buildStreamingPartialMessage({
+      toolCallId: "tc1",
+      toolName: "bash",
+      partialResult: undefined,
+    });
+
+    expect(msg.content).toBeUndefined();
+    expect(msg.details).toBeUndefined();
+    expect(msg.isStreamingPartial).toBe(true);
   });
 });

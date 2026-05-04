@@ -128,6 +128,7 @@ import {
   normalizeModelList,
   normalizeCommandList,
   mergeChunkSnapshot,
+  buildStreamingPartialMessage,
 } from "@/lib/message-helpers";
 import { evictLruIfNeeded, touchSessionCache, MAX_SESSION_UI_CACHE_SIZE } from "@/lib/session-ui-cache";
 import { removeMessagesByStableKey, replaceMessageByStableKey } from "@/lib/mcp-auth-banners";
@@ -2371,22 +2372,17 @@ export function App() {
           // state (at most once per frame), so the grouping code merges it with
           // the pending-tool card and the UI renders live output.
           //
-          // For tools that send structured details (e.g., subagent), wrap content
-          // with the details so the card component can render the full structure.
-          const details = partial?.details;
-          const syntheticContent = details
-            ? { content, details }
-            : content;
-          pendingToolStreamRef.current.set(toolCallId, {
-            role: "toolResult",
+          // The shape (content/details as sibling fields, not wrapped) is
+          // produced by buildStreamingPartialMessage — see that helper for the
+          // rationale and the message-helpers regression tests.
+          pendingToolStreamRef.current.set(
             toolCallId,
-            toolName,
-            content: syntheticContent,
-            isError: false,
-            // Mark as a streaming partial so deduplication logic does not
-            // treat it as a terminal tool result (the tool is still in-flight).
-            isStreamingPartial: true,
-          });
+            buildStreamingPartialMessage({
+              toolCallId,
+              toolName,
+              partialResult: partial,
+            }),
+          );
           scheduleToolStreamFlush();
         }
       }
