@@ -23,7 +23,7 @@ function makeProviderContext(
   };
 }
 
-export default async function (pi: ExtensionAPI) {
+export async function providerExtension(pi: ExtensionAPI) {
   // ── Session Start: discover and init providers ────────────────
   pi.on("session_start", async (event, ctx) => {
     const { discoverProviders } = await import("../../providers/loader");
@@ -149,3 +149,5 @@ export default async function (pi: ExtensionAPI) {
     currentTurnId = 0;
   });
 }
+
+export default providerExtension;
