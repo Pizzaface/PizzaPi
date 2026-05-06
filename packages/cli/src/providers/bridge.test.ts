@@ -2,14 +2,14 @@ import { describe, test, expect } from "bun:test";
 import { ProviderBridge } from "./bridge";
 import type { ExtensionProvider } from "./types";
 
-function makeProvider(overrides: Partial<ExtensionProvider> = {}): ExtensionProvider {
+function makeProvider(overrides: Record<string, any> = {}): ExtensionProvider {
   return {
     id: "test",
     capabilities: ["context", "lifecycle"] as const,
     init() {},
     dispose() {},
     ...overrides,
-  };
+  } as ExtensionProvider;
 }
 
 describe("ProviderBridge", () => {
@@ -148,9 +148,9 @@ describe("ProviderBridge", () => {
     const provider = makeProvider({
       id: "lifecycle",
       capabilities: ["lifecycle"] as const,
-      onTurnEnd: async (event) => { calls.push(`turn-${event.turnIndex}`); },
-      onSessionStart: async (event) => { calls.push(`start-${event.reason}`); },
-      onSessionShutdown: async (event) => { calls.push(`shutdown-${event.reason}`); },
+      onTurnEnd: async (event: { turnIndex: number }) => { calls.push(`turn-${event.turnIndex}`); },
+      onSessionStart: async (event: { reason: string }) => { calls.push(`start-${event.reason}`); },
+      onSessionShutdown: async (event: { reason: string }) => { calls.push(`shutdown-${event.reason}`); },
     });
 
     const bridge = new ProviderBridge([provider]);
