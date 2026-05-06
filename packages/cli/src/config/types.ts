@@ -327,6 +327,9 @@ export interface PizzaPiConfig {
      */
     allowProjectHooks?: boolean;
 
+    /** Allow loading providers from project-local .pizzapi/providers/ directories. Default: false. */
+    allowProjectProviders?: boolean;
+
     /**
      * Trust gate: allow project-local MCP server definitions (.pizzapi/config.json) to be loaded.
      * Must be set in the GLOBAL ~/.pizzapi/config.json (or via

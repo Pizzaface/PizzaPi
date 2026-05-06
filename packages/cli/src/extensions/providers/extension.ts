@@ -1,4 +1,7 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { ProviderBridge } from "../../providers/bridge";
 import type { ProviderContext } from "../../providers/types";
 
@@ -9,6 +12,20 @@ let providerInstances: Array<{ id: string; dispose(): Promise<void> | void }> = 
 let currentPromptId: string | null = null;
 /** Turn counter within the current prompt. Reset on new prompt. */
 let currentTurnId = 0;
+
+export function loadProviderConfig(): Record<string, Record<string, unknown>> {
+  const configPath = join(process.env.HOME || homedir(), ".pizzapi", "config.json");
+  try {
+    if (existsSync(configPath)) {
+      const raw = JSON.parse(readFileSync(configPath, "utf-8"));
+      const providers = raw?.providers;
+      if (providers && typeof providers === "object" && !Array.isArray(providers)) {
+        return providers;
+      }
+    }
+  } catch {}
+  return {};
+}
 
 function makeProviderContext(
   ctx: { signal?: AbortSignal; cwd: string },
@@ -28,12 +45,25 @@ export async function providerExtension(pi: ExtensionAPI) {
   pi.on("session_start", async (event, ctx) => {
     const { discoverProviders } = await import("../../providers/loader");
 
-    const result = await discoverProviders({ cwd: ctx.cwd });
+    const result = await discoverProviders({
+      cwd: ctx.cwd,
+      allowProject: false, // TODO: wire from config.json allowProjectProviders
+    });
     for (const err of result.errors) {
       console.error(`[provider-extension] Load error: ${err.path} — ${err.error}`);
     }
 
-    if (result.providers.length === 0) {
+    const configs = loadProviderConfig();
+    const enabledProviders = result.providers.filter(({ provider }) => {
+      const cfg = configs[provider.id];
+      if (cfg?.enabled === false) {
+        console.log(`[provider-extension] Skipping disabled provider "${provider.id}"`);
+        return false;
+      }
+      return true;
+    });
+
+    if (enabledProviders.length === 0) {
       bridge = null;
       providerInstances = [];
       return;
@@ -41,11 +71,10 @@ export async function providerExtension(pi: ExtensionAPI) {
 
     const instances: Array<{ id: string; dispose(): Promise<void> | void }> = [];
 
-    for (const { provider } of result.providers) {
+    for (const { provider } of enabledProviders) {
       try {
-        // Config: load from daemon config.json providers key (wired via daemon later)
         await provider.init({
-          config: {},
+          config: configs[provider.id] ?? {},
           fireTrigger: async () => {},
           socket: null,
           publishMetadata: () => {},
@@ -58,7 +87,7 @@ export async function providerExtension(pi: ExtensionAPI) {
     }
 
     providerInstances = instances;
-    bridge = new ProviderBridge(result.providers.map((p) => p.provider));
+    bridge = new ProviderBridge(enabledProviders.map((p) => p.provider));
 
     // Reset prompt tracking
     currentPromptId = null;

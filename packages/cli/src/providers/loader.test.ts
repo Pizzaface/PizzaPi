@@ -59,9 +59,22 @@ describe("discoverProviders", () => {
       };
     `);
 
-    const result = await discoverProviders({ cwd: projectDir });
+    const result = await discoverProviders({ cwd: projectDir, allowProject: true });
     expect(result.providers.length).toBe(1);
     expect(result.providers[0].provider.id).toBe("local-provider");
+    rmSync(projectDir, { recursive: true, force: true });
+  });
+
+  test("skips project providers when allowProject is false", async () => {
+    const projectDir = mkdtempSync(join(tmpdir(), "project-skip-"));
+    const providerDir = join(projectDir, ".pizzapi", "providers", "skip-me");
+    mkdirSync(providerDir, { recursive: true });
+    writeFileSync(join(providerDir, "index.ts"), `
+      export default { id: "skip-me", capabilities: ["context"], init() {}, dispose() {}, onBeforeAgentStart: async () => [] };
+    `);
+
+    const result = await discoverProviders({ cwd: projectDir, allowProject: false });
+    expect(result.providers).toEqual([]);
     rmSync(projectDir, { recursive: true, force: true });
   });
 
@@ -91,7 +104,7 @@ describe("discoverProviders", () => {
       export default { id: "dup-provider", capabilities: ["lifecycle"], init() {}, dispose() {}, onSessionStart: async () => {} };
     `);
 
-    const result = await discoverProviders({ cwd: projectDir });
+    const result = await discoverProviders({ cwd: projectDir, allowProject: true });
     expect(result.providers.length).toBe(1);
     expect(result.providers[0].provider.capabilities).toContain("context");
     rmSync(projectDir, { recursive: true, force: true });

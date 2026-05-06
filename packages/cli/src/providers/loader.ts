@@ -34,6 +34,8 @@ export interface DiscoverProvidersResult {
 
 export interface DiscoverProvidersOptions {
   cwd?: string;
+  /** Allow project-local providers. Default: false. */
+  allowProject?: boolean;
 }
 
 function validateProvider(obj: unknown, sourcePath: string): ExtensionProvider | null {
@@ -143,7 +145,7 @@ export async function discoverProviders(
   }
   allErrors.push(...globalResult.errors);
 
-  if (options.cwd) {
+  if (options.cwd && options.allowProject) {
     const projectResult = await scanProvidersDir(projectProvidersDir(options.cwd), "project");
     for (const p of projectResult.providers) {
       if (seenIds.has(p.provider.id)) {
