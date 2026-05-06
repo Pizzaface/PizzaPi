@@ -80,12 +80,16 @@ describe("Provider Pipeline E2E", () => {
 
   // ── 2. Context Contributions & Sorting ───────────────────────
 
-  test("onBeforeAgentStart returns context contributions sorted correctly", async () => {
-    writeProvider("sort-test", sortingProviderSource());
+  test("onBeforeAgentStart returns context contributions sorted by order and providerId", async () => {
+    writeProvider("zeta-sort", sortingProviderSource("zeta-sort", "Z"));
+    writeProvider("alpha-sort", sortingProviderSource("alpha-sort", "A"));
 
     const { providers } = await discoverProviders();
     const bridge = new ProviderBridge(
-      providers.map((p) => p.provider),
+      providers
+        .slice()
+        .sort((a, b) => b.provider.id.localeCompare(a.provider.id))
+        .map((p) => p.provider),
     );
 
     const result = await bridge.onBeforeAgentStart(
@@ -93,23 +97,23 @@ describe("Provider Pipeline E2E", () => {
       ctx(),
     );
 
-    // Provider returns:
-    //   prepend order=50  → "A: prepend-order-50"
-    //   prepend order=100 → "B: prepend-order-100"
-    //   append  order=10  → "C: append-order-10"
-    //
-    // Sorted ascending:  C(10), A(50), B(100)
-    // prepend reversed:   B, A   (higher order closer to top)
-    // append kept:        C
     expect(result.prepend).toEqual([
-      "B: prepend-order-100",
+      "A: prepend-order-100",
+      "Z: prepend-order-100",
       "A: prepend-order-50",
+      "Z: prepend-order-50",
     ]);
-    expect(result.append).toEqual(["C: append-order-10"]);
+    expect(result.append).toEqual([
+      "A: append-order-10",
+      "Z: append-order-10",
+    ]);
     expect(result.summaries).toEqual([
-      "B: prepend order 100",
+      "A: prepend order 100",
+      "Z: prepend order 100",
       "A: prepend order 50",
-      "C: append order 10",
+      "Z: prepend order 50",
+      "A: append order 10",
+      "Z: append order 10",
     ]);
   });
 
@@ -339,6 +343,29 @@ describe("Provider Pipeline E2E", () => {
     expect(r2.prepend).toEqual(r1.prepend);
   });
 
+  test("dedup across prompts does not collide after resetDedupeState", async () => {
+    writeProvider("prompt-dedup-test", promptDependentDedupProviderSource());
+
+    const { providers } = await discoverProviders();
+    const bridge = new ProviderBridge(
+      providers.map((p) => p.provider),
+    );
+
+    const firstPrompt = await bridge.onBeforeAgentStart(
+      { prompt: "memory first", systemPrompt: "base" },
+      ctx({ promptId: "prompt-1" }),
+    );
+    expect(firstPrompt.prepend).toEqual(["Memory for memory first"]);
+
+    bridge.resetDedupeState();
+
+    const secondPrompt = await bridge.onBeforeAgentStart(
+      { prompt: "memory second", systemPrompt: "base" },
+      ctx({ promptId: "prompt-2" }),
+    );
+    expect(secondPrompt.prepend).toEqual(["Memory for memory second"]);
+  });
+
   // ── 6. Disabled provider test ────────────────────────────────
 
   test("disabled provider is skipped by bridge (verifies after 3 turn-end failures)", async () => {
@@ -428,17 +455,17 @@ export default {
 }
 
 /** Provider that returns contributions with explicit sort orders. */
-function sortingProviderSource() {
+function sortingProviderSource(providerId: string, label: string) {
   return `
 export default {
-  id: "sort-test",
+  id: ${JSON.stringify(providerId)},
   capabilities: ["context"],
   init() {},
   dispose() {},
   onBeforeAgentStart: async () => [
-    { text: "A: prepend-order-50",  placement: "prepend", order: 50,  summary: "A: prepend order 50" },
-    { text: "B: prepend-order-100", placement: "prepend", order: 100, summary: "B: prepend order 100" },
-    { text: "C: append-order-10",   placement: "append",  order: 10,  summary: "C: append order 10" },
+    { text: ${JSON.stringify(`${label}: prepend-order-50`)},  placement: "prepend", order: 50,  summary: ${JSON.stringify(`${label}: prepend order 50`)} },
+    { text: ${JSON.stringify(`${label}: prepend-order-100`)}, placement: "prepend", order: 100, summary: ${JSON.stringify(`${label}: prepend order 100`)} },
+    { text: ${JSON.stringify(`${label}: append-order-10`)},   placement: "append",  order: 10,  summary: ${JSON.stringify(`${label}: append order 10`)} },
   ],
 };
 `;
@@ -562,6 +589,26 @@ export default {
       return [
         { text: "Memory: use pnpm", placement: "prepend", order: 50, summary: "Pkg mgr", dedupeKey: "pkg" },
         { text: "Directive: write tests", placement: "append", order: 100, summary: "Testing", dedupeKey: "test" },
+      ];
+    }
+    return [];
+  },
+};
+`;
+}
+
+/** Provider for testing per-prompt dedup reset with a prompt-dependent value. */
+function promptDependentDedupProviderSource() {
+  return `
+export default {
+  id: "prompt-dedup-test",
+  capabilities: ["context"],
+  init() {},
+  dispose() {},
+  onBeforeAgentStart: async (event) => {
+    if (event.prompt.includes("memory")) {
+      return [
+        { text: "Memory for " + event.prompt, placement: "prepend", order: 50, summary: "Prompt memory", dedupeKey: "pkg" },
       ];
     }
     return [];

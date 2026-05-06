@@ -14,6 +14,7 @@ export interface BeforeAgentStartResult {
 }
 
 interface CollectedContribution {
+  providerId: string;
   text: string;
   placement: "prepend" | "append";
   order: number;
@@ -36,6 +37,10 @@ export class ProviderBridge {
 
   isDisabled(providerId: string): boolean {
     return this.#disabled.has(providerId);
+  }
+
+  resetDedupeState(): void {
+    this.#dedupeState.clear();
   }
 
   async onBeforeAgentStart(
@@ -63,16 +68,13 @@ export class ProviderBridge {
           collected.push(entry);
         }
 
-        const emittedKeys = new Set<string>();
-
         for (const c of contributions) {
           if (c.dedupeKey) {
             // If this key exists, skip (already emitted from stored entries above).
             // If the key doesn't exist, store this contribution.
-            if (dedupeMap.has(c.dedupeKey)) {
-              emittedKeys.add(c.dedupeKey);
-            } else {
+            if (!dedupeMap.has(c.dedupeKey)) {
               const entry: CollectedContribution = {
+                providerId: provider.id,
                 text: c.text,
                 placement: c.placement,
                 order: c.order ?? 100,
@@ -81,10 +83,10 @@ export class ProviderBridge {
               };
               dedupeMap.set(c.dedupeKey, entry);
               collected.push(entry);
-              emittedKeys.add(c.dedupeKey);
             }
           } else {
             collected.push({
+              providerId: provider.id,
               text: c.text,
               placement: c.placement,
               order: c.order ?? 100,
@@ -100,13 +102,30 @@ export class ProviderBridge {
       }
     }
 
-    // Sort by order within each group.
-    // Prepend: higher order closer to top (descending).
-    // Append: lower order closer to system prompt (ascending).
-    const prependColl = collected.filter((c) => c.placement === "prepend");
+    collected.sort((a, b) => {
+      if (a.order !== b.order) return a.order - b.order;
+      return a.providerId.localeCompare(b.providerId);
+    });
+
+    // Prepend contributions are prepended in sorted order, which places higher
+    // order groups closer to the top while preserving providerId tie-breaks.
+    const prependColl: CollectedContribution[] = [];
+    let prependGroup: CollectedContribution[] = [];
+    let prependGroupOrder: number | undefined;
+    for (const contribution of collected) {
+      if (contribution.placement !== "prepend") continue;
+      if (prependGroupOrder === undefined || contribution.order === prependGroupOrder) {
+        prependGroup.push(contribution);
+        prependGroupOrder = contribution.order;
+        continue;
+      }
+      prependColl.unshift(...prependGroup);
+      prependGroup = [contribution];
+      prependGroupOrder = contribution.order;
+    }
+    if (prependGroup.length > 0) prependColl.unshift(...prependGroup);
+
     const appendColl = collected.filter((c) => c.placement === "append");
-    prependColl.sort((a, b) => b.order - a.order);
-    appendColl.sort((a, b) => a.order - b.order);
 
     const prepend: string[] = [];
     const append: string[] = [];

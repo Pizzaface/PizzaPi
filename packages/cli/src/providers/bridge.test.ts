@@ -30,26 +30,38 @@ describe("ProviderBridge", () => {
     expect(result.summaries).toEqual(["A", "B"]);
   });
 
-  test("sorts by order ascending, then providerId (prepend: higher order closer to top)", async () => {
-    const a = makeProvider({
-      id: "alpha",
+  test("sorts by order and providerId within prepend and append groups", async () => {
+    const zeta = makeProvider({
+      id: "zeta",
       onBeforeAgentStart: async () => [
-        { text: "A-100", placement: "prepend", order: 100, summary: "A" },
+        { text: "zeta-100", placement: "prepend", order: 100, summary: "zeta prepend 100" },
+        { text: "zeta-10", placement: "append", order: 10, summary: "zeta append 10" },
+        { text: "zeta-25", placement: "append", order: 25, summary: "zeta append 25" },
       ],
     });
-    const b = makeProvider({
-      id: "beta",
+    const alpha = makeProvider({
+      id: "alpha",
       onBeforeAgentStart: async () => [
-        { text: "B-50", placement: "prepend", order: 50, summary: "B" },
+        { text: "alpha-100", placement: "prepend", order: 100, summary: "alpha prepend 100" },
+        { text: "alpha-50", placement: "prepend", order: 50, summary: "alpha prepend 50" },
+        { text: "alpha-10", placement: "append", order: 10, summary: "alpha append 10" },
       ],
     });
 
-    const bridge = new ProviderBridge([a, b]);
+    const bridge = new ProviderBridge([zeta, alpha]);
     const ctx = { signal: new AbortController().signal, timeoutMs: 5000, sessionId: "s1", cwd: "/tmp", promptId: "p1", turnId: 0, isFirstTurn: true };
 
     const result = await bridge.onBeforeAgentStart({ prompt: "h", systemPrompt: "base" }, ctx);
-    // Sorted ascending by order: 50, 100 → prepended in order → higher order closer to top
-    expect(result.prepend).toEqual(["A-100", "B-50"]);
+    expect(result.prepend).toEqual(["alpha-100", "zeta-100", "alpha-50"]);
+    expect(result.append).toEqual(["alpha-10", "zeta-10", "zeta-25"]);
+    expect(result.summaries).toEqual([
+      "alpha prepend 100",
+      "zeta prepend 100",
+      "alpha prepend 50",
+      "alpha append 10",
+      "zeta append 10",
+      "zeta append 25",
+    ]);
   });
 
   test("deduplicates by providerId + dedupeKey across calls", async () => {
@@ -79,6 +91,32 @@ describe("ProviderBridge", () => {
     returnedKey = "key2";
     const r3 = await bridge.onBeforeAgentStart({ prompt: "c", systemPrompt: "base" }, ctx);
     expect(r3.prepend).toEqual(["Call 1", "Call 3"]);
+  });
+
+  test("resetDedupeState clears stored dedupe entries", async () => {
+    let callCount = 0;
+    const provider = makeProvider({
+      onBeforeAgentStart: async () => {
+        callCount++;
+        return [
+          { text: `Call ${callCount}`, placement: "prepend", order: 50, summary: "T", dedupeKey: "same" },
+        ];
+      },
+    });
+
+    const bridge = new ProviderBridge([provider]);
+    const ctx = { signal: new AbortController().signal, timeoutMs: 5000, sessionId: "s1", cwd: "/tmp", promptId: "p1", turnId: 0, isFirstTurn: true };
+
+    const first = await bridge.onBeforeAgentStart({ prompt: "first", systemPrompt: "base" }, ctx);
+    expect(first.prepend).toEqual(["Call 1"]);
+
+    const deduped = await bridge.onBeforeAgentStart({ prompt: "same prompt", systemPrompt: "base" }, ctx);
+    expect(deduped.prepend).toEqual(["Call 1"]);
+
+    bridge.resetDedupeState();
+
+    const afterReset = await bridge.onBeforeAgentStart({ prompt: "new prompt", systemPrompt: "base" }, ctx);
+    expect(afterReset.prepend).toEqual(["Call 3"]);
   });
 
   test("isolates failing providers", async () => {

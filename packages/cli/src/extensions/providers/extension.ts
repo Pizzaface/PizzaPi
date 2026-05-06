@@ -110,7 +110,11 @@ export async function providerExtension(pi: ExtensionAPI) {
     }
 
     providerInstances = instances;
-    bridge = new ProviderBridge(enabledProviders.map((p) => p.provider));
+    const successfulProviders = instances.map((i) => i.id);
+    const bridgeProviders = enabledProviders
+      .map((p) => p.provider)
+      .filter((p) => successfulProviders.includes(p.id));
+    bridge = new ProviderBridge(bridgeProviders);
 
     // Reset prompt tracking
     currentPromptId = null;
@@ -130,6 +134,7 @@ export async function providerExtension(pi: ExtensionAPI) {
     // Start a new prompt boundary
     currentPromptId = `prompt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     currentTurnId = 0;
+    bridge.resetDedupeState();
 
     const result = await bridge.onBeforeAgentStart(
       { prompt: event.prompt, images: event.images as any, systemPrompt: event.systemPrompt },
@@ -138,17 +143,22 @@ export async function providerExtension(pi: ExtensionAPI) {
 
     if (result.prepend.length === 0 && result.append.length === 0) return;
 
-    // Inject prepended text after pi's preamble, appended text before user appendSystemPrompt.
-    // We split the system prompt at the first tool listing or guideline marker if present,
-    // otherwise we prepend/append to the full prompt.
     const prependBlock = result.prepend.length > 0
-      ? `\n${result.prepend.join("\n")}\n`
+      ? "\n<!-- Provider Context -->\n" + result.prepend.join("\n") + "\n<!-- End Provider Context -->\n"
       : "";
     const appendBlock = result.append.length > 0
       ? `\n${result.append.join("\n")}\n`
       : "";
 
-    return { systemPrompt: prependBlock + event.systemPrompt + appendBlock };
+    // Insert prepended text after the leading preamble. Pi's prompt structure is
+    // not formally parseable here, so use a conservative preamble window.
+    const lines = event.systemPrompt.split("\n");
+    const preambleEnd = Math.min(3, Math.floor(lines.length / 4));
+    const before = lines.slice(0, preambleEnd).join("\n");
+    const after = lines.slice(preambleEnd).join("\n");
+
+    const newPrompt = before + "\n" + prependBlock + after + appendBlock;
+    return { systemPrompt: newPrompt };
   });
 
   // ── Turn End: incremental indexing ────────────────────────────
