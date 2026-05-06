@@ -289,6 +289,11 @@ export interface ToolSearchConfig {
     keepLoadedTools?: boolean;
 }
 
+export interface ProviderConfig {
+  enabled?: boolean;
+  [key: string]: unknown;
+}
+
 export interface PizzaPiConfig {
     /** Override the default system prompt */
     systemPrompt?: string;
@@ -465,4 +470,6 @@ export interface PizzaPiConfig {
      * Also supports per-server `deferLoading: true` in mcpServers entries.
      */
     toolSearch?: ToolSearchConfig;
+    /** Extension provider configurations, keyed by provider ID. */
+    providers?: Record<string, ProviderConfig>;
 }
