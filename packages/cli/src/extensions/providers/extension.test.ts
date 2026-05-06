@@ -43,6 +43,11 @@ describe("provider extension", () => {
     expect(typeof mod.default).toBe("function");
   });
 
+  test("triggerSessionClose is exported", async () => {
+    const mod = await import("./extension");
+    expect(typeof mod.triggerSessionClose).toBe("function");
+  });
+
   test("extension registers on session_start, before_agent_start, turn_end, session_shutdown", async () => {
     const events: string[] = [];
     const mockPi = {

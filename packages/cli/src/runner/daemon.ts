@@ -24,6 +24,7 @@ import { TunnelClient } from "@pizzapi/tunnel";
 import { loadGlobalConfig, defaultAgentDir, expandHome, loadConfig } from "../config.js";
 import { findSessionPathById } from "./session-list-cache.js";
 import { cleanupSessionAttachments, sweepOrphanedAttachments } from "../extensions/session-attachments.js";
+import { triggerSessionClose } from "../extensions/providers/extension.js";
 import { AuthStorage, ModelRegistry } from "@mariozechner/pi-coding-agent";
 import type { ServiceTriggerDef, ServiceSigilDef, TriggerSubscriptionEntry } from "@pizzapi/protocol";
 import { setLogComponent, logInfo, logWarn, logError } from "./logger.js";
@@ -309,6 +310,50 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             if (!gitService) return;
             const maybeGitService = gitService as GitService & { handleSessionEnded?: (id: string) => void };
             maybeGitService.handleSessionEnded?.(sessionId);
+        };
+        const sessionCloseMetadata = new Map<string, { cwd: string; sessionFile?: string }>();
+        const normalizeSessionCloseReason = (reason: unknown): "close" | "error" | "complete" => {
+            const text = typeof reason === "string" ? reason.toLowerCase() : "";
+            if (text.includes("error") || text.includes("crash") || text.includes("orphan")) return "error";
+            if (text.includes("complete")) return "complete";
+            return "close";
+        };
+        const resolveSessionFileForClose = async (sessionId: string, explicitSessionFile?: string): Promise<string> => {
+            if (explicitSessionFile) return explicitSessionFile;
+            const remembered = sessionCloseMetadata.get(sessionId)?.sessionFile;
+            if (remembered) return remembered;
+
+            try {
+                const sessionsRootDir = join(defaultAgentDir(), "agent", "sessions");
+                const found = await findSessionPathById(sessionsRootDir, sessionId);
+                if (found) return found;
+            } catch {
+                // Best-effort only — providers may still be able to use the relay session id.
+            }
+
+            return sessionId;
+        };
+        const notifyProviderSessionClose = async (
+            sessionId: string,
+            reason: unknown,
+            explicitSessionFile?: string,
+        ) => {
+            const metadata = sessionCloseMetadata.get(sessionId);
+            const cwd = metadata?.cwd ?? process.cwd();
+            const sessionFile = await resolveSessionFileForClose(sessionId, explicitSessionFile);
+            try {
+                const closeResult = await triggerSessionClose(
+                    sessionId,
+                    sessionFile,
+                    normalizeSessionCloseReason(reason),
+                    cwd,
+                );
+                if (closeResult) {
+                    logInfo(`[daemon] Provider close: ${closeResult.label}`);
+                }
+            } catch (err) {
+                logWarn(`[daemon] Provider close failed for ${sessionId}: ${err instanceof Error ? err.message : String(err)}`);
+            }
         };
         const tunnelService = new TunnelService();
         registry.register(tunnelService);
@@ -661,6 +706,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                             startedAt: Date.now(),
                             adopted: true,
                         });
+                        sessionCloseMetadata.set(sessionId, { cwd: typeof cwd === "string" && cwd ? cwd : process.cwd() });
                         adopted++;
                     }
                     if (adopted > 0) {
@@ -874,6 +920,10 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                         : { hiddenModels: requestedHiddenModels, agent: resolvedAgent, parentSessionId: requestedParentSessionId, autoClose: requestedAutoClose === true }; // Always pass agent + hidden models + parent + autoClose on restart
                     isFirstSpawn = false;
                     spawnSession(sessionId, apiKey!, relayRaw, requestedCwd, runningSessions, restartingSessions, killedSessions, doSpawn, spawnOpts);
+                    sessionCloseMetadata.set(sessionId, {
+                        cwd: requestedCwd ?? process.cwd(),
+                        ...(resolvedResumePath ? { sessionFile: resolvedResumePath } : {}),
+                    });
                     socket.emit("session_ready", { sessionId });
                     // No need to re-emit service_announce here — the server
                     // persists the announce data in Redis and sends it to
@@ -888,7 +938,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             doSpawn();
         });
 
-        socket.on("kill_session", (data: any) => {
+        socket.on("kill_session", async (data: any) => {
             if (isShuttingDown) return;
             const { sessionId } = data;
             const entry = runningSessions.get(sessionId);
@@ -907,7 +957,10 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                     socket.emit("disconnect_session", { sessionId });
                 }
                 runningSessions.delete(sessionId);
+                endedSessionIds.set(sessionId, Date.now());
+                await notifyProviderSessionClose(sessionId, "close");
                 cleanupGitSessionState(sessionId);
+                sessionCloseMetadata.delete(sessionId);
                 logInfo(`killed session ${sessionId}${entry.adopted ? " (adopted)" : ""}`);
                 socket.emit("session_killed", { sessionId });
                 // Clean up persisted attachments for this session
@@ -916,9 +969,9 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
         });
 
         // ── session_ended — relay notifies us a worker disconnected ───────
-        socket.on("session_ended", (data: any) => {
+        socket.on("session_ended", async (data: any) => {
             if (isShuttingDown) return;
-            const { sessionId, reason } = data;
+            const { sessionId, reason, sessionFile } = data;
 
             // If this session just did a restart-in-place (exit code 43), the relay fires
             // session_ended when the new worker's registerTuiSession tears down the OLD
@@ -939,6 +992,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             }
 
             const entry = runningSessions.get(sessionId);
+            let shouldNotifyProviderClose = false;
             if (entry) {
                 // If the child process is still alive AND this is a transient
                 // relay disconnect (not an expiry/orphan sweep), keep the entry
@@ -954,15 +1008,26 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                 runningSessions.delete(sessionId);
                 killedSessions.delete(sessionId);
                 endedSessionIds.set(sessionId, Date.now());
+                shouldNotifyProviderClose = true;
                 logInfo(`session ${sessionId} ended on relay${entry.adopted ? " (adopted)" : ""}${reason ? ` (${reason})` : ""}`);
             } else if (!endedSessionIds.has(sessionId)) {
                 // First duplicate — log once then suppress subsequent copies
                 endedSessionIds.set(sessionId, Date.now());
+                shouldNotifyProviderClose = true;
                 logInfo(`session_ended for unknown/already-removed session ${sessionId}`);
             }
             // else: duplicate session_ended for a session we already handled — silently ignore
 
+            if (shouldNotifyProviderClose) {
+                await notifyProviderSessionClose(
+                    sessionId,
+                    reason,
+                    typeof sessionFile === "string" ? sessionFile : undefined,
+                );
+            }
+
             cleanupGitSessionState(sessionId);
+            if (shouldNotifyProviderClose) sessionCloseMetadata.delete(sessionId);
 
             // Clean up persisted attachments.  For spawned sessions child.on("exit")
             // already ran cleanup, so this is a no-op (idempotent).  For adopted sessions

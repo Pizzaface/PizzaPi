@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { ProviderBridge } from "../../providers/bridge";
-import type { ProviderContext } from "../../providers/types";
+import type { ProviderContext, SessionCloseResult } from "../../providers/types";
 
 let bridge: ProviderBridge | null = null;
 /** Provider instances tracked separately for disposal (bridge doesn't own lifecycle). */
@@ -38,6 +38,29 @@ function makeProviderContext(
     cwd: ctx.cwd,
     ...overrides,
   };
+}
+
+/**
+ * Called by the daemon when a session is being archived.
+ * Returns the close result if any provider handles it, or null.
+ */
+export async function triggerSessionClose(
+  sessionId: string,
+  sessionFile: string,
+  reason: "close" | "error" | "complete",
+  cwd: string,
+): Promise<SessionCloseResult | null> {
+  if (!bridge) return null;
+  return bridge.onSessionClose(
+    { reason, sessionFile },
+    {
+      signal: new AbortController().signal,
+      timeoutMs: 5000,
+      sessionId,
+      sessionFile,
+      cwd,
+    },
+  );
 }
 
 export async function providerExtension(pi: ExtensionAPI) {
