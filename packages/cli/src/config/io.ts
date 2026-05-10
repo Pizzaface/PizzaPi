@@ -70,6 +70,7 @@ export function mergeHooks(a?: HooksConfig, b?: HooksConfig): HooksConfig | unde
         "SessionBeforeSwitch",
         "SessionBeforeFork",
         "SessionShutdown",
+        "TurnEnd",
         "SessionBeforeCompact",
         "SessionBeforeTree",
         "ModelSelect",

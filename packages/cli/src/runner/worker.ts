@@ -321,6 +321,10 @@ async function main(): Promise<void> {
     // triggers / remote input cannot start the first turn until all startup
     // work (notably MCP initialization) has completed.
     armWorkerStartupGate();
+    // Make session file path available to hooks/extensions (e.g. pertinence retrospective)
+    if (session.sessionFile) {
+      process.env.PIZZAPI_SESSION_FILE = session.sessionFile;
+    }
     bootTimer.start("[boot] bind-extensions");
     try {
     await session.bindExtensions({

@@ -47,6 +47,7 @@ export function createHooksExtension(hooksConfig: HooksConfig | undefined, cwd: 
     const hasSessionBeforeSwitchHooks = (hooksConfig.SessionBeforeSwitch?.length ?? 0) > 0;
     const hasSessionBeforeForkHooks = (hooksConfig.SessionBeforeFork?.length ?? 0) > 0;
     const hasSessionShutdownHooks = (hooksConfig.SessionShutdown?.length ?? 0) > 0;
+    const hasTurnEndHooks = (hooksConfig.TurnEnd?.length ?? 0) > 0;
     const hasSessionBeforeCompactHooks = (hooksConfig.SessionBeforeCompact?.length ?? 0) > 0;
     const hasSessionBeforeTreeHooks = (hooksConfig.SessionBeforeTree?.length ?? 0) > 0;
     const hasModelSelectHooks = (hooksConfig.ModelSelect?.length ?? 0) > 0;
@@ -405,7 +406,8 @@ export function createHooksExtension(hooksConfig: HooksConfig | undefined, cwd: 
         if (hasSessionShutdownHooks) {
             pi.on("session_shutdown", async () => {
                 try {
-                    const payload = JSON.stringify({ event: "SessionShutdown" });
+                    const sessionFile = process.env.PIZZAPI_SESSION_FILE ?? undefined;
+                    const payload = JSON.stringify({ event: "SessionShutdown", session_file: sessionFile });
                     await runFireAndForgetHooks(
                         hooksConfig.SessionShutdown!,
                         payload,
@@ -415,6 +417,33 @@ export function createHooksExtension(hooksConfig: HooksConfig | undefined, cwd: 
                 } catch (err) {
                     const msg = err instanceof Error ? err.message : String(err);
                     log.error(`SessionShutdown handler error: ${msg}`);
+                }
+            });
+        }
+
+        // ---------------------------------------------------------------
+        // Turn End — fire-and-forget observability
+        // ---------------------------------------------------------------
+
+        if (hasTurnEndHooks) {
+            pi.on("turn_end", async (event, ctx) => {
+                try {
+                    const payload = JSON.stringify({
+                        event: "TurnEnd",
+                        turn_index: event.turnIndex,
+                        stop_reason: event.message.role === "assistant" ? event.message.stopReason : undefined,
+                        session_id: (ctx as any)?.sessionId ?? process.env.PIZZAPI_SESSION_ID ?? process.env.SESSION_ID ?? "",
+                    });
+
+                    await runFireAndForgetHooks(
+                        hooksConfig.TurnEnd!,
+                        payload,
+                        cwd,
+                        "TurnEnd",
+                    );
+                } catch (err) {
+                    const msg = err instanceof Error ? err.message : String(err);
+                    log.error(`TurnEnd handler error: ${msg}`);
                 }
             });
         }

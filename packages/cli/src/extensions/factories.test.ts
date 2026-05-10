@@ -7,6 +7,7 @@ import type { HooksConfig } from "../config.js";
 import { buildPizzaPiExtensionFactories } from "./factories.js";
 import { mcpExtension } from "./mcp-extension.js";
 import { remoteExtension } from "./remote.js";
+import { providerExtension } from "./providers/extension.js";
 import { restartExtension } from "./restart.js";
 
 import { setSessionNameExtension } from "./set-session-name.js";
@@ -39,6 +40,7 @@ const CORE_EXTENSIONS: ExtensionFactory[] = [
     sandboxEventsExtension,
     pizzapiTitleExtension,
     pizzapiHeaderExtension,
+    providerExtension,  // Always registered
 ];
 
 /**

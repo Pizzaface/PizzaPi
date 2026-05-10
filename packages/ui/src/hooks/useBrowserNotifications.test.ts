@@ -1,13 +1,12 @@
 import { describe, test, expect } from "bun:test";
+import * as browserNotifications from "../lib/browser-notifications";
 
 /**
- * Unit tests for the pure logic used by useBrowserNotifications.
+ * Unit tests for the logic used by useBrowserNotifications.
  *
  * Since Bun's test runner does not provide a DOM environment, we test
- * the helper functions and logical invariants rather than the React hook.
- * The helper `getSessionLabel` is re-used here since it's not exported
- * from the hook module (it's a file-local function), but the logic is
- * tested to match the source exactly.
+ * the helper functions and logical invariants rather than the React hook
+ * itself.
  */
 
 // ── Extracted from useBrowserNotifications.ts ───────────────────────────────
@@ -122,5 +121,42 @@ describe("useBrowserNotifications logic", () => {
     expect(notified.size).toBe(1);
     expect(notified.has("s1")).toBe(true);
     expect(notified.has("s2")).toBe(false);
+  });
+
+  test("shows browser input notifications through the service worker registration", async () => {
+    const calls: Array<{ title: string; options: any }> = [];
+    const registration = {
+      showNotification: async (title: string, options: any) => {
+        calls.push({ title, options });
+      },
+    };
+
+    await browserNotifications.showBrowserInputNotification(
+      registration,
+      "session-123",
+      "My Cool Session",
+    );
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].title).toBe("Input needed");
+    expect(calls[0].options.tag).toBe("pizzapi-browser-input-session-123");
+    expect(calls[0].options.body).toBe(
+      'Agent in "My Cool Session" is waiting for your input.',
+    );
+    expect(calls[0].options.data).toEqual({
+      sessionId: "session-123",
+      type: "browser_input",
+    });
+  });
+
+  test("extracts session id from service worker open-session messages", () => {
+    expect(
+      browserNotifications.getOpenSessionMessageSessionId({
+        type: "open-session",
+        sessionId: "session-123",
+      }),
+    ).toBe("session-123");
+    expect(browserNotifications.getOpenSessionMessageSessionId({ type: "other" })).toBeNull();
+    expect(browserNotifications.getOpenSessionMessageSessionId(null)).toBeNull();
   });
 });

@@ -78,6 +78,12 @@ export interface HooksConfig {
      */
     SessionShutdown?: HookEntry[];
 
+    /**
+     * Fires at the end of each agent turn.
+     * Fire-and-forget — exit code is ignored.
+     */
+    TurnEnd?: HookEntry[];
+
     // -- Second wave hooks --
 
     /**

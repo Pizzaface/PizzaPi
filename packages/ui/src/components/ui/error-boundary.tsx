@@ -1,5 +1,5 @@
 import * as React from "react";
-import { AlertCircle, RefreshCw } from "lucide-react";
+import { AlertCircle, Check, Copy, RefreshCw } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { createLogger } from "@pizzapi/tools";
 
@@ -24,6 +24,7 @@ export interface ErrorBoundaryProps {
 interface ErrorBoundaryState {
   hasError: boolean;
   error: Error | null;
+  errorInfo: React.ErrorInfo | null;
 }
 
 /**
@@ -35,17 +36,21 @@ interface ErrorBoundaryState {
  * - `"widget"` — compact inline fallback for individual cards/tools
  */
 export class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoundaryState> {
+  private copied = false;
+  private copyTimer: ReturnType<typeof setTimeout> | null = null;
+
   constructor(props: ErrorBoundaryProps) {
     super(props);
-    this.state = { hasError: false, error: null };
+    this.state = { hasError: false, error: null, errorInfo: null };
   }
 
-  static getDerivedStateFromError(error: Error): ErrorBoundaryState {
+  static getDerivedStateFromError(error: Error): Partial<ErrorBoundaryState> {
     return { hasError: true, error };
   }
 
-  componentDidCatch(error: Error, info: React.ErrorInfo): void {
-    log.error("Caught render error:", error, info.componentStack);
+  componentDidCatch(error: Error, errorInfo: React.ErrorInfo): void {
+    log.error("Caught render error:", error, errorInfo.componentStack);
+    this.setState({ errorInfo });
   }
 
   componentDidUpdate(prevProps: ErrorBoundaryProps): void {
@@ -57,14 +62,38 @@ export class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoun
       const changed = prevKeys.length !== nextKeys.length ||
         nextKeys.some((key, i) => !Object.is(key, prevKeys[i]));
       if (changed) {
-        this.setState({ hasError: false, error: null });
+        this.setState({ hasError: false, error: null, errorInfo: null });
       }
     }
   }
 
   /** Reset error state so children can be re-rendered without a full page reload. */
   resetErrorBoundary = (): void => {
-    this.setState({ hasError: false, error: null });
+    this.setState({ hasError: false, error: null, errorInfo: null });
+  };
+
+  /** Copy full error details (message, stack trace, component stack) to clipboard. */
+  copyErrorDetails = (): void => {
+    const { error, errorInfo } = this.state;
+    const details = [
+      error?.message && `Message: ${error.message}`,
+      error?.stack && `Stack:\n${error.stack}`,
+      errorInfo?.componentStack && `Component Stack:\n${errorInfo.componentStack}`,
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+
+    navigator.clipboard.writeText(details || "No error details available");
+
+    this.copied = true;
+    this.forceUpdate();
+
+    if (this.copyTimer) clearTimeout(this.copyTimer);
+    this.copyTimer = setTimeout(() => {
+      this.copied = false;
+      this.forceUpdate();
+      this.copyTimer = null;
+    }, 2000);
   };
 
   render(): React.ReactNode {
@@ -92,6 +121,18 @@ export class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoun
           <span className="flex-1 min-w-0 truncate">
             {isDev && error?.message ? error.message : "Render error"}
           </span>
+          <button
+            type="button"
+            onClick={() => this.copyErrorDetails()}
+            className="shrink-0 rounded p-0.5 hover:bg-destructive/20 transition-colors"
+            aria-label={this.copied ? "Copied" : "Copy error details"}
+          >
+            {this.copied ? (
+              <Check className="size-3" />
+            ) : (
+              <Copy className="size-3" />
+            )}
+          </button>
           <button
             type="button"
             onClick={this.resetErrorBoundary}
@@ -138,6 +179,22 @@ export class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoun
           </div>
 
           <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => this.copyErrorDetails()}
+              className={cn(
+                "inline-flex items-center gap-2 rounded-md px-4 py-2 text-sm font-medium",
+                "border border-input bg-background hover:bg-accent hover:text-accent-foreground",
+                "transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+              )}
+            >
+              {this.copied ? (
+                <Check className="size-4" />
+              ) : (
+                <Copy className="size-4" />
+              )}
+              {this.copied ? "Copied!" : "Copy Details"}
+            </button>
             <button
               type="button"
               onClick={this.resetErrorBoundary}

@@ -28,13 +28,13 @@ export function loadProviderConfig(): Record<string, Record<string, unknown>> {
 }
 
 function makeProviderContext(
-  ctx: { signal?: AbortSignal; cwd: string },
+  ctx: { signal?: AbortSignal; cwd: string; sessionId?: string },
   overrides?: Partial<ProviderContext>,
 ): ProviderContext {
   return {
     signal: ctx.signal ?? new AbortController().signal,
     timeoutMs: 5000,
-    sessionId: "unknown",
+    sessionId: ctx.sessionId ?? process.env.PIZZAPI_SESSION_ID ?? process.env.SESSION_ID ?? "unknown",
     cwd: ctx.cwd,
     ...overrides,
   };
