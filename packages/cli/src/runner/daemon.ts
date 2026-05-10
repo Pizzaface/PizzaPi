@@ -524,6 +524,19 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             },
         );
 
+        socket.io.on("reconnect_attempt", (attempt) => {
+            logInfo(`[relay] reconnect attempt ${attempt} to ${sioUrl}/runner`);
+        });
+        socket.io.on("reconnect_error", (err) => {
+            logWarn(`[relay] reconnect error: ${err instanceof Error ? err.message : String(err)}`);
+        });
+        socket.io.on("reconnect", (attempt) => {
+            logInfo(`[relay] reconnected after ${attempt} attempt(s)`);
+        });
+        socket.io.on("error", (err) => {
+            logWarn(`[relay] manager error: ${err instanceof Error ? err.message : String(err)}`);
+        });
+
         // Service init happens in runner_registered after plugin discovery completes.
 
         if (tunnelClient) {
@@ -622,9 +635,14 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             emitRegister();
         });
 
-        socket.on("disconnect", (reason) => {
+        socket.on("disconnect", (reason, details) => {
             if (isShuttingDown) return;
-            logInfo(`disconnected (${reason}). Socket.IO will reconnect automatically.`);
+            const engine = socket.io.engine;
+            const transportName = engine?.transport?.name ?? "unknown";
+            logInfo(
+                `disconnected (${reason}). Socket.IO will reconnect automatically. `
+                + `transport=${transportName} details=${JSON.stringify(details ?? {})}`,
+            );
         });
 
         // ── Registration confirmation ─────────────────────────────────────
