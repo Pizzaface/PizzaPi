@@ -91,6 +91,8 @@ export class TunnelClient extends EventEmitter {
   private consecutiveFailures = 0;
   /** Whether a "registered" message was received for the current connection. */
   private registeredThisConnection = false;
+  /** Wall-clock time when the current WebSocket attempt was created. */
+  private connectionStartedAt = 0;
 
   /** Active HTTP requests: requestId → { controller, req } */
   private activeRequests = new Map<string, { controller: AbortController; req: http.ClientRequest }>();
@@ -123,6 +125,7 @@ export class TunnelClient extends EventEmitter {
     }
 
     this.registeredThisConnection = false;
+    this.connectionStartedAt = Date.now();
     this.log.info("[tunnel-client] Connecting to", this.relayUrl);
     this.ws = new WebSocket(this.relayUrl);
 
@@ -135,8 +138,21 @@ export class TunnelClient extends EventEmitter {
       this.handleMessage(event.data as string | Buffer | ArrayBuffer | ArrayBufferView);
     });
 
-    this.ws.addEventListener("close", () => {
-      this.log.info("[tunnel-client] Disconnected");
+    this.ws.addEventListener("close", (event: CloseEvent) => {
+      const uptimeMs = this.connectionStartedAt > 0 ? Date.now() - this.connectionStartedAt : undefined;
+      this.log.info(
+        "[tunnel-client] Disconnected",
+        JSON.stringify({
+          code: event.code,
+          reason: event.reason || undefined,
+          wasClean: event.wasClean,
+          registered: this.registeredThisConnection,
+          consecutiveFailures: this.consecutiveFailures,
+          uptimeMs,
+          activeRequests: this.activeRequests.size,
+          activeWs: this.activeWs.size,
+        }),
+      );
       this.cleanup();
       this.ws = null;
 
@@ -175,7 +191,16 @@ export class TunnelClient extends EventEmitter {
         ?? (event as any)?.error
         ?? (event as any)?.type
         ?? "unknown error";
-      this.log.error("[tunnel-client] WebSocket error:", msg);
+      this.log.error(
+        "[tunnel-client] WebSocket error:",
+        msg,
+        JSON.stringify({
+          relayUrl: this.relayUrl,
+          readyState: this.ws?.readyState,
+          registered: this.registeredThisConnection,
+          consecutiveFailures: this.consecutiveFailures,
+        }),
+      );
     });
   }
 

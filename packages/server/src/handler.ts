@@ -7,6 +7,7 @@ import { createLogger } from "@pizzapi/tools";
 
 const authLog = createLogger("auth");
 const apiLog = createLogger("api");
+const tunnelLog = createLogger("tunnel-relay");
 
 /** Default body size limit for API routes (1 MB). */
 export const MAX_BODY_SIZE = 1 * 1024 * 1024;
@@ -208,6 +209,15 @@ export async function handleFetch(req: Request, authContext: AuthContext): Promi
 
 async function _handleFetch(req: Request): Promise<Response> {
     const url = new URL(req.url);
+
+    if (url.pathname === "/_tunnel") {
+        tunnelLog.warn(
+            `/_tunnel reached HTTP handler without WebSocket upgrade method=${req.method} `
+            + `upgrade=${req.headers.get("upgrade") ?? "<none>"} connection=${req.headers.get("connection") ?? "<none>"} `
+            + `ua=${req.headers.get("user-agent") ?? "<none>"}`,
+        );
+        return new Response("Expected WebSocket upgrade", { status: 426 });
+    }
 
     // ── Body size guard ────────────────────────────────────────────────
     // Validates Content-Length when present (strict numeric parsing) and falls

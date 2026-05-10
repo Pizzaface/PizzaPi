@@ -355,6 +355,10 @@ export class TunnelRelay {
   private handleResponseStart(msg: TunnelResponseStartMessage): void {
     const pending = this.pendingRequests.get(msg.id);
     if (!pending) return;
+    // The timeout only protects the initial response handshake. Once headers
+    // have arrived, the response may legitimately be long-lived (SSE, logs,
+    // streaming dev servers), so do not abort it solely because it stays open.
+    clearTimeout(pending.timer);
     pending.onResponseStart(msg.statusCode, msg.statusMessage, msg.headers);
   }
 

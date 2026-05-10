@@ -357,7 +357,10 @@ export function registerRunnerNamespace(io: SocketIOServer, context: AuthContext
 
     runner.on("connection", bindAuthContext(context, (socket) => {
         bindSocketHandlersToAuthContext(socket, context);
-        log.info(`connected: ${socket.id}`);
+        log.info(
+            `connected: ${socket.id} transport=${socket.conn.transport.name} `
+            + `remote=${socket.handshake.address} ua=${socket.handshake.headers["user-agent"] ?? "<none>"}`,
+        );
 
         // ── Periodic Redis TTL refresh ───────────────────────────────────────
         // The runner's Redis key has a 2-hour TTL. Without periodic refresh,
@@ -1119,13 +1122,17 @@ export function registerRunnerNamespace(io: SocketIOServer, context: AuthContext
         });
 
         // ── disconnect — clean up runner resources ───────────────────────────
-        socket.on("disconnect", async (reason) => {
-            log.info(`disconnected: ${socket.id} (${reason})`);
+        socket.on("disconnect", async (reason, details) => {
+            const runnerId = socket.data.runnerId;
+            const transport = socket.conn.transport.name;
+            log.info(
+                `disconnected: ${socket.id} runner=${runnerId ?? "<unregistered>"} (${reason}) `
+                + `transport=${transport} details=${JSON.stringify(details ?? {})}`,
+            );
             if (runnerTtlTimer) {
                 clearInterval(runnerTtlTimer);
                 runnerTtlTimer = null;
             }
-            const runnerId = socket.data.runnerId;
             if (runnerId) {
                 // During graceful shutdown (io.close()), Socket.IO disconnects
                 // all sockets with reason "server shutting down".  Skip

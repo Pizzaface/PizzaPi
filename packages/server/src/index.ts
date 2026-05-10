@@ -179,7 +179,9 @@ async function sendFetchResponse(res: ServerResponse, response: Response): Promi
         }
     } finally {
         reader.releaseLock();
-        res.end();
+        if (!res.writableEnded && !res.destroyed) {
+            res.end();
+        }
     }
 }
 
@@ -199,6 +201,8 @@ const httpServer = createServer(async (req, res) => {
         await sendFetchResponse(res, fetchRes);
     } catch (e) {
         httpLog.error("Unhandled error:", e);
+        if (res.writableEnded || res.destroyed) return;
+
         if (!res.headersSent) {
             res.writeHead(500, {
                 "content-type": "application/json",
@@ -210,8 +214,14 @@ const httpServer = createServer(async (req, res) => {
                 "content-security-policy":
                     "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' ws: wss: blob:; font-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self'",
             });
+            res.end(JSON.stringify({ error: "Internal server error" }));
+            return;
         }
-        res.end(JSON.stringify({ error: "Internal server error" }));
+
+        // If a streaming response failed after headers/body bytes were already
+        // sent, we cannot send a JSON 500 without corrupting the response or
+        // hitting ERR_STREAM_WRITE_AFTER_END. Close whatever remains instead.
+        res.end();
     }
 });
 
