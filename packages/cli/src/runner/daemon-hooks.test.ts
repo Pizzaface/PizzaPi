@@ -126,4 +126,14 @@ describe("extractHookSummary", () => {
         const result = extractHookSummary(hooks);
         expect(result[0].scripts).toEqual(["hook-a.sh", "hook-b.sh"]);
     });
+
+    test("extracts TurnEnd hook entries", () => {
+        const hooks: HooksConfig = {
+            TurnEnd: [{ command: "/hooks/turn-end.sh" }],
+        };
+        const result = extractHookSummary(hooks);
+        expect(result).toHaveLength(1);
+        expect(result[0].type).toBe("TurnEnd");
+        expect(result[0].scripts).toContain("turn-end.sh");
+    });
 });

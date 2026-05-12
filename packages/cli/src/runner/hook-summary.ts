@@ -32,6 +32,7 @@ export function extractHookSummary(hooks?: HooksConfig): RunnerHook[] {
         "SessionBeforeSwitch",
         "SessionBeforeFork",
         "SessionShutdown",
+        "TurnEnd",
         "SessionBeforeCompact",
         "SessionBeforeTree",
         "ModelSelect",

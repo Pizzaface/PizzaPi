@@ -70,7 +70,7 @@ export async function providerExtension(pi: ExtensionAPI) {
 
     const result = await discoverProviders({
       cwd: ctx.cwd,
-      allowProject: false, // TODO: wire from config.json allowProjectProviders
+      allowProject: ctx.config?.allowProjectProviders === true,
     });
     for (const err of result.errors) {
       console.error(`[provider-extension] Load error: ${err.path} — ${err.error}`);
