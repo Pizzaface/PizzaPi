@@ -67,7 +67,7 @@ function validateProvider(obj: unknown, sourcePath: string): ExtensionProvider |
   return p as unknown as ExtensionProvider;
 }
 
-async function loadProviderModule(filePath: string): Promise<ExtensionProvider | null> {
+async function loadProviderModule(filePath: string): Promise<{ provider: ExtensionProvider | null; error?: string }> {
   try {
     const mod = await import(filePath);
     const exported = mod.default ?? mod;
@@ -75,20 +75,21 @@ async function loadProviderModule(filePath: string): Promise<ExtensionProvider |
     if (typeof exported === "function") {
       try {
         const instance = new exported();
-        return validateProvider(instance, filePath);
-      } catch {
+        return { provider: validateProvider(instance, filePath) };
+      } catch (err) {
+        const ctorErr = err instanceof Error ? err.message : String(err);
         try {
           const result = await exported();
-          return validateProvider(result, filePath);
-        } catch {
-          return null;
+          return { provider: validateProvider(result, filePath) };
+        } catch (err2) {
+          return { provider: null, error: `Constructor failed: ${ctorErr}; async factory also failed: ${err2 instanceof Error ? err2.message : String(err2)}` };
         }
       }
     }
 
-    return validateProvider(exported, filePath);
-  } catch {
-    return null;
+    return { provider: validateProvider(exported, filePath) };
+  } catch (err) {
+    return { provider: null, error: `Import failed: ${err instanceof Error ? err.message : String(err)}` };
   }
 }
 
@@ -119,11 +120,12 @@ async function scanProvidersDir(
       const indexPath = join(entryPath, "index.ts");
       if (!existsSync(indexPath)) continue;
 
-      const provider = await loadProviderModule(indexPath);
-      if (provider) {
-        providers.push({ provider, source: { origin, path: entryPath } });
+      const loaded = await loadProviderModule(indexPath);
+      if (loaded.provider) {
+        providers.push({ provider: loaded.provider, source: { origin, path: entryPath } });
       } else {
-        errors.push({ path: indexPath, error: "Module does not export a valid ExtensionProvider" });
+        const detail = loaded.error ? `: ${loaded.error}` : "";
+        errors.push({ path: indexPath, error: `Module does not export a valid ExtensionProvider${detail}` });
       }
     }
   }

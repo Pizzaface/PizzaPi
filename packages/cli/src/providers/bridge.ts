@@ -54,7 +54,11 @@ export class ProviderBridge {
       if (!isContextProvider(provider)) continue;
 
       try {
-        const contributions = await provider.onBeforeAgentStart(event, ctx);
+        const contributions = await this.#withTimeout(
+          provider.onBeforeAgentStart(event, ctx),
+          ctx,
+          provider.id,
+        );
         if (!contributions || contributions.length === 0) continue;
 
         let dedupeMap = this.#dedupeState.get(provider.id);
@@ -152,7 +156,11 @@ export class ProviderBridge {
       if (!isLifecycleHook(provider)) continue;
       if (!provider.onSessionStart) continue;
       try {
-        await provider.onSessionStart(event, ctx);
+        await this.#withTimeout(
+          provider.onSessionStart(event, ctx),
+          ctx,
+          provider.id,
+        );
       } catch (err) {
         this.#recordError(provider.id, err);
       }
@@ -177,7 +185,11 @@ export class ProviderBridge {
       if (!isLifecycleHook(provider)) continue;
       if (!provider.onTurnEnd) continue;
       try {
-        await provider.onTurnEnd(event, ctx);
+        await this.#withTimeout(
+          provider.onTurnEnd(event, ctx),
+          ctx,
+          provider.id,
+        );
         this.#errorCounts.set(provider.id, 0);
       } catch (err) {
         this.#recordError(provider.id, err);
@@ -191,13 +203,54 @@ export class ProviderBridge {
       if (!isLifecycleHook(provider)) continue;
       if (!provider.onSessionClose) continue;
       try {
-        const result = await provider.onSessionClose(event, ctx);
+        const result = await this.#withTimeout(
+          provider.onSessionClose(event, ctx),
+          ctx,
+          provider.id,
+        );
         if (result) return result;
       } catch (err) {
         this.#recordError(provider.id, err);
       }
     }
     return null;
+  }
+
+  /**
+   * Wraps a provider hook promise with timeout and abort signal enforcement.
+   * If the abort signal fires, the promise is rejected with an AbortError.
+   * If the timeout elapses, the promise is rejected with a timeout error.
+   */
+  async #withTimeout<T>(
+    promise: Promise<T>,
+    ctx: ProviderContext,
+    providerId: string,
+  ): Promise<T> {
+    if (ctx.signal.aborted) {
+      throw new Error(`Provider "${providerId}" call aborted before execution`);
+    }
+
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        reject(new Error(`Provider "${providerId}" timed out after ${ctx.timeoutMs}ms`));
+      }, ctx.timeoutMs);
+    });
+
+    const abortPromise = new Promise<never>((_, reject) => {
+      const onAbort = () => {
+        ctx.signal.removeEventListener("abort", onAbort);
+        reject(new Error(`Provider "${providerId}" call aborted`));
+      };
+      ctx.signal.addEventListener("abort", onAbort, { once: true });
+    });
+
+    try {
+      const result = await Promise.race([promise, timeoutPromise, abortPromise]);
+      return result;
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
   }
 
   #recordError(providerId: string, err: unknown): void {

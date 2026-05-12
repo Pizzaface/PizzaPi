@@ -253,13 +253,13 @@ describe("Provider Pipeline E2E", () => {
       { prompt: "1", systemPrompt: "base" },
       ctx(),
     );
-    expect(bridge.isDisabled("doomed")).toBe(false);
+    expect(bridge.isDisabled("bad-provider")).toBe(false);
 
     await bridge.onBeforeAgentStart(
       { prompt: "2", systemPrompt: "base" },
       ctx(),
     );
-    expect(bridge.isDisabled("doomed")).toBe(false);
+    expect(bridge.isDisabled("bad-provider")).toBe(false);
 
     await bridge.onBeforeAgentStart(
       { prompt: "3", systemPrompt: "base" },
