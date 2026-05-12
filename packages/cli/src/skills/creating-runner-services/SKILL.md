@@ -77,6 +77,8 @@ class MyProvider implements ExtensionProvider {
 
   async onSessionStart(event, ctx) {
     // event.reason — "startup" | "reload" | "new" | "resume" | "fork"
+    // event.model  — { provider, id, name } | undefined  (model active at session start)
+    // Use event.model to gate provider behavior on the current model
     // Rehydrate session state, load pending jobs
   }
 
@@ -179,6 +181,45 @@ Every hook method receives `ProviderContext`:
 ## Error Isolation
 
 PizzaPi catches provider errors and continues without the failing provider's contribution. After 3 consecutive errors, a provider is temporarily disabled for the remainder of the session. Errors are logged and surfaced in the provider's panel.
+
+## SessionStart Model Information
+
+`onSessionStart` now receives the active model in the event payload. This lets providers and hooks gate behavior on the model at session start — for example, adjusting context injection strategy per-model.
+
+```typescript
+async onSessionStart(event, ctx) {
+  // event.model — { provider: string; id: string; name: string } | undefined
+  // undefined only during very early startup before model resolution
+  console.log(`Session started with model: ${event.model?.id ?? 'unknown'}`);
+}
+```
+
+The same model information is also available to **native hooks** via the `SessionStart` hook:
+
+```json
+// ~/.pizzapi/config.json
+{
+  "hooks": {
+    "SessionStart": [{
+      "command": "echo $PIZZAPI_MODEL_ID > /tmp/session-model.txt"
+    }]
+  }
+}
+```
+
+Hook scripts receive JSON on stdin:
+
+```json
+{
+  "event": "SessionStart",
+  "reason": "startup",
+  "previous_session_file": null,
+  "session_id": "abc123",
+  "model": { "provider": "anthropic", "id": "claude-sonnet-4-20250514", "name": "Claude 4 Sonnet" }
+}
+```
+
+When no model is available yet, `model` is `null`. This is a fire-and-forget hook — exit codes are ignored.
 
 ---
 
