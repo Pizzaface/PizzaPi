@@ -76,6 +76,17 @@ export async function providerExtension(pi: ExtensionAPI) {
       console.error(`[provider-extension] Load error: ${err.path} — ${err.error}`);
     }
 
+    // Dispose any providers from a prior session (defensive — session_shutdown
+    // normally handles this, but ensure cleanup if session_start fires twice).
+    for (const instance of providerInstances) {
+      try {
+        await instance.dispose();
+      } catch (err) {
+        console.error(`[provider-extension] Error disposing ${instance.id} on re-init:`, err);
+      }
+    }
+    providerInstances = [];
+
     const configs = loadProviderConfig();
     const enabledProviders = result.providers.filter(({ provider }) => {
       const cfg = configs[provider.id];
