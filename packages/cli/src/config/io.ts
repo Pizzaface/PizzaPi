@@ -74,6 +74,7 @@ export function mergeHooks(a?: HooksConfig, b?: HooksConfig): HooksConfig | unde
         "SessionBeforeCompact",
         "SessionBeforeTree",
         "ModelSelect",
+        "SessionStart",
     ];
     for (const key of entryKeys) {
         const combined = [

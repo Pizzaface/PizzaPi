@@ -51,6 +51,7 @@ export function createHooksExtension(hooksConfig: HooksConfig | undefined, cwd: 
     const hasSessionBeforeCompactHooks = (hooksConfig.SessionBeforeCompact?.length ?? 0) > 0;
     const hasSessionBeforeTreeHooks = (hooksConfig.SessionBeforeTree?.length ?? 0) > 0;
     const hasModelSelectHooks = (hooksConfig.ModelSelect?.length ?? 0) > 0;
+    const hasSessionStartHooks = (hooksConfig.SessionStart?.length ?? 0) > 0;
 
     // Advisory context from PreToolUse hooks is stashed here per tool-call-id
     // and injected into the tool_result so the agent sees it in the same turn
@@ -535,6 +536,33 @@ export function createHooksExtension(hooksConfig: HooksConfig | undefined, cwd: 
                 } catch (err) {
                     const msg = err instanceof Error ? err.message : String(err);
                     log.error(`ModelSelect handler error: ${msg}`);
+                }
+            });
+        }
+
+        if (hasSessionStartHooks) {
+            pi.on("session_start", async (event, ctx) => {
+                try {
+                    const modelInfo = ctx.model
+                        ? { provider: ctx.model.provider, id: ctx.model.id, name: ctx.model.name }
+                        : undefined;
+                    const payload = JSON.stringify({
+                        event: "SessionStart",
+                        reason: event.reason,
+                        previous_session_file: event.previousSessionFile ?? null,
+                        session_id: process.env.PIZZAPI_SESSION_ID ?? process.env.SESSION_ID ?? "",
+                        model: modelInfo ?? null,
+                    });
+
+                    await runFireAndForgetHooks(
+                        hooksConfig.SessionStart!,
+                        payload,
+                        cwd,
+                        "SessionStart",
+                    );
+                } catch (err) {
+                    const msg = err instanceof Error ? err.message : String(err);
+                    log.error(`SessionStart handler error: ${msg}`);
                 }
             });
         }

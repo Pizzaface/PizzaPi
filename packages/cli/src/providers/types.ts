@@ -71,6 +71,8 @@ export interface LifecycleHook {
 export interface SessionStartEvent {
   reason: "startup" | "reload" | "new" | "resume" | "fork";
   previousSessionFile?: string;
+  /** The model active when the session started. May be undefined for very early startup. */
+  model?: { provider: string; id: string; name: string };
 }
 
 export interface SessionShutdownEvent {

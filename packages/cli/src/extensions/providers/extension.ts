@@ -121,8 +121,11 @@ export async function providerExtension(pi: ExtensionAPI) {
     currentTurnId = 0;
 
     // Notify lifecycle providers
+    const modelInfo = ctx.model
+      ? { provider: ctx.model.provider, id: ctx.model.id, name: ctx.model.name }
+      : undefined;
     await bridge.onSessionStart(
-      { reason: event.reason as "startup", previousSessionFile: event.previousSessionFile },
+      { reason: event.reason as "startup", previousSessionFile: event.previousSessionFile, model: modelInfo },
       makeProviderContext(ctx, { sessionFile: ctx.sessionManager?.getSessionFile?.() ?? undefined }),
     );
   });

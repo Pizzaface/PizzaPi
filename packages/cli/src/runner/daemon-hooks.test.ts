@@ -93,6 +93,16 @@ describe("extractHookSummary", () => {
         expect(result[0].scripts[0]).toBe("track-model.sh");
     });
 
+    test("extracts SessionStart hook entries", () => {
+        const hooks: HooksConfig = {
+            SessionStart: [{ command: "/hooks/on-start.sh" }],
+        };
+        const result = extractHookSummary(hooks);
+        expect(result).toHaveLength(1);
+        expect(result[0].type).toBe("SessionStart");
+        expect(result[0].scripts[0]).toBe("on-start.sh");
+    });
+
     test("handles command with arguments — only basenames the first token", () => {
         const hooks: HooksConfig = {
             BeforeAgentStart: [{ command: "/path/to/inject-context.sh --verbose --output /tmp/log" }],

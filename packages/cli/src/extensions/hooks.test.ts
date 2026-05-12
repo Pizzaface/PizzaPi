@@ -1551,6 +1551,14 @@ describe("mergeHooks — event hooks", () => {
         expect(result?.ModelSelect).toHaveLength(2);
     });
 
+    test("merges SessionStart hooks", () => {
+        const result = mergeHooks(
+            { SessionStart: [{ command: "init-env.sh" }] },
+            { SessionStart: [{ command: "log-startup.sh" }] },
+        );
+        expect(result?.SessionStart).toHaveLength(2);
+    });
+
     test("merges SessionBeforeCompact hooks", () => {
         const result = mergeHooks(
             { SessionBeforeCompact: [{ command: "check.sh" }] },
@@ -1830,5 +1838,34 @@ describe("event hook integration — second wave", () => {
             source: "set",
         });
         await runFireAndForgetHooks(hooks, payload, process.cwd(), "ModelSelect");
+    });
+
+    test("SessionStart runs as fire-and-forget with model info", async () => {
+        const hooks: HookEntry[] = [
+            // Even with exit 1, should not throw
+            { command: "exit 1" },
+        ];
+        const payload = JSON.stringify({
+            event: "SessionStart",
+            reason: "startup",
+            previous_session_file: null,
+            session_id: "test-session-1",
+            model: { provider: "anthropic", id: "claude-sonnet-4-20250514", name: "Claude 4 Sonnet" },
+        });
+        await runFireAndForgetHooks(hooks, payload, process.cwd(), "SessionStart");
+    });
+
+    test("SessionStart payload works with null model", async () => {
+        const hooks: HookEntry[] = [
+            { command: "exit 0" },
+        ];
+        const payload = JSON.stringify({
+            event: "SessionStart",
+            reason: "new",
+            previous_session_file: "/old/session.json",
+            session_id: "test-session-2",
+            model: null,
+        });
+        await runFireAndForgetHooks(hooks, payload, process.cwd(), "SessionStart");
     });
 });

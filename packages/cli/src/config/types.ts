@@ -103,6 +103,13 @@ export interface HooksConfig {
      * Exit code is ignored.
      */
     ModelSelect?: HookEntry[];
+
+    /**
+     * Fires when a session starts (startup, reload, new, resume, fork).
+     * Receives JSON on stdin with event name, reason, session ID, and model info.
+     * Fire-and-forget — exit code is ignored.
+     */
+    SessionStart?: HookEntry[];
 }
 
 // ── Sandbox configuration ─────────────────────────────────────────────────────
