@@ -10,6 +10,7 @@ import {
     shouldRewriteTunnelCss,
     rewriteTunnelJsModule,
     rewriteTunnelCss,
+    proxyTunnelRequestViaRelay,
 } from "./tunnel";
 
 describe("tunnel route URL rewriting", () => {
@@ -628,6 +629,52 @@ import bar from "../lib/bar.js";`;
         const js = `import React from '/node_modules/.vite/deps/react.js';`;
         const rewritten = rewriteTunnelJsModule(js, "s-1", 3000);
         expect(rewritten).toContain("from '/api/tunnel/s-1/3000/node_modules/.vite/deps/react.js'");
+    });
+});
+
+describe("tunnel route streaming proxy", () => {
+    test("closes an already-started streaming response cleanly when relay reports a late error", async () => {
+        let callbacks: {
+            onResponseStart: (statusCode: number, statusMessage: string, headers: Record<string, string>) => void;
+            onResponseData: (data: Buffer) => void;
+            onResponseEnd: () => void;
+            onError: (error: string) => void;
+        } | undefined;
+
+        const relay = {
+            proxyHttpRequest: (_runnerId: string, _request: unknown, cb: NonNullable<typeof callbacks>) => {
+                callbacks = cb;
+                return { cancel() {} };
+            },
+            sendRequestDataEnd() {},
+        };
+
+        const responsePromise = proxyTunnelRequestViaRelay(
+            new Request("http://localhost/api/tunnel/s-1/3000/data"),
+            relay as never,
+            "runner-1",
+            "request-1",
+            "/api/tunnel/s-1/3000",
+            3000,
+            "/data",
+            "/data",
+            {},
+        );
+
+        callbacks!.onResponseStart(200, "OK", { "content-type": "text/plain" });
+        const response = await responsePromise;
+        expect(response.status).toBe(200);
+        expect(response.body).toBeTruthy();
+
+        const reader = response.body!.getReader();
+        callbacks!.onResponseData(Buffer.from("hello"));
+        const first = await reader.read();
+        expect(first.done).toBe(false);
+        expect(Buffer.from(first.value!).toString("utf8")).toBe("hello");
+
+        callbacks!.onError("Tunnel request timed out");
+        await expect(reader.read()).resolves.toEqual({ done: true, value: undefined });
+        reader.releaseLock();
     });
 });
 

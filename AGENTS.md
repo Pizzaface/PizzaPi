@@ -44,6 +44,7 @@ User-facing documentation lives in `packages/docs/` — a [Starlight](https://st
 | Skills | `customization/skills.mdx` |
 | Agent definitions | `customization/agent-definitions.mdx` |
 | Claude plugins | `customization/claude-plugins.mdx` |
+| Provider services | `customization/providers.mdx` |
 | Subagents | `customization/subagents.mdx` |
 | `pizza web`, Docker | `deployment/self-hosting.mdx` |
 | Tailscale HTTPS | `deployment/tailscale.mdx` |

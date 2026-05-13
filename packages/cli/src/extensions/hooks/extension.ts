@@ -47,9 +47,11 @@ export function createHooksExtension(hooksConfig: HooksConfig | undefined, cwd: 
     const hasSessionBeforeSwitchHooks = (hooksConfig.SessionBeforeSwitch?.length ?? 0) > 0;
     const hasSessionBeforeForkHooks = (hooksConfig.SessionBeforeFork?.length ?? 0) > 0;
     const hasSessionShutdownHooks = (hooksConfig.SessionShutdown?.length ?? 0) > 0;
+    const hasTurnEndHooks = (hooksConfig.TurnEnd?.length ?? 0) > 0;
     const hasSessionBeforeCompactHooks = (hooksConfig.SessionBeforeCompact?.length ?? 0) > 0;
     const hasSessionBeforeTreeHooks = (hooksConfig.SessionBeforeTree?.length ?? 0) > 0;
     const hasModelSelectHooks = (hooksConfig.ModelSelect?.length ?? 0) > 0;
+    const hasSessionStartHooks = (hooksConfig.SessionStart?.length ?? 0) > 0;
 
     // Advisory context from PreToolUse hooks is stashed here per tool-call-id
     // and injected into the tool_result so the agent sees it in the same turn
@@ -405,7 +407,8 @@ export function createHooksExtension(hooksConfig: HooksConfig | undefined, cwd: 
         if (hasSessionShutdownHooks) {
             pi.on("session_shutdown", async () => {
                 try {
-                    const payload = JSON.stringify({ event: "SessionShutdown" });
+                    const sessionFile = process.env.PIZZAPI_SESSION_FILE ?? undefined;
+                    const payload = JSON.stringify({ event: "SessionShutdown", session_file: sessionFile });
                     await runFireAndForgetHooks(
                         hooksConfig.SessionShutdown!,
                         payload,
@@ -415,6 +418,33 @@ export function createHooksExtension(hooksConfig: HooksConfig | undefined, cwd: 
                 } catch (err) {
                     const msg = err instanceof Error ? err.message : String(err);
                     log.error(`SessionShutdown handler error: ${msg}`);
+                }
+            });
+        }
+
+        // ---------------------------------------------------------------
+        // Turn End — fire-and-forget observability
+        // ---------------------------------------------------------------
+
+        if (hasTurnEndHooks) {
+            pi.on("turn_end", async (event, ctx) => {
+                try {
+                    const payload = JSON.stringify({
+                        event: "TurnEnd",
+                        turn_index: event.turnIndex,
+                        stop_reason: event.message.role === "assistant" ? event.message.stopReason : undefined,
+                        session_id: (ctx as any)?.sessionId ?? process.env.PIZZAPI_SESSION_ID ?? process.env.SESSION_ID ?? "",
+                    });
+
+                    await runFireAndForgetHooks(
+                        hooksConfig.TurnEnd!,
+                        payload,
+                        cwd,
+                        "TurnEnd",
+                    );
+                } catch (err) {
+                    const msg = err instanceof Error ? err.message : String(err);
+                    log.error(`TurnEnd handler error: ${msg}`);
                 }
             });
         }
@@ -506,6 +536,33 @@ export function createHooksExtension(hooksConfig: HooksConfig | undefined, cwd: 
                 } catch (err) {
                     const msg = err instanceof Error ? err.message : String(err);
                     log.error(`ModelSelect handler error: ${msg}`);
+                }
+            });
+        }
+
+        if (hasSessionStartHooks) {
+            pi.on("session_start", async (event, ctx) => {
+                try {
+                    const modelInfo = ctx.model
+                        ? { provider: ctx.model.provider, id: ctx.model.id, name: ctx.model.name }
+                        : undefined;
+                    const payload = JSON.stringify({
+                        event: "SessionStart",
+                        reason: event.reason,
+                        previous_session_file: event.previousSessionFile ?? null,
+                        session_id: process.env.PIZZAPI_SESSION_ID ?? process.env.SESSION_ID ?? "",
+                        model: modelInfo ?? null,
+                    });
+
+                    await runFireAndForgetHooks(
+                        hooksConfig.SessionStart!,
+                        payload,
+                        cwd,
+                        "SessionStart",
+                    );
+                } catch (err) {
+                    const msg = err instanceof Error ? err.message : String(err);
+                    log.error(`SessionStart handler error: ${msg}`);
                 }
             });
         }

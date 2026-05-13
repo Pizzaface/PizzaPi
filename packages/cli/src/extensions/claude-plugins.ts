@@ -280,7 +280,13 @@ function registerHookGroup(
 
         case "session_start":
             pi.on("session_start", async (_event, ctx) => {
-                const stdinData = { session_id: "" };
+                const modelInfo = ctx.model
+                    ? { provider: ctx.model.provider, id: ctx.model.id, name: ctx.model.name }
+                    : undefined;
+                const stdinData: Record<string, unknown> = {
+                    session_id: "",
+                    model: modelInfo ?? null,
+                };
                 for (const hook of hooks) {
                     if (!hook.command) continue;
                     const result = await execHookCommand(hook.command, plugin.rootPath, stdinData, (hook.timeout ?? 10) * 1000);

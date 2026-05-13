@@ -32,9 +32,11 @@ export function extractHookSummary(hooks?: HooksConfig): RunnerHook[] {
         "SessionBeforeSwitch",
         "SessionBeforeFork",
         "SessionShutdown",
+        "TurnEnd",
         "SessionBeforeCompact",
         "SessionBeforeTree",
         "ModelSelect",
+        "SessionStart",
     ] as const;
     for (const type of entryTypes) {
         const entries = (hooks[type] as { command: string }[] | undefined) ?? [];

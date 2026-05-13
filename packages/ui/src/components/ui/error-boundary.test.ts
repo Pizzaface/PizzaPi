@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import type React from "react";
 
 /**
  * Tests for the ErrorBoundary React class component.
@@ -20,6 +21,7 @@ import { describe, expect, test } from "bun:test";
 interface ErrorBoundaryState {
   hasError: boolean;
   error: Error | null;
+  errorInfo: React.ErrorInfo | null;
 }
 
 interface ErrorBoundaryProps {
@@ -68,7 +70,7 @@ function shouldAutoReset(
  * Returns the next state after the user clicks "Retry".
  */
 function resetErrorBoundary(): ErrorBoundaryState {
-  return { hasError: false, error: null };
+  return { hasError: false, error: null, errorInfo: null };
 }
 
 // ── 1. getDerivedStateFromError ────────────────────────────────────────────────
@@ -108,12 +110,12 @@ describe("ErrorBoundary: retry reset (resetErrorBoundary)", () => {
 
   test("is idempotent — same result whether or not boundary was crashed", () => {
     // Crashed state → reset
-    const crashed: ErrorBoundaryState = { hasError: true, error: new Error("x") };
+    const crashed: ErrorBoundaryState = { hasError: true, error: new Error("x"), errorInfo: null };
     const afterReset = resetErrorBoundary();
     expect(afterReset.hasError).toBe(false);
 
     // Already-reset state → still reset
-    const clean: ErrorBoundaryState = { hasError: false, error: null };
+    const clean: ErrorBoundaryState = { hasError: false, error: null, errorInfo: null };
     const afterNoOp = resetErrorBoundary();
     expect(afterNoOp).toEqual(clean);
 
@@ -121,9 +123,9 @@ describe("ErrorBoundary: retry reset (resetErrorBoundary)", () => {
     void crashed;
   });
 
-  test("returned state has exactly the two expected fields", () => {
+  test("returned state has exactly the three expected fields", () => {
     const state = resetErrorBoundary();
-    expect(Object.keys(state).sort()).toEqual(["error", "hasError"]);
+    expect(Object.keys(state).sort()).toEqual(["error", "errorInfo", "hasError"]);
   });
 });
 
@@ -204,19 +206,19 @@ describe("ErrorBoundary resetKeys comparison logic", () => {
 
 describe("ErrorBoundary: auto-reset state machine (componentDidUpdate)", () => {
   test("does NOT reset when boundary has not tripped (hasError:false)", () => {
-    const state: ErrorBoundaryState = { hasError: false, error: null };
+    const state: ErrorBoundaryState = { hasError: false, error: null, errorInfo: null };
     // Even if resetKeys change, there is nothing to reset
     expect(shouldAutoReset(state, { resetKeys: ["a"] }, { resetKeys: ["b"] })).toBe(false);
   });
 
   test("does NOT reset when no resetKeys prop is provided", () => {
-    const state: ErrorBoundaryState = { hasError: true, error: new Error("crash") };
+    const state: ErrorBoundaryState = { hasError: true, error: new Error("crash"), errorInfo: null };
     expect(shouldAutoReset(state, {}, {})).toBe(false);
     expect(shouldAutoReset(state, { resetKeys: ["a"] }, {})).toBe(false);
   });
 
   test("does NOT reset when resetKeys are unchanged", () => {
-    const state: ErrorBoundaryState = { hasError: true, error: new Error("crash") };
+    const state: ErrorBoundaryState = { hasError: true, error: new Error("crash"), errorInfo: null };
     expect(shouldAutoReset(
       state,
       { resetKeys: ["session-1"] },
@@ -225,7 +227,7 @@ describe("ErrorBoundary: auto-reset state machine (componentDidUpdate)", () => {
   });
 
   test("DOES reset when resetKey changes (session switch clears sticky crash)", () => {
-    const state: ErrorBoundaryState = { hasError: true, error: new Error("crash") };
+    const state: ErrorBoundaryState = { hasError: true, error: new Error("crash"), errorInfo: null };
     expect(shouldAutoReset(
       state,
       { resetKeys: ["session-1"] },
@@ -234,7 +236,7 @@ describe("ErrorBoundary: auto-reset state machine (componentDidUpdate)", () => {
   });
 
   test("DOES reset when resetKey changes from non-null to null (session closed)", () => {
-    const state: ErrorBoundaryState = { hasError: true, error: new Error("crash") };
+    const state: ErrorBoundaryState = { hasError: true, error: new Error("crash"), errorInfo: null };
     expect(shouldAutoReset(
       state,
       { resetKeys: ["session-1"] },
@@ -243,7 +245,7 @@ describe("ErrorBoundary: auto-reset state machine (componentDidUpdate)", () => {
   });
 
   test("DOES reset when prevProps had no resetKeys but next does (first mount recovery)", () => {
-    const state: ErrorBoundaryState = { hasError: true, error: new Error("crash") };
+    const state: ErrorBoundaryState = { hasError: true, error: new Error("crash"), errorInfo: null };
     expect(shouldAutoReset(
       state,
       { resetKeys: undefined },
@@ -252,7 +254,7 @@ describe("ErrorBoundary: auto-reset state machine (componentDidUpdate)", () => {
   });
 
   test("DOES reset when second key in multi-key array changes", () => {
-    const state: ErrorBoundaryState = { hasError: true, error: new Error("crash") };
+    const state: ErrorBoundaryState = { hasError: true, error: new Error("crash"), errorInfo: null };
     expect(shouldAutoReset(
       state,
       { resetKeys: ["session-1", "runner-a"] },
@@ -260,9 +262,9 @@ describe("ErrorBoundary: auto-reset state machine (componentDidUpdate)", () => {
     )).toBe(true);
   });
 
-  test("state after auto-reset is hasError:false error:null", () => {
+  test("state after auto-reset is hasError:false error:null errorInfo:null", () => {
     // Verify the reset state used by componentDidUpdate is the same as resetErrorBoundary
-    const afterAutoReset = { hasError: false, error: null };
+    const afterAutoReset = { hasError: false, error: null, errorInfo: null };
     const afterManualReset = resetErrorBoundary();
     expect(afterAutoReset).toEqual(afterManualReset);
   });
@@ -273,7 +275,7 @@ describe("ErrorBoundary: auto-reset state machine (componentDidUpdate)", () => {
 describe("ErrorBoundary: full state lifecycle", () => {
   test("idle → crashed → reset via retry button", () => {
     // Start idle
-    let state: ErrorBoundaryState = { hasError: false, error: null };
+    let state: ErrorBoundaryState = { hasError: false, error: null, errorInfo: null };
     expect(state.hasError).toBe(false);
 
     // A child crashes
@@ -286,10 +288,11 @@ describe("ErrorBoundary: full state lifecycle", () => {
     state = resetErrorBoundary();
     expect(state.hasError).toBe(false);
     expect(state.error).toBeNull();
+    expect(state.errorInfo).toBeNull();
   });
 
   test("idle → crashed → reset via session switch (resetKeys)", () => {
-    let state: ErrorBoundaryState = { hasError: false, error: null };
+    let state: ErrorBoundaryState = { hasError: false, error: null, errorInfo: null };
 
     // A child crashes
     state = getDerivedStateFromError(new Error("crash"));
@@ -308,6 +311,7 @@ describe("ErrorBoundary: full state lifecycle", () => {
     }
     expect(state.hasError).toBe(false);
     expect(state.error).toBeNull();
+    expect(state.errorInfo).toBeNull();
   });
 
   test("multiple crashes and resets are independent", () => {

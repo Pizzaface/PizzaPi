@@ -432,8 +432,20 @@ function proxyTunnelRequestViaRelay(
         let statusCode = 502;
         let responseHeaders = new Headers();
         let streamController: ReadableStreamDefaultController<Uint8Array> | null = null;
+        let streamClosed = false;
         let shouldBuffer = false;
         const bodyChunks: Buffer[] = [];
+
+        const closeStream = (): void => {
+            if (streamClosed) return;
+            streamClosed = true;
+            try {
+                streamController?.close();
+            } catch {
+                // The client may already have disconnected or the stream may
+                // have been closed by a racing response-end/error callback.
+            }
+        };
 
         const resolveOnce = (response: Response): void => {
             if (resolved) return;
@@ -472,6 +484,7 @@ function proxyTunnelRequestViaRelay(
                             streamController = controller;
                         },
                         cancel() {
+                            streamClosed = true;
                             cancel();
                         },
                     });
@@ -487,9 +500,14 @@ function proxyTunnelRequestViaRelay(
                         return;
                     }
 
-                    streamController?.enqueue(
-                        new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength),
-                    );
+                    if (streamClosed) return;
+                    try {
+                        streamController?.enqueue(
+                            new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength),
+                        );
+                    } catch {
+                        streamClosed = true;
+                    }
                 },
                 onResponseEnd: () => {
                     if (shouldBuffer) {
@@ -512,7 +530,7 @@ function proxyTunnelRequestViaRelay(
                         return;
                     }
 
-                    streamController?.close();
+                    closeStream();
                 },
                 onError: (error) => {
                     if (!responseStarted || shouldBuffer) {
@@ -520,7 +538,12 @@ function proxyTunnelRequestViaRelay(
                         return;
                     }
 
-                    streamController?.error(new Error(error));
+                    // Once a streaming HTTP response has started, we can no
+                    // longer change the status code. Do not error the fetch
+                    // stream: Bun surfaces that as an unhandled server write
+                    // after the response may already be ended. Close the body
+                    // instead so the connection terminates cleanly.
+                    closeStream();
                 },
             },
         );
@@ -539,7 +562,7 @@ function proxyTunnelRequestViaRelay(
                 return;
             }
 
-            streamController?.error(new Error(message));
+            closeStream();
         });
     });
 }
@@ -764,4 +787,5 @@ export {
     shouldRewriteTunnelCss,
     rewriteTunnelJsModule,
     rewriteTunnelCss,
+    proxyTunnelRequestViaRelay,
 };

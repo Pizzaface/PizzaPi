@@ -1,0 +1,541 @@
+---
+title: Extension Providers
+description: Build plugins that inject context, hook into session lifecycle events, and extend the PizzaPi web UI.
+---
+
+import { Aside, FileTree, Steps } from "@astrojs/starlight/components";
+
+Extension Providers are a plugin system for extending the coding agent at runtime. Unlike [AI model providers](/PizzaPi/features/providers-and-models/) (which configure model backends like Anthropic or Ollama), Extension Providers are lifecycle-aware plugins that run inside the agent process.
+
+A provider can:
+
+- **Inject context** into every agent turn — add notes, rules, or references to the system prompt
+- **Hook into session lifecycle** — react to session start, turn end, shutdown, and close events
+- **Add UI panels and widgets** — register sidebar widgets or metadata cards in the web interface
+- **Contribute session metadata** — provide structured data about the session
+
+Providers live in `~/.pizzapi/providers/<name>/index.ts` and are discovered automatically on session start.
+
+---
+
+## Quick Start
+
+<Steps>
+
+1. **Create the provider directory:**
+
+   ```bash
+   mkdir -p ~/.pizzapi/providers/my-provider
+   ```
+
+2. **Add `index.ts`** with an ExtensionProvider:
+
+   ```typescript
+   // ~/.pizzapi/providers/my-provider/index.ts
+   export default {
+     id: "my-provider",
+     capabilities: ["context", "lifecycle"],
+     
+     init() {
+       console.log("[my-provider] initialized");
+     },
+     dispose() {
+       console.log("[my-provider] disposed");
+     },
+
+     onBeforeAgentStart(event, ctx) {
+       // Injected into every agent turn
+       return [
+         {
+           text: "Important: always run tests before committing.",
+           placement: "prepend",
+           order: 50,
+           summary: "Testing reminder",
+           dedupeKey: "test-reminder",
+         },
+       ];
+     },
+
+     onTurnEnd(event, ctx) {
+       // Called after each assistant response
+       console.log(`Turn ${event.turnIndex} complete`);
+     },
+   };
+   ```
+
+3. **Restart the runner** — the provider is loaded on the next session start.
+
+</Steps>
+
+---
+
+## Folder Structure
+
+<FileTree>
+- ~/.pizzapi/providers/
+  - my-provider/
+    - index.ts — ExtensionProvider module (default export)
+  - another-provider/
+    - index.ts
+    - helpers.ts — imported by index.ts
+</FileTree>
+
+Directories starting with `.` or `_` are ignored.
+
+---
+
+## ExtensionProvider Interface
+
+Every provider module must export a default value matching the `ExtensionProvider` interface:
+
+```typescript
+interface ExtensionProvider {
+  id: string;
+  label?: string;
+  version?: string;
+  capabilities: ("context" | "lifecycle" | "ui-panel" | "metadata")[];
+  init(ctx: ProviderInitContext): Promise<void> | void;
+  dispose(): Promise<void> | void;
+}
+```
+
+### Module Formats
+
+The loader accepts three export patterns:
+
+**Object literal** (recommended):
+```typescript
+export default {
+  id: "my-provider",
+  capabilities: ["context"],
+  init() {},
+  dispose() {},
+  onBeforeAgentStart() { /* ... */ },
+};
+```
+
+**Class (instantiated with `new`)**:
+```typescript
+export default class MyProvider {
+  id = "my-provider";
+  capabilities = ["context"];
+  init() {}
+  dispose() {}
+  onBeforeAgentStart() { /* ... */ }
+}
+```
+
+**Factory function (called with `await`)**:
+```typescript
+export default async function createProvider() {
+  return {
+    id: "my-provider",
+    capabilities: ["context"],
+    init() {},
+    dispose() {},
+    onBeforeAgentStart() { /* ... */ },
+  };
+}
+```
+
+### `init()` and `dispose()`
+
+`init()` receives a `ProviderInitContext` with:
+
+```typescript
+interface ProviderInitContext {
+  config: Record<string, unknown>;     // Provider-specific config from config.json
+  fireTrigger(sessionId, type, payload): Promise<void>;
+  socket: unknown;                     // Socket.IO connection (if available)
+  publishMetadata(sessionId, metadata): void;
+}
+```
+
+The `config` object contains the provider's entry from `~/.pizzapi/config.json`:
+
+```json title="~/.pizzapi/config.json"
+{
+  "providers": {
+    "my-provider": {
+      "enabled": true,
+      "model": "claude-sonnet-4-20250514",
+      "customOption": "value"
+    }
+  }
+}
+```
+
+`dispose()` is called during session shutdown for cleanup (closing connections, releasing resources).
+
+---
+
+## Capabilities
+
+Providers declare what they do via the `capabilities` array. Each capability requires specific methods:
+
+### `"context"` — Context Injection
+
+Inject text into every turn's system prompt. Implement `onBeforeAgentStart`:
+
+```typescript
+async onBeforeAgentStart(
+  event: BeforeAgentStartEvent,
+  ctx: ProviderContext,
+): Promise<ContextContribution[] | void>;
+```
+
+Where:
+
+```typescript
+interface BeforeAgentStartEvent {
+  prompt: string;                   // The user's current prompt
+  images?: Array<{ type: "image"; source: { type: "base64"; mediaType: string; data: string } }>;
+  systemPrompt: string;            // The current system prompt
+}
+
+interface ContextContribution {
+  text: string;                    // The text to inject
+  placement: "prepend" | "append"; // Before or after the system prompt
+  order?: number;                  // Sort order (default: 100)
+  dedupeKey?: string;              // Deduplication key (see below)
+  summary: string;                 // Short description for logging
+  referencedArtifacts?: Array<{ id: string; type: string; label: string }>;
+}
+```
+
+**Sorting:** Contributions are sorted by `order` (ascending), then by provider ID alphabetically. Prepend items are grouped by order — higher-order groups are placed closer to the top of the prompt while preserving order within each group.
+
+**Deduplication:** When two contributions share the same `dedupeKey` within a single user prompt, the second is silently skipped. This prevents duplicate context when a provider fires `onBeforeAgentStart` multiple times per prompt (e.g., on retries). The dedupe state resets at the start of each new user prompt.
+
+### `"lifecycle"` — Session Lifecycle Hooks
+
+Hook into session lifecycle events. Any of these methods may be present:
+
+```typescript
+interface LifecycleHook {
+  onSessionStart?(event: SessionStartEvent, ctx: ProviderContext): Promise<void>;
+  onSessionShutdown?(event: SessionShutdownEvent, ctx: ProviderContext): Promise<void>;
+  onTurnEnd?(event: TurnEndEvent, ctx: ProviderContext): Promise<void>;
+  onSessionClose?(event: SessionCloseEvent, ctx: ProviderContext): Promise<SessionCloseResult | null>;
+}
+```
+
+**Lifecycle order:**
+
+```
+Session Start → [Turn 1: BeforeAgentStart → Turn 1: TurnEnd → Turn 2: ...] → Session Close → Session Shutdown
+```
+
+**`onSessionStart`** — Called when a session begins:
+```typescript
+interface SessionStartEvent {
+  reason: "startup" | "reload" | "new" | "resume" | "fork";
+  previousSessionFile?: string;     // Set when resuming/forking a previous session
+}
+```
+
+**`onSessionShutdown`** — Called during session teardown:
+```typescript
+interface SessionShutdownEvent {
+  reason: "quit" | "reload" | "new" | "resume" | "fork";
+  targetSessionFile?: string;       // Set when switching to a different session
+}
+```
+
+**`onTurnEnd`** — Called after each assistant response:
+```typescript
+interface TurnEndEvent {
+  turnIndex: number;
+  message: { role: "assistant"; content: string };
+  toolResults?: Array<{ name: string; output: string; isError: boolean }>;
+}
+```
+
+Use `onTurnEnd` for incremental indexing, saving context, or observability.
+
+**`onSessionClose`** — Called when a session is being archived:
+```typescript
+interface SessionCloseEvent {
+  reason: "close" | "error" | "complete";
+  sessionFile: string;
+}
+
+interface SessionCloseResult {
+  label: string;
+  jobRef: Record<string, unknown>;
+}
+```
+
+The first provider to return a non-null `SessionCloseResult` wins — other providers are not called. Return `null` to let the next provider handle it.
+
+### `"ui-panel"` — Web UI Extensions
+
+Add UI panels, sidebar widgets, or session metadata cards to the PizzaPi web interface:
+
+```typescript
+interface UIPanelProvider {
+  panel?: PanelConfig;              // Full panel in the UI
+  sidebarWidgets?: SidebarWidgetDef[];
+  sessionMetadataCards?: MetadataCardDef[];
+}
+
+interface PanelConfig {
+  dir: string;                      // Directory with HTML/CSS/JS
+  requires?: string[];              // Required capabilities
+}
+
+interface SidebarWidgetDef {
+  id: string;
+  label: string;
+  source: { type: "html"; dir: string } | { type: "api"; endpoint: string };
+}
+
+interface MetadataCardDef {
+  id: string;
+  label: string;
+  source: { type: "html"; dir: string } | { type: "api"; endpoint: string };
+}
+```
+
+### `"metadata"` — Session Metadata
+
+Contribute structured metadata for the session viewer:
+
+```typescript
+interface MetadataProvider {
+  getSessionMetadata(sessionId: string, ctx: ProviderContext): Promise<Record<string, unknown>>;
+}
+```
+
+---
+
+## Configuration
+
+Providers can be configured via `~/.pizzapi/config.json`:
+
+```json title="~/.pizzapi/config.json"
+{
+  "providers": {
+    "my-provider": {
+      "enabled": true,
+      "apiKey": "sk-...",
+      "model": "claude-sonnet-4-20250514",
+      "customSetting": "value"
+    }
+  }
+}
+```
+
+The `enabled` field can be set to `false` to skip a provider without removing its directory:
+
+```json
+{
+  "providers": {
+    "my-provider": {
+      "enabled": false
+    }
+  }
+}
+```
+
+The entire config object (excluding `enabled`) is passed to the provider's `init()` method as `ctx.config`.
+
+---
+
+## ProviderBridge Behavior
+
+The ProviderBridge orchestrates all active providers. Understanding its behavior helps you design reliable providers:
+
+### Error Isolation
+
+If a provider throws in `onBeforeAgentStart`, `onTurnEnd`, or `onSessionClose`:
+
+1. The error is caught and logged
+2. Other providers **still run** — one failing provider doesn't block others
+3. After **3 consecutive errors**, the provider is **auto-disabled** and won't be called again
+4. A successful call resets the error counter
+
+This means a buggy provider won't take down the entire session.
+
+### ProviderContext
+
+All lifecycle methods receive a `ProviderContext`:
+
+```typescript
+interface ProviderContext {
+  signal: AbortSignal;              // Abort signal for cancellation
+  timeoutMs: number;                // Recommended timeout (default: 5000)
+  sessionId: string;                // Current session ID
+  sessionFile?: string;             // Path to the session file
+  cwd: string;                      // Working directory
+  promptId?: string;                // Current prompt boundary (set during onBeforeAgentStart)
+  turnId?: number;                  // Current turn number within the prompt
+  isFirstTurn?: boolean;            // True if this is the first turn of the prompt
+}
+```
+
+### Deduplication Scope
+
+Deduplication is **per-prompt** — each user prompt gets a fresh dedupe state. This means:
+
+- Within a single user prompt, repeating `dedupeKey` values are skipped
+- Across different user prompts, dedupe keys are independent
+- The extension resets dedupe state at the start of each `before_agent_start` event
+
+---
+
+## Complete Example
+
+A provider that tracks file modifications and injects recent changes into each turn:
+
+```typescript
+// ~/.pizzapi/providers/git-context/index.ts
+import { readFileSync, existsSync } from "node:fs";
+import { join } from "node:path";
+import { execSync } from "node:child_process";
+
+export default {
+  id: "git-context",
+  label: "Git Context Provider",
+  version: "1.0.0",
+  capabilities: ["context", "lifecycle"],
+
+  config: {},
+  gitDir: "",
+
+  init(ctx) {
+    this.config = ctx.config;
+    // Default to the session working directory
+    this.gitDir = ctx.config.gitDir ?? process.cwd();
+    console.log(`[git-context] Watching ${this.gitDir}`);
+  },
+
+  dispose() {
+    console.log("[git-context] disposed");
+  },
+
+  onSessionStart(event, ctx) {
+    if (event.reason === "resume" || event.reason === "fork") {
+      console.log(`[git-context] Resumed from ${event.previousSessionFile}`);
+    }
+  },
+
+  onBeforeAgentStart(event, ctx) {
+    try {
+      const root = execSync("git rev-parse --show-toplevel", {
+        cwd: this.gitDir,
+        encoding: "utf-8",
+        timeout: 3000,
+      }).trim();
+
+      const status = execSync("git status --short", {
+        cwd: root,
+        encoding: "utf-8",
+        timeout: 3000,
+      }).trim();
+
+      if (!status) return [];
+
+      const lines = status.split("\n").slice(0, 10);
+      const changes = lines.join("\n");
+
+      return [
+        {
+          text: `Current working tree changes:\n${changes}`,
+          placement: "prepend",
+          order: 40,
+          summary: `${lines.length} working tree changes`,
+          dedupeKey: `git-status-${ctx.promptId}`,
+        },
+      ];
+    } catch {
+      return [];
+    }
+  },
+
+  onTurnEnd(event, ctx) {
+    // Log assistant messages that mention files
+    if (event.message.content.includes("file") || event.message.content.includes("change")) {
+      console.log(`[git-context] Turn ${event.turnIndex}: file changes discussed`);
+    }
+  },
+
+  onSessionClose(event, ctx) {
+    // Record session closure for analytics
+    return {
+      label: "Git session recorded",
+      jobRef: { type: "git-session", sessionId: ctx.sessionId },
+    };
+  },
+};
+```
+
+---
+
+## Project-Local Providers
+
+Providers can also be placed in a project's `.pizzapi/providers/` directory:
+
+<FileTree>
+- .pizzapi/providers/
+  - project-tool/
+    - index.ts
+</FileTree>
+
+Project providers require explicit trust via `allowProjectProviders: true` in `~/.pizzapi/config.json`:
+
+```json title="~/.pizzapi/config.json"
+{
+  "allowProjectProviders": true
+}
+```
+
+When a project provider has the same `id` as a global provider, the project provider is **skipped** with a warning. Global providers always take priority.
+
+---
+
+## Validation Rules
+
+When a provider module is loaded, the system validates:
+
+- `id` must be a non-empty string
+- `capabilities` must be an array
+- `init()` and `dispose()` must be functions
+- If `capabilities` includes `"context"`, `onBeforeAgentStart` must be a function
+- If `capabilities` includes `"lifecycle"`, at least one lifecycle method must be present
+- If `capabilities` includes `"ui-panel"`, at least one UI property (`panel`, `sidebarWidgets`, or `sessionMetadataCards`) must be defined
+- If `capabilities` includes `"metadata"`, `getSessionMetadata` must be a function
+
+Invalid modules are reported as errors but don't prevent other providers from loading.
+
+---
+
+## Troubleshooting
+
+**Provider not loaded:**
+- Check that the directory is in `~/.pizzapi/providers/<name>/` and has an `index.ts` file
+- Verify the module exports a valid `ExtensionProvider` (default export)
+- Check for log messages starting with `[provider-extension]` on the runner
+- Ensure `enabled` is not set to `false` in `~/.pizzapi/config.json`
+
+**Context not appearing:**
+- Verify the `"context"` capability is declared
+- Check that `onBeforeAgentStart` returns a non-empty array
+- If using `dedupeKey`, ensure it's unique within the prompt — the same key is only emitted once
+
+**Provider disabled after errors:**
+- Check for `[ProviderBridge] Disabling provider` warnings in the runner logs
+- Fix the errors and restart the session
+- The 3-error threshold is reset by a single successful call
+
+**Project provider not loading:**
+- Ensure `allowProjectProviders: true` is set in `~/.pizzapi/config.json` (the global config, not the project one)
+- Check for duplicate ID warnings — another provider with the same `id` may already be loaded globally
+
+---
+
+## See Also
+
+- [Hooks](/PizzaPi/customization/hooks/) — shell-script lifecycle hooks (alternative to Extension Providers)
+- [Runner Services](/PizzaPi/customization/runner-services/) — background processes with UI panels and custom triggers
+- [ProviderBridge API](/PizzaPi/reference/architecture/) — how providers are orchestrated

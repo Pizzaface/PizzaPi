@@ -2,7 +2,10 @@ import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
 import { TunnelRelay } from "@pizzapi/tunnel";
 import { WebSocketServer, type WebSocket as NodeWebSocket, type RawData } from "ws";
+import { createLogger } from "@pizzapi/tools";
 import { bindAuthContext, getAuth, type AuthContext } from "./auth.js";
+
+const log = createLogger("tunnel-relay");
 
 let relay: TunnelRelay | null = null;
 let wss: WebSocketServer | null = null;
@@ -89,7 +92,16 @@ export function initTunnelRelay(context: AuthContext): TunnelRelay {
     });
 
     wss = new WebSocketServer({ noServer: true });
-    wss.on("connection", (ws) => {
+    wss.on("connection", (ws, req) => {
+        const openedAt = Date.now();
+        const remote = req.headers["x-forwarded-for"] ?? req.socket.remoteAddress ?? "unknown";
+        log.info(`/_tunnel WebSocket connected remote=${String(remote)} ua=${req.headers["user-agent"] ?? "<none>"}`);
+        ws.on("close", (code, reason) => {
+            log.info(`/_tunnel WebSocket closed code=${code} reason=${reason.toString() || "<none>"} uptimeMs=${Date.now() - openedAt}`);
+        });
+        ws.on("error", (err) => {
+            log.warn("/_tunnel WebSocket error:", err);
+        });
         relay!.handleConnection(adaptWs(ws) as unknown as WebSocket);
     });
 
@@ -103,7 +115,16 @@ export function handleTunnelRelayUpgrade(
 ): boolean {
     const pathname = (req.url ?? "/").split("?")[0];
     if (pathname !== "/_tunnel") return false;
-    if (!wss) return false;
+    if (!wss) {
+        log.warn("/_tunnel upgrade received before tunnel relay WebSocket server was initialized");
+        return false;
+    }
+
+    const remote = req.headers["x-forwarded-for"] ?? (socket as any).remoteAddress ?? "unknown";
+    log.info(`/_tunnel upgrade accepted remote=${String(remote)} headBytes=${head.length} ua=${req.headers["user-agent"] ?? "<none>"}`);
+    socket.once("error", (err) => {
+        log.warn("/_tunnel upgrade socket error:", err);
+    });
 
     wss.handleUpgrade(req, socket, head, (ws) => {
         wss!.emit("connection", ws, req);

@@ -19,6 +19,7 @@ import { pizzapiTitleExtension } from "./pizzapi-title.js";
 import { pizzapiHeaderExtension } from "./pizzapi-header.js";
 import { toolSearchExtension } from "./tool-search.js";
 import { ollamaWebToolsExtension } from "./ollama-web-tools.js";
+import { providerExtension } from "./providers/extension.js";
 
 export interface BuildExtensionFactoriesOptions {
     cwd: string;
@@ -74,6 +75,9 @@ export function buildPizzaPiExtensionFactories(options: BuildExtensionFactoriesO
         named(pizzapiTitleExtension, "title"),
         named(pizzapiHeaderExtension, "header"),
     );
+
+    // Provider interface — context injection + lifecycle hooks
+    factories.push(named(providerExtension, "providers"));
 
     if (options.includeInitialPrompt) {
         factories.push(named(initialPromptExtension, "initial-prompt"));

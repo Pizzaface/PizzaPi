@@ -193,6 +193,90 @@ describe("TunnelRelay HTTP proxy callbacks", () => {
     expect(body.toString("binary")).toBe("hello");
   });
 
+  test("times out when the runner never starts a response", async () => {
+    const relay = new TunnelRelay({ apiKeys: ["key1"] });
+    const mockWs = createMockWebSocket();
+
+    relay.handleConnection(mockWs.ws);
+    mockWs.emit("message", {
+      data: JSON.stringify({ type: "register", runnerId: "r1", apiKey: "key1" }),
+    });
+    await waitForMicrotask();
+
+    const errors: string[] = [];
+    relay.proxyHttpRequest(
+      "r1",
+      { id: "req-timeout", port: 3000, method: "GET", url: "/events", headers: {} },
+      {
+        onResponseStart() {},
+        onResponseData() {},
+        onResponseEnd() {},
+        onError(error) {
+          errors.push(error);
+        },
+      },
+      5,
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(errors).toEqual(["Tunnel request timed out"]);
+    expect(JSON.parse(mockWs.sent.at(-1)!)).toMatchObject({ type: "request-end", id: "req-timeout" });
+  });
+
+  test("does not time out long-lived streams after response headers arrive", async () => {
+    const relay = new TunnelRelay({ apiKeys: ["key1"] });
+    const mockWs = createMockWebSocket();
+
+    relay.handleConnection(mockWs.ws);
+    mockWs.emit("message", {
+      data: JSON.stringify({ type: "register", runnerId: "r1", apiKey: "key1" }),
+    });
+    await waitForMicrotask();
+
+    const events: string[] = [];
+    relay.proxyHttpRequest(
+      "r1",
+      { id: "req-stream", port: 3000, method: "GET", url: "/events", headers: {} },
+      {
+        onResponseStart() {
+          events.push("start");
+        },
+        onResponseData() {
+          events.push("data");
+        },
+        onResponseEnd() {
+          events.push("end");
+        },
+        onError(error) {
+          events.push(`error:${error}`);
+        },
+      },
+      5,
+    );
+
+    mockWs.emit("message", {
+      data: JSON.stringify({
+        type: "response-start",
+        id: "req-stream",
+        statusCode: 200,
+        statusMessage: "OK",
+        headers: { "content-type": "text/event-stream" },
+      }),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    mockWs.emit("message", {
+      data: JSON.stringify({ type: "response-data", id: "req-stream", data: "event: ping\\n\\n" }),
+    });
+    mockWs.emit("message", {
+      data: JSON.stringify({ type: "response-data-end", id: "req-stream" }),
+    });
+    await waitForMicrotask();
+
+    expect(events).toEqual(["start", "data", "end"]);
+  });
+
   test("disconnect only fails requests for the matching runner", async () => {
     const relay = new TunnelRelay({ apiKeys: ["key1"] });
     const runnerA = createMockWebSocket();

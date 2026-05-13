@@ -78,6 +78,12 @@ export interface HooksConfig {
      */
     SessionShutdown?: HookEntry[];
 
+    /**
+     * Fires at the end of each agent turn.
+     * Fire-and-forget — exit code is ignored.
+     */
+    TurnEnd?: HookEntry[];
+
     // -- Second wave hooks --
 
     /**
@@ -97,6 +103,13 @@ export interface HooksConfig {
      * Exit code is ignored.
      */
     ModelSelect?: HookEntry[];
+
+    /**
+     * Fires when a session starts (startup, reload, new, resume, fork).
+     * Receives JSON on stdin with event name, reason, session ID, and model info.
+     * Fire-and-forget — exit code is ignored.
+     */
+    SessionStart?: HookEntry[];
 }
 
 // ── Sandbox configuration ─────────────────────────────────────────────────────
@@ -289,6 +302,11 @@ export interface ToolSearchConfig {
     keepLoadedTools?: boolean;
 }
 
+export interface ProviderConfig {
+  enabled?: boolean;
+  [key: string]: unknown;
+}
+
 export interface PizzaPiConfig {
     /** Override the default system prompt */
     systemPrompt?: string;
@@ -321,6 +339,9 @@ export interface PizzaPiConfig {
      * When false/unset, only hooks from ~/.pizzapi/config.json (global) run.
      */
     allowProjectHooks?: boolean;
+
+    /** Allow loading providers from project-local .pizzapi/providers/ directories. Default: false. */
+    allowProjectProviders?: boolean;
 
     /**
      * Trust gate: allow project-local MCP server definitions (.pizzapi/config.json) to be loaded.
@@ -465,4 +486,6 @@ export interface PizzaPiConfig {
      * Also supports per-server `deferLoading: true` in mcpServers entries.
      */
     toolSearch?: ToolSearchConfig;
+    /** Extension provider configurations, keyed by provider ID. */
+    providers?: Record<string, ProviderConfig>;
 }

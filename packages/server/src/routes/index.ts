@@ -10,6 +10,7 @@
 import { getLatestNpmVersion } from "../version.js";
 import { serverHealth } from "../health.js";
 import { getServerRuntimeInfo } from "../runtime-version.js";
+import { createLogger } from "@pizzapi/tools";
 import { handleAuthRoute } from "./auth.js";
 import { handleRunnersRoute } from "./runners.js";
 import { handleSessionsRoute } from "./sessions.js";
@@ -22,6 +23,9 @@ import { handleTunnelRoute } from "./tunnel.js";
 import { handleTriggersRoute } from "./triggers.js";
 import { handleWebhooksRoute } from "./webhooks.js";
 import type { RouteHandler } from "./types.js";
+
+const healthLog = createLogger("health");
+let lastHealthSignature = "";
 
 /** All domain routers, tried in order. */
 const routers: RouteHandler[] = [
@@ -49,9 +53,17 @@ export async function handleApi(req: Request, url: URL): Promise<Response | unde
     if (url.pathname === "/health" || url.pathname === "/status" || url.pathname === "/api/status") {
         const { redis, socketio, startedAt } = serverHealth;
         const ok = redis && socketio;
+        const status = ok ? "ok" : "degraded";
+        const signature = `${status}:redis=${redis}:socketio=${socketio}`;
+        if (signature !== lastHealthSignature) {
+            lastHealthSignature = signature;
+            const message = `health status=${status} redis=${redis} socketio=${socketio} uptime=${Math.floor((Date.now() - startedAt) / 1000)}s`;
+            if (ok) healthLog.info(message);
+            else healthLog.warn(message);
+        }
         const { serverVersion, socketProtocolVersion, buildTimestamp } = await getServerRuntimeInfo();
         return Response.json({
-            status: ok ? "ok" : "degraded",
+            status,
             redis,
             socketio,
             uptime: Math.floor((Date.now() - startedAt) / 1000),

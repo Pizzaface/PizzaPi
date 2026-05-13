@@ -33,7 +33,15 @@ mock.module("@pizzapi/tools", () => ({
 
 // Restore all module mocks after this file so they don't bleed into other
 // test files running in the same Bun worker process.
-afterAll(() => mock.restore());
+afterAll(() => {
+	mock.restore();
+	// Restore clipboard mock
+	Object.defineProperty(globalThis, "navigator", {
+		value: undefined,
+		writable: true,
+		configurable: true,
+	});
+});
 
 // Dynamically imported after mock.module so the alias is already intercepted.
 const { ErrorBoundary } = await import("./error-boundary");
@@ -54,6 +62,18 @@ beforeAll(() => {
 	(globalThis as any).Event = win.Event;
 	(globalThis as any).MouseEvent = win.MouseEvent;
 	(globalThis as any).MutationObserver = (win as any).MutationObserver;
+
+	// Mock clipboard API — not available in happy-dom
+	Object.defineProperty(globalThis, "navigator", {
+		value: {
+			...win.navigator,
+			clipboard: {
+				writeText: mock(async (_text: string) => {}),
+			},
+		},
+		writable: true,
+		configurable: true,
+	});
 	/* eslint-enable @typescript-eslint/no-explicit-any */
 });
 
@@ -196,7 +216,8 @@ describe("ErrorBoundary render: retry button resets the boundary", () => {
 		const buttons = container.getElementsByTagName("button");
 		expect(buttons.length).toBeGreaterThan(0);
 
-		const retryBtn = buttons[0];
+		// buttons[0] is copy, buttons[1] is retry
+		const retryBtn = buttons[1];
 		expect(retryBtn.getAttribute("aria-label")).toBe("Retry");
 
 		// Allow the recovery to succeed
@@ -226,12 +247,16 @@ describe("ErrorBoundary render: retry button resets the boundary", () => {
 
 		expect(container.innerHTML).toContain("Something went wrong");
 
-		// There should be at least two buttons: Retry and Reload
+		// There should be three buttons: Copy Details, Retry, and Reload
 		const buttons = container.getElementsByTagName("button");
-		expect(buttons.length).toBeGreaterThanOrEqual(2);
+		expect(buttons.length).toBeGreaterThanOrEqual(3);
 
-		// First button should be "Retry"
-		const retryBtn = buttons[0];
+		// First button should be "Copy Details"
+		const copyBtn = buttons[0];
+		expect(copyBtn.textContent).toContain("Copy Details");
+
+		// Second button should be "Retry"
+		const retryBtn = buttons[1];
 		expect(retryBtn.textContent).toContain("Retry");
 
 		shouldThrow = false;
@@ -360,5 +385,68 @@ describe("ErrorBoundary render: level-specific fallback markup", () => {
 		// Default level is 'section'
 		const { container } = renderCrashed("boom");
 		expect(container.innerHTML).toContain("Something went wrong");
+	});
+});
+
+// ── 7. Copy error details button ─────────────────────────────────────────
+
+describe("ErrorBoundary render: copy error details button", () => {
+	test("widget level has a copy button with icon", () => {
+		const { container } = renderCrashed("boom", { level: "widget" });
+		// Widget level has 3 buttons: copy, retry (both aria-label only)
+		const buttons = container.getElementsByTagName("button");
+		expect(buttons.length).toBe(2);
+		expect(buttons[0].getAttribute("aria-label")).toContain("Copy error details");
+		expect(buttons[1].getAttribute("aria-label")).toBe("Retry");
+	});
+
+	test("section level has a Copy Details button", () => {
+		const { container } = renderCrashed("boom", { level: "section" });
+		expect(container.innerHTML).toContain("Copy Details");
+	});
+
+	test("root level has a Copy Details button", () => {
+		const { container } = renderCrashed("boom", { level: "root" });
+		expect(container.innerHTML).toContain("Copy Details");
+	});
+
+	test("clicking Copy Details writes error info to clipboard", async () => {
+		const writeTextMock = mock(async (_text: string) => {});
+		Object.defineProperty(globalThis, "navigator", {
+			value: {
+				clipboard: { writeText: writeTextMock },
+			},
+			writable: true,
+			configurable: true,
+		});
+
+		const { container } = renderCrashed("Test crash message", { level: "section" });
+
+		const buttons = container.getElementsByTagName("button");
+		const copyBtn = buttons[0];
+		expect(copyBtn.textContent).toContain("Copy Details");
+
+		await act(async () => {
+			fireEvent.click(copyBtn);
+		});
+
+		expect(writeTextMock).toHaveBeenCalledTimes(1);
+		const clipboardText = writeTextMock.mock.calls[0][0];
+		expect(clipboardText).toContain("Test crash message");
+	});
+
+	test("copy button shows 'Copied!' after click and reverts", async () => {
+		const { container } = renderCrashed("boom", { level: "section" });
+
+		const buttons = container.getElementsByTagName("button");
+		const copyBtn = buttons[0];
+		expect(copyBtn.textContent).toContain("Copy Details");
+
+		await act(async () => {
+			fireEvent.click(copyBtn);
+		});
+
+		// After click, button should show "Copied!"
+		expect(copyBtn.textContent).toContain("Copied!");
 	});
 });

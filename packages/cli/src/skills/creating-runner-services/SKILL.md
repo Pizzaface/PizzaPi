@@ -1,29 +1,231 @@
 ---
 name: creating-runner-services
-description: Use when building a new runner service — background processes with optional UI panels, custom triggers agents can subscribe to, or sigils that render inline references in the UI
+description: Use when building a new runner service — background processes with optional UI panels, custom triggers agents can subscribe to, sigils that render inline references in the UI, or lifecycle-aware context injection into agent turns
 ---
 
 # Creating Runner Services
 
-Runner services are background processes on the runner daemon. They can:
+Runner services are background processes on the runner daemon. Pick the right API for your needs:
 
-- **Expose a UI panel** — an iframe in the PizzaPi web interface (no React needed)
-- **Advertise custom triggers** — agents discover and subscribe to them at runtime
-- **Define sigils** — teach the UI how to render `[[type:id]]` inline references
-- **Fire triggers** — broadcast events to all subscribed agent sessions via the relay API
+| API | Directory | Use when |
+|-----|-----------|----------|
+| **ExtensionProvider** | `~/.pizzapi/providers/` | You need lifecycle hooks (session start/end, turn end), context injection into the LLM's system prompt, or session metadata attachment. Preferred for new services. |
+| **ServiceHandler** | `~/.pizzapi/services/` | You only need a panel, triggers, or sigils — no lifecycle awareness. Simpler, less boilerplate for panel-only services. |
+
+---
+
+# ExtensionProvider API (Recommended)
+
+The `ExtensionProvider` interface gives services direct access to:
+
+- **Context injection** — inject text into the LLM's system prompt before each turn
+- **Lifecycle hooks** — react to session_start, turn_end, session_shutdown, session_close
+- **UI extension** — sidebar widgets, metadata cards, and panels visible in the web UI
+- **Session metadata** — attach typed metadata to session records
 
 ## Folder Structure
 
 ```
-~/.pizzapi/services/<service-name>/
-  manifest.json       # Required — core identity (id, label, icon, entry, panel)
-  triggers.json       # Optional — trigger definitions (overrides manifest.triggers)
-  sigils.json         # Optional — sigil type definitions (overrides manifest.sigils)
-  index.ts            # ServiceHandler module (default export)
-  panel/              # Optional — only needed if the service has a UI panel
-    index.html        # Self-contained UI (HTML/CSS/JS)
-    ...               # Any additional static assets
+~/.pizzapi/providers/<provider-id>/
+  index.ts            # ExtensionProvider module (default export)
+  panel/              # Optional — static panel assets (HTML/CSS/JS)
 ```
+
+## ExtensionProvider Template
+
+```typescript
+import type { ExtensionProvider, ProviderInitContext, ProviderContext } from "@pizzapi/cli/providers/types";
+
+class MyProvider implements ExtensionProvider {
+  id = "my-provider";
+  capabilities = ["context", "lifecycle", "ui-panel", "metadata"] as const;
+
+  // ── Core Lifecycle ────────────────────────────────────────
+
+  init(ctx: ProviderInitContext) {
+    // ctx.config — per-provider config from config.json
+    // ctx.fireTrigger(sessionId, type, payload) — fire triggers
+    // ctx.publishMetadata(sessionId, metadata) — push metadata to UI
+    // ctx.socket — relay socket for custom protocols
+  }
+
+  dispose() {
+    // Cleanup
+  }
+
+  // ── Context Injection ─────────────────────────────────────
+
+  async onBeforeAgentStart(event, ctx) {
+    // Search your DB for relevant context based on event.prompt
+    return [
+      {
+        text: "Memory: use pnpm, not npm",
+        placement: "prepend",        // "prepend" | "append"
+        order: 50,                   // Lower = sorted first (default 100)
+        dedupeKey: "pkg-mgr",        // Same key + providerId = dedup
+        summary: "Package manager preference",
+        referencedArtifacts: [{
+          id: "mem-123",
+          type: "memory",
+          label: "Use pnpm"
+        }],
+      },
+    ];
+  }
+
+  // ── Lifecycle Hooks ───────────────────────────────────────
+
+  async onSessionStart(event, ctx) {
+    // event.reason — "startup" | "reload" | "new" | "resume" | "fork"
+    // event.model  — { provider, id, name } | undefined  (model active at session start)
+    // Use event.model to gate provider behavior on the current model
+    // Rehydrate session state, load pending jobs
+  }
+
+  async onTurnEnd(event, ctx) {
+    // event.turnIndex, event.message, event.toolResults
+    // Incremental indexing — scan messages for signals
+  }
+
+  async onSessionShutdown(event, ctx) {
+    // event.reason — "quit" | "reload" | "new" | "resume" | "fork"
+    // Flush pending writes
+  }
+
+  async onSessionClose(event, ctx) {
+    // event.reason — "close" | "error" | "complete"
+    // Best-effort final flush before archival
+    return { label: "Finalizing memory…", jobRef: { jobId: "123" } };
+  }
+
+  // ── UI Extension ──────────────────────────────────────────
+
+  get panel() {
+    return { dir: "./panel", requires: ["SESSION_ID", "PROJECT_DIR"] };
+  }
+
+  get sidebarWidgets() {
+    return [{
+      id: "my-timeline",
+      label: "Recent Activity",
+      source: { type: "html", dir: "./widgets/timeline" },
+    }];
+  }
+
+  get sessionMetadataCards() {
+    return [{
+      id: "my-stats",
+      label: "Provider Stats",
+      source: { type: "api", endpoint: "./api/stats" },
+    }];
+  }
+
+  // ── Session Metadata ──────────────────────────────────────
+
+  async getSessionMetadata(sessionId, ctx) {
+    return {
+      activeDirectives: 3,
+      recentMemories: ["Use pnpm", "Write tests first"],
+    };
+  }
+}
+
+export default MyProvider;
+```
+
+## Capability Interfaces
+
+A provider implements capability interfaces by duck-typing. PizzaPi discovers what a provider supports by checking its method signatures. Declare which capabilities you implement in the `capabilities` array:
+
+| Capability | Key methods/properties |
+|-----------|----------------------|
+| `"context"` | `onBeforeAgentStart(event, ctx)` → `ContextContribution[]` |
+| `"lifecycle"` | `onSessionStart`, `onTurnEnd`, `onSessionClose`, `onSessionShutdown` |
+| `"ui-panel"` | `panel`, `sidebarWidgets`, `sessionMetadataCards` |
+| `"metadata"` | `getSessionMetadata(sessionId, ctx)` → `Record<string, unknown>` |
+
+## Provider Configuration
+
+Providers can be configured in `~/.pizzapi/config.json`:
+
+```json
+{
+  "providers": {
+    "my-provider": {
+      "enabled": true,
+      "dbPath": "/custom/path/to/db.sqlite"
+    }
+  }
+}
+```
+
+The config object is passed to `ProviderInitContext.config` during `init()`. Set `"enabled": false` to disable a provider.
+
+**Trust gate:** Project-local providers (`.pizzapi/providers/`) are disabled by default. Set `"allowProjectProviders": true` in `config.json` to enable them for a specific project.
+
+## ProviderContext Fields
+
+Every hook method receives `ProviderContext`:
+
+| Field | Description |
+|-------|-------------|
+| `signal` | `AbortSignal` — respect this to cancel work |
+| `timeoutMs` | Timeout budget for this hook (default 5000ms) |
+| `sessionId` | Current session ID |
+| `sessionFile` | Path to session JSONL file |
+| `cwd` | Working directory |
+| `promptId` | Stable across all turns of one user prompt (turn-scoped only) |
+| `turnId` | Incrementing turn index within the current prompt |
+| `isFirstTurn` | `true` only for turn 0 |
+
+## Error Isolation
+
+PizzaPi catches provider errors and continues without the failing provider's contribution. After 3 consecutive errors, a provider is temporarily disabled for the remainder of the session. Errors are logged and surfaced in the provider's panel.
+
+## SessionStart Model Information
+
+`onSessionStart` now receives the active model in the event payload. This lets providers and hooks gate behavior on the model at session start — for example, adjusting context injection strategy per-model.
+
+```typescript
+async onSessionStart(event, ctx) {
+  // event.model — { provider: string; id: string; name: string } | undefined
+  // undefined only during very early startup before model resolution
+  console.log(`Session started with model: ${event.model?.id ?? 'unknown'}`);
+}
+```
+
+The same model information is also available to **native hooks** via the `SessionStart` hook:
+
+```json
+// ~/.pizzapi/config.json
+{
+  "hooks": {
+    "SessionStart": [{
+      "command": "echo $PIZZAPI_MODEL_ID > /tmp/session-model.txt"
+    }]
+  }
+}
+```
+
+Hook scripts receive JSON on stdin:
+
+```json
+{
+  "event": "SessionStart",
+  "reason": "startup",
+  "previous_session_file": null,
+  "session_id": "abc123",
+  "model": { "provider": "anthropic", "id": "claude-sonnet-4-20250514", "name": "Claude 4 Sonnet" }
+}
+```
+
+When no model is available yet, `model` is `null`. This is a fire-and-forget hook — exit codes are ignored.
+
+---
+
+# ServiceHandler API (Legacy)
+
+Use the `ServiceHandler` interface for simple services that only need a panel, triggers, or sigils — no lifecycle awareness.
 
 ## manifest.json
 
@@ -458,6 +660,21 @@ A service doesn't need a panel. Omit `panel` from manifest.json and skip the `an
 ```
 
 ## How It Works
+
+### ExtensionProvider
+
+```
+1. Daemon discovers folder in ~/.pizzapi/providers/
+2. Reads index.ts → validates capabilities against declared methods
+3. Calls provider.init(config) → provider initializes its DB/state
+4. On session_start → bridge fires onSessionStart on all providers
+5. On before_agent_start → bridge collects ContextContribution[], sorts, dedupes, injects into system prompt
+6. On turn_end → bridge fires onTurnEnd for incremental indexing
+7. On session archival → daemon calls onSessionClose for final flush
+8. On session_shutdown → bridge fires onSessionShutdown, then calls provider.dispose()
+```
+
+### ServiceHandler
 
 ```
 1. Daemon discovers folder in ~/.pizzapi/services/

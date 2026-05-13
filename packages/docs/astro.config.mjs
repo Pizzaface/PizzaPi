@@ -119,6 +119,7 @@ export default defineConfig({
                         { label: "Agent Definitions", slug: "customization/agent-definitions" },
                         { label: "Claude Code Plugins", slug: "customization/claude-plugins" },
                         { label: "Runner Services", slug: "customization/runner-services" },
+                        { label: "Extension Providers", slug: "customization/providers" },
                         { label: "Subagents", slug: "customization/subagents" },
                     ],
                 },
