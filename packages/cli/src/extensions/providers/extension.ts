@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { ProviderBridge } from "../../providers/bridge";
 import type { ProviderContext, SessionCloseResult } from "../../providers/types";
+import { loadGlobalConfig } from "../../config/io";
 
 let bridge: ProviderBridge | null = null;
 /** Provider instances tracked separately for disposal (bridge doesn't own lifecycle). */
@@ -70,7 +71,7 @@ export async function providerExtension(pi: ExtensionAPI) {
 
     const result = await discoverProviders({
       cwd: ctx.cwd,
-      allowProject: ctx.config?.allowProjectProviders === true,
+      allowProject: loadGlobalConfig().allowProjectProviders === true,
     });
     for (const err of result.errors) {
       console.error(`[provider-extension] Load error: ${err.path} — ${err.error}`);
