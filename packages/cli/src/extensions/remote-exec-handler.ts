@@ -26,6 +26,10 @@ function listSessionsForResume(ctx: ExtensionContext): Promise<SessionInfo[]> {
     return listSessionsCached(sessionDir);
 }
 
+function resolveScopedCwd(rctx: RelayContext): string {
+    return rctx.latestCtx?.cwd ?? process.cwd();
+}
+
 function pickResumeSession(sessions: SessionInfo[], currentPath: string | undefined, query?: string): SessionInfo | null {
     const normalized = query?.trim().toLowerCase();
     const candidates = sessions.filter((session) => session.path !== currentPath);
@@ -101,7 +105,7 @@ export async function handleExecFromWeb(
                 replyErr("Missing serverName");
                 return;
             }
-            const toggleResult = toggleMcpServer(serverName, disabled, process.cwd());
+            const toggleResult = toggleMcpServer(serverName, disabled, resolveScopedCwd(rctx));
             if (toggleResult.globallyDisabled) {
                 replyErr(`Cannot enable "${serverName}" — it is disabled in the global config (~/.pizzapi/config.json)`);
                 return;
@@ -525,8 +529,9 @@ export async function handleExecFromWeb(
             }
             saveGlobalConfig({ sandbox: merged });
             // Reload and resolve config to return the new resolved state
-            const newConfig = loadConfig(process.cwd());
-            const resolved = resolveSandboxConfig(process.cwd(), newConfig);
+            const cwd = resolveScopedCwd(rctx);
+            const newConfig = loadConfig(cwd);
+            const resolved = resolveSandboxConfig(cwd, newConfig);
             replyOk({
                 saved: true,
                 resolvedConfig: resolved,
