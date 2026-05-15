@@ -37,13 +37,13 @@ if docker inspect "$CONTAINER_NAME" --format '{{.State.Status}}' 2>/dev/null | g
     exit 0
 fi
 
-# ── Port already in use (non-Docker Redis)? ──────────────────────────────────
+# ── Port already in use (reuse existing local Redis) ──────────────────────────
 if lsof -i ":$REDIS_PORT" -sTCP:LISTEN &>/dev/null; then
-    echo "⚠️  Port $REDIS_PORT is already in use by another process:"
+    echo "✅ Port $REDIS_PORT is already in use by an existing local service."
     lsof -i ":$REDIS_PORT" -sTCP:LISTEN
     echo ""
-    echo "   Kill that process or change REDIS_PORT in this script."
-    exit 1
+    echo "   Reusing redis://localhost:$REDIS_PORT"
+    exit 0
 fi
 
 # ── Container exists but stopped → restart ────────────────────────────────────
