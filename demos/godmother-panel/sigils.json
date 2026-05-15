@@ -1,0 +1,15 @@
+[
+  {
+    "type": "idea",
+    "label": "Idea",
+    "description": "A Godmother idea/task reference",
+    "resolve": "/api/resolve/idea/{id}",
+    "aliases": ["task", "gm"]
+  },
+  {
+    "type": "epic",
+    "label": "Epic",
+    "description": "A Godmother epic initiative",
+    "resolve": "/api/resolve/epic/{id}"
+  }
+]

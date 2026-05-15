@@ -37,3 +37,10 @@ import { SystemMonitorPanel } from "./SystemMonitorPanel";
 - Uses `useServiceChannel("system-monitor")` to subscribe to stats updates
 - The runner service pushes CPU load, memory, and disk stats at a configurable interval
 - Renders gauge bars with color-coded thresholds (green → amber → red)
+
+## Godmother Panel
+
+Tracked example of the full Godmother panel source and MCP bridge.
+
+- Source: `demos/godmother-panel/`
+- Includes: manifest, panel assets, MCP bridge, and tests

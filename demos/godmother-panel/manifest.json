@@ -1,0 +1,16 @@
+{
+  "id": "godmother-panel",
+  "label": "Godmother",
+  "icon": "book-open",
+  "entry": "./index.ts",
+  "panel": {
+    "dir": "./panel"
+  },
+  "triggers": [
+    {
+      "type": "godmother:spawn_session",
+      "label": "Session Spawned",
+      "description": "Fired when a new PizzaPi session is spawned from the Godmother panel. Payload includes sessionId, runnerId, and cwd."
+    }
+  ]
+}

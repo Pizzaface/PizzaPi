@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Godmother</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+<div class="shell">
+  <!-- Toolbar -->
+  <div class="toolbar">
+    <div class="tb-group">
+      <button class="btn active" data-view="board" id="tabBoard">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="18" rx="1"/><rect x="14" y="3" width="7" height="10" rx="1"/></svg>
+        <span>Board</span>
+      </button>
+      <button class="btn" data-view="list" id="tabList">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
+        <span>List</span>
+      </button>
+    </div>
+    <div class="tb-sep"></div>
+    <select id="projectFilter" style="max-width: 110px; font-size: 10px; padding: 2px 6px;">
+      <option value="">All projects</option>
+    </select>
+    <!-- Active filter chips -->
+    <div id="filterChips" class="filter-chips"></div>
+    <div class="spacer"></div>
+    <button class="btn btn-ghost btn-icon" id="filterToggle" title="Filter &amp; Group">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>
+    </button>
+    <button class="btn btn-ghost btn-icon" id="searchToggle" title="Search">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+    </button>
+    <button class="btn btn-ghost btn-icon" id="captureToggle" title="Capture idea">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+    </button>
+    <button class="btn btn-ghost btn-icon" id="settingsToggle" title="Settings">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+    </button>
+    <button class="btn btn-ghost btn-icon" id="refreshBtn" title="Refresh">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+    </button>
+    <div class="tb-group" id="statusIndicator">
+      <div class="status-dot loading"></div>
+      <span class="status-text" id="statusText">Connecting…</span>
+    </div>
+  </div>
+
+  <!-- Search bar (collapsible) -->
+  <div class="search-bar" id="searchBar">
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--muted)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+    <input id="searchInput" placeholder="Semantic search…" autofocus />
+    <select id="searchProject" style="max-width: 100px; font-size: 10px; padding: 2px 4px;">
+      <option value="">Any project</option>
+    </select>
+    <button class="btn btn-primary" id="searchGoBtn" style="font-size: 10px; padding: 2px 8px;">Go</button>
+    <button class="btn btn-ghost btn-icon" id="searchClose" title="Close search">✕</button>
+  </div>
+
+  <!-- Capture drawer (collapsible) -->
+  <div class="capture-drawer" id="captureDrawer">
+    <div class="capture-row">
+      <input id="captureProject" value="PizzaPi" placeholder="Project" style="max-width: 100px;" />
+      <input id="captureSummary" placeholder="Summary (short title)" style="flex: 2;" />
+      <input id="captureTopics" placeholder="Topics (comma sep)" />
+      <button class="btn btn-primary" id="captureBtn" style="font-size: 10px;">Capture</button>
+      <button class="btn btn-ghost btn-icon" id="captureClose" title="Close">✕</button>
+    </div>
+    <textarea id="captureContent" placeholder="Description — include context, expected behavior, or impact."></textarea>
+  </div>
+
+  <!-- Content area -->
+  <div class="content-area">
+    <!-- Board view -->
+    <div class="board active" id="boardView">
+      <div class="board-inner" id="boardInner">
+        <!-- columns rendered by JS -->
+      </div>
+    </div>
+
+    <!-- List view -->
+    <div class="list-view" id="listView">
+      <!-- items rendered by JS -->
+    </div>
+  </div>
+</div>
+
+<!-- Filter popover -->
+<div class="filter-backdrop" id="filterBackdrop"></div>
+<div class="filter-popover" id="filterPopover">
+  <div class="fp-section">
+    <div class="fp-label">Group by</div>
+    <div class="fp-pills" id="fpGroupBy">
+      <button class="fp-pill active" data-value="status">Status</button>
+      <button class="fp-pill" data-value="epic">Epic</button>
+      <button class="fp-pill" data-value="none">None</button>
+    </div>
+  </div>
+  <div class="fp-section">
+    <div class="fp-label">Status</div>
+    <div class="fp-pills fp-multi" id="fpStatus"></div>
+  </div>
+  <div class="fp-section">
+    <div class="fp-label">Epic</div>
+    <select id="fpEpic" class="fp-select">
+      <option value="">Any</option>
+      <option value="__none__">Unassigned</option>
+    </select>
+  </div>
+  <div class="fp-section">
+    <div class="fp-label">Topic</div>
+    <input id="fpTopic" class="fp-input" placeholder="Filter by topic…" />
+  </div>
+  <div class="fp-footer">
+    <button class="btn btn-ghost" id="fpClear" style="font-size:11px;">Clear all</button>
+  </div>
+</div>
+
+<!-- Detail panel -->
+<div class="detail-backdrop" id="detailBackdrop"></div>
+<div class="detail-panel" id="detailPanel">
+  <div class="detail-header">
+    <div class="detail-status" id="detailStatusBadge"></div>
+    <div class="detail-header-actions">
+      <button class="detail-btn detail-archive-btn" id="detailArchiveBtn" title="Archive idea">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="21 8 21 21 3 21 3 8"/><rect x="1" y="3" width="22" height="5"/><line x1="10" y1="12" x2="14" y2="12"/></svg>
+      </button>
+      <button class="detail-btn detail-delete-btn" id="detailDeleteBtn" title="Delete idea">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>
+      </button>
+      <button class="detail-close" id="detailClose" title="Close">✕</button>
+    </div>
+  </div>
+  <div class="detail-body">
+    <div class="detail-content" id="detailContent"></div>
+    <div class="detail-meta">
+      <div>
+        <div class="detail-section-label">Status</div>
+        <div class="status-pills" id="detailStatusPills"></div>
+      </div>
+      <div id="detailTopicsSection" style="display:none;">
+        <div class="detail-section-label">Topics</div>
+        <div class="detail-topics" id="detailTopics"></div>
+      </div>
+      <div id="detailEpicSection" style="display:none;">
+        <div class="detail-section-label">Epic</div>
+        <div id="detailEpic"></div>
+      </div>
+      <div class="detail-meta-row">
+        <span class="meta-label">Project</span>
+        <span class="meta-value" id="detailProject"></span>
+      </div>
+      <div class="detail-meta-row">
+        <span class="meta-label">ID</span>
+        <span class="detail-id" id="detailId"></span>
+      </div>
+    </div>
+
+    <!-- Spawn session (collapsed by default) -->
+    <div class="detail-spawn" id="detailSpawnSection">
+      <button class="detail-spawn-toggle" id="detailSpawnToggle" aria-expanded="false">
+        <svg class="detail-spawn-chevron" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><polyline points="8 21 12 17 16 21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+        Spawn Session
+      </button>
+      <div class="detail-spawn-body" id="detailSpawnBody">
+        <div class="detail-spawn-row">
+          <label class="detail-spawn-label" for="detailSpawnModel">Model</label>
+          <select id="detailSpawnModel" class="detail-spawn-model fp-select" data-model-select>
+            <option value="">Runner default</option>
+          </select>
+        </div>
+        <textarea id="detailSpawnPrompt" class="detail-spawn-prompt" placeholder="Additional instructions (optional)&#10;&#10;The idea's title, description, project, status, and topics are automatically included as context. Use this field to add what you want the session to do with it — e.g. &quot;implement this feature&quot;, &quot;write tests for&quot;, &quot;investigate and fix&quot;.&#10;&#10;⌘+Enter to spawn."></textarea>
+        <button class="btn btn-primary detail-spawn-btn" id="detailSpawnBtn">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><polyline points="8 21 12 17 16 21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+          Spawn Session
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Settings modal -->
+<div class="settings-backdrop" id="settingsBackdrop"></div>
+<div class="settings-modal" id="settingsModal">
+  <div class="settings-header">
+    <span class="settings-title">Settings</span>
+    <button class="detail-close" id="settingsClose" title="Close">✕</button>
+  </div>
+  <div class="settings-body">
+    <div class="settings-section">
+      <div class="settings-section-title">Working Directory per Project</div>
+      <div class="settings-hint" style="margin-bottom:10px;">Set the default working directory used when spawning a session. Matched by the active project filter.</div>
+      <div class="settings-field">
+        <label class="settings-label" for="settingDefaultCwd">Fallback (no project selected)</label>
+        <input id="settingDefaultCwd" placeholder="e.g. ~/Projects  (leave empty for runner default)" />
+      </div>
+      <div id="settingsProjectRows" style="display:flex;flex-direction:column;gap:8px;margin-top:10px;">
+        <!-- rows injected by JS -->
+      </div>
+    </div>
+  </div>
+  <div class="settings-footer">
+    <button class="btn btn-primary" id="settingsSave" style="font-size: 11px; padding: 5px 14px;">Save</button>
+  </div>
+</div>
+
+<!-- Context Menu -->
+<div class="context-menu" id="contextMenu">
+  <div class="context-menu-header" id="contextMenuHeader"></div>
+  <div class="context-menu-items" id="contextMenuItems"></div>
+</div>
+
+<!-- Toast -->
+<div class="toast" id="toast"></div>
+
+<script src="./app.js"></script>
+</body>
+</html>
