@@ -5,7 +5,7 @@ import { VitePWA } from "vite-plugin-pwa";
 import path from "path";
 import fs from "fs";
 
-const API_PORT = process.env.PORT ?? "3001";
+const API_PORT = process.env.PORT ?? "7492";
 const buildTimestamp = new Date().toISOString();
 const uiPackageJson = JSON.parse(
     fs.readFileSync(path.resolve(__dirname, "./package.json"), "utf8"),
@@ -149,7 +149,11 @@ export default defineConfig({
         allowedHosts: extraAllowedHosts.length ? extraAllowedHosts : undefined,
         https: tlsConfig,
         proxy: {
-            "/api": `http://localhost:${API_PORT}`,
+            "/health": `http://localhost:${API_PORT}`,
+            "/api": {
+                target: `http://localhost:${API_PORT}`,
+                ws: true,
+            },
             "/socket.io": {
                 target: `http://localhost:${API_PORT}`,
                 ws: true,
