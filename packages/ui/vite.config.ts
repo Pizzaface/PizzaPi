@@ -150,7 +150,10 @@ export default defineConfig({
         https: tlsConfig,
         proxy: {
             "/health": `http://localhost:${API_PORT}`,
-            "/api": `http://localhost:${API_PORT}`,
+            "/api": {
+                target: `http://localhost:${API_PORT}`,
+                ws: true,
+            },
             "/socket.io": {
                 target: `http://localhost:${API_PORT}`,
                 ws: true,
