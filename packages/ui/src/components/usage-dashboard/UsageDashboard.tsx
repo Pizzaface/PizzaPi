@@ -12,9 +12,10 @@ import type { UsageData, UsageRange } from "./types";
 
 interface UsageDashboardProps {
   runnerId: string;
+  onInspectSession?: (sessionId: string) => void;
 }
 
-export function UsageDashboard({ runnerId }: UsageDashboardProps) {
+export function UsageDashboard({ runnerId, onInspectSession }: UsageDashboardProps) {
   const [range, setRange] = useState<UsageRange>("90d");
   const [data, setData] = useState<UsageData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -112,7 +113,7 @@ export function UsageDashboard({ runnerId }: UsageDashboardProps) {
       </div>
 
       {/* Recent Sessions */}
-      <SessionTable sessions={data.recentSessions} />
+      <SessionTable sessions={data.recentSessions} onInspectSession={onInspectSession} />
     </div>
   );
 }

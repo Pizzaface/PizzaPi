@@ -68,6 +68,7 @@ import {
   X,
   Zap,
   Pencil,
+  BarChart3,
 } from "lucide-react";
 import { AtMentionPopover } from "@/components/AtMentionPopover";
 import { McpToggleContext } from "@/components/session-viewer/McpToggleContext";
@@ -78,6 +79,7 @@ import { useDocumentPopoverKeyboardNavigation } from "@/components/session-viewe
 import { resolveCommandPopoverState } from "@/components/session-viewer/utils";
 
 import { ContextDonut } from "@/components/session-viewer/rendering";
+import { SessionAnalyzerPanel } from "@/components/session-viewer/SessionAnalyzerPanel";
 
 // ── Sub-module imports ────────────────────────────────────────────────────────
 import type { SessionViewerProps as BaseSessionViewerProps, CmdEntry } from "@/components/session-viewer/viewer-types";
@@ -171,6 +173,7 @@ export function SessionViewer({
 }) {
   // ── Misc local state ──────────────────────────────────────────────────────
   const [composerError, setComposerError] = React.useState<string | null>(null);
+  const [showAnalyzerPanel, setShowAnalyzerPanel] = React.useState(false);
 
   const sendActionSigilResponse = React.useCallback(
     async (text: string): Promise<boolean> => {
@@ -717,6 +720,10 @@ export function SessionViewer({
                 </Tooltip>
               </div>
             </div>
+          )}
+
+          {showAnalyzerPanel && sessionId && runnerId && (
+            <SessionAnalyzerPanel runnerId={runnerId} sessionId={sessionId} />
           )}
 
           {/* ── Conversation area ─────────────────────────────────────────── */}
@@ -1543,6 +1550,10 @@ export function SessionViewer({
                       onExec({ type: "exec", id: `${Date.now()}-${Math.random().toString(16).slice(2)}`, command: "compact" });
                     } : undefined}
                   />
+                  <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={() => setShowAnalyzerPanel(p => !p)} title="Context & Cache Analysis" type="button">
+                    <BarChart3 className="h-3.5 w-3.5 mr-1" />
+                    Analyze
+                  </Button>
                   <ComposerAttachmentButton />
                   <ComposerSubmitButton sessionId={sessionId} input={input} agentActive={agentActive} onExec={onExec} isTouchDevice={isTouchDevice} />
                 </div>
