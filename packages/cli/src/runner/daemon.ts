@@ -1481,6 +1481,46 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             }
         });
 
+        // ── Session Analysis ──────────────────────────────────────────
+
+        socket.on("get_session_analysis", (data: any) => {
+            if (isShuttingDown) return;
+            const requestId = data.requestId ?? "";
+            try {
+                const sessionId = data.sessionId;
+                if (!sessionId || typeof sessionId !== "string") {
+                    socket.emit("session_analysis_error", {
+                        requestId,
+                        error: "Missing sessionId parameter",
+                    });
+                    return;
+                }
+                // Query provider DB — provider must be loaded and initialized
+                const provider = providerRegistry?.get("session-analyzer");
+                if (!provider) {
+                    socket.emit("session_analysis_error", {
+                        requestId,
+                        error: "Session analyzer provider not available",
+                    });
+                    return;
+                }
+                const analysis = (provider as any).getAnalysis?.(sessionId);
+                if (!analysis) {
+                    socket.emit("session_analysis_error", {
+                        requestId,
+                        error: "No analysis data for session " + sessionId,
+                    });
+                    return;
+                }
+                socket.emit("session_analysis_data", { requestId, data: analysis });
+            } catch (e: any) {
+                socket.emit("session_analysis_error", {
+                    requestId,
+                    error: e.message ?? "Unknown error",
+                });
+            }
+        });
+
         // ── Settings ───────────────────────────────────────────────────────
 
         // sanitizeConfigForUI is imported from ./daemon-config-sanitize.js

@@ -1101,5 +1101,28 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
         }
     }
 
+    // GET /api/runners/:id/analysis/:sessionId
+    const analysisMatch = url.pathname.match(/^\/api\/runners\/([^/]+)\/analysis\/([^/]+)$/);
+    if (analysisMatch && req.method === "GET") {
+        const identity = await requireSession(req);
+        if (identity instanceof Response) return identity;
+
+        const runnerId = decodeURIComponent(analysisMatch[1]);
+        const sessionId = decodeURIComponent(analysisMatch[2]);
+        const runner = await getRunnerData(runnerId);
+        if (!runner) return Response.json({ error: "Runner not found" }, { status: 404 });
+        if (runner.userId !== identity.userId) return Response.json({ error: "Forbidden" }, { status: 403 });
+
+        try {
+            const result = await sendRunnerCommand(runnerId, { type: "get_session_analysis", sessionId }, 30_000) as any;
+            if (result && result.error) {
+                return Response.json({ error: result.error }, { status: 502 });
+            }
+            return Response.json(result);
+        } catch (err) {
+            return Response.json({ error: err instanceof Error ? err.message : String(err) }, { status: 502 });
+        }
+    }
+
     return undefined;
 };

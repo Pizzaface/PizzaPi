@@ -162,8 +162,14 @@ export interface RunnerClientToServerEvents {
     data: unknown; // UsageData shape — typed as unknown here to avoid protocol depending on CLI types
   }) => void;
 
-  /** Runner reports a usage data error */
-  usage_error: (data: {
+  /** Runner responds with session analysis data */
+  session_analysis_data: (data: {
+    requestId?: string;
+    data: unknown; // SessionAnalysis shape
+  }) => void;
+
+  /** Runner reports a session analysis error */
+  session_analysis_error: (data: {
     requestId?: string;
     error: string;
   }) => void;
@@ -442,6 +448,12 @@ export interface RunnerServerToClientEvents {
   get_usage: (data: {
     requestId?: string;
     range?: "7d" | "30d" | "90d" | "all";
+  }) => void;
+
+  /** Requests session context analysis from the runner */
+  get_session_analysis: (data: {
+    requestId?: string;
+    sessionId: string;
   }) => void;
 
   /** Requests the full runner settings (config.json + settings.json) */

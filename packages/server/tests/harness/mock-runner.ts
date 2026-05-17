@@ -1052,6 +1052,16 @@ export async function createMockRunner(
         socket.emit("usage_data", { requestId, data: usageData });
     });
 
+    // --- Session Analysis ---
+
+    socket.on("get_session_analysis", (data: any) => {
+        if (isShuttingDown) return;
+        const requestId = data?.requestId ?? "";
+
+        // Return empty analysis for mock — real analysis requires provider
+        socket.emit("session_analysis_data", { requestId, data: { sessionId: data.sessionId } });
+    });
+
     // --- Error handling ---
 
     socket.on("error", (_data: any) => {
