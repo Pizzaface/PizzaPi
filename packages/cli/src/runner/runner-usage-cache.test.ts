@@ -40,6 +40,7 @@ describe("runner-usage-cache child", () => {
                     authCreateCalls.push(authPath);
                     return {
                         authPath,
+                        get: () => ({ type: "oauth", access: authPath }),
                         getApiKey: async () => undefined,
                     };
                 },
@@ -53,8 +54,11 @@ describe("runner-usage-cache child", () => {
         }));
 
         mock.module("./usage-auth.js", () => ({
-            getRefreshedOAuthToken: async (storage: { authPath: string }, provider: string) =>
-                provider === "anthropic" ? "token:" + storage.authPath : null,
+            getOAuthAccessToken: (raw: any) => {
+                // Return token only for anthropic
+                if (!raw || raw.type !== "oauth") return null;
+                return "token:" + raw.access;
+            },
             parseGeminiQuotaCredential: () => null,
         }));
 

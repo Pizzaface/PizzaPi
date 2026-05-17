@@ -12,6 +12,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { join } from "path";
 import { buildSystemPrompt, defaultAgentDir, expandHome, loadConfig, resolveSandboxConfig, validateSandboxOverride, applyProviderSettingsEnv } from "./config.js";
+import { getOAuthAccessToken } from "./runner/usage-auth.js";
 import { c, usageBar, colorPct, colorRemaining } from "./cli-colors.js";
 import { buildSkillPaths, buildPromptTemplatePaths, createAgentsFilesOverride } from "./skills.js";
 import { getPluginSkillPaths } from "./extensions/claude-plugins.js";
@@ -97,7 +98,7 @@ async function main() {
 
         // ── Anthropic ──────────────────────────────────────────────────────────
         if (showAnthropic) {
-            const accessToken = await authStorage.getApiKey("anthropic");
+            const accessToken = getOAuthAccessToken(authStorage.get("anthropic"));
             if (!accessToken) {
                 if (providerArg === "anthropic") {
                     log.error("No Anthropic credentials found. Log in with /login inside pizzapi.");
