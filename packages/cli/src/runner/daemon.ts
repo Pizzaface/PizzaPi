@@ -62,6 +62,20 @@ import {
 } from "../usage/index.js";
 import type { UsageRange } from "../usage/types.js";
 
+// Session analyzer — lazily opens the provider's SQLite DB
+let getSessionAnalysisFn: ((sessionId: string) => any) | null = null;
+async function ensureSessionAnalysis() {
+    if (getSessionAnalysisFn) return;
+    try {
+        const analyzerDb = await import("../providers/session-analyzer/db.js");
+        const analyzerPath = join(homedir(), ".pizzapi", "provider-data", "session-analyzer");
+        const db = analyzerDb.openDb(analyzerPath);
+        getSessionAnalysisFn = (sessionId: string) => analyzerDb.loadAnalysis(db, sessionId);
+    } catch {
+        // Provider not installed — analysis unavailable (not an error)
+    }
+}
+
 // Re-export migration from shared module — used on daemon startup
 import { migrateAgentDir } from "../migrations.js";
 
@@ -1483,7 +1497,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
 
         // ── Session Analysis ──────────────────────────────────────────
 
-        socket.on("get_session_analysis", (data: any) => {
+        socket.on("get_session_analysis", async (data: any) => {
             if (isShuttingDown) return;
             const requestId = data.requestId ?? "";
             try {
@@ -1495,16 +1509,8 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                     });
                     return;
                 }
-                // Query provider DB — provider must be loaded and initialized
-                const provider = providerRegistry?.get("session-analyzer");
-                if (!provider) {
-                    socket.emit("session_analysis_error", {
-                        requestId,
-                        error: "Session analyzer provider not available",
-                    });
-                    return;
-                }
-                const analysis = (provider as any).getAnalysis?.(sessionId);
+                await ensureSessionAnalysis();
+                const analysis = getSessionAnalysisFn?.(sessionId);
                 if (!analysis) {
                     socket.emit("session_analysis_error", {
                         requestId,

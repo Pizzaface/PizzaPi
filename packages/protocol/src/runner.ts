@@ -168,6 +168,12 @@ export interface RunnerClientToServerEvents {
     data: unknown; // SessionAnalysis shape
   }) => void;
 
+  /** Runner reports a usage data error */
+  usage_error: (data: {
+    requestId?: string;
+    error: string;
+  }) => void;
+
   /** Runner reports a session analysis error */
   session_analysis_error: (data: {
     requestId?: string;

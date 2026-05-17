@@ -684,7 +684,6 @@ export function registerRunnerNamespace(io: SocketIOServer, context: AuthContext
                 }
             }
         });
-        });
 
         // ── models_list — runner responds with available models ─────────────
         socket.on("models_list", (data) => {
