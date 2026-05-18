@@ -9,11 +9,11 @@ interface CostBreakdownProps {
 
 export function CostBreakdown({ models }: CostBreakdownProps) {
   const sorted = React.useMemo(() => {
-    return [...models].sort((a, b) => (b.cost ?? 0) - (a.cost ?? 0));
+    return [...models].sort((a, b) => (b.totalCost ?? 0) - (a.totalCost ?? 0));
   }, [models]);
 
   const maxCost = React.useMemo(() => {
-    return sorted.reduce((max, m) => Math.max(max, m.cost ?? 0), 0);
+    return sorted.reduce((max, m) => Math.max(max, m.totalCost ?? 0), 0);
   }, [sorted]);
 
   if (sorted.length === 0) {
@@ -23,12 +23,12 @@ export function CostBreakdown({ models }: CostBreakdownProps) {
   return (
     <div className="flex flex-col gap-2">
       {sorted.map((m) => {
-        const cost = m.cost ?? 0;
+        const cost = m.totalCost ?? 0;
         const pct = maxCost > 0 ? (cost / maxCost) * 100 : 0;
         return (
-          <div key={m.modelId ?? "unknown"} className="flex flex-col gap-0.5">
+          <div key={m.id ?? "unknown"} className="flex flex-col gap-0.5">
             <div className="flex items-center justify-between text-xs">
-              <span className="truncate max-w-[70%] font-medium">{m.modelId ?? "Unknown model"}</span>
+              <span className="truncate max-w-[70%] font-medium">{m.id ?? "Unknown model"}</span>
               <span className="tabular-nums text-muted-foreground">{formatCurrency(cost)}</span>
             </div>
             <div className="h-1.5 w-full rounded-full bg-muted overflow-hidden">

@@ -23,6 +23,7 @@ import { initialPromptExtension } from "./initial-prompt.js";
 import { pizzapiHeaderExtension } from "./pizzapi-header.js";
 import { toolSearchExtension } from "./tool-search.js";
 import { ollamaWebToolsExtension } from "./ollama-web-tools.js";
+import { sessionAnalysisExtension } from "./session-analysis.js";
 
 const CORE_EXTENSIONS: ExtensionFactory[] = [
     triggersExtension,  // Must be before remoteExtension (shutdown ordering)
@@ -41,6 +42,7 @@ const CORE_EXTENSIONS: ExtensionFactory[] = [
     pizzapiTitleExtension,
     pizzapiHeaderExtension,
     providerExtension,  // Always registered
+    sessionAnalysisExtension,  // Always registered
 ];
 
 /**

@@ -56,6 +56,17 @@ export function SessionInspector({
     return () => { cancelled = true; };
   }, [runnerId, sessionId]);
 
+  // Sort blocks: negative indices (cached context) first, then positive turns
+  const sortedBlocks = React.useMemo(() => {
+    const blocks = analysis?.blocks ?? [];
+    if (blocks.length === 0) return blocks;
+    return [...blocks].sort((a, b) => {
+      if (a.turnIndex < 0 && b.turnIndex >= 0) return -1;
+      if (b.turnIndex < 0 && a.turnIndex >= 0) return 1;
+      return a.turnIndex - b.turnIndex;
+    });
+  }, [analysis?.blocks]);
+
   if (loading) {
     return (
       <div className="flex flex-col items-center justify-center flex-1 gap-2 p-8">
@@ -82,11 +93,20 @@ export function SessionInspector({
     );
   }
 
-  const totalCost = analysis?.totalCost ?? 0;
-  const cacheHitRate = analysis?.cacheHitRate ?? null;
-  const estSavings = analysis?.estimatedSavings ?? null;
-  const peakTokens = analysis?.peakContextTokens ?? null;
-  const compactionCount = analysis?.boundaries?.length ?? 0;
+  if (!analysis) {
+    return (
+      <div className="flex flex-col flex-1 p-6 gap-4">
+        <Button variant="ghost" size="sm" onClick={onBack} className="w-fit">
+          <ArrowLeft className="h-4 w-4 mr-1" /> Back
+        </Button>
+        <p className="text-sm text-muted-foreground">No analysis data available for this session.</p>
+      </div>
+    );
+  }
+
+  const totalCost = analysis?.summary?.totalCost ?? 0;
+  const cacheHitRate = analysis?.summary?.cacheHitRate ?? null;
+  const estSavings = analysis?.summary?.estimatedCacheSavings ?? null;
 
   return (
     <div className="flex flex-col flex-1 overflow-hidden">
@@ -100,8 +120,8 @@ export function SessionInspector({
             {sessionName || `Session ${sessionId.slice(0, 8)}`}
           </h2>
           <p className="text-xs text-muted-foreground">
-            {analysis?.modelStats?.length
-              ? analysis.modelStats.map((m) => m.modelId).filter(Boolean).join(", ")
+            {analysis.modelsUsed?.length
+              ? analysis.modelsUsed.map((m) => m.id).filter(Boolean).join(", ")
               : "Model info unavailable"}
           </p>
         </div>
@@ -122,16 +142,16 @@ export function SessionInspector({
       </div>
 
       {/* Main content */}
-      {analysis?.contextBlocks == null || analysis.contextBlocks.length === 0 ? (
+      {sortedBlocks.length === 0 ? (
         <div className="flex items-center justify-center flex-1 text-sm text-muted-foreground">
-          Waiting for first response…
+          No context blocks available
         </div>
       ) : (
         <div className="flex flex-col lg:flex-row flex-1 overflow-hidden">
           {/* Left: Treemap */}
           <div className="flex-1 p-4 overflow-auto min-h-0 flex flex-col gap-2">
             <Treemap
-              blocks={analysis.contextBlocks}
+              blocks={sortedBlocks}
               onHover={(block) => setHoveredBlock(block)}
             />
             {hoveredBlock && (
@@ -139,14 +159,14 @@ export function SessionInspector({
                 <span className="font-medium text-foreground">
                   {hoveredBlock.title ?? hoveredBlock.role ?? "Block"}
                 </span>
-                {hoveredBlock.turnIndex != null && (
+                {hoveredBlock.turnIndex >= 0 && (
                   <span> · Turn {hoveredBlock.turnIndex}</span>
                 )}
-                {hoveredBlock.tokenCount != null && (
-                  <span> · {formatTokens(hoveredBlock.tokenCount)} tokens</span>
+                {hoveredBlock.tokens != null && (
+                  <span> · {formatTokens(hoveredBlock.tokens)} tokens</span>
                 )}
-                {hoveredBlock.cost != null && (
-                  <span> · {formatCurrency(hoveredBlock.cost)}</span>
+                {hoveredBlock.usage?.cost?.total != null && (
+                  <span> · {formatCurrency(hoveredBlock.usage.cost.total)}</span>
                 )}
               </div>
             )}
@@ -176,30 +196,27 @@ export function SessionInspector({
             </div>
             <div className="flex-1 overflow-auto p-4 min-h-0">
               {activeTab === "cost" && (
-                <CostBreakdown models={analysis.modelStats ?? []} />
+                <CostBreakdown models={analysis.modelsUsed ?? []} />
               )}
               {activeTab === "compactions" && (
-                <CompactionLog boundaries={analysis.boundaries ?? []} />
+                <CompactionLog boundaries={analysis.compactions ?? []} />
               )}
               {activeTab === "turns" && (
-                <TurnList blocks={analysis.contextBlocks ?? []} />
+                <TurnList blocks={sortedBlocks} />
               )}
               {activeTab === "models" && (
                 <div className="space-y-2">
-                  {(analysis.modelStats ?? []).length === 0 && (
+                  {(analysis.modelsUsed ?? []).length === 0 && (
                     <p className="text-sm text-muted-foreground">Model data unavailable</p>
                   )}
-                  {(analysis.modelStats ?? []).map((m) => (
+                  {(analysis.modelsUsed ?? []).map((m) => (
                     <div
-                      key={m.modelId ?? ""}
+                      key={m.id ?? ""}
                       className="flex flex-col gap-0.5 border rounded-md p-2 text-sm"
                     >
-                      <div className="font-medium">{m.modelId ?? "Unknown model"}</div>
+                      <div className="font-medium">{m.id ?? "Unknown model"}</div>
                       <div className="text-xs text-muted-foreground">
-                        Requests: {m.requests ?? "—"} · Input: {formatTokens(m.inputTokens)} · Output:{" "}
-                        {formatTokens(m.outputTokens)} · Cache read: {formatTokens(m.cacheReadTokens)} ·
-                        Cache write: {formatTokens(m.cacheWriteTokens)} · Cost:{" "}
-                        {formatCurrency(m.cost)}
+                        Turns: {m.turns ?? "—"} · Cost: {formatCurrency(m.totalCost)} · Cache hit: {formatPct(m.cacheHitRate)}
                       </div>
                     </div>
                   ))}

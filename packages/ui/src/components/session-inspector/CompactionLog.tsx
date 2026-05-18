@@ -25,7 +25,7 @@ export function CompactionLog({ boundaries }: CompactionLogProps) {
       <table className="w-full text-sm">
         <thead>
           <tr className="border-b bg-muted/30">
-            <th className="py-2 px-2 text-left font-medium text-muted-foreground">Turn</th>
+            <th className="py-2 px-2 text-left font-medium text-muted-foreground">ID</th>
             <th className="py-2 px-2 text-right font-medium text-muted-foreground">Before</th>
             <th className="py-2 px-2 text-right font-medium text-muted-foreground">After</th>
             <th className="py-2 px-2 text-right font-medium text-muted-foreground">Saved</th>
@@ -35,11 +35,11 @@ export function CompactionLog({ boundaries }: CompactionLogProps) {
         <tbody>
           {sorted.map((b, i) => (
             <tr key={i} className="border-b last:border-0 hover:bg-muted/50 transition-colors">
-              <td className="py-2 px-2 tabular-nums">{b.turnIndex ?? "—"}</td>
-              <td className="py-2 px-2 text-right tabular-nums">{formatTokens(b.beforeTokens)}</td>
-              <td className="py-2 px-2 text-right tabular-nums">{formatTokens(b.afterTokens)}</td>
+              <td className="py-2 px-2 tabular-nums">{b.entryId.slice(0, 8)}…</td>
+              <td className="py-2 px-2 text-right tabular-nums">{formatTokens(b.tokensBeforeCompaction)}</td>
+              <td className="py-2 px-2 text-right tabular-nums">{formatTokens(b.estimatedTokensAfter)}</td>
               <td className="py-2 px-2 text-right tabular-nums text-green-600">
-                {formatTokens(b.savingsTokens)}
+                {formatTokens(b.estimatedTokensFreed)}
               </td>
               <td className="py-2 px-2 text-muted-foreground hidden sm:table-cell">
                 {b.timestamp ? new Date(b.timestamp).toLocaleString() : "—"}

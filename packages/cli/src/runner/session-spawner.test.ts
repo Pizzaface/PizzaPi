@@ -150,6 +150,9 @@ describe("session-spawner child", () => {
                 parentSessionId: "parent-1",
             });
 
+            latestChild!.emit("message", { type: "session_metadata", sessionFile: "/tmp/sess-main.jsonl" });
+            expect(runningSessions.get("sess-main")?.sessionFile).toBe("/tmp/sess-main.jsonl");
+
             latestChild!.emit("message", { type: "pre_restart" });
             expect(restartingSessions.has("sess-main")).toBe(true);
 

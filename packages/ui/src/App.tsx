@@ -59,7 +59,8 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { X, TerminalIcon, FolderTree, GitBranch, EyeOff, Zap } from "lucide-react";
+import { X, TerminalIcon, FolderTree, GitBranch, EyeOff, Zap, BarChart3 } from "lucide-react";
+import { SessionAnalyzerBody } from "@/components/session-viewer/SessionAnalyzerPanel";
 import { TriggersPanel, type TriggerHistoryEntry } from "@/components/TriggersPanel";
 import type { ProviderUsageMap } from "@/components/UsageIndicator";
 import { TerminalManager } from "@/components/TerminalManager";
@@ -67,6 +68,7 @@ import { FileExplorer } from "@/components/FileExplorer";
 import { GitPanel } from "@/components/git";
 import { CombinedPanel, type CombinedPanelTab } from "@/components/CombinedPanel";
 import { DockedPanelGroup, TAB_BAR_HEIGHT } from "@/components/DockedPanelGroup";
+import type { PanelPosition } from "@/hooks/usePanelLayout";
 import { ViewerSocketContext } from "@/lib/viewer-socket-context";
 import { HubSocketContext } from "@/lib/hub-socket-context";
 import { shouldStopViewerReconnect } from "@/lib/viewer-connection";
@@ -468,6 +470,12 @@ export function App() {
     triggersPosition, handleTriggersPositionChange,
   } = panelLayout;
 
+  const [showAnalyzer, setShowAnalyzer] = React.useState(false);
+  const [analyzerPosition, setAnalyzerPosition] = React.useState<PanelPosition>("center-bottom");
+  const handleAnalyzerPositionChange = React.useCallback((pos: PanelPosition) => {
+    setAnalyzerPosition(pos);
+  }, []);
+
   const [newSessionOpen, setNewSessionOpen] = React.useState(false);
   const [spawnRunnerId, setSpawnRunnerId] = React.useState<string | undefined>(undefined);
   const [spawnCwd, setSpawnCwd] = React.useState<string>("");
@@ -508,6 +516,7 @@ export function App() {
   const [isCompacting, setIsCompacting] = React.useState(false);
   const [planModeEnabled, setPlanModeEnabled] = React.useState(false);
   const [todoList, setTodoList] = React.useState<TodoItem[]>([]);
+  const [analysis, setAnalysis] = React.useState<SessionUiCacheEntry["analysis"]>(null);
 
   // Keyboard shortcuts
   const isMac = React.useMemo(() => {
@@ -749,6 +758,7 @@ export function App() {
       providerUsage: prev?.providerUsage ?? null,
       lastHeartbeatAt: prev?.lastHeartbeatAt ?? null,
       todoList: prev?.todoList ?? [],
+      analysis: prev?.analysis ?? null,
       pendingQuestion: prev?.pendingQuestion ?? null,
       pendingPlan: prev?.pendingPlan ?? null,
       ...patch,
@@ -1580,6 +1590,12 @@ export function App() {
         const todos = derived.todoList ?? [];
         setTodoList(todos);
         cachePatch.todoList = todos;
+      }
+
+      if (Object.prototype.hasOwnProperty.call(meta, "analysis")) {
+        const nextAnalysis = meta.analysis as SessionUiCacheEntry["analysis"];
+        setAnalysis(nextAnalysis ?? null);
+        cachePatch.analysis = nextAnalysis ?? null;
       }
 
       if (Object.keys(cachePatch).length > 0) {
@@ -2867,6 +2883,7 @@ export function App() {
     setTokenUsage(cached?.tokenUsage ?? null);
     setLastHeartbeatAt(cached?.lastHeartbeatAt ?? null);
     setTodoList(cached?.todoList ?? []);
+    setAnalysis(cached?.analysis ?? null);
 
     // ── Runner-scoped state: preserve on same-runner switch ─────────────
     if (!sameRunner) {
@@ -4236,6 +4253,24 @@ export function App() {
     ),
   } : null, [showTriggers, activeSessionId, runnerTriggerDefs, viewerSocket, startPanelDragWith, handleTriggersPositionChange, setShowTriggers]);
 
+  const analyzerPanelTab = React.useMemo<CombinedPanelTab | null>(() => {
+    if (!showAnalyzer || !activeSessionId) return null;
+    return {
+      id: "analyzer",
+      label: "Context & Cache Analysis",
+      icon: <BarChart3 className="size-3.5" />,
+      onClose: () => setShowAnalyzer(false),
+      onDragStart: (e) => startPanelDragWith(e, handleAnalyzerPositionChange),
+      content: (
+        <SessionAnalyzerBody
+          analysis={analysis}
+          runnerId={activeSessionInfo?.runnerId ?? null}
+          sessionId={activeSessionId}
+        />
+      ),
+    };
+  }, [showAnalyzer, activeSessionId, activeSessionInfo?.runnerId, analysis, startPanelDragWith, handleAnalyzerPositionChange]);
+
   const servicePanelTabs = React.useMemo<CombinedPanelTab[]>(() => {
     // Use tunnelSessionId (runner-stable) instead of activeSessionId so
     // iframe service panels don't reload on same-runner session switches.
@@ -4286,9 +4321,10 @@ export function App() {
     if (filesPanelTab) groups[filesPosition].push(filesPanelTab);
     if (gitPanelTab) groups[gitPosition].push(gitPanelTab);
     if (triggersPanelTab) groups[triggersPosition].push(triggersPanelTab);
+    if (analyzerPanelTab) groups[analyzerPosition].push(analyzerPanelTab);
     for (const tab of servicePanelTabs) groups[getServicePanelPosition(tab.id)].push(tab);
     return groups;
-  }, [terminalPanelTab, terminalPosition, filesPanelTab, filesPosition, gitPanelTab, gitPosition, triggersPanelTab, triggersPosition, servicePanelTabs, getServicePanelPosition]);
+  }, [terminalPanelTab, terminalPosition, filesPanelTab, filesPosition, gitPanelTab, gitPosition, triggersPanelTab, triggersPosition, analyzerPanelTab, analyzerPosition, servicePanelTabs, getServicePanelPosition]);
 
   // ── Derived column zone arrays ─────────────────────────────────────────────
   // Each side column orders its zones top→middle→bottom. Middle zone fills the
@@ -4354,8 +4390,8 @@ export function App() {
   const centerBottomCollapsed = isGroupCollapsed(centerBottomTabIds);
 
   const mobilePanelTabs = React.useMemo(() => {
-    return [terminalPanelTab, filesPanelTab, gitPanelTab, triggersPanelTab, ...servicePanelTabs].filter(Boolean) as CombinedPanelTab[];
-  }, [terminalPanelTab, filesPanelTab, gitPanelTab, triggersPanelTab, servicePanelTabs]);
+    return [terminalPanelTab, filesPanelTab, gitPanelTab, triggersPanelTab, analyzerPanelTab, ...servicePanelTabs].filter(Boolean) as CombinedPanelTab[];
+  }, [terminalPanelTab, filesPanelTab, gitPanelTab, triggersPanelTab, analyzerPanelTab, servicePanelTabs]);
 
   const resolveActiveTabId = React.useCallback((tabs: CombinedPanelTab[]) => {
     return resolveActiveTabIdFromIds(tabs.map((t) => t.id), combinedActiveTab);
@@ -4760,6 +4796,9 @@ export function App() {
                         onToggleTriggers={() => setShowTriggers((v) => !v)}
                         showTriggersButton={!!activeSessionId}
                         isTriggersOpen={showTriggers}
+                        onToggleAnalyzer={() => setShowAnalyzer((v) => !v)}
+                        showAnalyzerButton={!!activeSessionId}
+                        isAnalyzerOpen={showAnalyzer}
                         triggerCount={triggerCounts}
                         hasMoreServerMessages={paginationStateRef.current?.hasMore ?? false}
                         onLoadMoreServerMessages={requestOlderMessages}
@@ -4773,6 +4812,7 @@ export function App() {
                           />
                         }
                         todoList={todoList}
+                        analysis={analysis}
                         planModeEnabled={planModeEnabled}
                         runnerId={activeSessionInfo?.runnerId ?? undefined}
                         sessionCwd={activeSessionInfo?.cwd || undefined}

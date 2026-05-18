@@ -41,6 +41,11 @@ export function toRelayMessage(raw: unknown, fallbackId: string): RelayMessage |
   // Preserve structured details (e.g., subagent SubagentDetails) for tool results
   const details = msg.details !== undefined && msg.details !== null ? msg.details : undefined;
 
+  // Preserve custom-message metadata so the viewer can label extension/context
+  // messages with their full key instead of only the generic "custom" role.
+  const customType = typeof msg.customType === "string" ? msg.customType : undefined;
+  const display = typeof msg.display === "boolean" ? msg.display : undefined;
+
   return {
     key,
     role,
@@ -54,6 +59,8 @@ export function toRelayMessage(raw: unknown, fallbackId: string): RelayMessage |
     summary,
     tokensBefore,
     details,
+    customType,
+    display,
     isStreamingPartial: msg.isStreamingPartial === true ? true : undefined,
   };
 }

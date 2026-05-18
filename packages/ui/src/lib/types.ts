@@ -8,6 +8,7 @@
 import type { QuestionType, QuestionDisplayMode } from "@/lib/ask-user-questions";
 import type { ProviderUsageMap } from "@/components/UsageIndicator";
 import type { RelayMessage } from "@/components/session-viewer/types";
+import type { SessionAnalysis } from "@/components/session-inspector/types";
 
 export interface TodoItem {
   id: number;
@@ -86,4 +87,5 @@ export interface SessionUiCacheEntry {
 
   // ── Metadata ──────────────────────────────────────────────────────────
   lastAccessed: number;
+  analysis: SessionAnalysis | null;
 }

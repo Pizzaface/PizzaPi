@@ -197,7 +197,7 @@ export async function providerExtension(pi: ExtensionAPI) {
           isError: tr.isError ?? false,
         })),
       },
-      makeProviderContext(ctx, { promptId: currentPromptId ?? undefined, turnId: currentTurnId }),
+      makeProviderContext(ctx, { promptId: currentPromptId ?? undefined, turnId: currentTurnId, sessionFile: ctx.sessionManager?.getSessionFile?.() ?? undefined }),
     );
   });
 

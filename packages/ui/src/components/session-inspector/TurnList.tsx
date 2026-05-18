@@ -30,28 +30,36 @@ const COLUMNS: Column[] = [
     label: "Role",
     align: "left",
     sortValue: (b) => b.role ?? "",
-    render: (b) => (b.role ? b.role.replace(/_/g, " ").replace(/^\w/, (c) => c.toUpperCase()) : "—"),
+    render: (b) => (b.title ?? (b.role ? b.role.replace(/_/g, " ").replace(/^\w/, (c) => c.toUpperCase()) : "—")),
   },
   {
     key: "tokens",
     label: "Tokens",
     align: "right",
-    sortValue: (b) => b.tokenCount ?? -1,
-    render: (b) => formatTokens(b.tokenCount),
+    sortValue: (b) => b.tokens ?? -1,
+    render: (b) => formatTokens(b.tokens),
   },
   {
     key: "cost",
     label: "Cost",
     align: "right",
-    sortValue: (b) => b.cost ?? -1,
-    render: (b) => formatCurrency(b.cost),
+    sortValue: (b) => b.usage?.cost?.total ?? -1,
+    render: (b) => formatCurrency(b.usage?.cost?.total),
   },
   {
     key: "cache",
     label: "Cache",
     align: "right",
-    sortValue: (b) => b.cacheHitRate ?? -1,
-    render: (b) => formatPct(b.cacheHitRate),
+    sortValue: (b) => {
+      const input = b.usage?.input ?? 0;
+      const cacheRead = b.usage?.cacheRead ?? 0;
+      return input + cacheRead > 0 ? cacheRead / (input + cacheRead) : -1;
+    },
+    render: (b) => {
+      const input = b.usage?.input ?? 0;
+      const cacheRead = b.usage?.cacheRead ?? 0;
+      return formatPct(input + cacheRead > 0 ? cacheRead / (input + cacheRead) : null);
+    },
   },
 ];
 
@@ -83,6 +91,11 @@ export function TurnList({ blocks }: TurnListProps) {
     const col = COLUMNS.find((c) => c.key === sort.key)!;
     const multiplier = sort.dir === "asc" ? 1 : -1;
     return [...blocks].sort((a, b) => {
+      // When sorting by turnIndex: put negative-index blocks first
+      if (sort.key === "turnIndex") {
+        if (a.turnIndex < 0 && b.turnIndex >= 0) return -1;
+        if (b.turnIndex < 0 && a.turnIndex >= 0) return 1;
+      }
       const va = col.sortValue(a);
       const vb = col.sortValue(b);
       if (typeof va === "number" && typeof vb === "number") {
@@ -127,7 +140,7 @@ export function TurnList({ blocks }: TurnListProps) {
             <tr
               key={i}
               className="border-b last:border-0 hover:bg-muted/50 transition-colors"
-              title={block.title ?? block.content ?? undefined}
+              title={block.entryId ?? undefined}
             >
               {COLUMNS.map((col) => (
                 <td

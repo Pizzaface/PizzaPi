@@ -152,6 +152,61 @@ import { syncKeychainToAuthStorage } from "./keychain-auth.js";
 import { buildPizzaPiExtensionFactories } from "../extensions/factories.js";
 import { armWorkerStartupGate, markWorkerStartupComplete } from "../extensions/worker-startup-gate.js";
 
+// ── Context tracking injection ────────────────────────────────────────────
+
+/**
+ * Emit `custom_message` entries for each identifiable piece of session
+ * context so the session analyzer can attribute cost/tokens to individual
+ * components (global rules, project rules, system prompt, user append).
+ *
+ * These entries participate in LLM context and appear in the context
+ * treemap under distinct colors/roles (see session-analysis/analyzer.ts).
+ */
+function injectContextTrackingEntries(
+    session: any,
+    cwd: string,
+    agentDir: string,
+    config: { appendSystemPrompt?: string },
+): void {
+    const sm = session.sessionManager;
+    if (!sm || typeof sm.appendCustomMessageEntry !== "function") return;
+
+    // ── Global rules (from ~/.pizzapi/AGENTS.md) ──────────────────────────
+    const globalAgentsPath = join(agentDir, "AGENTS.md");
+    if (existsSync(globalAgentsPath)) {
+        try {
+            const content = readFileSync(globalAgentsPath, "utf-8");
+            if (content.trim()) {
+                sm.appendCustomMessageEntry("context:global-rules", content, false);
+            }
+        } catch { /* skip unreadable */ }
+    }
+
+    // ── Project rules (from <cwd>/AGENTS.md) ──────────────────────────────
+    const projectAgentsPath = join(cwd, "AGENTS.md");
+    if (existsSync(projectAgentsPath)) {
+        try {
+            const content = readFileSync(projectAgentsPath, "utf-8");
+            if (content.trim()) {
+                sm.appendCustomMessageEntry("context:project-rules", content, false);
+            }
+        } catch { /* skip unreadable */ }
+    }
+
+    // ── Built-in system prompt ─────────────────────────────────────────────
+    try {
+        const builtin = buildSystemPrompt({ cwd, isRunner: true });
+        if (builtin.trim()) {
+            sm.appendCustomMessageEntry("context:builtin-prompt", builtin, false);
+        }
+    } catch { /* skip */ }
+
+    // ── User append system prompt (from ~/.pizzapi/config.json) ───────────
+    if (config.appendSystemPrompt?.trim()) {
+        sm.appendCustomMessageEntry("context:append-prompt", config.appendSystemPrompt, false);
+    }
+}
+
 /**
  * Headless session worker.
  *
@@ -316,6 +371,18 @@ async function main(): Promise<void> {
     });
     bootTimer.end("[boot] create-session");
 
+    // ── Inject context tracking entries ───────────────────────────────────
+    // Emit custom_message entries for each identifiable piece of context
+    // (global rules, project rules, system prompt, user append prompt) so
+    // the session analyzer can attribute token/cost to individual components.
+    try {
+        injectContextTrackingEntries(session, cwd, agentDir, config);
+    } catch (e) {
+        // Non-fatal — session analysis won't see these entries but the
+        // session still works normally.
+        logWarn("Failed to inject context tracking entries: " + (e instanceof Error ? e.message : String(e)));
+    }
+
     // Bind extensions in headless mode (no UI context)
     // Arm the startup gate before session_start handlers run so inbound relay
     // triggers / remote input cannot start the first turn until all startup
@@ -324,6 +391,13 @@ async function main(): Promise<void> {
     // Make session file path available to hooks/extensions (e.g. pertinence retrospective)
     if (session.sessionFile) {
       process.env.PIZZAPI_SESSION_FILE = session.sessionFile;
+      if (typeof process.send === "function") {
+        process.send({
+          type: "session_metadata",
+          sessionId: process.env.PIZZAPI_SESSION_ID ?? null,
+          sessionFile: session.sessionFile,
+        });
+      }
     }
     bootTimer.start("[boot] bind-extensions");
     try {
@@ -366,6 +440,11 @@ async function main(): Promise<void> {
 
                 // Persist the current thinking level in the new session header
                 session.sessionManager.appendThinkingLevelChange(session.thinkingLevel);
+
+                // Re-inject context tracking entries for the new session
+                try {
+                    injectContextTrackingEntries(session, cwd, agentDir, config);
+                } catch { /* non-fatal */ }
 
                 // Notify extensions — the remote extension's session_switch handler
                 // cancels pending triggers, delinks children, and pushes the new

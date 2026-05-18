@@ -1,5 +1,5 @@
 import * as React from "react";
-import { AlertTriangleIcon, Loader2 } from "lucide-react";
+import { AlertTriangleIcon, ChevronDown, ChevronRight, Loader2 } from "lucide-react";
 import type { RelayMessage } from "./types";
 import {
   renderContent,
@@ -49,6 +49,8 @@ export const SessionMessageItem = React.memo(
     onTriggerResponse,
     onActionSigilResponse,
   }: SessionMessageItemProps) => {
+    const [customExpanded, setCustomExpanded] = React.useState(false);
+
     // System messages with structured command result data → standalone card
     if (message.role === "system" && isCommandResult(message.content)) {
       return (
@@ -134,6 +136,8 @@ export const SessionMessageItem = React.memo(
       );
     }
 
+    const isCustomMessage = message.role === "custom";
+
     return (
       <div className="group/msg w-full px-4 py-1.5">
         <Message from={toMessageRole(message.role)}>
@@ -147,6 +151,9 @@ export const SessionMessageItem = React.memo(
           >
             <div className="mb-1 flex items-center gap-2 text-[11px] uppercase tracking-wide opacity-70">
               <span>{roleLabel(message.role)}</span>
+              {isCustomMessage && message.customType && (
+                <span className="normal-case font-mono">• {message.customType}</span>
+              )}
               {message.toolName && <span>• {message.toolName}</span>}
               {message.timestamp && (
                 <span>• {new Date(message.timestamp).toLocaleTimeString()}</span>
@@ -157,7 +164,46 @@ export const SessionMessageItem = React.memo(
                 className="ml-auto opacity-0 group-hover/msg:opacity-100 transition-opacity"
               />
             </div>
-            {renderContent(
+            {isCustomMessage ? (
+              <div className="mt-1">
+                <button
+                  type="button"
+                  className="inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-xs normal-case text-muted-foreground hover:bg-muted/60 hover:text-foreground"
+                  onClick={() => setCustomExpanded((expanded) => !expanded)}
+                  aria-expanded={customExpanded}
+                  aria-label={customExpanded ? "Hide message" : "Show message"}
+                >
+                  {customExpanded ? (
+                    <ChevronDown className="size-3" aria-hidden="true" />
+                  ) : (
+                    <ChevronRight className="size-3" aria-hidden="true" />
+                  )}
+                  <span>{customExpanded ? "Hide message" : "Show message"}</span>
+                </button>
+                {customExpanded && (
+                  <div className="mt-2">
+                    {renderContent(
+                      message.content,
+                      activeToolCalls,
+                      message.role,
+                      message.toolName,
+                      message.isError,
+                      message.toolInput,
+                      message.toolCallId ?? message.key,
+                      // Only treat thinking as still-streaming when the agent is active,
+                      // this is the last message, AND the message has no timestamp yet
+                      agentActive && isLast && message.timestamp === undefined,
+                      message.thinking,
+                      message.thinkingDuration,
+                      undefined, // subAgentTurns
+                      message.details,
+                      onTriggerResponse,
+                      onActionSigilResponse,
+                    )}
+                  </div>
+                )}
+              </div>
+            ) : renderContent(
               message.content,
               activeToolCalls,
               message.role,

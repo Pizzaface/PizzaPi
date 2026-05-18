@@ -62,20 +62,6 @@ import {
 } from "../usage/index.js";
 import type { UsageRange } from "../usage/types.js";
 
-// Session analyzer — lazily opens the provider's SQLite DB
-let getSessionAnalysisFn: ((sessionId: string) => any) | null = null;
-async function ensureSessionAnalysis() {
-    if (getSessionAnalysisFn) return;
-    try {
-        const analyzerDb = await import("../providers/session-analyzer/db.js");
-        const analyzerPath = join(homedir(), ".pizzapi", "provider-data", "session-analyzer");
-        const db = analyzerDb.openDb(analyzerPath);
-        getSessionAnalysisFn = (sessionId: string) => analyzerDb.loadAnalysis(db, sessionId);
-    } catch {
-        // Provider not installed — analysis unavailable (not an error)
-    }
-}
-
 // Re-export migration from shared module — used on daemon startup
 import { migrateAgentDir } from "../migrations.js";
 
@@ -338,7 +324,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             if (remembered) return remembered;
 
             try {
-                const sessionsRootDir = join(defaultAgentDir(), "agent", "sessions");
+                const sessionsRootDir = join(defaultAgentDir(), "sessions");
                 const found = await findSessionPathById(sessionsRootDir, sessionId);
                 if (found) return found;
             } catch {
@@ -927,7 +913,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             // daemon resolves the path from the local session cache/filesystem.
             let resolvedResumePath = typeof requestedResumePath === "string" ? requestedResumePath : undefined;
             if (!resolvedResumePath && typeof requestedResumeId === "string" && requestedResumeId) {
-                const sessionsRootDir = join(defaultAgentDir(), "agent", "sessions");
+                const sessionsRootDir = join(defaultAgentDir(), "sessions");
                 try {
                     const found = await findSessionPathById(sessionsRootDir, requestedResumeId);
                     if (found) {
@@ -1497,30 +1483,46 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
 
         // ── Session Analysis ──────────────────────────────────────────
 
-        socket.on("get_session_analysis", async (data: any) => {
+        socket.on("analyze_session", async (data: any) => {
             if (isShuttingDown) return;
             const requestId = data.requestId ?? "";
             try {
                 const sessionId = data.sessionId;
                 if (!sessionId || typeof sessionId !== "string") {
-                    socket.emit("session_analysis_error", {
+                    socket.emit("analyze_session_error", {
                         requestId,
                         error: "Missing sessionId parameter",
                     });
                     return;
                 }
-                await ensureSessionAnalysis();
-                const analysis = getSessionAnalysisFn?.(sessionId);
-                if (!analysis) {
-                    socket.emit("session_analysis_error", {
+                const sessionsRootDir = join(homedir(), ".pizzapi", "sessions");
+                const sessionFile = runningSessions.get(sessionId)?.sessionFile
+                    ?? sessionCloseMetadata.get(sessionId)?.sessionFile
+                    ?? await findSessionPathById(sessionsRootDir, sessionId);
+                if (!sessionFile) {
+                    socket.emit("analyze_session_error", {
                         requestId,
-                        error: "No analysis data for session " + sessionId,
+                        error: "Session file not found for " + sessionId,
                     });
                     return;
                 }
-                socket.emit("session_analysis_data", { requestId, data: analysis });
+                const { existsSync, readFileSync } = await import("node:fs");
+                if (!existsSync(sessionFile)) {
+                    socket.emit("analyze_session_error", {
+                        requestId,
+                        error: "Session file does not exist: " + sessionFile,
+                    });
+                    return;
+                }
+                const { parseJsonlEntries } = await import("../session-analysis/parser.js");
+                const { reconstructContext } = await import("../session-analysis/analyzer.js");
+                const content = readFileSync(sessionFile, "utf-8");
+                const { entries } = parseJsonlEntries(content);
+                const leafId = entries.findLast((e: any) => e.id)?.id ?? "root";
+                const analysis = reconstructContext(entries, leafId);
+                socket.emit("analyze_session_data", { requestId, data: analysis });
             } catch (e: any) {
-                socket.emit("session_analysis_error", {
+                socket.emit("analyze_session_error", {
                     requestId,
                     error: e.message ?? "Unknown error",
                 });

@@ -28,6 +28,7 @@ import {
   PaperclipIcon,
   TerminalIcon,
   Zap,
+  BarChart3,
 } from "lucide-react";
 
 // ── HeartbeatStaleBadge ──────────────────────────────────────────────────────
@@ -176,6 +177,9 @@ export interface HeaderOverflowMenuProps {
   showTriggersButton?: boolean;
   onToggleTriggers?: () => void;
   isTriggersOpen?: boolean;
+  showAnalyzerButton?: boolean;
+  onToggleAnalyzer?: () => void;
+  isAnalyzerOpen?: boolean;
   triggerCount?: TriggerCounts;
   onDuplicateSession?: () => void;
   messages: RelayMessage[];
@@ -199,6 +203,9 @@ export function HeaderOverflowMenu({
   showTriggersButton,
   onToggleTriggers,
   isTriggersOpen,
+  showAnalyzerButton,
+  onToggleAnalyzer,
+  isAnalyzerOpen,
   triggerCount,
   onDuplicateSession,
   messages,
@@ -286,10 +293,18 @@ export function HeaderOverflowMenu({
             {isTriggersOpen && <Check className="size-3 ml-auto text-primary" />}
           </DropdownMenuItem>
         )}
+        {showAnalyzerButton && onToggleAnalyzer && (
+          <DropdownMenuItem onSelect={onToggleAnalyzer}>
+            <BarChart3 className="size-3.5 mr-2 shrink-0" />
+            Context &amp; Cache Analysis
+            {isAnalyzerOpen && <Check className="size-3 ml-auto text-primary" />}
+          </DropdownMenuItem>
+        )}
         {(showTerminalButton ||
           showFileExplorerButton ||
           showGitButton ||
-          showTriggersButton) && <DropdownMenuSeparator />}
+          showTriggersButton ||
+          showAnalyzerButton) && <DropdownMenuSeparator />}
         <DropdownMenuItem onSelect={handleCopyExport}>
           <Copy className="size-3.5 mr-2 shrink-0" />
           {copyState === "copied" ? "Copied!" : "Copy as Markdown"}

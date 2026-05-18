@@ -19,6 +19,9 @@ import { buildSessionContext } from "@mariozechner/pi-coding-agent";
 import { createLogger } from "@pizzapi/tools";
 import { getCurrentTodoList } from "../update-todo.js";
 import type { RelayContext } from "../remote-types.js";
+import { getSessionAnalysis } from "../session-analysis.js";
+import { reconstructContext } from "../../session-analysis/analyzer.js";
+import type { SessionAnalysis } from "../../session-analysis/types.js";
 
 const log = createLogger("remote");
 
@@ -266,6 +269,33 @@ function getLiveModel(rctx: RelayContext, fallback: unknown | (() => unknown)) {
     };
 }
 
+function getContextWindows(rctx: RelayContext): Map<string, number> {
+    const windows = new Map<string, number>();
+    for (const model of rctx.getConfiguredModels?.() ?? []) {
+        if (typeof model.contextWindow !== "number") continue;
+        windows.set(`${model.provider}:${model.id}`, model.contextWindow);
+    }
+    return windows;
+}
+
+/** Build analysis from the transcript, falling back to the live accumulator. */
+export function buildLiveSessionAnalysis(rctx: RelayContext): SessionAnalysis | null {
+    if (rctx.latestCtx) {
+        const entries = rctx.latestCtx.sessionManager.getEntries();
+        const leafId = rctx.latestCtx.sessionManager.getLeafId();
+        if (leafId && Array.isArray(entries) && entries.length > 0) {
+            try {
+                const analysis = reconstructContext(entries as any[], leafId, getContextWindows(rctx));
+                if (analysis.blocks.length > 0) return analysis;
+            } catch (err) {
+                log.warn("Failed to reconstruct session analysis", err);
+            }
+        }
+    }
+
+    return getSessionAnalysis(rctx.relaySessionId);
+}
+
 /**
  * Record the current message state as "last emitted" after a full session_active.
  * Exported for unit testing.
@@ -318,6 +348,7 @@ export function emitSessionActive(rctx: RelayContext): void {
         availableModels: rctx.getConfiguredModels(),
         availableCommands: rctx.getAvailableCommands(),
         todoList: getCurrentTodoList(),
+        analysis: buildLiveSessionAnalysis(rctx),
     };
 
     if (needsChunkedDelivery(messages)) {
@@ -396,6 +427,7 @@ export function emitSessionMetadataUpdate(rctx: RelayContext): void {
             availableModels: rctx.getConfiguredModels(),
             availableCommands: rctx.getAvailableCommands(),
             todoList: getCurrentTodoList(),
+            analysis: buildLiveSessionAnalysis(rctx),
         },
     });
 }

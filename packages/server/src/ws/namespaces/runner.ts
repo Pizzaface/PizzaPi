@@ -659,8 +659,8 @@ export function registerRunnerNamespace(io: SocketIOServer, context: AuthContext
             }
         });
 
-        // ── session_analysis_data — respond with session analysis ──────────
-        socket.on("session_analysis_data", (data) => {
+        // ── analyze_session_data — respond with session analysis ─────────
+        socket.on("analyze_session_data", (data) => {
             const requestId = data.requestId;
             if (requestId) {
                 const pending = pendingRunnerCommands.get(requestId);
@@ -672,8 +672,8 @@ export function registerRunnerNamespace(io: SocketIOServer, context: AuthContext
             }
         });
 
-        // ── session_analysis_error — analysis request failed ────────────────
-        socket.on("session_analysis_error", (data) => {
+        // ── analyze_session_error — analysis request failed ───────────────
+        socket.on("analyze_session_error", (data) => {
             const requestId = data.requestId;
             if (requestId) {
                 const pending = pendingRunnerCommands.get(requestId);

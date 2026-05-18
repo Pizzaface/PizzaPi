@@ -25,8 +25,8 @@ export interface ContextBlock {
   entryId: string;
   /**
    * A block represents a turn's total context contribution (user + assistant + tool results),
-   * a special entry (compaction/branch summary, custom message), or the system/base overhead.
-   * Per-role token splits within a turn are estimated heuristically in subBlocks.
+   * a special entry (compaction/branch summary, custom message), a system prompt section,
+   * or the system/base overhead.
    */
   role:
     | "turn"
@@ -34,7 +34,14 @@ export interface ContextBlock {
     | "compaction_summary"
     | "branch_summary"
     | "custom_message"
-    | "separator";
+    | "context:builtin-prompt"
+    | "context:global-rules"
+    | "context:project-rules"
+    | "context:append-prompt"
+    | "context:skill"
+    | "context:plugin"
+    | "separator"
+    | string; // customType passthrough for unrecognized
   /**
    * Estimated context contribution for this block. Always ≥ 0 for rendering.
    * Negative raw deltas are captured in rawTokenDelta and rendered as separators.
@@ -44,13 +51,16 @@ export interface ContextBlock {
   rawTokenDelta: number;
   usage?: Usage; // from the assistant message in this turn
   model?: { provider: string; id: string }; // model active at this turn
+  /** Human-readable title (e.g., "Global Rules", "Project Rules", skill name). */
+  title?: string;
   /**
    * Heuristic breakdown of the turn block into per-role sub-components.
-   * Estimated from content length ratios. Null for non-turn blocks.
+   * Estimated from content blocks (text, toolCall, thinking) in the assistant message.
+   * Null for non-turn blocks.
    */
   subBlocks?: Array<{
-    role: "user" | "assistant" | "tool_result";
-    tokens: number; // estimated from content length
+    role: "user" | "assistant" | "tool_result" | "thinking" | `tool:${string}`;
+    tokens: number; // estimated from content
   }>;
 }
 

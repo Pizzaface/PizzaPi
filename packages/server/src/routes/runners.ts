@@ -1101,7 +1101,7 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
         }
     }
 
-    // GET /api/runners/:id/analysis/:sessionId
+    // GET /api/runners/:id/analysis/:sessionId — on-demand session analysis
     const analysisMatch = url.pathname.match(/^\/api\/runners\/([^/]+)\/analysis\/([^/]+)$/);
     if (analysisMatch && req.method === "GET") {
         const identity = await requireSession(req);
@@ -1114,7 +1114,7 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
         if (runner.userId !== identity.userId) return Response.json({ error: "Forbidden" }, { status: 403 });
 
         try {
-            const result = await sendRunnerCommand(runnerId, { type: "get_session_analysis", sessionId }, 30_000) as any;
+            const result = await sendRunnerCommand(runnerId, { type: "analyze_session", sessionId }, 30_000) as any;
             if (result && result.error) {
                 return Response.json({ error: result.error }, { status: 502 });
             }

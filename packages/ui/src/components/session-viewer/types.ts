@@ -6,6 +6,10 @@ export interface RelayMessage {
   toolName?: string;
   toolCallId?: string;
   toolInput?: unknown;
+  /** For role === "custom": full custom message key from pi customType. */
+  customType?: string;
+  /** For role === "custom": whether the custom message requested transcript display. */
+  display?: boolean;
   isError?: boolean;
   thinking?: string;
   thinkingDuration?: number;

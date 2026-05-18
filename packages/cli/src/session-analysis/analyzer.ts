@@ -256,13 +256,42 @@ export function reconstructContext(
     }
     if (entry.type === "custom_message") {
       const cm = entry as any;
+      const customType = (cm.customType as string) ?? "";
       const content = typeof cm.content === "string" ? cm.content : JSON.stringify(cm.content ?? "");
+
+      // Map known customType prefixes to specific roles for coloring/labeling
+      let role: string = "custom_message";
+      let title: string | undefined;
+
+      if (customType.startsWith("context:")) {
+        if (customType === "context:builtin-prompt") {
+          role = "context:builtin-prompt";
+          title = "Built-in Prompt";
+        } else if (customType === "context:global-rules") {
+          role = "context:global-rules";
+          title = "Global Rules";
+        } else if (customType === "context:project-rules") {
+          role = "context:project-rules";
+          title = "Project Rules";
+        } else if (customType === "context:append-prompt") {
+          role = "context:append-prompt";
+          title = "Custom Prompt";
+        } else if (customType.startsWith("context:skill:")) {
+          role = "context:skill";
+          title = `Skill: ${customType.slice(15)}`;
+        } else {
+          role = "context:plugin";
+          title = customType;
+        }
+      }
+
       blocks.push({
         turnIndex: -1,
         entryId: entry.id ?? "custom-msg",
-        role: "custom_message",
+        role,
         tokens: estimateTokens(content),
         rawTokenDelta: 0,
+        title,
       });
     }
   }
@@ -349,19 +378,33 @@ function computeTurnSubBlocks(
   if (turnTokens <= 0) return undefined;
 
   // Walk backwards from the assistant to find the turn's messages
-  // A turn is: user message → ... → assistant (with tool results in between)
   let userTextLen = 0;
   let assistantTextLen = 0;
-  let toolResultTextLen = 0;
+  let thinkingTextLen = 0;
+  const toolCallLens = new Map<string, number>(); // toolCallId → content length
+  const toolResultLens = new Map<string, number>(); // toolCallId → content length
   let foundAssistant = false;
 
   for (let i = activeEntries.length - 1; i >= 0; i--) {
     const entry = activeEntries[i]!;
     if (entry.id === turnAssistantId) {
       foundAssistant = true;
-      // Include assistant content
       const msg = (entry as any).message;
-      assistantTextLen += getMessageContent(msg).length;
+      const content = msg?.content;
+
+      if (Array.isArray(content)) {
+        for (const block of content) {
+          if (block?.type === "text") {
+            assistantTextLen += String(block.text ?? "").length;
+          } else if (block?.type === "thinking") {
+            thinkingTextLen += String(block.thinking ?? "").length;
+          } else if (block?.type === "toolCall" || block?.type === "tool_use") {
+            const callId = block.id ?? "unknown";
+            const args = JSON.stringify(block.arguments ?? block.input ?? {});
+            toolCallLens.set(callId, args.length);
+          }
+        }
+      }
       continue;
     }
     if (!foundAssistant) continue;
@@ -371,21 +414,41 @@ function computeTurnSubBlocks(
     if (!msg) break;
     const role = getMessageRole(msg);
     if (role === "assistant") break; // previous turn boundary
-    const content = getMessageContent(msg);
-    if (role === "user") userTextLen += content.length;
-    else if (role === "toolResult") toolResultTextLen += content.length;
+
+    if (role === "user") {
+      userTextLen += getMessageContent(msg).length;
+    } else if (role === "toolResult") {
+      const callId = msg.toolCallId ?? "unknown";
+      toolResultLens.set(callId, (toolResultLens.get(callId) ?? 0) + getMessageContent(msg).length);
+    }
   }
 
-  const total = userTextLen + assistantTextLen + toolResultTextLen;
+  const total = userTextLen + assistantTextLen + thinkingTextLen +
+    Array.from(toolCallLens.values()).reduce((a, b) => a + b, 0) +
+    Array.from(toolResultLens.values()).reduce((a, b) => a + b, 0);
+
   if (total === 0) return undefined;
 
-  return (
-    [
-      { role: "user" as const, tokens: Math.round(turnTokens * (userTextLen / total)) },
-      { role: "assistant" as const, tokens: Math.round(turnTokens * (assistantTextLen / total)) },
-      { role: "tool_result" as const, tokens: Math.round(turnTokens * (toolResultTextLen / total)) },
-    ] as const
-  ).filter((b) => b.tokens > 0) as ContextBlock["subBlocks"];
+  const result: NonNullable<ContextBlock["subBlocks"]> = [];
+
+  if (userTextLen > 0) result.push({ role: "user", tokens: Math.round(turnTokens * (userTextLen / total)) });
+  if (thinkingTextLen > 0) result.push({ role: "thinking", tokens: Math.round(turnTokens * (thinkingTextLen / total)) });
+  if (assistantTextLen > 0) result.push({ role: "assistant", tokens: Math.round(turnTokens * (assistantTextLen / total)) });
+
+  // Individual tool calls
+  for (const [callId, tcLen] of toolCallLens) {
+    if (tcLen > 0) {
+      result.push({ role: `tool:call`, tokens: Math.round(turnTokens * (tcLen / total)) });
+    }
+  }
+  // Individual tool results
+  for (const [callId, trLen] of toolResultLens) {
+    if (trLen > 0) {
+      result.push({ role: `tool:result`, tokens: Math.round(turnTokens * (trLen / total)) });
+    }
+  }
+
+  return result.filter(b => b.tokens > 0);
 }
 
 function computeCacheSavings(assistantEntries: ParsedEntry[]): number | null {

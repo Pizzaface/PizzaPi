@@ -10,4 +10,13 @@ describe("App session metadata updates", () => {
     expect(sourceText).toMatch(/React\.useLayoutEffect\(\(\) => \{\s*activeModelRef\.current = activeModel;\s*\}, \[activeModel\]\);/s);
     expect(sourceText).toMatch(/currentActiveModel:\s*activeModelRef\.current/);
   });
+
+  test("applies live analysis metadata to the active viewer state", () => {
+    const path = new URL("./App.tsx", import.meta.url);
+    const sourceText = readFileSync(path, "utf8");
+
+    expect(sourceText).toMatch(/Object\.prototype\.hasOwnProperty\.call\(meta, "analysis"\)/);
+    expect(sourceText).toMatch(/setAnalysis\(nextAnalysis \?\? null\)/);
+    expect(sourceText).toMatch(/cachePatch\.analysis = nextAnalysis \?\? null/);
+  });
 });
