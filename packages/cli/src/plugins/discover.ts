@@ -6,8 +6,9 @@ import { existsSync, lstatSync, readdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { expandHome } from "../config.js";
-import { MAX_ENTRIES_PER_DIR, type ClaudeInstalledPluginEntry, type DiscoveredPlugin } from "./types.js";
-import { isPluginDir, parsePlugin } from "./parse.js";
+import { MAX_ENTRIES_PER_DIR, type ClaudeInstalledPluginEntry, type CommandFrontmatter, type DiscoveredPlugin, type PluginCommand } from "./types.js";
+import { isPluginDir, parseMarkdownFrontmatter, parsePlugin } from "./parse.js";
+import { readFileCapped } from "./types.js";
 
 // ── Discovery locations ───────────────────────────────────────────────────────
 
@@ -315,4 +316,117 @@ export function discoverPlugins(cwd?: string, opts?: { includeProjectLocal?: boo
     }
 
     return plugins;
+}
+
+// ── Standalone command discovery ──────────────────────────────────────────────
+
+/**
+ * Scan a directory for standalone Claude Code command files.
+ *
+ * Each .md file is a command — the filename (without extension) becomes
+ * the command name. Recursively scans subdirectories, same as
+ * parseCommands but operating on an arbitrary directory instead of
+ * pluginDir/commands/.
+ */
+export function scanStandaloneCommandsDir(dir: string): PluginCommand[] {
+    if (!existsSync(dir)) return [];
+
+    // Reject if the dir itself is a symlink
+    try {
+        if (lstatSync(dir).isSymbolicLink()) return [];
+    } catch { return []; }
+
+    const commands: PluginCommand[] = [];
+    const MAX_DEPTH = 10;
+    let entryCount = 0;
+
+    function scanDir(currentDir: string, prefix: string, depth: number = 0) {
+        if (depth > MAX_DEPTH) return;
+        if (entryCount >= MAX_ENTRIES_PER_DIR) return;
+
+        let entries: string[];
+        try {
+            entries = readdirSync(currentDir);
+        } catch {
+            return;
+        }
+
+        for (const entry of entries) {
+            if (entryCount >= MAX_ENTRIES_PER_DIR) break;
+            entryCount++;
+
+            const entryPath = join(currentDir, entry);
+            let stat;
+            try {
+                stat = lstatSync(entryPath);
+            } catch {
+                continue;
+            }
+
+            if (stat.isSymbolicLink()) continue;
+
+            if (stat.isDirectory()) {
+                scanDir(entryPath, prefix ? `${prefix}/${entry}` : entry, depth + 1);
+                continue;
+            }
+
+            if (!stat.isFile()) continue;
+            if (!entry.endsWith(".md")) continue;
+
+            const content = readFileCapped(entryPath);
+            if (content === null) continue;
+
+            const baseName = entry.slice(0, -3);
+            const name = prefix ? `${prefix}/${baseName}` : baseName;
+            const { frontmatter, body } = parseMarkdownFrontmatter(content);
+
+            commands.push({
+                name,
+                content: body,
+                frontmatter: frontmatter as CommandFrontmatter,
+                filePath: entryPath,
+            });
+        }
+    }
+
+    scanDir(dir, "");
+    return commands;
+}
+
+/**
+ * Discover standalone Claude Code commands from global and project-level
+ * directories.
+ *
+ * Directories scanned (in precedence order):
+ *   1. ~/.pizzapi/commands/   (global)
+ *   2. <cwd>/.pizzapi/commands/ (project)
+ *   3. ~/.agents/commands/     (global)
+ *   4. <cwd>/.agents/commands/  (project)
+ *
+ * Deduplicates by command name (first found wins).
+ */
+export function discoverStandaloneCommands(cwd: string): PluginCommand[] {
+    // Use process.env.HOME directly (not homedir()) so tests can override it.
+    // homedir() caches the value at process start and ignores env changes.
+    const home = process.env.HOME || homedir();
+    const dirs = [
+        join(home, ".pizzapi", "commands"),
+        join(cwd, ".pizzapi", "commands"),
+        join(home, ".agents", "commands"),
+        join(cwd, ".agents", "commands"),
+    ];
+
+    const seen = new Set<string>();
+    const commands: PluginCommand[] = [];
+
+    for (const dir of dirs) {
+        for (const cmd of scanStandaloneCommandsDir(dir)) {
+            if (!seen.has(cmd.name)) {
+                seen.add(cmd.name);
+                commands.push(cmd);
+            }
+        }
+    }
+
+    return commands;
 }

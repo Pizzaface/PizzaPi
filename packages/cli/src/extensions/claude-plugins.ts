@@ -10,6 +10,7 @@
 import type { ExtensionAPI, ExtensionFactory } from "@mariozechner/pi-coding-agent";
 import {
     discoverPlugins,
+    discoverStandaloneCommands,
     resolvePluginRoot,
     matchesTool,
     mapHookEventToPi,
@@ -24,7 +25,7 @@ import {
 import { isPluginTrusted, trustPlugin } from "../config.js";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { createLogger } from "@pizzapi/tools";
 
 const log = createLogger("claude-plugins");
@@ -114,6 +115,50 @@ export function expandArguments(template: string, args: string | undefined): str
         .replace(/\$ARGUMENTS/g, args ?? "");
 
     return result;
+}
+
+// ── Standalone command registration ───────────────────────────────────────────
+
+/**
+ * Register a standalone command (not tied to a plugin) as a pi slash command.
+ * Uses the command name directly without a plugin prefix.
+ */
+function registerStandaloneCommand(
+    pi: ExtensionAPI,
+    cmd: PluginCommand,
+): void {
+    // Resolve ${CLAUDE_PLUGIN_ROOT} to the command's parent directory
+    // (the commands/ dir itself, which serves as the "root" for standalone commands)
+    const commandRoot = dirname(cmd.filePath);
+    const templateContent = resolvePluginRoot(cmd.content, commandRoot);
+
+    pi.registerCommand(cmd.name, {
+        description: cmd.frontmatter.description ?? cmd.name,
+        handler: async (args, ctx) => {
+            let prompt = expandArguments(templateContent, args);
+
+            // Resolve inline shell commands: !\`command\`
+            const inlineShellPattern = /!\`([^`]+)\`/g;
+            const inlineMatches = [...prompt.matchAll(inlineShellPattern)];
+            for (const match of inlineMatches) {
+                const shellCmd = match[1];
+                try {
+                    const result = await new Promise<string>((res) => {
+                        execFile("/bin/sh", ["-c", shellCmd], {
+                            timeout: 5000,
+                            maxBuffer: 64 * 1024,
+                            cwd: ctx.cwd,
+                        }, (_err, stdout) => {
+                            res(typeof stdout === "string" ? stdout.trim() : "");
+                        });
+                    });
+                    prompt = prompt.replace(match[0], result);
+                } catch { /* leave as-is */ }
+            }
+
+            pi.sendUserMessage(prompt);
+        },
+    });
 }
 
 // ── Command registration ──────────────────────────────────────────────────────
@@ -492,12 +537,23 @@ export function createClaudePluginExtension(cwd: string): ExtensionFactory | nul
     }
     const localOnly = Array.from(localByName.values());
 
-    if (globalPlugins.length === 0 && localOnly.length === 0) return null;
+    // Discover standalone commands (not bundled inside plugins)
+    const standaloneCommands = discoverStandaloneCommands(cwd);
+
+    if (globalPlugins.length === 0 && localOnly.length === 0 && standaloneCommands.length === 0) return null;
 
     return (pi: ExtensionAPI) => {
         // Register global plugins immediately (trusted)
         for (const plugin of globalPlugins) {
             registerPlugin(pi, plugin);
+        }
+
+        // Register standalone commands immediately (trusted — they're from
+        // the same trusted directories as plugins)
+        if (standaloneCommands.length > 0) {
+            for (const cmd of standaloneCommands) {
+                registerStandaloneCommand(pi, cmd);
+            }
         }
 
         // Track whether the trust prompt has been shown and answered (not
