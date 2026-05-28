@@ -660,55 +660,58 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                 logInfo(`registered as ${runnerId}`);
 
                 // Wait for plugin service discovery to finish, then init ALL services
-                // (built-in + plugins) and announce the full list.
-                // On reconnect, dispose first to clear stale listeners from the old socket.
+                // (built-in + plugins) once and announce the full list.
                 await pluginServicesReady;
-                if (servicesInitialized) {
-                    registry.disposeAll();
-                }
-                servicesInitialized = true;
-                // Build announcePanel callback — when a service calls it, we register
-                // the port with the tunnel service and re-announce to viewers.
-                const announcePanel = (serviceId: string) => (port: number) => {
-                    const entry = panelEntries.get(serviceId);
-                    if (!entry) return;
-                    entry.port = port;
-                    tunnelService.registerPort(port, entry.label);
-                    logInfo(`[services] panel announced for "${serviceId}" on port ${port}`);
-                    // Re-announce so viewers pick up the panel
-                    emitServiceAnnounce();
-                };
-
-                // Build announceSigilServer callback — for services that run an HTTP resolve
-                // server but have no UI panel. Registers with the tunnel for routing and
-                // stamps the port onto sigil defs in service_announce, without adding the
-                // service to the panels array.
-                const announceSigilServer = (serviceId: string) => (port: number) => {
-                    sigilServerPorts.set(serviceId, port);
-                    tunnelService.registerPort(port, serviceId);
-                    logInfo(`[services] sigil resolve server announced for "${serviceId}" on port ${port}`);
-                    emitServiceAnnounce();
-                };
-
-                // Init all services — pass announcePanel to those with a UI panel,
-                // announceSigilServer to panel-less services that only need HTTP resolve routing.
-                for (const handler of registry.getAll()) {
-                    const opts: any = { isShuttingDown: () => isShuttingDown };
-                    const entry = panelEntries.get(handler.id);
-                    if (entry) {
-                        if (entry.hasPanel !== false) {
-                            opts.announcePanel = announcePanel(handler.id);
-                        } else {
-                            opts.announceSigilServer = announceSigilServer(handler.id);
-                        }
-                    }
-                    handler.init(socket, opts);
-                }
                 const allServiceIds = registry.getAll().map((s) => s.id);
-                logInfo(`[services] initialized ${allServiceIds.length} services: ${allServiceIds.join(", ")}`);
 
-                // TunnelService now preserves its exposed-port state across Socket.IO
-                // reconnects and re-announces known ports when re-initialized.
+                if (!servicesInitialized) {
+                    servicesInitialized = true;
+                    // Build announcePanel callback — when a service calls it, we register
+                    // the port with the tunnel service and re-announce to viewers.
+                    const announcePanel = (serviceId: string) => (port: number) => {
+                        const entry = panelEntries.get(serviceId);
+                        if (!entry) return;
+                        entry.port = port;
+                        tunnelService.registerPort(port, entry.label);
+                        logInfo(`[services] panel announced for "${serviceId}" on port ${port}`);
+                        // Re-announce so viewers pick up the panel
+                        emitServiceAnnounce();
+                    };
+
+                    // Build announceSigilServer callback — for services that run an HTTP resolve
+                    // server but have no UI panel. Registers with the tunnel for routing and
+                    // stamps the port onto sigil defs in service_announce, without adding the
+                    // service to the panels array.
+                    const announceSigilServer = (serviceId: string) => (port: number) => {
+                        sigilServerPorts.set(serviceId, port);
+                        tunnelService.registerPort(port, serviceId);
+                        logInfo(`[services] sigil resolve server announced for "${serviceId}" on port ${port}`);
+                        emitServiceAnnounce();
+                    };
+
+                    // Socket.IO reconnects reuse this same Socket instance, so service
+                    // listeners registered during the first init remain attached. Re-running
+                    // init() on reconnect would duplicate socket handlers and may respawn
+                    // service-owned resources; preserve the existing service instances instead.
+                    for (const handler of registry.getAll()) {
+                        const opts: any = { isShuttingDown: () => isShuttingDown };
+                        const entry = panelEntries.get(handler.id);
+                        if (entry) {
+                            if (entry.hasPanel !== false) {
+                                opts.announcePanel = announcePanel(handler.id);
+                            } else {
+                                opts.announceSigilServer = announceSigilServer(handler.id);
+                            }
+                        }
+                        handler.init(socket, opts);
+                    }
+                    logInfo(`[services] initialized ${allServiceIds.length} services: ${allServiceIds.join(", ")}`);
+                } else {
+                    logInfo(`[services] reconnected; preserving ${allServiceIds.length} initialized services: ${allServiceIds.join(", ")}`);
+                }
+
+                // Re-announce service metadata after every registration so viewers and
+                // freshly restarted relays rebuild their service/panel/sigil caches.
                 emitServiceAnnounce();
 
                 // Re-adopt orphaned sessions that survived a daemon restart.
