@@ -296,6 +296,8 @@ export interface RunnerServerToClientEvents {
    *  Allows the daemon to clean up its runningSessions map for adopted sessions. */
   session_ended: (data: {
     sessionId: string;
+    reason?: string;
+    sessionFile?: string;
   }) => void;
 
   /** Requests a list of active sessions */

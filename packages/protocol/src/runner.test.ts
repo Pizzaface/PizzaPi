@@ -238,10 +238,15 @@ describe("runner — RunnerServerToClientEvents payloads", () => {
     expect(typeof p.sessionId).toBe("string");
   });
 
-  test("session_ended carries sessionId", () => {
+  test("session_ended carries sessionId with optional close metadata", () => {
     type Payload = Parameters<RunnerServerToClientEvents["session_ended"]>[0];
-    const p: Payload = { sessionId: "sess-ended" };
+    const p: Payload = {
+      sessionId: "sess-ended",
+      reason: "Session ended",
+      sessionFile: "/tmp/sess-ended.jsonl",
+    };
     expect(typeof p.sessionId).toBe("string");
+    expect(p.sessionFile).toContain("sess-ended.jsonl");
   });
 
   test("list_sessions, restart, shutdown, ping send empty records", () => {

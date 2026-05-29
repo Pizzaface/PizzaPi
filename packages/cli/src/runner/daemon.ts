@@ -311,7 +311,20 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             const maybeGitService = gitService as GitService & { handleSessionEnded?: (id: string) => void };
             maybeGitService.handleSessionEnded?.(sessionId);
         };
-        const sessionCloseMetadata = new Map<string, { cwd: string; sessionFile?: string }>();
+        type SessionCloseMetadata = { cwd: string; sessionFile?: string; updatedAt: number };
+        const sessionCloseMetadata = new Map<string, SessionCloseMetadata>();
+        const setSessionCloseMetadata = (sessionId: string, metadata: Omit<SessionCloseMetadata, "updatedAt">) => {
+            sessionCloseMetadata.set(sessionId, { ...metadata, updatedAt: Date.now() });
+        };
+        const SESSION_CLOSE_METADATA_TTL_MS = 60 * 60_000;
+        const sessionCloseMetadataSweep = setInterval(() => {
+            const now = Date.now();
+            for (const [id, metadata] of sessionCloseMetadata) {
+                if (!runningSessions.has(id) && now - metadata.updatedAt >= SESSION_CLOSE_METADATA_TTL_MS) {
+                    sessionCloseMetadata.delete(id);
+                }
+            }
+        }, 5 * 60_000);
         const resolveConfiguredAgentDir = (cwd = process.cwd()) => {
             const config = loadConfig(cwd);
             return config.agentDir ? expandHome(config.agentDir) : defaultAgentDir();
@@ -581,6 +594,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             if (isShuttingDown) return;
             isShuttingDown = true;
             clearInterval(endedSessionSweep);
+            clearInterval(sessionCloseMetadataSweep);
             clearInterval(usageScanInterval);
             clearInterval(keychainSyncInterval);
             tunnelClient?.dispose();
@@ -732,7 +746,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                             adopted: true,
                             ...(typeof sessionFile === "string" && sessionFile ? { sessionFile } : {}),
                         });
-                        sessionCloseMetadata.set(sessionId, {
+                        setSessionCloseMetadata(sessionId, {
                             cwd: typeof cwd === "string" && cwd ? cwd : process.cwd(),
                             ...(typeof sessionFile === "string" && sessionFile ? { sessionFile } : {}),
                         });
@@ -949,7 +963,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                         : { hiddenModels: requestedHiddenModels, agent: resolvedAgent, parentSessionId: requestedParentSessionId, autoClose: requestedAutoClose === true }; // Always pass agent + hidden models + parent + autoClose on restart
                     isFirstSpawn = false;
                     spawnSession(sessionId, apiKey!, relayRaw, requestedCwd, runningSessions, restartingSessions, killedSessions, doSpawn, spawnOpts);
-                    sessionCloseMetadata.set(sessionId, {
+                    setSessionCloseMetadata(sessionId, {
                         cwd: requestedCwd ?? process.cwd(),
                         ...(resolvedResumePath ? { sessionFile: resolvedResumePath } : {}),
                     });
@@ -987,7 +1001,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                 }
                 runningSessions.delete(sessionId);
                 endedSessionIds.set(sessionId, Date.now());
-                await notifyProviderSessionClose(sessionId, "close");
+                await notifyProviderSessionClose(sessionId, "close", entry.sessionFile);
                 cleanupGitSessionState(sessionId);
                 sessionCloseMetadata.delete(sessionId);
                 logInfo(`killed session ${sessionId}${entry.adopted ? " (adopted)" : ""}`);
@@ -1051,7 +1065,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                 await notifyProviderSessionClose(
                     sessionId,
                     reason,
-                    typeof sessionFile === "string" ? sessionFile : undefined,
+                    typeof sessionFile === "string" ? sessionFile : entry?.sessionFile,
                 );
             }
 
@@ -1518,8 +1532,8 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                     });
                     return;
                 }
-                const { existsSync, readFileSync } = await import("node:fs");
-                if (!existsSync(sessionFile)) {
+                const transcriptFile = Bun.file(sessionFile);
+                if (!await transcriptFile.exists()) {
                     socket.emit("analyze_session_error", {
                         requestId,
                         error: "Session file does not exist: " + sessionFile,
@@ -1528,7 +1542,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                 }
                 const { parseJsonlEntries } = await import("../session-analysis/parser.js");
                 const { reconstructContext } = await import("../session-analysis/analyzer.js");
-                const content = readFileSync(sessionFile, "utf-8");
+                const content = await transcriptFile.text();
                 const { entries } = parseJsonlEntries(content);
                 const leafId = entries.findLast((e: any) => e.id)?.id ?? "root";
                 const analysis = reconstructContext(entries, leafId);
