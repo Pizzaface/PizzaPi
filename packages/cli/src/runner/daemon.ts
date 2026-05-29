@@ -320,7 +320,9 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
         const sessionCloseMetadataSweep = setInterval(() => {
             const now = Date.now();
             for (const [id, metadata] of sessionCloseMetadata) {
-                if (!runningSessions.has(id) && now - metadata.updatedAt >= SESSION_CLOSE_METADATA_TTL_MS) {
+                // Keep entries with sessionFile — they're needed for on-demand
+                // session analysis long after the session has ended.
+                if (!runningSessions.has(id) && now - metadata.updatedAt >= SESSION_CLOSE_METADATA_TTL_MS && !metadata.sessionFile) {
                     sessionCloseMetadata.delete(id);
                 }
             }
@@ -1546,11 +1548,19 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                     });
                     return;
                 }
+                const MAX_ANALYSIS_FILE_SIZE = 50 * 1024 * 1024; // 50 MB
                 const transcriptFile = Bun.file(sessionFile);
                 if (!await transcriptFile.exists()) {
                     socket.emit("analyze_session_error", {
                         requestId,
                         error: "Session file does not exist: " + sessionFile,
+                    });
+                    return;
+                }
+                if (transcriptFile.size > MAX_ANALYSIS_FILE_SIZE) {
+                    socket.emit("analyze_session_error", {
+                        requestId,
+                        error: `Session file too large for analysis (${Math.round(transcriptFile.size / 1024 / 1024)} MB, max ${MAX_ANALYSIS_FILE_SIZE / 1024 / 1024} MB)`,
                     });
                     return;
                 }
