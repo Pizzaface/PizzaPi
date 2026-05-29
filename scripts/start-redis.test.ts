@@ -55,6 +55,14 @@ echo 'redis-server 123 pizza 3u IPv4 0t0 TCP localhost:6379 (LISTEN)'
 `,
     );
 
+    makeExecutable(
+      join(fakeBin, "redis-cli"),
+      `#!/usr/bin/env bash
+set -euo pipefail
+echo PONG
+`,
+    );
+
     const result = Bun.spawnSync({
       cmd: ["/bin/bash", "scripts/start-redis.sh"],
       cwd: repoRoot,
@@ -69,7 +77,7 @@ echo 'redis-server 123 pizza 3u IPv4 0t0 TCP localhost:6379 (LISTEN)'
     expect(result.exitCode).toBe(0);
     expect(result.stderr.toString()).toBe("");
     expect(result.stdout.toString()).toContain(
-      "✅ Port 6379 is already in use by an existing local service.",
+      "✅ Redis is already running on port 6379.",
     );
     expect(result.stdout.toString()).toContain("Reusing redis://localhost:6379");
 
@@ -91,6 +99,14 @@ echo 'redis-server 123 pizza 3u IPv4 0t0 TCP localhost:6379 (LISTEN)'
 `,
     );
 
+    makeExecutable(
+      join(fakeBin, "redis-cli"),
+      `#!/usr/bin/env bash
+set -euo pipefail
+echo PONG
+`,
+    );
+
     const result = Bun.spawnSync({
       cmd: ["/bin/bash", "scripts/start-redis.sh"],
       cwd: repoRoot,
@@ -105,9 +121,51 @@ echo 'redis-server 123 pizza 3u IPv4 0t0 TCP localhost:6379 (LISTEN)'
     expect(result.exitCode).toBe(0);
     expect(result.stderr.toString()).toBe("");
     expect(result.stdout.toString()).toContain(
-      "✅ Port 6379 is already in use by an existing local service.",
+      "✅ Redis is already running on port 6379.",
     );
     expect(result.stdout.toString()).toContain("Reusing redis://localhost:6379");
+  });
+
+  test("fails clearly when port 6379 is used by a non-Redis listener", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "pizzapi-start-redis-non-redis-"));
+    tempDirs.push(tempDir);
+
+    const fakeBin = join(tempDir, "bin");
+    mkdirSync(fakeBin, { recursive: true });
+
+    makeExecutable(
+      join(fakeBin, "lsof"),
+      `#!/usr/bin/env bash
+set -euo pipefail
+echo 'python 123 pizza 3u IPv4 0t0 TCP localhost:6379 (LISTEN)'
+`,
+    );
+
+    makeExecutable(
+      join(fakeBin, "redis-cli"),
+      `#!/usr/bin/env bash
+set -euo pipefail
+exit 1
+`,
+    );
+
+    const result = Bun.spawnSync({
+      cmd: ["/bin/bash", "scripts/start-redis.sh"],
+      cwd: repoRoot,
+      env: {
+        ...process.env,
+        PATH: `${fakeBin}:/usr/bin:/bin`,
+      },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr.toString()).toBe("");
+    expect(result.stdout.toString()).toContain(
+      "❌ Port 6379 is in use, but it does not respond to Redis PING.",
+    );
+    expect(result.stdout.toString()).not.toContain("Reusing redis://localhost:6379");
   });
 
   test("falls back to Docker when the Redis port is free", () => {

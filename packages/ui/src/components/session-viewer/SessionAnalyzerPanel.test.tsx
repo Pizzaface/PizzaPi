@@ -42,9 +42,9 @@ const analysis: SessionAnalysis = {
   activeModel: { provider: "openai", id: "gpt-4.1-mini", contextWindow: 128000 },
   modelsUsed: [],
   blocks: [
-    { turnIndex: 0, entryId: "1", role: "turn", tokens: 120, rawTokenDelta: 120, title: "Turn" },
-    { turnIndex: 1, entryId: "2", role: "separator", tokens: 5, rawTokenDelta: 5 },
-    { turnIndex: 2, entryId: "3", role: "system", tokens: 80, rawTokenDelta: 80, title: "System" },
+    { turnIndex: 0, entryId: "1", role: "turn", tokens: 120, rawTokenDelta: 120, title: "Turn", usage: { input: 120, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 120 } },
+    { turnIndex: 1, entryId: "2", role: "separator", tokens: 0, rawTokenDelta: -40, usage: { input: 80, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 80 } },
+    { turnIndex: 2, entryId: "3", role: "turn", tokens: 40, rawTokenDelta: 40, title: "Turn", usage: { input: 120, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 120 } },
   ],
   compactions: [
     {
@@ -86,6 +86,7 @@ describe("SessionAnalyzerPanel", () => {
     expect(container.textContent).toContain("Context over time");
     expect(container.textContent).toContain("Largest context pieces");
     expect(container.textContent).toContain("Amber markers show compactions.");
+    expect(container.textContent).toContain("120 total");
 
     const closeButton = Array.from(container.getElementsByTagName("button")).find(
       (el) => el.getAttribute("aria-label") === "Close Context & Cache Analysis",

@@ -175,15 +175,18 @@ export function SessionAnalyzerBody({ analysis, runnerId, sessionId }: SessionAn
 
   const growthPoints = React.useMemo(() => {
     if (!effectiveAnalysis?.blocks?.length) return [];
+    const turnBlocks = effectiveAnalysis.blocks
+      .filter((block) => block.turnIndex >= 0)
+      .sort((a, b) => a.turnIndex - b.turnIndex);
+
     let sum = 0;
-    const blocks = [...effectiveAnalysis.blocks];
-    blocks.sort((a, b) => {
-      if (a.turnIndex < 0 && b.turnIndex >= 0) return 1;
-      if (b.turnIndex < 0 && a.turnIndex >= 0) return -1;
-      return a.turnIndex - b.turnIndex;
-    });
-    return blocks.map((block) => {
-      sum += block.tokens ?? 0;
+    return turnBlocks.map((block) => {
+      const usageInput = block.usage?.input;
+      if (typeof usageInput === "number") {
+        sum = usageInput;
+      } else {
+        sum = Math.max(0, sum + (block.rawTokenDelta ?? block.tokens ?? 0));
+      }
       return { value: sum, block };
     });
   }, [effectiveAnalysis]);

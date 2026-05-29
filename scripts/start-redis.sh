@@ -43,15 +43,34 @@ print_port_listener() {
     fi
 }
 
+redis_ping() {
+    if command -v redis-cli &>/dev/null; then
+        redis-cli -h localhost -p "$REDIS_PORT" ping 2>/dev/null | grep -q '^PONG$'
+        return $?
+    fi
+    if command -v nc &>/dev/null; then
+        printf '*1\r\n$4\r\nPING\r\n' | nc -w 2 localhost "$REDIS_PORT" 2>/dev/null | grep -q '^+PONG'
+        return $?
+    fi
+    return 1
+}
+
 # ── Port already in use (reuse existing local Redis) ──────────────────────────
 # Check this before requiring Docker so `bun run dev` works on systems that use
 # an already-running local Redis and do not have Docker installed.
 if port_in_use; then
-    echo "✅ Port $REDIS_PORT is already in use by an existing local service."
+    if redis_ping; then
+        echo "✅ Redis is already running on port $REDIS_PORT."
+        print_port_listener
+        echo ""
+        echo "   Reusing redis://localhost:$REDIS_PORT"
+        exit 0
+    fi
+    echo "❌ Port $REDIS_PORT is in use, but it does not respond to Redis PING."
     print_port_listener
     echo ""
-    echo "   Reusing redis://localhost:$REDIS_PORT"
-    exit 0
+    echo "   Stop the process using port $REDIS_PORT or configure Redis on a different port."
+    exit 1
 fi
 
 # ── Docker available? ─────────────────────────────────────────────────────────
