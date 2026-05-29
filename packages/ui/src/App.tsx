@@ -1649,6 +1649,14 @@ export function App() {
         setAvailableCommands(stateCommands);
       }
 
+      const hasStateAnalysis = !!state && Object.prototype.hasOwnProperty.call(state, "analysis");
+      const stateAnalysis = hasStateAnalysis
+        ? state.analysis as SessionUiCacheEntry["analysis"]
+        : null;
+      if (hasStateAnalysis) {
+        setAnalysis(stateAnalysis ?? null);
+      }
+
       // Track chunked delivery state — messages arrive as subsequent
       // session_messages_chunk events when the session is large.
       if (isChunked) {
@@ -1728,12 +1736,14 @@ export function App() {
           ...(hasStateCommands ? { availableCommands: stateCommands } : {}),
           effortLevel: thinkingLevel,
           todoList: stateTodos,
+          ...(hasStateAnalysis ? { analysis: stateAnalysis ?? null } : {}),
         });
       } else {
         patchSessionCache({
           messages: normalizedMessages,
           availableModels: stateModels,
           ...(hasStateCommands ? { availableCommands: stateCommands } : {}),
+          ...(hasStateAnalysis ? { analysis: stateAnalysis ?? null } : {}),
         });
       }
       return;

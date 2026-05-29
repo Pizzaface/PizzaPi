@@ -152,15 +152,29 @@ import { syncKeychainToAuthStorage } from "./keychain-auth.js";
 import { buildPizzaPiExtensionFactories } from "../extensions/factories.js";
 import { armWorkerStartupGate, markWorkerStartupComplete } from "../extensions/worker-startup-gate.js";
 
-// ── Context tracking injection ────────────────────────────────────────────
+// ── Session metadata / context tracking ──────────────────────────────────
+
+function publishSessionMetadata(session: any): void {
+    const sessionFile = session.sessionManager?.getSessionFile?.() ?? session.sessionFile;
+    if (!sessionFile) return;
+    process.env.PIZZAPI_SESSION_FILE = sessionFile;
+    if (typeof process.send === "function") {
+        process.send({
+            type: "session_metadata",
+            sessionId: process.env.PIZZAPI_SESSION_ID ?? null,
+            sessionFile,
+        });
+    }
+}
 
 /**
- * Emit `custom_message` entries for each identifiable piece of session
- * context so the session analyzer can attribute cost/tokens to individual
+ * Emit non-context `custom` metadata entries for each identifiable piece of
+ * session context so the session analyzer can attribute cost/tokens to
  * components (global rules, project rules, system prompt, user append).
  *
- * These entries participate in LLM context and appear in the context
- * treemap under distinct colors/roles (see session-analysis/analyzer.ts).
+ * These entries are ignored by buildSessionContext() and do not get sent to the
+ * model. They are telemetry only; use custom_message only for content that must
+ * participate in LLM context.
  */
 function injectContextTrackingEntries(
     session: any,
@@ -169,16 +183,21 @@ function injectContextTrackingEntries(
     config: { appendSystemPrompt?: string },
 ): void {
     const sm = session.sessionManager;
-    if (!sm || typeof sm.appendCustomMessageEntry !== "function") return;
+    if (!sm || typeof sm.appendCustomEntry !== "function") return;
+
+    const appendContextTelemetry = (customType: string, content: string) => {
+        if (!content.trim()) return;
+        sm.appendCustomEntry(customType, { content });
+    };
 
     // ── Global rules (from ~/.pizzapi/AGENTS.md) ──────────────────────────
     const globalAgentsPath = join(agentDir, "AGENTS.md");
     if (existsSync(globalAgentsPath)) {
         try {
-            const content = readFileSync(globalAgentsPath, "utf-8");
-            if (content.trim()) {
-                sm.appendCustomMessageEntry("context:global-rules", content, false);
-            }
+            appendContextTelemetry(
+                "context:global-rules",
+                readFileSync(globalAgentsPath, "utf-8"),
+            );
         } catch { /* skip unreadable */ }
     }
 
@@ -186,24 +205,24 @@ function injectContextTrackingEntries(
     const projectAgentsPath = join(cwd, "AGENTS.md");
     if (existsSync(projectAgentsPath)) {
         try {
-            const content = readFileSync(projectAgentsPath, "utf-8");
-            if (content.trim()) {
-                sm.appendCustomMessageEntry("context:project-rules", content, false);
-            }
+            appendContextTelemetry(
+                "context:project-rules",
+                readFileSync(projectAgentsPath, "utf-8"),
+            );
         } catch { /* skip unreadable */ }
     }
 
     // ── Built-in system prompt ─────────────────────────────────────────────
     try {
-        const builtin = buildSystemPrompt({ cwd, isRunner: true });
-        if (builtin.trim()) {
-            sm.appendCustomMessageEntry("context:builtin-prompt", builtin, false);
-        }
+        appendContextTelemetry(
+            "context:builtin-prompt",
+            buildSystemPrompt({ cwd, isRunner: true }),
+        );
     } catch { /* skip */ }
 
     // ── User append system prompt (from ~/.pizzapi/config.json) ───────────
     if (config.appendSystemPrompt?.trim()) {
-        sm.appendCustomMessageEntry("context:append-prompt", config.appendSystemPrompt, false);
+        appendContextTelemetry("context:append-prompt", config.appendSystemPrompt);
     }
 }
 
@@ -372,9 +391,10 @@ async function main(): Promise<void> {
     bootTimer.end("[boot] create-session");
 
     // ── Inject context tracking entries ───────────────────────────────────
-    // Emit custom_message entries for each identifiable piece of context
+    // Emit non-context custom entries for each identifiable piece of context
     // (global rules, project rules, system prompt, user append prompt) so
-    // the session analyzer can attribute token/cost to individual components.
+    // the session analyzer can attribute token/cost to individual components
+    // without changing the live LLM prompt.
     try {
         injectContextTrackingEntries(session, cwd, agentDir, config);
     } catch (e) {
@@ -389,16 +409,8 @@ async function main(): Promise<void> {
     // work (notably MCP initialization) has completed.
     armWorkerStartupGate();
     // Make session file path available to hooks/extensions (e.g. pertinence retrospective)
-    if (session.sessionFile) {
-      process.env.PIZZAPI_SESSION_FILE = session.sessionFile;
-      if (typeof process.send === "function") {
-        process.send({
-          type: "session_metadata",
-          sessionId: process.env.PIZZAPI_SESSION_ID ?? null,
-          sessionFile: session.sessionFile,
-        });
-      }
-    }
+    // and to the daemon for historical session analysis.
+    publishSessionMetadata(session);
     bootTimer.start("[boot] bind-extensions");
     try {
     await session.bindExtensions({
@@ -429,6 +441,7 @@ async function main(): Promise<void> {
                 // Create a fresh session file
                 session.sessionManager.newSession();
                 session.agent.sessionId = session.sessionManager.getSessionId();
+                publishSessionMetadata(session);
 
                 // Clear AgentSession's private tracking queues so stale steering/
                 // follow-up messages from the old conversation don't leak through.
@@ -492,6 +505,7 @@ async function main(): Promise<void> {
                 // Load the target session file into the existing SessionManager
                 session.sessionManager.setSessionFile(sessionPath);
                 session.agent.sessionId = session.sessionManager.getSessionId();
+                publishSessionMetadata(session);
 
                 // Rebuild messages from the target session
                 const sessionContext = session.sessionManager.buildSessionContext();

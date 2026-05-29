@@ -138,6 +138,7 @@ export function createRelayContext(
                 model,
                 thinkingLevel: rctx.getCurrentThinkingLevel(),
                 sessionName: rctx.getCurrentSessionName(),
+                sessionFile: rctx.latestCtx.sessionManager.getSessionFile?.(),
                 cwd: rctx.latestCtx.cwd,
                 availableModels: rctx.getConfiguredModels(),
                 todoList: getCurrentTodoList(),

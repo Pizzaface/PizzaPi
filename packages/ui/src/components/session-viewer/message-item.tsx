@@ -137,6 +137,9 @@ export const SessionMessageItem = React.memo(
     }
 
     const isCustomMessage = message.role === "custom";
+    if (isCustomMessage && message.display === false) {
+      return null;
+    }
 
     return (
       <div className="group/msg w-full px-4 py-1.5">
@@ -164,7 +167,7 @@ export const SessionMessageItem = React.memo(
                 className="ml-auto opacity-0 group-hover/msg:opacity-100 transition-opacity"
               />
             </div>
-            {isCustomMessage ? (
+            {isCustomMessage && message.display !== true ? (
               <div className="mt-1">
                 <button
                   type="button"

@@ -266,6 +266,7 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
             ephemeral: true,
             collabMode: true,
             sessionName: rctx.getCurrentSessionName() ?? undefined,
+            ...(process.env.PIZZAPI_SESSION_FILE ? { sessionFile: process.env.PIZZAPI_SESSION_FILE } : {}),
             ...(parentSessionIdForRegister === undefined ? {} : { parentSessionId: parentSessionIdForRegister }),
         });
     });

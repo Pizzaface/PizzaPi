@@ -128,6 +128,7 @@ export interface RegisterTuiSessionOpts {
     isEphemeral?: boolean;
     collabMode?: boolean;
     sessionName?: string | null;
+    sessionFile?: string;
     userId?: string;
     userName?: string;
     /** Parent session ID — set when registering a child session. */

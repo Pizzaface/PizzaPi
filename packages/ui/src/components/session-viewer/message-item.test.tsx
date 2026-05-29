@@ -50,4 +50,37 @@ describe("SessionMessageItem custom messages", () => {
     expect(view.getByText("Full custom message body")).toBeTruthy();
     expect(view.getByRole("button", { name: "Hide message" })).toBeTruthy();
   });
+
+  test("renders display:true custom messages inline", () => {
+    const message: RelayMessage = {
+      key: "custom-visible",
+      role: "custom",
+      customType: "plan-complete",
+      display: true,
+      timestamp: 1_700_000_000_000,
+      content: "Visible custom message body",
+    };
+
+    const view = render(<SessionMessageItem message={message} isLast={false} />);
+
+    expect(view.getByText("Custom")).toBeTruthy();
+    expect(view.getByText("• plan-complete")).toBeTruthy();
+    expect(view.getByText("Visible custom message body")).toBeTruthy();
+    expect(view.queryByRole("button", { name: "Show message" })).toBeNull();
+  });
+
+  test("hides display:false custom messages from the transcript", () => {
+    const message: RelayMessage = {
+      key: "custom-hidden",
+      role: "custom",
+      customType: "context:global-rules",
+      display: false,
+      timestamp: 1_700_000_000_000,
+      content: "Hidden custom message body",
+    };
+
+    const view = render(<SessionMessageItem message={message} isLast={false} />);
+
+    expect(view.container.innerHTML).toBe("");
+  });
 });

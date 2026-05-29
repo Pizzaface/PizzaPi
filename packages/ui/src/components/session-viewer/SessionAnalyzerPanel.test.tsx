@@ -96,7 +96,7 @@ describe("SessionAnalyzerPanel", () => {
     expect(closed).toBe(1);
   });
 
-  test("prefers on-demand reconstructed analysis when runner and session are available", async () => {
+  test("uses on-demand reconstructed analysis when no live analysis is available", async () => {
     const reconstructedAnalysis: SessionAnalysis = {
       ...analysis,
       blocks: [
@@ -113,7 +113,7 @@ describe("SessionAnalyzerPanel", () => {
 
     const { container } = render(
       <SessionAnalyzerPanel
-        analysis={analysis}
+        analysis={null}
         runnerId="runner-1"
         sessionId="session-1"
       />,
@@ -124,5 +124,41 @@ describe("SessionAnalyzerPanel", () => {
       "/api/runners/runner-1/analysis/session-1",
       { headers: { Accept: "application/json" }, credentials: "include" },
     );
+  });
+
+  test("live analysis updates supersede an earlier fetched snapshot", async () => {
+    const reconstructedAnalysis: SessionAnalysis = {
+      ...analysis,
+      blocks: [
+        { turnIndex: -1, entryId: "ctx-1", role: "context:global-rules", tokens: 500, rawTokenDelta: 0, title: "Global Rules" },
+        { turnIndex: 0, entryId: "turn-1", role: "turn", tokens: 120, rawTokenDelta: 120 },
+      ],
+    };
+    const fetchMock = mock(async () => ({
+      ok: true,
+      json: async () => reconstructedAnalysis,
+    }));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (globalThis as any).fetch = fetchMock;
+
+    const view = render(
+      <SessionAnalyzerPanel
+        analysis={null}
+        runnerId="runner-1"
+        sessionId="session-1"
+      />,
+    );
+
+    await waitFor(() => expect(view.container.textContent).toContain("2 items"));
+
+    view.rerender(
+      <SessionAnalyzerPanel
+        analysis={analysis}
+        runnerId="runner-1"
+        sessionId="session-1"
+      />,
+    );
+
+    await waitFor(() => expect(view.container.textContent).toContain("3 items"));
   });
 });

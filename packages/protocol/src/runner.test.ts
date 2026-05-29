@@ -192,12 +192,13 @@ describe("runner — RunnerServerToClientEvents payloads", () => {
     const withSessions: Payload = {
       runnerId: "r-1",
       existingSessions: [
-        { sessionId: "sess-1", cwd: "/home/user" },
+        { sessionId: "sess-1", cwd: "/home/user", sessionFile: "/home/user/.pizzapi/sessions/sess-1.jsonl" },
         { sessionId: "sess-2", cwd: "/tmp" },
       ],
     };
     expect(withSessions.existingSessions).toHaveLength(2);
     expect(withSessions.existingSessions![0].sessionId).toBe("sess-1");
+    expect(withSessions.existingSessions![0].sessionFile).toContain("sess-1.jsonl");
   });
 
   test("new_session carries sessionId with optional config", () => {

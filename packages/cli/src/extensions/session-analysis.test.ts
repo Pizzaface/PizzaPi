@@ -73,5 +73,53 @@ describe("sessionAnalysisExtension", () => {
       turns: 1,
       totalCost: 0.01,
     });
+    expect(analysis?.summary.estimatedCacheSavings).toBeCloseTo(0.000675);
+  });
+
+  test("live cache savings use model-specific pricing and become null for unknown pricing", () => {
+    process.env.PIZZAPI_SESSION_ID = "test-session";
+    const fakePi = createFakePi();
+    sessionAnalysisExtension(fakePi.api as any);
+
+    fakePi.emit("session_start");
+    fakePi.emit("turn_end", {
+      turnIndex: 0,
+      entryId: "assistant-haiku",
+      message: {
+        role: "assistant",
+        provider: "anthropic",
+        model: "claude-haiku-4-5",
+        usage: {
+          input: 1_000,
+          output: 100,
+          cacheRead: 1_000,
+          cacheWrite: 0,
+          totalTokens: 2_100,
+          cost: { total: 0.01 },
+        },
+      },
+    });
+
+    expect(getSessionAnalysis("test-session")?.summary.estimatedCacheSavings).toBeCloseTo(0.00072);
+
+    fakePi.emit("turn_end", {
+      turnIndex: 1,
+      entryId: "assistant-unknown",
+      message: {
+        role: "assistant",
+        provider: "openai",
+        model: "gpt-5.4-mini",
+        usage: {
+          input: 1_000,
+          output: 100,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: 1_100,
+          cost: { total: 0.01 },
+        },
+      },
+    });
+
+    expect(getSessionAnalysis("test-session")?.summary.estimatedCacheSavings).toBeNull();
   });
 });

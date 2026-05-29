@@ -22,6 +22,9 @@ export function UsageDashboard({ runnerId, onInspectSession }: UsageDashboardPro
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    const controller = new AbortController();
+    let active = true;
+
     const fetchUsageData = async () => {
       setLoading(true);
       setError(null);
@@ -33,8 +36,11 @@ export function UsageDashboard({ runnerId, onInspectSession }: UsageDashboardPro
               Accept: "application/json",
             },
             credentials: "include",
+            signal: controller.signal,
           },
         );
+
+        if (!active) return;
 
         if (!response.ok) {
           const errorData = await response.json();
@@ -42,17 +48,23 @@ export function UsageDashboard({ runnerId, onInspectSession }: UsageDashboardPro
         }
 
         const usageData = await response.json();
-        setData(usageData);
+        if (active) setData(usageData);
       } catch (err) {
+        if (!active || controller.signal.aborted) return;
         setError(
           err instanceof Error ? err.message : "An unexpected error occurred",
         );
       } finally {
-        setLoading(false);
+        if (active) setLoading(false);
       }
     };
 
     fetchUsageData();
+
+    return () => {
+      active = false;
+      controller.abort();
+    };
   }, [runnerId, range]);
 
   if (error) {

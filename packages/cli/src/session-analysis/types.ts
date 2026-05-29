@@ -174,6 +174,15 @@ export interface ParsedCustomMessageEntry {
   details?: unknown;
 }
 
+export interface ParsedCustomEntry {
+  type: "custom";
+  id: string;
+  parentId: string | null;
+  timestamp: string;
+  customType: string;
+  data?: unknown;
+}
+
 export interface ParsedModelChangeEntry {
   type: "model_change";
   id: string;
@@ -197,5 +206,6 @@ export type ParsedEntry =
   | ParsedCompactionEntry
   | ParsedBranchSummaryEntry
   | ParsedCustomMessageEntry
+  | ParsedCustomEntry
   | ParsedModelChangeEntry
   | ParsedUnknownEntry;

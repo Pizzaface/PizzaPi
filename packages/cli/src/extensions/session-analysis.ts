@@ -12,11 +12,7 @@ import type {
   SessionAnalysis,
   Usage,
 } from "../session-analysis/types.js";
-
-// ── Pricing constants ───────────────────────────────────────────
-
-const ANTHROPIC_INPUT_PRICE_PER_M = 3.0;      // $3 / MTok
-const ANTHROPIC_CACHE_READ_PRICE_PER_M = 0.30; // $0.30 / MTok
+import { estimateCacheReadSavings } from "../session-analysis/pricing.js";
 
 // ── Per-session state ───────────────────────────────────────────
 
@@ -32,6 +28,7 @@ const sessions = new Map<string, {
   totalCost: number;
   peakInput: number;
   cumulativeCacheSavings: number;
+  cacheSavingsKnown: boolean;
 }>();
 
 // ── Public API ──────────────────────────────────────────────────
@@ -61,7 +58,7 @@ export function getSessionAnalysis(sessionId: string): SessionAnalysis | null {
       totalTokens: s.totalTokens,
       totalCost: s.totalCost,
       cacheHitRate,
-      estimatedCacheSavings: s.cumulativeCacheSavings > 0 ? s.cumulativeCacheSavings : null,
+      estimatedCacheSavings: s.cacheSavingsKnown ? s.cumulativeCacheSavings : null,
       compactionCount: s.compactions.length,
       tokensFreedByCompaction: null,
       peakContextUsage: s.peakInput > 0 ? s.peakInput : null,
@@ -93,6 +90,7 @@ export function sessionAnalysisExtension(pi: ExtensionAPI) {
       totalCost: 0,
       peakInput: 0,
       cumulativeCacheSavings: 0,
+      cacheSavingsKnown: true,
     });
   });
 
@@ -182,10 +180,14 @@ export function sessionAnalysisExtension(pi: ExtensionAPI) {
     s.totalCost += cost ?? 0;
     if (input > s.peakInput) s.peakInput = input;
 
-    // Estimate cache savings (Anthropic pricing)
-    if (provider === "anthropic") {
-      s.cumulativeCacheSavings +=
-        (cacheRead / 1_000_000) * (ANTHROPIC_INPUT_PRICE_PER_M - ANTHROPIC_CACHE_READ_PRICE_PER_M);
+    if (s.cacheSavingsKnown) {
+      const turnSavings = estimateCacheReadSavings(provider, model, normalizedUsage);
+      if (turnSavings == null) {
+        s.cacheSavingsKnown = false;
+        s.cumulativeCacheSavings = 0;
+      } else {
+        s.cumulativeCacheSavings += turnSavings;
+      }
     }
   });
 

@@ -16,12 +16,9 @@ import type {
   ModelStats,
   Usage,
 } from "./types.js";
+import { estimateCacheReadSavings } from "./pricing.js";
 
 const CHARS_PER_TOKEN = 3.5;
-
-// Anthropic pricing per million tokens
-const ANTHROPIC_INPUT_PRICE = 3.0 / 1_000_000;
-const ANTHROPIC_CACHE_READ_PRICE = 0.30 / 1_000_000;
 
 function estimateTokens(text: string): number {
   return Math.max(1, Math.round(text.length / CHARS_PER_TOKEN));
@@ -69,6 +66,14 @@ function getMessageModel(msg: unknown): string | undefined {
   return (msg as Record<string, unknown>).model as string | undefined;
 }
 
+function extractCustomTelemetryContent(data: unknown): string {
+  if (typeof data === "string") return data;
+  if (!data || typeof data !== "object") return "";
+  const content = (data as Record<string, unknown>).content;
+  if (typeof content === "string") return content;
+  return "";
+}
+
 /**
  * Reconstruct context blocks, compaction boundaries, and per-model stats
  * from a full set of JSONL entries.
@@ -112,8 +117,8 @@ export function reconstructContext(
     if (entry.type === "compaction") {
       const ce = entry as ParsedCompactionEntry;
       if (ce.firstKeptEntryId) {
-        let skipId = ce.firstKeptEntryId;
-        while (skipId && byId.has(skipId) && skipId !== ce.id) {
+        let skipId = parentMap.get(ce.firstKeptEntryId) ?? "";
+        while (skipId && byId.has(skipId)) {
           compactionSkips.add(skipId);
           skipId = parentMap.get(skipId) ?? "";
         }
@@ -187,6 +192,8 @@ export function reconstructContext(
     }
   >();
 
+  const turnBlockByEntryId = new Map<string, ContextBlock>();
+
   for (let i = 0; i < assistantEntries.length; i++) {
     const entry = assistantEntries[i]! as any;
     const usage = extractUsage(entry.message?.usage);
@@ -217,7 +224,7 @@ export function reconstructContext(
       subBlocks = computeTurnSubBlocks(activeEntries, entry.id!, clampedDelta);
     }
 
-    blocks.push({
+    const block: ContextBlock = {
       turnIndex: i,
       entryId: entry.id ?? `turn-${i}`,
       role: isSeparator ? "separator" : "turn",
@@ -226,7 +233,9 @@ export function reconstructContext(
       usage,
       model: model ? { provider: model.provider, id: model.id } : undefined,
       subBlocks,
-    });
+    };
+    blocks.push(block);
+    turnBlockByEntryId.set(block.entryId, block);
 
     totalCacheRead += usage?.cacheRead ?? 0;
     totalInput += input;
@@ -254,10 +263,15 @@ export function reconstructContext(
         rawTokenDelta: 0,
       });
     }
-    if (entry.type === "custom_message") {
-      const cm = entry as any;
-      const customType = (cm.customType as string) ?? "";
-      const content = typeof cm.content === "string" ? cm.content : JSON.stringify(cm.content ?? "");
+    if (entry.type === "custom_message" || entry.type === "custom") {
+      const customEntry = entry as any;
+      const customType = (customEntry.customType as string) ?? "";
+      const content = entry.type === "custom"
+        ? extractCustomTelemetryContent(customEntry.data)
+        : typeof customEntry.content === "string"
+          ? customEntry.content
+          : JSON.stringify(customEntry.content ?? "");
+      if (!content) continue;
 
       // Map known customType prefixes to specific roles for coloring/labeling
       let role: string = "custom_message";
@@ -296,12 +310,28 @@ export function reconstructContext(
     }
   }
 
-  // Fill in compaction estimatedTokensAfter and estimatedTokensFreed
+  subtractContextTelemetryFromFirstTurn(blocks);
+
+  // Fill in compaction estimatedTokensAfter and estimatedTokensFreed.
+  // Each compaction must use the first assistant turn after that compaction in
+  // the active path. Later compactions cannot reuse the first turn in the whole
+  // analysis, and the post-compaction turn may be a separator (negative delta)
+  // while still carrying the correct usage.input snapshot.
+  const activeEntryIndexById = new Map<string, number>();
+  activeEntries.forEach((entry, index) => {
+    if (entry.id) activeEntryIndexById.set(entry.id, index);
+  });
+
   for (const c of compactions) {
-    // Find the first non-separator turn block whose entry appears after the compaction
-    const nextTurn = blocks.find(
-      (b) => b.role === "turn" && b.turnIndex >= 0 && b.rawTokenDelta >= 0,
-    );
+    const compactionIndex = activeEntryIndexById.get(c.entryId);
+    const nextAssistantEntry = compactionIndex == null
+      ? undefined
+      : activeEntries.slice(compactionIndex + 1).find(
+        (entry) => entry.type === "message" && getMessageRole((entry as any).message) === "assistant",
+      );
+    const nextTurn = nextAssistantEntry?.id
+      ? turnBlockByEntryId.get(nextAssistantEntry.id)
+      : undefined;
     c.estimatedTokensAfter = nextTurn?.usage?.input ?? null;
     c.estimatedTokensFreed =
       c.estimatedTokensAfter != null
@@ -316,16 +346,17 @@ export function reconstructContext(
     contextWindow: contextWindows?.get(`${m.provider}:${m.id}`),
     turns: m.turns,
     totalCost: m.totalCost,
-    cacheHitRate: m.totalInput > 0 ? m.cacheRead / m.totalInput : 0,
+    cacheHitRate: m.totalInput + m.cacheRead > 0 ? m.cacheRead / (m.totalInput + m.cacheRead) : 0,
   }));
 
-  // Active model at leaf (last model seen)
-  const lastModel = modelByTurn.get(assistantEntries.length - 1) ?? currentModel;
-  const activeModel = lastModel
+  // Active model at leaf (latest model seen on the active path). This may be a
+  // trailing model_change entry after the last assistant turn.
+  const activeModelSource = currentModel ?? modelByTurn.get(assistantEntries.length - 1);
+  const activeModel = activeModelSource
     ? {
-        provider: lastModel.provider,
-        id: lastModel.id,
-        contextWindow: contextWindows?.get(`${lastModel.provider}:${lastModel.id}`),
+        provider: activeModelSource.provider,
+        id: activeModelSource.id,
+        contextWindow: contextWindows?.get(`${activeModelSource.provider}:${activeModelSource.id}`),
       }
     : null;
 
@@ -340,8 +371,11 @@ export function reconstructContext(
     return sum + (u?.cost?.total ?? 0);
   }, 0);
 
-  const cacheHitRate = totalInput > 0 ? totalCacheRead / totalInput : 0;
+  const cacheHitRate = totalInput + totalCacheRead > 0 ? totalCacheRead / (totalInput + totalCacheRead) : 0;
   const estimatedCacheSavings = computeCacheSavings(assistantEntries);
+  const tokensFreedByCompaction = compactions.length > 0 && compactions.every((c) => c.estimatedTokensFreed != null)
+    ? compactions.reduce((sum, c) => sum + c.estimatedTokensFreed!, 0)
+    : null;
 
   // Context utilization: use the active model's context window for simplicity
   const activeCtxWindow = activeModel?.contextWindow;
@@ -360,14 +394,41 @@ export function reconstructContext(
       cacheHitRate,
       estimatedCacheSavings,
       compactionCount: compactions.length,
-      tokensFreedByCompaction: compactions.reduce(
-        (sum, c) => (sum ?? 0) + (c.estimatedTokensFreed ?? 0),
-        null as number | null,
-      ),
+      tokensFreedByCompaction,
       peakContextUsage: peakUsage > 0 ? peakUsage : null,
       contextUtilization,
     },
   };
+}
+
+function subtractContextTelemetryFromFirstTurn(blocks: ContextBlock[]): void {
+  const contextBlocks = blocks.filter((block) => block.role.startsWith("context:"));
+  if (contextBlocks.length === 0) return;
+
+  const firstTurn = blocks.find((block) => block.turnIndex === 0 && block.role === "turn");
+  if (!firstTurn || firstTurn.tokens <= 0) return;
+
+  const contextTotal = contextBlocks.reduce((sum, block) => sum + (block.tokens ?? 0), 0);
+  if (contextTotal <= 0) return;
+
+  let accountedContextTokens = contextTotal;
+  if (contextTotal > firstTurn.tokens) {
+    const scale = firstTurn.tokens / contextTotal;
+    accountedContextTokens = 0;
+    for (const block of contextBlocks) {
+      block.tokens = Math.max(0, Math.round((block.tokens ?? 0) * scale));
+      accountedContextTokens += block.tokens;
+    }
+  }
+
+  const originalTurnTokens = firstTurn.tokens;
+  firstTurn.tokens = Math.max(0, firstTurn.tokens - accountedContextTokens);
+  if (firstTurn.subBlocks?.length && originalTurnTokens > 0) {
+    const scale = firstTurn.tokens / originalTurnTokens;
+    firstTurn.subBlocks = firstTurn.subBlocks
+      .map((subBlock) => ({ ...subBlock, tokens: Math.round(subBlock.tokens * scale) }))
+      .filter((subBlock) => subBlock.tokens > 0);
+  }
 }
 
 function computeTurnSubBlocks(
@@ -452,23 +513,19 @@ function computeTurnSubBlocks(
 }
 
 function computeCacheSavings(assistantEntries: ParsedEntry[]): number | null {
+  if (assistantEntries.length === 0) return null;
+
   let savings = 0;
-  let hasCost = false;
 
   for (const entry of assistantEntries) {
     const e = entry as any;
     const usage = extractUsage(e.message?.usage);
-    if (!usage) continue;
-    if (usage.cost) hasCost = true;
+    if (!usage?.cost) return null;
 
-    const provider = e.message?.provider;
-    // Only compute savings for Anthropic models in v1
-    if (provider === "anthropic") {
-      savings +=
-        (usage.cacheRead ?? 0) * (ANTHROPIC_INPUT_PRICE - ANTHROPIC_CACHE_READ_PRICE);
-    }
-    // Non-Anthropic: skip savings calculation (unknown pricing)
+    const turnSavings = estimateCacheReadSavings(e.message?.provider, e.message?.model, usage);
+    if (turnSavings == null) return null;
+    savings += turnSavings;
   }
 
-  return hasCost ? savings : null;
+  return savings;
 }

@@ -80,7 +80,7 @@ const COLUMNS: Column[] = [
     key: "cost",
     label: "Cost",
     align: "right",
-    render: (s) => (s.totalCost ? formatCurrency(s.totalCost) : "—"),
+    render: (s) => (s.totalCost == null ? "—" : formatCurrency(s.totalCost)),
     sortValue: (s) => s.totalCost ?? -1,
   },
   {

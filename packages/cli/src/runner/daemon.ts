@@ -312,6 +312,10 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             maybeGitService.handleSessionEnded?.(sessionId);
         };
         const sessionCloseMetadata = new Map<string, { cwd: string; sessionFile?: string }>();
+        const resolveConfiguredAgentDir = (cwd = process.cwd()) => {
+            const config = loadConfig(cwd);
+            return config.agentDir ? expandHome(config.agentDir) : defaultAgentDir();
+        };
         const normalizeSessionCloseReason = (reason: unknown): "close" | "error" | "complete" => {
             const text = typeof reason === "string" ? reason.toLowerCase() : "";
             if (text.includes("error") || text.includes("crash") || text.includes("orphan")) return "error";
@@ -324,7 +328,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             if (remembered) return remembered;
 
             try {
-                const sessionsRootDir = join(defaultAgentDir(), "sessions");
+                const sessionsRootDir = join(resolveConfiguredAgentDir(sessionCloseMetadata.get(sessionId)?.cwd), "sessions");
                 const found = await findSessionPathById(sessionsRootDir, sessionId);
                 if (found) return found;
             } catch {
@@ -719,15 +723,19 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                 const existingSessions = data.existingSessions ?? [];
                 if (existingSessions.length > 0) {
                     let adopted = 0;
-                    for (const { sessionId, cwd } of existingSessions) {
+                    for (const { sessionId, cwd, sessionFile } of existingSessions) {
                         if (runningSessions.has(sessionId)) continue; // already tracked
                         runningSessions.set(sessionId, {
                             sessionId,
                             child: null,
                             startedAt: Date.now(),
                             adopted: true,
+                            ...(typeof sessionFile === "string" && sessionFile ? { sessionFile } : {}),
                         });
-                        sessionCloseMetadata.set(sessionId, { cwd: typeof cwd === "string" && cwd ? cwd : process.cwd() });
+                        sessionCloseMetadata.set(sessionId, {
+                            cwd: typeof cwd === "string" && cwd ? cwd : process.cwd(),
+                            ...(typeof sessionFile === "string" && sessionFile ? { sessionFile } : {}),
+                        });
                         adopted++;
                     }
                     if (adopted > 0) {
@@ -916,7 +924,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             // daemon resolves the path from the local session cache/filesystem.
             let resolvedResumePath = typeof requestedResumePath === "string" ? requestedResumePath : undefined;
             if (!resolvedResumePath && typeof requestedResumeId === "string" && requestedResumeId) {
-                const sessionsRootDir = join(defaultAgentDir(), "sessions");
+                const sessionsRootDir = join(resolveConfiguredAgentDir(requestedCwd), "sessions");
                 try {
                     const found = await findSessionPathById(sessionsRootDir, requestedResumeId);
                     if (found) {
@@ -1498,9 +1506,10 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                     });
                     return;
                 }
-                const sessionsRootDir = join(homedir(), ".pizzapi", "sessions");
+                const sessionMetadata = sessionCloseMetadata.get(sessionId);
+                const sessionsRootDir = join(resolveConfiguredAgentDir(sessionMetadata?.cwd), "sessions");
                 const sessionFile = runningSessions.get(sessionId)?.sessionFile
-                    ?? sessionCloseMetadata.get(sessionId)?.sessionFile
+                    ?? sessionMetadata?.sessionFile
                     ?? await findSessionPathById(sessionsRootDir, sessionId);
                 if (!sessionFile) {
                     socket.emit("analyze_session_error", {

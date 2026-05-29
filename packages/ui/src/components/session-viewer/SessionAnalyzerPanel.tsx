@@ -171,7 +171,7 @@ export function SessionAnalyzerBody({ analysis, runnerId, sessionId }: SessionAn
     return () => { cancelled = true; };
   }, [runnerId, sessionId]);
 
-  const effectiveAnalysis = fetchedAnalysis ?? analysis;
+  const effectiveAnalysis = analysis ?? fetchedAnalysis;
 
   const growthPoints = React.useMemo(() => {
     if (!effectiveAnalysis?.blocks?.length) return [];

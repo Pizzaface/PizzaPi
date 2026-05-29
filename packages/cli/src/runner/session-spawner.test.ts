@@ -143,6 +143,7 @@ describe("session-spawner child", () => {
             expect(lastSpawnCall?.env.NODE_OPTIONS).toBeUndefined();
             expect(lastSpawnCall?.env.BUN_OPTIONS).toBeUndefined();
             expect(lastSpawnCall?.env.LD_PRELOAD).toBeUndefined();
+            expect(isCwdAllowed).toHaveBeenCalledWith(tempCwd);
             expect(trackSessionCwd).toHaveBeenCalledWith("sess-main", tempCwd);
             expect(runningSessions.get("sess-main")).toMatchObject({
                 sessionId: "sess-main",
@@ -190,6 +191,10 @@ describe("session-spawner child", () => {
             expect(cleanupSessionAttachments).toHaveBeenCalledWith("sess-exit");
 
             allowCwd = false;
+            expect(() =>
+                spawnSession("sess-default-bad", "api-key", "https://relay.example", undefined, new Map(), new Set(), new Set()),
+            ).toThrow("Requested cwd is outside allowed workspace root(s): " + process.cwd());
+            expect(isCwdAllowed).toHaveBeenLastCalledWith(process.cwd());
             expect(() =>
                 spawnSession("sess-bad", "api-key", "https://relay.example", tempCwd, new Map(), new Set(), new Set()),
             ).toThrow("Requested cwd is outside allowed workspace root(s): " + tempCwd);

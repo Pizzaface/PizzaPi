@@ -18,6 +18,42 @@ set -euo pipefail
 CONTAINER_NAME="pizzapi-redis-dev"
 REDIS_PORT="6379"
 
+port_in_use() {
+    if command -v lsof &>/dev/null; then
+        if lsof -i ":$REDIS_PORT" -sTCP:LISTEN &>/dev/null; then
+            return 0
+        fi
+        return 1
+    fi
+    if command -v nc &>/dev/null; then
+        if nc -z localhost "$REDIS_PORT" &>/dev/null; then
+            return 0
+        fi
+        return 1
+    fi
+    if (echo >"/dev/tcp/127.0.0.1/$REDIS_PORT") &>/dev/null; then
+        return 0
+    fi
+    return 1
+}
+
+print_port_listener() {
+    if command -v lsof &>/dev/null; then
+        lsof -i ":$REDIS_PORT" -sTCP:LISTEN || true
+    fi
+}
+
+# ── Port already in use (reuse existing local Redis) ──────────────────────────
+# Check this before requiring Docker so `bun run dev` works on systems that use
+# an already-running local Redis and do not have Docker installed.
+if port_in_use; then
+    echo "✅ Port $REDIS_PORT is already in use by an existing local service."
+    print_port_listener
+    echo ""
+    echo "   Reusing redis://localhost:$REDIS_PORT"
+    exit 0
+fi
+
 # ── Docker available? ─────────────────────────────────────────────────────────
 if ! command -v docker &>/dev/null; then
     echo "❌ Docker is not installed or not in PATH."
@@ -34,15 +70,6 @@ fi
 if docker inspect "$CONTAINER_NAME" --format '{{.State.Status}}' 2>/dev/null | grep -q 'running'; then
     echo "✅ Redis ($CONTAINER_NAME) is already running on port $REDIS_PORT."
     echo "   URL: redis://localhost:$REDIS_PORT"
-    exit 0
-fi
-
-# ── Port already in use (reuse existing local Redis) ──────────────────────────
-if lsof -i ":$REDIS_PORT" -sTCP:LISTEN &>/dev/null; then
-    echo "✅ Port $REDIS_PORT is already in use by an existing local service."
-    lsof -i ":$REDIS_PORT" -sTCP:LISTEN
-    echo ""
-    echo "   Reusing redis://localhost:$REDIS_PORT"
     exit 0
 fi
 

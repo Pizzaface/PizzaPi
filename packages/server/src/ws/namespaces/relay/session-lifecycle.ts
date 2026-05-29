@@ -25,6 +25,7 @@ export function registerSessionLifecycleHandlers(socket: RelaySocket): void {
     // ── register ─────────────────────────────────────────────────────────
     socket.on("register", async (data) => {
         const cwd = data.cwd ?? "";
+        const sessionFile = typeof data.sessionFile === "string" && data.sessionFile ? data.sessionFile : undefined;
         const isEphemeral = data.ephemeral !== false;
         const collabMode = data.collabMode !== false;
 
@@ -33,6 +34,7 @@ export function registerSessionLifecycleHandlers(socket: RelaySocket): void {
             isEphemeral,
             collabMode,
             sessionName: data.sessionName,
+            sessionFile,
             userId: socket.data.userId,
             userName: (socket.data as RelaySocketData & { userName?: string }).userName,
             parentSessionId: data.parentSessionId ?? undefined,
@@ -41,6 +43,7 @@ export function registerSessionLifecycleHandlers(socket: RelaySocket): void {
         socket.data.sessionId = sessionId;
         socket.data.token = token;
         socket.data.cwd = cwd;
+        if (sessionFile) socket.data.sessionFile = sessionFile;
         socketAckedSeqs.set(socket.id, 0);
 
         socket.emit("registered", {

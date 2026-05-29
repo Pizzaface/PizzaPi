@@ -262,6 +262,7 @@ export interface RunnerServerToClientEvents {
     existingSessions?: Array<{
       sessionId: string;
       cwd: string;
+      sessionFile?: string;
     }>;
   }) => void;
 

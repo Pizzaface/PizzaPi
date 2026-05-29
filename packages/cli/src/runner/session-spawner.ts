@@ -81,18 +81,16 @@ export function spawnSession(
     // usage auth lookups and clean it up on exit without re-deriving it.
     const effectiveCwd = requestedCwd ?? process.cwd();
 
-    if (!isCwdAllowed(requestedCwd)) {
-        throw new Error(`Requested cwd is outside allowed workspace root(s): ${requestedCwd}`);
+    if (!isCwdAllowed(effectiveCwd)) {
+        throw new Error(`Requested cwd is outside allowed workspace root(s): ${effectiveCwd}`);
     }
 
-    if (requestedCwd) {
-        if (!existsSync(requestedCwd)) {
-            throw new Error(`cwd does not exist: ${requestedCwd}`);
-        }
-        const st = statSync(requestedCwd);
-        if (!st.isDirectory()) {
-            throw new Error(`cwd is not a directory: ${requestedCwd}`);
-        }
+    if (!existsSync(effectiveCwd)) {
+        throw new Error(`cwd does not exist: ${effectiveCwd}`);
+    }
+    const st = statSync(effectiveCwd);
+    if (!st.isDirectory()) {
+        throw new Error(`cwd is not a directory: ${effectiveCwd}`);
     }
 
     const workerArgs = resolveWorkerSpawnArgs();

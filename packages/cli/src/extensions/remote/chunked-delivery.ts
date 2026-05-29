@@ -424,6 +424,7 @@ export function emitSessionMetadataUpdate(rctx: RelayContext): void {
             ).model),
             thinkingLevel: rctx.getCurrentThinkingLevel(),
             sessionName: rctx.getCurrentSessionName(),
+            sessionFile: rctx.latestCtx.sessionManager.getSessionFile?.(),
             availableModels: rctx.getConfiguredModels(),
             availableCommands: rctx.getAvailableCommands(),
             todoList: getCurrentTodoList(),
