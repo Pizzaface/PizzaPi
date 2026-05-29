@@ -329,6 +329,36 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             const config = loadConfig(cwd);
             return config.agentDir ? expandHome(config.agentDir) : defaultAgentDir();
         };
+        const listConfiguredModels = (cwd = process.cwd()) => {
+            const agentDir = resolveConfiguredAgentDir(cwd);
+            const authStorage = AuthStorage.create(join(agentDir, "auth.json"));
+            const modelRegistry = ModelRegistry.create(authStorage, join(agentDir, "models.json"));
+            return modelRegistry
+                .getAvailable()
+                .map((model: any) => ({
+                    provider: model.provider,
+                    id: model.id,
+                    name: model.name,
+                    reasoning: model.reasoning,
+                    contextWindow: model.contextWindow,
+                }))
+                .sort((a: any, b: any) => {
+                    if (a.provider !== b.provider) return a.provider.localeCompare(b.provider);
+                    return a.id.localeCompare(b.id);
+                });
+        };
+        const getContextWindowsForAnalysis = (cwd = process.cwd()): Map<string, number> => {
+            const windows = new Map<string, number>();
+            try {
+                for (const model of listConfiguredModels(cwd)) {
+                    if (typeof model.contextWindow !== "number") continue;
+                    windows.set(`${model.provider}:${model.id}`, model.contextWindow);
+                }
+            } catch (err) {
+                logWarn(`[daemon] Failed to load model context windows for analysis: ${err instanceof Error ? err.message : String(err)}`);
+            }
+            return windows;
+        };
         const normalizeSessionCloseReason = (reason: unknown): "close" | "error" | "complete" => {
             const text = typeof reason === "string" ? reason.toLowerCase() : "";
             if (text.includes("error") || text.includes("crash") || text.includes("orphan")) return "error";
@@ -1459,23 +1489,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             if (isShuttingDown) return;
             const requestId = data?.requestId;
             try {
-                const config = loadConfig(process.cwd());
-                const agentDir = config.agentDir ? expandHome(config.agentDir) : defaultAgentDir();
-                const authStorage = AuthStorage.create(join(agentDir, "auth.json"));
-                const modelRegistry = ModelRegistry.create(authStorage, join(agentDir, "models.json"));
-                const models = modelRegistry
-                    .getAvailable()
-                    .map((model: any) => ({
-                        provider: model.provider,
-                        id: model.id,
-                        name: model.name,
-                        reasoning: model.reasoning,
-                        contextWindow: model.contextWindow,
-                    }))
-                    .sort((a: any, b: any) => {
-                        if (a.provider !== b.provider) return a.provider.localeCompare(b.provider);
-                        return a.id.localeCompare(b.id);
-                    });
+                const models = listConfiguredModels(process.cwd());
                 socket.emit("models_list", { requestId, models });
             } catch (e: any) {
                 socket.emit("models_list", { requestId, models: [], error: e.message ?? "Failed to list models" });
@@ -1545,7 +1559,11 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                 const content = await transcriptFile.text();
                 const { entries } = parseJsonlEntries(content);
                 const leafId = entries.findLast((e: any) => e.id)?.id ?? "root";
-                const analysis = reconstructContext(entries, leafId);
+                const analysis = reconstructContext(
+                    entries,
+                    leafId,
+                    getContextWindowsForAnalysis(sessionMetadata?.cwd),
+                );
                 socket.emit("analyze_session_data", { requestId, data: analysis });
             } catch (e: any) {
                 socket.emit("analyze_session_error", {

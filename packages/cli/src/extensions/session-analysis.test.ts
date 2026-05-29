@@ -1,5 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { getSessionAnalysis, resetSessionAnalysis, sessionAnalysisExtension } from "./session-analysis.js";
+import {
+  getSessionAnalysis,
+  resetSessionAnalysis,
+  sessionAnalysisExtension,
+  sweepStaleSessionAnalysis,
+} from "./session-analysis.js";
 
 function createFakePi() {
   const handlers = new Map<string, Array<(event?: unknown) => void>>();
@@ -74,6 +79,28 @@ describe("sessionAnalysisExtension", () => {
       totalCost: 0.01,
     });
     expect(analysis?.summary.estimatedCacheSavings).toBeCloseTo(0.000675);
+  });
+
+  test("TTL sweep removes stale sessions that missed shutdown", () => {
+    process.env.PIZZAPI_SESSION_ID = "test-session";
+    const fakePi = createFakePi();
+    sessionAnalysisExtension(fakePi.api as any);
+
+    fakePi.emit("session_start");
+    fakePi.emit("turn_end", {
+      turnIndex: 0,
+      entryId: "assistant-1",
+      message: {
+        role: "assistant",
+        provider: "anthropic",
+        model: "claude-sonnet-4-20250514",
+        usage: { input: 1_000, output: 100, totalTokens: 1_100 },
+      },
+    });
+
+    expect(getSessionAnalysis("test-session")).not.toBeNull();
+    expect(sweepStaleSessionAnalysis(Date.now() + 25 * 60 * 60_000)).toBe(1);
+    expect(getSessionAnalysis("test-session")).toBeNull();
   });
 
   test("live cache savings use model-specific pricing and become null for unknown pricing", () => {

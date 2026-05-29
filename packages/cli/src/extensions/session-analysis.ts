@@ -16,7 +16,10 @@ import { estimateCacheReadSavings } from "../session-analysis/pricing.js";
 
 // ── Per-session state ───────────────────────────────────────────
 
-const sessions = new Map<string, {
+const SESSION_ANALYSIS_TTL_MS = 24 * 60 * 60_000;
+const SESSION_ANALYSIS_SWEEP_MS = 5 * 60_000;
+
+type SessionAnalysisState = {
   blocks: ContextBlock[];
   compactions: CompactionBoundary[];
   models: Map<string, ModelStats & { cacheRead: number; totalInput: number }>;
@@ -29,7 +32,30 @@ const sessions = new Map<string, {
   peakInput: number;
   cumulativeCacheSavings: number;
   cacheSavingsKnown: boolean;
-}>();
+  updatedAt: number;
+};
+
+const sessions = new Map<string, SessionAnalysisState>();
+let analysisSweep: ReturnType<typeof setInterval> | null = null;
+
+export function sweepStaleSessionAnalysis(now = Date.now()): number {
+  let deleted = 0;
+  for (const [sessionId, state] of sessions) {
+    if (now - state.updatedAt >= SESSION_ANALYSIS_TTL_MS) {
+      sessions.delete(sessionId);
+      deleted += 1;
+    }
+  }
+  return deleted;
+}
+
+function ensureSessionAnalysisSweep() {
+  if (analysisSweep) return;
+  analysisSweep = setInterval(() => {
+    sweepStaleSessionAnalysis();
+  }, SESSION_ANALYSIS_SWEEP_MS);
+  analysisSweep.unref?.();
+}
 
 // ── Public API ──────────────────────────────────────────────────
 
@@ -74,6 +100,8 @@ export function resetSessionAnalysis(sessionId: string): void {
 // ── Extension ───────────────────────────────────────────────────
 
 export function sessionAnalysisExtension(pi: ExtensionAPI) {
+  ensureSessionAnalysisSweep();
+
   pi.on("session_start", () => {
     const sessionId = process.env.PIZZAPI_SESSION_ID
       || process.env.SESSION_ID
@@ -91,6 +119,7 @@ export function sessionAnalysisExtension(pi: ExtensionAPI) {
       peakInput: 0,
       cumulativeCacheSavings: 0,
       cacheSavingsKnown: true,
+      updatedAt: Date.now(),
     });
   });
 
@@ -100,6 +129,7 @@ export function sessionAnalysisExtension(pi: ExtensionAPI) {
       || "unknown";
     const s = sessions.get(sessionId);
     if (!s) return;
+    s.updatedAt = Date.now();
 
     const msg = event.message;
     if (!msg || msg.role !== "assistant") return;
