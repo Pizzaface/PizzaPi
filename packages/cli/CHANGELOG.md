@@ -1,17 +1,18 @@
 # Changelog
 
 All notable PizzaPi changes are documented here. Version numbers track the
-underlying `@mariozechner/pi-coding-agent` release that each PizzaPi update
+underlying `@earendil-works/pi-coding-agent` release that each PizzaPi update
 ships with — this is how the TUI detects "what's new" on startup.
 
 ## [Unreleased]
 
-## [0.70.6] - 2026-04-30
+## [0.79.3] - 2026-06-13
 
-### Upstream (pi 0.67.5 → 0.70.6)
+### Upstream (pi 0.70.6 → 0.79.3)
 
-- Refreshed PizzaPi's upstream package set to `@mariozechner/pi-*` `0.70.6`
-- Re-ported PizzaPi's existing patches for config-dir flattening, extension session control, retryable JSON stream errors, Anthropic web search, and Claude Code credential fallback
+- Refreshed PizzaPi's upstream package set to `@earendil-works/pi-*` `0.79.3`
+- Migrated from the old `@mariozechner/*` scope to the current `@earendil-works/*` scope
+- Re-ported PizzaPi's existing patches for config-dir flattening, retryable JSON stream errors, Anthropic web search, Claude Code credential fallback, and Windows console output
 - Added built-in Ollama Cloud provider wiring to the patched upstream packages
 
 ### PizzaPi

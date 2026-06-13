@@ -13,10 +13,9 @@
  *   /remote stop       Disconnect from relay
  *   /remote reconnect  Force reconnect
  *
- * Note: The `new_session` and `resume_session` exec handlers rely on a Bun
- * patch applied to `@mariozechner/pi-coding-agent` that exposes
- * `newSession()`/`switchSession()` on the extension runtime.
- * See `patches/README.md` for details.
+ * Note: The `new_session` and `resume_session` exec handlers rely on command
+ * actions bound by the PizzaPi runner. Upstream 0.79.x provides the extension
+ * runtime plumbing; PizzaPi no longer carries its old loader/runner shim patch.
  *
  * Sub-modules (all in the same `remote/` folder):
  *   model-selection.ts          — setModelFromWeb handler, model registry lookup
@@ -32,7 +31,7 @@
  *   connection.ts               — Socket.IO connect/disconnect + server events (untouched)
  */
 
-import type { ExtensionFactory } from "@mariozechner/pi-coding-agent";
+import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import type { Socket } from "socket.io-client";
 import type { RelayClientToServerEvents, RelayServerToClientEvents } from "@pizzapi/protocol";
 import type { RelayContext } from "../remote-types.js";

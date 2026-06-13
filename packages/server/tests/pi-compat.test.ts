@@ -1,5 +1,5 @@
 /**
- * Compatibility tests for @mariozechner/pi-ai and @mariozechner/pi-agent-core.
+ * Compatibility tests for @earendil-works/pi-ai and @earendil-works/pi-agent-core.
  *
  * Verifies that the APIs used by the server are still present and functional
  * after a pi package version bump. These tests act as an early warning if
@@ -13,12 +13,12 @@ import { describe, test, expect } from "bun:test";
 
 describe("pi-ai API compatibility", () => {
     test("getModel is exported and callable", async () => {
-        const { getModel } = await import("@mariozechner/pi-ai");
+        const { getModel } = await import("@earendil-works/pi-ai");
         expect(typeof getModel).toBe("function");
     });
 
     test("getProviders is exported and returns an array", async () => {
-        const { getProviders } = await import("@mariozechner/pi-ai");
+        const { getProviders } = await import("@earendil-works/pi-ai");
         expect(typeof getProviders).toBe("function");
         const providers = getProviders();
         expect(Array.isArray(providers)).toBe(true);
@@ -26,7 +26,7 @@ describe("pi-ai API compatibility", () => {
     });
 
     test("getModels is exported and returns models for a provider", async () => {
-        const { getProviders, getModels } = await import("@mariozechner/pi-ai");
+        const { getProviders, getModels } = await import("@earendil-works/pi-ai");
         expect(typeof getModels).toBe("function");
 
         const providers = getProviders();
@@ -42,7 +42,7 @@ describe("pi-ai API compatibility", () => {
     });
 
     test("Type schema builder is exported (used by tools)", async () => {
-        const { Type } = await import("@mariozechner/pi-ai");
+        const { Type } = await import("@earendil-works/pi-ai");
         expect(Type).toBeDefined();
         expect(typeof Type.Object).toBe("function");
         expect(typeof Type.String).toBe("function");
@@ -51,7 +51,7 @@ describe("pi-ai API compatibility", () => {
     });
 
     test("getModel returns model with expected properties", async () => {
-        const { getProviders, getModels, getModel } = await import("@mariozechner/pi-ai");
+        const { getProviders, getModels, getModel } = await import("@earendil-works/pi-ai");
         const providers = getProviders();
         if (providers.length === 0) return;
 
@@ -73,14 +73,14 @@ describe("pi-ai API compatibility", () => {
 
 describe("pi-agent-core API compatibility", () => {
     test("Agent class is exported and constructable", async () => {
-        const { Agent } = await import("@mariozechner/pi-agent-core");
+        const { Agent } = await import("@earendil-works/pi-agent-core");
         expect(typeof Agent).toBe("function");
         expect(Agent.prototype).toBeDefined();
     });
 
     test("Agent accepts initialState with systemPrompt, model, tools", async () => {
-        const { Agent } = await import("@mariozechner/pi-agent-core");
-        const { getProviders, getModels, getModel } = await import("@mariozechner/pi-ai");
+        const { Agent } = await import("@earendil-works/pi-agent-core");
+        const { getProviders, getModels, getModel } = await import("@earendil-works/pi-ai");
 
         const providers = getProviders();
         if (providers.length === 0) return;
@@ -108,8 +108,8 @@ describe("pi-agent-core API compatibility", () => {
     });
 
     test("Agent subscribe returns unsubscribe function", async () => {
-        const { Agent } = await import("@mariozechner/pi-agent-core");
-        const { getProviders, getModels, getModel } = await import("@mariozechner/pi-ai");
+        const { Agent } = await import("@earendil-works/pi-agent-core");
+        const { getProviders, getModels, getModel } = await import("@earendil-works/pi-ai");
 
         const providers = getProviders();
         if (providers.length === 0) return;

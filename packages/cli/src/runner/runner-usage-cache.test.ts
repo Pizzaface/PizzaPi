@@ -34,7 +34,7 @@ describe("runner-usage-cache child", () => {
         const projectCwd = join(home, "project");
         const projectAgentDirByCwd = new Map([[projectCwd, "~/custom-agent-dir"]]);
 
-        mock.module("@mariozechner/pi-coding-agent", () => ({
+        mock.module("@earendil-works/pi-coding-agent", () => ({
             AuthStorage: {
                 create: (authPath: string) => {
                     authCreateCalls.push(authPath);

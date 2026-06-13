@@ -21,7 +21,7 @@
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { type ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { type AgentScope, discoverAgents } from "../subagent-agents.js";
 import { getPluginAgentPaths } from "../claude-plugins.js";
 import { loadGlobalConfig } from "../../config.js";

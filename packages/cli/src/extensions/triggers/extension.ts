@@ -7,8 +7,8 @@
 //   - escalate_trigger: Escalate a child's trigger to the human viewer
 // ============================================================================
 
-import type { ExtensionFactory } from "@mariozechner/pi-coding-agent";
-import { Text } from "@mariozechner/pi-tui";
+import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
+import { Text } from "@earendil-works/pi-tui";
 import type { ConversationTrigger } from "./types.js";
 import { getRelaySocket, getRelaySessionId } from "../remote.js";
 import {

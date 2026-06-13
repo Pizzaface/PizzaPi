@@ -4,7 +4,7 @@
  * No files, no SQLite, no post-hoc parsing. Usage data is already in every
  * assistant message; we just accumulate it here and emit via session metadata.
  */
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type {
   CompactionBoundary,
   ContextBlock,

@@ -12,7 +12,7 @@
  * 3. Built-in tools (read, bash, edit, write, etc.) are never deferred.
  * 4. The `search_tools` tool itself is always active.
  */
-import type { ExtensionFactory } from "@mariozechner/pi-coding-agent";
+import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import { loadConfig, type PizzaPiConfig } from "../config.js";
 import { getMcpBridge } from "./mcp-bridge.js";
 import type { McpConfig } from "./mcp/registry.js";

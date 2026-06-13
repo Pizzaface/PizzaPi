@@ -1,7 +1,7 @@
 import { writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { AuthStorage } from "@mariozechner/pi-coding-agent";
+import { AuthStorage } from "@earendil-works/pi-coding-agent";
 import { loadConfig, defaultAgentDir, expandHome } from "../config.js";
 import { getRefreshedOAuthToken, parseGeminiQuotaCredential } from "./usage-auth.js";
 import { logInfo, logWarn } from "./logger.js";

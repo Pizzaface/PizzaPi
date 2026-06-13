@@ -5,15 +5,15 @@
  * and the core single-agent runner (createAgentSession + session.prompt).
  */
 
-import type { AssistantMessage, Message } from "@mariozechner/pi-ai";
+import type { AssistantMessage, Message } from "@earendil-works/pi-ai";
 import {
     createAgentSession,
     DefaultResourceLoader,
     createCodingTools,
     createReadOnlyTools,
-} from "@mariozechner/pi-coding-agent";
+} from "@earendil-works/pi-coding-agent";
 import type { AgentConfig } from "../subagent-agents.js";
-import type { Model } from "@mariozechner/pi-ai";
+import type { Model } from "@earendil-works/pi-ai";
 import { defaultAgentDir } from "../../config.js";
 import type { SingleResult, SubagentDetails, OnUpdateCallback } from "./types.js";
 import { getFinalOutput, summarizeResultForStreaming } from "./types.js";

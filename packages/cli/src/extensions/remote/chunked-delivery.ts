@@ -15,7 +15,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { buildSessionContext } from "@mariozechner/pi-coding-agent";
+import { buildSessionContext } from "@earendil-works/pi-coding-agent";
 import { createLogger } from "@pizzapi/tools";
 import { getCurrentTodoList } from "../update-todo.js";
 import type { RelayContext } from "../remote-types.js";

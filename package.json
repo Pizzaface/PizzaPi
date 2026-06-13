@@ -39,9 +39,9 @@
     "postinstall": "bun scripts/link-workspaces.ts"
   },
   "dependencies": {
-    "@mariozechner/pi-agent-core": "^0.70.6",
-    "@mariozechner/pi-ai": "^0.70.6",
-    "@mariozechner/pi-tui": "^0.70.6",
+    "@earendil-works/pi-agent-core": "^0.79.3",
+    "@earendil-works/pi-ai": "^0.79.3",
+    "@earendil-works/pi-tui": "^0.79.3",
     "motion": "^12.34.2",
     "pizzapi": "."
   },
@@ -53,9 +53,9 @@
   },
   "version": "",
   "patchedDependencies": {
-    "@mariozechner/pi-ai@0.70.6": "patches/@mariozechner%2Fpi-ai@0.70.6.patch",
-    "@mariozechner/pi-coding-agent@0.70.6": "patches/@mariozechner%2Fpi-coding-agent@0.70.6.patch",
-    "@mariozechner/pi-agent-core@0.70.6": "patches/@mariozechner%2Fpi-agent-core@0.70.6.patch",
-    "@mariozechner/pi-tui@0.70.6": "patches/@mariozechner%2Fpi-tui@0.70.6.patch"
+    "@earendil-works/pi-agent-core@0.79.3": "patches/@earendil-works%2Fpi-agent-core@0.79.3.patch",
+    "@earendil-works/pi-ai@0.79.3": "patches/@earendil-works%2Fpi-ai@0.79.3.patch",
+    "@earendil-works/pi-tui@0.79.3": "patches/@earendil-works%2Fpi-tui@0.79.3.patch",
+    "@earendil-works/pi-coding-agent@0.79.3": "patches/@earendil-works%2Fpi-coding-agent@0.79.3.patch"
   }
 }

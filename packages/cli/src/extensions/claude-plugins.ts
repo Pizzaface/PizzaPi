@@ -7,7 +7,7 @@
  * This is the ExtensionFactory wrapper that integrates with PizzaPi's
  * extension system. The core parsing logic lives in ../plugins.ts.
  */
-import type { ExtensionAPI, ExtensionFactory } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import {
     discoverPlugins,
     resolvePluginRoot,

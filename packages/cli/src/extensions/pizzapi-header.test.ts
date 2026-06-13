@@ -6,7 +6,7 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { visibleWidth } from "@mariozechner/pi-tui";
+import { visibleWidth } from "@earendil-works/pi-tui";
 
 // ── Minimal mock theme that returns plain text (no ANSI codes) ───────────────
 // This makes it easy to check visible output without stripping escape codes.

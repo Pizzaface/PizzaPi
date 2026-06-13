@@ -1,4 +1,4 @@
-import type { ExtensionFactory } from "@mariozechner/pi-coding-agent";
+import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import type { HooksConfig } from "../config.js";
 import { createHooksExtension } from "./hooks.js";
 import { initialPromptExtension } from "./initial-prompt.js";

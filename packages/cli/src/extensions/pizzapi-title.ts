@@ -1,6 +1,6 @@
 import { basename } from "node:path";
-import type { ExtensionFactory } from "@mariozechner/pi-coding-agent";
-import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
+import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 /**
  * Build the PizzaPi terminal title string.

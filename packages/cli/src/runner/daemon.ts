@@ -25,7 +25,7 @@ import { loadGlobalConfig, defaultAgentDir, expandHome, loadConfig } from "../co
 import { findSessionPathById } from "./session-list-cache.js";
 import { cleanupSessionAttachments, sweepOrphanedAttachments } from "../extensions/session-attachments.js";
 import { triggerSessionClose } from "../extensions/providers/extension.js";
-import { AuthStorage, ModelRegistry } from "@mariozechner/pi-coding-agent";
+import { AuthStorage, ModelRegistry } from "@earendil-works/pi-coding-agent";
 import type { ServiceTriggerDef, ServiceSigilDef, TriggerSubscriptionEntry } from "@pizzapi/protocol";
 import { setLogComponent, logInfo, logWarn, logError } from "./logger.js";
 import { extractHookSummary } from "./hook-summary.js";
@@ -35,6 +35,7 @@ import { startUsageRefreshLoop, stopUsageRefreshLoop } from "./runner-usage-cach
 import { syncKeychainToAuthJsonFile } from "./keychain-auth.js";
 import { getWorkspaceRoots, isCwdAllowed } from "./workspace.js";
 import { type RunnerSession, spawnSession } from "./session-spawner.js";
+import { pruneSessionCloseMetadata, type SessionCloseMetadata } from "./session-close-metadata.js";
 
 import {
     scanGlobalSkills,
@@ -311,21 +312,13 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             const maybeGitService = gitService as GitService & { handleSessionEnded?: (id: string) => void };
             maybeGitService.handleSessionEnded?.(sessionId);
         };
-        type SessionCloseMetadata = { cwd: string; sessionFile?: string; updatedAt: number };
         const sessionCloseMetadata = new Map<string, SessionCloseMetadata>();
         const setSessionCloseMetadata = (sessionId: string, metadata: Omit<SessionCloseMetadata, "updatedAt">) => {
             sessionCloseMetadata.set(sessionId, { ...metadata, updatedAt: Date.now() });
+            pruneSessionCloseMetadata(sessionCloseMetadata, runningSessions);
         };
-        const SESSION_CLOSE_METADATA_TTL_MS = 60 * 60_000;
         const sessionCloseMetadataSweep = setInterval(() => {
-            const now = Date.now();
-            for (const [id, metadata] of sessionCloseMetadata) {
-                // Keep entries with sessionFile — they're needed for on-demand
-                // session analysis long after the session has ended.
-                if (!runningSessions.has(id) && now - metadata.updatedAt >= SESSION_CLOSE_METADATA_TTL_MS && !metadata.sessionFile) {
-                    sessionCloseMetadata.delete(id);
-                }
-            }
+            pruneSessionCloseMetadata(sessionCloseMetadata, runningSessions);
         }, 5 * 60_000);
         const resolveConfiguredAgentDir = (cwd = process.cwd()) => {
             const config = loadConfig(cwd);

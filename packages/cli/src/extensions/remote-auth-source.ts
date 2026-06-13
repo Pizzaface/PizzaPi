@@ -5,8 +5,8 @@
  * so the UI can display this to the user.
  */
 
-import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
-import { getEnvApiKey } from "@mariozechner/pi-ai";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { getEnvApiKey } from "@earendil-works/pi-ai";
 import type { AuthSource } from "./remote-types.js";
 
 /**

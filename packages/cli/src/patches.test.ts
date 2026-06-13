@@ -1,5 +1,5 @@
 /**
- * Patch compatibility tests for @mariozechner/pi-coding-agent and @mariozechner/pi-ai.
+ * Patch compatibility tests for @earendil-works/pi-coding-agent and @earendil-works/pi-ai.
  *
  * These tests verify that the bun patches applied to upstream pi packages
  * are correctly in place and the patched APIs function as expected.
@@ -12,12 +12,12 @@ import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
 
 /**
- * Resolve a deep path inside @mariozechner/pi-coding-agent.
+ * Resolve a deep path inside @earendil-works/pi-coding-agent.
  * The package only exports "." and "./hooks", so we resolve from
  * the package root on disk.
  */
 function piCodingAgentPath(subpath: string): string {
-    const pkgMainUrl = import.meta.resolve("@mariozechner/pi-coding-agent");
+    const pkgMainUrl = import.meta.resolve("@earendil-works/pi-coding-agent");
     const pkgMain = fileURLToPath(pkgMainUrl);
     // pkgMain → .../dist/index.js, package root is two dirs up
     const pkgRoot = resolve(dirname(pkgMain), "..");
@@ -25,30 +25,30 @@ function piCodingAgentPath(subpath: string): string {
 }
 
 /**
- * Resolve a deep path inside @mariozechner/pi-ai.
+ * Resolve a deep path inside @earendil-works/pi-ai.
  */
 function piAiPath(subpath: string): string {
-    const pkgMainUrl = import.meta.resolve("@mariozechner/pi-ai");
+    const pkgMainUrl = import.meta.resolve("@earendil-works/pi-ai");
     const pkgMain = fileURLToPath(pkgMainUrl);
     const pkgRoot = resolve(dirname(pkgMain), "..");
     return resolve(pkgRoot, subpath);
 }
 
 /**
- * Resolve a deep path inside @mariozechner/pi-agent-core.
+ * Resolve a deep path inside @earendil-works/pi-agent-core.
  */
 function piAgentCorePath(subpath: string): string {
-    const pkgMainUrl = import.meta.resolve("@mariozechner/pi-agent-core");
+    const pkgMainUrl = import.meta.resolve("@earendil-works/pi-agent-core");
     const pkgMain = fileURLToPath(pkgMainUrl);
     const pkgRoot = resolve(dirname(pkgMain), "..");
     return resolve(pkgRoot, subpath);
 }
 
 /**
- * Resolve a deep path inside @mariozechner/pi-tui.
+ * Resolve a deep path inside @earendil-works/pi-tui.
  */
 function piTuiPath(subpath: string): string {
-    const pkgMainUrl = import.meta.resolve("@mariozechner/pi-tui");
+    const pkgMainUrl = import.meta.resolve("@earendil-works/pi-tui");
     const pkgMain = fileURLToPath(pkgMainUrl);
     const pkgRoot = resolve(dirname(pkgMain), "..");
     return resolve(pkgRoot, subpath);
@@ -63,39 +63,6 @@ function piTuiPath(subpath: string): string {
 // ---------------------------------------------------------------------------
 
 describe("pi-coding-agent patch application", () => {
-    test("loader.js: createExtensionRuntime exposes newSession/switchSession stubs", async () => {
-        const source = await Bun.file(
-            piCodingAgentPath("dist/core/extensions/loader.js"),
-        ).text();
-
-        // Runtime stubs
-        expect(source).toContain("newSession");
-        expect(source).toContain("switchSession");
-        // Our patch markers
-        expect(source).toContain("PATCH(pizzapi)");
-    });
-
-    test("loader.js: createExtensionAPI exposes newSession/switchSession methods", async () => {
-        const source = await Bun.file(
-            piCodingAgentPath("dist/core/extensions/loader.js"),
-        ).text();
-
-        // The API should delegate to runtime.newSession / runtime.switchSession
-        expect(source).toContain("runtime.newSession");
-        expect(source).toContain("runtime.switchSession");
-    });
-
-    test("runner.js: bindCommandContext copies handlers onto runtime", async () => {
-        const source = await Bun.file(
-            piCodingAgentPath("dist/core/extensions/runner.js"),
-        ).text();
-
-        // The patch assigns the handlers to this.runtime
-        expect(source).toContain("this.runtime.newSession");
-        expect(source).toContain("this.runtime.switchSession");
-        expect(source).toContain("PATCH(pizzapi)");
-    });
-
     test("agent-session.js: retryable error regex includes JSON parse errors", async () => {
         const source = await Bun.file(
             piCodingAgentPath("dist/core/agent-session.js"),
@@ -168,42 +135,6 @@ describe("pi-coding-agent patch application", () => {
 // ---------------------------------------------------------------------------
 
 describe("pi-coding-agent patched runtime behavior", () => {
-    // The first dynamic import of loader.js is slow on cold start (the package
-    // is large and Bun's module resolver takes ~10-20s the first time in CI).
-    // Give it a generous timeout; subsequent tests in this describe block reuse
-    // the cached module and are fast.
-    test(
-        "createExtensionRuntime returns object with newSession/switchSession",
-        async () => {
-            const { createExtensionRuntime } = await import(
-                piCodingAgentPath("dist/core/extensions/loader.js")
-            );
-            const runtime = createExtensionRuntime();
-
-            expect(typeof runtime.newSession).toBe("function");
-            expect(typeof runtime.switchSession).toBe("function");
-        },
-        30_000,
-    );
-
-    test("runtime.newSession rejects before initialization", async () => {
-        const { createExtensionRuntime } = await import(
-            piCodingAgentPath("dist/core/extensions/loader.js")
-        );
-        const runtime = createExtensionRuntime();
-
-        await expect(runtime.newSession()).rejects.toThrow(/not initialized/i);
-    });
-
-    test("runtime.switchSession rejects before initialization", async () => {
-        const { createExtensionRuntime } = await import(
-            piCodingAgentPath("dist/core/extensions/loader.js")
-        );
-        const runtime = createExtensionRuntime();
-
-        await expect(runtime.switchSession("/some/path")).rejects.toThrow(/not initialized/i);
-    });
-
     test("retryable error regex matches JSON parse errors from truncated streams", async () => {
         // Extract the regex from the patched source and verify it matches
         // the actual error messages that Bun/JavaScriptCore produces.
@@ -254,23 +185,6 @@ describe("pi-coding-agent patched runtime behavior", () => {
         expect(dir).not.toContain(".pizzapi/agent/sessions");
     });
 
-    test("runtime.newSession/switchSession are assignable (runner can bind them)", async () => {
-        const { createExtensionRuntime } = await import(
-            piCodingAgentPath("dist/core/extensions/loader.js")
-        );
-        const runtime = createExtensionRuntime();
-
-        // Simulate what runner.js bindCommandContext does
-        const mockResult = { cancelled: false };
-        runtime.newSession = async () => mockResult;
-        runtime.switchSession = async () => mockResult;
-
-        const newResult = await runtime.newSession();
-        const switchResult = await runtime.switchSession("/test");
-
-        expect(newResult).toEqual(mockResult);
-        expect(switchResult).toEqual(mockResult);
-    });
 });
 
 // ---------------------------------------------------------------------------
@@ -279,7 +193,7 @@ describe("pi-coding-agent patched runtime behavior", () => {
 
 describe("pi-coding-agent API surface compatibility", () => {
     test("createAgentSession is exported", async () => {
-        const mod = await import("@mariozechner/pi-coding-agent");
+        const mod = await import("@earendil-works/pi-coding-agent");
         expect(typeof mod.createAgentSession).toBe("function");
     });
 
@@ -291,25 +205,25 @@ describe("pi-coding-agent API surface compatibility", () => {
     });
 
     test("SessionManager and related types are accessible", async () => {
-        const mod = await import("@mariozechner/pi-coding-agent");
+        const mod = await import("@earendil-works/pi-coding-agent");
         expect(mod.SessionManager).toBeDefined();
         expect(typeof mod.SessionManager).toBe("function");
     });
 
     test("AuthStorage is exported", async () => {
-        const mod = await import("@mariozechner/pi-coding-agent");
+        const mod = await import("@earendil-works/pi-coding-agent");
         expect(mod.AuthStorage).toBeDefined();
     });
 
     test("buildSessionContext is exported", async () => {
-        const mod = await import("@mariozechner/pi-coding-agent");
+        const mod = await import("@earendil-works/pi-coding-agent");
         expect(typeof mod.buildSessionContext).toBe("function");
     });
 });
 
 describe("pi-agent-core dynamic tool refresh", () => {
     test("tools loaded during a tool call are visible to the very next assistant response", async () => {
-        const { Agent } = await import("@mariozechner/pi-agent-core");
+        const { Agent } = await import("@earendil-works/pi-agent-core");
 
         const usage = {
             input: 0,

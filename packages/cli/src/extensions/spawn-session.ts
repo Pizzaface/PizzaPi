@@ -1,8 +1,8 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { ExtensionFactory } from "@mariozechner/pi-coding-agent";
-import { Text } from "@mariozechner/pi-tui";
+import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
+import { Text } from "@earendil-works/pi-tui";
 import { loadConfig } from "../config.js";
 import { getRelaySessionId } from "./remote.js";
 import { buildProviderUsage, refreshAllUsage } from "./remote-provider-usage.js";

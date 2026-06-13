@@ -17,8 +17,8 @@ import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
-import type { ExtensionFactory } from "@mariozechner/pi-coding-agent";
-import { Text } from "@mariozechner/pi-tui";
+import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
+import { Text } from "@earendil-works/pi-tui";
 import { getRelaySocket as getRelaySocketDefault, getRelaySessionId as getRelaySessionIdDefault } from "./remote.js";
 import { loadConfig as loadConfigDefault } from "../config.js";
 

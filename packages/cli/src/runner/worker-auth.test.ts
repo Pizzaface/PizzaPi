@@ -57,7 +57,7 @@ describe("worker auth resilience", () => {
     test("AuthStorage.create reads from correct path", async () => {
         // This test verifies that when we pass an explicit authPath,
         // AuthStorage reads from that path, not from ~/.pi/agent/auth.json
-        const { AuthStorage } = await import("@mariozechner/pi-coding-agent");
+        const { AuthStorage } = await import("@earendil-works/pi-coding-agent");
 
         const authPath = join(tmpDir, "auth.json");
         const authData = {
@@ -81,7 +81,7 @@ describe("worker auth resilience", () => {
     test("AuthStorage.inMemory creates storage from pre-loaded data", async () => {
         // This tests the lockless fallback path: read file without lock,
         // create in-memory storage
-        const { AuthStorage } = await import("@mariozechner/pi-coding-agent");
+        const { AuthStorage } = await import("@earendil-works/pi-coding-agent");
 
         const authData = {
             anthropic: {
@@ -98,7 +98,7 @@ describe("worker auth resilience", () => {
     });
 
     test("AuthStorage.create with nonexistent path creates empty storage", async () => {
-        const { AuthStorage } = await import("@mariozechner/pi-coding-agent");
+        const { AuthStorage } = await import("@earendil-works/pi-coding-agent");
 
         const authPath = join(tmpDir, "nonexistent", "auth.json");
         // Ensure parent dir exists (AuthStorage.create tries to create it)

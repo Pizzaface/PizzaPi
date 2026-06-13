@@ -1,4 +1,4 @@
-import type { ExtensionFactory } from "@mariozechner/pi-coding-agent";
+import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import { messageBus, type SessionMessage } from "./session-message-bus.js";
 
 /** Minimal Component that renders nothing — keeps the tool call invisible in the TUI. */

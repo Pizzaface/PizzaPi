@@ -1,0 +1,164 @@
+diff --git a/dist/config.js b/dist/config.js
+index f414674d..edf53d2a 100644
+--- a/dist/config.js
++++ b/dist/config.js
+@@ -339,6 +339,10 @@ export function getExamplesPath() {
+ }
+ /** Get path to CHANGELOG.md */
+ export function getChangelogPath() {
++    // PATCH(pizzapi): allow PizzaPi to display its wrapper changelog.
++    if (process.env.PIZZAPI_CHANGELOG_PATH) {
++        return resolve(process.env.PIZZAPI_CHANGELOG_PATH);
++    }
+     return resolve(join(getPackageDir(), "CHANGELOG.md"));
+ }
+ /**
+@@ -372,7 +376,8 @@ const piConfigName = pkg.piConfig?.name;
+ export const PACKAGE_NAME = pkg.name || "@earendil-works/pi-coding-agent";
+ export const APP_NAME = piConfigName || "pi";
+ export const APP_TITLE = piConfigName ? APP_NAME : "π";
+-export const CONFIG_DIR_NAME = pkg.piConfig?.configDir || ".pi";
++// PATCH(pizzapi): force PizzaPi's config namespace instead of upstream .pi.
++export const CONFIG_DIR_NAME = ".pizzapi";
+ export const VERSION = pkg.version || "0.0.0";
+ // e.g., PI_CODING_AGENT_DIR or TAU_CODING_AGENT_DIR
+ export const ENV_AGENT_DIR = `${APP_NAME.toUpperCase()}_CODING_AGENT_DIR`;
+@@ -395,7 +400,8 @@ export function getAgentDir() {
+     if (envDir) {
+         return expandTildePath(envDir);
+     }
+-    return join(homedir(), CONFIG_DIR_NAME, "agent");
++    // PATCH(pizzapi): flat directory structure, no nested agent/ segment.
++    return join(homedir(), CONFIG_DIR_NAME);
+ }
+ /** Get path to user's custom themes directory */
+ export function getCustomThemesDir() {
+@@ -433,4 +439,4 @@ export function getSessionsDir() {
+ export function getDebugLogPath() {
+     return join(getAgentDir(), `${APP_NAME}-debug.log`);
+ }
+-//# sourceMappingURL=config.js.map
+\ No newline at end of file
++//# sourceMappingURL=config.js.map
+diff --git a/dist/core/agent-session.js b/dist/core/agent-session.js
+index 865ad951..4efbf356 100644
+--- a/dist/core/agent-session.js
++++ b/dist/core/agent-session.js
+@@ -1973,8 +1973,9 @@ export class AgentSession {
+         const err = message.errorMessage;
+         if (this._isNonRetryableProviderLimitError(err))
+             return false;
++        // PATCH(pizzapi): add JSON parse errors to retryable patterns.
+         // Match: overloaded_error, provider returned error, rate limit, 429, 500, 502, 503, 504, service unavailable, network/connection errors (including connection lost), WebSocket transport closes/errors, fetch failed, premature stream endings, HTTP/2 closed before response, terminated, retry delay exceeded
+-        return /overloaded|provider.?returned.?error|rate.?limit|too many requests|429|500|502|503|504|service.?unavailable|server.?error|internal.?error|network.?error|connection.?error|connection.?refused|connection.?lost|websocket.?closed|websocket.?error|other side closed|fetch failed|upstream.?connect|reset before headers|socket hang up|ended without|stream ended before message_stop|http2 request did not get a response|timed? out|timeout|terminated|retry delay/i.test(err);
++        return /overloaded|provider.?returned.?error|rate.?limit|too many requests|429|500|502|503|504|service.?unavailable|server.?error|internal.?error|network.?error|connection.?error|connection.?refused|connection.?lost|websocket.?closed|websocket.?error|other side closed|fetch failed|upstream.?connect|reset before headers|socket hang up|ended without|stream ended before message_stop|json.?parse.?error|unexpected.?end.?of.?json|http2 request did not get a response|timed? out|timeout|terminated|retry delay/i.test(err);
+     }
+     /**
+      * Prepare a retryable error for continuation with exponential backoff.
+@@ -2532,4 +2533,4 @@ export class AgentSession {
+         return this._extensionRunner;
+     }
+ }
+-//# sourceMappingURL=agent-session.js.map
+\ No newline at end of file
++//# sourceMappingURL=agent-session.js.map
+diff --git a/dist/core/model-resolver.js b/dist/core/model-resolver.js
+index 2bbfd7fa..5eb79b4d 100644
+--- a/dist/core/model-resolver.js
++++ b/dist/core/model-resolver.js
+@@ -20,6 +20,7 @@ export const defaultModelPerProvider = {
+     "google-vertex": "gemini-3.1-pro-preview",
+     "github-copilot": "gpt-5.4",
+     openrouter: "moonshotai/kimi-k2.6",
++    "ollama-cloud": "glm-5.1",
+     "vercel-ai-gateway": "zai/glm-5.1",
+     xai: "grok-4.20-0309-reasoning",
+     groq: "openai/gpt-oss-120b",
+@@ -531,4 +532,4 @@ export async function restoreModelFromSession(savedProvider, savedModelId, curre
+     // No models available
+     return { model: undefined, fallbackMessage: undefined };
+ }
+-//# sourceMappingURL=model-resolver.js.map
+\ No newline at end of file
++//# sourceMappingURL=model-resolver.js.map
+diff --git a/dist/core/provider-display-names.js b/dist/core/provider-display-names.js
+index fca54333..558dde5e 100644
+--- a/dist/core/provider-display-names.js
++++ b/dist/core/provider-display-names.js
+@@ -23,6 +23,7 @@ export const BUILT_IN_PROVIDER_DISPLAY_NAMES = {
+     "opencode-go": "OpenCode Go",
+     openai: "OpenAI",
+     openrouter: "OpenRouter",
++    "ollama-cloud": "Ollama Cloud",
+     together: "Together AI",
+     "vercel-ai-gateway": "Vercel AI Gateway",
+     xai: "xAI",
+@@ -33,4 +34,4 @@ export const BUILT_IN_PROVIDER_DISPLAY_NAMES = {
+     "xiaomi-token-plan-ams": "Xiaomi MiMo Token Plan (Amsterdam)",
+     "xiaomi-token-plan-sgp": "Xiaomi MiMo Token Plan (Singapore)",
+ };
+-//# sourceMappingURL=provider-display-names.js.map
+\ No newline at end of file
++//# sourceMappingURL=provider-display-names.js.map
+diff --git a/dist/modes/interactive/interactive-mode.js b/dist/modes/interactive/interactive-mode.js
+index 36bb7462..74a575f9 100644
+--- a/dist/modes/interactive/interactive-mode.js
++++ b/dist/modes/interactive/interactive-mode.js
+@@ -33,7 +33,6 @@ import { getCwdRelativePath } from "../../utils/paths.js";
+ import { getPiUserAgent } from "../../utils/pi-user-agent.js";
+ import { killTrackedDetachedChildren } from "../../utils/shell.js";
+ import { ensureTool } from "../../utils/tools-manager.js";
+-import { checkForNewPiVersion } from "../../utils/version-check.js";
+ import { ArminComponent } from "./components/armin.js";
+ import { AssistantMessageComponent } from "./components/assistant-message.js";
+ import { BashExecutionComponent } from "./components/bash-execution.js";
+@@ -533,12 +532,6 @@ export class InteractiveMode {
+      */
+     async run() {
+         await this.init();
+-        // Start version check asynchronously
+-        checkForNewPiVersion(this.version).then((newRelease) => {
+-            if (newRelease) {
+-                this.showNewVersionNotification(newRelease);
+-            }
+-        });
+         // Start package update check asynchronously
+         this.checkForPackageUpdates().then((updates) => {
+             if (updates.length > 0) {
+@@ -3045,29 +3038,6 @@ export class InteractiveMode {
+         this.chatContainer.addChild(new Text(theme.fg("warning", `Warning: ${warningMessage}`), 1, 0));
+         this.ui.requestRender();
+     }
+-    showNewVersionNotification(release) {
+-        const action = theme.fg("accent", `${APP_NAME} update`);
+-        const updateInstruction = theme.fg("muted", `New version ${release.version} is available. Run `) + action;
+-        const changelogUrl = "https://pi.dev/changelog";
+-        const changelogLink = getCapabilities().hyperlinks
+-            ? hyperlink(theme.fg("accent", "open changelog"), changelogUrl)
+-            : theme.fg("accent", changelogUrl);
+-        const changelogLine = theme.fg("muted", "Changelog: ") + changelogLink;
+-        const note = release.note?.trim();
+-        this.chatContainer.addChild(new Spacer(1));
+-        this.chatContainer.addChild(new DynamicBorder((text) => theme.fg("warning", text)));
+-        this.chatContainer.addChild(new Text(`${theme.bold(theme.fg("warning", "Update Available"))}\n${updateInstruction}`, 1, 0));
+-        if (note) {
+-            this.chatContainer.addChild(new Spacer(1));
+-            this.chatContainer.addChild(new Markdown(note, 1, 0, this.getMarkdownThemeWithSettings(), {
+-                color: (text) => theme.fg("muted", text),
+-            }));
+-            this.chatContainer.addChild(new Spacer(1));
+-        }
+-        this.chatContainer.addChild(new Text(changelogLine, 1, 0));
+-        this.chatContainer.addChild(new DynamicBorder((text) => theme.fg("warning", text)));
+-        this.ui.requestRender();
+-    }
+     showPackageUpdateNotification(packages) {
+         const action = theme.fg("accent", `${APP_NAME} update`);
+         const updateInstruction = theme.fg("muted", "Package updates are available. Run ") + action;
+@@ -4801,4 +4771,4 @@ export class InteractiveMode {
+         }
+     }
+ }
+-//# sourceMappingURL=interactive-mode.js.map
+\ No newline at end of file
++//# sourceMappingURL=interactive-mode.js.map
