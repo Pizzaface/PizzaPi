@@ -5,7 +5,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { setPlanModeFromRemote, requestContextClear } from "./plan-mode/index.js";
 import type {
     RelayContext,

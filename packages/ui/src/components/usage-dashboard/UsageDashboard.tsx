@@ -12,15 +12,19 @@ import type { UsageData, UsageRange } from "./types";
 
 interface UsageDashboardProps {
   runnerId: string;
+  onInspectSession?: (sessionId: string) => void;
 }
 
-export function UsageDashboard({ runnerId }: UsageDashboardProps) {
+export function UsageDashboard({ runnerId, onInspectSession }: UsageDashboardProps) {
   const [range, setRange] = useState<UsageRange>("90d");
   const [data, setData] = useState<UsageData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    const controller = new AbortController();
+    let active = true;
+
     const fetchUsageData = async () => {
       setLoading(true);
       setError(null);
@@ -32,8 +36,11 @@ export function UsageDashboard({ runnerId }: UsageDashboardProps) {
               Accept: "application/json",
             },
             credentials: "include",
+            signal: controller.signal,
           },
         );
+
+        if (!active) return;
 
         if (!response.ok) {
           const errorData = await response.json();
@@ -41,17 +48,23 @@ export function UsageDashboard({ runnerId }: UsageDashboardProps) {
         }
 
         const usageData = await response.json();
-        setData(usageData);
+        if (active) setData(usageData);
       } catch (err) {
+        if (!active || controller.signal.aborted) return;
         setError(
           err instanceof Error ? err.message : "An unexpected error occurred",
         );
       } finally {
-        setLoading(false);
+        if (active) setLoading(false);
       }
     };
 
     fetchUsageData();
+
+    return () => {
+      active = false;
+      controller.abort();
+    };
   }, [runnerId, range]);
 
   if (error) {
@@ -112,7 +125,7 @@ export function UsageDashboard({ runnerId }: UsageDashboardProps) {
       </div>
 
       {/* Recent Sessions */}
-      <SessionTable sessions={data.recentSessions} />
+      <SessionTable sessions={data.recentSessions} onInspectSession={onInspectSession} />
     </div>
   );
 }

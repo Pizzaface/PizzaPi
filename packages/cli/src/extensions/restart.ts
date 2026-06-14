@@ -1,4 +1,4 @@
-import type { ExtensionFactory } from "@mariozechner/pi-coding-agent";
+import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
 
 /**
  * Restart extension — adds a /restart command that reloads the extension

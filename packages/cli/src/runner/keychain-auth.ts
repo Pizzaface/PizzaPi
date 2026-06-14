@@ -23,7 +23,7 @@ import { execSync } from "node:child_process";
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
-import type { AuthStorage, OAuthCredential } from "@mariozechner/pi-coding-agent";
+import type { AuthStorage, OAuthCredential } from "@earendil-works/pi-coding-agent";
 import { logInfo, logWarn, logAuth } from "./logger.js";
 
 // ── Credential shape (Claude Code) ─────────────────────────────────────────

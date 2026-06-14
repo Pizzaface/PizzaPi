@@ -1,4 +1,4 @@
-import type { ExtensionFactory } from "@mariozechner/pi-coding-agent";
+import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import { existsSync, readFileSync } from "fs";
 import { join } from "path";
 import { loadConfig, toggleMcpServer, globalConfigDir, type PizzaPiConfig } from "../config.js";

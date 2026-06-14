@@ -104,6 +104,15 @@ describe("toRelayMessage", () => {
     expect(result?.details).toEqual(details);
   });
 
+  test("preserves custom message metadata", () => {
+    const result = toRelayMessage(
+      { role: "custom", customType: "context:global-rules", display: false, content: "rules" },
+      "x",
+    );
+    expect(result?.customType).toBe("context:global-rules");
+    expect(result?.display).toBe(false);
+  });
+
   test("omits toolCallId from output when input toolCallId is empty string", () => {
     const result = toRelayMessage({ role: "user", toolCallId: "" }, "x");
     expect(result?.toolCallId).toBeUndefined();

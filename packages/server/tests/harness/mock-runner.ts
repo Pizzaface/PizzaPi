@@ -1052,6 +1052,14 @@ export async function createMockRunner(
         socket.emit("usage_data", { requestId, data: usageData });
     });
 
+    // --- Session Analysis ---
+
+    socket.on("analyze_session", (data: any) => {
+        if (isShuttingDown) return;
+        const requestId = data?.requestId ?? "";
+        socket.emit("analyze_session_data", { requestId, data: { sessionId: data.sessionId } });
+    });
+
     // --- Error handling ---
 
     socket.on("error", (_data: any) => {

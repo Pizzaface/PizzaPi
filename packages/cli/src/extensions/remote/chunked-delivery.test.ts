@@ -6,14 +6,24 @@
  * - emitSessionMetadataUpdate: dispatches correct event type based on message change state
  */
 
-import { describe, test, expect, beforeEach } from "bun:test";
+import { afterEach, describe, test, expect, beforeEach } from "bun:test";
 import {
     messagesChangedSinceLastEmit,
     recordEmittedMessageState,
     emitSessionMetadataUpdate,
     emitSessionActive,
+    buildLiveSessionAnalysis,
 } from "./chunked-delivery.js";
 import type { RelayContext } from "../remote-types.js";
+import { resetSessionAnalysis, sessionAnalysisExtension } from "../session-analysis.js";
+
+const originalSessionId = process.env.PIZZAPI_SESSION_ID;
+
+afterEach(() => {
+    if (originalSessionId == null) delete process.env.PIZZAPI_SESSION_ID;
+    else process.env.PIZZAPI_SESSION_ID = originalSessionId;
+    resetSessionAnalysis("test-session");
+});
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -34,6 +44,7 @@ function makeContext(opts: {
         provider: string;
         modelId: string;
     } | null;
+    entries?: unknown[];
 } = {}): RelayContext & { emitted: unknown[] } {
     const leafId = opts.leafId ?? "leaf-1";
     const messages = opts.messages ?? [];
@@ -43,6 +54,7 @@ function makeContext(opts: {
     const sessionManager = {
         getLeafId: () => leafId,
         getEntries: () => {
+            if (opts.entries) return opts.entries;
             if (!opts.transcriptModel || !leafId) return [];
             return [{
                 id: leafId,
@@ -121,6 +133,22 @@ function makeContext(opts: {
         // Test capture
         emitted,
     } as any;
+}
+
+function createFakePi() {
+    const handlers = new Map<string, Array<(event?: unknown) => void>>();
+    return {
+        api: {
+            on(event: string, handler: (event?: unknown) => void) {
+                const list = handlers.get(event) ?? [];
+                list.push(handler);
+                handlers.set(event, list);
+            },
+        },
+        emit(event: string, payload?: unknown) {
+            for (const handler of handlers.get(event) ?? []) handler(payload);
+        },
+    };
 }
 
 // ── messagesChangedSinceLastEmit ─────────────────────────────────────────────
@@ -217,6 +245,107 @@ describe("emitSessionMetadataUpdate", () => {
         expect(Object.prototype.hasOwnProperty.call(evt.metadata, "cwd")).toBe(false);
     });
 
+    test("reconstructs analysis from transcript entries when live accumulator is empty", () => {
+        const ctx = makeContext({
+            leafId: "assistant-1",
+            entries: [
+                { type: "session", id: "test-session", timestamp: new Date(0).toISOString(), cwd: "/tmp" },
+                {
+                    type: "message",
+                    id: "assistant-1",
+                    parentId: null,
+                    timestamp: new Date(0).toISOString(),
+                    message: {
+                        role: "assistant",
+                        provider: "anthropic",
+                        model: "claude-sonnet-4-5",
+                        usage: {
+                            input: 1200,
+                            output: 100,
+                            cacheRead: 300,
+                            cacheWrite: 0,
+                            totalTokens: 1600,
+                            cost: { total: 0.01 },
+                        },
+                    },
+                },
+            ],
+        });
+
+        const analysis = buildLiveSessionAnalysis(ctx);
+
+        expect(analysis?.blocks).toHaveLength(1);
+        expect(analysis?.blocks[0]).toMatchObject({
+            entryId: "assistant-1",
+            role: "turn",
+            tokens: 1200,
+        });
+    });
+
+    test("prefers transcript reconstruction over live accumulator for rich context roles", () => {
+        process.env.PIZZAPI_SESSION_ID = "test-session";
+        const fakePi = createFakePi();
+        sessionAnalysisExtension(fakePi.api as any);
+        fakePi.emit("session_start");
+        fakePi.emit("turn_end", {
+            turnIndex: 0,
+            entryId: "assistant-1",
+            message: {
+                role: "assistant",
+                provider: "anthropic",
+                model: "claude-sonnet-4-5",
+                usage: {
+                    input: 1200,
+                    output: 100,
+                    cacheRead: 300,
+                    cacheWrite: 0,
+                    totalTokens: 1600,
+                    cost: { total: 0.01 },
+                },
+            },
+        });
+
+        const ctx = makeContext({
+            leafId: "assistant-1",
+            entries: [
+                { type: "session", id: "test-session", timestamp: new Date(0).toISOString(), cwd: "/tmp" },
+                {
+                    type: "custom_message",
+                    id: "context-1",
+                    parentId: null,
+                    timestamp: new Date(0).toISOString(),
+                    customType: "context:global-rules",
+                    content: "Global rules ".repeat(200),
+                },
+                {
+                    type: "message",
+                    id: "assistant-1",
+                    parentId: "context-1",
+                    timestamp: new Date(0).toISOString(),
+                    message: {
+                        role: "assistant",
+                        provider: "anthropic",
+                        model: "claude-sonnet-4-5",
+                        usage: {
+                            input: 1200,
+                            output: 100,
+                            cacheRead: 300,
+                            cacheWrite: 0,
+                            totalTokens: 1600,
+                            cost: { total: 0.01 },
+                        },
+                    },
+                },
+            ],
+        });
+
+        const analysis = buildLiveSessionAnalysis(ctx);
+        const roles = analysis?.blocks.map((block) => block.role) ?? [];
+
+        expect(roles).toContain("turn");
+        expect(roles).toContain("context:global-rules");
+    });
+
     test("session_metadata_update includes model, sessionName, thinkingLevel, todoList, availableModels", () => {
         const ctx = makeContext({
             leafId: "leaf-fields",
@@ -249,6 +378,7 @@ describe("emitSessionMetadataUpdate", () => {
         expect(keys).toContain("todoList");
         expect(keys).toContain("availableModels");
         expect(keys).toContain("availableCommands");
+        expect(keys).toContain("analysis");
     });
 
     test("session_metadata_update falls back to transcript model when no live model exists", () => {

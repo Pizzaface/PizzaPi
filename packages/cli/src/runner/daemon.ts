@@ -25,7 +25,7 @@ import { loadGlobalConfig, defaultAgentDir, expandHome, loadConfig } from "../co
 import { findSessionPathById } from "./session-list-cache.js";
 import { cleanupSessionAttachments, sweepOrphanedAttachments } from "../extensions/session-attachments.js";
 import { triggerSessionClose } from "../extensions/providers/extension.js";
-import { AuthStorage, ModelRegistry } from "@mariozechner/pi-coding-agent";
+import { AuthStorage, ModelRegistry } from "@earendil-works/pi-coding-agent";
 import type { ServiceTriggerDef, ServiceSigilDef, TriggerSubscriptionEntry } from "@pizzapi/protocol";
 import { setLogComponent, logInfo, logWarn, logError } from "./logger.js";
 import { extractHookSummary } from "./hook-summary.js";
@@ -35,6 +35,7 @@ import { startUsageRefreshLoop, stopUsageRefreshLoop } from "./runner-usage-cach
 import { syncKeychainToAuthJsonFile } from "./keychain-auth.js";
 import { getWorkspaceRoots, isCwdAllowed } from "./workspace.js";
 import { type RunnerSession, spawnSession } from "./session-spawner.js";
+import { pruneSessionCloseMetadata, type SessionCloseMetadata } from "./session-close-metadata.js";
 
 import {
     scanGlobalSkills,
@@ -311,7 +312,48 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             const maybeGitService = gitService as GitService & { handleSessionEnded?: (id: string) => void };
             maybeGitService.handleSessionEnded?.(sessionId);
         };
-        const sessionCloseMetadata = new Map<string, { cwd: string; sessionFile?: string }>();
+        const sessionCloseMetadata = new Map<string, SessionCloseMetadata>();
+        const setSessionCloseMetadata = (sessionId: string, metadata: Omit<SessionCloseMetadata, "updatedAt">) => {
+            sessionCloseMetadata.set(sessionId, { ...metadata, updatedAt: Date.now() });
+            pruneSessionCloseMetadata(sessionCloseMetadata, runningSessions);
+        };
+        const sessionCloseMetadataSweep = setInterval(() => {
+            pruneSessionCloseMetadata(sessionCloseMetadata, runningSessions);
+        }, 5 * 60_000);
+        const resolveConfiguredAgentDir = (cwd = process.cwd()) => {
+            const config = loadConfig(cwd);
+            return config.agentDir ? expandHome(config.agentDir) : defaultAgentDir();
+        };
+        const listConfiguredModels = (cwd = process.cwd()) => {
+            const agentDir = resolveConfiguredAgentDir(cwd);
+            const authStorage = AuthStorage.create(join(agentDir, "auth.json"));
+            const modelRegistry = ModelRegistry.create(authStorage, join(agentDir, "models.json"));
+            return modelRegistry
+                .getAvailable()
+                .map((model: any) => ({
+                    provider: model.provider,
+                    id: model.id,
+                    name: model.name,
+                    reasoning: model.reasoning,
+                    contextWindow: model.contextWindow,
+                }))
+                .sort((a: any, b: any) => {
+                    if (a.provider !== b.provider) return a.provider.localeCompare(b.provider);
+                    return a.id.localeCompare(b.id);
+                });
+        };
+        const getContextWindowsForAnalysis = (cwd = process.cwd()): Map<string, number> => {
+            const windows = new Map<string, number>();
+            try {
+                for (const model of listConfiguredModels(cwd)) {
+                    if (typeof model.contextWindow !== "number") continue;
+                    windows.set(`${model.provider}:${model.id}`, model.contextWindow);
+                }
+            } catch (err) {
+                logWarn(`[daemon] Failed to load model context windows for analysis: ${err instanceof Error ? err.message : String(err)}`);
+            }
+            return windows;
+        };
         const normalizeSessionCloseReason = (reason: unknown): "close" | "error" | "complete" => {
             const text = typeof reason === "string" ? reason.toLowerCase() : "";
             if (text.includes("error") || text.includes("crash") || text.includes("orphan")) return "error";
@@ -324,7 +366,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             if (remembered) return remembered;
 
             try {
-                const sessionsRootDir = join(defaultAgentDir(), "agent", "sessions");
+                const sessionsRootDir = join(resolveConfiguredAgentDir(sessionCloseMetadata.get(sessionId)?.cwd), "sessions");
                 const found = await findSessionPathById(sessionsRootDir, sessionId);
                 if (found) return found;
             } catch {
@@ -577,6 +619,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             if (isShuttingDown) return;
             isShuttingDown = true;
             clearInterval(endedSessionSweep);
+            clearInterval(sessionCloseMetadataSweep);
             clearInterval(usageScanInterval);
             clearInterval(keychainSyncInterval);
             tunnelClient?.dispose();
@@ -660,55 +703,58 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                 logInfo(`registered as ${runnerId}`);
 
                 // Wait for plugin service discovery to finish, then init ALL services
-                // (built-in + plugins) and announce the full list.
-                // On reconnect, dispose first to clear stale listeners from the old socket.
+                // (built-in + plugins) once and announce the full list.
                 await pluginServicesReady;
-                if (servicesInitialized) {
-                    registry.disposeAll();
-                }
-                servicesInitialized = true;
-                // Build announcePanel callback — when a service calls it, we register
-                // the port with the tunnel service and re-announce to viewers.
-                const announcePanel = (serviceId: string) => (port: number) => {
-                    const entry = panelEntries.get(serviceId);
-                    if (!entry) return;
-                    entry.port = port;
-                    tunnelService.registerPort(port, entry.label);
-                    logInfo(`[services] panel announced for "${serviceId}" on port ${port}`);
-                    // Re-announce so viewers pick up the panel
-                    emitServiceAnnounce();
-                };
-
-                // Build announceSigilServer callback — for services that run an HTTP resolve
-                // server but have no UI panel. Registers with the tunnel for routing and
-                // stamps the port onto sigil defs in service_announce, without adding the
-                // service to the panels array.
-                const announceSigilServer = (serviceId: string) => (port: number) => {
-                    sigilServerPorts.set(serviceId, port);
-                    tunnelService.registerPort(port, serviceId);
-                    logInfo(`[services] sigil resolve server announced for "${serviceId}" on port ${port}`);
-                    emitServiceAnnounce();
-                };
-
-                // Init all services — pass announcePanel to those with a UI panel,
-                // announceSigilServer to panel-less services that only need HTTP resolve routing.
-                for (const handler of registry.getAll()) {
-                    const opts: any = { isShuttingDown: () => isShuttingDown };
-                    const entry = panelEntries.get(handler.id);
-                    if (entry) {
-                        if (entry.hasPanel !== false) {
-                            opts.announcePanel = announcePanel(handler.id);
-                        } else {
-                            opts.announceSigilServer = announceSigilServer(handler.id);
-                        }
-                    }
-                    handler.init(socket, opts);
-                }
                 const allServiceIds = registry.getAll().map((s) => s.id);
-                logInfo(`[services] initialized ${allServiceIds.length} services: ${allServiceIds.join(", ")}`);
 
-                // TunnelService now preserves its exposed-port state across Socket.IO
-                // reconnects and re-announces known ports when re-initialized.
+                if (!servicesInitialized) {
+                    servicesInitialized = true;
+                    // Build announcePanel callback — when a service calls it, we register
+                    // the port with the tunnel service and re-announce to viewers.
+                    const announcePanel = (serviceId: string) => (port: number) => {
+                        const entry = panelEntries.get(serviceId);
+                        if (!entry) return;
+                        entry.port = port;
+                        tunnelService.registerPort(port, entry.label);
+                        logInfo(`[services] panel announced for "${serviceId}" on port ${port}`);
+                        // Re-announce so viewers pick up the panel
+                        emitServiceAnnounce();
+                    };
+
+                    // Build announceSigilServer callback — for services that run an HTTP resolve
+                    // server but have no UI panel. Registers with the tunnel for routing and
+                    // stamps the port onto sigil defs in service_announce, without adding the
+                    // service to the panels array.
+                    const announceSigilServer = (serviceId: string) => (port: number) => {
+                        sigilServerPorts.set(serviceId, port);
+                        tunnelService.registerPort(port, serviceId);
+                        logInfo(`[services] sigil resolve server announced for "${serviceId}" on port ${port}`);
+                        emitServiceAnnounce();
+                    };
+
+                    // Socket.IO reconnects reuse this same Socket instance, so service
+                    // listeners registered during the first init remain attached. Re-running
+                    // init() on reconnect would duplicate socket handlers and may respawn
+                    // service-owned resources; preserve the existing service instances instead.
+                    for (const handler of registry.getAll()) {
+                        const opts: any = { isShuttingDown: () => isShuttingDown };
+                        const entry = panelEntries.get(handler.id);
+                        if (entry) {
+                            if (entry.hasPanel !== false) {
+                                opts.announcePanel = announcePanel(handler.id);
+                            } else {
+                                opts.announceSigilServer = announceSigilServer(handler.id);
+                            }
+                        }
+                        handler.init(socket, opts);
+                    }
+                    logInfo(`[services] initialized ${allServiceIds.length} services: ${allServiceIds.join(", ")}`);
+                } else {
+                    logInfo(`[services] reconnected; preserving ${allServiceIds.length} initialized services: ${allServiceIds.join(", ")}`);
+                }
+
+                // Re-announce service metadata after every registration so viewers and
+                // freshly restarted relays rebuild their service/panel/sigil caches.
                 emitServiceAnnounce();
 
                 // Re-adopt orphaned sessions that survived a daemon restart.
@@ -716,15 +762,19 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                 const existingSessions = data.existingSessions ?? [];
                 if (existingSessions.length > 0) {
                     let adopted = 0;
-                    for (const { sessionId, cwd } of existingSessions) {
+                    for (const { sessionId, cwd, sessionFile } of existingSessions) {
                         if (runningSessions.has(sessionId)) continue; // already tracked
                         runningSessions.set(sessionId, {
                             sessionId,
                             child: null,
                             startedAt: Date.now(),
                             adopted: true,
+                            ...(typeof sessionFile === "string" && sessionFile ? { sessionFile } : {}),
                         });
-                        sessionCloseMetadata.set(sessionId, { cwd: typeof cwd === "string" && cwd ? cwd : process.cwd() });
+                        setSessionCloseMetadata(sessionId, {
+                            cwd: typeof cwd === "string" && cwd ? cwd : process.cwd(),
+                            ...(typeof sessionFile === "string" && sessionFile ? { sessionFile } : {}),
+                        });
                         adopted++;
                     }
                     if (adopted > 0) {
@@ -913,7 +963,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             // daemon resolves the path from the local session cache/filesystem.
             let resolvedResumePath = typeof requestedResumePath === "string" ? requestedResumePath : undefined;
             if (!resolvedResumePath && typeof requestedResumeId === "string" && requestedResumeId) {
-                const sessionsRootDir = join(defaultAgentDir(), "agent", "sessions");
+                const sessionsRootDir = join(resolveConfiguredAgentDir(requestedCwd), "sessions");
                 try {
                     const found = await findSessionPathById(sessionsRootDir, requestedResumeId);
                     if (found) {
@@ -938,7 +988,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                         : { hiddenModels: requestedHiddenModels, agent: resolvedAgent, parentSessionId: requestedParentSessionId, autoClose: requestedAutoClose === true }; // Always pass agent + hidden models + parent + autoClose on restart
                     isFirstSpawn = false;
                     spawnSession(sessionId, apiKey!, relayRaw, requestedCwd, runningSessions, restartingSessions, killedSessions, doSpawn, spawnOpts);
-                    sessionCloseMetadata.set(sessionId, {
+                    setSessionCloseMetadata(sessionId, {
                         cwd: requestedCwd ?? process.cwd(),
                         ...(resolvedResumePath ? { sessionFile: resolvedResumePath } : {}),
                     });
@@ -976,7 +1026,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                 }
                 runningSessions.delete(sessionId);
                 endedSessionIds.set(sessionId, Date.now());
-                await notifyProviderSessionClose(sessionId, "close");
+                await notifyProviderSessionClose(sessionId, "close", entry.sessionFile);
                 cleanupGitSessionState(sessionId);
                 sessionCloseMetadata.delete(sessionId);
                 logInfo(`killed session ${sessionId}${entry.adopted ? " (adopted)" : ""}`);
@@ -1040,7 +1090,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                 await notifyProviderSessionClose(
                     sessionId,
                     reason,
-                    typeof sessionFile === "string" ? sessionFile : undefined,
+                    typeof sessionFile === "string" ? sessionFile : entry?.sessionFile,
                 );
             }
 
@@ -1434,23 +1484,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             if (isShuttingDown) return;
             const requestId = data?.requestId;
             try {
-                const config = loadConfig(process.cwd());
-                const agentDir = config.agentDir ? expandHome(config.agentDir) : defaultAgentDir();
-                const authStorage = AuthStorage.create(join(agentDir, "auth.json"));
-                const modelRegistry = ModelRegistry.create(authStorage, join(agentDir, "models.json"));
-                const models = modelRegistry
-                    .getAvailable()
-                    .map((model: any) => ({
-                        provider: model.provider,
-                        id: model.id,
-                        name: model.name,
-                        reasoning: model.reasoning,
-                        contextWindow: model.contextWindow,
-                    }))
-                    .sort((a: any, b: any) => {
-                        if (a.provider !== b.provider) return a.provider.localeCompare(b.provider);
-                        return a.id.localeCompare(b.id);
-                    });
+                const models = listConfiguredModels(process.cwd());
                 socket.emit("models_list", { requestId, models });
             } catch (e: any) {
                 socket.emit("models_list", { requestId, models: [], error: e.message ?? "Failed to list models" });
@@ -1475,6 +1509,67 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                 socket.emit("usage_data", { requestId, data: usageData });
             } catch (e: any) {
                 socket.emit("usage_error", {
+                    requestId,
+                    error: e.message ?? "Unknown error",
+                });
+            }
+        });
+
+        // ── Session Analysis ──────────────────────────────────────────
+
+        socket.on("analyze_session", async (data: any) => {
+            if (isShuttingDown) return;
+            const requestId = data.requestId ?? "";
+            try {
+                const sessionId = data.sessionId;
+                if (!sessionId || typeof sessionId !== "string") {
+                    socket.emit("analyze_session_error", {
+                        requestId,
+                        error: "Missing sessionId parameter",
+                    });
+                    return;
+                }
+                const sessionMetadata = sessionCloseMetadata.get(sessionId);
+                const sessionsRootDir = join(resolveConfiguredAgentDir(sessionMetadata?.cwd), "sessions");
+                const sessionFile = runningSessions.get(sessionId)?.sessionFile
+                    ?? sessionMetadata?.sessionFile
+                    ?? await findSessionPathById(sessionsRootDir, sessionId);
+                if (!sessionFile) {
+                    socket.emit("analyze_session_error", {
+                        requestId,
+                        error: "Session file not found for " + sessionId,
+                    });
+                    return;
+                }
+                const MAX_ANALYSIS_FILE_SIZE = 50 * 1024 * 1024; // 50 MB
+                const transcriptFile = Bun.file(sessionFile);
+                if (!await transcriptFile.exists()) {
+                    socket.emit("analyze_session_error", {
+                        requestId,
+                        error: "Session file does not exist: " + sessionFile,
+                    });
+                    return;
+                }
+                if (transcriptFile.size > MAX_ANALYSIS_FILE_SIZE) {
+                    socket.emit("analyze_session_error", {
+                        requestId,
+                        error: `Session file too large for analysis (${Math.round(transcriptFile.size / 1024 / 1024)} MB, max ${MAX_ANALYSIS_FILE_SIZE / 1024 / 1024} MB)`,
+                    });
+                    return;
+                }
+                const { parseJsonlEntries } = await import("../session-analysis/parser.js");
+                const { reconstructContext } = await import("../session-analysis/analyzer.js");
+                const content = await transcriptFile.text();
+                const { entries } = parseJsonlEntries(content);
+                const leafId = entries.findLast((e: any) => e.id)?.id ?? "root";
+                const analysis = reconstructContext(
+                    entries,
+                    leafId,
+                    getContextWindowsForAnalysis(sessionMetadata?.cwd),
+                );
+                socket.emit("analyze_session_data", { requestId, data: analysis });
+            } catch (e: any) {
+                socket.emit("analyze_session_error", {
                     requestId,
                     error: e.message ?? "Unknown error",
                 });

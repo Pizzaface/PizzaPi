@@ -1,4 +1,5 @@
 import React, { useMemo, useState } from "react";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { formatCurrency } from "./chart-theme";
 import type { UsageData } from "./types";
@@ -79,7 +80,7 @@ const COLUMNS: Column[] = [
     key: "cost",
     label: "Cost",
     align: "right",
-    render: (s) => (s.totalCost ? formatCurrency(s.totalCost) : "—"),
+    render: (s) => (s.totalCost == null ? "—" : formatCurrency(s.totalCost)),
     sortValue: (s) => s.totalCost ?? -1,
   },
   {
@@ -102,9 +103,10 @@ function SortIcon({ active, dir }: { active: boolean; dir: SortDir }) {
 
 interface SessionTableProps {
   sessions: UsageData["recentSessions"];
+  onInspectSession?: (sessionId: string) => void;
 }
 
-export function SessionTable({ sessions }: SessionTableProps) {
+export function SessionTable({ sessions, onInspectSession }: SessionTableProps) {
   const [sort, setSort] = useState<{ key: SortKey; dir: SortDir }>(DEFAULT_SORT);
 
   const toggleSort = (key: SortKey) => {
@@ -159,6 +161,9 @@ export function SessionTable({ sessions }: SessionTableProps) {
                     </span>
                   </th>
                 ))}
+                {onInspectSession && (
+                  <th className="py-2.5 px-3 font-medium text-muted-foreground text-left"></th>
+                )}
               </tr>
             </thead>
             <tbody>
@@ -186,6 +191,17 @@ export function SessionTable({ sessions }: SessionTableProps) {
                       {col.render(session)}
                     </td>
                   ))}
+                  {onInspectSession && (
+                    <td className="py-2 px-3">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => onInspectSession(session.id)}
+                      >
+                        Inspect
+                      </Button>
+                    </td>
+                  )}
                 </tr>
               ))}
             </tbody>

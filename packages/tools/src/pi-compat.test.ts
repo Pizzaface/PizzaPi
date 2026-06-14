@@ -13,7 +13,7 @@ import { createToolkit } from "./toolkit.js";
 
 describe("pi-ai Type schema compatibility", () => {
     test("Type.Object creates a valid schema", async () => {
-        const { Type } = await import("@mariozechner/pi-ai");
+        const { Type } = await import("@earendil-works/pi-ai");
 
         const schema = Type.Object({
             path: Type.String({ description: "File path" }),
@@ -28,7 +28,7 @@ describe("pi-ai Type schema compatibility", () => {
     });
 
     test("Type.Optional wraps a type correctly", async () => {
-        const { Type } = await import("@mariozechner/pi-ai");
+        const { Type } = await import("@earendil-works/pi-ai");
 
         const schema = Type.Object({
             required: Type.String(),
@@ -44,7 +44,7 @@ describe("pi-ai Type schema compatibility", () => {
     });
 
     test("Type.Boolean and Type.Number are available", async () => {
-        const { Type } = await import("@mariozechner/pi-ai");
+        const { Type } = await import("@earendil-works/pi-ai");
 
         expect(typeof Type.Boolean).toBe("function");
         expect(typeof Type.Number).toBe("function");

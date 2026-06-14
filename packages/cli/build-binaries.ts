@@ -3,7 +3,7 @@
  * Builds self-contained `pizza` binaries for all supported platforms.
  *
  * Each binary is placed in dist/binaries/<platform>/ alongside the asset
- * files that @mariozechner/pi-coding-agent expects to find next to the
+ * files that @earendil-works/pi-coding-agent expects to find next to the
  * executable at runtime (package.json, theme/, export-html/).
  *
  * Usage:
@@ -48,7 +48,7 @@ const ALL_TARGETS: Target[] = [
 
 function resolvePiPackageDir(): string {
     // import.meta.resolve gives us the main entry point URL; walk up to find package.json
-    const entryUrl = import.meta.resolve("@mariozechner/pi-coding-agent");
+    const entryUrl = import.meta.resolve("@earendil-works/pi-coding-agent");
     let dir = dirname(new URL(entryUrl).pathname);
     while (dir !== dirname(dir)) {
         if (existsSync(join(dir, "package.json"))) {
@@ -56,7 +56,7 @@ function resolvePiPackageDir(): string {
         }
         dir = dirname(dir);
     }
-    throw new Error("Could not locate @mariozechner/pi-coding-agent package root");
+    throw new Error("Could not locate @earendil-works/pi-coding-agent package root");
 }
 
 // ---------------------------------------------------------------------------

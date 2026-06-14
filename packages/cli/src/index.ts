@@ -9,7 +9,7 @@ import {
     InteractiveMode,
     ModelRegistry,
     SessionManager,
-} from "@mariozechner/pi-coding-agent";
+} from "@earendil-works/pi-coding-agent";
 import { join } from "path";
 import { buildSystemPrompt, defaultAgentDir, expandHome, loadConfig, resolveSandboxConfig, validateSandboxOverride, applyProviderSettingsEnv } from "./config.js";
 import { c, usageBar, colorPct, colorRemaining } from "./cli-colors.js";

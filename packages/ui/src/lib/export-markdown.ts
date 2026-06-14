@@ -192,6 +192,8 @@ function formatSubAgentTurn(turn: SubAgentTurn): string {
 function formatMessage(message: RelayMessage): string | null {
   const { role } = message;
 
+  if (role === "custom" && message.display === false) return null;
+
   // ── User ──
   if (role === "user") {
     const text = contentToString(message.content);

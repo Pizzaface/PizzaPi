@@ -1,9 +1,9 @@
 import { join } from "node:path";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { AuthStorage, type ExtensionFactory } from "@mariozechner/pi-coding-agent";
-import type { AgentTool } from "@mariozechner/pi-agent-core";
-import { Type } from "@mariozechner/pi-ai";
+import { AuthStorage, type ExtensionFactory } from "@earendil-works/pi-coding-agent";
+import type { AgentTool } from "@earendil-works/pi-agent-core";
+import { Type } from "@earendil-works/pi-ai";
 import { defaultAgentDir, expandHome, loadConfig } from "../config.js";
 
 const OLLAMA_WEB_SEARCH_URL = "https://ollama.com/api/web_search";

@@ -1,4 +1,4 @@
-import type { ExtensionFactory } from "@mariozechner/pi-coding-agent";
+import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import { createLogger } from "@pizzapi/tools";
 import { waitForRelayRegistration } from "./remote.js";
 import { waitForWorkerStartupComplete } from "./worker-startup-gate.js";

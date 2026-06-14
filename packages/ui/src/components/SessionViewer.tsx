@@ -68,6 +68,7 @@ import {
   X,
   Zap,
   Pencil,
+  BarChart3,
 } from "lucide-react";
 import { AtMentionPopover } from "@/components/AtMentionPopover";
 import { McpToggleContext } from "@/components/session-viewer/McpToggleContext";
@@ -144,8 +145,12 @@ export function SessionViewer({
   onToggleTriggers,
   showTriggersButton,
   isTriggersOpen,
+  onToggleAnalyzer,
+  showAnalyzerButton,
+  isAnalyzerOpen,
   triggerCount,
   todoList = [],
+  analysis = null,
   planModeEnabled,
   runnerId,
   sessionCwd,
@@ -635,6 +640,16 @@ export function SessionViewer({
                     </TooltipContent>
                   </Tooltip>
                 )}
+                {showAnalyzerButton && onToggleAnalyzer && (
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button className="hidden md:inline-flex h-7 w-7" onClick={onToggleAnalyzer} size="icon" type="button" variant="outline" aria-label="Toggle context analysis">
+                        <BarChart3 className="size-3.5" />
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>Context &amp; Cache Analysis</TooltipContent>
+                  </Tooltip>
+                )}
                 {extraHeaderButtons}
                 <Tooltip>
                   <TooltipTrigger asChild>
@@ -671,6 +686,9 @@ export function SessionViewer({
                   showTriggersButton={showTriggersButton}
                   onToggleTriggers={onToggleTriggers}
                   isTriggersOpen={isTriggersOpen}
+                  showAnalyzerButton={showAnalyzerButton}
+                  onToggleAnalyzer={onToggleAnalyzer}
+                  isAnalyzerOpen={isAnalyzerOpen}
                   triggerCount={triggerCount}
                   onDuplicateSession={onDuplicateSession}
                   messages={sortedMessages}

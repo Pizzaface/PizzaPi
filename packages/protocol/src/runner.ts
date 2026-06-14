@@ -162,8 +162,20 @@ export interface RunnerClientToServerEvents {
     data: unknown; // UsageData shape — typed as unknown here to avoid protocol depending on CLI types
   }) => void;
 
+  /** Runner responds with on-demand session analysis data */
+  analyze_session_data: (data: {
+    requestId?: string;
+    data: unknown; // SessionAnalysis shape
+  }) => void;
+
   /** Runner reports a usage data error */
   usage_error: (data: {
+    requestId?: string;
+    error: string;
+  }) => void;
+
+  /** Runner reports a session analysis error */
+  analyze_session_error: (data: {
     requestId?: string;
     error: string;
   }) => void;
@@ -250,6 +262,7 @@ export interface RunnerServerToClientEvents {
     existingSessions?: Array<{
       sessionId: string;
       cwd: string;
+      sessionFile?: string;
     }>;
   }) => void;
 
@@ -283,6 +296,8 @@ export interface RunnerServerToClientEvents {
    *  Allows the daemon to clean up its runningSessions map for adopted sessions. */
   session_ended: (data: {
     sessionId: string;
+    reason?: string;
+    sessionFile?: string;
   }) => void;
 
   /** Requests a list of active sessions */
@@ -442,6 +457,12 @@ export interface RunnerServerToClientEvents {
   get_usage: (data: {
     requestId?: string;
     range?: "7d" | "30d" | "90d" | "all";
+  }) => void;
+
+  /** Requests on-demand session context analysis from the runner */
+  analyze_session: (data: {
+    requestId?: string;
+    sessionId: string;
   }) => void;
 
   /** Requests the full runner settings (config.json + settings.json) */

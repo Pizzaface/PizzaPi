@@ -116,6 +116,20 @@ describe("exportToMarkdown", () => {
     expect(md).toContain("Branched from main session");
   });
 
+  test("hidden custom messages are omitted", () => {
+    const md = exportToMarkdown([
+      msg({
+        role: "custom",
+        customType: "context:global-rules",
+        display: false,
+        content: "secret prompt content",
+      }),
+    ]);
+
+    expect(md).not.toContain("secret prompt content");
+    expect(md).toBe("\n");
+  });
+
   test("sub-agent conversation renders sent and received turns", () => {
     const md = exportToMarkdown([
       msg({

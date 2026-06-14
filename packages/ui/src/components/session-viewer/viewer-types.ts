@@ -1,5 +1,6 @@
 import type { RelayMessage } from "@/components/session-viewer/types";
 import type { TodoItem, TokenUsage, QueuedMessage, ResumeSessionOption } from "@/lib/types";
+import type { SessionAnalysis } from "@/components/session-inspector/types";
 import type { TriggerCounts } from "@/hooks/useTriggerCount";
 import type { QuestionDisplayMode } from "@/lib/ask-user-questions";
 import type { CommandResultData } from "@/components/session-viewer/rendering";
@@ -78,6 +79,12 @@ export interface SessionViewerProps {
   showTriggersButton?: boolean;
   /** Whether the triggers panel is currently open (used for mobile overflow menu state indicator) */
   isTriggersOpen?: boolean;
+  /** Toggle the context & cache analysis panel */
+  onToggleAnalyzer?: () => void;
+  /** Whether to show the analyzer button */
+  showAnalyzerButton?: boolean;
+  /** Whether the analyzer panel is currently open (used for mobile overflow menu state indicator) */
+  isAnalyzerOpen?: boolean;
   /** Trigger counts — pending (incomplete) and subscriptions */
   triggerCount?: TriggerCounts;
   /** Extra buttons to render in the header bar (e.g. service panel toggles) */
@@ -112,4 +119,6 @@ export interface SessionViewerProps {
   onMcpOAuthPasteDismiss?: (serverName: string) => void;
   /** Disable an MCP server (from OAuth paste prompt). */
   onMcpServerDisable?: (serverName: string) => void;
+  /** Live session context & cache analysis data */
+  analysis?: SessionAnalysis | null;
 }

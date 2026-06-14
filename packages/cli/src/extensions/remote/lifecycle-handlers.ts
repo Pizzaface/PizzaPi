@@ -12,7 +12,7 @@
 import { writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 // NOTE: `pi` (the factory argument) is the PiInstance, which has .on()/.registerCommand()/.events
 // etc. but is not publicly exported. We type it as `any` in LifecycleHandlersDeps to avoid
 // a hard dependency on an internal type. ExtensionContext is used only for ctx parameters

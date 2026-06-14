@@ -12,13 +12,14 @@ export interface ServiceHandler {
 
     /**
      * Initialize the service — register socket event listeners and perform setup.
-     * Called once per socket connection.
+     * Called once during daemon startup. Socket.IO reconnects reuse the same
+     * Socket instance, so listeners remain attached across transient reconnects.
      */
     init(socket: Socket, options: ServiceInitOptions): void;
 
     /**
      * Clean up the service — kill processes, clear state, remove listeners.
-     * Called on socket disconnect or daemon shutdown.
+     * Called on daemon shutdown.
      */
     dispose(): void;
 
@@ -98,9 +99,7 @@ export class ServiceRegistry {
         return Array.from(this.handlers.values());
     }
 
-    /**
-     * Initialize all registered services against the given socket.
-     */
+    /** Initialize all registered services against the given socket. */
     initAll(socket: Socket, options: ServiceInitOptions): void {
         for (const handler of this.handlers.values()) {
             handler.init(socket, options);

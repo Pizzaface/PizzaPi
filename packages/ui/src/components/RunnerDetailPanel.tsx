@@ -23,6 +23,7 @@ const UsageDashboard = React.lazy(() =>
         default: m.UsageDashboard,
     }))
 );
+import { SessionInspector } from "@/components/session-inspector/SessionInspector";
 import {
     Plus,
     RefreshCw,
@@ -318,10 +319,12 @@ export function RunnerDetailPanel({
     onPluginsChange,
 }: RunnerDetailPanelProps) {
     const [activeTab, setActiveTab] = useState<RunnerTab>("sessions");
+    const [inspectorSessionId, setInspectorSessionId] = React.useState<string | null>(null);
 
     // Reset tab when runner changes
     useEffect(() => {
         setActiveTab("sessions");
+        setInspectorSessionId(null);
     }, [runner?.runnerId]);
 
     // ---- Empty states ----
@@ -449,18 +452,30 @@ export function RunnerDetailPanel({
             );
             break;
         case "usage":
-            tabContent = (
-                <Suspense
-                    fallback={
-                        <div className="flex items-center justify-center p-8">
-                            <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-                            <span className="ml-2 text-muted-foreground">Loading usage dashboard...</span>
-                        </div>
-                    }
-                >
-                    <UsageDashboard runnerId={runner.runnerId} />
-                </Suspense>
-            );
+            if (inspectorSessionId) {
+                const inspectedSession = sessions.find((s) => s.sessionId === inspectorSessionId);
+                tabContent = (
+                    <SessionInspector
+                        runnerId={runner.runnerId}
+                        sessionId={inspectorSessionId}
+                        sessionName={inspectedSession?.sessionName ?? null}
+                        onBack={() => setInspectorSessionId(null)}
+                    />
+                );
+            } else {
+                tabContent = (
+                    <Suspense
+                        fallback={
+                            <div className="flex items-center justify-center p-8">
+                                <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+                                <span className="ml-2 text-muted-foreground">Loading usage dashboard...</span>
+                            </div>
+                        }
+                    >
+                        <UsageDashboard runnerId={runner.runnerId} onInspectSession={setInspectorSessionId} />
+                    </Suspense>
+                );
+            }
             break;
         case "sandbox":
             tabContent = <SandboxManager runnerId={runner.runnerId} bare />;

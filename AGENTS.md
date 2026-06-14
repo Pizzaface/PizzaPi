@@ -1,6 +1,6 @@
 # PizzaPi — Agent Guide
 
-PizzaPi is a self-hosted web interface and relay server for the [`pi` coding agent](https://github.com/badlogic/pi-mono). It streams live agent sessions to any browser and allows remote interaction from mobile or desktop without needing terminal access.
+PizzaPi is a self-hosted web interface and relay server for the [`pi` coding agent](https://pi.dev/). It streams live agent sessions to any browser and allows remote interaction from mobile or desktop without needing terminal access.
 
 ---
 
@@ -66,7 +66,7 @@ The README is intentionally slim — it has a quick start and links to the docs 
 | Language | TypeScript (strict mode, ESM throughout) |
 | Server | Bun.serve, better-auth, Kysely + SQLite, Redis, web-push |
 | UI | React 19, Vite 6, TailwindCSS v4, Radix UI, shadcn/ui, streamdown |
-| Agent core | `@mariozechner/pi-coding-agent`, `@mariozechner/pi-ai`, `@mariozechner/pi-tui` |
+| Agent core | `@earendil-works/pi-coding-agent`, `@earendil-works/pi-ai`, `@earendil-works/pi-tui` |
 
 ---
 
@@ -110,19 +110,20 @@ bun run clean
 
 ## Upstream Patches
 
-PizzaPi patches three upstream pi packages via `patchedDependencies` in the root `package.json`. Patches live in `patches/` and are auto-applied on `bun install`. See `patches/README.md` for full details.
+PizzaPi patches four upstream pi packages via `patchedDependencies` in the root `package.json`. Patches live in `patches/` and are auto-applied on `bun install`. See `patches/README.md` for full details.
 
-### @mariozechner/pi-agent-core
+### @earendil-works/pi-agent-core
 
 - **Dynamic tool refresh:** When a tool changes the active tool set mid-run (for example Tool Deferral loading a deferred tool), the next assistant response now sees the refreshed tools/system prompt instead of the stale turn-start snapshot.
 
-### @mariozechner/pi-coding-agent
+### @earendil-works/pi-coding-agent
 
-- **Session control:** Exposes `newSession()` / `switchSession()` on the extension API so the remote extension can trigger `/new` and `/resume` from the web UI.
 - **Version check removal:** Disables the npm registry version check and "Update Available" notification (irrelevant for PizzaPi's headless runner).
 - **Auth path display:** Shows the actual auth file path instead of hardcoded default.
 
-### @mariozechner/pi-ai
+PizzaPi still binds `newSession()` / `switchSession()` command actions in the runner so the remote extension can trigger `/new` and `/resume` from the web UI, but upstream 0.79.x no longer needs PizzaPi's old loader/runner shim patch for that wiring.
+
+### @earendil-works/pi-ai
 
 - **Anthropic web search:** Adds support for Anthropic's native server-side web search tool, including streaming handling and conversation round-tripping. Configured via `providerSettings.anthropic.webSearch` in `~/.pizzapi/config.json`. See `patches/README.md` for details.
 
@@ -130,8 +131,8 @@ PizzaPi patches three upstream pi packages via `patchedDependencies` in the root
 
 1. Update version specifiers in all `package.json` files
 2. `bun install` to fetch the new versions
-3. `bun patch @mariozechner/pi-coding-agent@<version>` — edit files, then `bun patch --commit 'node_modules/@mariozechner/pi-coding-agent'`
-4. `bun patch @mariozechner/pi-ai@<version>` — edit files, then `bun patch --commit 'node_modules/@mariozechner/pi-ai'`
+3. `bun patch @earendil-works/pi-coding-agent@<version>` — edit files, then `bun patch --commit 'node_modules/@earendil-works/pi-coding-agent'`
+4. `bun patch @earendil-works/pi-ai@<version>` — edit files, then `bun patch --commit 'node_modules/@earendil-works/pi-ai'`
 5. Run `cd packages/cli && bun test src/patches.test.ts` to verify
 
 ---

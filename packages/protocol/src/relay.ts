@@ -16,6 +16,8 @@ export interface RelayClientToServerEvents {
     ephemeral?: boolean;
     collabMode?: boolean;
     sessionName?: string | null;
+    /** Local JSONL transcript path, used by runner daemon re-adoption after restart. */
+    sessionFile?: string | null;
     /** Parent session ID for child→parent linking (trigger system). */
     parentSessionId?: string | null;
   }) => void;
@@ -244,5 +246,6 @@ export interface RelaySocketData extends SocketClientMetadata {
   sessionId?: string;
   token?: string;
   cwd?: string;
+  sessionFile?: string;
   userId?: string;
 }

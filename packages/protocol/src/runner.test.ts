@@ -192,12 +192,13 @@ describe("runner — RunnerServerToClientEvents payloads", () => {
     const withSessions: Payload = {
       runnerId: "r-1",
       existingSessions: [
-        { sessionId: "sess-1", cwd: "/home/user" },
+        { sessionId: "sess-1", cwd: "/home/user", sessionFile: "/home/user/.pizzapi/sessions/sess-1.jsonl" },
         { sessionId: "sess-2", cwd: "/tmp" },
       ],
     };
     expect(withSessions.existingSessions).toHaveLength(2);
     expect(withSessions.existingSessions![0].sessionId).toBe("sess-1");
+    expect(withSessions.existingSessions![0].sessionFile).toContain("sess-1.jsonl");
   });
 
   test("new_session carries sessionId with optional config", () => {
@@ -237,10 +238,15 @@ describe("runner — RunnerServerToClientEvents payloads", () => {
     expect(typeof p.sessionId).toBe("string");
   });
 
-  test("session_ended carries sessionId", () => {
+  test("session_ended carries sessionId with optional close metadata", () => {
     type Payload = Parameters<RunnerServerToClientEvents["session_ended"]>[0];
-    const p: Payload = { sessionId: "sess-ended" };
+    const p: Payload = {
+      sessionId: "sess-ended",
+      reason: "Session ended",
+      sessionFile: "/tmp/sess-ended.jsonl",
+    };
     expect(typeof p.sessionId).toBe("string");
+    expect(p.sessionFile).toContain("sess-ended.jsonl");
   });
 
   test("list_sessions, restart, shutdown, ping send empty records", () => {

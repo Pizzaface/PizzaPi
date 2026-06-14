@@ -1,5 +1,5 @@
-import { Type } from "@mariozechner/pi-ai";
-import type { AgentTool } from "@mariozechner/pi-agent-core";
+import { Type } from "@earendil-works/pi-ai";
+import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { exec } from "child_process";
 import { promisify } from "util";
 import { wrapCommand, getSandboxEnv, isSandboxActive } from "./sandbox.js";

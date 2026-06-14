@@ -23,7 +23,7 @@ import { readFile, stat, readdir } from "node:fs/promises";
 function resolveHome(): string {
     return process.env.HOME || homedir();
 }
-import type { SessionInfo } from "@mariozechner/pi-coding-agent";
+import type { SessionInfo } from "@earendil-works/pi-coding-agent";
 
 // ── Cache file format ────────────────────────────────────────────────────────
 

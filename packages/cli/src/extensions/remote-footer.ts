@@ -6,7 +6,7 @@
  */
 
 import { homedir } from "node:os";
-import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { RelayContext } from "./remote-types.js";
 import { getAuthSource, authSourceLabel } from "./remote-auth-source.js";
 

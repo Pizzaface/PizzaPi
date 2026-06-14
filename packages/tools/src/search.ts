@@ -1,5 +1,5 @@
-import { Type } from "@mariozechner/pi-ai";
-import type { AgentTool } from "@mariozechner/pi-agent-core";
+import { Type } from "@earendil-works/pi-ai";
+import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { spawn } from "child_process";
 import { StringDecoder } from "string_decoder";
 import { validatePath, getResolvedConfig } from "./sandbox.js";

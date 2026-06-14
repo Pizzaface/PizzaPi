@@ -5,7 +5,7 @@ import { mkdtempSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 
 function piCodingAgentPath(subpath: string): string {
-  const pkgMainUrl = import.meta.resolve("@mariozechner/pi-coding-agent");
+  const pkgMainUrl = import.meta.resolve("@earendil-works/pi-coding-agent");
   const pkgMain = fileURLToPath(pkgMainUrl);
   const pkgRoot = resolve(dirname(pkgMain), "..");
   return resolve(pkgRoot, subpath);
@@ -13,7 +13,7 @@ function piCodingAgentPath(subpath: string): string {
 
 describe("Ollama built-in provider", () => {
   test("pi-ai exposes bundled Ollama Cloud models with cloud base URL", async () => {
-    const { getModels } = await import("@mariozechner/pi-ai");
+    const { getModels } = await import("@earendil-works/pi-ai");
     const models = getModels("ollama-cloud");
     const modelRecords = models as Array<any>;
 
@@ -39,7 +39,7 @@ describe("Ollama built-in provider", () => {
   });
 
   test("pi-ai exposes Ollama Cloud models with scraped context windows", async () => {
-    const { getModels } = await import("@mariozechner/pi-ai");
+    const { getModels } = await import("@earendil-works/pi-ai");
     const models = getModels("ollama-cloud");
     const contextById = new Map((models as Array<any>).map((model) => [model.id, model.contextWindow]));
 
@@ -55,7 +55,7 @@ describe("Ollama built-in provider", () => {
   });
 
   test("pi-ai resolves OLLAMA_API_KEY from environment for ollama-cloud", async () => {
-    const { getEnvApiKey } = await import("@mariozechner/pi-ai");
+    const { getEnvApiKey } = await import("@earendil-works/pi-ai");
     const prev = process.env.OLLAMA_API_KEY;
     process.env.OLLAMA_API_KEY = "test-ollama-key";
     try {
@@ -67,7 +67,7 @@ describe("Ollama built-in provider", () => {
   });
 
   test("pi-ai requests streaming usage for Ollama Cloud so tokens are counted", async () => {
-    const { complete, getModels } = await import("@mariozechner/pi-ai");
+    const { complete, getModels } = await import("@earendil-works/pi-ai");
     const model = (getModels("ollama-cloud") as Array<any>).find((m) => m.id === "glm-5.1");
     expect(model).toBeDefined();
 
@@ -116,17 +116,18 @@ describe("Ollama built-in provider", () => {
 
   test("coding-agent treats Ollama Cloud as a built-in API-key login provider", async () => {
     const { defaultModelPerProvider } = await import(piCodingAgentPath("dist/core/model-resolver.js"));
-    const { getApiKeyProviderDisplayName, isApiKeyLoginProvider } = await import(
+    const { BUILT_IN_PROVIDER_DISPLAY_NAMES } = await import(piCodingAgentPath("dist/core/provider-display-names.js"));
+    const { isApiKeyLoginProvider } = await import(
       piCodingAgentPath("dist/modes/interactive/interactive-mode.js")
     );
 
     expect(defaultModelPerProvider["ollama-cloud"]).toBe("glm-5.1");
-    expect(getApiKeyProviderDisplayName("ollama-cloud")).toBe("Ollama Cloud");
+    expect(BUILT_IN_PROVIDER_DISPLAY_NAMES["ollama-cloud"]).toBe("Ollama Cloud");
     expect(isApiKeyLoginProvider("ollama-cloud", new Set())).toBe(true);
   });
 
   test("custom local ollama models remain separate from built-in cloud auth", async () => {
-    const { AuthStorage, ModelRegistry } = await import("@mariozechner/pi-coding-agent");
+    const { AuthStorage, ModelRegistry } = await import("@earendil-works/pi-coding-agent");
 
     const dir = mkdtempSync(join(tmpdir(), "ollama-cloud-registry-"));
     const modelsPath = join(dir, "models.json");

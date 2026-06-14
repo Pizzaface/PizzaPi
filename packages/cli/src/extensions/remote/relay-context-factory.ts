@@ -9,7 +9,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { buildSessionContext } from "@mariozechner/pi-coding-agent";
+import { buildSessionContext } from "@earendil-works/pi-coding-agent";
 import { loadConfig } from "../../config.js";
 import { buildHeartbeat } from "../remote-heartbeat.js";
 import { getCurrentTodoList } from "../update-todo.js";
@@ -138,6 +138,7 @@ export function createRelayContext(
                 model,
                 thinkingLevel: rctx.getCurrentThinkingLevel(),
                 sessionName: rctx.getCurrentSessionName(),
+                sessionFile: rctx.latestCtx.sessionManager.getSessionFile?.(),
                 cwd: rctx.latestCtx.cwd,
                 availableModels: rctx.getConfiguredModels(),
                 todoList: getCurrentTodoList(),

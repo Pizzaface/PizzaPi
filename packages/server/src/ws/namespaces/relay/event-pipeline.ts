@@ -253,6 +253,9 @@ export function registerEventHandler(socket: RelaySocket): void {
         // Cache session_active state so new viewers get an immediate snapshot
         if (event.type === "session_active") {
             const state = event.state as Record<string, unknown> | undefined;
+            if (typeof state?.sessionFile === "string" && state.sessionFile) {
+                socket.data.sessionFile = state.sessionFile;
+            }
             if (state?.chunked) {
                 // Chunked session: store metadata and start accumulating chunks.
                 // Don't persist incomplete state to lastState — viewers would
@@ -321,6 +324,9 @@ export function registerEventHandler(socket: RelaySocket): void {
             await touchSessionActivity(sessionId);
             const meta = (event as any).metadata;
             if (meta && typeof meta === "object") {
+                if (typeof meta.sessionFile === "string" && meta.sessionFile) {
+                    socket.data.sessionFile = meta.sessionFile;
+                }
                 const patch: Partial<SessionMetaState> = {};
                 let mergedModel: SessionMetaState["model"] | undefined;
                 if (meta.model && typeof meta.model === "object") {

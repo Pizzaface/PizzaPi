@@ -659,6 +659,32 @@ export function registerRunnerNamespace(io: SocketIOServer, context: AuthContext
             }
         });
 
+        // ── analyze_session_data — respond with session analysis ─────────
+        socket.on("analyze_session_data", (data) => {
+            const requestId = data.requestId;
+            if (requestId) {
+                const pending = pendingRunnerCommands.get(requestId);
+                if (pending) {
+                    clearTimeout(pending.timer);
+                    pendingRunnerCommands.delete(requestId);
+                    pending.resolve((data.data as Record<string, unknown>) ?? {});
+                }
+            }
+        });
+
+        // ── analyze_session_error — analysis request failed ───────────────
+        socket.on("analyze_session_error", (data) => {
+            const requestId = data.requestId;
+            if (requestId) {
+                const pending = pendingRunnerCommands.get(requestId);
+                if (pending) {
+                    clearTimeout(pending.timer);
+                    pendingRunnerCommands.delete(requestId);
+                    pending.reject(new Error(data.error ?? "Unknown analysis error"));
+                }
+            }
+        });
+
         // ── models_list — runner responds with available models ─────────────
         socket.on("models_list", (data) => {
             const requestId = data.requestId;

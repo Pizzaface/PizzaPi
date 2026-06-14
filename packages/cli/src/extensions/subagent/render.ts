@@ -6,8 +6,8 @@
  * tested and reused independently.
  */
 
-import { getMarkdownTheme } from "@mariozechner/pi-coding-agent";
-import { Container, Markdown, Spacer, Text } from "@mariozechner/pi-tui";
+import { getMarkdownTheme } from "@earendil-works/pi-coding-agent";
+import { Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
 import type { SubagentDetails } from "./types.js";
 import { COLLAPSED_ITEM_COUNT, getFinalOutput, getDisplayItems } from "./types.js";
 import { formatToolCall, formatUsageStats, aggregateUsage } from "./format.js";

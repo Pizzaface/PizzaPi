@@ -1,5 +1,5 @@
-import { Type } from "@mariozechner/pi-ai";
-import type { AgentTool } from "@mariozechner/pi-agent-core";
+import { Type } from "@earendil-works/pi-ai";
+import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { writeFile, mkdir } from "fs/promises";
 import { dirname } from "path";
 import { validatePath } from "./sandbox.js";

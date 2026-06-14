@@ -2,8 +2,8 @@
  * Shared types, constants, and pure type-based utilities for the subagent tool.
  */
 
-import type { AgentToolResult } from "@mariozechner/pi-coding-agent";
-import type { Message } from "@mariozechner/pi-ai";
+import type { AgentToolResult } from "@earendil-works/pi-coding-agent";
+import type { Message } from "@earendil-works/pi-ai";
 import type { AgentScope } from "../subagent-agents.js";
 
 // ── Constants ──────────────────────────────────────────────────────────

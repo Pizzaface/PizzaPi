@@ -4,7 +4,7 @@ Patches in this directory are applied automatically by Bun via the
 `patchedDependencies` field in the root `package.json`. They are reapplied on
 every `bun install` — no postinstall script is needed.
 
-## @mariozechner/pi-agent-core@0.70.6
+## @earendil-works/pi-agent-core@0.79.3
 
 Adds one PizzaPi-specific runtime fix:
 
@@ -24,9 +24,12 @@ Adds one PizzaPi-specific runtime fix:
 
 **Tests:** `packages/cli/src/patches.test.ts` verifies the regression behavior with a live `Agent` instance.
 
-## @mariozechner/pi-coding-agent@0.70.6
+## @earendil-works/pi-coding-agent@0.79.3
 
-Same core PizzaPi integration changes as 0.67.5, ported forward to the 0.70.x upstream layout, plus one Ollama-first-party addition.
+PizzaPi integration changes ported to the current `@earendil-works` package
+scope and 0.79.x upstream layout. Upstream now provides session-control
+actions without PizzaPi's old loader/runner shim, so that patch is no longer
+carried.
 
 **What it changes:**
 
@@ -34,14 +37,15 @@ Same core PizzaPi integration changes as 0.67.5, ported forward to the 0.70.x up
 |------|--------|
 | `dist/config.js` | Hardcodes `".pizzapi"`, flattens `getAgentDir()`, and honors `PIZZAPI_CHANGELOG_PATH` |
 | `dist/core/agent-session.js` | Retries transient JSON parse stream failures |
-| `dist/core/extensions/loader.js` / `runner.js` | Exposes `newSession` / `switchSession` to extensions |
-| `dist/core/resource-loader.js` | Uses inline extension factory names for display |
 | `dist/core/model-resolver.js` | Adds built-in default model selection for `ollama-cloud` (`glm-5.1`) |
-| `dist/modes/interactive/interactive-mode.js` | Removes upstream version-notification UI, shows actual auth path, and exposes `ollama-cloud` in API-key login labels |
+| `dist/core/provider-display-names.js` | Exposes `Ollama Cloud` as a built-in provider display name |
+| `dist/modes/interactive/interactive-mode.js` | Removes upstream version-notification UI |
 
-## @mariozechner/pi-ai@0.70.6
+## @earendil-works/pi-ai@0.79.3
 
-Same Anthropic web-search and Claude Code credential fallback changes as 0.67.5, ported forward, plus built-in **Ollama Cloud** provider support.
+Same Anthropic web-search and Claude Code credential fallback changes as 0.70.6,
+ported to the current `@earendil-works` package scope, plus built-in
+**Ollama Cloud** provider support.
 
 **What it changes:**
 
@@ -51,6 +55,11 @@ Same Anthropic web-search and Claude Code credential fallback changes as 0.67.5,
 | `dist/utils/oauth/anthropic.js` | Preserves Claude Code Keychain / credential-file fallback |
 | `dist/env-api-keys.js` | Recognizes `OLLAMA_API_KEY` for provider `ollama-cloud` |
 | `dist/models.generated.js` / `dist/models.generated.d.ts` / `dist/types.d.ts` | Adds typed bundled `ollama-cloud` provider models targeting `https://ollama.com/v1` with conservative OpenAI-compatible defaults and context windows scraped from Ollama's cloud model tables |
+
+## @mariozechner/pi-coding-agent@0.70.6 (replaced by 0.79.3 patch)
+
+Same PizzaPi integration changes as 0.67.5, ported forward to the 0.70.x
+upstream layout, plus one Ollama-first-party addition.
 
 ## @mariozechner/pi-coding-agent@0.66.1 (replaced by 0.67.5 patch)
 
@@ -85,7 +94,7 @@ Notable upstream changes in 0.66.1:
 | `dist/modes/interactive/interactive-mode.js` — section headers | Box-drawing themed headers, compact extension table |
 | `dist/modes/interactive/interactive-mode.js` — diagnostics | Uses themed section headers for skill/prompt/extension/theme issues |
 
-## @mariozechner/pi-tui@0.70.6
+## @earendil-works/pi-tui@0.79.3
 
 Adds Windows console output lifecycle management so Unicode glyphs render
 reliably on Windows terminals.

@@ -6,7 +6,7 @@
  * imported by the individual extracted modules.
  */
 
-import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Socket } from "socket.io-client";
 import type { RelayClientToServerEvents, RelayServerToClientEvents } from "@pizzapi/protocol";
 import type { RemoteExecResponse } from "./remote-commands.js";

@@ -18,6 +18,8 @@ export interface RunnerSession {
     adopted?: boolean;
     /** ID of the parent session that spawned this one. */
     parentSessionId?: string;
+    /** JSONL transcript file for this relay session, reported by the worker after startup. */
+    sessionFile?: string;
 }
 
 /** Is this process running inside a compiled Bun single-file binary? */
@@ -79,18 +81,16 @@ export function spawnSession(
     // usage auth lookups and clean it up on exit without re-deriving it.
     const effectiveCwd = requestedCwd ?? process.cwd();
 
-    if (!isCwdAllowed(requestedCwd)) {
-        throw new Error(`Requested cwd is outside allowed workspace root(s): ${requestedCwd}`);
+    if (!isCwdAllowed(effectiveCwd)) {
+        throw new Error(`Requested cwd is outside allowed workspace root(s): ${effectiveCwd}`);
     }
 
-    if (requestedCwd) {
-        if (!existsSync(requestedCwd)) {
-            throw new Error(`cwd does not exist: ${requestedCwd}`);
-        }
-        const st = statSync(requestedCwd);
-        if (!st.isDirectory()) {
-            throw new Error(`cwd is not a directory: ${requestedCwd}`);
-        }
+    if (!existsSync(effectiveCwd)) {
+        throw new Error(`cwd does not exist: ${effectiveCwd}`);
+    }
+    const st = statSync(effectiveCwd);
+    if (!st.isDirectory()) {
+        throw new Error(`cwd is not a directory: ${effectiveCwd}`);
     }
 
     const workerArgs = resolveWorkerSpawnArgs();
@@ -177,9 +177,17 @@ export function spawnSession(
     // Marking restartingSessions here (synchronously, while the worker is still
     // alive) guarantees the guard is set before any relay session_ended event arrives.
     child.on("message", (msg: unknown) => {
-        if (typeof msg === "object" && msg !== null && (msg as Record<string, unknown>).type === "pre_restart") {
+        if (typeof msg !== "object" || msg === null) return;
+        const message = msg as Record<string, unknown>;
+        if (message.type === "pre_restart") {
             restartingSessions.add(sessionId);
             logInfo(`session ${sessionId} signaled pre-restart via IPC`);
+            return;
+        }
+        if (message.type === "session_metadata" && typeof message.sessionFile === "string") {
+            const running = runningSessions.get(sessionId);
+            if (running) running.sessionFile = message.sessionFile;
+            logInfo(`session ${sessionId} reported transcript ${message.sessionFile}`);
         }
     });
 

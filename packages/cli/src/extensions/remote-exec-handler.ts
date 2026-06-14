@@ -5,7 +5,7 @@
  */
 
 import { spawn } from "node:child_process";
-import { buildSessionContext, SessionManager, type ExtensionContext, type SessionInfo } from "@mariozechner/pi-coding-agent";
+import { buildSessionContext, SessionManager, type ExtensionContext, type SessionInfo } from "@earendil-works/pi-coding-agent";
 import { getMcpBridge } from "./mcp-bridge.js";
 import { toggleMcpServer, saveGlobalConfig, loadConfig, loadGlobalConfig, resolveSandboxConfig, type SandboxConfig } from "../config.js";
 import { isPlanModeEnabled, togglePlanModeFromRemote, setPlanModeFromRemote } from "./plan-mode/index.js";

@@ -128,6 +128,7 @@ export interface RegisterTuiSessionOpts {
     isEphemeral?: boolean;
     collabMode?: boolean;
     sessionName?: string | null;
+    sessionFile?: string;
     userId?: string;
     userName?: string;
     /** Parent session ID — set when registering a child session. */
@@ -907,6 +908,9 @@ export async function endSharedSession(sessionId: string, reason: string = "Sess
     // cluster-wide Socket.IO queries.
     io.of("/viewer").in(viewerSessionRoom(sessionId)).disconnectSockets();
 
+    const tuiSocket = localTuiSockets.get(sessionId);
+    const sessionFile = typeof tuiSocket?.data.sessionFile === "string" ? tuiSocket.data.sessionFile : undefined;
+
     // Clean up local socket reference
     localTuiSockets.delete(sessionId);
     lastTouchTimes.delete(sessionId);
@@ -917,7 +921,11 @@ export async function endSharedSession(sessionId: string, reason: string = "Sess
     // event reaches the correct runner via the Redis adapter even when it is
     // connected to a different relay node than the one calling this function.
     if (session.runnerId) {
-        emitToRunner(session.runnerId, "session_ended", { sessionId, reason });
+        emitToRunner(session.runnerId, "session_ended", {
+            sessionId,
+            reason,
+            ...(sessionFile ? { sessionFile } : {}),
+        });
     }
 
     // Clean up trigger subscriptions eagerly so reverse-index entries don't

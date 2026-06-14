@@ -87,6 +87,7 @@ export function roleLabel(role: string) {
   if (role === "user") return "User";
   if (role === "assistant") return "Assistant";
   if (role === "toolResult") return "Tool";
+  if (role === "custom") return "Custom";
   return role || "Message";
 }
 

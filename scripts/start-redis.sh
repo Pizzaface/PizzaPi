@@ -18,6 +18,61 @@ set -euo pipefail
 CONTAINER_NAME="pizzapi-redis-dev"
 REDIS_PORT="6379"
 
+port_in_use() {
+    if command -v lsof &>/dev/null; then
+        if lsof -i ":$REDIS_PORT" -sTCP:LISTEN &>/dev/null; then
+            return 0
+        fi
+        return 1
+    fi
+    if command -v nc &>/dev/null; then
+        if nc -z localhost "$REDIS_PORT" &>/dev/null; then
+            return 0
+        fi
+        return 1
+    fi
+    if (echo >"/dev/tcp/127.0.0.1/$REDIS_PORT") &>/dev/null; then
+        return 0
+    fi
+    return 1
+}
+
+print_port_listener() {
+    if command -v lsof &>/dev/null; then
+        lsof -i ":$REDIS_PORT" -sTCP:LISTEN || true
+    fi
+}
+
+redis_ping() {
+    if command -v redis-cli &>/dev/null; then
+        redis-cli -h localhost -p "$REDIS_PORT" ping 2>/dev/null | grep -q '^PONG$'
+        return $?
+    fi
+    if command -v nc &>/dev/null; then
+        printf '*1\r\n$4\r\nPING\r\n' | nc -w 2 localhost "$REDIS_PORT" 2>/dev/null | grep -q '^+PONG'
+        return $?
+    fi
+    return 1
+}
+
+# ── Port already in use (reuse existing local Redis) ──────────────────────────
+# Check this before requiring Docker so `bun run dev` works on systems that use
+# an already-running local Redis and do not have Docker installed.
+if port_in_use; then
+    if redis_ping; then
+        echo "✅ Redis is already running on port $REDIS_PORT."
+        print_port_listener
+        echo ""
+        echo "   Reusing redis://localhost:$REDIS_PORT"
+        exit 0
+    fi
+    echo "❌ Port $REDIS_PORT is in use, but it does not respond to Redis PING."
+    print_port_listener
+    echo ""
+    echo "   Stop the process using port $REDIS_PORT or configure Redis on a different port."
+    exit 1
+fi
+
 # ── Docker available? ─────────────────────────────────────────────────────────
 if ! command -v docker &>/dev/null; then
     echo "❌ Docker is not installed or not in PATH."
@@ -34,15 +89,6 @@ fi
 if docker inspect "$CONTAINER_NAME" --format '{{.State.Status}}' 2>/dev/null | grep -q 'running'; then
     echo "✅ Redis ($CONTAINER_NAME) is already running on port $REDIS_PORT."
     echo "   URL: redis://localhost:$REDIS_PORT"
-    exit 0
-fi
-
-# ── Port already in use (reuse existing local Redis) ──────────────────────────
-if lsof -i ":$REDIS_PORT" -sTCP:LISTEN &>/dev/null; then
-    echo "✅ Port $REDIS_PORT is already in use by an existing local service."
-    lsof -i ":$REDIS_PORT" -sTCP:LISTEN
-    echo ""
-    echo "   Reusing redis://localhost:$REDIS_PORT"
     exit 0
 fi
 
