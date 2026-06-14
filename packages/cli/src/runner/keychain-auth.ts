@@ -12,19 +12,14 @@
  *    (Linux, Windows, Docker/headless). Same JSON shape as the Keychain
  *    payload. Used when no Keychain is available or has no valid entries.
  *
- * If the external credential is fresher than what's in auth.json, we inject
- * it into the AuthStorage so PizzaPi can piggyback on the most recently
- * refreshed credential.
- *
  * Read-only — we never write back to the Keychain or credentials file.
  */
 
 import { execSync } from "node:child_process";
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
-import type { AuthStorage, OAuthCredential } from "@earendil-works/pi-coding-agent";
-import { logInfo, logWarn, logAuth } from "./logger.js";
+import { logAuth } from "./logger.js";
 
 // ── Credential shape (Claude Code) ─────────────────────────────────────────
 
@@ -53,9 +48,6 @@ export interface ExternalCredential {
 // ── Constants ──────────────────────────────────────────────────────────────
 
 const KEYCHAIN_SERVICE_PREFIX = "Claude Code-credentials";
-
-/** Minimum advantage (in ms) the external token must have to justify a swap. */
-const FRESHNESS_THRESHOLD_MS = 60_000; // 1 minute
 
 /** Path to Claude Code's credentials file (cross-platform fallback). */
 const CREDENTIALS_FILE_PATH = join(homedir(), ".claude", ".credentials.json");
@@ -304,105 +296,4 @@ export function readBestExternalCredential(): ExternalCredential | null {
     }
 
     return null;
-}
-
-// ── Conversion helpers ─────────────────────────────────────────────────────
-
-/**
- * Convert a Claude Code OAuth payload into the auth.json credential format
- * used by pi's AuthStorage.
- */
-export function toAuthCredential(keychain: KeychainOAuth): OAuthCredential {
-    return {
-        type: "oauth",
-        access: keychain.accessToken,
-        refresh: keychain.refreshToken,
-        expires: keychain.expiresAt,
-    } as OAuthCredential;
-}
-
-/**
- * Returns `true` if the external expiry is meaningfully later than the
- * auth.json expiry (by at least {@link FRESHNESS_THRESHOLD_MS}).
- */
-export function isKeychainFresher(externalExpiresAt: number, authJsonExpires: number): boolean {
-    return externalExpiresAt - authJsonExpires > FRESHNESS_THRESHOLD_MS;
-}
-
-// ── Sync functions ─────────────────────────────────────────────────────────
-
-/**
- * If an external source holds a fresher Anthropic OAuth token than
- * `authStorage`, inject it into the storage (in-memory only — does NOT
- * persist to auth.json).
- *
- * Use this at worker boot for an immediate credential upgrade.
- */
-export function syncKeychainToAuthStorage(authStorage: AuthStorage): boolean {
-    const ext = readBestExternalCredential();
-    if (!ext?.credentials.claudeAiOauth) return false;
-
-    const current = authStorage.get("anthropic") as { type: string; expires?: number } | undefined;
-    const currentExpires = current?.type === "oauth" && typeof current.expires === "number" ? current.expires : 0;
-
-    if (!isKeychainFresher(ext.credentials.claudeAiOauth.expiresAt, currentExpires)) {
-        return false;
-    }
-
-    const credential = toAuthCredential(ext.credentials.claudeAiOauth);
-    authStorage.set("anthropic", credential);
-
-    const gainMs = ext.credentials.claudeAiOauth.expiresAt - currentExpires;
-    logAuth("credential-sync", {
-        action: "injected",
-        source: ext.source,
-        sourceLabel: ext.sourceLabel,
-        gainMinutes: `${Math.round(gainMs / 60_000)}`,
-        newExpiresIn: `${Math.round((ext.credentials.claudeAiOauth.expiresAt - Date.now()) / 1000)}s`,
-    });
-
-    return true;
-}
-
-/**
- * If an external source holds a fresher Anthropic OAuth token than what's
- * on disk in `authJsonPath`, update the file so ALL workers benefit.
- *
- * Used by the daemon's periodic sync loop.
- */
-export function syncKeychainToAuthJsonFile(authJsonPath: string): boolean {
-    const ext = readBestExternalCredential();
-    if (!ext?.credentials.claudeAiOauth) return false;
-
-    let diskData: Record<string, unknown> = {};
-    try {
-        const raw = readFileSync(authJsonPath, "utf-8");
-        diskData = JSON.parse(raw);
-    } catch {
-        // File missing or unparseable — we'll create/overwrite the anthropic entry.
-    }
-
-    const existing = diskData.anthropic as { type?: string; expires?: number } | undefined;
-    const existingExpires =
-        existing?.type === "oauth" && typeof existing.expires === "number" ? existing.expires : 0;
-
-    if (!isKeychainFresher(ext.credentials.claudeAiOauth.expiresAt, existingExpires)) {
-        return false;
-    }
-
-    const credential = toAuthCredential(ext.credentials.claudeAiOauth);
-    diskData.anthropic = credential;
-
-    try {
-        writeFileSync(authJsonPath, JSON.stringify(diskData, null, 2), { encoding: "utf-8", mode: 0o600 });
-    } catch (err) {
-        logWarn(`credential sync: failed to write auth.json: ${err instanceof Error ? err.message : String(err)}`);
-        return false;
-    }
-
-    const gainMs = ext.credentials.claudeAiOauth.expiresAt - existingExpires;
-    logInfo(
-        `credential sync [${ext.source}]: updated auth.json anthropic token (gained ${Math.round(gainMs / 60_000)} min, expires in ${Math.round((ext.credentials.claudeAiOauth.expiresAt - Date.now()) / 60_000)} min)`,
-    );
-    return true;
 }

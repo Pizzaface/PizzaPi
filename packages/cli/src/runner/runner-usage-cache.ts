@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { AuthStorage } from "@earendil-works/pi-coding-agent";
 import { loadConfig, defaultAgentDir, expandHome } from "../config.js";
-import { getRefreshedOAuthToken, parseGeminiQuotaCredential } from "./usage-auth.js";
+import { getOAuthAccessToken, parseGeminiQuotaCredential } from "./usage-auth.js";
 import { logInfo, logWarn } from "./logger.js";
 
 // ── Runner-wide usage cache (shared with worker processes via file) ───────────
@@ -86,7 +86,8 @@ async function fetchAnthropicUsageData(): Promise<ProviderUsageData | null> {
     let token: string | null = null;
     try {
         for (const authStorage of getKnownAuthStorages()) {
-            token = await getRefreshedOAuthToken(authStorage, "anthropic");
+            const raw = authStorage.get("anthropic");
+            token = getOAuthAccessToken(raw);
             if (token) break;
         }
     } catch (err: any) {
@@ -201,7 +202,8 @@ async function fetchCodexUsageData(): Promise<ProviderUsageData | null> {
     let token: string | null = null;
     try {
         for (const authStorage of getKnownAuthStorages()) {
-            token = await getRefreshedOAuthToken(authStorage, "openai-codex");
+            const raw = authStorage.get("openai-codex");
+            token = getOAuthAccessToken(raw);
             if (token) break;
         }
     } catch (err: any) {
