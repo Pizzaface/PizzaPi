@@ -17,8 +17,9 @@ import type { Socket } from "socket.io-client";
 import type { ReconcileOptions, ServiceHandler, ServiceInitOptions } from "../../service-handler.js";
 import type { TriggerSubscriptionEntry } from "@pizzapi/protocol";
 import { DiscordProvider } from "./discord-provider.js";
+import { discordRoleAllowed } from "./discord-policy.js";
 import { ProviderRegistry } from "./provider-registry.js";
-import type { InboundMessage, MessageProvider, OutboundMessage, ProviderConfig, ProviderStatus } from "./types.js";
+import type { CanExecutePolicy, CanExecuteResult, InboundMessage, MessageProvider, OutboundMessage, ProviderConfig, ProviderStatus } from "./types.js";
 import { validateProviderConfig } from "./types.js";
 
 type BunServer = import("bun").Server<unknown>;
@@ -217,10 +218,27 @@ export class MessageBridgeService implements ServiceHandler {
 
             try {
                 const provider = factory();
-                this.#registry.register(provider, rawConfig as ProviderConfig);
+                const config = this.#ensureDefaultCanExecute(providerId, rawConfig as ProviderConfig);
+                this.#registry.register(provider, config);
                 // Forward inbound messages as triggers to the relay.
-                provider.onMessage((inbound) => {
-                    void this.#broadcastInbound(provider.id, inbound);
+                provider.onMessage(async (inbound) => {
+                    const policy = this.#resolveCanExecutePolicy(provider.id, inbound.channelId, config);
+                    if (policy) {
+                        let result: CanExecuteResult;
+                        try {
+                            result = await policy(inbound);
+                        } catch (err) {
+                            this.#logWarn(
+                                `[message-bridge] canExecute policy threw for ${inbound.author.username}: ${err instanceof Error ? err.message : String(err)}`,
+                            );
+                            return;
+                        }
+                        if (!result.allowed) {
+                            this.#logInfo(`Rejected message from ${inbound.author.username}: ${result.reason ?? "unauthorized"}`);
+                            return;
+                        }
+                    }
+                    await this.#broadcastInbound(provider.id, inbound);
                 });
             } catch (err) {
                 this.#logError(
@@ -228,6 +246,38 @@ export class MessageBridgeService implements ServiceHandler {
                 );
             }
         }
+    }
+
+    // ── Authorization helpers ────────────────────────────────────────────────
+
+    #ensureDefaultCanExecute(providerId: string, config: ProviderConfig): ProviderConfig {
+        if (providerId !== "discord") {
+            return config;
+        }
+
+        const discordOptions = config.options as
+            | { allowedRoles?: unknown; discord?: { allowedRoles?: unknown } }
+            | undefined;
+        const allowedRoles = discordOptions?.allowedRoles ?? discordOptions?.discord?.allowedRoles;
+
+        if (
+            Array.isArray(allowedRoles) &&
+            allowedRoles.every((role) => typeof role === "string") &&
+            !config.defaultCanExecute
+        ) {
+            config.defaultCanExecute = discordRoleAllowed(allowedRoles as string[]);
+        }
+
+        return config;
+    }
+
+    #resolveCanExecutePolicy(
+        providerId: string,
+        channelId: string,
+        providerConfig: ProviderConfig,
+    ): CanExecutePolicy | undefined {
+        const channelSession = this.#registry.getRouter(providerId).getSession(channelId);
+        return channelSession?.config?.canExecute ?? providerConfig.defaultCanExecute;
     }
 
     // ── Panel HTTP handlers ────────────────────────────────────────────────────
@@ -435,6 +485,11 @@ export class MessageBridgeService implements ServiceHandler {
     }
 
     // ── Logging helpers ──────────────────────────────────────────────────────
+
+    #logInfo(message: string): void {
+        // eslint-disable-next-line no-console
+        console.info(`[message-bridge] ${message}`);
+    }
 
     #logWarn(message: string): void {
         // eslint-disable-next-line no-console

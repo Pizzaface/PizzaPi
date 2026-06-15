@@ -64,10 +64,8 @@ class MockProvider implements MessageProvider {
         }
     }
 
-    emit(message: InboundMessage): void {
-        for (const handler of this.handlers) {
-            void handler(message);
-        }
+    async emit(message: InboundMessage): Promise<void> {
+        await Promise.all(this.handlers.map((handler) => handler(message)));
     }
 }
 
@@ -216,7 +214,7 @@ describe("ChannelRouter", () => {
         expect(parsed.content).toBe("a".repeat(10));
     });
 
-    test("routes to mapped session", () => {
+    test("routes to mapped session", async () => {
         const router = new ChannelRouter();
         const session: ChannelSession = {
             channelId: "ch-1",
@@ -225,28 +223,28 @@ describe("ChannelRouter", () => {
         };
         router.addSession(session);
 
-        const route = router.route(makeMessage({ content: "!status" }));
+        const route = await router.route(makeMessage({ content: "!status" }));
         expect(route).toBeDefined();
         expect(route!.sessionId).toBe("sess-1");
         expect(route!.shouldForward).toBe(true);
     });
 
-    test("does not route unmapped channels", () => {
+    test("does not route unmapped channels", async () => {
         const router = new ChannelRouter();
-        const route = router.route(makeMessage({ channelId: "unknown" }));
+        const route = await router.route(makeMessage({ channelId: "unknown" }));
         expect(route).toBeUndefined();
     });
 
-    test("all-messages mode forwards everything", () => {
+    test("all-messages mode forwards everything", async () => {
         const router = new ChannelRouter();
         router.addSession({ channelId: "ch-1", sessionId: "sess-1", config: { mode: "all-messages" } });
 
-        const route = router.route(makeMessage({ content: "hello" }));
+        const route = await router.route(makeMessage({ content: "hello" }));
         expect(route!.shouldForward).toBe(true);
         expect(route!.message.isCommand).toBe(false);
     });
 
-    test("filtered mode matches patterns", () => {
+    test("filtered mode matches patterns", async () => {
         const router = new ChannelRouter();
         router.addSession({
             channelId: "ch-1",
@@ -254,8 +252,8 @@ describe("ChannelRouter", () => {
             config: { mode: "filtered", filterPatterns: ["alert", "warn"] },
         });
 
-        expect(router.route(makeMessage({ content: "this is an alert" }))!.shouldForward).toBe(true);
-        expect(router.route(makeMessage({ content: "normal chat" }))!.shouldForward).toBe(false);
+        expect((await router.route(makeMessage({ content: "this is an alert" })))!.shouldForward).toBe(true);
+        expect((await router.route(makeMessage({ content: "normal chat" })))!.shouldForward).toBe(false);
     });
 
     test("finds channels by session id", () => {
@@ -268,11 +266,11 @@ describe("ChannelRouter", () => {
         expect(found.map((s) => s.channelId).sort()).toEqual(["ch-1", "ch-2"]);
     });
 
-    test("removeSession drops the mapping", () => {
+    test("removeSession drops the mapping", async () => {
         const router = new ChannelRouter();
         router.addSession({ channelId: "ch-1", sessionId: "sess-1", config: { mode: "commands-only" } });
         router.removeSession("ch-1");
-        expect(router.route(makeMessage())).toBeUndefined();
+        expect(await router.route(makeMessage())).toBeUndefined();
     });
 });
 
@@ -378,8 +376,8 @@ describe("ProviderRegistry", () => {
             received.push({ message, route });
         });
 
-        provider.emit(makeMessage({ content: "!status" }));
-        provider.emit(makeMessage({ content: "not a command" }));
+        await provider.emit(makeMessage({ content: "!status" }));
+        await provider.emit(makeMessage({ content: "not a command" }));
 
         expect(received).toHaveLength(1);
         expect(received[0].message.command?.name).toBe("status");
@@ -400,7 +398,7 @@ describe("ProviderRegistry", () => {
         expect(registry.getStatus()[0].messagesOut).toBe(1);
     });
 
-    test("allowedChannels filters inbound messages", () => {
+    test("allowedChannels filters inbound messages", async () => {
         const registry = new ProviderRegistry();
         const provider = new MockProvider("mock");
         registry.register(provider, {
@@ -416,8 +414,8 @@ describe("ProviderRegistry", () => {
             received.push(message);
         });
 
-        provider.emit(makeMessage({ channelId: "ch-1", content: "hello" }));
-        provider.emit(makeMessage({ channelId: "ch-2", content: "hello" }));
+        await provider.emit(makeMessage({ channelId: "ch-1", content: "hello" }));
+        await provider.emit(makeMessage({ channelId: "ch-2", content: "hello" }));
 
         expect(received).toHaveLength(1);
         expect(received[0].channelId).toBe("ch-1");

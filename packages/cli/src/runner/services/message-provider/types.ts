@@ -99,6 +99,8 @@ export interface ChannelRouterConfig {
     filterPatterns?: string[];
     /** Maximum message length (truncate longer) */
     maxMessageLength?: number;
+    /** Authorization policy for this channel */
+    canExecute?: CanExecutePolicy;
 }
 
 export interface ProviderConfig {
@@ -114,6 +116,8 @@ export interface ProviderConfig {
     forwardEvents?: SessionEventType[];
     /** Platform-specific options */
     options?: Record<string, unknown>;
+    /** Default authorization policy for all channels */
+    defaultCanExecute?: CanExecutePolicy;
 }
 
 export type SessionEventType =
@@ -207,6 +211,10 @@ export function validateProviderConfig(config: unknown): ConfigValidationResult 
         errors.push("options must be an object");
     }
 
+    if (c.defaultCanExecute !== undefined && typeof c.defaultCanExecute !== "function") {
+        errors.push("defaultCanExecute must be a function");
+    }
+
     return { valid: errors.length === 0, errors };
 }
 
@@ -233,5 +241,22 @@ function isValidChannelRouterConfig(config: unknown): config is ChannelRouterCon
         return false;
     }
 
+    if (c.canExecute !== undefined && typeof c.canExecute !== "function") {
+        return false;
+    }
+
     return true;
 }
+
+export interface CanExecuteResult {
+    /** Whether the message is authorized */
+    allowed: boolean;
+    /** Human-readable reason when denied */
+    reason?: string;
+}
+
+/**
+ * Authorization policy. Called before every inbound trigger fires.
+ * Receives the full InboundMessage including provider-specific `raw` data.
+ */
+export type CanExecutePolicy = (message: InboundMessage) => Promise<CanExecuteResult> | CanExecuteResult;

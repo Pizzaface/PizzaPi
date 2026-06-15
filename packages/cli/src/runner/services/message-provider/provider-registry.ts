@@ -288,7 +288,7 @@ export class ProviderRegistry {
     }
 
     private createProviderMessageHandler(providerId: string): InboundMessageHandler {
-        return (message: InboundMessage) => {
+        return async (message: InboundMessage) => {
             this.incrementMessagesIn(providerId);
 
             const config = this.providers.get(providerId)?.config;
@@ -301,7 +301,7 @@ export class ProviderRegistry {
                 return;
             }
 
-            const route = router.route(message);
+            const route = await router.route(message);
             if (!route || !route.shouldForward) {
                 return;
             }
@@ -328,9 +328,18 @@ export class ProviderRegistry {
 
     private rebuildRouter(id: string, config: ProviderConfig): void {
         const router = this.getRouter(id);
-        if (config.defaultRouter) {
-            router.setDefaultRouter(config.defaultRouter);
+
+        if (config.defaultRouter || config.defaultCanExecute) {
+            const defaultRouter: ChannelRouterConfig = {
+                mode: config.defaultRouter?.mode ?? "commands-only",
+                commandPrefix: config.defaultRouter?.commandPrefix,
+                filterPatterns: config.defaultRouter?.filterPatterns,
+                maxMessageLength: config.defaultRouter?.maxMessageLength,
+                canExecute: config.defaultRouter?.canExecute ?? config.defaultCanExecute,
+            };
+            router.setDefaultRouter(defaultRouter);
         }
+
         for (const session of router.getSessions()) {
             const channelConfig = config.channelRouters?.[session.channelId];
             if (channelConfig) {

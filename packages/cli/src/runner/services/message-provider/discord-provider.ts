@@ -48,6 +48,7 @@ export class DiscordProvider implements MessageProvider {
                 intents: [
                     GatewayIntentBits.Guilds,
                     GatewayIntentBits.GuildMessages,
+                    GatewayIntentBits.GuildMembers,
                     GatewayIntentBits.MessageContent,
                     GatewayIntentBits.GuildMessageReactions,
                 ],

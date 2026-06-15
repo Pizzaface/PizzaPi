@@ -1,4 +1,5 @@
 import type {
+    CanExecutePolicy,
     ChannelRouterConfig,
     ChannelSession,
     InboundMessage,
@@ -100,7 +101,7 @@ export class ChannelRouter {
      * Route a message to a mapped session. Returns undefined when the channel is
      * not mapped.
      */
-    route(message: InboundMessage): RouteResult | undefined {
+    async route(message: InboundMessage): Promise<RouteResult | undefined> {
         const session = this.sessions.get(message.channelId);
         if (!session) {
             return undefined;
@@ -108,7 +109,19 @@ export class ChannelRouter {
 
         const config = session.config ?? this.defaultRouter;
         const parsed = this.parseMessage(message, config);
-        const shouldForward = this.shouldForward(parsed, config);
+
+        let shouldForward = false;
+        try {
+            shouldForward = await this.shouldForward(parsed, config);
+        } catch (err) {
+            // A canExecute policy threw — drop the message rather than crash routing.
+            return {
+                sessionId: session.sessionId,
+                config,
+                shouldForward: false,
+                message: parsed,
+            };
+        }
 
         return {
             sessionId: session.sessionId,
@@ -120,9 +133,16 @@ export class ChannelRouter {
 
     /**
      * Decide whether a parsed message should be forwarded, based on the router
-     * mode and filters.
+     * mode, filters, and optional authorization policy.
      */
-    private shouldForward(message: InboundMessage, config: ChannelRouterConfig): boolean {
+    private async shouldForward(message: InboundMessage, config: ChannelRouterConfig): Promise<boolean> {
+        if (config.canExecute) {
+            const result = await config.canExecute(message);
+            if (!result.allowed) {
+                return false;
+            }
+        }
+
         switch (config.mode) {
             case "all-messages":
                 return true;
