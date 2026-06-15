@@ -117,6 +117,129 @@ describe("Ollama built-in provider", () => {
     }
   });
 
+  test("vision ollama-cloud models send image content as image_url", async () => {
+    const { complete, getModels } = await import("@earendil-works/pi-ai");
+    const model = (getModels("ollama-cloud") as Array<any>).find((m) => m.id === "gemma3:12b");
+    expect(model).toBeDefined();
+    expect(model.input).toContain("image");
+
+    const prevFetch = globalThis.fetch;
+    const prevKey = process.env.OLLAMA_API_KEY;
+    process.env.OLLAMA_API_KEY = "test-ollama-key";
+    let requestPayload: any;
+
+    globalThis.fetch = (async (_input: string | URL | Request, init?: RequestInit) => {
+      requestPayload = JSON.parse(String(init?.body));
+      const body = [
+        `data: ${JSON.stringify({
+          id: "chatcmpl-test",
+          object: "chat.completion.chunk",
+          choices: [{ index: 0, delta: { content: "hi" }, finish_reason: null }],
+        })}`,
+        `data: ${JSON.stringify({
+          id: "chatcmpl-test",
+          object: "chat.completion.chunk",
+          choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+          usage: { prompt_tokens: 123, completion_tokens: 45, total_tokens: 168 },
+        })}`,
+        "data: [DONE]",
+        "",
+      ].join("\n\n");
+      return new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } });
+    }) as unknown as typeof fetch;
+
+    try {
+      await complete(
+        model,
+        {
+          messages: [
+            {
+              role: "user",
+              content: [
+                { type: "text", text: "describe this" },
+                { type: "image", data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", mimeType: "image/png" },
+              ],
+              timestamp: Date.now(),
+            },
+          ],
+        },
+        { maxRetries: 0 },
+      );
+
+      expect(requestPayload.messages).toHaveLength(1);
+      const content = requestPayload.messages[0].content;
+      expect(content).toHaveLength(2);
+      expect(content[0]).toEqual({ type: "text", text: "describe this" });
+      expect(content[1].type).toBe("image_url");
+      expect(content[1].image_url.url).toMatch(/^data:image\/png;base64,/);
+    } finally {
+      globalThis.fetch = prevFetch;
+      if (prevKey === undefined) delete process.env.OLLAMA_API_KEY;
+      else process.env.OLLAMA_API_KEY = prevKey;
+    }
+  });
+
+  test("non-vision ollama-cloud models downgrade images to placeholder text", async () => {
+    const { complete, getModels } = await import("@earendil-works/pi-ai");
+    const model = (getModels("ollama-cloud") as Array<any>).find((m) => m.id === "glm-5.1");
+    expect(model).toBeDefined();
+    expect(model.input).not.toContain("image");
+
+    const prevFetch = globalThis.fetch;
+    const prevKey = process.env.OLLAMA_API_KEY;
+    process.env.OLLAMA_API_KEY = "test-ollama-key";
+    let requestPayload: any;
+
+    globalThis.fetch = (async (_input: string | URL | Request, init?: RequestInit) => {
+      requestPayload = JSON.parse(String(init?.body));
+      const body = [
+        `data: ${JSON.stringify({
+          id: "chatcmpl-test",
+          object: "chat.completion.chunk",
+          choices: [{ index: 0, delta: { content: "hi" }, finish_reason: null }],
+        })}`,
+        `data: ${JSON.stringify({
+          id: "chatcmpl-test",
+          object: "chat.completion.chunk",
+          choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+          usage: { prompt_tokens: 123, completion_tokens: 45, total_tokens: 168 },
+        })}`,
+        "data: [DONE]",
+        "",
+      ].join("\n\n");
+      return new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } });
+    }) as unknown as typeof fetch;
+
+    try {
+      await complete(
+        model,
+        {
+          messages: [
+            {
+              role: "user",
+              content: [
+                { type: "text", text: "describe this" },
+                { type: "image", data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", mimeType: "image/png" },
+              ],
+              timestamp: Date.now(),
+            },
+          ],
+        },
+        { maxRetries: 0 },
+      );
+
+      expect(requestPayload.messages).toHaveLength(1);
+      const content = requestPayload.messages[0].content;
+      expect(content).toHaveLength(2);
+      expect(content[0]).toEqual({ type: "text", text: "describe this" });
+      expect(content[1]).toEqual({ type: "text", text: "(image omitted: model does not support images)" });
+    } finally {
+      globalThis.fetch = prevFetch;
+      if (prevKey === undefined) delete process.env.OLLAMA_API_KEY;
+      else process.env.OLLAMA_API_KEY = prevKey;
+    }
+  });
+
   test("coding-agent treats Ollama Cloud as a built-in API-key login provider", async () => {
     const { defaultModelPerProvider } = await import(piCodingAgentPath("dist/core/model-resolver.js"));
     const { BUILT_IN_PROVIDER_DISPLAY_NAMES } = await import(piCodingAgentPath("dist/core/provider-display-names.js"));

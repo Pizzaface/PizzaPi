@@ -102,6 +102,14 @@ export function capabilitiesInclude(caps: string[] | undefined, needle: string):
     return caps?.some((c) => c.toLowerCase() === needle.toLowerCase()) ?? false;
 }
 
+export function getCachedOllamaCloudModels(): OllamaCloudModel[] | null {
+    const cached = readCache();
+    if (cached && Date.now() - cached.fetchedAt < CACHE_TTL_MS) {
+        return cached.models;
+    }
+    return null;
+}
+
 export async function fetchOllamaCloudModels({ signal }: { signal?: AbortSignal } = {}): Promise<OllamaCloudModel[]> {
     const cached = readCache();
     if (cached && Date.now() - cached.fetchedAt < CACHE_TTL_MS) {

@@ -304,7 +304,7 @@ export function renderContent(
                   key={i}
                   src={`data:${mime};base64,${data}`}
                   alt="Message attachment"
-                  className="max-h-80 max-w-full rounded border border-border"
+                  className="max-h-80 max-w-full rounded border border-border object-contain"
                 />
               );
             }
@@ -335,7 +335,7 @@ export function renderContent(
                     key={i}
                     src={url}
                     alt="Message attachment"
-                    className="max-h-80 max-w-full rounded border border-border"
+                    className="max-h-80 max-w-full rounded border border-border object-contain"
                     loading="lazy"
                   />
                 );

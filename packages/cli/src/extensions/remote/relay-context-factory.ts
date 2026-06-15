@@ -21,7 +21,7 @@ import { isCancelTriggerAction } from "../remote-trigger-response.js";
 import type { TriggerWaitManager } from "../trigger-wait-manager.js";
 import { emitSessionActive } from "./chunked-delivery.js";
 import { emitSessionTriggerWithAck } from "./session-complete-delivery.js";
-import { fetchOllamaCloudModels } from "../../ollama-cloud-models.js";
+import { fetchOllamaCloudModels, getCachedOllamaCloudModels } from "../../ollama-cloud-models.js";
 
 const RELAY_DEFAULT = "ws://localhost:7492";
 const RELAY_STATUS_KEY = "relay";
@@ -190,24 +190,18 @@ export function createRelayContext(
                 process.env.OLLAMA_API_KEY;
 
             if (hasOllamaKey) {
-                try {
-                    // Async network call inside a synchronous getter is not ideal,
-                    // but this path is only hit when the relay requests capabilities
-                    // state and the existing tests cover it returning synchronously.
-                    // The live fetch result is cached for 24h, so in practice this
-                    // resolves on the first call and returns cached data thereafter.
-                    const models = fetchOllamaCloudModels();
-                    liveOllama = ((models as unknown) as Promise<import("../../ollama-cloud-models.js").OllamaCloudModel[]>).then((m) =>
-                        m.map((model) => ({
-                            provider: model.provider,
-                            id: model.id,
-                            name: model.name,
-                            reasoning: model.reasoning,
-                            contextWindow: model.contextWindow,
-                        })),
-                    ) as unknown as RelayModelInfo[];
-                } catch {
-                    // ignore live fetch failures
+                const cached = getCachedOllamaCloudModels();
+                if (cached) {
+                    liveOllama = cached.map((model) => ({
+                        provider: model.provider,
+                        id: model.id,
+                        name: model.name,
+                        reasoning: model.reasoning,
+                        contextWindow: model.contextWindow,
+                    }));
+                } else {
+                    // No cache yet — kick off a background fetch to warm it for next time.
+                    fetchOllamaCloudModels().catch(() => undefined);
                 }
             }
 
