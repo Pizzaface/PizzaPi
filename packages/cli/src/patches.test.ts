@@ -185,6 +185,44 @@ describe("pi-coding-agent patched runtime behavior", () => {
         expect(dir).not.toContain(".pizzapi/agent/sessions");
     });
 
+    test("extension API exposes bound newSession and switchSession handlers", async () => {
+        const { createExtensionRuntime, loadExtensionFromFactory } = await import(
+            piCodingAgentPath("dist/core/extensions/loader.js")
+        );
+        const { ExtensionRunner } = await import(
+            piCodingAgentPath("dist/core/extensions/runner.js")
+        );
+
+        const runtime = createExtensionRuntime() as any;
+        const calls: string[] = [];
+        const runner = new ExtensionRunner([], runtime, process.cwd(), {} as any, {} as any);
+        runner.bindCommandContext({
+            waitForIdle: async () => undefined,
+            newSession: async () => {
+                calls.push("new");
+                return { cancelled: false };
+            },
+            fork: async () => ({ cancelled: false }),
+            navigateTree: async () => ({ cancelled: false }),
+            switchSession: async (sessionPath: string) => {
+                calls.push(`switch:${sessionPath}`);
+                return { cancelled: false };
+            },
+            reload: async () => undefined,
+        });
+
+        let api: any;
+        await loadExtensionFromFactory((pi: any) => {
+            api = pi;
+        }, process.cwd(), {} as any, runtime);
+
+        expect(typeof api.newSession).toBe("function");
+        expect(typeof api.switchSession).toBe("function");
+        await expect(api.newSession()).resolves.toEqual({ cancelled: false });
+        await expect(api.switchSession("/tmp/session.jsonl")).resolves.toEqual({ cancelled: false });
+        expect(calls).toEqual(["new", "switch:/tmp/session.jsonl"]);
+    });
+
 });
 
 // ---------------------------------------------------------------------------

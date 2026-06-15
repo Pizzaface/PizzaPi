@@ -162,3 +162,91 @@ index 36bb7462..74a575f9 100644
 -//# sourceMappingURL=interactive-mode.js.map
 \ No newline at end of file
 +//# sourceMappingURL=interactive-mode.js.map
+diff --git a/dist/core/extensions/loader.js b/dist/core/extensions/loader.js
+--- a/dist/core/extensions/loader.js
++++ b/dist/core/extensions/loader.js
+@@ -110,6 +110,9 @@ export function createExtensionRuntime() {
+         sendUserMessage: notInitialized,
+         appendEntry: notInitialized,
+         setSessionName: notInitialized,
++        // PATCH(pizzapi): expose session-control actions on ExtensionAPI, not only command contexts.
++        newSession: () => Promise.reject(new Error("Extension runtime not initialized")),
++        switchSession: () => Promise.reject(new Error("Extension runtime not initialized")),
+         getSessionName: notInitialized,
+         setLabel: notInitialized,
+         getActiveTools: notInitialized,
+@@ -209,6 +212,15 @@ function createExtensionAPI(extension, runtime, cwd, eventBus) {
+             runtime.assertActive();
+             runtime.setSessionName(name);
+         },
++        // PATCH(pizzapi): remote exec handlers need /new and /resume from lifecycle/event handlers.
++        newSession(options) {
++            runtime.assertActive();
++            return runtime.newSession(options);
++        },
++        switchSession(sessionPath, options) {
++            runtime.assertActive();
++            return runtime.switchSession(sessionPath, options);
++        },
+         getSessionName() {
+             runtime.assertActive();
+             return runtime.getSessionName();
+diff --git a/dist/core/extensions/runner.js b/dist/core/extensions/runner.js
+--- a/dist/core/extensions/runner.js
++++ b/dist/core/extensions/runner.js
+@@ -222,17 +222,22 @@ export class ExtensionRunner {
+         if (actions) {
+             this.waitForIdleFn = actions.waitForIdle;
+             this.newSessionHandler = actions.newSession;
++            // PATCH(pizzapi): make session controls available to ExtensionAPI callers.
++            this.runtime.newSession = (options) => this.newSessionHandler(options);
+             this.forkHandler = actions.fork;
+             this.navigateTreeHandler = actions.navigateTree;
+             this.switchSessionHandler = actions.switchSession;
++            this.runtime.switchSession = (sessionPath, options) => this.switchSessionHandler(sessionPath, options);
+             this.reloadHandler = actions.reload;
+             return;
+         }
+         this.waitForIdleFn = async () => { };
+         this.newSessionHandler = async () => ({ cancelled: false });
++        this.runtime.newSession = (options) => this.newSessionHandler(options);
+         this.forkHandler = async () => ({ cancelled: false });
+         this.navigateTreeHandler = async () => ({ cancelled: false });
+         this.switchSessionHandler = async () => ({ cancelled: false });
++        this.runtime.switchSession = (sessionPath, options) => this.switchSessionHandler(sessionPath, options);
+         this.reloadHandler = async () => { };
+     }
+     setUIContext(uiContext, mode = "print") {
+diff --git a/dist/core/extensions/types.d.ts b/dist/core/extensions/types.d.ts
+--- a/dist/core/extensions/types.d.ts
++++ b/dist/core/extensions/types.d.ts
+@@ -871,6 +871,20 @@ export interface ExtensionAPI {
+     appendEntry<T = unknown>(customType: string, data?: T): void;
+     /** Set the session display name (shown in session selector). */
+     setSessionName(name: string): void;
++    /** Start a new session. Available to PizzaPi remote event handlers. */
++    newSession(options?: {
++        parentSession?: string;
++        setup?: (sessionManager: SessionManager) => Promise<void>;
++        withSession?: (ctx: ReplacedSessionContext) => Promise<void>;
++    }): Promise<{
++        cancelled: boolean;
++    }>;
++    /** Switch to a different session file. Available to PizzaPi remote event handlers. */
++    switchSession(sessionPath: string, options?: {
++        withSession?: (ctx: ReplacedSessionContext) => Promise<void>;
++    }): Promise<{
++        cancelled: boolean;
++    }>;
+     /** Get the current session name, if set. */
+     getSessionName(): string | undefined;
+     /** Set or clear a label on an entry. Labels are user-defined markers for bookmarking/navigation. */
+@@ -1102,6 +1116,8 @@ export interface ExtensionActions {
+     sendUserMessage: SendUserMessageHandler;
+     appendEntry: AppendEntryHandler;
+     setSessionName: SetSessionNameHandler;
++    newSession: ExtensionCommandContextActions["newSession"];
++    switchSession: ExtensionCommandContextActions["switchSession"];
+     getSessionName: GetSessionNameHandler;
+     setLabel: SetLabelHandler;
+     getActiveTools: GetActiveToolsHandler;

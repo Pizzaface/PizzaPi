@@ -21,6 +21,7 @@ import { isCancelTriggerAction } from "../remote-trigger-response.js";
 import type { TriggerWaitManager } from "../trigger-wait-manager.js";
 import { emitSessionActive } from "./chunked-delivery.js";
 import { emitSessionTriggerWithAck } from "./session-complete-delivery.js";
+import { fetchOllamaCloudModels, getCachedOllamaCloudModels } from "../../ollama-cloud-models.js";
 
 const RELAY_DEFAULT = "ws://localhost:7492";
 const RELAY_STATUS_KEY = "relay";
@@ -172,7 +173,7 @@ export function createRelayContext(
 
         getConfiguredModels(): RelayModelInfo[] {
             if (!rctx.latestCtx) return [];
-            return rctx.latestCtx.modelRegistry
+            const staticModels = rctx.latestCtx.modelRegistry
                 .getAvailable()
                 .map((model) => ({
                     provider: model.provider,
@@ -180,11 +181,39 @@ export function createRelayContext(
                     name: model.name,
                     reasoning: model.reasoning,
                     contextWindow: model.contextWindow,
-                }))
-                .sort((a, b) => {
-                    if (a.provider !== b.provider) return a.provider.localeCompare(b.provider);
-                    return a.id.localeCompare(b.id);
-                });
+                }));
+
+            let liveOllama: RelayModelInfo[] = [];
+            const mr = (rctx.latestCtx as any).modelRegistry;
+            const hasOllamaKey =
+                (mr && typeof mr.hasConfiguredAuth === "function" && mr.hasConfiguredAuth({ provider: "ollama-cloud" } as any)) ||
+                process.env.OLLAMA_API_KEY;
+
+            if (hasOllamaKey) {
+                const cached = getCachedOllamaCloudModels();
+                if (cached) {
+                    liveOllama = cached.map((model) => ({
+                        provider: model.provider,
+                        id: model.id,
+                        name: model.name,
+                        reasoning: model.reasoning,
+                        contextWindow: model.contextWindow,
+                    }));
+                } else {
+                    // No cache yet — kick off a background fetch to warm it for next time.
+                    fetchOllamaCloudModels().catch(() => undefined);
+                }
+            }
+
+            const seen = new Set(staticModels.map((m) => `${m.provider}:${m.id}`));
+            const all = [
+                ...staticModels,
+                ...liveOllama.filter((m) => !seen.has(`${m.provider}:${m.id}`)),
+            ];
+            return all.sort((a, b) => {
+                if (a.provider !== b.provider) return a.provider.localeCompare(b.provider);
+                return a.id.localeCompare(b.id);
+            });
         },
 
         getCurrentSessionName(): string | null {

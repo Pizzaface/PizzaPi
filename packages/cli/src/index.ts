@@ -7,7 +7,6 @@ import {
     createAgentSessionServices,
     DefaultResourceLoader,
     InteractiveMode,
-    ModelRegistry,
     SessionManager,
 } from "@earendil-works/pi-coding-agent";
 import { join } from "path";
@@ -303,60 +302,9 @@ async function main() {
     }
 
     if (args[0] === "models") {
-        const config = loadConfig(cwd);
-        const agentDir = config.agentDir ? expandHome(config.agentDir) : defaultAgentDir();
-
-        const authStorage = AuthStorage.create(join(agentDir, "auth.json"));
-        const modelRegistry = ModelRegistry.create(authStorage, join(agentDir, "models.json"));
-        const configuredModels = modelRegistry
-            .getAvailable()
-            .map((model) => ({
-                provider: model.provider,
-                id: model.id,
-                name: model.name,
-                contextWindow: model.contextWindow,
-                reasoning: model.reasoning,
-            }))
-            .sort((a, b) => {
-                if (a.provider !== b.provider) return a.provider.localeCompare(b.provider);
-                return a.id.localeCompare(b.id);
-            });
-
-        if (args.includes("--json")) {
-            log.info(JSON.stringify({ models: configuredModels }, null, 2));
-            return;
-        }
-
-        if (configuredModels.length === 0) {
-            log.info("No configured models found.");
-            log.info(`Checked credentials in ${join(agentDir, "auth.json")}`);
-            return;
-        }
-
-        // Group by provider for colored output
-        const byProvider = new Map<string, typeof configuredModels>();
-        for (const model of configuredModels) {
-            const group = byProvider.get(model.provider) ?? [];
-            group.push(model);
-            byProvider.set(model.provider, group);
-        }
-
-        const modelWidth = Math.max(...configuredModels.map((m) => m.id.length), "model".length);
-
-        log.info("");
-        for (const [provider, models] of byProvider) {
-            log.info(c.label(provider));
-            for (const model of models) {
-                const noteParts: string[] = [];
-                if (model.reasoning) noteParts.push(c.accent("reasoning"));
-                if (model.contextWindow) noteParts.push(c.dim(`${model.contextWindow.toLocaleString()} ctx`));
-                if (model.name && model.name !== model.id) noteParts.push(c.dim(model.name));
-                const notes = noteParts.join(c.dim(" • "));
-                log.info(`  ${c.cmd(model.id.padEnd(modelWidth))}  ${notes}`);
-            }
-            log.info("");
-        }
-        return;
+        const { runModelsCommand } = await import("./models-command.js");
+        const code = await runModelsCommand(args.slice(1), cwd);
+        process.exit(code);
     }
 
     if (args.includes("--version") || args.includes("-v")) {

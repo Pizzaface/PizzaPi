@@ -18,7 +18,7 @@ describe("Ollama built-in provider", () => {
     const modelRecords = models as Array<any>;
 
     expect(modelRecords.length).toBeGreaterThan(0);
-    for (const id of ["glm-5.1", "gpt-oss:20b", "kimi-k2.6", "qwen3-coder-next", "deepseek-v4-pro"]) {
+    for (const id of ["glm-5.1", "gpt-oss:20b", "kimi-k2.6", "kimi-k2.7-code", "minimax-m3", "nemotron-3-ultra", "deepseek-v4-pro"]) {
       expect(modelRecords.some((m) => m.id === id)).toBe(true);
     }
 
@@ -26,6 +26,7 @@ describe("Ollama built-in provider", () => {
     expect(glm).toBeDefined();
     expect(glm?.provider).toBe("ollama-cloud");
     expect(glm?.baseUrl).toBe("https://ollama.com/v1");
+    expect(new URL("models", `${glm?.baseUrl}/`).toString()).toBe("https://ollama.com/v1/models");
     expect(glm?.api).toBe("openai-completions");
     expect(glm?.compat).toMatchObject({
       supportsStore: false,
@@ -43,13 +44,15 @@ describe("Ollama built-in provider", () => {
     const models = getModels("ollama-cloud");
     const contextById = new Map((models as Array<any>).map((model) => [model.id, model.contextWindow]));
 
-    expect(contextById.get("deepseek-v4-pro")).toBe(1048576);
+    expect(contextById.get("deepseek-v4-pro")).toBe(524288);
     expect(contextById.get("deepseek-v4-flash")).toBe(1048576);
-    expect(contextById.get("nemotron-3-nano:30b")).toBe(1048576);
+    expect(contextById.get("nemotron-3-nano:30b")).toBe(262144);
+    expect(contextById.get("nemotron-3-ultra")).toBe(262144);
     expect(contextById.get("rnj-1:8b")).toBe(32768);
     expect(contextById.get("ministral-3:8b")).toBe(262144);
-    expect(contextById.get("minimax-m2.7")).toBe(204800);
-    expect(contextById.get("gemma3:12b")).toBe(32768);
+    expect(contextById.get("minimax-m2.7")).toBe(196608);
+    expect(contextById.get("minimax-m3")).toBe(524288);
+    expect(contextById.get("gemma3:12b")).toBe(131072);
     expect(contextById.get("mistral-large-3:675b")).toBe(262144);
     expect(contextById.get("devstral-small-2:24b")).toBe(262144);
   });
@@ -107,6 +110,129 @@ describe("Ollama built-in provider", () => {
       expect(response.usage.input).toBe(123);
       expect(response.usage.output).toBe(45);
       expect(response.usage.totalTokens).toBe(168);
+    } finally {
+      globalThis.fetch = prevFetch;
+      if (prevKey === undefined) delete process.env.OLLAMA_API_KEY;
+      else process.env.OLLAMA_API_KEY = prevKey;
+    }
+  });
+
+  test("vision ollama-cloud models send image content as image_url", async () => {
+    const { complete, getModels } = await import("@earendil-works/pi-ai");
+    const model = (getModels("ollama-cloud") as Array<any>).find((m) => m.id === "gemma3:12b");
+    expect(model).toBeDefined();
+    expect(model.input).toContain("image");
+
+    const prevFetch = globalThis.fetch;
+    const prevKey = process.env.OLLAMA_API_KEY;
+    process.env.OLLAMA_API_KEY = "test-ollama-key";
+    let requestPayload: any;
+
+    globalThis.fetch = (async (_input: string | URL | Request, init?: RequestInit) => {
+      requestPayload = JSON.parse(String(init?.body));
+      const body = [
+        `data: ${JSON.stringify({
+          id: "chatcmpl-test",
+          object: "chat.completion.chunk",
+          choices: [{ index: 0, delta: { content: "hi" }, finish_reason: null }],
+        })}`,
+        `data: ${JSON.stringify({
+          id: "chatcmpl-test",
+          object: "chat.completion.chunk",
+          choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+          usage: { prompt_tokens: 123, completion_tokens: 45, total_tokens: 168 },
+        })}`,
+        "data: [DONE]",
+        "",
+      ].join("\n\n");
+      return new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } });
+    }) as unknown as typeof fetch;
+
+    try {
+      await complete(
+        model,
+        {
+          messages: [
+            {
+              role: "user",
+              content: [
+                { type: "text", text: "describe this" },
+                { type: "image", data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", mimeType: "image/png" },
+              ],
+              timestamp: Date.now(),
+            },
+          ],
+        },
+        { maxRetries: 0 },
+      );
+
+      expect(requestPayload.messages).toHaveLength(1);
+      const content = requestPayload.messages[0].content;
+      expect(content).toHaveLength(2);
+      expect(content[0]).toEqual({ type: "text", text: "describe this" });
+      expect(content[1].type).toBe("image_url");
+      expect(content[1].image_url.url).toMatch(/^data:image\/png;base64,/);
+    } finally {
+      globalThis.fetch = prevFetch;
+      if (prevKey === undefined) delete process.env.OLLAMA_API_KEY;
+      else process.env.OLLAMA_API_KEY = prevKey;
+    }
+  });
+
+  test("non-vision ollama-cloud models downgrade images to placeholder text", async () => {
+    const { complete, getModels } = await import("@earendil-works/pi-ai");
+    const model = (getModels("ollama-cloud") as Array<any>).find((m) => m.id === "glm-5.1");
+    expect(model).toBeDefined();
+    expect(model.input).not.toContain("image");
+
+    const prevFetch = globalThis.fetch;
+    const prevKey = process.env.OLLAMA_API_KEY;
+    process.env.OLLAMA_API_KEY = "test-ollama-key";
+    let requestPayload: any;
+
+    globalThis.fetch = (async (_input: string | URL | Request, init?: RequestInit) => {
+      requestPayload = JSON.parse(String(init?.body));
+      const body = [
+        `data: ${JSON.stringify({
+          id: "chatcmpl-test",
+          object: "chat.completion.chunk",
+          choices: [{ index: 0, delta: { content: "hi" }, finish_reason: null }],
+        })}`,
+        `data: ${JSON.stringify({
+          id: "chatcmpl-test",
+          object: "chat.completion.chunk",
+          choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+          usage: { prompt_tokens: 123, completion_tokens: 45, total_tokens: 168 },
+        })}`,
+        "data: [DONE]",
+        "",
+      ].join("\n\n");
+      return new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } });
+    }) as unknown as typeof fetch;
+
+    try {
+      await complete(
+        model,
+        {
+          messages: [
+            {
+              role: "user",
+              content: [
+                { type: "text", text: "describe this" },
+                { type: "image", data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", mimeType: "image/png" },
+              ],
+              timestamp: Date.now(),
+            },
+          ],
+        },
+        { maxRetries: 0 },
+      );
+
+      expect(requestPayload.messages).toHaveLength(1);
+      const content = requestPayload.messages[0].content;
+      expect(content).toHaveLength(2);
+      expect(content[0]).toEqual({ type: "text", text: "describe this" });
+      expect(content[1]).toEqual({ type: "text", text: "(image omitted: model does not support images)" });
     } finally {
       globalThis.fetch = prevFetch;
       if (prevKey === undefined) delete process.env.OLLAMA_API_KEY;

@@ -27,9 +27,9 @@ Adds one PizzaPi-specific runtime fix:
 ## @earendil-works/pi-coding-agent@0.79.3
 
 PizzaPi integration changes ported to the current `@earendil-works` package
-scope and 0.79.x upstream layout. Upstream now provides session-control
-actions without PizzaPi's old loader/runner shim, so that patch is no longer
-carried.
+scope and 0.79.x upstream layout. Upstream provides session-control actions for
+command contexts; PizzaPi also exposes those actions on the general extension API
+so remote event handlers can trigger `/new` and `/resume`.
 
 **What it changes:**
 
@@ -37,6 +37,7 @@ carried.
 |------|--------|
 | `dist/config.js` | Hardcodes `".pizzapi"`, flattens `getAgentDir()`, and honors `PIZZAPI_CHANGELOG_PATH` |
 | `dist/core/agent-session.js` | Retries transient JSON parse stream failures |
+| `dist/core/extensions/loader.js` / `dist/core/extensions/runner.js` | Exposes `newSession()` and `switchSession()` on the general extension API for remote exec handlers |
 | `dist/core/model-resolver.js` | Adds built-in default model selection for `ollama-cloud` (`glm-5.1`) |
 | `dist/core/provider-display-names.js` | Exposes `Ollama Cloud` as a built-in provider display name |
 | `dist/modes/interactive/interactive-mode.js` | Removes upstream version-notification UI |
