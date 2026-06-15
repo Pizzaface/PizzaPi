@@ -18,7 +18,7 @@ describe("Ollama built-in provider", () => {
     const modelRecords = models as Array<any>;
 
     expect(modelRecords.length).toBeGreaterThan(0);
-    for (const id of ["glm-5.1", "gpt-oss:20b", "kimi-k2.6", "qwen3-coder-next", "deepseek-v4-pro"]) {
+    for (const id of ["glm-5.1", "gpt-oss:20b", "kimi-k2.6", "kimi-k2.7-code", "minimax-m3", "nemotron-3-ultra", "deepseek-v4-pro"]) {
       expect(modelRecords.some((m) => m.id === id)).toBe(true);
     }
 
@@ -26,6 +26,7 @@ describe("Ollama built-in provider", () => {
     expect(glm).toBeDefined();
     expect(glm?.provider).toBe("ollama-cloud");
     expect(glm?.baseUrl).toBe("https://ollama.com/v1");
+    expect(new URL("models", `${glm?.baseUrl}/`).toString()).toBe("https://ollama.com/v1/models");
     expect(glm?.api).toBe("openai-completions");
     expect(glm?.compat).toMatchObject({
       supportsStore: false,
@@ -43,13 +44,15 @@ describe("Ollama built-in provider", () => {
     const models = getModels("ollama-cloud");
     const contextById = new Map((models as Array<any>).map((model) => [model.id, model.contextWindow]));
 
-    expect(contextById.get("deepseek-v4-pro")).toBe(1048576);
+    expect(contextById.get("deepseek-v4-pro")).toBe(524288);
     expect(contextById.get("deepseek-v4-flash")).toBe(1048576);
-    expect(contextById.get("nemotron-3-nano:30b")).toBe(1048576);
+    expect(contextById.get("nemotron-3-nano:30b")).toBe(262144);
+    expect(contextById.get("nemotron-3-ultra")).toBe(262144);
     expect(contextById.get("rnj-1:8b")).toBe(32768);
     expect(contextById.get("ministral-3:8b")).toBe(262144);
-    expect(contextById.get("minimax-m2.7")).toBe(204800);
-    expect(contextById.get("gemma3:12b")).toBe(32768);
+    expect(contextById.get("minimax-m2.7")).toBe(196608);
+    expect(contextById.get("minimax-m3")).toBe(524288);
+    expect(contextById.get("gemma3:12b")).toBe(131072);
     expect(contextById.get("mistral-large-3:675b")).toBe(262144);
     expect(contextById.get("devstral-small-2:24b")).toBe(262144);
   });
