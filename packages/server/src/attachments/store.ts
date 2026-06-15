@@ -183,7 +183,9 @@ export async function storeExtractedImage(input: {
         ? base64Data.slice(base64Data.indexOf(",") + 1)
         : base64Data;
     const bytes = Buffer.from(rawB64, "base64");
-    const ext = mimeType.split("/").pop() ?? "png";
+    const VALID_IMAGE_EXTS = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg", "avif", "ico"]);
+    const rawExt = mimeType.split("/").pop()?.split(";")[0]?.trim().toLowerCase() ?? "png";
+    const ext = VALID_IMAGE_EXTS.has(rawExt) ? rawExt : "bin";
     const filename = `extracted-${attachmentId}.${ext}`;
     const targetPath = path.join(uploadRoot, filename);
 
