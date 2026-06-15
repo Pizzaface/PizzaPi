@@ -64,6 +64,7 @@ mock.module("../runner-recent-folders.js", () => ({
 mock.module("../user-hidden-models.js", () => ({ getHiddenModels: mock(() => Promise.resolve([])) }));
 import * as _runnerRegistryModule from "../ws/sio-registry/runners.js";
 import * as _sioStateModule from "../ws/sio-state/index.js";
+import * as runnerNamespace from "../ws/namespaces/runner.js";
 const mockRunnerServicesSpy = spyOn(_runnerRegistryModule, "getRunnerServices").mockImplementation(mockGetRunnerServices as any);
 const mockGetSessionSpy = spyOn(_sioStateModule, "getSession").mockImplementation(mockGetSession as any);
 
@@ -193,6 +194,78 @@ describe("runner trigger listener routes", () => {
         expect(body.ok).toBe(true);
         expect(body.triggerType).toBe("svc:event");
         expect(body.removed).toBe(2);
+    });
+});
+
+describe("runner folders inspect route", () => {
+    beforeEach(() => {
+        mockRequireSession.mockReset();
+        mockRequireSession.mockReturnValue(Promise.resolve({ userId: "user-1", userName: "TestUser" } as any));
+        mockGetRunnerData.mockReset();
+        mockGetRunnerData.mockReturnValue(Promise.resolve({ userId: "user-1", runnerId: "runner-A" } as any));
+        spyOn(runnerNamespace, "sendRunnerCommand").mockImplementation((_runnerId: string, command: Record<string, unknown>) => {
+            const paths = Array.isArray(command.paths) ? command.paths : [];
+            return Promise.resolve({
+                ok: true,
+                folders: paths.map((p: string) => ({ path: p, isGit: p.includes("/repo"), branch: "main" })),
+            });
+        });
+    });
+
+    test("POST forwards paths to runner and returns folder metadata", async () => {
+        const [req, url] = makeReq("POST", "/api/runners/runner-A/folders/inspect", {
+            paths: ["/code/repo", "/code/other"],
+        });
+        const res = await handleRunnersRoute(req, url);
+        expect(res!.status).toBe(200);
+        const body = await res!.json();
+        expect(body.ok).toBe(true);
+        expect(body.folders).toHaveLength(2);
+        expect(body.folders[0].path).toBe("/code/repo");
+        expect(body.folders[0].isGit).toBe(true);
+        expect(body.folders[1].path).toBe("/code/other");
+        expect(body.folders[1].isGit).toBe(false);
+        expect(runnerNamespace.sendRunnerCommand).toHaveBeenCalledWith(
+            "runner-A",
+            { type: "inspect_folders", paths: ["/code/repo", "/code/other"] },
+            15_000,
+        );
+    });
+
+    test("POST rejects missing paths", async () => {
+        const [req, url] = makeReq("POST", "/api/runners/runner-A/folders/inspect", { paths: [] });
+        const res = await handleRunnersRoute(req, url);
+        expect(res!.status).toBe(400);
+        const body = await res!.json();
+        expect(body.error).toBe("Missing paths");
+    });
+
+    test("POST rejects paths outside workspace roots", async () => {
+        mockGetRunnerData.mockReturnValue(Promise.resolve({
+            userId: "user-1",
+            runnerId: "runner-A",
+            roots: JSON.stringify(["/code"]),
+        } as any));
+
+        const [req, url] = makeReq("POST", "/api/runners/runner-A/folders/inspect", {
+            paths: ["/code/repo", "/etc/other"],
+        });
+        const res = await handleRunnersRoute(req, url);
+        expect(res!.status).toBe(400);
+        const body = await res!.json();
+        expect(body.error).toContain("/etc/other");
+    });
+
+    test("POST returns 502 when runner command fails", async () => {
+        spyOn(runnerNamespace, "sendRunnerCommand").mockRejectedValue(new Error("runner offline"));
+
+        const [req, url] = makeReq("POST", "/api/runners/runner-A/folders/inspect", {
+            paths: ["/code/repo"],
+        });
+        const res = await handleRunnersRoute(req, url);
+        expect(res!.status).toBe(502);
+        const body = await res!.json();
+        expect(body.error).toBe("runner offline");
     });
 });
 

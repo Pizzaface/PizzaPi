@@ -378,6 +378,48 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
         return undefined;
     }
 
+    // ── Inspect folders (git metadata for recent-folder rows) ─────────
+    const inspectFoldersMatch = url.pathname.match(/^\/api\/runners\/([^/]+)\/folders\/inspect$/);
+    if (inspectFoldersMatch && req.method === "POST") {
+        const identity = await requireSession(req);
+        if (identity instanceof Response) return identity;
+
+        const runnerId = decodeURIComponent(inspectFoldersMatch[1]);
+        const runner = await getRunnerData(runnerId);
+        if (!runner) return Response.json({ error: "Runner not found" }, { status: 404 });
+        if (runner.userId !== identity.userId) return Response.json({ error: "Forbidden" }, { status: 403 });
+
+        let body: any = {};
+        try { body = await req.json(); } catch { body = {}; }
+        const paths = Array.isArray(body?.paths)
+            ? body.paths.filter((p: unknown): p is string => typeof p === "string" && p.length > 0)
+            : [];
+        if (paths.length === 0) {
+            return Response.json({ error: "Missing paths" }, { status: 400 });
+        }
+
+        // Enforce workspace roots for every path (defense-in-depth).
+        const roots = parseJsonArray(runner.roots);
+        for (const p of paths) {
+            if (roots.length > 0 && !cwdMatchesRoots(roots, p)) {
+                return Response.json({ error: `Path outside allowed workspace roots: ${p}` }, { status: 400 });
+            }
+        }
+
+        try {
+            const result = await sendRunnerCommand(runnerId, { type: "inspect_folders", paths }, 15_000) as any;
+            if (!result.ok) {
+                return Response.json({ error: result.message || "Inspect folders failed" }, { status: 400 });
+            }
+            return Response.json({ ok: true, folders: result.folders ?? [] });
+        } catch (err) {
+            return Response.json(
+                { error: err instanceof Error ? err.message : "Inspect folders failed" },
+                { status: 502 },
+            );
+        }
+    }
+
     // ── Browse directory (folder picker) ───────────────────────────
     const browseMatch = url.pathname.match(/^\/api\/runners\/([^/]+)\/browse$/);
     if (browseMatch && req.method === "GET") {
