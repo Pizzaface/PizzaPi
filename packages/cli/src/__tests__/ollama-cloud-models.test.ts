@@ -1,0 +1,66 @@
+import { describe, test, expect, beforeEach, afterEach } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+    fetchOllamaCloudModels,
+    extractContextLength,
+    capabilitiesInclude,
+} from "../ollama-cloud-models.js";
+
+const originalHome = process.env.HOME;
+
+describe("ollama-cloud dynamic model discovery", () => {
+    let tempHome: string;
+
+    beforeEach(() => {
+        tempHome = mkdtempSync(join(tmpdir(), "ollama-cloud-models-test-"));
+        process.env.HOME = tempHome;
+    });
+
+    afterEach(() => {
+        process.env.HOME = originalHome;
+        try {
+            rmSync(tempHome, { recursive: true, force: true });
+        } catch {
+            // ignore
+        }
+    });
+
+    test("extractContextLength returns first context_length key", () => {
+        expect(extractContextLength({ "glm5.1.context_length": 202752 })).toBe(202752);
+        expect(extractContextLength({ context_length: 131072 })).toBe(131072);
+        expect(extractContextLength({ foo: "bar" })).toBeUndefined();
+    });
+
+    test("capabilitiesInclude is case-insensitive", () => {
+        expect(capabilitiesInclude(["Thinking", "completion"], "thinking")).toBe(true);
+        expect(capabilitiesInclude(["completion"], "thinking")).toBe(false);
+    });
+
+    test("fetchOllamaCloudModels returns cached data when cache is fresh", async () => {
+        const expected: import("../ollama-cloud-models.js").OllamaCloudModel[] = [
+            {
+                id: "cached-model",
+                name: "cached-model",
+                provider: "ollama-cloud",
+                api: "openai-completions",
+                baseUrl: "https://ollama.com/v1",
+                reasoning: true,
+                input: ["text"],
+                contextWindow: 1234,
+                maxTokens: 32768,
+            },
+        ];
+
+        const dir = join(tempHome, ".pizzapi");
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(
+            join(dir, "ollama-cloud-models-cache.json"),
+            JSON.stringify({ models: expected, fetchedAt: Date.now() }),
+        );
+
+        const result = await fetchOllamaCloudModels();
+        expect(result).toEqual(expected);
+    });
+});
