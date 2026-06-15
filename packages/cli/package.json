@@ -28,6 +28,9 @@
     "build:binary:windows-x64": "bun build-binaries.ts --target windows-x64",
     "build:binaries": "bun build-binaries.ts"
   },
+  "optionalDependencies": {
+    "discord.js": "^14.18.0"
+  },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "^0.79.3",
     "@modelcontextprotocol/sdk": "^1.27.1",
