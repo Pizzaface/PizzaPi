@@ -1,0 +1,54 @@
+{
+  "id": "message-bridge",
+  "label": "Message Bridge",
+  "icon": "message-circle",
+  "panel": {
+    "dir": "./panel",
+    "requires": ["SESSION_ID"]
+  },
+  "triggers": [
+    {
+      "type": "message-bridge:inbound",
+      "label": "Inbound Message",
+      "description": "Fired when a message is received from an external platform (Discord, Slack, etc.)",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "providerId": { "type": "string" },
+          "channelId": { "type": "string" },
+          "channelName": { "type": "string" },
+          "author": { "type": "object" },
+          "content": { "type": "string" },
+          "isCommand": { "type": "boolean" },
+          "command": { "type": "object" },
+          "threadId": { "type": "string" },
+          "replyToId": { "type": "string" },
+          "messageId": { "type": "string" }
+        }
+      },
+      "params": [
+        {
+          "name": "providerId",
+          "label": "Provider",
+          "type": "string",
+          "enum": ["discord", "slack", "telegram"],
+          "description": "Only receive messages from this provider"
+        }
+      ]
+    },
+    {
+      "type": "message-bridge:send",
+      "label": "Send Message",
+      "description": "Fired when a message is successfully sent to an external platform",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "providerId": { "type": "string" },
+          "channelId": { "type": "string" },
+          "content": { "type": "string" },
+          "messageId": { "type": "string" }
+        }
+      }
+    }
+  ]
+}
