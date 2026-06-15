@@ -242,12 +242,12 @@ export function clearPendingGuidance(sessionId: string): void {
 }
 
 /**
- * Restore the latest persisted goal for a session, if any.
+ * Scan session entries for the most recent persisted `goal_state` entry,
+ * regardless of its lifecycle status.
  */
-export function restoreGoal(
-    sessionId: string,
-    entries: Array<{ type: string; customType?: string; data?: unknown }>,
-): GoalState | undefined {
+function findLatestGoalState(
+    entries: Array<{ type?: string; customType?: string; data?: unknown }>,
+): PersistedGoalState | undefined {
     let latest: PersistedGoalState | undefined;
 
     for (const entry of entries) {
@@ -257,6 +257,18 @@ export function restoreGoal(
             latest = data;
         }
     }
+
+    return latest;
+}
+
+/**
+ * Restore the latest persisted goal for a session, if any.
+ */
+export function restoreGoal(
+    sessionId: string,
+    entries: Array<{ type: string; customType?: string; data?: unknown }>,
+): GoalState | undefined {
+    const latest = findLatestGoalState(entries);
 
     if (!latest || latest.status === "cancelled" || latest.status === "met") {
         return undefined;
@@ -293,18 +305,8 @@ export function toMetaGoalStatus(state: GoalState): MetaGoalStatus {
 export function getActiveGoalFromEntries(
     entries: Array<{ type?: string; customType?: string; data?: unknown }>,
 ): GoalState | undefined {
-    let latest: PersistedGoalState | undefined;
-
-    for (const entry of entries) {
-        if (entry.type !== "custom" || entry.customType !== GOAL_STATE_CUSTOM_TYPE) continue;
-        const data = entry.data as PersistedGoalState | undefined;
-        if (data && data.version === 1 && (!latest || (data.createdAt ?? 0) > (latest.createdAt ?? 0))) {
-            latest = data;
-        }
-    }
-
+    const latest = findLatestGoalState(entries);
     if (!latest || latest.status !== "active") return undefined;
-
     return fromPersisted(latest);
 }
 

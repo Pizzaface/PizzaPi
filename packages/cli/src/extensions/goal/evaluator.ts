@@ -24,20 +24,6 @@ import type {
 
 export const DEFAULT_EVALUATOR_MAX_TOKENS = 512;
 
-/**
- * Default fallback model identifiers for the LLM evaluator, ordered by
- * preference. Anthropic Haiku is the preferred cheap default; OpenAI mini
- * models are fallbacks for non-Anthropic setups.
- */
-export const DEFAULT_EVALUATOR_MODEL_IDS = [
-    "claude-3-5-haiku-20241022",
-    "claude-3-5-haiku-latest",
-    "claude-haiku-4-5",
-    "claude-3-haiku-20240307",
-    "gpt-4o-mini",
-    "gpt-4.1-mini",
-];
-
 function buildEvaluatorPrompt(state: GoalState, context: GoalEvaluationContext): string {
     const budgetParts: string[] = [];
     if (state.budget.maxTurns !== undefined) budgetParts.push(`turns ≤ ${state.budget.maxTurns}`);
@@ -58,19 +44,51 @@ function buildEvaluatorPrompt(state: GoalState, context: GoalEvaluationContext):
         "Latest turn:",
         context.latestTurnText || "(no turn text available)",
         "",
-        'Has the goal been met? Reply in this exact format:\nDecision: yes or no\nReason: short explanation of why the goal is or is not satisfied',
+        'Has the goal been met? Reply with a single JSON object using this exact format:\n{"verdict": "yes" or "no", "reason": "short explanation of why the goal is or is not satisfied"}',
     ].join("\n");
+}
+
+function isYesVerdict(value: string): boolean {
+    return value === "yes" || value === "met" || value === "true";
+}
+
+function isNoVerdict(value: string): boolean {
+    return value === "no" || value === "not_met" || value === "not met" || value === "false";
 }
 
 /**
  * Parse a yes/no decision from the evaluator model.
  *
- * Accepts "yes" / "no", "met" / "not_met" / "not met" as synonyms. Falls back
- * to scanning the full response if the first line is ambiguous.
+ * First tries to parse the response as a JSON object with `verdict` and
+ * optional `reason` fields. Falls back to the legacy free-text regex logic if
+ * JSON parsing fails or the JSON does not contain a usable verdict.
+ *
+ * Accepts "yes" / "no", "met" / "not_met" / "not met" as synonyms.
  */
 export function parseLlmVerdict(raw: string): { verdict: GoalVerdict; reason: string } {
     const text = raw.trim();
     const lower = text.toLowerCase();
+
+    // 1. Try structured JSON output first.
+    const jsonMatch = text.match(/\{[\s\S]*?\}/);
+    if (jsonMatch) {
+        try {
+            const parsed = JSON.parse(jsonMatch[0]);
+            if (parsed && typeof parsed === "object" && typeof parsed.verdict === "string") {
+                const verdict = parsed.verdict.toLowerCase().trim();
+                if (isYesVerdict(verdict) || isNoVerdict(verdict)) {
+                    const reason = typeof parsed.reason === "string" ? parsed.reason.trim() : "";
+                    return {
+                        verdict: isYesVerdict(verdict) ? "met" : "not_met",
+                        reason,
+                    };
+                }
+            }
+        } catch {
+            // Not valid JSON; fall through to regex parsing.
+        }
+    }
+
     const firstLine = text.split("\n")[0] ?? text;
 
     const yes = /\byes\b/i.test(firstLine) || /\bmet\b/i.test(firstLine);
@@ -169,30 +187,27 @@ export function createLlmGoalEvaluator(deps: LlmEvaluatorDeps): GoalEvaluator {
 }
 
 /**
- * Resolve a small model to use for goal evaluation.
+ * Resolve a small, fast model to use for goal evaluation.
  *
  * If a model is configured (as `provider:modelId` or just `modelId`), it is
- * tried first. Otherwise the default fallback list is searched. Only models
- * with configured auth are returned.
+ * tried first. Otherwise the registry is searched for the cheapest available
+ * text model that has configured auth. This avoids hardcoding Anthropic IDs
+ * and works with any provider the user has set up.
  */
 export async function resolveEvaluatorModel(
     registry: ModelRegistry,
     configured?: string,
-    fallbackIds = DEFAULT_EVALUATOR_MODEL_IDS,
 ): Promise<{ model: Model<any>; apiKey?: string } | undefined> {
-    const all = registry.getAll();
     let candidates: Model<any>[] = [];
 
     if (configured) {
         const [providerPart, idPart] = configured.includes(":") ? configured.split(":") : [undefined, configured];
-        candidates = all.filter((m) => {
+        candidates = registry.getAll().filter((m) => {
             if (providerPart && m.provider !== providerPart) return false;
             return m.id === idPart;
         });
-    }
-
-    if (candidates.length === 0) {
-        candidates = fallbackIds.flatMap((id) => all.filter((m) => m.id === id));
+    } else {
+        candidates = findSmallFastModels(registry);
     }
 
     for (const model of candidates) {
@@ -203,6 +218,18 @@ export async function resolveEvaluatorModel(
     }
 
     return undefined;
+}
+
+function findSmallFastModels(registry: ModelRegistry): Model<any>[] {
+    return registry
+        .getAll()
+        .filter((m) => m.input.includes("text") && !m.reasoning)
+        .sort((a, b) => {
+            const aCost = a.cost.input + a.cost.output;
+            const bCost = b.cost.input + b.cost.output;
+            if (aCost !== bCost) return aCost - bCost;
+            return a.contextWindow - b.contextWindow;
+        });
 }
 
 /**

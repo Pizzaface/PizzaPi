@@ -16,7 +16,7 @@ import {
     setGoal,
     setPendingGuidance,
 } from "./state.js";
-import { keywordGoalEvaluator, parseLlmVerdict, createLlmGoalEvaluator } from "./evaluator.js";
+import { keywordGoalEvaluator, parseLlmVerdict, createLlmGoalEvaluator, resolveEvaluatorModel } from "./evaluator.js";
 import { extractLatestTurnText, buildTranscript, extractAgentMessageText } from "./transcript.js";
 import type { AssistantMessage, Context, Model, SimpleStreamOptions, ToolResultMessage } from "@earendil-works/pi-ai";
 import type { GoalState, GoalVerdict } from "./types.js";
@@ -24,6 +24,7 @@ import type {
     ExtensionAPI,
     ExtensionCommandContext,
     ExtensionContext,
+    ModelRegistry,
     TurnEndEvent,
     BeforeAgentStartEvent,
     SessionEntry,
@@ -345,8 +346,80 @@ describe("parseLlmVerdict", () => {
         expect(result.reason).toBe(reason);
     });
 
+    test.each([
+        ['{"verdict": "yes", "reason": "tests pass"}', "met", "tests pass"],
+        ['{"verdict": "no", "reason": "still failing"}', "not_met", "still failing"],
+        ['{"verdict": "met", "reason": "done"}', "met", "done"],
+        ['{"verdict": "not_met", "reason": "incomplete"}', "not_met", "incomplete"],
+        ['{"verdict": "not met", "reason": "incomplete"}', "not_met", "incomplete"],
+        ['{"verdict": "true"}', "met", ""],
+        ['{"verdict": "false"}', "not_met", ""],
+    ])("parses JSON %p as %p", (input, verdict, reason) => {
+        const result = parseLlmVerdict(input);
+        expect(result.verdict).toBe(verdict as GoalVerdict);
+        expect(result.reason).toBe(reason);
+    });
+
     test("returns uncertain for ambiguous responses", () => {
         expect(parseLlmVerdict("maybe later").verdict).toBe("uncertain");
+    });
+});
+
+describe("resolveEvaluatorModel", () => {
+    function makeRegistry(models: Array<Partial<Model<any>> & { id: string; provider: string }>): ModelRegistry {
+        return {
+            getAll: () => models as Model<any>[],
+            hasConfiguredAuth: (m: Model<any>) => m.provider !== "unauthenticated",
+            getApiKeyAndHeaders: async (m: Model<any>) =>
+                m.provider === "unauthenticated"
+                    ? { ok: false as const, error: "no key" }
+                    : { ok: true as const, apiKey: `${m.provider}-key` },
+        } as unknown as ModelRegistry;
+    }
+
+    test("returns configured model by id", async () => {
+        const registry = makeRegistry([
+            { provider: "anthropic", id: "claude-haiku-4-5", input: ["text"], cost: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 }, contextWindow: 200_000, maxTokens: 4096, reasoning: false, name: "Haiku", api: "anthropic-messages", baseUrl: "" },
+        ]);
+        const resolved = await resolveEvaluatorModel(registry, "claude-haiku-4-5");
+        expect(resolved?.model.id).toBe("claude-haiku-4-5");
+        expect(resolved?.apiKey).toBe("anthropic-key");
+    });
+
+    test("returns configured model by provider:id", async () => {
+        const registry = makeRegistry([
+            { provider: "openai", id: "gpt-4o-mini", input: ["text"], cost: { input: 0.5, output: 0.5, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128_000, maxTokens: 4096, reasoning: false, name: "Mini", api: "openai-completions", baseUrl: "" },
+            { provider: "anthropic", id: "claude-haiku-4-5", input: ["text"], cost: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 }, contextWindow: 200_000, maxTokens: 4096, reasoning: false, name: "Haiku", api: "anthropic-messages", baseUrl: "" },
+        ]);
+        const resolved = await resolveEvaluatorModel(registry, "openai:gpt-4o-mini");
+        expect(resolved?.model.provider).toBe("openai");
+        expect(resolved?.model.id).toBe("gpt-4o-mini");
+    });
+
+    test("falls back to the cheapest authenticated text model", async () => {
+        const registry = makeRegistry([
+            { provider: "anthropic", id: "claude-opus", input: ["text"], cost: { input: 15, output: 75, cacheRead: 0, cacheWrite: 0 }, contextWindow: 200_000, maxTokens: 4096, reasoning: false, name: "Opus", api: "anthropic-messages", baseUrl: "" },
+            { provider: "openai", id: "gpt-4o-mini", input: ["text"], cost: { input: 0.15, output: 0.6, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128_000, maxTokens: 4096, reasoning: false, name: "Mini", api: "openai-completions", baseUrl: "" },
+            { provider: "groq", id: "llama-8b", input: ["text"], cost: { input: 0.05, output: 0.08, cacheRead: 0, cacheWrite: 0 }, contextWindow: 8_192, maxTokens: 4096, reasoning: false, name: "Llama", api: "openai-completions", baseUrl: "" },
+        ]);
+        const resolved = await resolveEvaluatorModel(registry);
+        expect(resolved?.model.provider).toBe("groq");
+        expect(resolved?.model.id).toBe("llama-8b");
+    });
+
+    test("ignores models without configured auth", async () => {
+        const registry = makeRegistry([
+            { provider: "unauthenticated", id: "cheap-model", input: ["text"], cost: { input: 0.01, output: 0.01, cacheRead: 0, cacheWrite: 0 }, contextWindow: 8_192, maxTokens: 4096, reasoning: false, name: "Cheap", api: "openai-completions", baseUrl: "" },
+            { provider: "openai", id: "gpt-4o-mini", input: ["text"], cost: { input: 0.15, output: 0.6, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128_000, maxTokens: 4096, reasoning: false, name: "Mini", api: "openai-completions", baseUrl: "" },
+        ]);
+        const resolved = await resolveEvaluatorModel(registry);
+        expect(resolved?.model.id).toBe("gpt-4o-mini");
+    });
+
+    test("returns undefined when nothing is available", async () => {
+        const registry = makeRegistry([]);
+        const resolved = await resolveEvaluatorModel(registry);
+        expect(resolved).toBeUndefined();
     });
 });
 
