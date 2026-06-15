@@ -64,6 +64,19 @@ export interface MetaMcpReport {
   ts?: number;
 }
 
+export interface MetaGoalStatus {
+  id: string;
+  description: string;
+  status: "active" | "met" | "failed" | "cancelled";
+  turnCount: number;
+  maxTurns?: number;
+  tokenSpend: number;
+  maxTokens?: number;
+  costSpend: number;
+  maxCost?: number;
+  lastReason?: string;
+}
+
 export interface SessionMetaState {
   todoList:           MetaTodoItem[];
   pendingQuestion:    MetaPendingQuestion | null;
@@ -78,6 +91,7 @@ export interface SessionMetaState {
   thinkingLevel:      string | null;
   authSource:         string | null;
   model:              MetaModelInfo | null;
+  goal:               MetaGoalStatus | null;
   /** Monotonic counter incremented on every updateSessionMetaState call. */
   version:            number;
 }
@@ -97,6 +111,7 @@ export function defaultMetaState(): SessionMetaState {
     thinkingLevel: null,
     authSource: null,
     model: null,
+    goal: null,
     version: 0,
   };
 }

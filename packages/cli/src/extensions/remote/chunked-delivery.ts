@@ -18,6 +18,7 @@ import { randomUUID } from "node:crypto";
 import { buildSessionContext } from "@earendil-works/pi-coding-agent";
 import { createLogger } from "@pizzapi/tools";
 import { getCurrentTodoList } from "../update-todo.js";
+import { getActiveGoalFromEntries, toMetaGoalStatus } from "../goal/state.js";
 import type { RelayContext } from "../remote-types.js";
 import { getSessionAnalysis } from "../session-analysis.js";
 import { reconstructContext } from "../../session-analysis/analyzer.js";
@@ -278,6 +279,13 @@ function getContextWindows(rctx: RelayContext): Map<string, number> {
     return windows;
 }
 
+function resolveGoalMetadata(rctx: RelayContext) {
+    if (rctx.goalState) return rctx.goalState;
+    if (!rctx.latestCtx) return null;
+    const activeGoalState = getActiveGoalFromEntries(rctx.latestCtx.sessionManager.getEntries() as any[]);
+    return activeGoalState ? toMetaGoalStatus(activeGoalState) : null;
+}
+
 /** Build analysis from the transcript, falling back to the live accumulator. */
 export function buildLiveSessionAnalysis(rctx: RelayContext): SessionAnalysis | null {
     if (rctx.latestCtx) {
@@ -349,6 +357,7 @@ export function emitSessionActive(rctx: RelayContext): void {
         availableCommands: rctx.getAvailableCommands(),
         todoList: getCurrentTodoList(),
         analysis: buildLiveSessionAnalysis(rctx),
+        goal: resolveGoalMetadata(rctx),
     };
 
     if (needsChunkedDelivery(messages)) {
@@ -429,6 +438,7 @@ export function emitSessionMetadataUpdate(rctx: RelayContext): void {
             availableCommands: rctx.getAvailableCommands(),
             todoList: getCurrentTodoList(),
             analysis: buildLiveSessionAnalysis(rctx),
+            goal: resolveGoalMetadata(rctx),
         },
     });
 }

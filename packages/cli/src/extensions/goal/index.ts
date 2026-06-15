@@ -13,6 +13,7 @@
  *   for the next turn when the goal has not yet been met.
  * - `session_shutdown` clears the in-memory entry for the session.
  */
+import type { MetaGoalStatus } from "@pizzapi/protocol";
 import type {
     AssistantMessage,
     ToolResultMessage,
@@ -33,6 +34,7 @@ import {
     clearGoal,
     clearPendingGuidance,
     formatGoalStatus,
+    getActiveGoalFromEntries,
     getGoal,
     getPendingGuidance,
     recordEvaluation,
@@ -41,6 +43,8 @@ import {
     restoreGoal,
     setGoal,
     setPendingGuidance,
+    toMetaGoalStatus,
+    formatCompactGoalStatus,
 } from "./state.js";
 import { parseGoalArgs } from "./parser.js";
 import {
@@ -59,6 +63,31 @@ const log = createLogger("goal");
 
 function getSessionId(ctx: ExtensionContext): string {
     return process.env.PIZZAPI_SESSION_ID ?? process.env.SESSION_ID ?? ctx.sessionManager.getSessionId() ?? "unknown";
+}
+
+function emitGoalStatusChanged(
+    pi: Pick<ExtensionAPI, "sendMessage" | "appendEntry" | "events">,
+    payload: MetaGoalStatus | null,
+): void {
+    const events = (pi as any).events;
+    if (events && typeof events.emit === "function") {
+        events.emit("goal:state_changed", payload);
+    }
+}
+
+function broadcastGoalStatus(
+    sessionId: string,
+    state: GoalState | undefined,
+    ctx: ExtensionContext,
+    pi: Pick<ExtensionAPI, "sendMessage" | "appendEntry" | "events">,
+): void {
+    if (state?.status === "active") {
+        ctx.ui.setStatus("goal", formatCompactGoalStatus(state));
+        emitGoalStatusChanged(pi, toMetaGoalStatus(state));
+    } else {
+        ctx.ui.setStatus("goal", undefined);
+        emitGoalStatusChanged(pi, null);
+    }
 }
 
 function handleGoalCommand(
@@ -248,6 +277,7 @@ export const goalExtension: ExtensionFactory = (pi) => {
                 content: result.message,
                 display: true,
             });
+            broadcastGoalStatus(getSessionId(ctx), getGoal(getSessionId(ctx)), ctx, pi);
         },
     });
 
@@ -255,10 +285,12 @@ export const goalExtension: ExtensionFactory = (pi) => {
         const sessionId = getSessionId(ctx);
         const entries = ctx.sessionManager.getEntries();
         restoreGoal(sessionId, entries as any[]);
+        broadcastGoalStatus(sessionId, getGoal(sessionId), ctx, pi);
     });
 
     pi.on("turn_end", async (event, ctx) => {
         await runGoalStopCheck(event, ctx, pi);
+        broadcastGoalStatus(getSessionId(ctx), getGoal(getSessionId(ctx)), ctx, pi);
     });
 
     pi.on("before_agent_start", async (event, ctx) => {
@@ -274,5 +306,6 @@ export const goalExtension: ExtensionFactory = (pi) => {
     pi.on("session_shutdown", () => {
         const sessionId = process.env.PIZZAPI_SESSION_ID ?? process.env.SESSION_ID ?? "unknown";
         resetSession(sessionId);
+        emitGoalStatusChanged(pi, null);
     });
 };

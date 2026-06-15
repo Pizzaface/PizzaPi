@@ -13,6 +13,7 @@ import { writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { MetaGoalStatus } from "@pizzapi/protocol";
 // NOTE: `pi` (the factory argument) is the PiInstance, which has .on()/.registerCommand()/.events
 // etc. but is not publicly exported. We type it as `any` in LifecycleHandlersDeps to avoid
 // a hard dependency on an internal type. ExtensionContext is used only for ctx parameters
@@ -44,7 +45,7 @@ import { setPlanModeChangeCallback, setPlanModeMetaEmitter } from "../plan-mode/
 import { registerAskUserTool } from "../remote-ask-user.js";
 import { registerPlanModeTool } from "../remote-plan-mode.js";
 import { isDisabled } from "./connection.js";
-import { emitSessionActive } from "./chunked-delivery.js";
+import { emitSessionActive, emitSessionMetadataUpdate } from "./chunked-delivery.js";
 import { shouldAutoClose } from "./auto-close.js";
 import type { RelayContext } from "../remote-types.js";
 import type { TriggerWaitManager } from "../trigger-wait-manager.js";
@@ -337,6 +338,13 @@ export function registerLifecycleHandlers(deps: LifecycleHandlersDeps): void {
         const shutdownExitReason = rctx.wasAborted ? "killed" : rctx.lastRetryableError ? "error" : "completed";
         await followUpGrace.fireSessionComplete(undefined, undefined, shutdownExitReason);
         doDisconnect();
+    });
+
+    // Goal state is emitted by the `/goal` extension. Forward it as a
+    // lightweight metadata update so the web UI header badge stays in sync.
+    pi.events.on("goal:state_changed", (goal: unknown) => {
+        rctx.goalState = goal && typeof goal === "object" ? (goal as MetaGoalStatus) : null;
+        emitSessionMetadataUpdate(rctx);
     });
 
     // ── Agent lifecycle ───────────────────────────────────────────────────────

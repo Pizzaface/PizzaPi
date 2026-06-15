@@ -112,6 +112,7 @@ import {
 } from "@/lib/input-dedupe";
 import { parsePendingQuestionDisplayMode, parsePendingQuestions, type QuestionDisplayMode, type QuestionType } from "@/lib/ask-user-questions";
 import type { TodoItem, TokenUsage, ConfiguredModelInfo, ResumeSessionOption, QueuedMessage, SessionUiCacheEntry } from "@/lib/types";
+import type { MetaGoalStatus } from "@pizzapi/protocol";
 import { metaEventToStatePatch, type MetaStatePatch } from "@/lib/meta-state-apply";
 import { deriveSessionMetadataUpdatePatch } from "@/lib/session-metadata-update";
 import { usePanelLayout } from "@/hooks/usePanelLayout";
@@ -193,6 +194,7 @@ interface SessionState {
   resumeSessions: ResumeSessionOption[];
   resumeSessionsLoading: boolean;
   resumeSessionsNextCursor: string | null;
+  goal: MetaGoalStatus | null;
 }
 
 function createInitialSessionState(): SessionState {
@@ -224,6 +226,7 @@ function createInitialSessionState(): SessionState {
     resumeSessions: [],
     resumeSessionsLoading: false,
     resumeSessionsNextCursor: null,
+    goal: null,
   };
 }
 // ─────────────────────────────────────────────────────────────────────────────
@@ -246,6 +249,7 @@ export function App() {
     modelSelectorOpen, isChangingModel, agentActive, effortLevel, authSource,
     tokenUsage, providerUsage, usageRefreshing, lastHeartbeatAt,
     availableCommands, resumeSessions, resumeSessionsLoading, resumeSessionsNextCursor,
+    goal,
   } = sessionState;
 
   // Thin setter wrappers — identical signatures to the original useState setters
@@ -388,6 +392,11 @@ export function App() {
   const setResumeSessionsNextCursor = React.useCallback(
     (v: string | null) =>
       setSessionState((p: SessionState) => ({ ...p, resumeSessionsNextCursor: v })),
+    []
+  );
+  const setGoal = React.useCallback(
+    (v: React.SetStateAction<MetaGoalStatus | null>) =>
+      setSessionState((p: SessionState) => ({ ...p, goal: typeof v === "function" ? v(p.goal) : v })),
     []
   );
   // Tracks whether the in-flight list_resume_sessions request is a "load more" (append) vs fresh load
@@ -761,6 +770,7 @@ export function App() {
       analysis: prev?.analysis ?? null,
       pendingQuestion: prev?.pendingQuestion ?? null,
       pendingPlan: prev?.pendingPlan ?? null,
+      goal: prev?.goal ?? null,
       ...patch,
       lastAccessed: Date.now(),
     };
@@ -1592,6 +1602,12 @@ export function App() {
         cachePatch.todoList = todos;
       }
 
+      if (Object.prototype.hasOwnProperty.call(derived, "goal")) {
+        const nextGoal = derived.goal ?? null;
+        setGoal(nextGoal);
+        cachePatch.goal = nextGoal;
+      }
+
       if (Object.prototype.hasOwnProperty.call(meta, "analysis")) {
         const nextAnalysis = meta.analysis as SessionUiCacheEntry["analysis"];
         setAnalysis(nextAnalysis ?? null);
@@ -1655,6 +1671,12 @@ export function App() {
         : null;
       if (hasStateAnalysis) {
         setAnalysis(stateAnalysis ?? null);
+      }
+
+      const hasStateGoal = !!state && Object.prototype.hasOwnProperty.call(state, "goal");
+      const stateGoal = hasStateGoal ? (state.goal as MetaGoalStatus | null) : null;
+      if (hasStateGoal) {
+        setGoal(stateGoal ?? null);
       }
 
       // Track chunked delivery state — messages arrive as subsequent
@@ -2894,6 +2916,7 @@ export function App() {
     setLastHeartbeatAt(cached?.lastHeartbeatAt ?? null);
     setTodoList(cached?.todoList ?? []);
     setAnalysis(cached?.analysis ?? null);
+    setGoal(cached?.goal ?? null);
 
     // ── Runner-scoped state: preserve on same-runner switch ─────────────
     if (!sameRunner) {
@@ -4822,6 +4845,7 @@ export function App() {
                           />
                         }
                         todoList={todoList}
+                        goal={goal}
                         analysis={analysis}
                         planModeEnabled={planModeEnabled}
                         runnerId={activeSessionInfo?.runnerId ?? undefined}

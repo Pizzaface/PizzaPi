@@ -342,6 +342,9 @@ export function registerEventHandler(socket: RelaySocket): void {
                     patch.thinkingLevel = typeof meta.thinkingLevel === "string" ? meta.thinkingLevel : null;
                 }
                 if (Array.isArray(meta.todoList)) patch.todoList = meta.todoList;
+                if (Object.prototype.hasOwnProperty.call(meta, "goal")) {
+                    patch.goal = meta.goal && typeof meta.goal === "object" ? meta.goal : null;
+                }
                 if (Object.keys(patch).length > 0) {
                     await updateSessionMetaState(sessionId, patch);
                 }

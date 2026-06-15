@@ -15,6 +15,7 @@ describe("buildSnapshotPatchFromMetadata", () => {
             availableModels: [{ provider: "anthropic", id: "claude-sonnet-4-5" }],
             availableCommands: [{ name: "search_tools", description: "search" }],
             todoList: [{ id: 1, text: "todo", status: "pending" }],
+            goal: { id: "goal_1", description: "tests pass", status: "active", turnCount: 3, tokenSpend: 0, costSpend: 0 },
         });
 
         expect(patch).toEqual({
@@ -24,6 +25,7 @@ describe("buildSnapshotPatchFromMetadata", () => {
             availableModels: [{ provider: "anthropic", id: "claude-sonnet-4-5" }],
             availableCommands: [{ name: "search_tools", description: "search" }],
             todoList: [{ id: 1, text: "todo", status: "pending" }],
+            goal: { id: "goal_1", description: "tests pass", status: "active", turnCount: 3, tokenSpend: 0, costSpend: 0 },
         });
     });
 
@@ -35,6 +37,7 @@ describe("buildSnapshotPatchFromMetadata", () => {
             availableModels: [],
             availableCommands: [],
             todoList: [],
+            goal: null,
         });
 
         expect(patch).toEqual({
@@ -44,6 +47,7 @@ describe("buildSnapshotPatchFromMetadata", () => {
             availableModels: [],
             availableCommands: [],
             todoList: [],
+            goal: null,
         });
     });
 });

@@ -70,4 +70,40 @@ describe("deriveSessionMetadataUpdatePatch", () => {
       contextWindow: 200000,
     });
   });
+
+  test("passes goal state through when present", () => {
+    const patch = deriveSessionMetadataUpdatePatch({
+      metadata: {
+        goal: {
+          id: "goal_1",
+          description: "tests pass",
+          status: "active",
+          turnCount: 3,
+          maxTurns: 5,
+          tokenSpend: 1200,
+          costSpend: 0.0123,
+          lastReason: "still failing",
+        },
+      },
+    });
+
+    expect(patch.goal).toEqual({
+      id: "goal_1",
+      description: "tests pass",
+      status: "active",
+      turnCount: 3,
+      maxTurns: 5,
+      tokenSpend: 1200,
+      costSpend: 0.0123,
+      lastReason: "still failing",
+    });
+  });
+
+  test("clears goal state when metadata contains null", () => {
+    const patch = deriveSessionMetadataUpdatePatch({
+      metadata: { goal: null },
+    });
+
+    expect(patch.goal).toBeNull();
+  });
 });

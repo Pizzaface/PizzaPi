@@ -6,6 +6,7 @@
  * the goal survives session reload/resume.
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { MetaGoalStatus } from "@pizzapi/protocol";
 import type {
     GoalBudget,
     GoalCommandResult,
@@ -246,6 +247,67 @@ export function restoreGoal(
     const state = fromPersisted(latest);
     goalsBySessionId.set(sessionId, state);
     return state;
+}
+
+/**
+ * Build the serializable goal status payload forwarded to the web UI.
+ */
+export function toMetaGoalStatus(state: GoalState): MetaGoalStatus {
+    const lastEval = state.evaluations.at(-1);
+    return {
+        id: state.id,
+        description: state.condition.description,
+        status: state.status,
+        turnCount: state.turnCount,
+        maxTurns: state.budget.maxTurns,
+        tokenSpend: state.tokenSpend,
+        maxTokens: state.budget.maxTokens,
+        costSpend: state.costSpend,
+        maxCost: state.budget.maxCost,
+        lastReason: lastEval?.reason,
+    };
+}
+
+/**
+ * Scan session entries for the most recent active persisted goal.
+ */
+export function getActiveGoalFromEntries(
+    entries: Array<{ type?: string; customType?: string; data?: unknown }>,
+): GoalState | undefined {
+    let latest: PersistedGoalState | undefined;
+
+    for (const entry of entries) {
+        if (entry.type !== "custom" || entry.customType !== GOAL_STATE_CUSTOM_TYPE) continue;
+        const data = entry.data as PersistedGoalState | undefined;
+        if (data && data.version === 1 && (!latest || (data.createdAt ?? 0) > (latest.createdAt ?? 0))) {
+            latest = data;
+        }
+    }
+
+    if (!latest || latest.status !== "active") return undefined;
+
+    return fromPersisted(latest);
+}
+
+/**
+ * Single-line status for the TUI footer / status bar.
+ */
+export function formatCompactGoalStatus(state: GoalState): string {
+    const parts = ["◎ /goal active"];
+
+    if (state.budget.maxTurns !== undefined) {
+        parts.push(`turn ${state.turnCount}/${state.budget.maxTurns}`);
+    } else {
+        parts.push(`turn ${state.turnCount}`);
+    }
+
+    const lastEval = state.evaluations.at(-1);
+    if (lastEval?.verdict === "not_met" && lastEval.reason) {
+        const reason = lastEval.reason.replace(/\s+/g, " ").trim();
+        parts.push(reason.length > 60 ? `${reason.slice(0, 57)}...` : reason);
+    }
+
+    return parts.join(" · ");
 }
 
 /**

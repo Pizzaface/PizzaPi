@@ -22,6 +22,7 @@ import type { AssistantMessage, Context, Model, SimpleStreamOptions, ToolResultM
 import type { GoalState, GoalVerdict } from "./types.js";
 import type {
     ExtensionAPI,
+    ExtensionCommandContext,
     ExtensionContext,
     TurnEndEvent,
     BeforeAgentStartEvent,
@@ -454,10 +455,14 @@ function createFakePi(): {
     handlers: Map<string, ((event: unknown, ctx: ExtensionContext) => unknown)[]>;
     messages: Array<{ customType: string; content: string; display: boolean }>;
     entries: Array<{ customType: string; data: unknown }>;
+    events: Map<string, unknown[]>;
+    commands: Map<string, (args: string, ctx: ExtensionCommandContext) => unknown>;
 } {
     const handlers = new Map<string, ((event: unknown, ctx: ExtensionContext) => unknown)[]>();
     const messages: Array<{ customType: string; content: string; display: boolean }> = [];
     const entries: Array<{ customType: string; data: unknown }> = [];
+    const events = new Map<string, unknown[]>();
+    const commands = new Map<string, (args: string, ctx: ExtensionCommandContext) => unknown>();
 
     const pi = {
         on: (event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) => {
@@ -471,10 +476,19 @@ function createFakePi(): {
         appendEntry: (customType: string, data?: unknown) => {
             entries.push({ customType, data });
         },
-        registerCommand: () => {},
+        registerCommand: (name: string, options: { handler: (args: string, ctx: ExtensionCommandContext) => unknown }) => {
+            commands.set(name, options.handler);
+        },
+        events: {
+            emit: (event: string, payload: unknown) => {
+                const list = events.get(event) ?? [];
+                list.push(payload);
+                events.set(event, list);
+            },
+        },
     } as unknown as ExtensionAPI;
 
-    return { pi, handlers, messages, entries };
+    return { pi, handlers, messages, entries, events, commands };
 }
 
 function createFakeCtx(overrides: {
@@ -494,6 +508,9 @@ function createFakeCtx(overrides: {
         },
         signal: overrides.signal ?? undefined,
         shutdown: overrides.shutdown ?? (() => {}),
+        ui: {
+            setStatus: (_key: string, _text?: string) => {},
+        },
     } as unknown as ExtensionContext;
 }
 
@@ -637,5 +654,82 @@ describe("goalExtension event wiring", () => {
         expect(getGoal("session-1")?.stopReason).toBe("max_turns");
         expect(shutdownCalled).toBe(true);
         expect(messages.some((m) => m.content.includes("budget reached"))).toBe(true);
+    });
+
+    test("broadcasts active goal status on set, update, and clear", async () => {
+        resetSession("session-1");
+        const { pi, handlers, events, commands } = createFakePi();
+        const ctx = createFakeCtx();
+
+        goalExtension(pi);
+
+        // /goal command sets an active goal and broadcasts it.
+        const goalHandler = commands.get("goal");
+        expect(goalHandler).toBeDefined();
+        await goalHandler!("tests pass --max-turns 5 --evaluator keyword --keyword pass", ctx as ExtensionCommandContext);
+
+        let emitted = events.get("goal:state_changed") ?? [];
+        expect(emitted.length).toBe(1);
+        expect((emitted[0] as any).status).toBe("active");
+        expect((emitted[0] as any).description).toBe("tests pass");
+        expect((emitted[0] as any).maxTurns).toBe(5);
+
+        // turn_end not met broadcasts an updated turn count / reason.
+        const turnHandlers = handlers.get("turn_end") ?? [];
+        for (const handler of turnHandlers) {
+            await handler({
+                type: "turn_end",
+                turnIndex: 1,
+                message: makeAssistantMessage("Still failing"),
+                toolResults: [],
+            } as TurnEndEvent, ctx);
+        }
+
+        emitted = events.get("goal:state_changed") ?? [];
+        expect(emitted.length).toBe(2);
+        expect((emitted[1] as any).turnCount).toBe(1);
+        expect((emitted[1] as any).lastReason).toContain("pass");
+
+        // /goal clear broadcasts null.
+        await goalHandler!("clear", ctx as ExtensionCommandContext);
+
+        emitted = events.get("goal:state_changed") ?? [];
+        expect(emitted.length).toBe(3);
+        expect(emitted[2]).toBeNull();
+    });
+
+    test("restores active goal from persisted entries on session_start", async () => {
+        resetSession("session-1");
+        const { pi, handlers, events } = createFakePi();
+        const persisted = {
+            version: 1 as const,
+            id: "goal_123",
+            condition: { description: "foo", evaluator: "keyword" as const },
+            budget: { maxTurns: 5 },
+            status: "active" as const,
+            turnCount: 2,
+            tokenSpend: 100,
+            costSpend: 0,
+            evaluations: [],
+            createdAt: 1,
+        };
+        const ctx = createFakeCtx({
+            entries: [
+                { type: "custom", customType: "goal_state", data: persisted },
+            ] as SessionEntry[],
+        });
+
+        goalExtension(pi);
+
+        const startHandlers = handlers.get("session_start") ?? [];
+        for (const handler of startHandlers) {
+            await handler({ type: "session_start" }, ctx);
+        }
+
+        expect(getGoal("session-1")?.id).toBe("goal_123");
+        const emitted = events.get("goal:state_changed") ?? [];
+        expect(emitted.length).toBe(1);
+        expect((emitted[0] as any).status).toBe("active");
+        expect((emitted[0] as any).turnCount).toBe(2);
     });
 });
