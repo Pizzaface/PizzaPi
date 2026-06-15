@@ -12,11 +12,16 @@ import { SiApple, SiLinux } from "react-icons/si";
 import { cn } from "@/lib/utils";
 import { formatPathTail } from "@/lib/path";
 import { filterFolders } from "@/lib/filterFolders";
-import { buildFolderMetaMap, formatWorktreeLabel, type FolderGitMetadata } from "@/lib/gitFolderMeta";
+import { buildFolderMetaMap, formatWorktreeLabel, repoOriginForWorktree, deriveWorktreePath, type FolderGitMetadata } from "@/lib/gitFolderMeta";
 import { FolderBrowser } from "@/components/FolderBrowser";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+    HoverCard,
+    HoverCardContent,
+    HoverCardTrigger,
+} from "@/components/ui/hover-card";
 import {
     Dialog,
     DialogContent,
@@ -136,6 +141,17 @@ export function NewSessionWizardDialog({
     // Folder browser mode
     const [browsing, setBrowsing] = React.useState(false);
 
+    // Worktree creation mini-form state
+    const [worktreeDialogOpen, setWorktreeDialogOpen] = React.useState(false);
+    const [worktreeTarget, setWorktreeTarget] = React.useState<{
+        folder: string;
+        repoOrigin: string;
+        currentBranch?: string;
+    } | null>(null);
+    const [worktreeBranch, setWorktreeBranch] = React.useState("");
+    const [worktreeCreating, setWorktreeCreating] = React.useState(false);
+    const [worktreeError, setWorktreeError] = React.useState<string | null>(null);
+
     // Filtered list (derived)
     const filteredFolders = React.useMemo(
         () => filterFolders(recentFolders, cwd),
@@ -171,6 +187,10 @@ export function NewSessionWizardDialog({
         setFolderMeta(new Map());
         setFolderMetaError(null);
         setBrowsing(false);
+        setWorktreeDialogOpen(false);
+        setWorktreeTarget(null);
+        setWorktreeBranch("");
+        setWorktreeError(null);
     }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
 
     // Fetch recent folders when entering Step 2
@@ -326,6 +346,54 @@ export function NewSessionWizardDialog({
         }
     }
 
+    function handleNewSessionFromRow(folder: string) {
+        if (!selectedRunnerId || spawning || worktreeCreating) return;
+        setCwd(folder);
+        void handleSpawn();
+    }
+
+    function handleOpenWorktreeDialog(folder: string) {
+        const meta = folderMeta.get(folder);
+        const repoOrigin = repoOriginForWorktree(meta);
+        if (!selectedRunnerId || !repoOrigin) return;
+        setWorktreeTarget({ folder, repoOrigin, currentBranch: meta?.branch });
+        setWorktreeBranch(meta?.branch ?? "");
+        setWorktreeError(null);
+        setWorktreeDialogOpen(true);
+    }
+
+    async function handleCreateWorktree() {
+        if (!selectedRunnerId || !worktreeTarget || !worktreeBranch.trim()) return;
+        setWorktreeCreating(true);
+        setWorktreeError(null);
+        try {
+            const path = deriveWorktreePath(worktreeTarget.repoOrigin, worktreeBranch.trim());
+            const res = await fetch(
+                `/api/runners/${encodeURIComponent(selectedRunnerId)}/worktrees/add`,
+                {
+                    method: "POST",
+                    credentials: "include",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        cwd: worktreeTarget.repoOrigin,
+                        branch: worktreeBranch.trim(),
+                        path,
+                    }),
+                },
+            );
+            const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+            if (!res.ok || !body.ok || typeof body.path !== "string") {
+                throw new Error(typeof body.error === "string" ? body.error : "Worktree creation failed");
+            }
+            setWorktreeDialogOpen(false);
+            await onSpawn(selectedRunnerId, body.path);
+        } catch (err) {
+            setWorktreeError(err instanceof Error ? err.message : String(err));
+        } finally {
+            setWorktreeCreating(false);
+        }
+    }
+
     // ── Derived ───────────────────────────────────────────────────────────
 
     const connectedRunners = runners.filter((r) => r.isOnline);
@@ -334,7 +402,8 @@ export function NewSessionWizardDialog({
     // ── Render ────────────────────────────────────────────────────────────
 
     return (
-        <Dialog open={open} onOpenChange={(o) => { if (!spawning) onOpenChange(o); }}>
+        <>
+            <Dialog open={open} onOpenChange={(o) => { if (!spawning) onOpenChange(o); }}>
             <DialogContent className="sm:max-w-lg">
                 <DialogHeader>
                     <DialogTitle>New session</DialogTitle>
@@ -523,69 +592,104 @@ export function NewSessionWizardDialog({
                                                 const meta = folderMeta.get(folder);
                                                 const worktreeLabel = meta ? formatWorktreeLabel(meta, recentPaths) : null;
                                                 return (
-                                                    <div
-                                                        key={folder}
-                                                        style={{
-                                                            position: "absolute",
-                                                            top: item.start,
-                                                            left: 0,
-                                                            right: 0,
-                                                            height: ROW_HEIGHT,
-                                                        }}
-                                                        className={cn(
-                                                            "flex items-center group px-2 gap-2",
-                                                            isSelected
-                                                                ? "bg-accent text-accent-foreground"
-                                                                : "hover:bg-muted",
-                                                        )}
-                                                    >
-                                                        <button
-                                                            type="button"
-                                                            onClick={() => handleSelectRecent(folder)}
-                                                            disabled={spawning}
-                                                            title={folder}
-                                                            className="flex items-center gap-2 min-w-0 flex-1 text-left"
-                                                        >
-                                                            <FolderOpen className="h-3.5 w-3.5 flex-shrink-0 opacity-60" />
-                                                            <span className="text-sm font-mono truncate">
-                                                                {basename}
-                                                            </span>
-                                                            {tail !== basename && (
-                                                                <span className="text-xs text-muted-foreground font-mono truncate">
-                                                                    {tail}
-                                                                </span>
-                                                            )}
-                                                        </button>
-
-                                                        {meta?.isGit && meta.branch && (
-                                                            <span
-                                                                className="flex items-center gap-1 text-xs text-muted-foreground flex-shrink-0"
-                                                                title={`Branch: ${meta.branch}`}
+                                                    <HoverCard key={folder} openDelay={0} closeDelay={100}>
+                                                        <HoverCardTrigger asChild>
+                                                            <div
+                                                                style={{
+                                                                    position: "absolute",
+                                                                    top: item.start,
+                                                                    left: 0,
+                                                                    right: 0,
+                                                                    height: ROW_HEIGHT,
+                                                                }}
+                                                                className={cn(
+                                                                    "flex items-center group px-2 gap-2 cursor-default",
+                                                                    isSelected
+                                                                        ? "bg-accent text-accent-foreground"
+                                                                        : "hover:bg-muted",
+                                                                )}
                                                             >
-                                                                <GitBranch className="h-3 w-3 flex-shrink-0" />
-                                                                <span className="truncate max-w-[80px]">{meta.branch}</span>
-                                                            </span>
-                                                        )}
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => handleSelectRecent(folder)}
+                                                                    disabled={spawning}
+                                                                    title={folder}
+                                                                    className="flex items-center gap-2 min-w-0 flex-1 text-left"
+                                                                >
+                                                                    <FolderOpen className="h-3.5 w-3.5 flex-shrink-0 opacity-60" />
+                                                                    <span className="text-sm font-mono truncate">
+                                                                        {basename}
+                                                                    </span>
+                                                                    {tail !== basename && (
+                                                                        <span className="text-xs text-muted-foreground font-mono truncate">
+                                                                            {tail}
+                                                                        </span>
+                                                                    )}
+                                                                </button>
 
-                                                        {worktreeLabel && (
-                                                            <span
-                                                                className="text-xs text-muted-foreground flex-shrink-0 truncate max-w-[120px]"
-                                                                title={worktreeLabel}
-                                                            >
-                                                                {worktreeLabel}
-                                                            </span>
-                                                        )}
+                                                                {meta?.isGit && meta.branch && (
+                                                                    <span
+                                                                        className="flex items-center gap-1 text-xs text-muted-foreground flex-shrink-0"
+                                                                        title={`Branch: ${meta.branch}`}
+                                                                    >
+                                                                        <GitBranch className="h-3 w-3 flex-shrink-0" />
+                                                                        <span className="truncate max-w-[80px]">{meta.branch}</span>
+                                                                    </span>
+                                                                )}
 
-                                                        <button
-                                                            type="button"
-                                                            onClick={() => void handleRemoveRecent(folder)}
-                                                            disabled={spawning}
-                                                            title="Remove from recent"
-                                                            className="flex-shrink-0 opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive transition-opacity"
+                                                                {worktreeLabel && (
+                                                                    <span
+                                                                        className="text-xs text-muted-foreground flex-shrink-0 truncate max-w-[120px]"
+                                                                        title={worktreeLabel}
+                                                                    >
+                                                                        {worktreeLabel}
+                                                                    </span>
+                                                                )}
+
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => void handleRemoveRecent(folder)}
+                                                                    disabled={spawning}
+                                                                    title="Remove from recent"
+                                                                    className="flex-shrink-0 opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive transition-opacity"
+                                                                >
+                                                                    <X className="h-3 w-3" />
+                                                                </button>
+                                                            </div>
+                                                        </HoverCardTrigger>
+                                                        <HoverCardContent
+                                                            side="right"
+                                                            align="start"
+                                                            sideOffset={6}
+                                                            className="w-44 p-2"
                                                         >
-                                                            <X className="h-3 w-3" />
-                                                        </button>
-                                                    </div>
+                                                            <div className="flex flex-col gap-1">
+                                                                <Button
+                                                                    type="button"
+                                                                    variant="ghost"
+                                                                    size="sm"
+                                                                    className="w-full justify-start h-8 px-2 text-xs"
+                                                                    disabled={spawning || worktreeCreating}
+                                                                    onClick={() => void handleNewSessionFromRow(folder)}
+                                                                >
+                                                                    New Session
+                                                                </Button>
+                                                                {repoOriginForWorktree(meta) && (
+                                                                    <Button
+                                                                        type="button"
+                                                                        variant="ghost"
+                                                                        size="sm"
+                                                                        className="w-full justify-start h-8 px-2 text-xs"
+                                                                        disabled={spawning || worktreeCreating}
+                                                                        onClick={() => handleOpenWorktreeDialog(folder)}
+                                                                    >
+                                                                        <GitBranch className="h-3.5 w-3.5 mr-1.5" />
+                                                                        New Worktree From…
+                                                                    </Button>
+                                                                )}
+                                                            </div>
+                                                        </HoverCardContent>
+                                                    </HoverCard>
                                                 );
                                             })}
                                         </div>
@@ -639,6 +743,72 @@ export function NewSessionWizardDialog({
                     )}
                 </DialogFooter>
             </DialogContent>
-        </Dialog>
+            </Dialog>
+            {worktreeDialogOpen && (
+                <Dialog open={worktreeDialogOpen} onOpenChange={setWorktreeDialogOpen}>
+                    <DialogContent className="sm:max-w-md">
+                        <DialogHeader>
+                            <DialogTitle>New worktree</DialogTitle>
+                            <DialogDescription>
+                                Create a worktree from{" "}
+                                <span className="font-mono text-xs">{worktreeTarget?.repoOrigin}</span>
+                                {worktreeTarget?.currentBranch && (
+                                    <> on branch <span className="font-medium">{worktreeTarget.currentBranch}</span></>
+                                )}
+                                .
+                            </DialogDescription>
+                        </DialogHeader>
+                        <div className="flex flex-col gap-3">
+                            <div className="flex flex-col gap-1.5">
+                                <Label htmlFor="worktree-branch">Branch name</Label>
+                                <Input
+                                    id="worktree-branch"
+                                    value={worktreeBranch}
+                                    onChange={(e) => setWorktreeBranch(e.target.value)}
+                                    onKeyDown={(e) => { if (e.key === "Enter" && worktreeBranch.trim()) void handleCreateWorktree(); }}
+                                    placeholder="feature/my-change"
+                                    className="font-mono text-sm"
+                                    disabled={worktreeCreating}
+                                    autoFocus
+                                />
+                            </div>
+                            {worktreeBranch.trim() && worktreeTarget && (
+                                <p className="text-xs text-muted-foreground">
+                                    Will create{" "}
+                                    <span className="font-mono">{deriveWorktreePath(worktreeTarget.repoOrigin, worktreeBranch.trim())}</span>
+                                </p>
+                            )}
+                            {worktreeError && (
+                                <p className="text-xs text-destructive rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2">
+                                    {worktreeError}
+                                </p>
+                            )}
+                        </div>
+                        <DialogFooter className="gap-2">
+                            <Button
+                                variant="outline"
+                                onClick={() => setWorktreeDialogOpen(false)}
+                                disabled={worktreeCreating}
+                            >
+                                Cancel
+                            </Button>
+                            <Button
+                                onClick={() => void handleCreateWorktree()}
+                                disabled={worktreeCreating || !worktreeBranch.trim()}
+                            >
+                                {worktreeCreating ? (
+                                    <>
+                                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                        Creating…
+                                    </>
+                                ) : (
+                                    "Create & Start Session"
+                                )}
+                            </Button>
+                        </DialogFooter>
+                    </DialogContent>
+                </Dialog>
+            )}
+        </>
     );
 }

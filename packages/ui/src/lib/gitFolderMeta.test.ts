@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { buildFolderMetaMap, formatWorktreeLabel, type FolderGitMetadata } from "./gitFolderMeta.js";
+import { buildFolderMetaMap, formatWorktreeLabel, repoOriginForWorktree, deriveWorktreePath, type FolderGitMetadata } from "./gitFolderMeta.js";
 
 const META: FolderGitMetadata[] = [
     { path: "/code/repo", isGit: true, repoRoot: "/code/repo", branch: "main" },
@@ -35,5 +35,29 @@ describe("formatWorktreeLabel", () => {
     test("returns null for non-git entries", () => {
         const label = formatWorktreeLabel(META[2], new Set(["/code/repo"]));
         expect(label).toBeNull();
+    });
+});
+
+describe("repoOriginForWorktree", () => {
+    test("returns repo root for a regular repo", () => {
+        expect(repoOriginForWorktree(META[0])).toBe("/code/repo");
+    });
+
+    test("returns main repo path for a worktree entry", () => {
+        expect(repoOriginForWorktree(META[1])).toBe("/code/repo");
+    });
+
+    test("returns null for non-git entries", () => {
+        expect(repoOriginForWorktree(META[2])).toBeNull();
+    });
+});
+
+describe("deriveWorktreePath", () => {
+    test("creates a sibling path from repo origin and branch", () => {
+        expect(deriveWorktreePath("/code/repo", "feature/abc")).toBe("/code/repo-feature-abc");
+    });
+
+    test("falls back to repo name only when there is no parent", () => {
+        expect(deriveWorktreePath("repo", "fix")).toBe("repo-fix");
     });
 });

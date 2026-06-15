@@ -24,6 +24,29 @@ export function buildFolderMetaMap(folders: FolderGitMetadata[]): Map<string, Fo
 }
 
 /**
+ * Determine the repository origin to use when creating a new worktree.
+ * For a worktree entry, this is the main repo path; for a regular repo,
+ * it is the repo root.
+ */
+export function repoOriginForWorktree(meta: FolderGitMetadata | undefined): string | null {
+    if (!meta?.isGit) return null;
+    return meta.isWorktree ? meta.mainRepoPath ?? meta.repoRoot ?? null : meta.repoRoot ?? null;
+}
+
+/**
+ * Derive a sibling worktree path from a repo origin and a branch name.
+ * Mirrors the server-side derivation in `runners.ts`.
+ */
+export function deriveWorktreePath(repoOrigin: string, branch: string): string {
+    const trimmed = repoOrigin.replace(/\/+$/, "");
+    const lastSlash = trimmed.lastIndexOf("/");
+    const parent = lastSlash > 0 ? trimmed.slice(0, lastSlash) : "";
+    const repoName = trimmed.split("/").filter(Boolean).pop() || "repo";
+    const branchSlug = branch.replace(/\//g, "-");
+    return parent ? `${parent}/${repoName}-${branchSlug}` : `${repoName}-${branchSlug}`;
+}
+
+/**
  * Format a short label for a worktree entry when its main repo is also in the
  * recent list. Returns `null` when no association label is needed.
  */
