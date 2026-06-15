@@ -26,6 +26,9 @@ const goalsBySessionId = new Map<string, GoalState>();
 /** Pending evaluator guidance to inject into the next turn's system prompt. */
 const pendingGuidanceBySessionId = new Map<string, string>();
 
+/** Goals that have stopped are kept in memory for 24 hours, then pruned. */
+const STOPPED_GOAL_RETENTION_MS = 24 * 60 * 60 * 1000;
+
 function generateGoalId(): string {
     return `goal_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -69,6 +72,20 @@ export function fromPersisted(persisted: PersistedGoalState): GoalState {
 }
 
 /**
+ * Remove stale stopped goals from the in-memory map. Active goals are never
+ * pruned. Call this whenever the map is mutated (setGoal / restoreGoal) so
+ * long-lived processes don't accumulate dead entries.
+ */
+function cleanupStaleGoals(): void {
+    const cutoff = Date.now() - STOPPED_GOAL_RETENTION_MS;
+    for (const [sessionId, state] of goalsBySessionId) {
+        if (state.status !== "active" && state.stoppedAt !== undefined && state.stoppedAt < cutoff) {
+            goalsBySessionId.delete(sessionId);
+        }
+    }
+}
+
+/**
  * Set or replace the active goal for a session.
  */
 export function setGoal(
@@ -78,6 +95,7 @@ export function setGoal(
     pi: Pick<ExtensionAPI, "appendEntry">,
 ): GoalState {
     clearPendingGuidance(sessionId);
+    cleanupStaleGoals();
     const state = createGoalState(condition, budget);
     goalsBySessionId.set(sessionId, state);
     persist(state, pi);
@@ -244,6 +262,7 @@ export function restoreGoal(
         return undefined;
     }
 
+    cleanupStaleGoals();
     const state = fromPersisted(latest);
     goalsBySessionId.set(sessionId, state);
     return state;

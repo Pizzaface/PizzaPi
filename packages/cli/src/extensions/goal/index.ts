@@ -180,6 +180,7 @@ async function runGoalStopCheck(
 
     const budgetReason = checkBudget(state);
     if (budgetReason) {
+        clearPendingGuidance(sessionId);
         pi.sendMessage({
             customType: "goal_status",
             content: `Goal budget reached: ${budgetReason}. The goal is now inactive; you may continue the session.`,
@@ -247,6 +248,14 @@ async function runGoalStopCheck(
         }, pi) ?? state;
     }
 
+    const lastEval = state.evaluations.at(-1);
+    if (lastEval && lastEval.verdict === "not_met") {
+        clearPendingGuidance(sessionId);
+        setPendingGuidance(sessionId, lastEval.reason);
+    } else {
+        clearPendingGuidance(sessionId);
+    }
+
     if (state.status !== "active") {
         if (state.stopReason === "goal_met") {
             pi.sendMessage({
@@ -264,11 +273,6 @@ async function runGoalStopCheck(
         // Never shutdown when the goal is met or a budget is exhausted. The
         // agent should finish the current turn and return control to the user.
         return;
-    }
-
-    const lastEval = state.evaluations.at(-1);
-    if (lastEval && lastEval.verdict === "not_met") {
-        setPendingGuidance(sessionId, lastEval.reason);
     }
 }
 
@@ -303,7 +307,6 @@ export const goalExtension: ExtensionFactory = (pi) => {
         const guidance = getPendingGuidance(sessionId);
         if (!guidance) return undefined;
 
-        clearPendingGuidance(sessionId);
         const systemPrompt = `${event.systemPrompt}\n\n[Goal guidance] The goal has not been met yet. ${guidance}`;
         return { systemPrompt };
     });

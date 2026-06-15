@@ -268,14 +268,20 @@ describe("/goal multi-turn integration", () => {
         expect(getPendingGuidance("goal-integration-session")).toContain("tests pass");
         expect(shutdown).not.toHaveBeenCalled();
 
-        // Turn 2: guidance is injected before the agent starts.
+        // Turn 2: guidance is injected before the agent starts. Guidance is kept
+        // in memory until the next turn_end evaluation runs, so it is still
+        // pending here.
         systemPrompt = await runBeforeAgentStart(handlers, ctx, "You are a helpful assistant.");
         expect(systemPrompt).toContain("[Goal guidance]");
         expect(systemPrompt).toContain("tests pass");
-        expect(getPendingGuidance("goal-integration-session")).toBeUndefined();
+        expect(getPendingGuidance("goal-integration-session")).toContain("tests pass");
 
         // Agent acts and reports the success keyword (via tool result text).
         await runTurnEnd(handlers, ctx, 2, "The test run finished.", [makeToolResult("All tests pass")]);
+
+        // After turn_end evaluation the previous guidance is cleared (and no new
+        // guidance is set because the goal was met).
+        expect(getPendingGuidance("goal-integration-session")).toBeUndefined();
 
         const finalState = getGoal("goal-integration-session")!;
         expect(finalState.status).toBe("met");

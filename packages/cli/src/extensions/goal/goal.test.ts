@@ -180,6 +180,36 @@ describe("goal state", () => {
         expect(restored?.turnCount).toBe(2);
     });
 
+    test("cleanupStaleGoals removes stopped goals older than 24 hours", () => {
+        resetSession("session-old");
+        resetSession("session-new");
+        const oldState = setGoal(
+            "session-old",
+            { description: "old", evaluator: "keyword", successKeywords: ["done"] },
+            {},
+            { appendEntry: fakeAppendEntry },
+        );
+        // Simulate the goal being met more than 24 hours ago.
+        recordEvaluation("session-old", {
+            turnIndex: 1,
+            verdict: "met",
+            reason: "done",
+            timestamp: Date.now(),
+        }, { appendEntry: fakeAppendEntry });
+        const stale = getGoal("session-old")!;
+        stale.stoppedAt = Date.now() - 25 * 60 * 60 * 1000;
+
+        setGoal(
+            "session-new",
+            { description: "new", evaluator: "keyword", successKeywords: ["done"] },
+            {},
+            { appendEntry: fakeAppendEntry },
+        );
+
+        expect(getGoal("session-old")).toBeUndefined();
+        expect(getGoal("session-new")).toBeDefined();
+    });
+
     test("formatGoalStatus renders budgets", () => {
         resetSession("session-1");
         const state = makeGoal();
@@ -274,6 +304,31 @@ describe("buildTranscript", () => {
         expect(transcript.startsWith("...truncated...")).toBe(true);
         expect(transcript).toContain("end");
         expect(transcript).not.toContain(longText);
+    });
+
+    test("redacts common env-var secrets from transcript", () => {
+        const transcript = buildTranscript([
+            {
+                type: "message",
+                message: {
+                    role: "toolResult",
+                    toolCallId: "t1",
+                    toolName: "bash",
+                    content: [{ type: "text", text: "export PIZZAPI_AUTH_TOKEN=abc123\nOPENAI_API_KEY: sk-secret\nANTHROPIC_API_KEY=other" }],
+                    isError: false,
+                    timestamp: 1,
+                },
+                id: "1",
+                parentId: null,
+                timestamp: "1",
+            },
+        ] as any[], 1000);
+        expect(transcript).toContain("PIZZAPI_AUTH_TOKEN=[REDACTED]");
+        expect(transcript).toContain("OPENAI_API_KEY:[REDACTED]");
+        expect(transcript).toContain("ANTHROPIC_API_KEY=[REDACTED]");
+        expect(transcript).not.toContain("abc123");
+        expect(transcript).not.toContain("sk-secret");
+        expect(transcript).not.toContain("other");
     });
 });
 
@@ -600,7 +655,35 @@ describe("goalExtension event wiring", () => {
         expect(getPendingGuidance("session-1")).toContain("pass");
     });
 
-    test("before_agent_start injects pending guidance into system prompt", async () => {
+    test("turn_end clears previous guidance after evaluation", async () => {
+        resetSession("session-1");
+        const { pi, handlers } = createFakePi();
+        const ctx = createFakeCtx();
+
+        goalExtension(pi);
+        setGoal(
+            "session-1",
+            { description: "tests pass", evaluator: "keyword", successKeywords: ["pass"] },
+            {},
+            pi,
+        );
+        setPendingGuidance("session-1", "previous guidance");
+
+        const turnHandlers = handlers.get("turn_end") ?? [];
+        for (const handler of turnHandlers) {
+            await handler({
+                type: "turn_end",
+                turnIndex: 1,
+                message: makeAssistantMessage("Still failing"),
+                toolResults: [],
+            } as TurnEndEvent, ctx);
+        }
+
+        expect(getPendingGuidance("session-1")).toContain("pass");
+        expect(getPendingGuidance("session-1")).not.toContain("previous guidance");
+    });
+
+    test("before_agent_start injects pending guidance into system prompt without clearing it", async () => {
         resetSession("session-1");
         setPendingGuidance("session-1", "add more tests");
 
@@ -621,7 +704,7 @@ describe("goalExtension event wiring", () => {
 
         expect(result?.systemPrompt).toContain("[Goal guidance]");
         expect(result?.systemPrompt).toContain("add more tests");
-        expect(getPendingGuidance("session-1")).toBeUndefined();
+        expect(getPendingGuidance("session-1")).toBe("add more tests");
     });
 
     test("turn_end budget exhaustion warns but does not stop session", async () => {

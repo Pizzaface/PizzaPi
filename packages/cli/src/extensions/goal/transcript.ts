@@ -99,6 +99,13 @@ export function extractLatestTurnText(payload: {
 /**
  * Build a compact transcript from session message entries.
  *
+ * ⚠️ PRIVACY WARNING: this transcript contains the full text of the session
+ * (user messages, assistant replies, and tool outputs) and is sent to the
+ * configured evaluator LLM. Do not include secrets, credentials, or other
+ * sensitive data in goal conditions or in messages you expect to remain private.
+ * A best-effort regex redacts common env-var-style secrets, but it is not a
+ * guarantee. Review the content before enabling LLM-based evaluation.
+ *
  * The transcript includes user, assistant, and tool-result messages as plain
  * text. It is capped to `maxChars` (default 60,000) to keep evaluator costs
  * bounded; older content is truncated from the front so the latest turns are
@@ -129,6 +136,13 @@ export function buildTranscript(entries: SessionEntry[], maxChars = TRANSCRIPT_M
     }
 
     let transcript = lines.join("\n\n");
+
+    // Best-effort redaction of common env-var secrets before sending to the
+    // evaluator. This is a safety net, not a replacement for avoiding secrets
+    // in session text. Values are replaced with [REDACTED] while preserving the
+    // key and separator so the transcript structure stays intact.
+    transcript = redactEnvVarSecrets(transcript);
+
     if (transcript.length > maxChars) {
         transcript = transcript.slice(-maxChars);
         const firstNewline = transcript.indexOf("\n");
@@ -139,4 +153,37 @@ export function buildTranscript(entries: SessionEntry[], maxChars = TRANSCRIPT_M
     }
 
     return transcript;
+}
+
+/** Known secret-looking environment variable names to redact from transcripts. */
+const REDACTED_ENV_VARS = [
+    "PIZZAPI_AUTH_TOKEN",
+    "PIZZAPI_API_KEY",
+    "PI_API_KEY",
+    "PI_AUTH_TOKEN",
+    "OPENAI_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "GOOGLE_API_KEY",
+    "GROQ_API_KEY",
+    "COHERE_API_KEY",
+    "MISTRAL_API_KEY",
+    "OPENROUTER_API_KEY",
+    "GITHUB_TOKEN",
+    "GITLAB_TOKEN",
+    "DOCKER_TOKEN",
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "AZURE_OPENAI_API_KEY",
+].join("|");
+
+/**
+ * Redact values that follow common env-var patterns (KEY=value, KEY: value,
+ * "KEY": "value", export KEY=value). Keeps the key and separator intact.
+ */
+function redactEnvVarSecrets(transcript: string): string {
+    const pattern = new RegExp(
+        `\\b(${REDACTED_ENV_VARS})\\b\\s*([:=])\\s*[^\\s\\n]+`,
+        "g",
+    );
+    return transcript.replace(pattern, "$1$2[REDACTED]");
 }
