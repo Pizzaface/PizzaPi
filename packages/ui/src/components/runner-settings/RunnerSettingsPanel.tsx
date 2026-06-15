@@ -12,6 +12,7 @@ const ToolSearchSettings = React.lazy(() => import("./ToolSearchSettings"));
 const EnvVarsSettings = React.lazy(() => import("./EnvVarsSettings"));
 const SystemPromptSettings = React.lazy(() => import("./SystemPromptSettings"));
 const TuiPrefsSettings = React.lazy(() => import("./TuiPrefsSettings"));
+const FastModelSettings = React.lazy(() => import("./FastModelSettings"));
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -21,7 +22,8 @@ export type SettingsSection =
     | "toolSearch"
     | "envVars"
     | "systemPrompt"
-    | "tuiPreferences";
+    | "tuiPreferences"
+    | "goal";
 
 export interface RunnerSettingsPanelProps {
     runnerId: string;
@@ -44,6 +46,7 @@ export interface SectionProps {
 
 const SETTINGS_TABS: { key: SettingsSection; label: string }[] = [
     { key: "models", label: "Models" },
+    { key: "goal", label: "Fast Model" },
     { key: "webSearch", label: "Web Search" },
     { key: "toolSearch", label: "Tool Search" },
     { key: "envVars", label: "Env Vars" },
@@ -148,6 +151,9 @@ export function RunnerSettingsPanel({ runnerId }: RunnerSettingsPanelProps) {
     switch (activeSection) {
         case "models":
             content = <ModelsSettings {...sectionProps} />;
+            break;
+        case "goal":
+            content = <FastModelSettings {...sectionProps} />;
             break;
         case "webSearch":
             content = <WebSearchSettings {...sectionProps} />;
