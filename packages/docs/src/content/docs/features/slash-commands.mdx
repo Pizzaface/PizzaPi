@@ -83,6 +83,7 @@ If a sub-command requires an argument (like `/mcp disable`), selecting it fills 
 | Command | Description |
 |---------|-------------|
 | `/name <name>` | Set a display name for the current session, e.g. `/name auth-refactor`. |
+| `/goal "{condition}" [flags]` | Set a success condition and optional budget for the session. Flags: `--max-turns`, `--max-tokens`, `--max-cost`, `--evaluator keyword|llm`, `--keyword {word}`. The session stops automatically when the goal is met or a budget is exhausted. |
 | `/copy` | Copy the last assistant message to your clipboard. |
 | `/export [file]` | Export the current session to an HTML file. |
 | `/share` | Upload as a private GitHub gist with a shareable HTML link. |

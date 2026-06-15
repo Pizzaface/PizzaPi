@@ -9,6 +9,7 @@ import { restartExtension } from "./restart.js";
 import { setSessionNameExtension } from "./set-session-name.js";
 import { spawnSessionExtension } from "./spawn-session.js";
 import { updateTodoExtension } from "./update-todo.js";
+import { goalExtension } from "./goal/index.js";
 import { createClaudePluginExtension } from "./claude-plugins.js";
 import { subagentExtension } from "./subagent.js";
 import { tunnelToolsExtension } from "./tunnel-tools.js";
@@ -66,6 +67,7 @@ export function buildPizzaPiExtensionFactories(options: BuildExtensionFactoriesO
     factories.push(named(ollamaWebToolsExtension, "ollama-web-tools"));
 
     factories.push(
+        named(goalExtension, "goal"),
         named(restartExtension, "restart"),
         named(setSessionNameExtension, "session-name"),
         named(updateTodoExtension, "todo"),

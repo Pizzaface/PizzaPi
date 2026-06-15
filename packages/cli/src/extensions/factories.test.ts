@@ -19,6 +19,7 @@ import { planModeToggleExtension } from "./plan-mode/index.js";
 import { triggersExtension } from "./triggers/extension.js";
 import { sandboxEventsExtension } from "./sandbox-events.js";
 import { pizzapiTitleExtension } from "./pizzapi-title.js";
+import { goalExtension } from "./goal/index.js";
 import { initialPromptExtension } from "./initial-prompt.js";
 import { pizzapiHeaderExtension } from "./pizzapi-header.js";
 import { toolSearchExtension } from "./tool-search.js";
@@ -32,6 +33,7 @@ const CORE_EXTENSIONS: ExtensionFactory[] = [
     mcpExtension,
     toolSearchExtension,  // Must be after MCP to see registered MCP tools
     ollamaWebToolsExtension,
+    goalExtension,
     restartExtension,
     setSessionNameExtension,
     updateTodoExtension,

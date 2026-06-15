@@ -29,6 +29,7 @@ The following commands are always available in the chat input:
 | `/effort` or `/cycle_effort` | Cycle through reasoning effort levels (extended thinking). |
 | `/compact [instructions]` | Compact the context window. Optionally provides custom instructions for what to preserve. Shows a spinner while compacting. |
 | `/name <name>` | Set the session display name shown in the sidebar. |
+| `/goal "{condition}" [flags]` | Set a success condition and optional budget (`--max-turns`, `--max-tokens`, `--max-cost`). The session stops when the goal is met or a budget runs out. |
 | `/copy` | Copy the last assistant message to clipboard. |
 | `/stop` | Abort the currently running agent generation. |
 | `/restart` | Restart the underlying CLI process — useful if the agent is stuck or needs a fresh start. |
