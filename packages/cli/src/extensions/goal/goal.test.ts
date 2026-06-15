@@ -70,9 +70,10 @@ describe("parseGoalArgs", () => {
         expect(parsed.statusOnly).toBe(true);
     });
 
-    test("treats /goal clear as clear", () => {
-        const parsed = parseGoalArgs("clear");
+    test.each([["clear"], ["stop"], ["off"], ["cancel"], ["reset"], ["none"]])("treats /goal %s as clear", (alias) => {
+        const parsed = parseGoalArgs(alias);
         expect(parsed.clear).toBe(true);
+        expect(parsed.statusOnly).toBe(false);
     });
 
     test("rejects unknown flags", () => {
