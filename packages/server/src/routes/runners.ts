@@ -31,6 +31,7 @@ import { requireSession, validateApiKey } from "../middleware.js";
 import { deleteRecentFolder, getRecentFolders, recordRecentFolder } from "../runner-recent-folders.js";
 import { getHiddenModels } from "../user-hidden-models.js";
 import { cwdMatchesRoots } from "../security.js";
+import { dirname, basename } from "node:path";
 import { isValidSkillName } from "../validation.js";
 import { parseJsonArray } from "./utils.js";
 import { isHiddenModel } from "./model-guard.js";
@@ -415,6 +416,64 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
         } catch (err) {
             return Response.json(
                 { error: err instanceof Error ? err.message : "Inspect folders failed" },
+                { status: 502 },
+            );
+        }
+    }
+
+    // ── Create worktree from a repo ─────────────────────────────────
+    const worktreeAddMatch = url.pathname.match(/^\/api\/runners\/([^/]+)\/worktrees\/add$/);
+    if (worktreeAddMatch && req.method === "POST") {
+        const identity = await requireSession(req);
+        if (identity instanceof Response) return identity;
+
+        const runnerId = decodeURIComponent(worktreeAddMatch[1]);
+        const runner = await getRunnerData(runnerId);
+        if (!runner) return Response.json({ error: "Runner not found" }, { status: 404 });
+        if (runner.userId !== identity.userId) return Response.json({ error: "Forbidden" }, { status: 403 });
+
+        let body: any = {};
+        try { body = await req.json(); } catch { body = {}; }
+        const cwd = typeof body?.cwd === "string" ? body.cwd.trim() : "";
+        const branch = typeof body?.branch === "string" ? body.branch.trim() : "";
+        let path = typeof body?.path === "string" ? body.path.trim() : "";
+
+        if (!cwd) return Response.json({ error: "Missing cwd" }, { status: 400 });
+        if (!branch) return Response.json({ error: "Missing branch" }, { status: 400 });
+
+        // Enforce workspace roots for the repo origin.
+        const roots = parseJsonArray(runner.roots);
+        if (roots.length > 0 && !cwdMatchesRoots(roots, cwd)) {
+            return Response.json({ error: `Path outside allowed workspace roots: ${cwd}` }, { status: 400 });
+        }
+
+        // Auto-derive a sibling worktree path from the branch when not provided.
+        if (!path) {
+            const parent = dirname(cwd);
+            const repoName = basename(cwd) || "repo";
+            const branchSlug = branch.replace(/\//g, "-");
+            path = `${parent}/${repoName}-${branchSlug}`;
+        }
+
+        // Validate the resolved path as well.
+        if (roots.length > 0 && !cwdMatchesRoots(roots, path)) {
+            return Response.json({ error: `Worktree path outside allowed workspace roots: ${path}` }, { status: 400 });
+        }
+
+        try {
+            const result = await sendRunnerCommand(runnerId, {
+                type: "git_worktree_add",
+                cwd,
+                branch,
+                path,
+            }, 30_000) as any;
+            if (!result.ok) {
+                return Response.json({ error: result.message || "Worktree creation failed" }, { status: 400 });
+            }
+            return Response.json({ ok: true, branch, path });
+        } catch (err) {
+            return Response.json(
+                { error: err instanceof Error ? err.message : "Worktree creation failed" },
                 { status: 502 },
             );
         }

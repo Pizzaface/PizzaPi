@@ -269,6 +269,98 @@ describe("runner folders inspect route", () => {
     });
 });
 
+describe("runner worktree add route", () => {
+    beforeEach(() => {
+        mockRequireSession.mockReset();
+        mockRequireSession.mockReturnValue(Promise.resolve({ userId: "user-1", userName: "TestUser" } as any));
+        mockGetRunnerData.mockReset();
+        mockGetRunnerData.mockReturnValue(Promise.resolve({ userId: "user-1", runnerId: "runner-A" } as any));
+        spyOn(runnerNamespace, "sendRunnerCommand").mockImplementation((_runnerId: string, command: Record<string, unknown>) => {
+            return Promise.resolve({
+                ok: true,
+                branch: command.branch,
+                path: command.path,
+            });
+        });
+    });
+
+    test("POST creates worktree with explicit path", async () => {
+        const [req, url] = makeReq("POST", "/api/runners/runner-A/worktrees/add", {
+            cwd: "/code/repo",
+            branch: "feat/x",
+            path: "/code/repo-feat-x",
+        });
+        const res = await handleRunnersRoute(req, url);
+        expect(res!.status).toBe(200);
+        const body = await res!.json();
+        expect(body.ok).toBe(true);
+        expect(body.branch).toBe("feat/x");
+        expect(body.path).toBe("/code/repo-feat-x");
+        expect(runnerNamespace.sendRunnerCommand).toHaveBeenCalledWith(
+            "runner-A",
+            { type: "git_worktree_add", cwd: "/code/repo", branch: "feat/x", path: "/code/repo-feat-x" },
+            30_000,
+        );
+    });
+
+    test("POST auto-derives worktree path from branch", async () => {
+        const [req, url] = makeReq("POST", "/api/runners/runner-A/worktrees/add", {
+            cwd: "/code/repo",
+            branch: "feature/abc",
+        });
+        const res = await handleRunnersRoute(req, url);
+        expect(res!.status).toBe(200);
+        const body = await res!.json();
+        expect(body.ok).toBe(true);
+        expect(body.path).toBe("/code/repo-feature-abc");
+    });
+
+    test("POST rejects missing cwd or branch", async () => {
+        let [req, url] = makeReq("POST", "/api/runners/runner-A/worktrees/add", { branch: "feat/x" });
+        let res = await handleRunnersRoute(req, url);
+        expect(res!.status).toBe(400);
+        let body = await res!.json();
+        expect(body.error).toBe("Missing cwd");
+
+        [req, url] = makeReq("POST", "/api/runners/runner-A/worktrees/add", { cwd: "/code/repo" });
+        res = await handleRunnersRoute(req, url);
+        expect(res!.status).toBe(400);
+        body = await res!.json();
+        expect(body.error).toBe("Missing branch");
+    });
+
+    test("POST rejects paths outside workspace roots", async () => {
+        mockGetRunnerData.mockReturnValue(Promise.resolve({
+            userId: "user-1",
+            runnerId: "runner-A",
+            roots: JSON.stringify(["/code"]),
+        } as any));
+
+        const [req, url] = makeReq("POST", "/api/runners/runner-A/worktrees/add", {
+            cwd: "/code/repo",
+            branch: "feat/x",
+            path: "/outside/repo-feat-x",
+        });
+        const res = await handleRunnersRoute(req, url);
+        expect(res!.status).toBe(400);
+        const body = await res!.json();
+        expect(body.error).toContain("/outside/repo-feat-x");
+    });
+
+    test("POST returns 502 when runner command fails", async () => {
+        spyOn(runnerNamespace, "sendRunnerCommand").mockRejectedValue(new Error("runner offline"));
+
+        const [req, url] = makeReq("POST", "/api/runners/runner-A/worktrees/add", {
+            cwd: "/code/repo",
+            branch: "feat/x",
+        });
+        const res = await handleRunnersRoute(req, url);
+        expect(res!.status).toBe(502);
+        const body = await res!.json();
+        expect(body.error).toBe("runner offline");
+    });
+});
+
 describe("runner MCP reload route", () => {
     beforeEach(() => {
         mockRequireSession.mockReset();
