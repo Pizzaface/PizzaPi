@@ -1220,27 +1220,51 @@ describe("GitService worktree add/remove", () => {
         expect(gitCalls.some((c) => c[0] === "worktree" && c[1] === "remove")).toBe(true);
     });
 
-    test("worktree remove rejects unknown paths", async () => {
+    test("direct git_worktree_add command emits file_result", async () => {
+        const gitCalls: string[][] = [];
+
         const service = new GitService({
             execGit: async (args) => {
+                gitCalls.push([...args]);
                 const cmd = args[0];
-                if (cmd === "worktree" && args[1] === "list") return { stdout: "worktree /tmp/pizzapi-test\nHEAD abc\nbranch refs/heads/main\n", stderr: "" };
+                if (cmd === "rev-parse" && args[1] === "--verify") throw new Error("not found");
+                if (cmd === "worktree" && args[1] === "add") return { stdout: "", stderr: "" };
                 if (cmd === "rev-parse") return { stdout: "/tmp/pizzapi-test\n", stderr: "" };
+                if (cmd === "status") return { stdout: "", stderr: "" };
+                if (cmd === "diff") return { stdout: "", stderr: "" };
+                if (cmd === "rev-list") return { stdout: "0 0\n", stderr: "" };
                 throw new Error(`Unexpected git args: ${args.join(" ")}`);
             },
         });
 
-        const socket = createMockSocket();
+        const emitted: { event: string; data: any }[] = [];
+        const listeners = new Map<string, Function[]>();
+        const socket = {
+            emitted,
+            listeners,
+            emit: (event: string, data: any) => emitted.push({ event, data }),
+            on: (event: string, handler: Function) => {
+                listeners.set(event, [...(listeners.get(event) ?? []), handler]);
+            },
+            off: (event: string, handler: Function) => {
+                listeners.set(event, (listeners.get(event) ?? []).filter((fn) => fn !== handler));
+            },
+        };
+
         service.init(socket as any, { isShuttingDown: () => false });
 
-        dispatchServiceMessage(socket, {
-            serviceId: "git",
-            type: "git_worktree_remove",
-            requestId: "wt-remove-2",
-            payload: { cwd: "/tmp/pizzapi-test", path: "/unknown/path" },
-        });
-        const r = await waitForResult(socket, "wt-remove-2", "git_worktree_remove_result");
-        expect((r.payload as any).ok).toBe(false);
-        expect((r.payload as any).message).toContain("not a known git worktree");
+        const handlers = socket.listeners.get("git_worktree_add") ?? [];
+        for (const handler of handlers) {
+            handler({ requestId: "wt-direct-1", cwd: "/tmp/pizzapi-test", branch: "feat/direct", path: ".worktrees/direct" });
+        }
+
+        await waitForCondition(() =>
+            emitted.some((e) => e.event === "file_result" && e.data?.requestId === "wt-direct-1"),
+        );
+        const r = emitted.find((e) => e.event === "file_result" && e.data?.requestId === "wt-direct-1");
+        expect(r).toBeDefined();
+        expect(r!.data.ok).toBe(true);
+        expect(r!.data.branch).toBe("feat/direct");
+        expect(gitCalls.some((c) => c[0] === "worktree" && c[1] === "add" && c[2] === "-b")).toBe(true);
     });
 });

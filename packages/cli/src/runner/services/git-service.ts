@@ -135,6 +135,7 @@ export class GitService implements ServiceHandler {
 
     private _socket: Socket | null = null;
     private _onServiceMessage: ((envelope: ServiceEnvelope) => void) | null = null;
+    private _onGitWorktreeAddDirect: ((data: any) => void) | null = null;
     private _isShuttingDown: () => boolean = () => false;
     private readonly _execGit: GitExec;
     private readonly _watchFs: WatchFs;
@@ -246,11 +247,37 @@ export class GitService implements ServiceHandler {
         };
 
         (socket as any).on("service_message", this._onServiceMessage);
+
+        // Direct "git_worktree_add" handler for the server REST API. The git
+        // panel uses the service_message envelope; the New Session wizard uses
+        // the direct request/response runner command channel.
+        this._onGitWorktreeAddDirect = async (data: any) => {
+            if (isShuttingDown()) return;
+            const requestId = data.requestId;
+            if (typeof data.cwd !== "string" || !data.cwd) {
+                (socket as any).emit("file_result", { requestId, ok: false, message: "Missing cwd" });
+                return;
+            }
+            if (!isCwdAllowed(data.cwd)) {
+                (socket as any).emit("file_result", { requestId, ok: false, message: "Path outside allowed roots" });
+                return;
+            }
+            const cwd = data.cwd;
+
+            const branch = typeof data.branch === "string" ? data.branch.trim() : "";
+            const path = typeof data.path === "string" ? data.path.trim() : "";
+            const result = await this.performWorktreeAdd(cwd, branch, path, { emitOnBusy: false });
+            (socket as any).emit("file_result", { requestId, ...result });
+        };
+        (socket as any).on("git_worktree_add", this._onGitWorktreeAddDirect);
     }
 
     dispose(): void {
         if (this._socket && this._onServiceMessage) {
             (this._socket as any).off("service_message", this._onServiceMessage);
+        }
+        if (this._socket && this._onGitWorktreeAddDirect) {
+            (this._socket as any).off("git_worktree_add", this._onGitWorktreeAddDirect);
         }
         for (const cwd of this._repoWatchers.keys()) {
             this.stopWatchingRepo(cwd);
@@ -300,7 +327,7 @@ export class GitService implements ServiceHandler {
         mutationName: string,
         requestId?: string,
         sessionId?: string,
-        { waitMs = 5000 }: { waitMs?: number } = {},
+        { waitMs = 5000, emitOnBusy = true }: { waitMs?: number; emitOnBusy?: boolean } = {},
     ): Promise<{ key: string; token: string } | null> {
         const key = this._cwdRepoRoot.get(cwd) ?? await this.resolveRepoRoot(cwd);
         // Cache for future calls
@@ -311,11 +338,13 @@ export class GitService implements ServiceHandler {
         while (this._activeRepoMutations.has(key)) {
             if (this._now() >= deadline) {
                 const activeMutation = this._activeRepoMutations.get(key) ?? "unknown";
-                this.emit(type, {
-                    ok: false,
-                    reason: "busy",
-                    message: `Another git operation (${activeMutation}) is still running after ${waitMs / 1000}s. Try again.`,
-                }, requestId, sessionId);
+                if (emitOnBusy) {
+                    this.emit(type, {
+                        ok: false,
+                        reason: "busy",
+                        message: `Another git operation (${activeMutation}) is still running after ${waitMs / 1000}s. Try again.`,
+                    }, requestId, sessionId);
+                }
                 return null;
             }
             await new Promise<void>((resolve) => this._setTimeout(resolve, 50));
@@ -1686,35 +1715,35 @@ export class GitService implements ServiceHandler {
 
     // ── git worktree add/remove ───────────────────────────────────────────
 
-    private async handleWorktreeAdd(
-        payload: Record<string, unknown>,
-        requestId?: string,
-        sessionId?: string,
-    ): Promise<void> {
-        const cwd = this.validateCwd(payload.cwd, "git_worktree_add_result", requestId, sessionId);
-        if (!cwd) return;
-
-        const branch = typeof payload.branch === "string" ? payload.branch.trim() : "";
-        const path = typeof payload.path === "string" ? payload.path.trim() : "";
-
+    /**
+     * Shared implementation for creating a git worktree.
+     *
+     * Used by both the service_message envelope (git panel) and the direct
+     * "git_worktree_add" runner command (New Session wizard REST API).
+     */
+    private async performWorktreeAdd(
+        cwd: string,
+        branch: string,
+        path: string,
+        { emitOnBusy = true }: { emitOnBusy?: boolean } = {},
+    ): Promise<{ ok: true; branch: string; path: string } | { ok: false; message: string; reason?: string }> {
         if (!branch || !isValidBranchName(branch)) {
-            this.emitError("git_worktree_add_result", "Invalid branch name", requestId, sessionId);
-            return;
+            return { ok: false, message: "Invalid branch name" };
         }
         if (!path) {
-            this.emitError("git_worktree_add_result", "Missing worktree path", requestId, sessionId);
-            return;
+            return { ok: false, message: "Missing worktree path" };
         }
 
         // Validate the resolved worktree path is within allowed roots
         const resolvedPath = path.startsWith("/") ? path : join(cwd, path);
         if (!isCwdAllowed(resolvedPath)) {
-            this.emitError("git_worktree_add_result", "Worktree path outside allowed roots", requestId, sessionId);
-            return;
+            return { ok: false, message: "Worktree path outside allowed roots" };
         }
 
-        const mutation = await this.beginRepoMutation(cwd, "git_worktree_add_result", "worktree-add", requestId, sessionId);
-        if (!mutation) return;
+        const mutation = await this.beginRepoMutation(cwd, "git_worktree_add_result", "worktree-add", undefined, undefined, { emitOnBusy });
+        if (!mutation) {
+            return { ok: false, message: "Another git operation is still running", reason: "busy" };
+        }
 
         try {
             // Use -b to create a new branch at the worktree. If the branch already
@@ -1732,16 +1761,26 @@ export class GitService implements ServiceHandler {
                 : ["worktree", "add", "-b", branch, "--", path];
             await this._execGit(args, { cwd, timeout: 30000 });
             await this.invalidateStatusCacheFamily(cwd);
-            this.emit("git_worktree_add_result", {
-                ok: true,
-                branch,
-                path,
-            }, requestId, sessionId);
+            return { ok: true, branch, path };
         } catch (err) {
-            this.emitError("git_worktree_add_result", err instanceof Error ? err.message : String(err), requestId, sessionId);
+            return { ok: false, message: err instanceof Error ? err.message : String(err) };
         } finally {
             this.endRepoMutation(mutation);
         }
+    }
+
+    private async handleWorktreeAdd(
+        payload: Record<string, unknown>,
+        requestId?: string,
+        sessionId?: string,
+    ): Promise<void> {
+        const cwd = this.validateCwd(payload.cwd, "git_worktree_add_result", requestId, sessionId);
+        if (!cwd) return;
+
+        const branch = typeof payload.branch === "string" ? payload.branch.trim() : "";
+        const path = typeof payload.path === "string" ? payload.path.trim() : "";
+        const result = await this.performWorktreeAdd(cwd, branch, path, { emitOnBusy: true });
+        this.emit("git_worktree_add_result", result, requestId, sessionId);
     }
 
     private async handleWorktreeRemove(
