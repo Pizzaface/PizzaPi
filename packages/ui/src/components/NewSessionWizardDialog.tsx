@@ -7,11 +7,12 @@
  */
 import * as React from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { FolderOpen, FolderSearch, Loader2, X, ChevronLeft, Monitor } from "lucide-react";
+import { FolderOpen, FolderSearch, GitBranch, Loader2, X, ChevronLeft, Monitor } from "lucide-react";
 import { SiApple, SiLinux } from "react-icons/si";
 import { cn } from "@/lib/utils";
 import { formatPathTail } from "@/lib/path";
 import { filterFolders } from "@/lib/filterFolders";
+import { buildFolderMetaMap, formatWorktreeLabel, type FolderGitMetadata } from "@/lib/gitFolderMeta";
 import { FolderBrowser } from "@/components/FolderBrowser";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -127,6 +128,11 @@ export function NewSessionWizardDialog({
     const [recentFoldersLoading, setRecentFoldersLoading] = React.useState(false);
     const [recentFoldersError, setRecentFoldersError] = React.useState<string | null>(null);
 
+    // Per-folder git metadata (populated after recent folders load)
+    const [folderMeta, setFolderMeta] = React.useState<Map<string, FolderGitMetadata>>(new Map());
+    const [folderMetaLoading, setFolderMetaLoading] = React.useState(false);
+    const [folderMetaError, setFolderMetaError] = React.useState<string | null>(null);
+
     // Folder browser mode
     const [browsing, setBrowsing] = React.useState(false);
 
@@ -134,6 +140,12 @@ export function NewSessionWizardDialog({
     const filteredFolders = React.useMemo(
         () => filterFolders(recentFolders, cwd),
         [recentFolders, cwd],
+    );
+
+    // Set of all recent paths, used to decide whether to show "worktree of X" labels
+    const recentPaths = React.useMemo(
+        () => new Set(recentFolders),
+        [recentFolders],
     );
 
     // Virtualizer
@@ -156,6 +168,8 @@ export function NewSessionWizardDialog({
         setSpawnError(null);
         setDisconnectedMsg(null);
         setRecentFolders([]);
+        setFolderMeta(new Map());
+        setFolderMetaError(null);
         setBrowsing(false);
     }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -208,10 +222,49 @@ export function NewSessionWizardDialog({
                 setSelectedRunnerId(null);
                 setStep("runner");
                 setRecentFolders([]);
+                setFolderMeta(new Map());
                 setDisconnectedMsg("Runner disconnected. Please select another.");
             }
         }
     }, [runners, runnersLoading, open, selectedRunnerId, step, onOpenChange]);
+
+    // Fetch git metadata for the recent folders list
+    React.useEffect(() => {
+        if (!open || step !== "folder" || !selectedRunnerId || recentFolders.length === 0) return;
+
+        let cancelled = false;
+        setFolderMetaLoading(true);
+        setFolderMetaError(null);
+
+        fetch(`/api/runners/${encodeURIComponent(selectedRunnerId)}/folders/inspect`, {
+            method: "POST",
+            credentials: "include",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ paths: recentFolders }),
+        })
+            .then((res) => {
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                return res.json();
+            })
+            .then((body: any) => {
+                if (cancelled) return;
+                const folders = Array.isArray(body?.folders)
+                    ? (body.folders as FolderGitMetadata[])
+                    : [];
+                setFolderMeta(buildFolderMetaMap(folders));
+            })
+            .catch(() => {
+                if (cancelled) return;
+                setFolderMetaError("Couldn't load git info.");
+            })
+            .finally(() => {
+                if (!cancelled) setFolderMetaLoading(false);
+            });
+
+        return () => {
+            cancelled = true;
+        };
+    }, [open, step, selectedRunnerId, recentFolders]);
 
     // ── Handlers ─────────────────────────────────────────────────────────
 
@@ -428,14 +481,22 @@ export function NewSessionWizardDialog({
                         )}
                         {!browsing && !recentFoldersLoading && !recentFoldersError && recentFolders.length > 0 && (
                             <div className="flex flex-col gap-1">
-                                <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-                                    Recent projects
-                                    {cwd.trim() && filteredFolders.length !== recentFolders.length && (
-                                        <span className="normal-case tracking-normal ml-1 font-normal">
-                                            ({filteredFolders.length} of {recentFolders.length})
-                                        </span>
+                                <div className="flex items-center gap-2">
+                                    <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                                        Recent projects
+                                        {cwd.trim() && filteredFolders.length !== recentFolders.length && (
+                                            <span className="normal-case tracking-normal ml-1 font-normal">
+                                                ({filteredFolders.length} of {recentFolders.length})
+                                            </span>
+                                        )}
+                                    </p>
+                                    {folderMetaLoading && (
+                                        <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />
                                     )}
-                                </p>
+                                </div>
+                                {folderMetaError && (
+                                    <p className="text-xs text-destructive">{folderMetaError}</p>
+                                )}
                                 {/* Virtualized list */}
                                 <div
                                     ref={listRef}
@@ -459,6 +520,8 @@ export function NewSessionWizardDialog({
                                                     folder.split("/").filter(Boolean).pop() || folder;
                                                 const tail = formatPathTail(folder, 2);
                                                 const isSelected = cwd === folder;
+                                                const meta = folderMeta.get(folder);
+                                                const worktreeLabel = meta ? formatWorktreeLabel(meta, recentPaths) : null;
                                                 return (
                                                     <div
                                                         key={folder}
@@ -493,6 +556,26 @@ export function NewSessionWizardDialog({
                                                                 </span>
                                                             )}
                                                         </button>
+
+                                                        {meta?.isGit && meta.branch && (
+                                                            <span
+                                                                className="flex items-center gap-1 text-xs text-muted-foreground flex-shrink-0"
+                                                                title={`Branch: ${meta.branch}`}
+                                                            >
+                                                                <GitBranch className="h-3 w-3 flex-shrink-0" />
+                                                                <span className="truncate max-w-[80px]">{meta.branch}</span>
+                                                            </span>
+                                                        )}
+
+                                                        {worktreeLabel && (
+                                                            <span
+                                                                className="text-xs text-muted-foreground flex-shrink-0 truncate max-w-[120px]"
+                                                                title={worktreeLabel}
+                                                            >
+                                                                {worktreeLabel}
+                                                            </span>
+                                                        )}
+
                                                         <button
                                                             type="button"
                                                             onClick={() => void handleRemoveRecent(folder)}
