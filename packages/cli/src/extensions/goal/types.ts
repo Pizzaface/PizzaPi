@@ -150,6 +150,9 @@ export interface GoalEvaluationContext {
     /** Plain-text summary of the latest assistant message and tool results. */
     latestTurnText: string;
 
+    /** Compact conversation transcript used by the LLM evaluator. */
+    transcript: string;
+
     /** All prior evaluator feedback for this goal. */
     history: GoalEvaluatorFeedback[];
 

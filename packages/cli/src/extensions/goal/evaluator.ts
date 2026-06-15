@@ -1,54 +1,209 @@
 /**
  * Goal evaluator implementations.
  *
- * This module defines the evaluator interface and ships a deterministic
- * keyword evaluator. The LLM evaluator is intentionally a stub: wiring a
- * side-call to a model requires provider-specific plumbing that is out of
- * scope for the initial interface design.
+ * This module defines the evaluator interface and ships two implementations:
+ *
+ * - `keywordGoalEvaluator`: fast, local keyword check.
+ * - `createLlmGoalEvaluator(...)`: sends a compact transcript + goal to a
+ *   small, fast model (default Anthropic Haiku) and parses a yes/no decision.
  */
+import type {
+    AssistantMessage,
+    Context,
+    Model,
+    SimpleStreamOptions,
+} from "@earendil-works/pi-ai";
+import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
 import type {
     GoalEvaluationContext,
     GoalEvaluator,
     GoalEvaluatorFeedback,
     GoalState,
+    GoalVerdict,
 } from "./types.js";
 
-function buildEvaluatorMessage(state: GoalState, context: GoalEvaluationContext): string {
+export const DEFAULT_EVALUATOR_MAX_TOKENS = 512;
+
+/**
+ * Default fallback model identifiers for the LLM evaluator, ordered by
+ * preference. Anthropic Haiku is the preferred cheap default; OpenAI mini
+ * models are fallbacks for non-Anthropic setups.
+ */
+export const DEFAULT_EVALUATOR_MODEL_IDS = [
+    "claude-3-5-haiku-20241022",
+    "claude-3-5-haiku-latest",
+    "claude-haiku-4-5",
+    "claude-3-haiku-20240307",
+    "gpt-4o-mini",
+    "gpt-4.1-mini",
+];
+
+function buildEvaluatorPrompt(state: GoalState, context: GoalEvaluationContext): string {
+    const budgetParts: string[] = [];
+    if (state.budget.maxTurns !== undefined) budgetParts.push(`turns ≤ ${state.budget.maxTurns}`);
+    if (state.budget.maxTokens !== undefined) budgetParts.push(`tokens ≤ ${state.budget.maxTokens.toLocaleString()}`);
+    if (state.budget.maxCost !== undefined) budgetParts.push(`cost ≤ $${state.budget.maxCost.toFixed(2)}`);
+
     return [
+        "You are a goal evaluator. Given the session goal and conversation transcript, decide whether the goal has been met.",
+        "",
         `Goal: ${state.condition.description}`,
+        budgetParts.length ? `Budget: ${budgetParts.join(", ")}` : "Budget: none",
         `Turns so far: ${context.turnCount}`,
-        `Tokens spent so far: ${context.tokenSpend}`,
+        `Tokens spent so far: ${context.tokenSpend.toLocaleString()}`,
+        "",
+        "Conversation so far:",
+        context.transcript || "(no transcript available)",
         "",
         "Latest turn:",
-        context.latestTurnText,
+        context.latestTurnText || "(no turn text available)",
         "",
-        "Has the goal been met? Reply with exactly one of: met, not_met, uncertain.",
-        "Then explain your reasoning on the next line.",
+        'Has the goal been met? Reply in this exact format:\nDecision: yes or no\nReason: short explanation of why the goal is or is not satisfied',
     ].join("\n");
 }
 
 /**
- * Stub LLM evaluator.
+ * Parse a yes/no decision from the evaluator model.
  *
- * In a full implementation this would call a cheap model through the same
- * provider abstraction used by the agent, parse the verdict, and return a
- * feedback object. For now it always reports "not_met" so the integration
- * wiring can be tested without burning API credits.
+ * Accepts "yes" / "no", "met" / "not_met" / "not met" as synonyms. Falls back
+ * to scanning the full response if the first line is ambiguous.
  */
-export const llmGoalEvaluator: GoalEvaluator = {
-    async evaluate(state, context): Promise<GoalEvaluatorFeedback> {
-        const prompt = buildEvaluatorMessage(state, context);
-        // TODO: replace with provider-specific model call.
-        void prompt;
+export function parseLlmVerdict(raw: string): { verdict: GoalVerdict; reason: string } {
+    const text = raw.trim();
+    const lower = text.toLowerCase();
+    const firstLine = text.split("\n")[0] ?? text;
 
-        return {
-            turnIndex: context.turnCount,
-            verdict: "not_met",
-            reason: "LLM evaluator is not yet wired; defaulting to not_met.",
-            timestamp: Date.now(),
-        };
-    },
-};
+    const yes = /\byes\b/i.test(firstLine) || /\bmet\b/i.test(firstLine);
+    const no = /\bno\b/i.test(firstLine) || /\bnot_met\b/i.test(firstLine) || /\bnot met\b/i.test(firstLine);
+
+    if (no) return { verdict: "not_met", reason: extractReason(text) };
+    if (yes) return { verdict: "met", reason: extractReason(text) };
+
+    // Fallback: scan the whole response for a clear yes/no.
+    const fullNo = /\bno\b/i.test(lower) || /\bnot_met\b/i.test(lower) || /\bnot met\b/i.test(lower);
+    const fullYes = /\byes\b/i.test(lower) || /\bmet\b/i.test(lower);
+
+    if (fullNo) return { verdict: "not_met", reason: extractReason(text) };
+    if (fullYes) return { verdict: "met", reason: extractReason(text) };
+
+    return {
+        verdict: "uncertain",
+        reason: `Could not parse a yes/no decision. Model said: ${text.slice(0, 200)}`,
+    };
+}
+
+function extractReason(text: string): string {
+    const withoutDecision = text.replace(/^Decision:.*$/im, "").trim();
+    const reason = withoutDecision.replace(/^Reason:\s*/im, "").trim();
+    return reason || withoutDecision || text;
+}
+
+export function extractAssistantText(message: AssistantMessage): string {
+    return message.content
+        .filter((c): c is { type: "text"; text: string } => c.type === "text" && typeof c.text === "string")
+        .map((c) => c.text)
+        .join("\n")
+        .trim();
+}
+
+export interface LlmEvaluatorDeps {
+    /** Function that performs a simple model completion. */
+    completeSimple: (model: Model<any>, context: Context, options?: SimpleStreamOptions) => Promise<AssistantMessage>;
+    /** The small model to call. */
+    model: Model<any>;
+    /** Optional API key override. */
+    apiKey?: string;
+    /** Maximum output tokens for the evaluator call. */
+    maxTokens?: number;
+    /** Optional abort signal for the model call. */
+    signal?: AbortSignal;
+}
+
+/**
+ * Create an LLM-based goal evaluator backed by a small, fast model.
+ */
+export function createLlmGoalEvaluator(deps: LlmEvaluatorDeps): GoalEvaluator {
+    return {
+        async evaluate(state, context): Promise<GoalEvaluatorFeedback> {
+            const prompt = buildEvaluatorPrompt(state, context);
+            const messages: Context["messages"] = [
+                {
+                    role: "user",
+                    content: prompt,
+                    timestamp: Date.now(),
+                },
+            ];
+            const modelContext: Context = { messages };
+            const options: SimpleStreamOptions = {
+                maxTokens: deps.maxTokens ?? DEFAULT_EVALUATOR_MAX_TOKENS,
+            };
+            if (deps.apiKey) options.apiKey = deps.apiKey;
+            if (deps.signal) options.signal = deps.signal;
+
+            try {
+                const response = await deps.completeSimple(deps.model, modelContext, options);
+                const text = response.errorMessage
+                    ? `Model error: ${response.errorMessage}`
+                    : extractAssistantText(response);
+                const parsed = parseLlmVerdict(text);
+
+                return {
+                    turnIndex: context.turnCount,
+                    verdict: parsed.verdict,
+                    reason: parsed.reason,
+                    tokensUsed: response.usage?.totalTokens,
+                    cost: response.usage?.cost?.total,
+                    model: { provider: deps.model.provider, id: deps.model.id },
+                    timestamp: Date.now(),
+                };
+            } catch (err) {
+                return {
+                    turnIndex: context.turnCount,
+                    verdict: "uncertain",
+                    reason: `Evaluator model call failed: ${err instanceof Error ? err.message : String(err)}`,
+                    timestamp: Date.now(),
+                };
+            }
+        },
+    };
+}
+
+/**
+ * Resolve a small model to use for goal evaluation.
+ *
+ * If a model is configured (as `provider:modelId` or just `modelId`), it is
+ * tried first. Otherwise the default fallback list is searched. Only models
+ * with configured auth are returned.
+ */
+export async function resolveEvaluatorModel(
+    registry: ModelRegistry,
+    configured?: string,
+    fallbackIds = DEFAULT_EVALUATOR_MODEL_IDS,
+): Promise<{ model: Model<any>; apiKey?: string } | undefined> {
+    const all = registry.getAll();
+    let candidates: Model<any>[] = [];
+
+    if (configured) {
+        const [providerPart, idPart] = configured.includes(":") ? configured.split(":") : [undefined, configured];
+        candidates = all.filter((m) => {
+            if (providerPart && m.provider !== providerPart) return false;
+            return m.id === idPart;
+        });
+    }
+
+    if (candidates.length === 0) {
+        candidates = fallbackIds.flatMap((id) => all.filter((m) => m.id === id));
+    }
+
+    for (const model of candidates) {
+        if (!registry.hasConfiguredAuth(model)) continue;
+        const auth = await registry.getApiKeyAndHeaders(model);
+        if (!auth.ok) continue;
+        return { model, apiKey: auth.apiKey };
+    }
+
+    return undefined;
+}
 
 /**
  * Simple deterministic evaluator: if any success keyword appears in the
@@ -73,49 +228,3 @@ export const keywordGoalEvaluator: GoalEvaluator = {
     },
 };
 
-export function chooseEvaluator(kind: "llm" | "keyword"): GoalEvaluator {
-    return kind === "llm" ? llmGoalEvaluator : keywordGoalEvaluator;
-}
-
-/**
- * Extract a plain-text snapshot of the latest turn for evaluation.
- *
- * This is a best-effort concatenation of assistant message text and tool
- * result text. It intentionally avoids depending on upstream message types
- * so it can be unit-tested.
- */
-export function extractLatestTurnText(payload: {
-    assistantText?: string;
-    assistantContent?: string | Array<{ type: string; text?: string }>;
-    toolResults?: Array<{ content?: Array<{ type: string; text?: string }>; text?: string }>;
-}): string {
-    const parts: string[] = [];
-    if (payload.assistantText) {
-        parts.push(payload.assistantText);
-    } else if (payload.assistantContent) {
-        if (typeof payload.assistantContent === "string") {
-            parts.push(payload.assistantContent);
-        } else {
-            const joined = payload.assistantContent
-                .filter((c): c is { type: string; text: string } => c.type === "text" && typeof c.text === "string")
-                .map((c) => c.text)
-                .join("\n");
-            if (joined) parts.push(joined);
-        }
-    }
-
-    for (const tool of payload.toolResults ?? []) {
-        const text = tool.text;
-        if (text) {
-            parts.push(text);
-            continue;
-        }
-        const joined = (tool.content ?? [])
-            .filter((c): c is { type: string; text: string } => c.type === "text" && typeof c.text === "string")
-            .map((c) => c.text)
-            .join("\n");
-        if (joined) parts.push(joined);
-    }
-
-    return parts.join("\n\n");
-}

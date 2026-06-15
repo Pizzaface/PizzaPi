@@ -486,6 +486,16 @@ export interface PizzaPiConfig {
      * Also supports per-server `deferLoading: true` in mcpServers entries.
      */
     toolSearch?: ToolSearchConfig;
+    /**
+     * `/goal` command configuration.
+     */
+    goal?: {
+        /** Model identifier (provider:modelId or just modelId) for the LLM evaluator. Defaults to Anthropic Haiku. */
+        evaluatorModel?: string;
+        /** Maximum output tokens for the evaluator LLM call. Default: 512. */
+        evaluatorMaxTokens?: number;
+    };
+
     /** Extension provider configurations, keyed by provider ID. */
     providers?: Record<string, ProviderConfig>;
 }

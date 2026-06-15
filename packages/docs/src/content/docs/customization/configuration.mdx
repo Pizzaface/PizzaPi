@@ -87,6 +87,14 @@ You can also override any setting with **environment variables**.
       "allowWrite": [".", "/tmp"],
       "denyWrite": [".env.production"]
     }
+  },
+
+  // `/goal` evaluator configuration. The LLM evaluator sends the conversation
+  // transcript and active goal to a small, fast model after each turn.
+  // Defaults to the cheapest available Anthropic Haiku or OpenAI mini model.
+  "goal": {
+    "evaluatorModel": "anthropic:claude-3-5-haiku-20241022",
+    "evaluatorMaxTokens": 512
   }
 }
 ```
@@ -117,6 +125,8 @@ You can also override any setting with **environment variables**.
 | `slowStartupWarning` | `boolean` | `true` | Show warnings when startup takes longer than expected (slow MCP servers, etc.). See [Safe Mode](/PizzaPi/security/sandbox/). |
 | `subagent.maxParallelTasks` | `number` | `8` | Max tasks in a single parallel subagent call. **Global config only.** |
 | `subagent.maxConcurrency` | `number` | `4` | Max concurrent agent sessions running simultaneously. **Global config only.** |
+| `goal.evaluatorModel` | `string` | cheapest available Haiku/mini | Model (`provider:modelId` or `modelId`) used by the `/goal` LLM evaluator. |
+| `goal.evaluatorMaxTokens` | `number` | `512` | Maximum output tokens for each `/goal` evaluator call. |
 | `providerSettings` | `object` | — | Provider-specific settings. See [Web Search](#web-search) below. |
 
 ---

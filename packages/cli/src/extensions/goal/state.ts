@@ -22,6 +22,9 @@ export const GOAL_STATE_CUSTOM_TYPE = "goal_state";
 /** In-memory goal state keyed by session id. */
 const goalsBySessionId = new Map<string, GoalState>();
 
+/** Pending evaluator guidance to inject into the next turn's system prompt. */
+const pendingGuidanceBySessionId = new Map<string, string>();
+
 function generateGoalId(): string {
     return `goal_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -73,6 +76,7 @@ export function setGoal(
     budget: GoalBudget,
     pi: Pick<ExtensionAPI, "appendEntry">,
 ): GoalState {
+    clearPendingGuidance(sessionId);
     const state = createGoalState(condition, budget);
     goalsBySessionId.set(sessionId, state);
     persist(state, pi);
@@ -91,6 +95,7 @@ export function clearGoal(
         return { success: true, message: "No active goal to clear." };
     }
 
+    clearPendingGuidance(sessionId);
     existing.status = "cancelled";
     existing.stoppedAt = Date.now();
     existing.stopReason = "cancelled";
@@ -193,6 +198,28 @@ export function persist(state: GoalState, pi: Pick<ExtensionAPI, "appendEntry">)
  */
 export function resetSession(sessionId: string): void {
     goalsBySessionId.delete(sessionId);
+    pendingGuidanceBySessionId.delete(sessionId);
+}
+
+/**
+ * Store evaluator guidance for the next turn.
+ */
+export function setPendingGuidance(sessionId: string, guidance: string): void {
+    pendingGuidanceBySessionId.set(sessionId, guidance);
+}
+
+/**
+ * Retrieve any pending guidance for the next turn.
+ */
+export function getPendingGuidance(sessionId: string): string | undefined {
+    return pendingGuidanceBySessionId.get(sessionId);
+}
+
+/**
+ * Clear pending guidance (e.g. after applying it or cancelling the goal).
+ */
+export function clearPendingGuidance(sessionId: string): void {
+    pendingGuidanceBySessionId.delete(sessionId);
 }
 
 /**
