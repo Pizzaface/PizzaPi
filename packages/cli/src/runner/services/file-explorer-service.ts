@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { readdir, stat, realpath } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import type { Socket } from "socket.io-client";
 import type { ServiceHandler, ServiceInitOptions } from "../service-handler.js";
 import { isCwdAllowed, getWorkspaceRoots } from "../workspace.js";
@@ -15,6 +15,16 @@ const SENSITIVE_DOTDIRS = new Set([
 
 const execFileAsync = promisify(execFile);
 
+export interface FolderGitMetadata {
+    path: string;
+    isGit: boolean;
+    repoRoot?: string;
+    branch?: string;
+    isWorktree?: boolean;
+    mainRepoPath?: string;
+    error?: string;
+}
+
 export class FileExplorerService implements ServiceHandler {
     readonly id = "file-explorer";
 
@@ -27,6 +37,7 @@ export class FileExplorerService implements ServiceHandler {
     private _onSearchFiles: ((data: any) => void) | null = null;
     private _onReadFile: ((data: any) => void) | null = null;
     private _onBrowseDirectory: ((data: any) => void) | null = null;
+    private _onInspectFolders: ((data: any) => void) | null = null;
 
     init(socket: Socket, { isShuttingDown }: ServiceInitOptions): void {
         this._socket = socket;
@@ -159,6 +170,30 @@ export class FileExplorerService implements ServiceHandler {
         };
         socket.on("browse_directory", this._onBrowseDirectory);
 
+        // inspect_folders — returns git metadata for a batch of absolute paths.
+        // Used by the New Session dialog to identify repos/worktrees in the
+        // recent-folders list before a session is spawned.
+        this._onInspectFolders = async (data: any) => {
+            if (isShuttingDown()) return;
+            const requestId = data.requestId;
+            const rawPaths: unknown[] = Array.isArray(data.paths) ? data.paths : [];
+            const paths = rawPaths.filter((p: unknown): p is string => typeof p === "string" && p.length > 0);
+            if (paths.length === 0) {
+                emitFileResult({ requestId, ok: false, message: "Missing paths" });
+                return;
+            }
+
+            const folders = await Promise.all(paths.map(async (folderPath) => {
+                if (!isCwdAllowed(folderPath)) {
+                    return { path: folderPath, isGit: false, error: "Path outside allowed roots" };
+                }
+                return inspectGitFolder(folderPath);
+            }));
+
+            emitFileResult({ requestId, ok: true, folders });
+        };
+        socket.on("inspect_folders", this._onInspectFolders);
+
         this._onSearchFiles = async (data: any) => {
             if (isShuttingDown()) return;
             const requestId = data.requestId;
@@ -281,11 +316,66 @@ export class FileExplorerService implements ServiceHandler {
             if (this._onSearchFiles) (this._socket as any).off("search_files", this._onSearchFiles);
             if (this._onReadFile) (this._socket as any).off("read_file", this._onReadFile);
             if (this._onBrowseDirectory) (this._socket as any).off("browse_directory", this._onBrowseDirectory);
+            if (this._onInspectFolders) (this._socket as any).off("inspect_folders", this._onInspectFolders);
             this._socket = null;
         }
         this._onListFiles = null;
         this._onSearchFiles = null;
         this._onReadFile = null;
         this._onBrowseDirectory = null;
+        this._onInspectFolders = null;
     }
+}
+
+// ── Git metadata helpers ───────────────────────────────────────────────────
+
+async function inspectGitFolder(folderPath: string): Promise<FolderGitMetadata> {
+    // First check whether this path is inside a git worktree.
+    try {
+        const { stdout } = await execFileAsync("git", ["rev-parse", "--is-inside-work-tree"], {
+            cwd: folderPath,
+            timeout: 5000,
+        });
+        if (stdout.trim() !== "true") {
+            return { path: folderPath, isGit: false };
+        }
+    } catch {
+        return { path: folderPath, isGit: false };
+    }
+
+    const [toplevelResult, branchResult, gitDirResult, gitCommonDirResult] = await Promise.allSettled([
+        execFileAsync("git", ["rev-parse", "--show-toplevel"], { cwd: folderPath, timeout: 5000 }),
+        execFileAsync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: folderPath, timeout: 5000 }),
+        execFileAsync("git", ["rev-parse", "--git-dir"], { cwd: folderPath, timeout: 5000 }),
+        execFileAsync("git", ["rev-parse", "--git-common-dir"], { cwd: folderPath, timeout: 5000 }),
+    ]);
+
+    const repoRoot = toplevelResult.status === "fulfilled"
+        ? toplevelResult.value.stdout.trim()
+        : folderPath;
+    const branch = branchResult.status === "fulfilled"
+        ? branchResult.value.stdout.trim()
+        : "";
+
+    const gitDirRaw = gitDirResult.status === "fulfilled"
+        ? gitDirResult.value.stdout.trim()
+        : "";
+    const gitCommonDirRaw = gitCommonDirResult.status === "fulfilled"
+        ? gitCommonDirResult.value.stdout.trim()
+        : "";
+
+    const gitDir = isAbsolute(gitDirRaw) ? gitDirRaw : resolve(folderPath, gitDirRaw);
+    const gitCommonDir = isAbsolute(gitCommonDirRaw) ? gitCommonDirRaw : resolve(folderPath, gitCommonDirRaw);
+
+    const isWorktree = gitDir !== "" && gitCommonDir !== "" && gitDir !== gitCommonDir;
+    const mainRepoPath = isWorktree ? dirname(gitCommonDir) : repoRoot;
+
+    return {
+        path: folderPath,
+        isGit: true,
+        repoRoot,
+        branch,
+        isWorktree,
+        mainRepoPath,
+    };
 }

@@ -1,8 +1,18 @@
+import { execFileSync } from "node:child_process";
 import { describe, test, expect, beforeEach, afterEach, mock } from "bun:test";
-import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { FileExplorerService } from "./file-explorer-service.js";
+
+let gitAvailable = false;
+try {
+    execFileSync("git", ["--version"], { stdio: "ignore" });
+    gitAvailable = true;
+} catch {
+    gitAvailable = false;
+}
+const testIfGit = gitAvailable ? test : test.skip;
 
 // ── Mock workspace module ──────────────────────────────────────────────────
 // Separate controls so tests can independently configure path access vs roots.
@@ -186,5 +196,115 @@ describe("FileExplorerService — browse_directory", () => {
         service.dispose();
         const after = socket.listeners.get("browse_directory")?.length ?? 0;
         expect(after).toBe(0);
+    });
+});
+
+// ── inspect_folders ────────────────────────────────────────────────────────
+
+describe("FileExplorerService — inspect_folders", () => {
+    let tmpDir: string;
+    let repoRoot: string;
+    let subDir: string;
+    let worktreeDir: string;
+    let plainDir: string;
+    let socket: ReturnType<typeof createFakeSocket>;
+    let service: FileExplorerService;
+
+    beforeEach(() => {
+        if (!gitAvailable) return;
+        mockCwdAllowed = true;
+        mockRoots = [];
+
+        tmpDir = mkdtempSync(join(tmpdir(), "inspect-test-"));
+        repoRoot = join(tmpDir, "repo");
+        subDir = join(repoRoot, "packages", "ui");
+        worktreeDir = join(tmpDir, "wt-fix");
+        plainDir = join(tmpDir, "plain");
+
+        mkdirSync(subDir, { recursive: true });
+        mkdirSync(plainDir, { recursive: true });
+
+        execFileSync("git", ["init", repoRoot]);
+        execFileSync("git", ["-C", repoRoot, "config", "user.email", "test@example.com"]);
+        execFileSync("git", ["-C", repoRoot, "config", "user.name", "Test User"]);
+        writeFileSync(join(repoRoot, "README.md"), "# repo");
+        execFileSync("git", ["-C", repoRoot, "add", "."]);
+        execFileSync("git", ["-C", repoRoot, "commit", "-m", "init"]);
+        execFileSync("git", ["-C", repoRoot, "worktree", "add", "-b", "fix-branch", worktreeDir, "HEAD"]);
+
+        // Resolve symlinks so assertions match git's canonical paths on macOS.
+        repoRoot = realpathSync(repoRoot);
+        subDir = realpathSync(subDir);
+        worktreeDir = realpathSync(worktreeDir);
+        plainDir = realpathSync(plainDir);
+
+        socket = createFakeSocket();
+        service = new FileExplorerService();
+        service.init(socket as any, { isShuttingDown: () => false });
+    });
+
+    afterEach(() => {
+        if (service) service.dispose();
+        if (tmpDir) rmSync(tmpDir, { recursive: true, force: true });
+    });
+
+    function getLastPayload(): any {
+        const msg = socket.serviceMessages().pop();
+        return msg?.payload;
+    }
+
+    function findMeta(path: string) {
+        const payload = getLastPayload();
+        return payload?.folders?.find((f: any) => f.path === path);
+    }
+
+    testIfGit("returns git metadata for repo root, subdir, worktree, and non-repo", async () => {
+        await socket.trigger("inspect_folders", {
+            requestId: "i1",
+            paths: [repoRoot, subDir, worktreeDir, plainDir],
+        });
+
+        const payload = getLastPayload();
+        expect(payload.ok).toBe(true);
+        expect(payload.folders).toHaveLength(4);
+
+        const repoMeta = findMeta(repoRoot);
+        expect(repoMeta.isGit).toBe(true);
+        expect(repoMeta.repoRoot).toBe(repoRoot);
+        expect(repoMeta.branch).toBe("main");
+        expect(repoMeta.isWorktree).toBe(false);
+        expect(repoMeta.mainRepoPath).toBe(repoRoot);
+
+        const subMeta = findMeta(subDir);
+        expect(subMeta.isGit).toBe(true);
+        expect(subMeta.repoRoot).toBe(repoRoot);
+        expect(subMeta.branch).toBe("main");
+        expect(subMeta.isWorktree).toBe(false);
+        expect(subMeta.mainRepoPath).toBe(repoRoot);
+
+        const wtMeta = findMeta(worktreeDir);
+        expect(wtMeta.isGit).toBe(true);
+        expect(wtMeta.repoRoot).toBe(worktreeDir);
+        expect(wtMeta.branch).toBe("fix-branch");
+        expect(wtMeta.isWorktree).toBe(true);
+        expect(wtMeta.mainRepoPath).toBe(repoRoot);
+
+        const plainMeta = findMeta(plainDir);
+        expect(plainMeta.isGit).toBe(false);
+    });
+
+    testIfGit("returns error when no paths are provided", async () => {
+        await socket.trigger("inspect_folders", { requestId: "i2", paths: [] });
+        const payload = getLastPayload();
+        expect(payload.ok).toBe(false);
+        expect(payload.message).toBe("Missing paths");
+    });
+
+    testIfGit("marks disallowed paths with an error and isGit=false", async () => {
+        mockCwdAllowed = false;
+        await socket.trigger("inspect_folders", { requestId: "i3", paths: [repoRoot] });
+        const meta = findMeta(repoRoot);
+        expect(meta.isGit).toBe(false);
+        expect(meta.error).toBe("Path outside allowed roots");
     });
 });
