@@ -281,7 +281,7 @@ describe("/goal multi-turn integration", () => {
         expect(finalState.status).toBe("met");
         expect(finalState.stopReason).toBe("goal_met");
         expect(finalState.turnCount).toBe(2);
-        expect(shutdown).toHaveBeenCalledTimes(1);
+        expect(shutdown).not.toHaveBeenCalled();
         expect(messages.some((m) => m.content.includes("Goal met"))).toBe(true);
 
         // Each state change was broadcast (set, update after turn 1, clear after met).
@@ -359,7 +359,7 @@ describe("/goal multi-turn integration", () => {
         expect(finalState.status).toBe("met");
         expect(finalState.stopReason).toBe("goal_met");
         expect(finalState.turnCount).toBe(2);
-        expect(shutdown).toHaveBeenCalledTimes(1);
+        expect(shutdown).not.toHaveBeenCalled();
         expect(messages.some((m) => m.content.includes("Goal met"))).toBe(true);
 
         const broadcasts = events.get("goal:state_changed") ?? [];

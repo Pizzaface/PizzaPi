@@ -543,7 +543,7 @@ describe("goalExtension event wiring", () => {
         }
     });
 
-    test("turn_end keyword goal met stops session", async () => {
+    test("turn_end keyword goal met does not stop session", async () => {
         resetSession("session-1");
         const { pi, handlers, messages } = createFakePi();
         let shutdownCalled = false;
@@ -569,7 +569,7 @@ describe("goalExtension event wiring", () => {
 
         expect(getGoal("session-1")?.status).toBe("met");
         expect(getGoal("session-1")?.stopReason).toBe("goal_met");
-        expect(shutdownCalled).toBe(true);
+        expect(shutdownCalled).toBe(false);
         expect(messages.some((m) => m.content.includes("Goal met"))).toBe(true);
     });
 
@@ -624,7 +624,7 @@ describe("goalExtension event wiring", () => {
         expect(getPendingGuidance("session-1")).toBeUndefined();
     });
 
-    test("turn_end budget exhaustion stops session", async () => {
+    test("turn_end budget exhaustion warns but does not stop session", async () => {
         resetSession("session-1");
         const { pi, handlers, messages } = createFakePi();
         let shutdownCalled = false;
@@ -652,7 +652,7 @@ describe("goalExtension event wiring", () => {
 
         expect(getGoal("session-1")?.status).toBe("failed");
         expect(getGoal("session-1")?.stopReason).toBe("max_turns");
-        expect(shutdownCalled).toBe(true);
+        expect(shutdownCalled).toBe(false);
         expect(messages.some((m) => m.content.includes("budget reached"))).toBe(true);
     });
 
@@ -731,5 +731,34 @@ describe("goalExtension event wiring", () => {
         expect(emitted.length).toBe(1);
         expect((emitted[0] as any).status).toBe("active");
         expect((emitted[0] as any).turnCount).toBe(2);
+    });
+
+    test("getSessionId prefers sessionManager over environment variables", async () => {
+        resetSession("manager-session");
+        resetSession("env-session");
+        const { pi, commands } = createFakePi();
+        const originalEnv = process.env.PIZZAPI_SESSION_ID;
+        process.env.PIZZAPI_SESSION_ID = "env-session";
+
+        const ctx = {
+            cwd: "/tmp/pizzapi-goal-test",
+            sessionManager: { getSessionId: () => "manager-session", getEntries: () => [] },
+            modelRegistry: { getAll: () => [], hasConfiguredAuth: () => false },
+            shutdown: () => {},
+            ui: { setStatus: () => {} },
+        } as unknown as ExtensionCommandContext;
+
+        goalExtension(pi);
+        const goalHandler = commands.get("goal")!;
+        await goalHandler("tests pass --evaluator keyword --keyword pass", ctx);
+
+        expect(getGoal("manager-session")?.condition.description).toBe("tests pass");
+        expect(getGoal("env-session")).toBeUndefined();
+
+        if (originalEnv === undefined) {
+            delete process.env.PIZZAPI_SESSION_ID;
+        } else {
+            process.env.PIZZAPI_SESSION_ID = originalEnv;
+        }
     });
 });

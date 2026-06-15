@@ -62,7 +62,10 @@ import type {
 const log = createLogger("goal");
 
 function getSessionId(ctx: ExtensionContext): string {
-    return process.env.PIZZAPI_SESSION_ID ?? process.env.SESSION_ID ?? ctx.sessionManager.getSessionId() ?? "unknown";
+    // Prefer the live session manager over environment variables to avoid
+    // cross-session state pollution when multiple sessions run in the same
+    // process (e.g. spawned sub-agents or resumed sessions).
+    return ctx.sessionManager.getSessionId() ?? process.env.PIZZAPI_SESSION_ID ?? process.env.SESSION_ID ?? "unknown";
 }
 
 function emitGoalStatusChanged(
@@ -179,10 +182,11 @@ async function runGoalStopCheck(
     if (budgetReason) {
         pi.sendMessage({
             customType: "goal_status",
-            content: `Goal budget reached: ${budgetReason}. Stopping session.`,
+            content: `Goal budget reached: ${budgetReason}. The goal is now inactive; you may continue the session.`,
             display: true,
         });
-        ctx.shutdown();
+        // Do not shutdown the session; budget exhaustion only deactivates the
+        // goal and lets the agent return control to the user naturally.
         return;
     }
 
@@ -257,7 +261,8 @@ async function runGoalStopCheck(
                 display: true,
             });
         }
-        ctx.shutdown();
+        // Never shutdown when the goal is met or a budget is exhausted. The
+        // agent should finish the current turn and return control to the user.
         return;
     }
 
@@ -303,8 +308,8 @@ export const goalExtension: ExtensionFactory = (pi) => {
         return { systemPrompt };
     });
 
-    pi.on("session_shutdown", () => {
-        const sessionId = process.env.PIZZAPI_SESSION_ID ?? process.env.SESSION_ID ?? "unknown";
+    pi.on("session_shutdown", (_event, ctx) => {
+        const sessionId = getSessionId(ctx);
         resetSession(sessionId);
         emitGoalStatusChanged(pi, null);
     });
