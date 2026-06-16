@@ -76,6 +76,20 @@ describe("runPackageCommand", () => {
         expect(code).toBe(0);
     });
 
+    test("update with no flags defaults to extensions-only (no self-update)", async () => {
+        const agentDir = join(tmpDir, "agent");
+        const cwd = join(tmpDir, "project");
+        const code = await runPackageCommand(["update"], cwd, agentDir);
+        expect(code).toBe(0);
+    });
+
+    test("update --extensions updates packages without self-update", async () => {
+        const agentDir = join(tmpDir, "agent");
+        const cwd = join(tmpDir, "project");
+        const code = await runPackageCommand(["update", "--extensions"], cwd, agentDir);
+        expect(code).toBe(0);
+    });
+
     test("list on an empty agent dir reports no packages", async () => {
         const agentDir = join(tmpDir, "agent");
         const cwd = join(tmpDir, "project");

@@ -82,19 +82,47 @@ function printCommandHelp(command: string): void {
     }
 }
 
-function isUpdateSelfOnly(args: string[]): boolean {
-    if (args[0] !== "update") return false;
-    const rest = args.slice(1);
-    if (rest.includes("--self")) return true;
-    const firstPositional = rest.find((a) => !a.startsWith("-"));
-    if (firstPositional === "self" || firstPositional === "pi") return true;
-    return false;
+function printSelfUpdateNote(): void {
+    console.log(`Use ${c.cmd("npm install -g @pizzapi/pizza")} to update the PizzaPi wrapper itself.`);
+    console.log();
 }
 
-function printSelfUpdateNote(): void {
-    console.log(c.dim("pizza update --self updates the upstream pi package."));
-    console.log(`To update the PizzaPi wrapper itself, run ${c.cmd("npm install -g @pizzapi/pizza")}.`);
-    console.log();
+/**
+ * Parse update args to determine if self-update would be attempted.
+ * Returns { includeSelf, argsForUpstream } where argsForUpstream is the
+ * rewritten args with self-update stripped out.
+ */
+function rewriteUpdateArgs(args: string[]): { includeSelf: boolean; argsForUpstream: string[] } {
+    if (args[0] !== "update") {
+        return { includeSelf: false, argsForUpstream: args };
+    }
+
+    const rest = args.slice(1);
+    const hasSelf = rest.includes("--self");
+    const hasExtensions = rest.includes("--extensions");
+    const hasExtensionFlag = rest.some((a, i) => a === "--extension" && i + 1 < rest.length);
+    const firstPositional = rest.find((a) => !a.startsWith("-"));
+    const positionalIsSelf = firstPositional === "self" || firstPositional === "pi";
+
+    // Explicit self-only
+    if (hasSelf && !hasExtensions && !positionalIsSelf && !firstPositional) {
+        return { includeSelf: true, argsForUpstream: args };
+    }
+    if (positionalIsSelf && !hasExtensions) {
+        return { includeSelf: true, argsForUpstream: args };
+    }
+
+    // Explicit extensions-only or specific source — no self
+    if (hasExtensions || hasExtensionFlag) {
+        return { includeSelf: false, argsForUpstream: args };
+    }
+    if (firstPositional && !positionalIsSelf) {
+        return { includeSelf: false, argsForUpstream: args };
+    }
+
+    // Default (no flags): upstream would do "all" (extensions + self).
+    // Rewrite to extensions-only to avoid the self-update failure.
+    return { includeSelf: false, argsForUpstream: ["update", "--extensions", ...rest] };
 }
 
 /**
@@ -121,9 +149,25 @@ export async function runPackageCommand(args: string[], cwd: string, agentDir: s
         return 0;
     }
 
-    if (isUpdateSelfOnly(args)) {
-        printSelfUpdateNote();
-        return 0;
+    // Rewrite update args to skip self-update by default
+    if (args[0] === "update") {
+        const { includeSelf, argsForUpstream } = rewriteUpdateArgs(args);
+        if (includeSelf) {
+            printSelfUpdateNote();
+            return 0;
+        }
+        const wasRewritten = argsForUpstream !== args;
+        try {
+            const handled = await handlePackageCommand(argsForUpstream);
+            if (handled) {
+                if (wasRewritten) printSelfUpdateNote();
+                return Number(process.exitCode ?? 0);
+            }
+            return 1;
+        } catch (err) {
+            console.error(`pizza ${args[0]}: ${err instanceof Error ? err.message : String(err)}`);
+            return 1;
+        }
     }
 
     try {
