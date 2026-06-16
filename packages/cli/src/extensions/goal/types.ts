@@ -106,6 +106,9 @@ export interface GoalState {
     /** When the goal was created. */
     createdAt: number;
 
+    /** Schema version for persisted goal entries. */
+    version?: 1;
+
     /** When the goal stopped, if it has stopped. */
     stoppedAt?: number;
 
@@ -113,25 +116,8 @@ export interface GoalState {
     stopReason?: GoalStopReason;
 
     /** Latest message/tool text snapshot used for evaluation. */
+    // ponytail: runtime-only, not persisted
     lastEvaluatedText?: string;
-}
-
-/**
- * Serializable subset of GoalState persisted in the session file.
- */
-export interface PersistedGoalState {
-    version: 1;
-    id: string;
-    condition: GoalCondition;
-    budget: GoalBudget;
-    status: GoalStatus;
-    turnCount: number;
-    tokenSpend: number;
-    costSpend: number;
-    evaluations: GoalEvaluatorFeedback[];
-    createdAt: number;
-    stoppedAt?: number;
-    stopReason?: GoalStopReason;
 }
 
 /**

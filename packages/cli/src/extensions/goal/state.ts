@@ -15,7 +15,6 @@ import type {
     GoalState,
     GoalStatus,
     GoalStopReason,
-    PersistedGoalState,
 } from "./types.js";
 
 export const GOAL_STATE_CUSTOM_TYPE = "goal_state";
@@ -36,6 +35,7 @@ function generateGoalId(): string {
 function createGoalState(condition: GoalCondition, budget: GoalBudget): GoalState {
     return {
         id: generateGoalId(),
+        version: 1,
         condition,
         budget,
         status: "active",
@@ -44,30 +44,6 @@ function createGoalState(condition: GoalCondition, budget: GoalBudget): GoalStat
         costSpend: 0,
         evaluations: [],
         createdAt: Date.now(),
-    };
-}
-
-function toPersisted(state: GoalState): PersistedGoalState {
-    return {
-        version: 1,
-        id: state.id,
-        condition: state.condition,
-        budget: state.budget,
-        status: state.status,
-        turnCount: state.turnCount,
-        tokenSpend: state.tokenSpend,
-        costSpend: state.costSpend,
-        evaluations: state.evaluations,
-        createdAt: state.createdAt,
-        stoppedAt: state.stoppedAt,
-        stopReason: state.stopReason,
-    };
-}
-
-export function fromPersisted(persisted: PersistedGoalState): GoalState {
-    return {
-        ...persisted,
-        lastEvaluatedText: undefined,
     };
 }
 
@@ -209,7 +185,7 @@ function mapStopReasonToStatus(reason: GoalStopReason): GoalStatus {
  * Persist the current state to the session file.
  */
 export function persist(state: GoalState, pi: Pick<ExtensionAPI, "appendEntry">): void {
-    pi.appendEntry(GOAL_STATE_CUSTOM_TYPE, toPersisted(state));
+    pi.appendEntry(GOAL_STATE_CUSTOM_TYPE, state);
 }
 
 /**
@@ -247,12 +223,12 @@ export function clearPendingGuidance(sessionId: string): void {
  */
 function findLatestGoalState(
     entries: Array<{ type?: string; customType?: string; data?: unknown }>,
-): PersistedGoalState | undefined {
-    let latest: PersistedGoalState | undefined;
+): GoalState | undefined {
+    let latest: GoalState | undefined;
 
     for (const entry of entries) {
         if (entry.type !== "custom" || entry.customType !== GOAL_STATE_CUSTOM_TYPE) continue;
-        const data = entry.data as PersistedGoalState | undefined;
+        const data = entry.data as GoalState | undefined;
         if (data && data.version === 1 && (!latest || (data.createdAt ?? 0) > (latest.createdAt ?? 0))) {
             latest = data;
         }
@@ -275,7 +251,7 @@ export function restoreGoal(
     }
 
     cleanupStaleGoals();
-    const state = fromPersisted(latest);
+    const state = latest;
     goalsBySessionId.set(sessionId, state);
     return state;
 }
@@ -307,7 +283,7 @@ export function getActiveGoalFromEntries(
 ): GoalState | undefined {
     const latest = findLatestGoalState(entries);
     if (!latest || latest.status !== "active") return undefined;
-    return fromPersisted(latest);
+    return latest;
 }
 
 /**

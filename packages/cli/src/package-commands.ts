@@ -21,65 +21,99 @@ function stripCwdFlag(args: string[]): string[] {
     return copy;
 }
 
-function printCommandHelp(command: string): void {
-    const cmd = (s: string) => c.cmd(s);
-    const dim = (s: string) => c.dim(s);
-    const flag = (s: string) => c.flag(s);
+type HelpEntry = {
+    commands: string[];
+    usage: string;
+    description: (c: typeof import("./cli-colors.js").c) => string;
+    options: Array<{ flag: string; desc: string }>;
+    examples?: string[];
+    note?: (c: typeof import("./cli-colors.js").c) => string;
+};
 
-    switch (command) {
-        case "install":
-            console.log(`\n${c.label("Usage:")}\n  ${cmd("pizza install")} ${dim("<source> [-l]")}\n`);
-            console.log(`Install a pi package (extensions, skills, prompts, or themes).\n`);
-            console.log(`${c.label("Options:")}`);
-            console.log(`  ${flag("-l, --local")}     Install into the project-local .pizzapi directory`);
-            console.log(`  ${flag("-a, --approve")}    Trust project-local files for this command`);
-            console.log(`  ${flag("-na, --no-approve")} Ignore project-local files for this command`);
-            console.log(`\n${c.label("Examples:")}`);
-            console.log(`  ${cmd("pizza install npm:@foo/pi-tools")}`);
-            console.log(`  ${cmd("pizza install git:github.com/user/repo")}`);
-            console.log(`  ${cmd("pizza install ./local/path")}`);
-            console.log();
-            return;
-        case "remove":
-        case "uninstall":
-            console.log(`\n${c.label("Usage:")}\n  ${cmd("pizza remove")} ${dim("<source> [-l]")}\n`);
-            console.log(`Remove an installed pi package. Alias: ${cmd("pizza uninstall")}.\n`);
-            console.log(`${c.label("Options:")}`);
-            console.log(`  ${flag("-l, --local")}     Remove from project-local .pizzapi`);
-            console.log(`  ${flag("-a, --approve")}    Trust project-local files for this command`);
-            console.log(`  ${flag("-na, --no-approve")} Ignore project-local files for this command`);
-            console.log();
-            return;
-        case "update":
-            console.log(`\n${c.label("Usage:")}\n  ${cmd("pizza update")} ${dim("[source|self|pi] [--self] [--extensions] [--extension <source>] [-a|-na]")}\n`);
-            console.log(`Update installed pi packages.\n`);
-            console.log(`${c.label("Options:")}`);
-            console.log(`  ${flag("--self")}             Update the upstream pi package only`);
-            console.log(`  ${flag("--extensions")}       Update installed packages only`);
-            console.log(`  ${flag("--extension <source>")} Update a single package`);
-            console.log(`  ${flag("--force")}            Reinstall even if already up to date`);
-            console.log(`  ${flag("-a, --approve")}        Trust project-local files`);
-            console.log(`  ${flag("-na, --no-approve")}     Ignore project-local files`);
-            console.log(`\n${c.accent("Note:")} Use ${cmd("npm install -g @pizzapi/pizza")} to update the PizzaPi wrapper itself.`);
-            console.log();
-            return;
-        case "list":
-            console.log(`\n${c.label("Usage:")}\n  ${cmd("pizza list")} ${dim("[-a|-na]")}\n`);
-            console.log(`List installed pi packages.\n`);
-            console.log(`${c.label("Options:")}`);
-            console.log(`  ${flag("-a, --approve")}    Trust project-local files`);
-            console.log(`  ${flag("-na, --no-approve")} Ignore project-local files`);
-            console.log();
-            return;
-        case "config":
-            console.log(`\n${c.label("Usage:")}\n  ${cmd("pizza config")} ${dim("[-a|-na]")}\n`);
-            console.log(`Interactively enable or disable installed package resources.\n`);
-            console.log(`${c.label("Options:")}`);
-            console.log(`  ${flag("-a, --approve")}    Trust project-local files`);
-            console.log(`  ${flag("-na, --no-approve")} Ignore project-local files`);
-            console.log();
-            return;
+const COMMAND_HELP: HelpEntry[] = [
+    {
+        commands: ["install"],
+        usage: "<source> [-l]",
+        description: () => "Install a pi package (extensions, skills, prompts, or themes).",
+        options: [
+            { flag: "-l, --local", desc: "Install into the project-local .pizzapi directory" },
+            { flag: "-a, --approve", desc: "Trust project-local files for this command" },
+            { flag: "-na, --no-approve", desc: "Ignore project-local files for this command" },
+        ],
+        examples: [
+            "pizza install npm:@foo/pi-tools",
+            "pizza install git:github.com/user/repo",
+            "pizza install ./local/path",
+        ],
+    },
+    {
+        commands: ["remove", "uninstall"],
+        usage: "<source> [-l]",
+        description: (colors) => `Remove an installed pi package. Alias: ${colors.cmd("pizza uninstall")}.`,
+        options: [
+            { flag: "-l, --local", desc: "Remove from project-local .pizzapi" },
+            { flag: "-a, --approve", desc: "Trust project-local files for this command" },
+            { flag: "-na, --no-approve", desc: "Ignore project-local files for this command" },
+        ],
+    },
+    {
+        commands: ["update"],
+        usage: "[source|self|pi] [--self] [--extensions] [--extension <source>] [-a|-na]",
+        description: () => "Update installed pi packages.",
+        options: [
+            { flag: "--self", desc: "Update the upstream pi package only" },
+            { flag: "--extensions", desc: "Update installed packages only" },
+            { flag: "--extension <source>", desc: "Update a single package" },
+            { flag: "--force", desc: "Reinstall even if already up to date" },
+            { flag: "-a, --approve", desc: "Trust project-local files" },
+            { flag: "-na, --no-approve", desc: "Ignore project-local files" },
+        ],
+        note: (colors) =>
+            `${colors.accent("Note:")} Use ${colors.cmd("npm install -g @pizzapi/pizza")} to update the PizzaPi wrapper itself.`,
+    },
+    {
+        commands: ["list"],
+        usage: "[-a|-na]",
+        description: () => "List installed pi packages.",
+        options: [
+            { flag: "-a, --approve", desc: "Trust project-local files" },
+            { flag: "-na, --no-approve", desc: "Ignore project-local files" },
+        ],
+    },
+    {
+        commands: ["config"],
+        usage: "[-a|-na]",
+        description: () => "Interactively enable or disable installed package resources.",
+        options: [
+            { flag: "-a, --approve", desc: "Trust project-local files" },
+            { flag: "-na, --no-approve", desc: "Ignore project-local files" },
+        ],
+    },
+];
+
+function printCommandHelp(command: string): void {
+    const entry = COMMAND_HELP.find((e) => e.commands.includes(command));
+    if (!entry) return;
+
+    const canonical = entry.commands[0];
+    console.log(`\n${c.label("Usage:")}\n  ${c.cmd(`pizza ${canonical}`)} ${c.dim(entry.usage)}\n`);
+    console.log(`${entry.description(c)}\n`);
+    console.log(`${c.label("Options:")}`);
+    const maxFlagLen = entry.options.reduce((max, opt) => Math.max(max, opt.flag.length), 0);
+    for (const { flag, desc } of entry.options) {
+        const pad = " ".repeat(maxFlagLen - flag.length + 2);
+        console.log(`  ${c.flag(flag)}${pad}${desc}`);
     }
+    if (entry.examples) {
+        console.log(`\n${c.label("Examples:")}`);
+        for (const example of entry.examples) {
+            console.log(`  ${c.cmd(example)}`);
+        }
+    }
+    if (entry.note) {
+        console.log(`\n${entry.note(c)}`);
+    }
+    console.log();
 }
 
 function printSelfUpdateNote(): void {

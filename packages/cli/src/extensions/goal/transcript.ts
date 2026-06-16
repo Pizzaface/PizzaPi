@@ -72,24 +72,17 @@ export function extractLatestTurnText(payload: {
         if (typeof payload.assistantContent === "string") {
             parts.push(payload.assistantContent);
         } else {
-            const joined = payload.assistantContent
-                .filter((c): c is { type: string; text: string } => c.type === "text" && typeof c.text === "string")
-                .map((c) => c.text)
-                .join("\n");
+            const joined = extractTextBlocks(payload.assistantContent);
             if (joined) parts.push(joined);
         }
     }
 
     for (const tool of payload.toolResults ?? []) {
-        const text = tool.text;
-        if (text) {
-            parts.push(text);
+        if (tool.text) {
+            parts.push(tool.text);
             continue;
         }
-        const joined = (tool.content ?? [])
-            .filter((c): c is { type: string; text: string } => c.type === "text" && typeof c.text === "string")
-            .map((c) => c.text)
-            .join("\n");
+        const joined = extractTextBlocks(tool.content ?? []);
         if (joined) parts.push(joined);
     }
 
