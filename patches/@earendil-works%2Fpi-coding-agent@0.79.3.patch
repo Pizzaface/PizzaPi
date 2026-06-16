@@ -250,3 +250,25 @@ diff --git a/dist/core/extensions/types.d.ts b/dist/core/extensions/types.d.ts
      getSessionName: GetSessionNameHandler;
      setLabel: SetLabelHandler;
      getActiveTools: GetActiveToolsHandler;
+diff --git a/dist/index.js b/dist/index.js
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -12,6 +12,7 @@
+ export { convertToLlm } from "./core/messages.js";
+ export { ModelRegistry } from "./core/model-registry.js";
+ export { DefaultPackageManager } from "./core/package-manager.js";
++export { handleConfigCommand, handlePackageCommand } from "./package-manager-cli.js";
+ export { DefaultResourceLoader, loadProjectContextFiles } from "./core/resource-loader.js";
+ // SDK for programmatic usage
+ export { AgentSessionRuntime, 
+diff --git a/dist/index.d.ts b/dist/index.d.ts
+--- a/dist/index.d.ts
++++ b/dist/index.d.ts
+@@ -11,6 +11,7 @@
+ export { ModelRegistry } from "./core/model-registry.ts";
+ export type { PackageManager, PathMetadata, ProgressCallback, ProgressEvent, ResolvedPaths, ResolvedResource, } from "./core/package-manager.ts";
+ export { DefaultPackageManager } from "./core/package-manager.ts";
++export { handleConfigCommand, handlePackageCommand } from "./package-manager-cli.ts";
+ export type { ResourceCollision, ResourceDiagnostic, ResourceLoader } from "./core/resource-loader.ts";
+ export { DefaultResourceLoader, loadProjectContextFiles } from "./core/resource-loader.ts";
+ export { AgentSessionRuntime, type AgentSessionRuntimeDiagnostic, type AgentSessionServices, type CreateAgentSessionFromServicesOptions, type CreateAgentSessionOptions, type CreateAgentSessionResult, type CreateAgentSessionRuntimeFactory, type CreateAgentSessionRuntimeResult, type CreateAgentSessionServicesOptions, createAgentSession, createAgentSessionFromServices, createAgentSessionRuntime, createAgentSessionServices, createBashTool, createCodingTools, createEditTool, createFindTool, createGrepTool, createLsTool, createReadOnlyTools, createReadTool, createWriteTool, type PromptTemplate, } from "./core/sdk.ts";
