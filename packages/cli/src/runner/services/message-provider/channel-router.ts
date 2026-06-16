@@ -148,6 +148,8 @@ export class ChannelRouter {
                 return true;
             case "commands-only":
                 return message.isCommand;
+            case "mentions":
+                return message.mentionedBot === true;
             case "filtered":
                 return matchesFilter(message.content, config.filterPatterns);
             default:

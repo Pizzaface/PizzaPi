@@ -34,6 +34,7 @@ export class DiscordProvider implements MessageProvider {
     private connected = false;
     private readonly handlers = new Set<InboundMessageHandler>();
     private readonly providedClient?: Client;
+    private botUserId: string | null = null;
 
     constructor(client?: Client) {
         this.providedClient = client;
@@ -55,6 +56,7 @@ export class DiscordProvider implements MessageProvider {
             });
 
         this.client.once("ready", () => {
+            this.botUserId = this.client?.user?.id ?? null;
             this.connected = true;
         });
 
@@ -136,7 +138,14 @@ export class DiscordProvider implements MessageProvider {
 
     private convertMessage(message: Message): InboundMessage {
         const prefix = this.config?.defaultRouter?.commandPrefix ?? DEFAULT_COMMAND_PREFIX;
-        const command = parseCommand(message.content, prefix);
+        const mentionedBot = this.botUserId !== null && isBotMention(message.content, this.botUserId);
+        // Strip mention prefix when in mentions mode so the rest is treated as payload
+        const contentForParsing = mentionedBot && this.botUserId
+            ? message.content.replace(new RegExp(`<@!?${escapeRegex(this.botUserId)}>`), "").trim()
+            : message.content;
+        const command = mentionedBot
+            ? parseMentionCommand(contentForParsing)
+            : parseCommand(message.content, prefix);
 
         return {
             id: message.id,
@@ -150,6 +159,7 @@ export class DiscordProvider implements MessageProvider {
             content: message.content,
             timestamp: message.createdTimestamp,
             isCommand: command !== undefined,
+            mentionedBot,
             command,
             raw: message,
             threadId: message.thread?.id,
@@ -209,4 +219,25 @@ function getChannelName(channel: { name?: string } | unknown): string {
         return (channel as { name: string }).name;
     }
     return "DM";
+}
+
+/** Detect a Discord bot mention in message content (<@BOTID> or <@!BOTID>). */
+function isBotMention(content: string, botUserId: string): boolean {
+    return new RegExp(`<@!?${escapeRegex(botUserId)}>`).test(content);
+}
+
+/** Parse text content after a mention has been stripped into a command. */
+function parseMentionCommand(content: string): ParsedCommand | undefined {
+    const trimmed = content.trim();
+    if (!trimmed) {
+        // Bare mention — forward as a "ping" command so the bridge can respond
+        return { name: "ping", args: [], raw: "" };
+    }
+    const parts = trimmed.split(/\s+/).filter(Boolean);
+    const [name, ...args] = parts;
+    return name ? { name, args, raw: trimmed } : undefined;
+}
+
+function escapeRegex(str: string): string {
+    return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }

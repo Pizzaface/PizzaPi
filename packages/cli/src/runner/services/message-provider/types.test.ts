@@ -78,6 +78,7 @@ function makeMessage(overrides: Partial<InboundMessage> = {}): InboundMessage {
         content: "hello",
         timestamp: Date.now(),
         isCommand: false,
+        mentionedBot: false,
         raw: {},
         ...overrides,
     };
@@ -130,6 +131,19 @@ describe("validateProviderConfig", () => {
         });
         expect(bad.valid).toBe(false);
         expect(bad.errors).toContain('channelRouters["c1"] is invalid');
+    });
+
+    test("accepts mentions mode in defaultRouter", () => {
+        const result = validateProviderConfig({ token: "abc", defaultRouter: { mode: "mentions" } });
+        expect(result.valid).toBe(true);
+    });
+
+    test("accepts mentions mode in channelRouters", () => {
+        const result = validateProviderConfig({
+            token: "abc",
+            channelRouters: { c1: { mode: "mentions" }, c2: { mode: "commands-only" } },
+        });
+        expect(result.valid).toBe(true);
     });
 
     test("validates defaultRouter", () => {
@@ -271,6 +285,25 @@ describe("ChannelRouter", () => {
         router.addSession({ channelId: "ch-1", sessionId: "sess-1", config: { mode: "commands-only" } });
         router.removeSession("ch-1");
         expect(await router.route(makeMessage())).toBeUndefined();
+    });
+
+    test("mentions mode forwards only when mentionedBot is true", async () => {
+        const router = new ChannelRouter();
+        router.addSession({ channelId: "ch-1", sessionId: "sess-1", config: { mode: "mentions" } });
+
+        const mentioned = await router.route(makeMessage({ mentionedBot: true, content: "<@123> help me" }));
+        expect(mentioned!.shouldForward).toBe(true);
+
+        const notMentioned = await router.route(makeMessage({ mentionedBot: false, content: "hello" }));
+        expect(notMentioned!.shouldForward).toBe(false);
+    });
+
+    test("mentions mode defaults false for undefined mentionedBot", async () => {
+        const router = new ChannelRouter();
+        router.addSession({ channelId: "ch-1", sessionId: "sess-1", config: { mode: "mentions" } });
+
+        const route = await router.route(makeMessage({ content: "hello" }));
+        expect(route!.shouldForward).toBe(false);
     });
 });
 

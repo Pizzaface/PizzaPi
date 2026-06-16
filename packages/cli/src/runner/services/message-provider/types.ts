@@ -44,6 +44,8 @@ export interface InboundMessage {
     timestamp: number;
     /** Whether this message contains a command prefix */
     isCommand: boolean;
+    /** Whether this message is a bot mention (e.g. @PizzaBot) */
+    mentionedBot?: boolean;
     /** Parsed command (if isCommand) */
     command?: ParsedCommand;
     /** Raw provider-specific data */
@@ -93,8 +95,8 @@ export interface ChannelSession {
 export interface ChannelRouterConfig {
     /** Command prefix to recognize (default "!") */
     commandPrefix?: string;
-    /** Whether to forward all messages or only commands */
-    mode: "commands-only" | "all-messages" | "filtered";
+    /** Mode for deciding which messages to forward */
+    mode: "commands-only" | "all-messages" | "filtered" | "mentions";
     /** Patterns for filtered mode */
     filterPatterns?: string[];
     /** Maximum message length (truncate longer) */
@@ -224,7 +226,7 @@ function isValidChannelRouterConfig(config: unknown): config is ChannelRouterCon
     }
     const c = config as Partial<ChannelRouterConfig>;
 
-    const validModes: ChannelRouterConfig["mode"][] = ["commands-only", "all-messages", "filtered"];
+    const validModes: ChannelRouterConfig["mode"][] = ["commands-only", "all-messages", "filtered", "mentions"];
     if (!validModes.includes(c.mode as ChannelRouterConfig["mode"])) {
         return false;
     }

@@ -324,4 +324,69 @@ describe("DiscordProvider", () => {
         const inbound = provider._convertMessage(dmMessage);
         expect(inbound.channelName).toBe("DM");
     });
+
+    test("detects bot mention in message", async () => {
+        const client = createMockClient();
+        (client as unknown as Record<string, unknown>).user = { id: "bot-123" };
+        const provider = new DiscordProvider(client);
+        await provider.connect({ token: "bot-token" });
+        client.emit("ready");
+
+        const mentioned = createMockMessage({ content: "<@bot-123> help me please" });
+        expect(provider._convertMessage(mentioned).mentionedBot).toBe(true);
+
+        const notMentioned = createMockMessage({ content: "hello world" });
+        expect(provider._convertMessage(notMentioned).mentionedBot).toBe(false);
+    });
+
+    test("detects bot mention with @! syntax", async () => {
+        const client = createMockClient();
+        (client as unknown as Record<string, unknown>).user = { id: "bot-456" };
+        const provider = new DiscordProvider(client);
+        await provider.connect({ token: "t" });
+        client.emit("ready");
+
+        const msg = createMockMessage({ content: "<@!bot-456> do stuff" });
+        expect(provider._convertMessage(msg).mentionedBot).toBe(true);
+    });
+
+    test("parses content after mention into a command", async () => {
+        const client = createMockClient();
+        (client as unknown as Record<string, unknown>).user = { id: "bot-789" };
+        const provider = new DiscordProvider(client);
+        await provider.connect({ token: "t" });
+        client.emit("ready");
+
+        const msg = createMockMessage({ content: "<@bot-789> status all" });
+        const inbound = provider._convertMessage(msg);
+        expect(inbound.mentionedBot).toBe(true);
+        expect(inbound.isCommand).toBe(true);
+        expect(inbound.command?.name).toBe("status");
+        expect(inbound.command?.args).toEqual(["all"]);
+    });
+
+    test("bare mention becomes ping command", async () => {
+        const client = createMockClient();
+        (client as unknown as Record<string, unknown>).user = { id: "bot-999" };
+        const provider = new DiscordProvider(client);
+        await provider.connect({ token: "t" });
+        client.emit("ready");
+
+        const msg = createMockMessage({ content: "<@bot-999>" });
+        const inbound = provider._convertMessage(msg);
+        expect(inbound.mentionedBot).toBe(true);
+        expect(inbound.command?.name).toBe("ping");
+        expect(inbound.command?.args).toEqual([]);
+    });
+
+    test("does not detect mention if bot is not ready or no bot user", async () => {
+        const client = createMockClient();
+        const provider = new DiscordProvider(client);
+        await provider.connect({ token: "t" });
+        // Do NOT emit ready — botUserId stays null
+
+        const msg = createMockMessage({ content: "<@some-id> hi" });
+        const inbound = provider._convertMessage(msg);
+        expect(inbound.mentionedBot).toBe(false);
+    });
 });
