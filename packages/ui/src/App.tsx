@@ -1292,6 +1292,11 @@ export function App() {
       }
     }
 
+    if (Object.prototype.hasOwnProperty.call(state, "goal")) {
+      setGoal(state.goal ?? null);
+      cachePatch.goal = state.goal ?? null;
+    }
+
     // Apply mcpStartupReport from snapshot so late-joining viewers see MCP startup warnings.
     // If session is not yet hydrated, save it for replay once session_active arrives —
     // the new slim-heartbeat CLI no longer retries in every heartbeat, so without this
@@ -1429,6 +1434,11 @@ export function App() {
         setActiveModel(null);
         cachePatch.activeModel = null;
       }
+    }
+
+    if (patch.goal !== undefined) {
+      setGoal(patch.goal ?? null);
+      cachePatch.goal = patch.goal ?? null;
     }
 
     if (Object.keys(cachePatch).length > 0) {

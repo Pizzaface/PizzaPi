@@ -35,6 +35,7 @@ import {
     emitCompactEnded,
     emitTodoUpdated,
     emitPlanModeToggled,
+    emitGoalUpdated,
 } from "../remote-meta-events.js";
 import { getAuthSource } from "../remote-auth-source.js";
 import { clearAndCancelPendingTriggers } from "../triggers/extension.js";
@@ -341,9 +342,12 @@ export function registerLifecycleHandlers(deps: LifecycleHandlersDeps): void {
     });
 
     // Goal state is emitted by the `/goal` extension. Forward it as a
-    // lightweight metadata update so the web UI header badge stays in sync.
+    // lightweight metadata update so the web UI header badge stays in sync,
+    // and also as a discrete meta event so the server can keep the
+    // authoritative metaState up to date for reconnecting viewers.
     pi.events.on("goal:state_changed", (goal: unknown) => {
         rctx.goalState = goal && typeof goal === "object" ? (goal as MetaGoalStatus) : null;
+        emitGoalUpdated(rctx, rctx.goalState);
         emitSessionMetadataUpdate(rctx);
     });
 

@@ -132,7 +132,8 @@ export type MetaRelayEvent =
   | { type: "token_usage_updated";     tokenUsage: MetaTokenUsage; providerUsage: MetaProviderUsage }
   | { type: "thinking_level_changed";  level: string | null }
   | { type: "auth_source_changed";     source: string | null }
-  | { type: "model_changed";           model: MetaModelInfo | null };
+  | { type: "model_changed";           model: MetaModelInfo | null }
+  | { type: "goal_updated";            goal: MetaGoalStatus | null };
 
 export const META_RELAY_EVENT_TYPES = new Set<string>([
   "todo_updated", "question_pending", "question_cleared",
@@ -140,6 +141,7 @@ export const META_RELAY_EVENT_TYPES = new Set<string>([
   "compact_started", "compact_ended", "retry_state_changed",
   "plugin_trust_required", "plugin_trust_resolved", "mcp_startup_report",
   "token_usage_updated", "thinking_level_changed", "auth_source_changed", "model_changed",
+  "goal_updated",
 ]);
 
 export function isMetaRelayEvent(event: { type?: unknown }): event is MetaRelayEvent {
@@ -170,5 +172,6 @@ export function metaEventToPatch(event: MetaRelayEvent): Partial<SessionMetaStat
     case "thinking_level_changed": return { thinkingLevel: event.level };
     case "auth_source_changed":    return { authSource: event.source };
     case "model_changed":          return { model: event.model };
+    case "goal_updated":           return { goal: event.goal };
   }
 }
