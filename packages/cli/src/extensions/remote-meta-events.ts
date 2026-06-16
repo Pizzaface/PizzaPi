@@ -6,6 +6,7 @@ import type { RelayContext } from "./remote-types.js";
 import type {
   MetaTodoItem, MetaPendingQuestion, MetaPendingPlan, MetaRetryState,
   MetaPluginTrustPrompt, MetaMcpReport, MetaTokenUsage, MetaProviderUsage, MetaModelInfo,
+  MetaGoalStatus,
 } from "@pizzapi/protocol";
 
 type ForwardCtx = Pick<RelayContext, "forwardEvent">;
@@ -57,4 +58,7 @@ export function emitAuthSourceChanged(rctx: ForwardCtx, source: string | null): 
 }
 export function emitModelChanged(rctx: ForwardCtx, model: MetaModelInfo | null): void {
   rctx.forwardEvent({ type: "model_changed", model });
+}
+export function emitGoalUpdated(rctx: ForwardCtx, goal: MetaGoalStatus | null): void {
+  rctx.forwardEvent({ type: "goal_updated", goal });
 }

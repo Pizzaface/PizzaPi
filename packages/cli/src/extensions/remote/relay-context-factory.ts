@@ -15,6 +15,7 @@ import { buildHeartbeat } from "../remote-heartbeat.js";
 import { getCurrentTodoList } from "../update-todo.js";
 import { isDisabled, toWebSocketBaseUrl } from "./connection.js";
 import type { RelayContext, RelayModelInfo, TriggerResponse } from "../remote-types.js";
+import { getActiveGoalFromEntries, toMetaGoalStatus } from "../goal/state.js";
 import type { RemoteExecResponse } from "../remote-commands.js";
 import type { ConversationTrigger } from "../triggers/types.js";
 import { isCancelTriggerAction } from "../remote-trigger-response.js";
@@ -70,6 +71,7 @@ export function createRelayContext(
         pendingPluginTrust: null,
 
         lastMcpStartupReport: null,
+        goalState: null,
         relayStatusText: "",
 
         forwardEvent(event: unknown) {
@@ -130,13 +132,17 @@ export function createRelayContext(
 
         buildSessionState() {
             if (!rctx.latestCtx) return undefined;
+            const entries = rctx.latestCtx.sessionManager.getEntries();
             const { messages, model } = buildSessionContext(
-                rctx.latestCtx.sessionManager.getEntries(),
+                entries,
                 rctx.latestCtx.sessionManager.getLeafId(),
             );
+            const activeGoalState = getActiveGoalFromEntries(entries as any[]);
+            const activeGoal = rctx.goalState ?? (activeGoalState ? toMetaGoalStatus(activeGoalState) : null);
             return {
                 messages,
                 model,
+                goal: activeGoal ?? null,
                 thinkingLevel: rctx.getCurrentThinkingLevel(),
                 sessionName: rctx.getCurrentSessionName(),
                 sessionFile: rctx.latestCtx.sessionManager.getSessionFile?.(),
@@ -191,7 +197,7 @@ export function createRelayContext(
 
             if (hasOllamaKey) {
                 const cached = getCachedOllamaCloudModels();
-                if (cached) {
+                if (cached && Array.isArray(cached)) {
                     liveOllama = cached.map((model) => ({
                         provider: model.provider,
                         id: model.id,

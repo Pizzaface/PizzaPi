@@ -27,6 +27,11 @@ Usage:
   pizza usage [provider]      Show API usage stats
   pizza models                List available models
   pizza plugins [cmd]         Manage Claude Code plugins (list/trust/untrust)
+  pizza install <source>      Install a pi package (extensions, skills, prompts, themes)
+  pizza remove <source>       Remove an installed pi package
+  pizza update [source|self]  Update installed pi packages
+  pizza list                  List installed pi packages
+  pizza config                Enable/disable package resources
 
 Flags:
   --cwd <path>    Set working directory
@@ -391,6 +396,55 @@ Once approved by any method, the trust is persisted to `~/.pizzapi/config.json` 
 
 <Aside type="tip">
   See the [Claude Code Plugins guide](/PizzaPi/customization/claude-plugins/) for details on plugin structure, hook mapping, and how the adapter works.
+</Aside>
+
+---
+
+### `pizzapi install`, `pizzapi remove`, `pizzapi update`, `pizzapi list`, `pizzapi config`
+
+Install, update, and manage **pi packages** — bundles of extensions, skills, prompt templates, and themes that extend the agent. These commands inherit the upstream `pi` package manager and store packages in `~/.pizzapi/settings.json` (or `.pizzapi/settings.json` for project-local installs).
+
+```bash
+# Install a package from npm, git, or a local path
+pizzapi install npm:@foo/pi-tools
+pizzapi install git:github.com/user/repo
+pizzapi install ./local/path
+
+# Install into the current project only
+pizzapi install npm:@foo/pi-tools -l
+
+# Remove a package
+pizzapi remove npm:@foo/pi-tools
+pizzapi uninstall npm:@foo/pi-tools      # alias for remove
+
+# List installed packages
+pizzapi list
+
+# Update installed packages
+pizzapi update --extensions
+
+# Update everything (pi packages only; PizzaPi itself is updated via npm)
+pizzapi update
+
+# Interactively enable/disable package resources
+pizzapi config
+```
+
+| Command | Description |
+|---------|-------------|
+| `install <source> [-l]` | Install a package and add it to settings |
+| `remove <source> [-l]` | Remove a package from settings |
+| `uninstall <source> [-l]` | Alias for `remove` |
+| `update [source\|self\|pi]` | Update installed packages and/or the upstream `pi` package |
+| `update --extensions` | Update installed packages only |
+| `update --self` | Update the upstream `pi` package only (use `npm install -g @pizzapi/pizza` to update PizzaPi) |
+| `list` | List installed packages |
+| `config` | Interactively enable or disable package resources |
+
+These commands accept `--cwd <path>` to target a different project directory and honor `agentDir` from `~/.pizzapi/config.json`.
+
+<Aside type="note">
+  `pizzapi update --self` updates the upstream `pi-coding-agent` package, not the PizzaPi wrapper. To update the wrapper itself, run `npm install -g @pizzapi/pizza`.
 </Aside>
 
 ---

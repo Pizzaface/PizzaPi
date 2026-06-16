@@ -41,6 +41,7 @@ so remote event handlers can trigger `/new` and `/resume`.
 | `dist/core/model-resolver.js` | Adds built-in default model selection for `ollama-cloud` (`glm-5.1`) |
 | `dist/core/provider-display-names.js` | Exposes `Ollama Cloud` as a built-in provider display name |
 | `dist/modes/interactive/interactive-mode.js` | Removes upstream version-notification UI |
+| `dist/index.js` / `dist/index.d.ts` | Re-exports `handlePackageCommand` and `handleConfigCommand` so the `pizza` CLI can inherit `install`/`remove`/`update`/`list`/`config` without a subpath import |
 
 ## @earendil-works/pi-ai@0.79.3
 

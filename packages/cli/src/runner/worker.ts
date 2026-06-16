@@ -568,6 +568,53 @@ async function main(): Promise<void> {
             if (err.stack) logError(err.stack);
             forwardCliError(err.error, err.extensionPath);
         },
+        // PATCH(pizzapi): Provide a full UI context polyfill for headless mode.
+        // pi-coding-agent's noOpUIContext has all methods as no-ops, but we
+        // override notify() to forward to the web UI as a toast. All other
+        // methods (setStatus, setFooter, setHeader, setTitle, etc.) are no-ops
+        // so extensions don't crash when calling them in headless mode.
+        uiContext: {
+            select: async () => undefined,
+            confirm: async () => false,
+            input: async () => undefined,
+            notify: (message: string, type?: "info" | "warning" | "error") => {
+                (session.extensionRunner as any).emit({
+                    type: "ui_notify",
+                    message,
+                    notifyType: type,
+                });
+                // Persist in session file so notifications survive reconnects.
+                try {
+                    session.sessionManager.appendCustomEntry("ui_notification", { message, notifyType: type });
+                } catch {
+                    // Non-fatal — session file write can fail during shutdown.
+                }
+            },
+            onTerminalInput: () => () => {},
+            setStatus: () => {},
+            setWorkingMessage: () => {},
+            setWorkingVisible: () => {},
+            setWorkingIndicator: () => {},
+            setHiddenThinkingLabel: () => {},
+            setWidget: () => {},
+            setFooter: () => {},
+            setHeader: () => {},
+            setTitle: () => {},
+            custom: async () => undefined,
+            pasteToEditor: () => {},
+            setEditorText: () => {},
+            getEditorText: () => "",
+            editor: async () => undefined,
+            addAutocompleteProvider: () => {},
+            setEditorComponent: () => {},
+            getEditorComponent: () => undefined,
+            get theme() { return undefined; },
+            getAllThemes: () => [],
+            getTheme: () => undefined,
+            setTheme: (_theme: any) => ({ success: false, error: "UI not available" }),
+            getToolsExpanded: () => false,
+            setToolsExpanded: () => {},
+        } as any,
     });
     } finally {
         // Always release the gate — even if bindExtensions() throws — so that

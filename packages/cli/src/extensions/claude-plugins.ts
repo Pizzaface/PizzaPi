@@ -123,10 +123,9 @@ function registerPluginCommand(
     plugin: DiscoveredPlugin,
     cmd: PluginCommand,
 ): void {
-    const commandName = `${plugin.name}:${cmd.name}`;
     const templateContent = resolvePluginRoot(cmd.content, plugin.rootPath);
 
-    pi.registerCommand(commandName, {
+    pi.registerCommand(cmd.name, {
         description: cmd.frontmatter.description ?? `[${plugin.name}] ${cmd.name}`,
         handler: async (args, ctx) => {
             let prompt = expandArguments(templateContent, args);

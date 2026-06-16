@@ -97,6 +97,7 @@ import {
 } from "@/components/session-viewer/header-badge";
 import { ComposerSubmitButton } from "@/components/session-viewer/composer-submit";
 import { SessionMessageItem, PaginationSentinel } from "@/components/session-viewer/message-item";
+import { GoalStatusBadge } from "@/components/session-viewer/goal-status-badge";
 
 // ── Public re-exports (existing consumers import these from SessionViewer) ────
 export type { RelayMessage } from "@/components/session-viewer/types";
@@ -150,6 +151,7 @@ export function SessionViewer({
   isAnalyzerOpen,
   triggerCount,
   todoList = [],
+  goal,
   analysis = null,
   planModeEnabled,
   runnerId,
@@ -571,6 +573,7 @@ export function SessionViewer({
                     ⏸ plan
                   </button>
                 )}
+                <GoalStatusBadge goal={goal} />
                 {tokenUsage && (tokenUsage.input > 0 || tokenUsage.output > 0) && (
                   <span
                     className="text-[0.7rem] text-muted-foreground tabular-nums hidden xs:inline"

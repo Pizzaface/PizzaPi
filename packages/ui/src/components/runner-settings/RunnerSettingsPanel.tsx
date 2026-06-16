@@ -12,6 +12,8 @@ const ToolSearchSettings = React.lazy(() => import("./ToolSearchSettings"));
 const EnvVarsSettings = React.lazy(() => import("./EnvVarsSettings"));
 const SystemPromptSettings = React.lazy(() => import("./SystemPromptSettings"));
 const TuiPrefsSettings = React.lazy(() => import("./TuiPrefsSettings"));
+const FastModelSettings = React.lazy(() => import("./FastModelSettings"));
+const PackagesSettings = React.lazy(() => import("./PackagesSettings"));
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -21,7 +23,9 @@ export type SettingsSection =
     | "toolSearch"
     | "envVars"
     | "systemPrompt"
-    | "tuiPreferences";
+    | "tuiPreferences"
+    | "goal"
+    | "packages";
 
 export interface RunnerSettingsPanelProps {
     runnerId: string;
@@ -44,11 +48,13 @@ export interface SectionProps {
 
 const SETTINGS_TABS: { key: SettingsSection; label: string }[] = [
     { key: "models", label: "Models" },
+    { key: "goal", label: "Fast Model" },
     { key: "webSearch", label: "Web Search" },
     { key: "toolSearch", label: "Tool Search" },
     { key: "envVars", label: "Env Vars" },
     { key: "systemPrompt", label: "System Prompt" },
     { key: "tuiPreferences", label: "TUI Prefs" },
+    { key: "packages", label: "Packages" },
 ];
 
 // ── Component ─────────────────────────────────────────────────────────────────
@@ -149,6 +155,9 @@ export function RunnerSettingsPanel({ runnerId }: RunnerSettingsPanelProps) {
         case "models":
             content = <ModelsSettings {...sectionProps} />;
             break;
+        case "goal":
+            content = <FastModelSettings {...sectionProps} />;
+            break;
         case "webSearch":
             content = <WebSearchSettings {...sectionProps} />;
             break;
@@ -163,6 +172,9 @@ export function RunnerSettingsPanel({ runnerId }: RunnerSettingsPanelProps) {
             break;
         case "tuiPreferences":
             content = <TuiPrefsSettings {...sectionProps} />;
+            break;
+        case "packages":
+            content = <PackagesSettings {...sectionProps} />;
             break;
     }
 

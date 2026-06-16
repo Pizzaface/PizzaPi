@@ -5,6 +5,7 @@ import type { TriggerCounts } from "@/hooks/useTriggerCount";
 import type { QuestionDisplayMode } from "@/lib/ask-user-questions";
 import type { CommandResultData } from "@/components/session-viewer/rendering";
 import type { PromptInputMessage } from "@/components/ai-elements/prompt-input";
+import type { MetaGoalStatus } from "@pizzapi/protocol";
 
 export type { RelayMessage, TodoItem, TokenUsage, QueuedMessage, ResumeSessionOption };
 
@@ -91,6 +92,8 @@ export interface SessionViewerProps {
   extraHeaderButtons?: React.ReactNode;
   /** Current agent todo list */
   todoList?: TodoItem[];
+  /** Active /goal state for the session header indicator */
+  goal?: MetaGoalStatus | null;
   /** Whether plan mode (read-only exploration) is currently active */
   planModeEnabled?: boolean;
   /** Runner ID for the current session (used for runner files API) */

@@ -78,6 +78,14 @@ Sigils relay *references* — they don't replace analysis. If the user asks you 
 </section>
 {{/if}}
 
+<section name="goal-command">
+The user can set a session goal with the `/goal` slash command, for example:
+`/goal "all tests pass and the README is updated" --max-turns 20 --max-tokens 100000`.
+When the goal is met or a budget is exhausted, the session stops and configured
+stop hooks run. If a goal is active, work toward satisfying the stated
+condition and keep an eye on the remaining budget.
+</section>
+
 <section name="sandbox">
 This session may run with OS-level sandbox restrictions that control which files you can read/write and which network domains are accessible. If a tool call is blocked by the sandbox, the error message will explain what was blocked and suggest updating the sandbox configuration. Do not attempt to circumvent sandbox restrictions — they are enforced at the OS level.
 </section>

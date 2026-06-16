@@ -1,4 +1,5 @@
 import type { TodoItem } from "@/lib/types";
+import type { MetaGoalStatus } from "@pizzapi/protocol";
 import {
   normalizeCommandList,
   normalizeModel,
@@ -13,6 +14,7 @@ export interface SessionMetadataUpdatePatch {
   sessionName?: string | null;
   thinkingLevel?: string | null;
   todoList?: TodoItem[];
+  goal?: MetaGoalStatus | null;
 }
 
 export function deriveSessionMetadataUpdatePatch(input: {
@@ -58,6 +60,15 @@ export function deriveSessionMetadataUpdatePatch(input: {
 
   if (Array.isArray(metadata.todoList)) {
     patch.todoList = metadata.todoList as TodoItem[];
+  }
+
+  if (Object.prototype.hasOwnProperty.call(metadata, "goal")) {
+    const rawGoal = metadata.goal;
+    if (rawGoal && typeof rawGoal === "object" && "id" in rawGoal && "status" in rawGoal) {
+      patch.goal = rawGoal as MetaGoalStatus;
+    } else {
+      patch.goal = null;
+    }
   }
 
   return patch;

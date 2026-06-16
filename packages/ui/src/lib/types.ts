@@ -9,6 +9,7 @@ import type { QuestionType, QuestionDisplayMode } from "@/lib/ask-user-questions
 import type { ProviderUsageMap } from "@/components/UsageIndicator";
 import type { RelayMessage } from "@/components/session-viewer/types";
 import type { SessionAnalysis } from "@/components/session-inspector/types";
+import type { MetaGoalStatus } from "@pizzapi/protocol";
 
 export interface TodoItem {
   id: number;
@@ -75,6 +76,9 @@ export interface SessionUiCacheEntry {
     description: string | null;
     steps: Array<{ title: string; description?: string }>;
   } | null;
+
+  // ── Goal tracking ─────────────────────────────────────────────────────────
+  goal: MetaGoalStatus | null;
 
   // ── Runner-scoped (preserved on same-runner session switch) ───────────
   // These values are identical across sessions on the same runner.

@@ -4,7 +4,7 @@ import {
   emitPlanCleared, emitPlanModeToggled, emitCompactStarted, emitCompactEnded,
   emitRetryStateChanged, emitPluginTrustRequired, emitPluginTrustResolved,
   emitMcpStartupReport, emitTokenUsageUpdated, emitThinkingLevelChanged,
-  emitAuthSourceChanged, emitModelChanged,
+  emitAuthSourceChanged, emitModelChanged, emitGoalUpdated,
 } from "./remote-meta-events.js";
 
 type ForwardedEvent = Record<string, unknown>;
@@ -99,5 +99,16 @@ describe("remote-meta-events", () => {
     const model = { provider: "anthropic", id: "claude-3" };
     emitModelChanged(rctx as any, model);
     expect(rctx.events[0]).toMatchObject({ type: "model_changed", model });
+  });
+  test("emitGoalUpdated", () => {
+    const rctx = makeRctx();
+    const goal = { id: "g1", description: "tests pass", status: "active" as const, turnCount: 0, tokenSpend: 0, costSpend: 0 };
+    emitGoalUpdated(rctx as any, goal);
+    expect(rctx.events[0]).toMatchObject({ type: "goal_updated", goal });
+  });
+  test("emitGoalUpdated null clears goal", () => {
+    const rctx = makeRctx();
+    emitGoalUpdated(rctx as any, null);
+    expect(rctx.events[0]).toMatchObject({ type: "goal_updated", goal: null });
   });
 });

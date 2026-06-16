@@ -117,6 +117,14 @@ describe("pi-coding-agent patch application", () => {
         expect(source).toContain("PATCH(pizzapi): flat directory structure");
     });
 
+    test("index.js re-exports package-management command handlers", async () => {
+        const { handlePackageCommand, handleConfigCommand } = await import(
+            piCodingAgentPath("dist/index.js")
+        );
+        expect(typeof handlePackageCommand).toBe("function");
+        expect(typeof handleConfigCommand).toBe("function");
+    });
+
     test("config.js: getChangelogPath honors PIZZAPI_CHANGELOG_PATH", async () => {
         const { getChangelogPath } = await import(piCodingAgentPath("dist/config.js"));
         const prev = process.env.PIZZAPI_CHANGELOG_PATH;

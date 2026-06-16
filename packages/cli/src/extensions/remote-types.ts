@@ -8,7 +8,7 @@
 
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Socket } from "socket.io-client";
-import type { RelayClientToServerEvents, RelayServerToClientEvents } from "@pizzapi/protocol";
+import type { MetaGoalStatus, RelayClientToServerEvents, RelayServerToClientEvents } from "@pizzapi/protocol";
 import type { RemoteExecResponse } from "./remote-commands.js";
 import type { ConversationTrigger } from "./triggers/types.js";
 
@@ -210,6 +210,7 @@ export interface RelayContext {
 
     // Cached state
     lastMcpStartupReport: McpStartupReportSummary | null;
+    goalState: MetaGoalStatus | null;
 
     // Helpers
     forwardEvent(event: unknown): void;

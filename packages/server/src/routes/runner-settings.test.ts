@@ -63,6 +63,26 @@ describe("handleRunnerSettingsRoute", () => {
     });
   });
 
+  test("accepts goal as a valid settings section", async () => {
+    const payload = {
+      evaluatorModel: "anthropic:claude-3-5-haiku-latest",
+      evaluatorMaxTokens: 1024,
+    };
+
+    const [req, url] = makeReq("PUT", "/api/runners/runner-A/settings", {
+      section: "goal",
+      value: payload,
+    });
+    const res = await handleRunnerSettingsRoute(req, url);
+    expect(res).toBeTruthy();
+    expect(res!.status).toBe(200);
+    expect(mockSendRunnerCommand).toHaveBeenCalledWith("runner-A", {
+      type: "settings_update_section",
+      section: "goal",
+      value: payload,
+    });
+  });
+
   test("also accepts the preferred mcp section", async () => {
     const payload = { servers: [{ name: "github", url: "https://example.test/mcp", type: "http" }] };
     const [req, url] = makeReq("PUT", "/api/runners/runner-A/settings", {

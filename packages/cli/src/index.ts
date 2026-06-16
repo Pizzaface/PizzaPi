@@ -11,6 +11,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { join } from "path";
 import { buildSystemPrompt, defaultAgentDir, expandHome, loadConfig, resolveSandboxConfig, validateSandboxOverride, applyProviderSettingsEnv } from "./config.js";
+import { isPackageCommand, runPackageCommand } from "./package-commands.js";
 import { getOAuthAccessToken } from "./runner/usage-auth.js";
 import { c, usageBar, colorPct, colorRemaining } from "./cli-colors.js";
 import { buildSkillPaths, buildPromptTemplatePaths, createAgentsFilesOverride } from "./skills.js";
@@ -307,6 +308,13 @@ async function main() {
         process.exit(code);
     }
 
+    if (isPackageCommand(args[0])) {
+        const config = loadConfig(cwd);
+        const agentDir = config.agentDir ? expandHome(config.agentDir) : defaultAgentDir();
+        const code = await runPackageCommand(args, cwd, agentDir);
+        process.exit(code);
+    }
+
     if (args.includes("--version") || args.includes("-v")) {
         const { default: pkg } = await import("../package.json");
         log.info(`pizzapi v${pkg.version}`);
@@ -328,6 +336,11 @@ async function main() {
         log.info(`  ${c.cmd("pizza usage")} ${c.dim("[provider]")}      Show API usage stats`);
         log.info(`  ${c.cmd("pizza models")}                List available models`);
         log.info(`  ${c.cmd("pizza plugins")} ${c.dim("[cmd]")}         Manage Claude Code plugins`);
+        log.info(`  ${c.cmd("pizza install")} ${c.dim("<source>")}       Install a pi package (extensions, skills, prompts, themes)`);
+        log.info(`  ${c.cmd("pizza remove")} ${c.dim("<source>")}        Remove an installed pi package`);
+        log.info(`  ${c.cmd("pizza update")} ${c.dim("[source|self]")}   Update installed pi packages`);
+        log.info(`  ${c.cmd("pizza list")}                    List installed pi packages`);
+        log.info(`  ${c.cmd("pizza config")}                  Enable/disable package resources`);
         log.info("");
         log.info(c.label("Flags"));
         log.info(`  ${c.flag("--cwd")} ${c.dim("<path>")}         Set working directory`);

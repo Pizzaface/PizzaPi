@@ -43,4 +43,11 @@ describe("metaEventToStatePatch", () => {
   test("model_changed null clears model", () => {
     expect(metaEventToStatePatch({ type: "model_changed", model: null }).model).toBeNull();
   });
+  test("goal_updated sets active goal", () => {
+    const goal = { id: "g1", description: "tests pass", status: "active" as const, turnCount: 0, tokenSpend: 0, costSpend: 0 };
+    expect(metaEventToStatePatch({ type: "goal_updated", goal }).goal).toEqual(goal);
+  });
+  test("goal_updated null clears goal", () => {
+    expect(metaEventToStatePatch({ type: "goal_updated", goal: null }).goal).toBeNull();
+  });
 });

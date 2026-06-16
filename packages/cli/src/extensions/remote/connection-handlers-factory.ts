@@ -64,7 +64,7 @@ export function createConnectionHandlers(deps: ConnectionHandlersDeps) {
 
         setModelFromWeb,
 
-        sendUserMessage: (msg: unknown, opts?: { deliverAs?: "followUp" | "steer" }) =>
+        sendUserMessage: (msg: unknown, opts?: { deliverAs?: "followUp" | "steer"; expandPromptTemplates?: boolean }) =>
             (pi as any).sendUserMessage(msg, opts),
 
         // ── Delink handlers ───────────────────────────────────────────────

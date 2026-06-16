@@ -71,6 +71,9 @@ async function handleMetadataUpdate(
         patch.thinkingLevel = typeof meta.thinkingLevel === "string" ? meta.thinkingLevel : null;
     }
     if (Array.isArray(meta.todoList)) patch.todoList = meta.todoList as SessionMetaState["todoList"];
+    if (Object.prototype.hasOwnProperty.call(meta, "goal")) {
+        patch.goal = meta.goal && typeof meta.goal === "object" ? meta.goal as SessionMetaState["goal"] : null;
+    }
     if (Object.keys(patch).length > 0) {
         await stubUpdateMetaState(sessionId, patch);
     }
@@ -183,20 +186,32 @@ describe("session_metadata_update handler — metadata persistence", () => {
     test("persists multiple fields in one call", async () => {
         const model = { provider: "anthropic", id: "claude-opus", name: "Opus", reasoning: true, contextWindow: 100000 };
         const todos = [{ id: 1, text: "task A", status: "done" as const }];
+        const goal = { id: "goal_1", description: "tests pass", status: "active" as const, turnCount: 3, tokenSpend: 0, costSpend: 0 };
         await handleMetadataUpdate("s1", {
             model,
             thinkingLevel: "medium",
             todoList: todos,
             sessionName: "Multi Field Session",
+            goal,
         });
 
         const state = await stubGetMetaState("s1");
         expect(state.model).toEqual(model);
         expect(state.thinkingLevel).toBe("medium");
         expect(state.todoList).toEqual(todos);
+        expect(state.goal).toEqual(goal);
 
         const session = stubGetSession("s1");
         expect(session?.sessionName).toBe("Multi Field Session");
+    });
+
+    test("clears goal when explicitly null", async () => {
+        const goal = { id: "goal_1", description: "tests pass", status: "active" as const, turnCount: 3, tokenSpend: 0, costSpend: 0 };
+        await handleMetadataUpdate("s1", { goal });
+        await handleMetadataUpdate("s1", { goal: null });
+
+        const state = await stubGetMetaState("s1");
+        expect(state.goal).toBeNull();
     });
 
     test("ignores non-object model field", async () => {

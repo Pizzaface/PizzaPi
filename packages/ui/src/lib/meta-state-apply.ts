@@ -12,7 +12,7 @@ import {
   type ParsedQuestion,
   type QuestionDisplayMode,
 } from "./ask-user-questions";
-import type { MetaRelayEvent, SessionMetaState, MetaPendingQuestion } from "@pizzapi/protocol";
+import type { MetaRelayEvent, SessionMetaState, MetaPendingQuestion, MetaGoalStatus } from "@pizzapi/protocol";
 import type { ProviderUsageMap } from "@/components/UsageIndicator";
 
 interface PendingQuestionState {
@@ -36,6 +36,7 @@ export interface MetaStatePatch {
   thinkingLevel?: string | null;
   authSource?: string | null;
   model?: { provider: string; id: string; name?: string; reasoning?: boolean } | null;
+  goal?: MetaGoalStatus | null;
   viewerStatusOverride?: string;
 }
 
@@ -94,6 +95,8 @@ export function metaEventToStatePatch(event: MetaRelayEvent): MetaStatePatch {
       return { authSource: event.source };
     case "model_changed":
       return { model: event.model };
+    case "goal_updated":
+      return { goal: event.goal };
     default:
       return {};
   }

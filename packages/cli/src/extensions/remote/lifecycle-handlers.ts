@@ -13,6 +13,7 @@ import { writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { MetaGoalStatus } from "@pizzapi/protocol";
 // NOTE: `pi` (the factory argument) is the PiInstance, which has .on()/.registerCommand()/.events
 // etc. but is not publicly exported. We type it as `any` in LifecycleHandlersDeps to avoid
 // a hard dependency on an internal type. ExtensionContext is used only for ctx parameters
@@ -34,6 +35,7 @@ import {
     emitCompactEnded,
     emitTodoUpdated,
     emitPlanModeToggled,
+    emitGoalUpdated,
 } from "../remote-meta-events.js";
 import { getAuthSource } from "../remote-auth-source.js";
 import { clearAndCancelPendingTriggers } from "../triggers/extension.js";
@@ -44,7 +46,7 @@ import { setPlanModeChangeCallback, setPlanModeMetaEmitter } from "../plan-mode/
 import { registerAskUserTool } from "../remote-ask-user.js";
 import { registerPlanModeTool } from "../remote-plan-mode.js";
 import { isDisabled } from "./connection.js";
-import { emitSessionActive } from "./chunked-delivery.js";
+import { emitSessionActive, emitSessionMetadataUpdate } from "./chunked-delivery.js";
 import { shouldAutoClose } from "./auto-close.js";
 import type { RelayContext } from "../remote-types.js";
 import type { TriggerWaitManager } from "../trigger-wait-manager.js";
@@ -339,6 +341,16 @@ export function registerLifecycleHandlers(deps: LifecycleHandlersDeps): void {
         doDisconnect();
     });
 
+    // Goal state is emitted by the `/goal` extension. Forward it as a
+    // lightweight metadata update so the web UI header badge stays in sync,
+    // and also as a discrete meta event so the server can keep the
+    // authoritative metaState up to date for reconnecting viewers.
+    pi.events.on("goal:state_changed", (goal: unknown) => {
+        rctx.goalState = goal && typeof goal === "object" ? (goal as MetaGoalStatus) : null;
+        emitGoalUpdated(rctx, rctx.goalState);
+        emitSessionMetadataUpdate(rctx);
+    });
+
     // ── Agent lifecycle ───────────────────────────────────────────────────────
 
     pi.on("agent_start", (event: any) => {
@@ -506,6 +518,12 @@ export function registerLifecycleHandlers(deps: LifecycleHandlersDeps): void {
     });
 
     // ── Compaction ────────────────────────────────────────────────────────────
+
+    // PATCH(pizzapi): Forward extension UI notify events to the web UI so
+    // ctx.ui.notify() shows up as a toast/notification in the chat.
+    pi.on("ui_notify", (event: any) => {
+        rctx.forwardEvent(event);
+    });
 
     pi.on("session_before_compact", () => {
         // Only emit if not already tracked (web-triggered compacts set the flag
