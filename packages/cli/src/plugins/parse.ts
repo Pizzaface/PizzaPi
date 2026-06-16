@@ -191,21 +191,42 @@ export function parseCommands(pluginDir: string): PluginCommand[] {
             // that could block readFileSync before trust approval.
             if (!stat.isFile()) continue;
 
-            if (!entry.endsWith(".md")) continue;
+            const isMd = entry.endsWith(".md");
+            const isToml = entry.endsWith(".toml");
+            if (!isMd && !isToml) continue;
 
             const content = readFileCapped(entryPath);
             if (content === null) continue;
 
-            const baseName = entry.slice(0, -3); // Strip .md
+            const extLength = isMd ? 3 : 5;
+            const baseName = entry.slice(0, -extLength);
             const name = prefix ? `${prefix}/${baseName}` : baseName;
-            const { frontmatter, body } = parseMarkdownFrontmatter(content);
 
-            commands.push({
-                name,
-                content: body,
-                frontmatter: frontmatter as CommandFrontmatter,
-                filePath: entryPath,
-            });
+            if (isToml) {
+                // Parse TOML command format: description and prompt fields
+                // Simple regex for 'value' or "value"
+                const descMatch = /description\s*=\s*(?:'([^']+)'|"([^"]+)")/m.exec(content);
+                const promptMatch = /prompt\s*=\s*(?:'([^']+)'|"([^"]+)")/m.exec(content);
+                
+                const description = descMatch ? (descMatch[1] ?? descMatch[2] ?? "").trim() : "";
+                const prompt = promptMatch ? (promptMatch[1] ?? promptMatch[2] ?? content).trim() : content.trim();
+
+                commands.push({
+                    name,
+                    content: prompt,
+                    frontmatter: { description },
+                    filePath: entryPath,
+                });
+            } else {
+                const { frontmatter, body } = parseMarkdownFrontmatter(content);
+
+                commands.push({
+                    name,
+                    content: body,
+                    frontmatter: frontmatter as CommandFrontmatter,
+                    filePath: entryPath,
+                });
+            }
         }
     }
 
@@ -473,12 +494,18 @@ export function parsePlugin(pluginDir: string): DiscoveredPlugin {
     const agents = parsePluginAgents(rootPath);
     const rules = parseRules(rootPath);
 
+    // Deduplicate: skip command files whose name already matches a skill.
+    // Plugins that ship both a commands/ and skills/ dir for the same feature
+    // would register duplicate slash commands otherwise (:1 from skill, :2 from command).
+    const skillNames = new Set(skills.map(s => s.name));
+    const dedupedCommands = commands.filter(c => !skillNames.has(c.name));
+
     return {
         name: manifest.name,
         description: manifest.description ?? "",
         rootPath,
         manifest,
-        commands,
+        commands: dedupedCommands,
         hooks,
         skills,
         agents,

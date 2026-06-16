@@ -736,6 +736,24 @@ describe("parsePlugin", () => {
         expect(plugin.hasAgents).toBe(true);
         expect(plugin.hasLsp).toBe(false);
     });
+
+    test("deduplicates commands whose name matches a skill", () => {
+        const dir = createPlugin("dup-plugin", {
+            manifest: { name: "dup-plugin", description: "Has dup names" },
+            commands: {
+                review: `---\ndescription: Review code\n---\nReview.`,
+                deploy: `---\ndescription: Deploy\n---\nDeploy.`,
+            },
+            skills: ["review"],
+        });
+
+        const plugin = parsePlugin(dir);
+        // "review" exists as both command and skill → command is dropped
+        expect(plugin.commands).toHaveLength(1);
+        expect(plugin.commands[0].name).toBe("deploy");
+        expect(plugin.skills).toHaveLength(1);
+        expect(plugin.skills[0].name).toBe("review");
+    });
 });
 
 // ── scanPluginsDir ────────────────────────────────────────────────────────────

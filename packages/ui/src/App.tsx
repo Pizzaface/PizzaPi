@@ -1769,6 +1769,7 @@ export function App() {
           effortLevel: thinkingLevel,
           todoList: stateTodos,
           ...(hasStateAnalysis ? { analysis: stateAnalysis ?? null } : {}),
+          ...(hasStateGoal ? { goal: stateGoal ?? null } : {}),
         });
       } else {
         patchSessionCache({
@@ -1776,6 +1777,7 @@ export function App() {
           availableModels: stateModels,
           ...(hasStateCommands ? { availableCommands: stateCommands } : {}),
           ...(hasStateAnalysis ? { analysis: stateAnalysis ?? null } : {}),
+          ...(hasStateGoal ? { goal: stateGoal ?? null } : {}),
         });
       }
       return;

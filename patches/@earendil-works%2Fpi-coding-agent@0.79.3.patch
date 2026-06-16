@@ -1,5 +1,8 @@
+diff --git a/node_modules/.bun/@earendil-works+pi-coding-agent@0.79.3+36935d20367572cb/node_modules/@earendil-works/pi-coding-agent/.bun-tag-267a54891af61ddc b/.bun-tag-267a54891af61ddc
+new file mode 100644
+index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
 diff --git a/dist/config.js b/dist/config.js
-index f414674d..edf53d2a 100644
+index f414674d69c0a8aeda577c81d2ab7d1b3e8a129c..edf53d2a8e4eed21df66a2cc8c557432a6b9fdf9 100644
 --- a/dist/config.js
 +++ b/dist/config.js
 @@ -339,6 +339,10 @@ export function getExamplesPath() {
@@ -33,18 +36,24 @@ index f414674d..edf53d2a 100644
  }
  /** Get path to user's custom themes directory */
  export function getCustomThemesDir() {
-@@ -433,4 +439,4 @@ export function getSessionsDir() {
- export function getDebugLogPath() {
-     return join(getAgentDir(), `${APP_NAME}-debug.log`);
- }
--//# sourceMappingURL=config.js.map
-\ No newline at end of file
-+//# sourceMappingURL=config.js.map
 diff --git a/dist/core/agent-session.js b/dist/core/agent-session.js
-index 865ad951..4efbf356 100644
+index 865ad951ee187a630ca5dd9794a04ac8c996908c..db4a71230dfab8615c4361c2f6614d787f2b52b5 100644
 --- a/dist/core/agent-session.js
 +++ b/dist/core/agent-session.js
-@@ -1973,8 +1973,9 @@ export class AgentSession {
+@@ -1032,9 +1032,10 @@ export class AgentSession {
+             if (images.length === 0)
+                 images = undefined;
+         }
+-        // Use prompt() with expandPromptTemplates: false to skip command handling and template expansion
++        // Use prompt() with expandPromptTemplates: false by default to skip command handling and template expansion.
++        // PATCH(pizzapi): allow callers to opt into command/template expansion (e.g. web UI input).
+         await this.prompt(text, {
+-            expandPromptTemplates: false,
++            expandPromptTemplates: options?.expandPromptTemplates ?? false,
+             streamingBehavior: options?.deliverAs,
+             images,
+             source: "extension",
+@@ -1973,8 +1974,9 @@ export class AgentSession {
          const err = message.errorMessage;
          if (this._isNonRetryableProviderLimitError(err))
              return false;
@@ -55,15 +64,115 @@ index 865ad951..4efbf356 100644
      }
      /**
       * Prepare a retryable error for continuation with exponential backoff.
-@@ -2532,4 +2533,4 @@ export class AgentSession {
-         return this._extensionRunner;
+diff --git a/dist/core/extensions/loader.js b/dist/core/extensions/loader.js
+index 677b4f681b246352e12c33827e4ee81a7bb86c92..408fb3a5d48444acce9f6375f271cbeee9c74e3f 100644
+--- a/dist/core/extensions/loader.js
++++ b/dist/core/extensions/loader.js
+@@ -110,6 +110,9 @@ export function createExtensionRuntime() {
+         sendUserMessage: notInitialized,
+         appendEntry: notInitialized,
+         setSessionName: notInitialized,
++        // PATCH(pizzapi): expose session-control actions on ExtensionAPI, not only command contexts.
++        newSession: () => Promise.reject(new Error("Extension runtime not initialized")),
++        switchSession: () => Promise.reject(new Error("Extension runtime not initialized")),
+         getSessionName: notInitialized,
+         setLabel: notInitialized,
+         getActiveTools: notInitialized,
+@@ -209,6 +212,15 @@ function createExtensionAPI(extension, runtime, cwd, eventBus) {
+             runtime.assertActive();
+             runtime.setSessionName(name);
+         },
++        // PATCH(pizzapi): remote exec handlers need /new and /resume from lifecycle/event handlers.
++        newSession(options) {
++            runtime.assertActive();
++            return runtime.newSession(options);
++        },
++        switchSession(sessionPath, options) {
++            runtime.assertActive();
++            return runtime.switchSession(sessionPath, options);
++        },
+         getSessionName() {
+             runtime.assertActive();
+             return runtime.getSessionName();
+diff --git a/dist/core/extensions/runner.js b/dist/core/extensions/runner.js
+index 45d68a44d4fb1738509aae509ad7314150d87d74..38e27ca4494a650da80264714f22d560b3155251 100644
+--- a/dist/core/extensions/runner.js
++++ b/dist/core/extensions/runner.js
+@@ -222,17 +222,22 @@ export class ExtensionRunner {
+         if (actions) {
+             this.waitForIdleFn = actions.waitForIdle;
+             this.newSessionHandler = actions.newSession;
++            // PATCH(pizzapi): make session controls available to ExtensionAPI callers.
++            this.runtime.newSession = (options) => this.newSessionHandler(options);
+             this.forkHandler = actions.fork;
+             this.navigateTreeHandler = actions.navigateTree;
+             this.switchSessionHandler = actions.switchSession;
++            this.runtime.switchSession = (sessionPath, options) => this.switchSessionHandler(sessionPath, options);
+             this.reloadHandler = actions.reload;
+             return;
+         }
+         this.waitForIdleFn = async () => { };
+         this.newSessionHandler = async () => ({ cancelled: false });
++        this.runtime.newSession = (options) => this.newSessionHandler(options);
+         this.forkHandler = async () => ({ cancelled: false });
+         this.navigateTreeHandler = async () => ({ cancelled: false });
+         this.switchSessionHandler = async () => ({ cancelled: false });
++        this.runtime.switchSession = (sessionPath, options) => this.switchSessionHandler(sessionPath, options);
+         this.reloadHandler = async () => { };
      }
- }
--//# sourceMappingURL=agent-session.js.map
-\ No newline at end of file
-+//# sourceMappingURL=agent-session.js.map
+     setUIContext(uiContext, mode = "print") {
+diff --git a/dist/core/extensions/types.d.ts b/dist/core/extensions/types.d.ts
+index e1773bb6b60ef27cd535fee5acc56ec0e910ca1a..756b7bd34b9e318d80581798a38b6c50258af3d3 100644
+--- a/dist/core/extensions/types.d.ts
++++ b/dist/core/extensions/types.d.ts
+@@ -866,11 +866,27 @@ export interface ExtensionAPI {
+      */
+     sendUserMessage(content: string | (TextContent | ImageContent)[], options?: {
+         deliverAs?: "steer" | "followUp";
++        /** PATCH(pizzapi): opt into slash-command and template expansion (default false). */
++        expandPromptTemplates?: boolean;
+     }): void;
+     /** Append a custom entry to the session for state persistence (not sent to LLM). */
+     appendEntry<T = unknown>(customType: string, data?: T): void;
+     /** Set the session display name (shown in session selector). */
+     setSessionName(name: string): void;
++    /** Start a new session. Available to PizzaPi remote event handlers. */
++    newSession(options?: {
++        parentSession?: string;
++        setup?: (sessionManager: SessionManager) => Promise<void>;
++        withSession?: (ctx: ReplacedSessionContext) => Promise<void>;
++    }): Promise<{
++        cancelled: boolean;
++    }>;
++    /** Switch to a different session file. Available to PizzaPi remote event handlers. */
++    switchSession(sessionPath: string, options?: {
++        withSession?: (ctx: ReplacedSessionContext) => Promise<void>;
++    }): Promise<{
++        cancelled: boolean;
++    }>;
+     /** Get the current session name, if set. */
+     getSessionName(): string | undefined;
+     /** Set or clear a label on an entry. Labels are user-defined markers for bookmarking/navigation. */
+@@ -1051,6 +1067,8 @@ export type SendMessageHandler = <T = unknown>(message: Pick<CustomMessage<T>, "
+ }) => void;
+ export type SendUserMessageHandler = (content: string | (TextContent | ImageContent)[], options?: {
+     deliverAs?: "steer" | "followUp";
++    /** PATCH(pizzapi): opt into slash-command and template expansion (default false). */
++    expandPromptTemplates?: boolean;
+ }) => void;
+ export type AppendEntryHandler = <T = unknown>(customType: string, data?: T) => void;
+ export type SetSessionNameHandler = (name: string) => void;
+@@ -1102,6 +1120,8 @@ export interface ExtensionActions {
+     sendUserMessage: SendUserMessageHandler;
+     appendEntry: AppendEntryHandler;
+     setSessionName: SetSessionNameHandler;
++    newSession: ExtensionCommandContextActions["newSession"];
++    switchSession: ExtensionCommandContextActions["switchSession"];
+     getSessionName: GetSessionNameHandler;
+     setLabel: SetLabelHandler;
+     getActiveTools: GetActiveToolsHandler;
 diff --git a/dist/core/model-resolver.js b/dist/core/model-resolver.js
-index 2bbfd7fa..5eb79b4d 100644
+index 2bbfd7fa7c4234cf34afe47de4988f35566b2f4e..5eb79b4de3bf2c7af0df574224ecd5dd8b6cd614 100644
 --- a/dist/core/model-resolver.js
 +++ b/dist/core/model-resolver.js
 @@ -20,6 +20,7 @@ export const defaultModelPerProvider = {
@@ -74,15 +183,8 @@ index 2bbfd7fa..5eb79b4d 100644
      "vercel-ai-gateway": "zai/glm-5.1",
      xai: "grok-4.20-0309-reasoning",
      groq: "openai/gpt-oss-120b",
-@@ -531,4 +532,4 @@ export async function restoreModelFromSession(savedProvider, savedModelId, curre
-     // No models available
-     return { model: undefined, fallbackMessage: undefined };
- }
--//# sourceMappingURL=model-resolver.js.map
-\ No newline at end of file
-+//# sourceMappingURL=model-resolver.js.map
 diff --git a/dist/core/provider-display-names.js b/dist/core/provider-display-names.js
-index fca54333..558dde5e 100644
+index fca54333f8c5354f98b37934e2bd014356f67be5..558dde5e4cadb91667496647a155942015795843 100644
 --- a/dist/core/provider-display-names.js
 +++ b/dist/core/provider-display-names.js
 @@ -23,6 +23,7 @@ export const BUILT_IN_PROVIDER_DISPLAY_NAMES = {
@@ -93,15 +195,32 @@ index fca54333..558dde5e 100644
      together: "Together AI",
      "vercel-ai-gateway": "Vercel AI Gateway",
      xai: "xAI",
-@@ -33,4 +34,4 @@ export const BUILT_IN_PROVIDER_DISPLAY_NAMES = {
-     "xiaomi-token-plan-ams": "Xiaomi MiMo Token Plan (Amsterdam)",
-     "xiaomi-token-plan-sgp": "Xiaomi MiMo Token Plan (Singapore)",
- };
--//# sourceMappingURL=provider-display-names.js.map
-\ No newline at end of file
-+//# sourceMappingURL=provider-display-names.js.map
+diff --git a/dist/index.d.ts b/dist/index.d.ts
+index 982967eb7a5e92d502deb5dc7f1b742e5bbaa803..b57c9119c3aa3d7872ac1c2137a04793d3aa80dc 100644
+--- a/dist/index.d.ts
++++ b/dist/index.d.ts
+@@ -11,6 +11,7 @@ export { convertToLlm } from "./core/messages.ts";
+ export { ModelRegistry } from "./core/model-registry.ts";
+ export type { PackageManager, PathMetadata, ProgressCallback, ProgressEvent, ResolvedPaths, ResolvedResource, } from "./core/package-manager.ts";
+ export { DefaultPackageManager } from "./core/package-manager.ts";
++export { handleConfigCommand, handlePackageCommand } from "./package-manager-cli.ts";
+ export type { ResourceCollision, ResourceDiagnostic, ResourceLoader } from "./core/resource-loader.ts";
+ export { DefaultResourceLoader, loadProjectContextFiles } from "./core/resource-loader.ts";
+ export { AgentSessionRuntime, type AgentSessionRuntimeDiagnostic, type AgentSessionServices, type CreateAgentSessionFromServicesOptions, type CreateAgentSessionOptions, type CreateAgentSessionResult, type CreateAgentSessionRuntimeFactory, type CreateAgentSessionRuntimeResult, type CreateAgentSessionServicesOptions, createAgentSession, createAgentSessionFromServices, createAgentSessionRuntime, createAgentSessionServices, createBashTool, createCodingTools, createEditTool, createFindTool, createGrepTool, createLsTool, createReadOnlyTools, createReadTool, createWriteTool, type PromptTemplate, } from "./core/sdk.ts";
+diff --git a/dist/index.js b/dist/index.js
+index 156078de9ceb80a03212b24898d4d9050924c9a9..a4a597584402a8df0d5ebf17cbeb6223a44fb74d 100644
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -12,6 +12,7 @@ export { createExtensionRuntime, defineTool, discoverAndLoadExtensions, Extensio
+ export { convertToLlm } from "./core/messages.js";
+ export { ModelRegistry } from "./core/model-registry.js";
+ export { DefaultPackageManager } from "./core/package-manager.js";
++export { handleConfigCommand, handlePackageCommand } from "./package-manager-cli.js";
+ export { DefaultResourceLoader, loadProjectContextFiles } from "./core/resource-loader.js";
+ // SDK for programmatic usage
+ export { AgentSessionRuntime, 
 diff --git a/dist/modes/interactive/interactive-mode.js b/dist/modes/interactive/interactive-mode.js
-index 36bb7462..74a575f9 100644
+index 36bb7462e8206b9e03fa6d9d4db0ea005eba17a1..74a575f9cd5103b5d0d9864cf3fe83e940a1fa91 100644
 --- a/dist/modes/interactive/interactive-mode.js
 +++ b/dist/modes/interactive/interactive-mode.js
 @@ -33,7 +33,6 @@ import { getCwdRelativePath } from "../../utils/paths.js";
@@ -155,120 +274,3 @@ index 36bb7462..74a575f9 100644
      showPackageUpdateNotification(packages) {
          const action = theme.fg("accent", `${APP_NAME} update`);
          const updateInstruction = theme.fg("muted", "Package updates are available. Run ") + action;
-@@ -4801,4 +4771,4 @@ export class InteractiveMode {
-         }
-     }
- }
--//# sourceMappingURL=interactive-mode.js.map
-\ No newline at end of file
-+//# sourceMappingURL=interactive-mode.js.map
-diff --git a/dist/core/extensions/loader.js b/dist/core/extensions/loader.js
---- a/dist/core/extensions/loader.js
-+++ b/dist/core/extensions/loader.js
-@@ -110,6 +110,9 @@ export function createExtensionRuntime() {
-         sendUserMessage: notInitialized,
-         appendEntry: notInitialized,
-         setSessionName: notInitialized,
-+        // PATCH(pizzapi): expose session-control actions on ExtensionAPI, not only command contexts.
-+        newSession: () => Promise.reject(new Error("Extension runtime not initialized")),
-+        switchSession: () => Promise.reject(new Error("Extension runtime not initialized")),
-         getSessionName: notInitialized,
-         setLabel: notInitialized,
-         getActiveTools: notInitialized,
-@@ -209,6 +212,15 @@ function createExtensionAPI(extension, runtime, cwd, eventBus) {
-             runtime.assertActive();
-             runtime.setSessionName(name);
-         },
-+        // PATCH(pizzapi): remote exec handlers need /new and /resume from lifecycle/event handlers.
-+        newSession(options) {
-+            runtime.assertActive();
-+            return runtime.newSession(options);
-+        },
-+        switchSession(sessionPath, options) {
-+            runtime.assertActive();
-+            return runtime.switchSession(sessionPath, options);
-+        },
-         getSessionName() {
-             runtime.assertActive();
-             return runtime.getSessionName();
-diff --git a/dist/core/extensions/runner.js b/dist/core/extensions/runner.js
---- a/dist/core/extensions/runner.js
-+++ b/dist/core/extensions/runner.js
-@@ -222,17 +222,22 @@ export class ExtensionRunner {
-         if (actions) {
-             this.waitForIdleFn = actions.waitForIdle;
-             this.newSessionHandler = actions.newSession;
-+            // PATCH(pizzapi): make session controls available to ExtensionAPI callers.
-+            this.runtime.newSession = (options) => this.newSessionHandler(options);
-             this.forkHandler = actions.fork;
-             this.navigateTreeHandler = actions.navigateTree;
-             this.switchSessionHandler = actions.switchSession;
-+            this.runtime.switchSession = (sessionPath, options) => this.switchSessionHandler(sessionPath, options);
-             this.reloadHandler = actions.reload;
-             return;
-         }
-         this.waitForIdleFn = async () => { };
-         this.newSessionHandler = async () => ({ cancelled: false });
-+        this.runtime.newSession = (options) => this.newSessionHandler(options);
-         this.forkHandler = async () => ({ cancelled: false });
-         this.navigateTreeHandler = async () => ({ cancelled: false });
-         this.switchSessionHandler = async () => ({ cancelled: false });
-+        this.runtime.switchSession = (sessionPath, options) => this.switchSessionHandler(sessionPath, options);
-         this.reloadHandler = async () => { };
-     }
-     setUIContext(uiContext, mode = "print") {
-diff --git a/dist/core/extensions/types.d.ts b/dist/core/extensions/types.d.ts
---- a/dist/core/extensions/types.d.ts
-+++ b/dist/core/extensions/types.d.ts
-@@ -871,6 +871,20 @@ export interface ExtensionAPI {
-     appendEntry<T = unknown>(customType: string, data?: T): void;
-     /** Set the session display name (shown in session selector). */
-     setSessionName(name: string): void;
-+    /** Start a new session. Available to PizzaPi remote event handlers. */
-+    newSession(options?: {
-+        parentSession?: string;
-+        setup?: (sessionManager: SessionManager) => Promise<void>;
-+        withSession?: (ctx: ReplacedSessionContext) => Promise<void>;
-+    }): Promise<{
-+        cancelled: boolean;
-+    }>;
-+    /** Switch to a different session file. Available to PizzaPi remote event handlers. */
-+    switchSession(sessionPath: string, options?: {
-+        withSession?: (ctx: ReplacedSessionContext) => Promise<void>;
-+    }): Promise<{
-+        cancelled: boolean;
-+    }>;
-     /** Get the current session name, if set. */
-     getSessionName(): string | undefined;
-     /** Set or clear a label on an entry. Labels are user-defined markers for bookmarking/navigation. */
-@@ -1102,6 +1116,8 @@ export interface ExtensionActions {
-     sendUserMessage: SendUserMessageHandler;
-     appendEntry: AppendEntryHandler;
-     setSessionName: SetSessionNameHandler;
-+    newSession: ExtensionCommandContextActions["newSession"];
-+    switchSession: ExtensionCommandContextActions["switchSession"];
-     getSessionName: GetSessionNameHandler;
-     setLabel: SetLabelHandler;
-     getActiveTools: GetActiveToolsHandler;
-diff --git a/dist/index.js b/dist/index.js
---- a/dist/index.js
-+++ b/dist/index.js
-@@ -12,6 +12,7 @@
- export { convertToLlm } from "./core/messages.js";
- export { ModelRegistry } from "./core/model-registry.js";
- export { DefaultPackageManager } from "./core/package-manager.js";
-+export { handleConfigCommand, handlePackageCommand } from "./package-manager-cli.js";
- export { DefaultResourceLoader, loadProjectContextFiles } from "./core/resource-loader.js";
- // SDK for programmatic usage
- export { AgentSessionRuntime, 
-diff --git a/dist/index.d.ts b/dist/index.d.ts
---- a/dist/index.d.ts
-+++ b/dist/index.d.ts
-@@ -11,6 +11,7 @@
- export { ModelRegistry } from "./core/model-registry.ts";
- export type { PackageManager, PathMetadata, ProgressCallback, ProgressEvent, ResolvedPaths, ResolvedResource, } from "./core/package-manager.ts";
- export { DefaultPackageManager } from "./core/package-manager.ts";
-+export { handleConfigCommand, handlePackageCommand } from "./package-manager-cli.ts";
- export type { ResourceCollision, ResourceDiagnostic, ResourceLoader } from "./core/resource-loader.ts";
- export { DefaultResourceLoader, loadProjectContextFiles } from "./core/resource-loader.ts";
- export { AgentSessionRuntime, type AgentSessionRuntimeDiagnostic, type AgentSessionServices, type CreateAgentSessionFromServicesOptions, type CreateAgentSessionOptions, type CreateAgentSessionResult, type CreateAgentSessionRuntimeFactory, type CreateAgentSessionRuntimeResult, type CreateAgentSessionServicesOptions, createAgentSession, createAgentSessionFromServices, createAgentSessionRuntime, createAgentSessionServices, createBashTool, createCodingTools, createEditTool, createFindTool, createGrepTool, createLsTool, createReadOnlyTools, createReadTool, createWriteTool, type PromptTemplate, } from "./core/sdk.ts";

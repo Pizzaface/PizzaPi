@@ -52,7 +52,7 @@ export interface ConnectionHandlers {
     /** Change the active model (called from exec and model_set handlers). */
     setModelFromWeb: (provider: string, modelId: string) => Promise<void>;
     /** Deliver a user message to the agent (called from input and session_trigger handlers). */
-    sendUserMessage: (message: unknown, options?: { deliverAs?: "followUp" | "steer" }) => void;
+    sendUserMessage: (message: unknown, options?: { deliverAs?: "followUp" | "steer"; expandPromptTemplates?: boolean }) => void;
 
     // ── Delink handlers (PR #176) ─────────────────────────────────────────
     /** Whether a delink_own_parent is pending (child did /new). */
@@ -399,7 +399,7 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
                 // started streaming by the time we resume here. See
                 // resolveInputDeliverAs for the rationale.
                 const effectiveDeliverAs = resolveInputDeliverAs(deliverAs, rctx.isAgentActive === true);
-                handlers.sendUserMessage(message, effectiveDeliverAs ? { deliverAs: effectiveDeliverAs } : undefined);
+                handlers.sendUserMessage(message, { expandPromptTemplates: true, ...(effectiveDeliverAs ? { deliverAs: effectiveDeliverAs } : {}) });
             } catch (err) {
                 log.error(`pizzapi: failed to deliver remote input: ${err instanceof Error ? err.message : String(err)}`);
             }
