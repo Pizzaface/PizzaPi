@@ -2,13 +2,17 @@ import type { CanExecutePolicy, CanExecuteResult, InboundMessage } from "./types
 import type { Message, Role } from "discord.js";
 
 /**
- * Create a CanExecutePolicy that checks Discord guild roles.
+ * Create a CanExecutePolicy that checks Discord guild roles by ID.
  *
- * The policy extracts roles from the raw discord.js Message object
+ * The policy extracts role IDs from the raw discord.js Message object
  * attached to InboundMessage.raw. If allowedRoles is empty or the
  * message is not a guild message (DM), the policy allows by default.
  *
- * @param allowedRoles — Role names OR role IDs that grant access
+ * Role names are intentionally NOT matched — they are mutable, can be
+ * renamed or spoofed, and can differ across guilds. Role IDs are stable
+ * and canonical within a guild.
+ *
+ * @param allowedRoles — Role IDs that grant access
  */
 export function discordRoleAllowed(allowedRoles: string[]): CanExecutePolicy {
     return (message: InboundMessage): CanExecuteResult => {
@@ -21,15 +25,14 @@ export function discordRoleAllowed(allowedRoles: string[]): CanExecutePolicy {
         }
 
         const memberRoles = raw.member.roles.cache;
-        const roleNames = Array.from(memberRoles.values()).map((r: Role) => r.name);
         const roleIds = Array.from(memberRoles.values()).map((r: Role) => r.id);
 
         const hasMatch = allowedRoles.some(allowed =>
-            roleNames.includes(allowed) || roleIds.includes(allowed)
+            roleIds.includes(allowed)
         );
 
         return hasMatch
             ? { allowed: true }
-            : { allowed: false, reason: `User ${message.author.username} lacks required role: ${allowedRoles.join(", ")}` };
+            : { allowed: false, reason: `User ${message.author.username} lacks required role ID: ${allowedRoles.join(", ")}` };
     };
 }

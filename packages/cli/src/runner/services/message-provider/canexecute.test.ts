@@ -182,11 +182,13 @@ describe("CanExecuteResult type", () => {
 });
 
 describe("discordRoleAllowed policy", () => {
-    test("allows when member has a matching role name", () => {
+    test("does not match by role name — ID only", () => {
         const policy = discordRoleAllowed(["admin", "moderator"]);
         const message = sampleInbound({ raw: mockDiscordMessage([{ id: "role-1", name: "admin" }]) });
 
-        expect(policy(message)).toEqual({ allowed: true });
+        // Role name "admin" is not a role ID — should be denied
+        const result = policy(message) as CanExecuteResult;
+        expect(result.allowed).toBe(false);
     });
 
     test("allows when member has a matching role ID", () => {
@@ -202,7 +204,7 @@ describe("discordRoleAllowed policy", () => {
 
         const result = policy(message) as CanExecuteResult;
         expect(result.allowed).toBe(false);
-        expect(result.reason).toContain("user1 lacks required role");
+        expect(result.reason).toContain("lacks required role ID");
     });
 
     test("denies DM or uncached member", () => {
@@ -242,7 +244,7 @@ describe("MessageBridgeService canExecute integration", () => {
             enabled: true,
             discord: {
                 token: "discord-token",
-                options: { allowedRoles: ["admin"] },
+                options: { allowedRoles: ["role-1"] },
             },
         };
 
@@ -276,7 +278,7 @@ describe("MessageBridgeService canExecute integration", () => {
             enabled: true,
             discord: {
                 token: "discord-token",
-                options: { allowedRoles: ["admin"] },
+                options: { allowedRoles: ["role-1"] },
             },
         };
 
