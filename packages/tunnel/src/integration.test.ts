@@ -189,9 +189,9 @@ async function proxyHttpRequestThroughTunnel(
   };
 }
 
-afterEach(() => {
+afterEach(async () => {
   client?.removeAllListeners();
-  client?.dispose();
+  await client?.dispose();
   client = undefined;
 
   closeWebSocketServer(localWss);

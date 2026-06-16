@@ -609,7 +609,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             clearInterval(endedSessionSweep);
             clearInterval(sessionCloseMetadataSweep);
             clearInterval(usageScanInterval);
-            tunnelClient?.dispose();
+            void tunnelClient?.dispose();
             registry.disposeAll();
             stopUsageRefreshLoop();
             closeUsage();

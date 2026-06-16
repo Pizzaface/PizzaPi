@@ -86,6 +86,8 @@ export class TunnelClient extends EventEmitter {
   private ws: WebSocket | null = null;
   private exposedPorts = new Set<number>();
   private disposed = false;
+  /** Prevents stale close handlers from interfering after dispose/reconnect. */
+  private connectionGeneration = 0;
 
   /** Tracks consecutive connection failures (never received "registered"). */
   private consecutiveFailures = 0;
@@ -124,6 +126,7 @@ export class TunnelClient extends EventEmitter {
       return;
     }
 
+    this.connectionGeneration++;
     this.registeredThisConnection = false;
     this.connectionStartedAt = Date.now();
     this.log.info("[tunnel-client] Connecting to", this.relayUrl);
@@ -138,7 +141,9 @@ export class TunnelClient extends EventEmitter {
       this.handleMessage(event.data as string | Buffer | ArrayBuffer | ArrayBufferView);
     });
 
+    const generation = this.connectionGeneration;
     this.ws.addEventListener("close", (event: CloseEvent) => {
+      if (generation !== this.connectionGeneration) return;
       const uptimeMs = this.connectionStartedAt > 0 ? Date.now() - this.connectionStartedAt : undefined;
       this.log.info(
         "[tunnel-client] Disconnected",
@@ -204,16 +209,21 @@ export class TunnelClient extends EventEmitter {
     });
   }
 
-  dispose(): void {
+  async dispose(): Promise<void> {
     this.disposed = true;
+    this.connectionGeneration++;
     this.cleanup();
     if (this.ws) {
-      try {
-        this.ws.close();
-      } catch {
-        // ignore close errors
-      }
+      const ws = this.ws;
       this.ws = null;
+      if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+        await new Promise<void>((resolve) => {
+          const onClose = () => resolve();
+          ws.addEventListener("close", onClose, { once: true });
+          setTimeout(onClose, 2_000); // ponytail: safety net for stuck close
+          try { ws.close(); } catch { /* ignore */ }
+        });
+      }
     }
   }
 
