@@ -167,54 +167,61 @@ function rewriteUpdateArgs(args: string[]): { includeSelf: boolean; argsForUpstr
  * `process.cwd()` and `getAgentDir()`.
  */
 export async function runPackageCommand(args: string[], cwd: string, agentDir: string): Promise<number> {
-    args = stripCwdFlag(args);
+    const previousExitCode = process.exitCode;
+    process.exitCode = undefined;
 
-    if (!process.env.PI_CODING_AGENT_DIR) {
-        process.env.PI_CODING_AGENT_DIR = agentDir;
-    }
+    try {
+        args = stripCwdFlag(args);
 
-    // Upstream handlers use process.cwd() for project-local (-l) installs.
-    if (process.cwd() !== cwd) {
-        process.chdir(cwd);
-    }
+        if (!process.env.PI_CODING_AGENT_DIR) {
+            process.env.PI_CODING_AGENT_DIR = agentDir;
+        }
 
-    if (args.includes("--help") || args.includes("-h")) {
-        printCommandHelp(args[0] ?? "install");
-        return 0;
-    }
+        // Upstream handlers use process.cwd() for project-local (-l) installs.
+        if (process.cwd() !== cwd) {
+            process.chdir(cwd);
+        }
 
-    // Rewrite update args to skip self-update by default
-    if (args[0] === "update") {
-        const { includeSelf, argsForUpstream } = rewriteUpdateArgs(args);
-        if (includeSelf) {
-            printSelfUpdateNote();
+        if (args.includes("--help") || args.includes("-h")) {
+            printCommandHelp(args[0] ?? "install");
             return 0;
         }
-        const wasRewritten = argsForUpstream !== args;
-        try {
-            const handled = await handlePackageCommand(argsForUpstream);
-            if (handled) {
-                if (wasRewritten) printSelfUpdateNote();
-                return Number(process.exitCode ?? 0);
+
+        // Rewrite update args to skip self-update by default
+        if (args[0] === "update") {
+            const { includeSelf, argsForUpstream } = rewriteUpdateArgs(args);
+            if (includeSelf) {
+                printSelfUpdateNote();
+                return 0;
             }
-            return 1;
+            const wasRewritten = argsForUpstream !== args;
+            try {
+                const handled = await handlePackageCommand(argsForUpstream);
+                if (handled) {
+                    if (wasRewritten) printSelfUpdateNote();
+                    return Number(process.exitCode ?? 0);
+                }
+                return 1;
+            } catch (err) {
+                console.error(`pizza ${args[0]}: ${err instanceof Error ? err.message : String(err)}`);
+                return 1;
+            }
+        }
+
+        try {
+            if (args[0] === "config") {
+                // handleConfigCommand exits the process itself.
+                await handleConfigCommand(args);
+                return 0;
+            }
+
+            const handled = await handlePackageCommand(args);
+            return handled ? Number(process.exitCode ?? 0) : 1;
         } catch (err) {
             console.error(`pizza ${args[0]}: ${err instanceof Error ? err.message : String(err)}`);
             return 1;
         }
-    }
-
-    try {
-        if (args[0] === "config") {
-            // handleConfigCommand exits the process itself.
-            await handleConfigCommand(args);
-            return 0;
-        }
-
-        const handled = await handlePackageCommand(args);
-        return handled ? Number(process.exitCode ?? 0) : 1;
-    } catch (err) {
-        console.error(`pizza ${args[0]}: ${err instanceof Error ? err.message : String(err)}`);
-        return 1;
+    } finally {
+        process.exitCode = previousExitCode ?? 0;
     }
 }
