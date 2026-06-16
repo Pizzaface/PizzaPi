@@ -537,6 +537,15 @@ export function App() {
   // Sequence tracking for gap detection
   const lastSeqRef = React.useRef<number | null>(null);
 
+  // PATCH(pizzapi): Toast notification state for ctx.ui.notify() events
+  interface Toast {
+    id: string;
+    message: string;
+    type: "info" | "warning" | "error";
+  }
+  const [toasts, setToasts] = React.useState<Toast[]>([]);
+  const handleUiNotifyRef = React.useRef<(payload: { message: string; notifyType?: "info" | "warning" | "error" }) => void>(() => {});
+
   // Stale-connection detection: track the last time any event arrived from the relay.
   // If the socket believes it's connected but nothing has arrived for STALE_THRESHOLD_MS
   // (NAT timeout, middlebox drop, background tab, etc.) we force-reconnect.
@@ -2648,6 +2657,19 @@ export function App() {
       thinkingStartTimesRef.current = new Map();
       thinkingDurationsRef.current = new Map();
     }
+
+    // PATCH(pizzapi): Forward ui_notify events from the runner to the toast system
+    // and append as a system message in the chat.
+    if (type === "ui_notify") {
+      const raw = evt as unknown as { message: string; notifyType?: "info" | "warning" | "error" };
+      // Strip ANSI escape codes (terminal color codes) so they don't show
+      // as raw gibberish in the web UI.
+      const clean = raw.message.replace(/\x1b\[[0-9;]*m/g, "");
+      const payload = { message: clean, notifyType: raw.notifyType };
+      handleUiNotifyRef.current(payload);
+      const prefix = payload.notifyType === "error" ? "❌" : payload.notifyType === "warning" ? "⚠️" : "🔔";
+      appendLocalSystemMessage(`${prefix} ${clean}`);
+    }
   }, [
     upsertMessage,
     upsertMessageDebounced,
@@ -2781,6 +2803,22 @@ export function App() {
       void checkVersionCompatibility();
     };
 
+    // PATCH(pizzapi): Handle ui_notify events from the runner (ctx.ui.notify)
+    const handleUiNotify = (payload: { message: string; notifyType?: "info" | "warning" | "error" }) => {
+      const id = `toast-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      const newToast: Toast = {
+        id,
+        message: payload.message,
+        type: payload.notifyType || "info",
+      };
+      setToasts((prev) => [...prev, newToast]);
+      // Auto-dismiss after 5 seconds
+      setTimeout(() => {
+        setToasts((prev) => prev.filter((t) => t.id !== id));
+      }, 5000);
+    };
+    handleUiNotifyRef.current = handleUiNotify;
+
     socket.on("state_snapshot", handleStateSnapshot);
     socket.on("meta_event", handleMetaEvent);
     socket.on("connect", handleReconnect);
@@ -2789,6 +2827,7 @@ export function App() {
       socket.off("state_snapshot", handleStateSnapshot);
       socket.off("meta_event", handleMetaEvent);
       socket.off("connect", handleReconnect);
+      socket.off("ui_notify", handleUiNotify);
       socket.disconnect();
       hubSocketRef.current = null;
       setHubSocket(null);
@@ -5173,6 +5212,34 @@ export function App() {
         )}
 
         <ShortcutsDialog open={showShortcutsHelp} onOpenChange={setShowShortcutsHelp} />
+
+        {/* PATCH(pizzapi): Toast notifications for ctx.ui.notify() */}
+        <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2 pointer-events-none">
+          {toasts.map((toast) => (
+            <div
+              key={toast.id}
+              className={cn(
+                "pointer-events-auto max-w-sm rounded-lg border p-4 shadow-lg backdrop-blur-sm animate-in slide-in-from-bottom-2 fade-in duration-200",
+                toast.type === "error"
+                  ? "bg-red-950/80 border-red-800 text-red-200"
+                  : toast.type === "warning"
+                    ? "bg-yellow-950/80 border-yellow-800 text-yellow-200"
+                    : "bg-zinc-900/90 border-zinc-800 text-zinc-200",
+              )}
+            >
+              <div className="flex items-start gap-3">
+                <div className="flex-1 text-sm font-medium">{toast.message}</div>
+                <button
+                  onClick={() => setToasts((prev) => prev.filter((t) => t.id !== toast.id))}
+                  className="shrink-0 rounded-md p-1 hover:bg-white/10 text-inherit transition-colors"
+                  aria-label="Dismiss"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
       </div>
     </div>
     </TooltipProvider>

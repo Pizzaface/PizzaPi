@@ -197,7 +197,7 @@ export function createRelayContext(
 
             if (hasOllamaKey) {
                 const cached = getCachedOllamaCloudModels();
-                if (cached) {
+                if (cached && Array.isArray(cached)) {
                     liveOllama = cached.map((model) => ({
                         provider: model.provider,
                         id: model.id,

@@ -519,6 +519,12 @@ export function registerLifecycleHandlers(deps: LifecycleHandlersDeps): void {
 
     // ── Compaction ────────────────────────────────────────────────────────────
 
+    // PATCH(pizzapi): Forward extension UI notify events to the web UI so
+    // ctx.ui.notify() shows up as a toast/notification in the chat.
+    pi.on("ui_notify", (event: any) => {
+        rctx.forwardEvent(event);
+    });
+
     pi.on("session_before_compact", () => {
         // Only emit if not already tracked (web-triggered compacts set the flag
         // in the exec handler before calling ctx.compact()).
