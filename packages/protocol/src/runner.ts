@@ -479,6 +479,31 @@ export interface RunnerServerToClientEvents {
     value: unknown;
   }) => void;
 
+  /** Package management: list installed packages */
+  packages_list: (data: {
+    requestId?: string;
+  }) => void;
+
+  /** Package management: install a package */
+  packages_install: (data: {
+    requestId?: string;
+    source: string;
+    local?: boolean;
+  }) => void;
+
+  /** Package management: remove a package */
+  packages_remove: (data: {
+    requestId?: string;
+    source: string;
+    local?: boolean;
+  }) => void;
+
+  /** Package management: update packages */
+  packages_update: (data: {
+    requestId?: string;
+    source?: string;
+  }) => void;
+
   /** Full snapshot of active trigger subscriptions for this runner's sessions.
    *  Sent after runner_registered so the runner can rebuild subscription state. */
   trigger_subscriptions_snapshot: (data: TriggerSubscriptionsSnapshot) => void;

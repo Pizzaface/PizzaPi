@@ -13,6 +13,7 @@ const EnvVarsSettings = React.lazy(() => import("./EnvVarsSettings"));
 const SystemPromptSettings = React.lazy(() => import("./SystemPromptSettings"));
 const TuiPrefsSettings = React.lazy(() => import("./TuiPrefsSettings"));
 const FastModelSettings = React.lazy(() => import("./FastModelSettings"));
+const PackagesSettings = React.lazy(() => import("./PackagesSettings"));
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -23,7 +24,8 @@ export type SettingsSection =
     | "envVars"
     | "systemPrompt"
     | "tuiPreferences"
-    | "goal";
+    | "goal"
+    | "packages";
 
 export interface RunnerSettingsPanelProps {
     runnerId: string;
@@ -52,6 +54,7 @@ const SETTINGS_TABS: { key: SettingsSection; label: string }[] = [
     { key: "envVars", label: "Env Vars" },
     { key: "systemPrompt", label: "System Prompt" },
     { key: "tuiPreferences", label: "TUI Prefs" },
+    { key: "packages", label: "Packages" },
 ];
 
 // ── Component ─────────────────────────────────────────────────────────────────
@@ -169,6 +172,9 @@ export function RunnerSettingsPanel({ runnerId }: RunnerSettingsPanelProps) {
             break;
         case "tuiPreferences":
             content = <TuiPrefsSettings {...sectionProps} />;
+            break;
+        case "packages":
+            content = <PackagesSettings {...sectionProps} />;
             break;
     }
 

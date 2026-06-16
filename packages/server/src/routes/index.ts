@@ -18,6 +18,7 @@ import { handleAttachmentsRoute } from "./attachments.js";
 import { handlePushRoute } from "./push.js";
 import { handleSettingsRoute } from "./settings.js";
 import { handleRunnerSettingsRoute } from "./runner-settings.js";
+import { handlePackagesRoute } from "./packages.js";
 import { handleMcpOAuthRoute } from "./mcp-oauth.js";
 import { handleTunnelRoute } from "./tunnel.js";
 import { handleTriggersRoute } from "./triggers.js";
@@ -34,6 +35,7 @@ const routers: RouteHandler[] = [
     handleTunnelRoute,     // Before runners — /api/tunnel/* is session-scoped, not runner-scoped
     handleRunnersRoute,
     handleRunnerSettingsRoute,
+    handlePackagesRoute,
     handleSessionsRoute,
     handleTriggersRoute,    // Before attachments — /api/sessions/:id/trigger
     handleWebhooksRoute,    // Webhook CRUD + fire endpoint
