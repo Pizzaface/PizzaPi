@@ -140,7 +140,7 @@ function getAssistantUsage(message: unknown): { tokens: number; cost: number } {
     if (!isAssistantMessage(message)) return { tokens: 0, cost: 0 };
     return {
         tokens: message.usage?.totalTokens ?? 0,
-        cost: message.usage?.cost?.total ?? 0,
+        cost: Math.max(0, message.usage?.cost?.total ?? 0),
     };
 }
 
