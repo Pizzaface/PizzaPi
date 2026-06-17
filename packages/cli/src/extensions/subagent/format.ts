@@ -33,7 +33,7 @@ export function formatUsageStats(
     if (usage.output) parts.push(`↓${formatTokens(usage.output)}`);
     if (usage.cacheRead) parts.push(`R${formatTokens(usage.cacheRead)}`);
     if (usage.cacheWrite) parts.push(`W${formatTokens(usage.cacheWrite)}`);
-    if (usage.cost) parts.push(`$${usage.cost.toFixed(4)}`);
+    if (usage.cost > 0) parts.push(`$${usage.cost.toFixed(4)}`);
     if (usage.contextTokens && usage.contextTokens > 0) {
         parts.push(`ctx:${formatTokens(usage.contextTokens)}`);
     }
@@ -127,7 +127,7 @@ export function aggregateUsage(results: SingleResult[]): {
         total.output += r.usage.output;
         total.cacheRead += r.usage.cacheRead;
         total.cacheWrite += r.usage.cacheWrite;
-        total.cost += r.usage.cost;
+        total.cost += Math.max(0, r.usage.cost);
         total.turns += r.usage.turns;
     }
     return total;
