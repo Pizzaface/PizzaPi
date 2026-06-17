@@ -507,17 +507,10 @@ export function SubagentResultCard({
         </div>
       )}
 
-      {/* Usage footer — single/chain only (parallel cards have their own) */}
-      {mode !== "parallel" && usageText && (
+      {/* Usage footer */}
+      {usageText && (
         <div className="border-t border-zinc-800 px-3 py-1.5 text-[10px] font-mono text-zinc-500">
-          {usageText}
-        </div>
-      )}
-
-      {/* Parallel aggregated usage footer */}
-      {mode === "parallel" && usageText && (
-        <div className="border-t border-zinc-800 px-3 py-1.5 text-[10px] font-mono text-zinc-500">
-          <span className="text-zinc-600 mr-1">Total:</span>
+          {mode !== "single" && <span className="text-zinc-600 mr-1">Total:</span>}
           {usageText}
         </div>
       )}
@@ -611,8 +604,6 @@ function ParallelTaskCard({
 }) {
   const isRunning = result.exitCode === -1;
   const isFailed = result.exitCode !== 0 || result.stopReason === "error" || result.stopReason === "aborted";
-  const finalOutput = getFinalOutput(result);
-  const toolCallCount = getToolCallCount(result);
   const usage = result.usage;
   const perCardUsage = formatUsage(usage, result.model);
 
