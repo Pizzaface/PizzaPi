@@ -7,7 +7,7 @@
  * visibility of service panel buttons in the session header.
  */
 import * as React from "react";
-import { Loader2, Server, ExternalLink, Eye, EyeOff, Zap, Hash, Power } from "lucide-react";
+import { Loader2, Server, ExternalLink, Eye, EyeOff, Zap, Hash } from "lucide-react";
 import { DynamicLucideIcon } from "@/components/service-panels/lucide-icon";
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 import { Switch } from "@/components/ui/switch";
@@ -100,6 +100,8 @@ export function RunnerServicesPanel({ runnerId }: RunnerServicesPanelProps) {
   const [error, setError] = React.useState<string | null>(null);
   const [hiddenPanels, setHiddenPanels] = React.useState<Set<string>>(loadHiddenPanels);
   const [togglingServices, setTogglingServices] = React.useState<Set<string>>(new Set());
+  const toggleErrorRef = React.useRef<string | null>(null);
+  const [toggleError, setToggleError] = React.useState<string | null>(null);
 
   const fetchServices = React.useCallback(async () => {
     setLoading(true);
@@ -184,6 +186,16 @@ export function RunnerServicesPanel({ runnerId }: RunnerServicesPanelProps) {
       setServices(prev => prev.map(svc => 
         svc.id === serviceId ? { ...svc, enabled: !enabled } : svc
       ));
+      const msg = err instanceof Error ? err.message : "Failed to toggle service";
+      setToggleError(msg);
+      toggleErrorRef.current = msg;
+      // Clear error after 5 seconds
+      setTimeout(() => {
+        if (toggleErrorRef.current === msg) {
+          setToggleError(null);
+          toggleErrorRef.current = null;
+        }
+      }, 5000);
     } finally {
       setTogglingServices(prev => {
         const next = new Set(prev);
@@ -244,6 +256,17 @@ export function RunnerServicesPanel({ runnerId }: RunnerServicesPanelProps) {
 
   return (
     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+      {toggleError && (
+        <div className="col-span-1 sm:col-span-2 flex items-center gap-2 px-3 py-2 rounded-lg border border-destructive/50 bg-destructive/10 text-destructive text-sm">
+          <span className="flex-1">{toggleError}</span>
+          <button
+            onClick={() => { setToggleError(null); toggleErrorRef.current = null; }}
+            className="text-destructive/60 hover:text-destructive transition-colors"
+          >
+            ✕
+          </button>
+        </div>
+      )}
       {services.map((svc) => {
         const isHidden = hiddenPanels.has(svc.id);
         const hasPanel = !!svc.panel;

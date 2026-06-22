@@ -845,21 +845,45 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                 logInfo(`[services] reconfiguring: disabling ${Array.from(newDisabledServices).join(", ") || "none"}`);
 
                 // Update config on disk
-                const { saveGlobalConfig, loadGlobalConfig } = await import("../config/io.js");
                 const currentConfig = loadGlobalConfig();
                 saveGlobalConfig({ ...currentConfig, disabledRunnerServices: Array.from(newDisabledServices) });
 
                 // Update runtime disabled set
                 disabledServices = newDisabledServices;
 
-                // Dispose and remove services that are now disabled
-                const servicesToDisable = registry.getAll().filter(s => newDisabledServices.has(s.id));
-                for (const service of servicesToDisable) {
-                    logInfo(`[services] disabling service "${service.id}"`);
-                    service.dispose();
-                    registry.unregister(service.id);
-                    panelEntries.delete(service.id);
-                    sigilServerPorts.delete(service.id);
+                const optsForInit = (id: string): any => {
+                    const opts: any = { isShuttingDown: () => isShuttingDown };
+                    const entry = panelEntries.get(id);
+                    if (entry) {
+                        if (entry.hasPanel !== false) {
+                            opts.announcePanel = (port: number) => {
+                                entry.port = port;
+                                tunnelService.registerPort(port, entry.label);
+                                logInfo(`[services] panel announced for "${id}" on port ${port}`);
+                                emitServiceAnnounce();
+                            };
+                        } else {
+                            opts.announceSigilServer = (port: number) => {
+                                sigilServerPorts.set(id, port);
+                                tunnelService.registerPort(port, id);
+                                logInfo(`[services] sigil resolve server announced for "${id}" on port ${port}`);
+                                emitServiceAnnounce();
+                            };
+                        }
+                    }
+                    return opts;
+                };
+
+                // Disable plugin services that are now in the disabled set
+                const BUILTIN_IDS = new Set(["terminal", "file-explorer", "git", "tunnel", "time"]);
+                const pluginsToDisable = registry.getAll()
+                    .filter(s => !BUILTIN_IDS.has(s.id) && newDisabledServices.has(s.id));
+                for (const svc of pluginsToDisable) {
+                    logInfo(`[services] disabling plugin service "${svc.id}"`);
+                    svc.dispose();
+                    registry.unregister(svc.id);
+                    panelEntries.delete(svc.id);
+                    sigilServerPorts.delete(svc.id);
                 }
 
                 // Re-discover plugin services with new disabled list
@@ -869,11 +893,10 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
 
                 // Register any newly enabled plugin services
                 for (const { handler, source, manifest } of discoveredServices) {
-                    if (registry.has(handler.id)) continue; // Already registered
+                    if (registry.has(handler.id)) continue;
                     try {
                         registry.register(handler);
                         logInfo(`[services] loaded plugin service "${handler.id}" from ${source.pluginName ?? source.path}`);
-                        // Track panel metadata if present
                         if (manifest?.panel || (manifest?.triggers && manifest.triggers.length > 0) || (manifest?.sigils && manifest.sigils.length > 0)) {
                             panelEntries.set(handler.id, {
                                 serviceId: handler.id,
@@ -884,27 +907,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                                 ...(manifest.panel?.requires ? { requires: manifest.panel.requires } : {}),
                             });
                         }
-                        // Initialize the newly enabled service
-                        const opts: any = { isShuttingDown: () => isShuttingDown };
-                        const entry = panelEntries.get(handler.id);
-                        if (entry) {
-                            if (entry.hasPanel !== false) {
-                                opts.announcePanel = (port: number) => {
-                                    entry.port = port;
-                                    tunnelService.registerPort(port, entry.label);
-                                    logInfo(`[services] panel announced for "${handler.id}" on port ${port}`);
-                                    emitServiceAnnounce();
-                                };
-                            } else {
-                                opts.announceSigilServer = (port: number) => {
-                                    sigilServerPorts.set(handler.id, port);
-                                    tunnelService.registerPort(port, handler.id);
-                                    logInfo(`[services] sigil resolve server announced for "${handler.id}" on port ${port}`);
-                                    emitServiceAnnounce();
-                                };
-                            }
-                        }
-                        handler.init(socket, opts);
+                        handler.init(socket, optsForInit(handler.id));
                     } catch (err) {
                         logWarn(`[services] failed to register plugin service "${handler.id}": ${err}`);
                     }

@@ -305,13 +305,19 @@ export async function getRunnerServices(
     sigilDefs?: ServiceSigilDef[];
 } | null> {
     const runner = await getRunnerState(runnerId);
-    if (!runner?.serviceIds) return null;
-    const serviceIds: string[] = safeJsonParse(runner.serviceIds) ?? [];
-    if (serviceIds.length === 0) return null;
+    if (!runner) return null;
+    // A runner that has never announced services returns null.
+    // Once it has announced (even if all services are disabled), return data
+    // so callers can still inspect disabledServiceIds.
+    const hasServices = !!runner.serviceIds;
+    const hasDisabled = !!runner.disabledServiceIds;
+    if (!hasServices && !hasDisabled) return null;
+    const serviceIds: string[] = runner.serviceIds ? safeJsonParse(runner.serviceIds) ?? [] : [];
+    const disabledServiceIds: string[] = runner.disabledServiceIds ? safeJsonParse(runner.disabledServiceIds) ?? [] : [];
+    if (serviceIds.length === 0 && disabledServiceIds.length === 0) return null;
     const panels = runner.panels ? safeJsonParse(runner.panels) ?? undefined : undefined;
     const triggerDefs = runner.triggerDefs ? safeJsonParse(runner.triggerDefs) ?? undefined : undefined;
     const sigilDefs = runner.sigilDefs ? safeJsonParse(runner.sigilDefs) ?? undefined : undefined;
-    const disabledServiceIds: string[] = runner.disabledServiceIds ? safeJsonParse(runner.disabledServiceIds) ?? [] : [];
     return {
         serviceIds,
         disabledServiceIds,
