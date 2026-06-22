@@ -36,7 +36,11 @@ import {
   ZapIcon,
   LinkIcon,
   WrenchIcon,
+  ChevronRightIcon,
+  ChevronsUpDownIcon,
+  ChevronsDownUpIcon,
 } from "lucide-react";
+import { cn } from "@/lib/utils";
 import { ToolCardShell } from "@/components/ui/tool-card";
 import { MessageResponse } from "@/components/ai-elements/message";
 import { extractTextFromToolContent, parseToolInputArgs } from "@/components/session-viewer/utils";
@@ -93,7 +97,7 @@ function formatUsage(usage: UsageStats, model?: string): string {
   if (usage.output) parts.push(`↓${formatTokens(usage.output)}`);
   if (usage.cacheRead) parts.push(`R${formatTokens(usage.cacheRead)}`);
   if (usage.cacheWrite) parts.push(`W${formatTokens(usage.cacheWrite)}`);
-  if (usage.cost) parts.push(`$${usage.cost.toFixed(4)}`);
+  if (usage.cost > 0) parts.push(`$${usage.cost.toFixed(4)}`);
   if (model) parts.push(model);
   return parts.join(" · ");
 }
@@ -108,7 +112,7 @@ function aggregateUsage(results: SingleResult[]): UsageStats {
     total.output += r.usage.output;
     total.cacheRead += r.usage.cacheRead;
     total.cacheWrite += r.usage.cacheWrite;
-    total.cost += r.usage.cost;
+    total.cost += Math.max(0, r.usage.cost);
     total.contextTokens += r.usage.contextTokens;
     total.turns += r.usage.turns;
   }
@@ -480,38 +484,28 @@ export function SubagentResultCard({
       </div>
 
       {/* Chat bubbles */}
-      <div className="flex flex-col gap-3 px-3 py-3 max-h-[32rem] overflow-y-auto">
-        {mode === "single" && results.length === 1 ? (
-          <AgentExchange result={results[0]} isRunning={results[0].exitCode === -1} />
-        ) : mode === "chain" ? (
-          // Chain: sequential exchanges with step dividers
-          results.map((r, i) => (
-            <AgentExchange
-              key={`${r.agent}-${i}`}
-              result={r}
-              isRunning={r.exitCode === -1}
-              showStepLabel
-            />
-          ))
-        ) : (
-          // Parallel: each agent exchange separated by a divider
-          results.map((r, i) => (
-            <React.Fragment key={`${r.agent}-${i}`}>
-              {i > 0 && (
-                <div className="flex items-center gap-2 px-1">
-                  <div className="h-px flex-1 bg-zinc-800" />
-                  <span className="text-[10px] font-medium text-zinc-600">{r.agent}</span>
-                  <div className="h-px flex-1 bg-zinc-800" />
-                </div>
-              )}
-              <AgentExchange result={r} isRunning={r.exitCode === -1} />
-            </React.Fragment>
-          ))
-        )}
+      {mode === "parallel" ? (
+        <ParallelTaskCards results={results} />
+      ) : (
+        <div className="flex flex-col gap-3 px-3 py-3 max-h-[32rem] overflow-y-auto">
+          {mode === "single" && results.length === 1 ? (
+            <AgentExchange result={results[0]} isRunning={results[0].exitCode === -1} />
+          ) : (
+            // Chain: sequential exchanges with step dividers
+            results.map((r, i) => (
+              <AgentExchange
+                key={`${r.agent}-${i}`}
+                result={r}
+                isRunning={r.exitCode === -1}
+                showStepLabel
+              />
+            ))
+          )}
 
-        {/* Still running indicator at end */}
-        {isRunning && results.every((r) => r.exitCode !== -1) && <ThinkingBubble />}
-      </div>
+          {/* Still running indicator at end */}
+          {isRunning && results.every((r) => r.exitCode !== -1) && <ThinkingBubble />}
+        </div>
+      )}
 
       {/* Usage footer */}
       {usageText && (
@@ -521,5 +515,148 @@ export function SubagentResultCard({
         </div>
       )}
     </ToolCardShell>
+  );
+}
+
+// ── Parallel task cards ─────────────────────────────────────────────────────
+
+/**
+ * Renders each parallel subagent task as its own independent, collapsible card.
+ * Each card has its own header (agent name + status + expand/collapse), conversation,
+ * and usage footer — giving the visual feeling of separate sessions.
+ */
+function ParallelTaskCards({
+  results,
+}: {
+  results: SingleResult[];
+}) {
+  // Default: all expanded when ≤3 tasks, first only when >3
+  const defaultExpanded = results.length <= 3
+    ? new Set(results.map((_, i) => i))
+    : new Set([0]);
+  const [expandedSet, setExpandedSet] = React.useState<Set<number>>(defaultExpanded);
+
+  const toggle = React.useCallback((idx: number) => {
+    setExpandedSet((prev) => {
+      const next = new Set(prev);
+      if (next.has(idx)) next.delete(idx);
+      else next.add(idx);
+      return next;
+    });
+  }, []);
+
+  const allExpanded = expandedSet.size === results.length;
+  const toggleAll = React.useCallback(() => {
+    if (allExpanded) {
+      setExpandedSet(new Set());
+    } else {
+      setExpandedSet(new Set(results.map((_, i) => i)));
+    }
+  }, [allExpanded, results.length]);
+
+  return (
+    <div className="flex flex-col gap-0">
+      {/* Summary bar with expand/collapse all */}
+      <div className="flex items-center justify-between px-3 py-1.5 border-b border-zinc-800/60 bg-zinc-900/40">
+        <span className="text-[10px] font-medium text-zinc-500">
+          {results.length} task{results.length !== 1 ? "s" : ""}
+        </span>
+        <button
+          onClick={toggleAll}
+          className="flex items-center gap-1 text-[10px] text-zinc-500 hover:text-zinc-300 transition-colors"
+        >
+          {allExpanded ? (
+            <><ChevronsDownUpIcon className="size-3" /> Collapse all</>
+          ) : (
+            <><ChevronsUpDownIcon className="size-3" /> Expand all</>
+          )}
+        </button>
+      </div>
+
+      {/* Individual task cards */}
+      {results.map((r, i) => (
+        <ParallelTaskCard
+          key={`${r.agent}-${i}`}
+          result={r}
+          index={i}
+          isExpanded={expandedSet.has(i)}
+          onToggle={() => toggle(i)}
+        />
+      ))}
+    </div>
+  );
+}
+
+/**
+ * A single parallel task card — independently collapsible, with its own
+ * conversation and usage footer.
+ */
+function ParallelTaskCard({
+  result,
+  index,
+  isExpanded,
+  onToggle,
+}: {
+  result: SingleResult;
+  index: number;
+  isExpanded: boolean;
+  onToggle: () => void;
+}) {
+  const isRunning = result.exitCode === -1;
+  const isFailed = result.exitCode !== 0 || result.stopReason === "error" || result.stopReason === "aborted";
+  const usage = result.usage;
+  const perCardUsage = formatUsage(usage, result.model);
+
+  return (
+    <div className={index > 0 ? "border-t border-zinc-800/60" : ""}>
+      {/* Card header — clickable to expand/collapse */}
+      <button
+        onClick={onToggle}
+        className="flex w-full items-center gap-2 px-3 py-2 hover:bg-zinc-900/60 transition-colors text-left"
+      >
+        <ChevronRightIcon
+          className={cn(
+            "size-3.5 shrink-0 text-zinc-500 transition-transform",
+            isExpanded && "rotate-90",
+          )}
+        />
+        <BotIcon className="size-3.5 shrink-0 text-violet-400" />
+        <span className="text-[0.75rem] font-medium text-zinc-300 flex-1 truncate">
+          {result.agent}
+        </span>
+
+        {/* Status pill */}
+        {isRunning ? (
+          <span className="inline-flex items-center gap-1 text-[10px] text-violet-400 shrink-0">
+            <Loader2Icon className="size-2.5 animate-spin" />
+            Running
+          </span>
+        ) : isFailed ? (
+          <span className="inline-flex items-center gap-1 text-[10px] text-red-400 shrink-0">
+            <XCircleIcon className="size-3" />
+            Failed
+          </span>
+        ) : (
+          <span className="inline-flex items-center gap-1 text-[10px] text-emerald-400 shrink-0">
+            <CheckCircle2Icon className="size-3" />
+            Done
+          </span>
+        )}
+      </button>
+
+      {/* Expanded content */}
+      {isExpanded && (
+        <div className="flex flex-col gap-3 px-3 py-3 max-h-[32rem] overflow-y-auto">
+          <AgentExchange result={result} isRunning={isRunning} />
+        </div>
+      )}
+
+      {/* Per-card usage footer — always visible when expanded */}
+      {isExpanded && perCardUsage && (
+        <div className="border-t border-zinc-800/60 px-3 py-1 text-[10px] font-mono text-zinc-600">
+          {perCardUsage}
+        </div>
+      )}
+    </div>
   );
 }

@@ -298,7 +298,7 @@ export async function runSingleAgent(
                         currentResult.usage.output += usage.output || 0;
                         currentResult.usage.cacheRead += usage.cacheRead || 0;
                         currentResult.usage.cacheWrite += usage.cacheWrite || 0;
-                        currentResult.usage.cost += (usage.cost as any)?.total || 0;
+                        currentResult.usage.cost += Math.max(0, (usage.cost as any)?.total ?? 0);
                         currentResult.usage.contextTokens = usage.totalTokens || 0;
                     }
                     if (!currentResult.model && assistantMsg.model) currentResult.model = assistantMsg.model;

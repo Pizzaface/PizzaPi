@@ -85,7 +85,7 @@ export function installFooter(rctx: RelayContext, ctx: ExtensionContext) {
                         totalOutput += entry.message.usage.output;
                         totalCacheRead += entry.message.usage.cacheRead;
                         totalCacheWrite += entry.message.usage.cacheWrite;
-                        totalCost += entry.message.usage.cost.total;
+                        totalCost += Math.max(0, entry.message.usage.cost.total);
                     }
                 }
 

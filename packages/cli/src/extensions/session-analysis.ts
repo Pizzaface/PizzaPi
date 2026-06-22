@@ -172,7 +172,7 @@ export function sessionAnalysisExtension(pi: ExtensionAPI) {
         totalInput: 0,
       };
       stats.turns += 1;
-      stats.totalCost += cost ?? 0;
+      stats.totalCost += Math.max(0, cost ?? 0);
       stats.cacheRead += cacheRead;
       stats.totalInput += input;
       s.models.set(key, stats);
@@ -207,7 +207,7 @@ export function sessionAnalysisExtension(pi: ExtensionAPI) {
     s.cumulativeCacheRead += cacheRead;
     s.cumulativeInput += input;
     s.totalTokens += totalTokens;
-    s.totalCost += cost ?? 0;
+    s.totalCost += Math.max(0, cost ?? 0);
     if (input > s.peakInput) s.peakInput = input;
 
     if (s.cacheSavingsKnown) {

@@ -14,7 +14,7 @@ export function buildTokenUsage(rctx: RelayContext): { input: number; output: nu
             output += entry.message.usage.output;
             cacheRead += entry.message.usage.cacheRead;
             cacheWrite += entry.message.usage.cacheWrite;
-            cost += entry.message.usage.cost.total;
+            cost += Math.max(0, entry.message.usage.cost.total);
         }
     }
     const contextUsage = rctx.latestCtx.getContextUsage?.();

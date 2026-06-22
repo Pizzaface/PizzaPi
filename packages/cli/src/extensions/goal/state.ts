@@ -134,7 +134,7 @@ export function recordEvaluation(
     if (!state || state.status !== "active") return undefined;
 
     state.evaluations.push(feedback);
-    if (feedback.cost) state.costSpend += feedback.cost;
+    if (feedback.cost) state.costSpend += Math.max(0, feedback.cost);
     if (feedback.tokensUsed) state.tokenSpend += feedback.tokensUsed;
 
     if (feedback.verdict === "met" && state.status === "active") {

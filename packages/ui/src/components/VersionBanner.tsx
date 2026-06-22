@@ -32,7 +32,8 @@ export function VersionBanner({
 
     if (!message || dismissed) return null;
 
-    const isUpdate = message.toLowerCase().includes("newer") || message.toLowerCase().includes("deployed");
+    const lc = message.toLowerCase();
+    const isUpdate = lc.includes("newer") || lc.includes("deployed");
     const toneClasses = protocolCompatible
         ? "bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/20"
         : "bg-red-500/10 text-red-600 dark:text-red-400 border-red-500/20";
