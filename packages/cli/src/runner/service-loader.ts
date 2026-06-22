@@ -585,6 +585,8 @@ export interface DiscoverServicesOptions {
     cwd?: string;
     /** Additional plugin directories to scan for manifest-declared services */
     pluginDirs?: string[];
+    /** Service IDs to skip, regardless of source. */
+    disabledIds?: Set<string>;
 }
 
 /**
@@ -605,6 +607,7 @@ export async function discoverServices(
     // 1. Global services directory
     const globalResult = await loadServicesFromDir(globalServicesDir(), "global-dir");
     for (const s of globalResult.services) {
+        if (options.disabledIds?.has(s.handler.id)) continue;
         if (seenIds.has(s.handler.id)) {
             allErrors.push({
                 path: s.source.path,
@@ -624,6 +627,7 @@ export async function discoverServices(
             "project-dir",
         );
         for (const s of projectResult.services) {
+            if (options.disabledIds?.has(s.handler.id)) continue;
             if (seenIds.has(s.handler.id)) {
                 allErrors.push({
                     path: s.source.path,
@@ -641,6 +645,7 @@ export async function discoverServices(
     if (options.pluginDirs && options.pluginDirs.length > 0) {
         const pluginResult = await loadServicesFromPlugins(options.pluginDirs);
         for (const s of pluginResult.services) {
+            if (options.disabledIds?.has(s.handler.id)) continue;
             if (seenIds.has(s.handler.id)) {
                 allErrors.push({
                     path: s.source.path,

@@ -293,6 +293,71 @@ describe("loadConfig disabledMcpServers merge", () => {
   });
 });
 
+describe("loadConfig disabledRunnerServices merge", () => {
+  let tempDir: string;
+  let globalDir: string;
+
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), "pizzapi-config-svcs-merge-"));
+    globalDir = join(tempDir, "global-pizzapi");
+    mkdirSync(globalDir, { recursive: true });
+    _setGlobalConfigDir(globalDir);
+  });
+
+  afterEach(() => {
+    _setGlobalConfigDir(null);
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  test("merges global and project disabledRunnerServices into a union", () => {
+    writeFileSync(
+      join(globalDir, "config.json"),
+      JSON.stringify({ disabledRunnerServices: ["git"] }),
+    );
+
+    const projectDir = join(tempDir, "project");
+    mkdirSync(join(projectDir, ".pizzapi"), { recursive: true });
+    writeFileSync(
+      join(projectDir, ".pizzapi", "config.json"),
+      JSON.stringify({ disabledRunnerServices: ["time"] }),
+    );
+
+    const config = loadConfig(projectDir);
+    expect(config.disabledRunnerServices).toBeDefined();
+    expect(new Set(config.disabledRunnerServices)).toEqual(new Set(["git", "time"]));
+  });
+
+  test("deduplicates overlapping entries and filters non-string values", () => {
+    writeFileSync(
+      join(globalDir, "config.json"),
+      JSON.stringify({ disabledRunnerServices: ["git", "time"] }),
+    );
+
+    const projectDir = join(tempDir, "project");
+    mkdirSync(join(projectDir, ".pizzapi"), { recursive: true });
+    writeFileSync(
+      join(projectDir, ".pizzapi", "config.json"),
+      JSON.stringify({ disabledRunnerServices: ["time", 123, null] }),
+    );
+
+    const config = loadConfig(projectDir);
+    expect(config.disabledRunnerServices).toBeDefined();
+    expect(config.disabledRunnerServices!.length).toBe(2);
+    expect(new Set(config.disabledRunnerServices)).toEqual(new Set(["git", "time"]));
+  });
+
+  test("returns no disabledRunnerServices when neither config has them", () => {
+    writeFileSync(join(globalDir, "config.json"), JSON.stringify({}));
+
+    const projectDir = join(tempDir, "project");
+    mkdirSync(join(projectDir, ".pizzapi"), { recursive: true });
+    writeFileSync(join(projectDir, ".pizzapi", "config.json"), JSON.stringify({}));
+
+    const config = loadConfig(projectDir);
+    expect(config.disabledRunnerServices).toBeUndefined();
+  });
+});
+
 describe("resolveSandboxConfig", () => {
   test("throws on invalid sandbox mode", () => {
     expect(() =>

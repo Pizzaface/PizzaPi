@@ -22,6 +22,7 @@ import {
 } from "@pizzapi/protocol";
 import { TunnelClient } from "@pizzapi/tunnel";
 import { loadGlobalConfig, defaultAgentDir, expandHome, loadConfig } from "../config.js";
+import type { PizzaPiConfig } from "../config.js";
 import { findSessionPathById } from "./session-list-cache.js";
 import { cleanupSessionAttachments, sweepOrphanedAttachments } from "../extensions/session-attachments.js";
 import { triggerSessionClose } from "../extensions/providers/extension.js";
@@ -82,6 +83,25 @@ function resolveRequires(requires: string[]): Record<string, string> {
         if (key) params[key] = resolvePizzaPiVar(name);
     }
     return params;
+}
+
+/**
+ * Resolve the set of runner service IDs that should be skipped.
+ * Built-in services: "terminal", "file-explorer", "git", "tunnel", "time".
+ * Combines the PIZZAPI_DISABLED_RUNNER_SERVICES env var (comma-separated)
+ * with the disabledRunnerServices config array.
+ */
+export function resolveDisabledRunnerServices(
+    config: Partial<PizzaPiConfig>,
+    envValue: string | undefined = process.env.PIZZAPI_DISABLED_RUNNER_SERVICES,
+): Set<string> {
+    const fromEnv = envValue
+        ? envValue.split(",").map((s) => s.trim()).filter(Boolean)
+        : [];
+    const fromConfig = (config.disabledRunnerServices ?? []).filter(
+        (s): s is string => typeof s === "string",
+    );
+    return new Set([...fromEnv, ...fromConfig]);
 }
 
 /**
@@ -209,6 +229,10 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
     // env vars aren't available).
     const daemonConfig = loadGlobalConfig();
 
+    // Resolve runner services that should be skipped (config + env var).
+    const disabledServices = resolveDisabledRunnerServices(daemonConfig);
+    const isServiceDisabled = (id: string) => disabledServices.has(id);
+
     // Priority: env var > config.json > default
     const apiKey =
         process.env.PIZZAPI_RUNNER_API_KEY ??
@@ -291,9 +315,21 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
 
         // ── Service registry ──────────────────────────────────────────────
         const registry = new ServiceRegistry();
-        registry.register(new TerminalService());
-        registry.register(new FileExplorerService());
-        registry.register(new GitService());
+        if (isServiceDisabled("terminal")) {
+            logInfo('[services] built-in service "terminal" disabled by config');
+        } else {
+            registry.register(new TerminalService());
+        }
+        if (isServiceDisabled("file-explorer")) {
+            logInfo('[services] built-in service "file-explorer" disabled by config');
+        } else {
+            registry.register(new FileExplorerService());
+        }
+        if (isServiceDisabled("git")) {
+            logInfo('[services] built-in service "git" disabled by config');
+        } else {
+            registry.register(new GitService());
+        }
         const cleanupGitSessionState = (sessionId: string) => {
             const gitService = registry.get("git");
             if (!gitService) return;
@@ -386,9 +422,18 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             }
         };
         const tunnelService = new TunnelService();
-        registry.register(tunnelService);
-        const timeService = new TimeService();
-        registry.register(timeService);
+        if (isServiceDisabled("tunnel")) {
+            logInfo('[services] built-in service "tunnel" disabled by config');
+        } else {
+            registry.register(tunnelService);
+        }
+
+        const timeService = isServiceDisabled("time") ? null : new TimeService();
+        if (timeService) {
+            registry.register(timeService);
+        } else {
+            logInfo('[services] built-in service "time" disabled by config');
+        }
 
         const formatTunnelLog = (...args: unknown[]) => args.map((arg) => {
             if (typeof arg === "string") return arg;
@@ -441,14 +486,16 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
         // Trigger/sigil defs are tracked via panelEntries (no port here) so they appear in
         // service_announce. The resolve port is tracked separately in sigilServerPorts and
         // stamped onto the sigil defs at announce time.
-        panelEntries.set("time", {
-            serviceId: "time",
-            label: "Time",
-            icon: "clock",
-            hasPanel: false,
-            triggers: TIME_TRIGGER_DEFS,
-            sigils: TIME_SIGIL_DEFS,
-        });
+        if (timeService) {
+            panelEntries.set("time", {
+                serviceId: "time",
+                label: "Time",
+                icon: "clock",
+                hasPanel: false,
+                triggers: TIME_TRIGGER_DEFS,
+                sigils: TIME_SIGIL_DEFS,
+            });
+        }
 
         // Ports for services that run an HTTP resolve server but have no UI panel.
         // Keyed by serviceId. Populated when the service calls announceSigilServer().
@@ -500,7 +547,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
         // The runner_registered handler awaits this before announcing services.
         let resolvePluginServices: () => void;
         const pluginServicesReady = new Promise<void>(r => { resolvePluginServices = r; });
-        discoverServices({ pluginDirs: globalPluginDirs() }).then(({ services, errors }) => {
+        discoverServices({ pluginDirs: globalPluginDirs(), disabledIds: disabledServices }).then(({ services, errors }) => {
             for (const { handler, source, manifest } of services) {
                 try {
                     registry.register(handler);

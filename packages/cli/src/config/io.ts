@@ -297,6 +297,19 @@ export function loadConfig(cwd: string = process.cwd()): PizzaPiConfig {
         delete config.disabledMcpServers;
     }
 
+    // Merge disabledRunnerServices from both scopes (union).
+    const globalDisabledServices = Array.isArray(global.disabledRunnerServices) ? global.disabledRunnerServices : [];
+    const projectDisabledServices = Array.isArray(project.disabledRunnerServices) ? project.disabledRunnerServices : [];
+    const disabledRunnerServices = [
+        ...globalDisabledServices,
+        ...projectDisabledServices,
+    ].filter((s): s is string => typeof s === "string");
+    if (disabledRunnerServices.length > 0) {
+        config.disabledRunnerServices = [...new Set(disabledRunnerServices)];
+    } else {
+        delete config.disabledRunnerServices;
+    }
+
     return config;
 }
 

@@ -74,6 +74,11 @@ You can also override any setting with **environment variables**.
   // Set to false to suppress slow-startup notifications.
   "slowStartupWarning": true,
 
+  // Runner service IDs to skip loading.
+  // Built-in services: "terminal", "file-explorer", "git", "tunnel", "time".
+  // Plugin-provided services use the id declared in their manifest.
+  "disabledRunnerServices": ["git", "time"],
+
   // OS-level sandbox configuration.
   // mode: "none" | "basic" (default) | "full"
   // All other fields are srt-native overrides merged on top of the preset.
@@ -123,6 +128,7 @@ You can also override any setting with **environment variables**.
 | `sandbox.filesystem.allowWrite` | `string[]` | `[".", "/tmp"]` | Paths allowed for writing (replaces preset when set). |
 | `sandbox.filesystem.denyWrite` | `string[]` | *merged with preset* | Additional paths blocked from writing. |
 | `slowStartupWarning` | `boolean` | `true` | Show warnings when startup takes longer than expected (slow MCP servers, etc.). See [Safe Mode](/PizzaPi/security/sandbox/). |
+| `disabledRunnerServices` | `string[]` | `[]` | Runner service IDs to skip. Built-in services: `"terminal"`, `"file-explorer"`, `"git"`, `"tunnel"`, `"time"`. Plugin services use the id declared in their manifest. |
 | `subagent.maxParallelTasks` | `number` | `8` | Max tasks in a single parallel subagent call. **Global config only.** |
 | `subagent.maxConcurrency` | `number` | `4` | Max concurrent agent sessions running simultaneously. **Global config only.** |
 | `goal.evaluatorModel` | `string` | cheapest available Haiku/mini | Model (`provider:modelId` or `modelId`) used by the `/goal` LLM evaluator. |
@@ -227,6 +233,7 @@ Every config option can also be set as an environment variable. Environment vari
 | `PIZZAPI_NO_PLUGINS` | — | Set to `1` to skip plugin loading ([Safe Mode](/PizzaPi/security/sandbox/)) |
 | `PIZZAPI_NO_HOOKS` | — | Set to `1` to skip hook execution ([Safe Mode](/PizzaPi/security/sandbox/)) |
 | `PIZZAPI_NO_RELAY` | — | Set to `1` to skip relay connection ([Safe Mode](/PizzaPi/security/sandbox/)) |
+| `PIZZAPI_DISABLED_RUNNER_SERVICES` | `disabledRunnerServices` | Comma-separated list of service IDs to skip (e.g. `git,time`) |
 | `PIZZAPI_SANDBOX` | `sandbox.mode` | Override sandbox mode: `none`, `basic`, or `full` ([Sandbox](/PizzaPi/security/sandbox/)) |
 | `PIZZAPI_NO_SANDBOX` | — | Set to `1` to disable sandbox (shorthand for `none`) ([Sandbox](/PizzaPi/security/sandbox/)) |
 
