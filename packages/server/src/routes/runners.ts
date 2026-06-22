@@ -458,9 +458,83 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
         const services = await getRunnerServices(runnerId);
         return Response.json({
             serviceIds: services?.serviceIds ?? [],
+            disabledServiceIds: services?.disabledServiceIds ?? [],
             panels: services?.panels ?? [],
             triggerDefs: services?.triggerDefs ?? [],
             sigilDefs: services?.sigilDefs ?? [],
+        });
+    }
+
+    // ── Enable/disable a runner service ─────────────────────────────
+    const serviceEnabledMatch = url.pathname.match(/^\/api\/runners\/([^/]+)\/services\/([^/]+)\/enabled$/);
+    if (serviceEnabledMatch && req.method === "PUT") {
+        const identity = await requireSession(req);
+        if (identity instanceof Response) return identity;
+
+        const runnerId = decodeURIComponent(serviceEnabledMatch[1]);
+        const serviceId = decodeURIComponent(serviceEnabledMatch[2]);
+        const runner = await getRunnerData(runnerId);
+        if (!runner) return Response.json({ error: "Runner not found" }, { status: 404 });
+        if (runner.userId !== identity.userId) return Response.json({ error: "Forbidden" }, { status: 403 });
+
+        const body = await req.json().catch(() => null) as { enabled?: boolean } | null;
+        if (!body || typeof body.enabled !== "boolean") {
+            return Response.json({ error: "Missing or invalid 'enabled' field" }, { status: 400 });
+        }
+
+        const services = await getRunnerServices(runnerId);
+        if (!services) {
+            return Response.json({ error: "No services registered for this runner" }, { status: 404 });
+        }
+
+        const availableServiceIds = new Set(services.serviceIds);
+        const disabledServiceIds = new Set(services.disabledServiceIds);
+        const isCurrentlyDisabled = disabledServiceIds.has(serviceId);
+        const isCurrentlyAvailable = availableServiceIds.has(serviceId);
+
+        // Service doesn't exist
+        if (!isCurrentlyDisabled && !isCurrentlyAvailable) {
+            return Response.json({ error: `Service '${serviceId}' not found` }, { status: 404 });
+        }
+
+        // No change needed
+        if (body.enabled === !isCurrentlyDisabled) {
+            return Response.json({
+                ok: true,
+                serviceId,
+                enabled: !isCurrentlyDisabled,
+                disabledServiceIds: Array.from(disabledServiceIds),
+            });
+        }
+
+        // Build new disabled list
+        const newDisabledIds = Array.from(disabledServiceIds);
+        if (body.enabled) {
+            // Enable: remove from disabled list
+            newDisabledIds.splice(newDisabledIds.indexOf(serviceId), 1);
+        } else {
+            // Disable: add to disabled list
+            newDisabledIds.push(serviceId);
+        }
+
+        // Send reconfigure command to runner daemon
+        const runnerSocket = getLocalRunnerSocket(runnerId);
+        if (!runnerSocket) {
+            return Response.json({ error: "Runner is not connected to this server" }, { status: 502 });
+        }
+
+        try {
+            runnerSocket.emit("reconfigure_services", { disabledServiceIds: newDisabledIds });
+        } catch (err) {
+            log.error("Failed to send reconfigure_services to runner:", err);
+            return Response.json({ error: "Failed to send reconfigure command to runner" }, { status: 502 });
+        }
+
+        return Response.json({
+            ok: true,
+            serviceId,
+            enabled: body.enabled,
+            disabledServiceIds: newDisabledIds,
         });
     }
 

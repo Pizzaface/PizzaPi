@@ -516,6 +516,11 @@ export interface RunnerServerToClientEvents {
    *  The relay forwards this verbatim; it does not inspect serviceId. */
   service_message: (envelope: ServiceEnvelope) => void;
 
+  /** Instructs runner to update its disabled service list and restart/stop services accordingly. */
+  reconfigure_services: (data: {
+    disabledServiceIds: string[];
+  }) => void;
+
   /** Generic error */
   error: (data: {
     message: string;

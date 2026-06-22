@@ -16,6 +16,7 @@ const { attachServiceAnnounceListener, seedServiceCache } = await import("./useR
 
 // The internal cache keys used by the module
 const SERVICE_IDS_KEY = "__serviceIds";
+const DISABLED_SERVICE_IDS_KEY = "__disabledServiceIds";
 const PANELS_KEY = "__panels";
 const TRIGGER_DEFS_KEY = "__triggerDefs";
 const SIGIL_DEFS_KEY = "__sigilDefs";
@@ -46,12 +47,14 @@ describe("attachServiceAnnounceListener", () => {
 
         socket.emit("service_announce", {
             serviceIds: ["github", "godmother"],
+            disabledServiceIds: ["terminal"],
             panels: [{ serviceId: "github", port: 3001, label: "GitHub", icon: "git-branch" }],
             triggerDefs: [{ type: "github:pr_comment", label: "PR Comment" }],
             sigilDefs: [{ type: "pr", label: "Pull Request", serviceId: "github" }],
         });
 
         expect(socket[SERVICE_IDS_KEY]).toEqual(["github", "godmother"]);
+        expect(socket[DISABLED_SERVICE_IDS_KEY]).toEqual(["terminal"]);
         expect(socket[PANELS_KEY]).toHaveLength(1);
         expect(socket[TRIGGER_DEFS_KEY]).toHaveLength(1);
         expect(socket[SIGIL_DEFS_KEY]).toHaveLength(1);
@@ -63,6 +66,7 @@ describe("attachServiceAnnounceListener", () => {
 
         socket.emit("service_announce", {
             serviceIds: ["github"],
+            disabledServiceIds: [],
             panels: [],
             triggerDefs: [],
             sigilDefs: [],
@@ -72,6 +76,7 @@ describe("attachServiceAnnounceListener", () => {
         socket.emit("disconnect");
 
         expect(socket[SERVICE_IDS_KEY]).toBeUndefined();
+        expect(socket[DISABLED_SERVICE_IDS_KEY]).toBeUndefined();
         expect(socket[PANELS_KEY]).toBeUndefined();
         expect(socket[TRIGGER_DEFS_KEY]).toBeUndefined();
         expect(socket[SIGIL_DEFS_KEY]).toBeUndefined();
@@ -84,6 +89,7 @@ describe("seedServiceCache", () => {
         attachServiceAnnounceListener(prev);
         prev.emit("service_announce", {
             serviceIds: ["github"],
+            disabledServiceIds: ["terminal"],
             panels: [{ serviceId: "github", port: 3001, label: "GitHub", icon: "git-branch" }],
             triggerDefs: [{ type: "github:pr_comment", label: "PR Comment" }],
             sigilDefs: [{ type: "pr", label: "Pull Request", serviceId: "github" }],
@@ -93,6 +99,7 @@ describe("seedServiceCache", () => {
         seedServiceCache(next, prev);
 
         expect(next[SERVICE_IDS_KEY]).toEqual(["github"]);
+        expect(next[DISABLED_SERVICE_IDS_KEY]).toEqual(["terminal"]);
         expect(next[PANELS_KEY]).toHaveLength(1);
         expect(next[TRIGGER_DEFS_KEY]).toHaveLength(1);
         expect(next[SIGIL_DEFS_KEY]).toHaveLength(1);

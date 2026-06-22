@@ -63,6 +63,8 @@ export interface RunnerInfo {
   platform?: string | null;
   /** Service IDs available on this runner (cached from last service_announce). */
   serviceIds?: string[];
+  /** Service IDs that are currently disabled on the runner. */
+  disabledServiceIds?: string[];
   /** Panel metadata for services that expose a UI panel. */
   panels?: ServicePanelInfo[];
   /** Trigger types declared by services on this runner (from service_announce). */
@@ -278,6 +280,8 @@ export interface ServiceSigilDef {
 /** Payload for the service_announce event. */
 export interface ServiceAnnounceData {
   serviceIds: string[];
+  /** Service IDs that are currently disabled on the runner. */
+  disabledServiceIds?: string[];
   /** Panels exposed by plugin services (present when ≥1 service has a panel). */
   panels?: ServicePanelInfo[];
   /** Trigger types declared by services on this runner. */

@@ -262,6 +262,7 @@ export async function updateRunnerServices(
     panels?: Array<{ serviceId: string; port: number; label: string; icon: string }>,
     triggerDefs?: Array<{ type: string; label: string; description?: string; schema?: Record<string, unknown> }>,
     sigilDefs?: Array<{ type: string; label: string; description?: string; icon?: string; serviceId?: string; resolve?: string; schema?: Record<string, unknown>; aliases?: string[] }>,
+    disabledServiceIds?: string[],
 ): Promise<void> {
     const fields: Record<string, string> = {
         serviceIds: JSON.stringify(serviceIds),
@@ -281,6 +282,11 @@ export async function updateRunnerServices(
     } else {
         fields.sigilDefs = "[]";
     }
+    if (disabledServiceIds && disabledServiceIds.length > 0) {
+        fields.disabledServiceIds = JSON.stringify(disabledServiceIds);
+    } else {
+        fields.disabledServiceIds = "[]";
+    }
     await updateRunnerFields(runnerId, fields);
     await broadcastRunnerUpdated(runnerId);
 }
@@ -293,6 +299,7 @@ export async function getRunnerServices(
     runnerId: string,
 ): Promise<{
     serviceIds: string[];
+    disabledServiceIds: string[];
     panels?: Array<{ serviceId: string; port: number; label: string; icon: string }>;
     triggerDefs?: ServiceTriggerDef[];
     sigilDefs?: ServiceSigilDef[];
@@ -304,8 +311,10 @@ export async function getRunnerServices(
     const panels = runner.panels ? safeJsonParse(runner.panels) ?? undefined : undefined;
     const triggerDefs = runner.triggerDefs ? safeJsonParse(runner.triggerDefs) ?? undefined : undefined;
     const sigilDefs = runner.sigilDefs ? safeJsonParse(runner.sigilDefs) ?? undefined : undefined;
+    const disabledServiceIds: string[] = runner.disabledServiceIds ? safeJsonParse(runner.disabledServiceIds) ?? [] : [];
     return {
         serviceIds,
+        disabledServiceIds,
         ...(panels && panels.length > 0 ? { panels } : {}),
         ...(triggerDefs && triggerDefs.length > 0 ? { triggerDefs } : {}),
         ...(sigilDefs && sigilDefs.length > 0 ? { sigilDefs } : {}),
@@ -406,6 +415,7 @@ export async function getConnectedSessionsForRunner(runnerId: string): Promise<A
  */
 function runnerDataToInfo(r: RedisRunnerData, sessionCount = 0): RunnerInfo {
     const serviceIds: string[] | undefined = r.serviceIds ? safeJsonParse(r.serviceIds) ?? undefined : undefined;
+    const disabledServiceIds: string[] | undefined = r.disabledServiceIds ? safeJsonParse(r.disabledServiceIds) ?? undefined : undefined;
     const panels = r.panels ? safeJsonParse(r.panels) ?? undefined : undefined;
     const triggerDefs = r.triggerDefs ? safeJsonParse(r.triggerDefs) ?? undefined : undefined;
     const sigilDefs = r.sigilDefs ? safeJsonParse(r.sigilDefs) ?? undefined : undefined;
@@ -422,6 +432,7 @@ function runnerDataToInfo(r: RedisRunnerData, sessionCount = 0): RunnerInfo {
         version: r.version ?? null,
         platform: r.platform ?? null,
         ...(serviceIds ? { serviceIds } : {}),
+        ...(disabledServiceIds ? { disabledServiceIds } : {}),
         ...(panels ? { panels } : {}),
         ...(triggerDefs && triggerDefs.length > 0 ? { triggerDefs } : {}),
         ...(sigilDefs && sigilDefs.length > 0 ? { sigilDefs } : {}),

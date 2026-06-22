@@ -91,6 +91,14 @@ export class ServiceRegistry {
         this.handlers.set(handler.id, handler);
     }
 
+    unregister(id: string): boolean {
+        return this.handlers.delete(id);
+    }
+
+    has(id: string): boolean {
+        return this.handlers.has(id);
+    }
+
     get(id: string): ServiceHandler | undefined {
         return this.handlers.get(id);
     }

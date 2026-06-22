@@ -21,7 +21,7 @@ import {
     type RunnerServerToClientEvents,
 } from "@pizzapi/protocol";
 import { TunnelClient } from "@pizzapi/tunnel";
-import { loadGlobalConfig, defaultAgentDir, expandHome, loadConfig } from "../config.js";
+import { loadGlobalConfig, saveGlobalConfig, defaultAgentDir, expandHome, loadConfig } from "../config.js";
 import type { PizzaPiConfig } from "../config.js";
 import { findSessionPathById } from "./session-list-cache.js";
 import { cleanupSessionAttachments, sweepOrphanedAttachments } from "../extensions/session-attachments.js";
@@ -230,7 +230,8 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
     const daemonConfig = loadGlobalConfig();
 
     // Resolve runner services that should be skipped (config + env var).
-    const disabledServices = resolveDisabledRunnerServices(daemonConfig);
+    // Use let instead of const to allow mutation during reconfiguration.
+    let disabledServices = resolveDisabledRunnerServices(daemonConfig);
     const isServiceDisabled = (id: string) => disabledServices.has(id);
 
     // Priority: env var > config.json > default
@@ -504,6 +505,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
         /** Emit service_announce with current service IDs, panel metadata, and trigger defs. */
         const emitServiceAnnounce = () => {
             const allServiceIds = registry.getAll().map((s) => s.id);
+            const disabledServiceIds = Array.from(disabledServices).filter(id => !allServiceIds.includes(id));
             // Map panel entries to ServicePanelInfo, resolving requires → panelParams
             const panels = Array.from(panelEntries.values())
                 .filter((p): p is PanelEntry & { port: number } => p.port != null && p.hasPanel !== false)
@@ -536,6 +538,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             }
             (socket as any).emit("service_announce", {
                 serviceIds: allServiceIds,
+                ...(disabledServiceIds.length > 0 ? { disabledServiceIds } : {}),
                 ...(panels.length > 0 ? { panels } : {}),
                 ...(allTriggerDefs.length > 0 ? { triggerDefs: allTriggerDefs } : {}),
                 ...(allSigilDefs.length > 0 ? { sigilDefs: allSigilDefs } : {}),
@@ -821,6 +824,102 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                 void sweepOrphanedAttachments(new Set(runningSessions.keys())).catch(() => {});
             } catch (err) {
                 logError(`[daemon] runner_registered handler failed: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`);
+            }
+        });
+
+        // ── Service reconfiguration ───────────────────────────────────────
+        // Update the disabled services list at runtime and reinitialize services.
+        socket.on("reconfigure_services", async (data: any) => {
+            if (isShuttingDown) return;
+            try {
+                const { disabledServiceIds } = data ?? {};
+                if (!Array.isArray(disabledServiceIds)) {
+                    logWarn("[services] invalid reconfigure_services payload");
+                    return;
+                }
+
+                const newDisabledServices = new Set(
+                    disabledServiceIds.filter((id): id is string => typeof id === "string"),
+                );
+
+                logInfo(`[services] reconfiguring: disabling ${Array.from(newDisabledServices).join(", ") || "none"}`);
+
+                // Update config on disk
+                const { saveGlobalConfig, loadGlobalConfig } = await import("../config/io.js");
+                const currentConfig = loadGlobalConfig();
+                saveGlobalConfig({ ...currentConfig, disabledRunnerServices: Array.from(newDisabledServices) });
+
+                // Update runtime disabled set
+                disabledServices = newDisabledServices;
+
+                // Dispose and remove services that are now disabled
+                const servicesToDisable = registry.getAll().filter(s => newDisabledServices.has(s.id));
+                for (const service of servicesToDisable) {
+                    logInfo(`[services] disabling service "${service.id}"`);
+                    service.dispose();
+                    registry.unregister(service.id);
+                    panelEntries.delete(service.id);
+                    sigilServerPorts.delete(service.id);
+                }
+
+                // Re-discover plugin services with new disabled list
+                const { services: discoveredServices, errors } = await discoverServices(
+                    { pluginDirs: globalPluginDirs(), disabledIds: newDisabledServices },
+                );
+
+                // Register any newly enabled plugin services
+                for (const { handler, source, manifest } of discoveredServices) {
+                    if (registry.has(handler.id)) continue; // Already registered
+                    try {
+                        registry.register(handler);
+                        logInfo(`[services] loaded plugin service "${handler.id}" from ${source.pluginName ?? source.path}`);
+                        // Track panel metadata if present
+                        if (manifest?.panel || (manifest?.triggers && manifest.triggers.length > 0) || (manifest?.sigils && manifest.sigils.length > 0)) {
+                            panelEntries.set(handler.id, {
+                                serviceId: handler.id,
+                                label: manifest.label,
+                                icon: manifest.icon,
+                                ...(manifest.triggers && manifest.triggers.length > 0 ? { triggers: manifest.triggers } : {}),
+                                ...(manifest.sigils && manifest.sigils.length > 0 ? { sigils: manifest.sigils } : {}),
+                                ...(manifest.panel?.requires ? { requires: manifest.panel.requires } : {}),
+                            });
+                        }
+                        // Initialize the newly enabled service
+                        const opts: any = { isShuttingDown: () => isShuttingDown };
+                        const entry = panelEntries.get(handler.id);
+                        if (entry) {
+                            if (entry.hasPanel !== false) {
+                                opts.announcePanel = (port: number) => {
+                                    entry.port = port;
+                                    tunnelService.registerPort(port, entry.label);
+                                    logInfo(`[services] panel announced for "${handler.id}" on port ${port}`);
+                                    emitServiceAnnounce();
+                                };
+                            } else {
+                                opts.announceSigilServer = (port: number) => {
+                                    sigilServerPorts.set(handler.id, port);
+                                    tunnelService.registerPort(port, handler.id);
+                                    logInfo(`[services] sigil resolve server announced for "${handler.id}" on port ${port}`);
+                                    emitServiceAnnounce();
+                                };
+                            }
+                        }
+                        handler.init(socket, opts);
+                    } catch (err) {
+                        logWarn(`[services] failed to register plugin service "${handler.id}": ${err}`);
+                    }
+                }
+
+                for (const { path, error } of errors) {
+                    logWarn(`[services] plugin service load error at ${path}: ${error}`);
+                }
+
+                // Re-announce services
+                emitServiceAnnounce();
+
+                logInfo(`[services] reconfiguration complete. Active services: ${registry.getAll().map(s => s.id).join(", ")}`);
+            } catch (err) {
+                logError(`[services] reconfigure_services handler failed: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`);
             }
         });
 

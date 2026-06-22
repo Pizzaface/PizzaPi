@@ -194,6 +194,7 @@ describe("trigger subscription reconciliation — delta emission", () => {
             // Provide a valid trigger catalog so the POST route proceeds past validation
             mockGetRunnerServices.mockReturnValue(Promise.resolve({
                 serviceIds: ["time"],
+                disabledServiceIds: [],
                 triggerDefs: [
                     {
                         type: "time:timer_fired",

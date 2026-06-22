@@ -7,9 +7,10 @@
  * visibility of service panel buttons in the session header.
  */
 import * as React from "react";
-import { Loader2, Server, ExternalLink, Eye, EyeOff, Zap, Hash } from "lucide-react";
+import { Loader2, Server, ExternalLink, Eye, EyeOff, Zap, Hash, Power } from "lucide-react";
 import { DynamicLucideIcon } from "@/components/service-panels/lucide-icon";
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
+import { Switch } from "@/components/ui/switch";
 
 /** Built-in system service IDs — hidden from the user-facing panel. */
 const BUILTIN_SERVICE_IDS = new Set(["terminal", "file-explorer", "git", "tunnel"]);
@@ -90,6 +91,7 @@ interface ServiceInfo {
   panel?: ServicePanel;
   triggerCount: number;
   sigilCount: number;
+  enabled: boolean;
 }
 
 export function RunnerServicesPanel({ runnerId }: RunnerServicesPanelProps) {
@@ -97,61 +99,98 @@ export function RunnerServicesPanel({ runnerId }: RunnerServicesPanelProps) {
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);
   const [hiddenPanels, setHiddenPanels] = React.useState<Set<string>>(loadHiddenPanels);
+  const [togglingServices, setTogglingServices] = React.useState<Set<string>>(new Set());
+
+  const fetchServices = React.useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/runners/${encodeURIComponent(runnerId)}/services`, {
+        credentials: "include",
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json() as {
+        serviceIds?: string[];
+        disabledServiceIds?: string[];
+        panels?: ServicePanel[];
+        triggerDefs?: TriggerDef[];
+        sigilDefs?: SigilDef[];
+      };
+
+      const enabledServiceIds = (data.serviceIds ?? []).filter(id => !BUILTIN_SERVICE_IDS.has(id));
+      const disabledServiceIds = (data.disabledServiceIds ?? []).filter(id => !BUILTIN_SERVICE_IDS.has(id));
+      const allServiceIds = [...enabledServiceIds, ...disabledServiceIds];
+      const panelMap = new Map((data.panels ?? []).map(p => [p.serviceId, p]));
+      const triggerDefs = data.triggerDefs ?? [];
+      const sigilDefs = data.sigilDefs ?? [];
+
+      // Count triggers per service namespace
+      const triggerCounts = new Map<string, number>();
+      for (const t of triggerDefs) {
+        const ns = serviceNamespace(t.type);
+        triggerCounts.set(ns, (triggerCounts.get(ns) || 0) + 1);
+      }
+
+      // Count sigils per service (use serviceId field, fall back to type namespace)
+      const sigilCounts = new Map<string, number>();
+      for (const s of sigilDefs) {
+        const ns = s.serviceId || serviceNamespace(s.type);
+        sigilCounts.set(ns, (sigilCounts.get(ns) || 0) + 1);
+      }
+
+      const result: ServiceInfo[] = allServiceIds.map(id => ({
+        id,
+        panel: panelMap.get(id),
+        triggerCount: triggerCounts.get(id) || 0,
+        sigilCount: sigilCounts.get(id) || 0,
+        enabled: enabledServiceIds.includes(id),
+      }));
+
+      setServices(result);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load services");
+    } finally {
+      setLoading(false);
+    }
+  }, [runnerId]);
 
   React.useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    void (async () => {
-      try {
-        const res = await fetch(`/api/runners/${encodeURIComponent(runnerId)}/services`, {
+    fetchServices();
+  }, [fetchServices]);
+
+  const toggleService = React.useCallback(async (serviceId: string, enabled: boolean) => {
+    setTogglingServices(prev => new Set(prev).add(serviceId));
+    try {
+      const res = await fetch(
+        `/api/runners/${encodeURIComponent(runnerId)}/services/${encodeURIComponent(serviceId)}/enabled`,
+        {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
           credentials: "include",
-        });
-        if (cancelled) return;
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data = await res.json() as {
-          serviceIds?: string[];
-          panels?: ServicePanel[];
-          triggerDefs?: TriggerDef[];
-          sigilDefs?: SigilDef[];
-        };
-        if (cancelled) return;
-
-        const serviceIds = (data.serviceIds ?? []).filter(id => !BUILTIN_SERVICE_IDS.has(id));
-        const panelMap = new Map((data.panels ?? []).map(p => [p.serviceId, p]));
-        const triggerDefs = data.triggerDefs ?? [];
-        const sigilDefs = data.sigilDefs ?? [];
-
-        // Count triggers per service namespace
-        const triggerCounts = new Map<string, number>();
-        for (const t of triggerDefs) {
-          const ns = serviceNamespace(t.type);
-          triggerCounts.set(ns, (triggerCounts.get(ns) || 0) + 1);
+          body: JSON.stringify({ enabled }),
         }
-
-        // Count sigils per service (use serviceId field, fall back to type namespace)
-        const sigilCounts = new Map<string, number>();
-        for (const s of sigilDefs) {
-          const ns = s.serviceId || serviceNamespace(s.type);
-          sigilCounts.set(ns, (sigilCounts.get(ns) || 0) + 1);
-        }
-
-        const result: ServiceInfo[] = serviceIds.map(id => ({
-          id,
-          panel: panelMap.get(id),
-          triggerCount: triggerCounts.get(id) || 0,
-          sigilCount: sigilCounts.get(id) || 0,
-        }));
-
-        setServices(result);
-        setError(null);
-      } catch (err) {
-        if (cancelled) return;
-        setError(err instanceof Error ? err.message : "Failed to load services");
-      } finally {
-        if (!cancelled) setLoading(false);
+      );
+      if (!res.ok) {
+        const error = await res.json().catch(() => ({ error: 'Failed to toggle service' }));
+        throw new Error(error.error || `HTTP ${res.status}`);
       }
-    })();
-    return () => { cancelled = true; };
+      // Optimistic update
+      setServices(prev => prev.map(svc => 
+        svc.id === serviceId ? { ...svc, enabled } : svc
+      ));
+    } catch (err) {
+      console.error(`Failed to toggle service ${serviceId}:`, err);
+      // Revert on error
+      setServices(prev => prev.map(svc => 
+        svc.id === serviceId ? { ...svc, enabled: !enabled } : svc
+      ));
+    } finally {
+      setTogglingServices(prev => {
+        const next = new Set(prev);
+        next.delete(serviceId);
+        return next;
+      });
+    }
   }, [runnerId]);
 
   const toggleHidden = React.useCallback((serviceId: string) => {
@@ -208,12 +247,15 @@ export function RunnerServicesPanel({ runnerId }: RunnerServicesPanelProps) {
       {services.map((svc) => {
         const isHidden = hiddenPanels.has(svc.id);
         const hasPanel = !!svc.panel;
+        const isToggling = togglingServices.has(svc.id);
 
         return (
           <div
             key={svc.id}
             className={`flex items-start gap-3 p-3 rounded-lg border transition-colors ${
-              isHidden
+              !svc.enabled
+                ? "opacity-60 border-border/30 bg-muted/5"
+                : isHidden
                 ? "opacity-50 border-border/30 bg-muted/5"
                 : "border-border/50 bg-muted/10 hover:bg-muted/20"
             }`}
@@ -271,8 +313,28 @@ export function RunnerServicesPanel({ runnerId }: RunnerServicesPanelProps) {
                 {svc.triggerCount === 0 && svc.sigilCount === 0 && !hasPanel && (
                   <span className="text-[10px] text-muted-foreground/50 italic">No public capabilities</span>
                 )}
+                {!svc.enabled && (
+                  <span className="text-[10px] text-muted-foreground/70 font-medium">Disabled</span>
+                )}
               </div>
             </div>
+
+            {/* Enable/disable toggle */}
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <div className="flex-shrink-0">
+                  <Switch
+                    checked={svc.enabled}
+                    onCheckedChange={(checked) => toggleService(svc.id, checked)}
+                    disabled={isToggling}
+                    className="data-[state=checked]:bg-green-600"
+                  />
+                </div>
+              </TooltipTrigger>
+              <TooltipContent>
+                {svc.enabled ? "Disable service" : "Enable service"}
+              </TooltipContent>
+            </Tooltip>
 
             {/* Hide/show toggle for panel visibility */}
             {hasPanel && (
