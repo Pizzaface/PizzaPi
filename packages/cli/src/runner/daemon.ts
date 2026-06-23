@@ -104,6 +104,23 @@ export function resolveDisabledRunnerServices(
     return new Set([...fromEnv, ...fromConfig]);
 }
 
+export function resolveReconfiguredDisabledRunnerServices(
+    current: Set<string>,
+    data: unknown,
+): Set<string> | null {
+    const payload = data && typeof data === "object" ? data as Record<string, unknown> : {};
+    if (typeof payload.serviceId === "string" && typeof payload.enabled === "boolean") {
+        const next = new Set(current);
+        if (payload.enabled) next.delete(payload.serviceId);
+        else next.add(payload.serviceId);
+        return next;
+    }
+    if (Array.isArray(payload.disabledServiceIds)) {
+        return new Set(payload.disabledServiceIds.filter((id): id is string => typeof id === "string"));
+    }
+    return null;
+}
+
 /**
  * Read the `relayUrl` from ~/.pizzapi/config.json, returning undefined
  * if not set or set to "off".  Used as a fallback when PIZZAPI_RELAY_URL
@@ -835,15 +852,11 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
         socket.on("reconfigure_services", async (data: any) => {
             if (isShuttingDown) return;
             try {
-                const { disabledServiceIds } = data ?? {};
-                if (!Array.isArray(disabledServiceIds)) {
+                const newDisabledServices = resolveReconfiguredDisabledRunnerServices(disabledServices, data);
+                if (!newDisabledServices) {
                     logWarn("[services] invalid reconfigure_services payload");
                     return;
                 }
-
-                const newDisabledServices = new Set(
-                    disabledServiceIds.filter((id): id is string => typeof id === "string"),
-                );
 
                 logInfo(`[services] reconfiguring: disabling ${Array.from(newDisabledServices).join(", ") || "none"}`);
 

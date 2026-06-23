@@ -524,7 +524,7 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
         }
 
         try {
-            runnerSocket.emit("reconfigure_services", { disabledServiceIds: newDisabledIds });
+            runnerSocket.emit("reconfigure_services", { disabledServiceIds: newDisabledIds, serviceId, enabled: body.enabled });
         } catch (err) {
             log.error("Failed to send reconfigure_services to runner:", err);
             return Response.json({ error: "Failed to send reconfigure command to runner" }, { status: 502 });

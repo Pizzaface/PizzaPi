@@ -2,7 +2,7 @@ import { describe, test, expect } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { resolveDisabledRunnerServices } from "./daemon.js";
+import { resolveDisabledRunnerServices, resolveReconfiguredDisabledRunnerServices } from "./daemon.js";
 import { _setGlobalConfigDir, loadGlobalConfig, saveGlobalConfig } from "../config/io.js";
 
 describe("resolveDisabledRunnerServices", () => {
@@ -35,6 +35,30 @@ describe("resolveDisabledRunnerServices", () => {
                 ",,time,",
             ),
         ).toEqual(new Set(["git", "time"]));
+    });
+});
+
+describe("resolveReconfiguredDisabledRunnerServices", () => {
+    test("applies a single disable on top of current runtime state", () => {
+        expect(resolveReconfiguredDisabledRunnerServices(new Set(["taxonomy"]), {
+            disabledServiceIds: ["nightshift"],
+            serviceId: "nightshift",
+            enabled: false,
+        })).toEqual(new Set(["taxonomy", "nightshift"]));
+    });
+
+    test("applies a single enable on top of current runtime state", () => {
+        expect(resolveReconfiguredDisabledRunnerServices(new Set(["taxonomy", "nightshift"]), {
+            disabledServiceIds: [],
+            serviceId: "taxonomy",
+            enabled: true,
+        })).toEqual(new Set(["nightshift"]));
+    });
+
+    test("falls back to full disabledServiceIds snapshots for old servers", () => {
+        expect(resolveReconfiguredDisabledRunnerServices(new Set(["old"]), {
+            disabledServiceIds: ["demo", 123, null],
+        })).toEqual(new Set(["demo"]));
     });
 });
 
