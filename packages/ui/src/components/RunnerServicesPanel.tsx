@@ -13,7 +13,7 @@ import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip
 import { Switch } from "@/components/ui/switch";
 
 /** Built-in system service IDs — hidden from the user-facing panel. */
-const BUILTIN_SERVICE_IDS = new Set(["terminal", "file-explorer", "git", "tunnel"]);
+const BUILTIN_SERVICE_IDS = new Set(["terminal", "file-explorer", "git", "tunnel", "time"]);
 
 const HIDDEN_PANELS_KEY = "pp-hidden-service-panels";
 
