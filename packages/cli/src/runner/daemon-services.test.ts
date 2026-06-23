@@ -2,7 +2,7 @@ import { describe, test, expect } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { resolveDisabledRunnerServices, resolveReconfiguredDisabledRunnerServices } from "./daemon.js";
+import { resolveAnnouncedDisabledRunnerServices, resolveDisabledRunnerServices, resolveReconfiguredDisabledRunnerServices } from "./daemon.js";
 import { _setGlobalConfigDir, loadGlobalConfig, saveGlobalConfig } from "../config/io.js";
 
 describe("resolveDisabledRunnerServices", () => {
@@ -67,6 +67,12 @@ describe("resolveReconfiguredDisabledRunnerServices", () => {
             serviceId: "demo",
             enabled: true,
         })).toEqual(new Set(["nightshift"]));
+    });
+});
+
+describe("resolveAnnouncedDisabledRunnerServices", () => {
+    test("announces disabled IDs even when they are not loaded/discovered", () => {
+        expect(resolveAnnouncedDisabledRunnerServices(new Set(["taxonomy", "demo"]))).toEqual(["taxonomy", "demo"]);
     });
 });
 

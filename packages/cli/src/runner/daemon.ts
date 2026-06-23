@@ -121,6 +121,12 @@ export function resolveReconfiguredDisabledRunnerServices(
     return null;
 }
 
+export function resolveAnnouncedDisabledRunnerServices(disabledServices: Set<string>): string[] {
+    // Announce the configured disabled IDs even when the service is not loaded.
+    // Otherwise disabled-at-startup plugins are invisible in the web UI and cannot be re-enabled.
+    return Array.from(disabledServices);
+}
+
 /**
  * Read the `relayUrl` from ~/.pizzapi/config.json, returning undefined
  * if not set or set to "off".  Used as a fallback when PIZZAPI_RELAY_URL
@@ -527,9 +533,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
         /** Emit service_announce with current service IDs, panel metadata, and trigger defs. */
         const emitServiceAnnounce = () => {
             const allServiceIds = registry.getAll().map((s) => s.id);
-            // Include disabled services that were discovered but are not currently registered
-            const allKnownServiceIds = new Set([...allServiceIds, ...allDiscoveredServiceIds]);
-            const disabledServiceIds = Array.from(disabledServices).filter(id => allKnownServiceIds.has(id));
+            const disabledServiceIds = resolveAnnouncedDisabledRunnerServices(disabledServices);
             // Map panel entries to ServicePanelInfo, resolving requires → panelParams
             const panels = Array.from(panelEntries.values())
                 .filter((p): p is PanelEntry & { port: number } => p.port != null && p.hasPanel !== false)
