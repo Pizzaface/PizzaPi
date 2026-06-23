@@ -60,6 +60,14 @@ describe("resolveReconfiguredDisabledRunnerServices", () => {
             disabledServiceIds: ["demo", 123, null],
         })).toEqual(new Set(["demo"]));
     });
+
+    test("re-enable removes from disabled set", () => {
+        expect(resolveReconfiguredDisabledRunnerServices(new Set(["demo", "nightshift"]), {
+            disabledServiceIds: ["demo"],
+            serviceId: "demo",
+            enabled: true,
+        })).toEqual(new Set(["nightshift"]));
+    });
 });
 
 describe("disabledRunnerServices round-trip", () => {

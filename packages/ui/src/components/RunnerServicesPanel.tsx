@@ -176,16 +176,10 @@ export function RunnerServicesPanel({ runnerId }: RunnerServicesPanelProps) {
         const error = await res.json().catch(() => ({ error: 'Failed to toggle service' }));
         throw new Error(error.error || `HTTP ${res.status}`);
       }
-      // Optimistic update
-      setServices(prev => prev.map(svc => 
-        svc.id === serviceId ? { ...svc, enabled } : svc
-      ));
+      // Refresh the full service list to reflect the updated state
+      await fetchServices();
     } catch (err) {
       console.error(`Failed to toggle service ${serviceId}:`, err);
-      // Revert on error
-      setServices(prev => prev.map(svc => 
-        svc.id === serviceId ? { ...svc, enabled: !enabled } : svc
-      ));
       const msg = err instanceof Error ? err.message : "Failed to toggle service";
       setToggleError(msg);
       toggleErrorRef.current = msg;
@@ -203,7 +197,7 @@ export function RunnerServicesPanel({ runnerId }: RunnerServicesPanelProps) {
         return next;
       });
     }
-  }, [runnerId]);
+  }, [runnerId, fetchServices]);
 
   const toggleHidden = React.useCallback((serviceId: string) => {
     setHiddenPanels(prev => {
