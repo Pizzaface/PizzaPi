@@ -501,6 +501,8 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             requires?: string[];
         };
         const panelEntries = new Map<string, PanelEntry>();
+        // Track ALL discovered service IDs (including disabled ones) so the UI can show them.
+        const allDiscoveredServiceIds = new Set<string>();
 
         // Register built-in Time service trigger/sigil defs so they flow through service_announce.
         // The Time service has no panel — it only runs an HTTP server for sigil resolve calls.
@@ -525,7 +527,9 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
         /** Emit service_announce with current service IDs, panel metadata, and trigger defs. */
         const emitServiceAnnounce = () => {
             const allServiceIds = registry.getAll().map((s) => s.id);
-            const disabledServiceIds = Array.from(disabledServices).filter(id => !allServiceIds.includes(id));
+            // Include disabled services that were discovered but are not currently registered
+            const allKnownServiceIds = new Set([...allServiceIds, ...allDiscoveredServiceIds]);
+            const disabledServiceIds = Array.from(disabledServices).filter(id => allKnownServiceIds.has(id));
             // Map panel entries to ServicePanelInfo, resolving requires → panelParams
             const panels = Array.from(panelEntries.values())
                 .filter((p): p is PanelEntry & { port: number } => p.port != null && p.hasPanel !== false)
@@ -574,6 +578,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             for (const { handler, source, manifest } of services) {
                 try {
                     registry.register(handler);
+                    allDiscoveredServiceIds.add(handler.id);
                     logInfo(`[services] loaded plugin service "${handler.id}" from ${source.pluginName ?? source.path}`);
                     // Track panel metadata and trigger defs from folder-based services
                     if (manifest?.panel || (manifest?.triggers && manifest.triggers.length > 0) || (manifest?.sigils && manifest.sigils.length > 0)) {
@@ -898,7 +903,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                     logInfo(`[services] disabling plugin service "${svc.id}"`);
                     svc.dispose();
                     registry.unregister(svc.id);
-                    panelEntries.delete(svc.id);
+                    // Keep panel entry for disabled services so they still appear in service_announce
                     sigilServerPorts.delete(svc.id);
                 }
 
@@ -907,9 +912,20 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                     { pluginDirs: globalPluginDirs(), disabledIds: newDisabledServices },
                 );
 
+                // Remove services that are no longer discoverable (plugin deleted) and not disabled
+                for (const id of allDiscoveredServiceIds) {
+                    if (newDisabledServices.has(id)) continue; // Keep disabled services
+                    if (discoveredServices.some(s => s.handler.id === id)) continue; // Still exists
+                    // Plugin was removed and is not disabled - clean up
+                    allDiscoveredServiceIds.delete(id);
+                    panelEntries.delete(id);
+                    sigilServerPorts.delete(id);
+                }
+
                 // Register any newly enabled plugin services
                 for (const { handler, source, manifest } of discoveredServices) {
                     if (registry.has(handler.id)) continue;
+                    allDiscoveredServiceIds.add(handler.id);
                     try {
                         registry.register(handler);
                         logInfo(`[services] loaded plugin service "${handler.id}" from ${source.pluginName ?? source.path}`);
