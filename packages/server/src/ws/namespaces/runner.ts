@@ -291,6 +291,7 @@ export async function seedServiceAnnounceCache(runnerId: string): Promise<void> 
         persisted
             ? {
                 serviceIds: persisted.serviceIds,
+                disabledServiceIds: persisted.disabledServiceIds,
                 panels: persisted.panels,
                 triggerDefs: persisted.triggerDefs,
                 sigilDefs: persisted.sigilDefs,

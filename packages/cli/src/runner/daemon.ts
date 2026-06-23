@@ -316,6 +316,9 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
 
         // ── Service registry ──────────────────────────────────────────────
         const registry = new ServiceRegistry();
+        if (disabledServices.size > 0) {
+            logInfo(`[services] configured disabled services: ${Array.from(disabledServices).join(", ")}`);
+        }
         if (isServiceDisabled("terminal")) {
             logInfo('[services] built-in service "terminal" disabled by config');
         } else {
