@@ -379,6 +379,7 @@ function parseRunnerFromHash(hash: Record<string, string>): RedisRunnerData | nu
         version: hash.version || null,
         platform: hash.platform || null,
         serviceIds: hash.serviceIds || undefined,
+        disabledServiceIds: hash.disabledServiceIds || undefined,
         panels: hash.panels || undefined,
         triggerDefs: hash.triggerDefs || undefined,
         sigilDefs: hash.sigilDefs || undefined,

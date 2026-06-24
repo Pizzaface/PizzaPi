@@ -378,6 +378,9 @@ const { registerRunner, removeRunner, updateRunnerSkills, updateRunnerAgents, up
             runnerId,
             ["terminal", "file-explorer", "git", "tunnel", "monitor"],
             [{ serviceId: "monitor", port: 9090, label: "System Monitor", icon: "activity" }],
+            undefined,
+            undefined,
+            ["demo"],
         );
 
         const updated = emitCalls.find(
@@ -386,11 +389,13 @@ const { registerRunner, removeRunner, updateRunnerSkills, updateRunnerAgents, up
         expect(updated).toBeDefined();
         expect((updated!.data as any).runnerId).toBe(runnerId);
         expect((updated!.data as any).serviceIds).toEqual(["terminal", "file-explorer", "git", "tunnel", "monitor"]);
+        expect((updated!.data as any).disabledServiceIds).toEqual(["demo"]);
 
         // Retrieve
         const after = await getRunnerServices(runnerId);
         expect(after).not.toBeNull();
         expect(after!.serviceIds).toEqual(["terminal", "file-explorer", "git", "tunnel", "monitor"]);
+        expect(after!.disabledServiceIds).toEqual(["demo"]);
         expect(after!.panels).toHaveLength(1);
         expect(after!.panels![0].serviceId).toBe("monitor");
         expect(after!.panels![0].port).toBe(9090);
