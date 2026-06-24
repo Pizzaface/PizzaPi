@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { TriggerSubscriptionEntry } from "@pizzapi/protocol";
-import { reconcileSnapshotSubscriptions } from "./daemon.js";
+import { applyTriggerSubscriptionDeltaToCache, reconcileSnapshotSubscriptions } from "./daemon.js";
 import { ServiceRegistry, type ServiceHandler, type ServiceInitOptions, type ReconcileOptions } from "./service-handler.js";
 import type { Socket } from "socket.io-client";
 
@@ -34,6 +34,27 @@ function entry(sessionId: string, triggerType: string, subscriptionId?: string):
         params: {},
     };
 }
+
+describe("applyTriggerSubscriptionDeltaToCache", () => {
+    test("replaces one subscription by subscriptionId", () => {
+        const first = entry("session-1", "time:timer_fired", "sub-1");
+        const second = entry("session-1", "time:timer_fired", "sub-2");
+        const updated = { ...first, params: { duration: "5m" } };
+
+        expect(applyTriggerSubscriptionDeltaToCache([first, second], "update", updated)).toEqual([second, updated]);
+    });
+
+    test("legacy unsubscribe removes all matching session/type subscriptions", () => {
+        const first = entry("session-1", "time:timer_fired", "sub-1");
+        const second = entry("session-1", "time:timer_fired", "sub-2");
+        const other = entry("session-2", "time:timer_fired", "sub-3");
+
+        expect(applyTriggerSubscriptionDeltaToCache([first, second, other], "unsubscribe", {
+            ...first,
+            subscriptionId: "legacy:all:time:timer_fired",
+        })).toEqual([other]);
+    });
+});
 
 describe("reconcileSnapshotSubscriptions", () => {
     test("reconciles loaded services with an empty snapshot subset when absent", () => {

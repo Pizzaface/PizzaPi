@@ -79,6 +79,38 @@ function makeReq(method: string, path: string, body?: object): [Request, URL] {
     return [new Request(url.toString(), init), url];
 }
 
+describe("runner service toggle route", () => {
+    beforeEach(() => {
+        mockRequireSession.mockReset();
+        mockRequireSession.mockReturnValue(Promise.resolve({ userId: "user-1", userName: "TestUser" } as any));
+        mockGetRunnerData.mockReset();
+        mockGetRunnerData.mockReturnValue(Promise.resolve({ userId: "user-1", runnerId: "runner-A" } as any));
+        mockGetRunnerServices.mockReset();
+        mockGetLocalRunnerSocket.mockReset();
+    });
+
+    test("sends the changed service id so the runner can merge against runtime state", async () => {
+        const emit = mock(() => {});
+        mockGetRunnerServices.mockReturnValue(Promise.resolve({
+            serviceIds: ["taxonomy", "nightshift"],
+            disabledServiceIds: [],
+            panels: [],
+            triggerDefs: [],
+            sigilDefs: [],
+        }));
+        mockGetLocalRunnerSocket.mockReturnValue({ emit } as any);
+
+        const [req, url] = makeReq("PUT", "/api/runners/runner-A/services/taxonomy/enabled", { enabled: false });
+        const res = await handleRunnersRoute(req, url);
+        expect(res!.status).toBe(200);
+        expect(emit).toHaveBeenCalledWith("reconfigure_services", {
+            disabledServiceIds: ["taxonomy"],
+            serviceId: "taxonomy",
+            enabled: false,
+        });
+    });
+});
+
 describe("runner trigger listener routes", () => {
     beforeEach(() => {
         mockRequireSession.mockReset();

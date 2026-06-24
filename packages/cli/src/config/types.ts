@@ -381,6 +381,19 @@ export interface PizzaPiConfig {
     mcpTimeout?: number;
 
     /**
+     * Runner service IDs to skip loading.
+     *
+     * Built-in services: "terminal", "file-explorer", "git", "tunnel", "time".
+     * Plugin-provided services use the id declared in their manifest.
+     * Disabled services are not registered, so their panels, triggers, and
+     * sigils are unavailable to the runner and the web UI.
+     *
+     * Can also be set via the PIZZAPI_DISABLED_RUNNER_SERVICES environment
+     * variable as a comma-separated list.
+     */
+    disabledRunnerServices?: string[];
+
+    /**
      * Sandbox configuration — controls filesystem, network, and socket access
      * restrictions for agent tool execution.
      *

@@ -1014,3 +1014,41 @@ describe("discoverServices — folder-based services", () => {
         expect(m.sigils![0].resolve).toBe("/api/resolve/pr/{id}");
     });
 });
+
+// ── discoverServices — disabledIds ───────────────────────────────────────────
+
+describe("discoverServices — disabledIds", () => {
+    let tmpDir: string;
+    let origHome: string;
+
+    beforeEach(() => {
+        tmpDir = makeTmpDir();
+        origHome = process.env.HOME!;
+        process.env.HOME = tmpDir;
+    });
+
+    afterEach(() => {
+        process.env.HOME = origHome;
+        rmSync(tmpDir, { recursive: true, force: true });
+    });
+
+    test("skips service IDs in disabledIds set", async () => {
+        const servicesDir = join(tmpDir, ".pizzapi", "services");
+        mkdirSync(servicesDir, { recursive: true });
+        writeInstanceHandler(servicesDir, "enabled.js", "enabled-svc");
+        writeInstanceHandler(servicesDir, "disabled.js", "disabled-svc");
+
+        const result = await discoverServices({ disabledIds: new Set(["disabled-svc"]) });
+        expect(result.services).toHaveLength(1);
+        expect(result.services[0].handler.id).toBe("enabled-svc");
+    });
+
+    test("ignores disabledIds for unknown IDs", async () => {
+        const servicesDir = join(tmpDir, ".pizzapi", "services");
+        mkdirSync(servicesDir, { recursive: true });
+        writeInstanceHandler(servicesDir, "only.js", "only-svc");
+
+        const result = await discoverServices({ disabledIds: new Set(["missing"]) });
+        expect(result.services).toHaveLength(1);
+    });
+});

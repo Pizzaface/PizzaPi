@@ -291,6 +291,7 @@ export async function seedServiceAnnounceCache(runnerId: string): Promise<void> 
         persisted
             ? {
                 serviceIds: persisted.serviceIds,
+                disabledServiceIds: persisted.disabledServiceIds,
                 panels: persisted.panels,
                 triggerDefs: persisted.triggerDefs,
                 sigilDefs: persisted.sigilDefs,
@@ -1097,7 +1098,7 @@ export function registerRunnerNamespace(io: SocketIOServer, context: AuthContext
             // Persist to Redis so the data survives server restarts.
             // Identical payloads can skip the write; viewers still need fanout.
             if (!sameAsCached) {
-                void updateRunnerServices(runnerId, data.serviceIds, data.panels, data.triggerDefs, data.sigilDefs).catch((err) => {
+                void updateRunnerServices(runnerId, data.serviceIds, data.panels, data.triggerDefs, data.sigilDefs, data.disabledServiceIds).catch((err) => {
                     log.error(`failed to persist service_announce to Redis for ${runnerId}:`, err);
                 });
             }

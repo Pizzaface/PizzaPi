@@ -28,6 +28,14 @@ export function isSameServiceAnnounce(
         if (a.serviceIds[i] !== b.serviceIds[i]) return false;
     }
 
+    // Compare disabled service IDs
+    const aDisabled = a.disabledServiceIds ?? [];
+    const bDisabled = b.disabledServiceIds ?? [];
+    if (aDisabled.length !== bDisabled.length) return false;
+    for (let i = 0; i < aDisabled.length; i++) {
+        if (aDisabled[i] !== bDisabled[i]) return false;
+    }
+
     const aPanels = a.panels ?? [];
     const bPanels = b.panels ?? [];
     if (aPanels.length !== bPanels.length) return false;

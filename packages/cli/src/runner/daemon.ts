@@ -21,7 +21,8 @@ import {
     type RunnerServerToClientEvents,
 } from "@pizzapi/protocol";
 import { TunnelClient } from "@pizzapi/tunnel";
-import { loadGlobalConfig, defaultAgentDir, expandHome, loadConfig } from "../config.js";
+import { loadGlobalConfig, saveGlobalConfig, defaultAgentDir, expandHome, loadConfig } from "../config.js";
+import type { PizzaPiConfig } from "../config.js";
 import { findSessionPathById } from "./session-list-cache.js";
 import { cleanupSessionAttachments, sweepOrphanedAttachments } from "../extensions/session-attachments.js";
 import { triggerSessionClose } from "../extensions/providers/extension.js";
@@ -85,6 +86,48 @@ function resolveRequires(requires: string[]): Record<string, string> {
 }
 
 /**
+ * Resolve the set of runner service IDs that should be skipped.
+ * Built-in services: "terminal", "file-explorer", "git", "tunnel", "time".
+ * Combines the PIZZAPI_DISABLED_RUNNER_SERVICES env var (comma-separated)
+ * with the disabledRunnerServices config array.
+ */
+export function resolveDisabledRunnerServices(
+    config: Partial<PizzaPiConfig>,
+    envValue: string | undefined = process.env.PIZZAPI_DISABLED_RUNNER_SERVICES,
+): Set<string> {
+    const fromEnv = envValue
+        ? envValue.split(",").map((s) => s.trim()).filter(Boolean)
+        : [];
+    const fromConfig = (config.disabledRunnerServices ?? []).filter(
+        (s): s is string => typeof s === "string",
+    );
+    return new Set([...fromEnv, ...fromConfig]);
+}
+
+export function resolveReconfiguredDisabledRunnerServices(
+    current: Set<string>,
+    data: unknown,
+): Set<string> | null {
+    const payload = data && typeof data === "object" ? data as Record<string, unknown> : {};
+    if (typeof payload.serviceId === "string" && typeof payload.enabled === "boolean") {
+        const next = new Set(current);
+        if (payload.enabled) next.delete(payload.serviceId);
+        else next.add(payload.serviceId);
+        return next;
+    }
+    if (Array.isArray(payload.disabledServiceIds)) {
+        return new Set(payload.disabledServiceIds.filter((id): id is string => typeof id === "string"));
+    }
+    return null;
+}
+
+export function resolveAnnouncedDisabledRunnerServices(disabledServices: Set<string>): string[] {
+    // Announce the configured disabled IDs even when the service is not loaded.
+    // Otherwise disabled-at-startup plugins are invisible in the web UI and cannot be re-enabled.
+    return Array.from(disabledServices);
+}
+
+/**
  * Read the `relayUrl` from ~/.pizzapi/config.json, returning undefined
  * if not set or set to "off".  Used as a fallback when PIZZAPI_RELAY_URL
  * env var is not present (e.g. LaunchAgent contexts).
@@ -112,6 +155,20 @@ type TriggerReconciliationLogger = {
  * must treat `subscriptionId` as the stable identity when they maintain
  * runtime state so same-session same-type subscriptions can coexist.
  */
+export function applyTriggerSubscriptionDeltaToCache(
+    current: TriggerSubscriptionEntry[],
+    action: "subscribe" | "update" | "unsubscribe",
+    subscription: TriggerSubscriptionEntry,
+): TriggerSubscriptionEntry[] {
+    const subscriptionId = subscription.subscriptionId;
+    const useExactId = subscriptionId && !subscriptionId.startsWith("legacy:all:");
+    const matches = (existing: TriggerSubscriptionEntry) => useExactId
+        ? existing.subscriptionId === subscriptionId
+        : existing.sessionId === subscription.sessionId && existing.triggerType === subscription.triggerType;
+    const next = current.filter((existing) => !matches(existing));
+    return action === "unsubscribe" ? next : [...next, subscription];
+}
+
 export function reconcileSnapshotSubscriptions(
     registry: ServiceRegistry,
     subscriptions: TriggerSubscriptionEntry[],
@@ -209,6 +266,11 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
     // env vars aren't available).
     const daemonConfig = loadGlobalConfig();
 
+    // Resolve runner services that should be skipped (config + env var).
+    // Use let instead of const to allow mutation during reconfiguration.
+    let disabledServices = resolveDisabledRunnerServices(daemonConfig);
+    const isServiceDisabled = (id: string) => disabledServices.has(id);
+
     // Priority: env var > config.json > default
     const apiKey =
         process.env.PIZZAPI_RUNNER_API_KEY ??
@@ -291,9 +353,24 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
 
         // ── Service registry ──────────────────────────────────────────────
         const registry = new ServiceRegistry();
-        registry.register(new TerminalService());
-        registry.register(new FileExplorerService());
-        registry.register(new GitService());
+        if (disabledServices.size > 0) {
+            logInfo(`[services] configured disabled services: ${Array.from(disabledServices).join(", ")}`);
+        }
+        if (isServiceDisabled("terminal")) {
+            logInfo('[services] built-in service "terminal" disabled by config');
+        } else {
+            registry.register(new TerminalService());
+        }
+        if (isServiceDisabled("file-explorer")) {
+            logInfo('[services] built-in service "file-explorer" disabled by config');
+        } else {
+            registry.register(new FileExplorerService());
+        }
+        if (isServiceDisabled("git")) {
+            logInfo('[services] built-in service "git" disabled by config');
+        } else {
+            registry.register(new GitService());
+        }
         const cleanupGitSessionState = (sessionId: string) => {
             const gitService = registry.get("git");
             if (!gitService) return;
@@ -386,9 +463,18 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             }
         };
         const tunnelService = new TunnelService();
-        registry.register(tunnelService);
-        const timeService = new TimeService();
-        registry.register(timeService);
+        if (isServiceDisabled("tunnel")) {
+            logInfo('[services] built-in service "tunnel" disabled by config');
+        } else {
+            registry.register(tunnelService);
+        }
+
+        const timeService = isServiceDisabled("time") ? null : new TimeService();
+        if (timeService) {
+            registry.register(timeService);
+        } else {
+            logInfo('[services] built-in service "time" disabled by config');
+        }
 
         const formatTunnelLog = (...args: unknown[]) => args.map((arg) => {
             if (typeof arg === "string") return arg;
@@ -435,20 +521,24 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             requires?: string[];
         };
         const panelEntries = new Map<string, PanelEntry>();
+        // Track ALL discovered service IDs (including disabled ones) so the UI can show them.
+        const allDiscoveredServiceIds = new Set<string>();
 
         // Register built-in Time service trigger/sigil defs so they flow through service_announce.
         // The Time service has no panel — it only runs an HTTP server for sigil resolve calls.
         // Trigger/sigil defs are tracked via panelEntries (no port here) so they appear in
         // service_announce. The resolve port is tracked separately in sigilServerPorts and
         // stamped onto the sigil defs at announce time.
-        panelEntries.set("time", {
-            serviceId: "time",
-            label: "Time",
-            icon: "clock",
-            hasPanel: false,
-            triggers: TIME_TRIGGER_DEFS,
-            sigils: TIME_SIGIL_DEFS,
-        });
+        if (timeService) {
+            panelEntries.set("time", {
+                serviceId: "time",
+                label: "Time",
+                icon: "clock",
+                hasPanel: false,
+                triggers: TIME_TRIGGER_DEFS,
+                sigils: TIME_SIGIL_DEFS,
+            });
+        }
 
         // Ports for services that run an HTTP resolve server but have no UI panel.
         // Keyed by serviceId. Populated when the service calls announceSigilServer().
@@ -457,9 +547,11 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
         /** Emit service_announce with current service IDs, panel metadata, and trigger defs. */
         const emitServiceAnnounce = () => {
             const allServiceIds = registry.getAll().map((s) => s.id);
+            const activeServiceIds = new Set(allServiceIds);
+            const disabledServiceIds = resolveAnnouncedDisabledRunnerServices(disabledServices);
             // Map panel entries to ServicePanelInfo, resolving requires → panelParams
             const panels = Array.from(panelEntries.values())
-                .filter((p): p is PanelEntry & { port: number } => p.port != null && p.hasPanel !== false)
+                .filter((p): p is PanelEntry & { port: number } => activeServiceIds.has(p.serviceId) && p.port != null && p.hasPanel !== false)
                 .map((p) => ({
                     serviceId: p.serviceId,
                     port: p.port,
@@ -471,6 +563,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             const allTriggerDefs: ServiceTriggerDef[] = [];
             const allSigilDefs: ServiceSigilDef[] = [];
             for (const entry of panelEntries.values()) {
+                if (!activeServiceIds.has(entry.serviceId)) continue;
                 if (entry.triggers && entry.triggers.length > 0) {
                     allTriggerDefs.push(...entry.triggers);
                 }
@@ -489,6 +582,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             }
             (socket as any).emit("service_announce", {
                 serviceIds: allServiceIds,
+                ...(disabledServiceIds.length > 0 ? { disabledServiceIds } : {}),
                 ...(panels.length > 0 ? { panels } : {}),
                 ...(allTriggerDefs.length > 0 ? { triggerDefs: allTriggerDefs } : {}),
                 ...(allSigilDefs.length > 0 ? { sigilDefs: allSigilDefs } : {}),
@@ -500,10 +594,11 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
         // The runner_registered handler awaits this before announcing services.
         let resolvePluginServices: () => void;
         const pluginServicesReady = new Promise<void>(r => { resolvePluginServices = r; });
-        discoverServices({ pluginDirs: globalPluginDirs() }).then(({ services, errors }) => {
+        discoverServices({ pluginDirs: globalPluginDirs(), disabledIds: disabledServices }).then(({ services, errors }) => {
             for (const { handler, source, manifest } of services) {
                 try {
                     registry.register(handler);
+                    allDiscoveredServiceIds.add(handler.id);
                     logInfo(`[services] loaded plugin service "${handler.id}" from ${source.pluginName ?? source.path}`);
                     // Track panel metadata and trigger defs from folder-based services
                     if (manifest?.panel || (manifest?.triggers && manifest.triggers.length > 0) || (manifest?.sigils && manifest.sigils.length > 0)) {
@@ -777,6 +872,119 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             }
         });
 
+        let cachedTriggerSubscriptions: TriggerSubscriptionEntry[] = [];
+
+        // ── Service reconfiguration ───────────────────────────────────────
+        // Update the disabled services list at runtime and reinitialize services.
+        socket.on("reconfigure_services", async (data: any) => {
+            if (isShuttingDown) return;
+            try {
+                const newDisabledServices = resolveReconfiguredDisabledRunnerServices(disabledServices, data);
+                if (!newDisabledServices) {
+                    logWarn("[services] invalid reconfigure_services payload");
+                    return;
+                }
+
+                logInfo(`[services] reconfiguring: disabling ${Array.from(newDisabledServices).join(", ") || "none"}`);
+
+                // Update config on disk
+                const currentConfig = loadGlobalConfig();
+                saveGlobalConfig({ ...currentConfig, disabledRunnerServices: Array.from(newDisabledServices) });
+
+                // Update runtime disabled set
+                disabledServices = newDisabledServices;
+
+                const optsForInit = (id: string): any => {
+                    const opts: any = { isShuttingDown: () => isShuttingDown };
+                    const entry = panelEntries.get(id);
+                    if (entry) {
+                        if (entry.hasPanel !== false) {
+                            opts.announcePanel = (port: number) => {
+                                entry.port = port;
+                                tunnelService.registerPort(port, entry.label);
+                                logInfo(`[services] panel announced for "${id}" on port ${port}`);
+                                emitServiceAnnounce();
+                            };
+                        } else {
+                            opts.announceSigilServer = (port: number) => {
+                                sigilServerPorts.set(id, port);
+                                tunnelService.registerPort(port, id);
+                                logInfo(`[services] sigil resolve server announced for "${id}" on port ${port}`);
+                                emitServiceAnnounce();
+                            };
+                        }
+                    }
+                    return opts;
+                };
+
+                // Disable plugin services that are now in the disabled set
+                const BUILTIN_IDS = new Set(["terminal", "file-explorer", "git", "tunnel", "time"]);
+                const pluginsToDisable = registry.getAll()
+                    .filter(s => !BUILTIN_IDS.has(s.id) && newDisabledServices.has(s.id));
+                for (const svc of pluginsToDisable) {
+                    logInfo(`[services] disabling plugin service "${svc.id}"`);
+                    svc.dispose();
+                    registry.unregister(svc.id);
+                    // Keep panel entry for disabled services so they still appear in service_announce
+                    sigilServerPorts.delete(svc.id);
+                }
+
+                // Re-discover plugin services with new disabled list
+                const { services: discoveredServices, errors } = await discoverServices(
+                    { pluginDirs: globalPluginDirs(), disabledIds: newDisabledServices },
+                );
+
+                // Remove services that are no longer discoverable (plugin deleted) and not disabled
+                for (const id of allDiscoveredServiceIds) {
+                    if (newDisabledServices.has(id)) continue; // Keep disabled services
+                    if (discoveredServices.some(s => s.handler.id === id)) continue; // Still exists
+                    // Plugin was removed and is not disabled - clean up
+                    allDiscoveredServiceIds.delete(id);
+                    panelEntries.delete(id);
+                    sigilServerPorts.delete(id);
+                }
+
+                // Register any newly enabled plugin services
+                for (const { handler, source, manifest } of discoveredServices) {
+                    if (registry.has(handler.id)) continue;
+                    allDiscoveredServiceIds.add(handler.id);
+                    try {
+                        registry.register(handler);
+                        logInfo(`[services] loaded plugin service "${handler.id}" from ${source.pluginName ?? source.path}`);
+                        if (manifest?.panel || (manifest?.triggers && manifest.triggers.length > 0) || (manifest?.sigils && manifest.sigils.length > 0)) {
+                            panelEntries.set(handler.id, {
+                                serviceId: handler.id,
+                                label: manifest.label,
+                                icon: manifest.icon,
+                                ...(manifest.triggers && manifest.triggers.length > 0 ? { triggers: manifest.triggers } : {}),
+                                ...(manifest.sigils && manifest.sigils.length > 0 ? { sigils: manifest.sigils } : {}),
+                                ...(manifest.panel?.requires ? { requires: manifest.panel.requires } : {}),
+                            });
+                        }
+                        handler.init(socket, optsForInit(handler.id));
+                        if (typeof handler.reconcileSubscriptions === "function") {
+                            const subs = cachedTriggerSubscriptions.filter((sub) => sub.triggerType?.split(":")[0] === handler.id);
+                            const result = handler.reconcileSubscriptions(subs, { mode: "snapshot" });
+                            logInfo(`[trigger-reconciliation] service "${handler.id}" hot-reload applied ${result.applied}/${subs.length} cached subscriptions${result.errors?.length ? `, errors=${result.errors.length}` : ""}`);
+                        }
+                    } catch (err) {
+                        logWarn(`[services] failed to register plugin service "${handler.id}": ${err}`);
+                    }
+                }
+
+                for (const { path, error } of errors) {
+                    logWarn(`[services] plugin service load error at ${path}: ${error}`);
+                }
+
+                // Re-announce services
+                emitServiceAnnounce();
+
+                logInfo(`[services] reconfiguration complete. Active services: ${registry.getAll().map(s => s.id).join(", ")}`);
+            } catch (err) {
+                logError(`[services] reconfigure_services handler failed: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`);
+            }
+        });
+
         // ── Trigger subscription reconciliation ──────────────────────────
 
         // Track the last applied revision to ignore stale/duplicate messages.
@@ -821,8 +1029,9 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                 lastAppliedRevision = revision;
 
                 logInfo(`[trigger-reconciliation] received snapshot revision=${revision} with ${subscriptions.length} subscriptions`);
+                cachedTriggerSubscriptions = subscriptions as TriggerSubscriptionEntry[];
 
-                const { applied: totalApplied, errors: allErrors } = reconcileSnapshotSubscriptions(registry, subscriptions);
+                const { applied: totalApplied, errors: allErrors } = reconcileSnapshotSubscriptions(registry, cachedTriggerSubscriptions);
 
                 // Ack back to the server
                 socket.emit("trigger_subscriptions_applied" as any, {
@@ -857,7 +1066,10 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                 }
                 lastAppliedRevision = revision;
 
-                const prefix = subscription.triggerType.split(":")[0];
+                const typedSubscription = subscription as TriggerSubscriptionEntry;
+                cachedTriggerSubscriptions = applyTriggerSubscriptionDeltaToCache(cachedTriggerSubscriptions, action, typedSubscription);
+
+                const prefix = typedSubscription.triggerType.split(":")[0];
                 if (!prefix) return;
 
                 let applied = 0;
@@ -869,7 +1081,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                     logInfo(`[trigger-reconciliation] service "${prefix}" does not implement reconcileSubscriptions, skipping delta ${action}`);
                 } else {
                     try {
-                        const result = service.reconcileSubscriptions([subscription], {
+                        const result = service.reconcileSubscriptions([typedSubscription], {
                             mode: "delta",
                             action,
                         });

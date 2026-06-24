@@ -20,6 +20,7 @@ import type { RunnerInfo, ServiceAnnounceData, ServiceAnnounceDelta, ServicePane
 import { matchesViewerGeneration } from "@/lib/viewer-switch";
 
 const SERVICE_IDS_KEY = "__serviceIds" as const;
+const DISABLED_SERVICE_IDS_KEY = "__disabledServiceIds" as const;
 const PANELS_KEY = "__panels" as const;
 const TRIGGER_DEFS_KEY = "__triggerDefs" as const;
 const SIGIL_DEFS_KEY = "__sigilDefs" as const;
@@ -73,6 +74,7 @@ export function attachServiceAnnounceListener(socket: Socket): void {
             return;
         }
         (socket as any)[SERVICE_IDS_KEY] = data.serviceIds;
+        (socket as any)[DISABLED_SERVICE_IDS_KEY] = data.disabledServiceIds ?? [];
         (socket as any)[PANELS_KEY] = data.panels;
         (socket as any)[TRIGGER_DEFS_KEY] = data.triggerDefs;
         (socket as any)[SIGIL_DEFS_KEY] = data.sigilDefs;
@@ -86,6 +88,7 @@ export function attachServiceAnnounceListener(socket: Socket): void {
     });
     socket.on("disconnect", () => {
         (socket as any)[SERVICE_IDS_KEY] = undefined;
+        (socket as any)[DISABLED_SERVICE_IDS_KEY] = undefined;
         (socket as any)[PANELS_KEY] = undefined;
         (socket as any)[TRIGGER_DEFS_KEY] = undefined;
         (socket as any)[SIGIL_DEFS_KEY] = undefined;
@@ -100,10 +103,12 @@ export function attachServiceAnnounceListener(socket: Socket): void {
 export function seedServiceCache(newSocket: Socket, prevSocket: Socket | null): void {
     if (!prevSocket) return;
     const ids = (prevSocket as any)[SERVICE_IDS_KEY] as string[] | undefined;
+    const disabledIds = (prevSocket as any)[DISABLED_SERVICE_IDS_KEY] as string[] | undefined;
     const panels = (prevSocket as any)[PANELS_KEY] as ServicePanelInfo[] | undefined;
     const triggerDefs = (prevSocket as any)[TRIGGER_DEFS_KEY] as ServiceTriggerDef[] | undefined;
     const sigilDefs = (prevSocket as any)[SIGIL_DEFS_KEY] as ServiceSigilDef[] | undefined;
     if (ids) (newSocket as any)[SERVICE_IDS_KEY] = ids;
+    if (disabledIds) (newSocket as any)[DISABLED_SERVICE_IDS_KEY] = disabledIds;
     if (panels) (newSocket as any)[PANELS_KEY] = panels;
     if (triggerDefs) (newSocket as any)[TRIGGER_DEFS_KEY] = triggerDefs;
     if (sigilDefs) (newSocket as any)[SIGIL_DEFS_KEY] = sigilDefs;
@@ -116,6 +121,12 @@ export function setViewerSwitchGeneration(socket: Socket, generation: number): v
 /** Read any already-captured service IDs from the socket. */
 function getEagerServiceIds(socket: Socket | null): Set<string> {
     const ids = socket ? (socket as any)[SERVICE_IDS_KEY] as string[] | undefined : undefined;
+    return ids ? new Set(ids) : new Set();
+}
+
+/** Read any already-captured disabled service IDs from the socket. */
+function getEagerDisabledServiceIds(socket: Socket | null): Set<string> {
+    const ids = socket ? (socket as any)[DISABLED_SERVICE_IDS_KEY] as string[] | undefined : undefined;
     return ids ? new Set(ids) : new Set();
 }
 
@@ -136,6 +147,7 @@ function getEagerSigilDefs(socket: Socket | null): ServiceSigilDef[] {
 
 export interface RunnerServicesState {
     services: Set<string>;
+    disabledServices: Set<string>;
     panels: ServicePanelInfo[];
     triggerDefs: ServiceTriggerDef[];
     sigilDefs: ServiceSigilDef[];
@@ -144,6 +156,7 @@ export interface RunnerServicesState {
 function hasRunnerServiceMetadata(runnerInfo: RunnerInfo | null | undefined): boolean {
     return !!runnerInfo && (
         (runnerInfo.serviceIds?.length ?? 0) > 0 ||
+        (runnerInfo.disabledServiceIds?.length ?? 0) > 0 ||
         (runnerInfo.panels?.length ?? 0) > 0 ||
         (runnerInfo.triggerDefs?.length ?? 0) > 0 ||
         (runnerInfo.sigilDefs?.length ?? 0) > 0
@@ -153,6 +166,7 @@ function hasRunnerServiceMetadata(runnerInfo: RunnerInfo | null | undefined): bo
 function runnerInfoToServices(runnerInfo: RunnerInfo | null | undefined): RunnerServicesState {
     return {
         services: new Set(runnerInfo?.serviceIds ?? []),
+        disabledServices: new Set(runnerInfo?.disabledServiceIds ?? []),
         panels: runnerInfo?.panels ?? [],
         triggerDefs: runnerInfo?.triggerDefs ?? [],
         sigilDefs: runnerInfo?.sigilDefs ?? [],
@@ -162,6 +176,7 @@ function runnerInfoToServices(runnerInfo: RunnerInfo | null | undefined): Runner
 export function useRunnerServices(socket: Socket | null, runnerInfo: RunnerInfo | null = null): RunnerServicesState {
     const initialFromRunner = hasRunnerServiceMetadata(runnerInfo) ? runnerInfoToServices(runnerInfo) : null;
     const [services, setServices] = useState<Set<string>>(() => initialFromRunner?.services ?? getEagerServiceIds(socket));
+    const [disabledServices, setDisabledServices] = useState<Set<string>>(() => initialFromRunner?.disabledServices ?? getEagerDisabledServiceIds(socket));
     const [panels, setPanels] = useState<ServicePanelInfo[]>(() => initialFromRunner?.panels ?? getEagerPanels(socket));
     const [triggerDefs, setTriggerDefs] = useState<ServiceTriggerDef[]>(() => initialFromRunner?.triggerDefs ?? getEagerTriggerDefs(socket));
     const [sigilDefs, setSigilDefs] = useState<ServiceSigilDef[]>(() => initialFromRunner?.sigilDefs ?? getEagerSigilDefs(socket));
@@ -174,6 +189,7 @@ export function useRunnerServices(socket: Socket | null, runnerInfo: RunnerInfo 
     useEffect(() => {
         if (!socket) {
             setServices(new Set());
+            setDisabledServices(new Set());
             setPanels([]);
             setTriggerDefs([]);
             setSigilDefs([]);
@@ -186,12 +202,14 @@ export function useRunnerServices(socket: Socket | null, runnerInfo: RunnerInfo 
         if (hasRunnerServiceMetadata(runnerInfo)) {
             const next = runnerInfoToServices(runnerInfo);
             setServices(next.services);
+            setDisabledServices(next.disabledServices);
             setPanels(next.panels);
             setTriggerDefs(next.triggerDefs);
             setSigilDefs(next.sigilDefs);
         } else if (runnerInfo === null) {
             // True non-runner/local session: clear stale runner service state.
             setServices(new Set());
+            setDisabledServices(new Set());
             setPanels([]);
             setTriggerDefs([]);
             setSigilDefs([]);
@@ -203,6 +221,7 @@ export function useRunnerServices(socket: Socket | null, runnerInfo: RunnerInfo 
             // service state from the previous session instead of leaving old
             // panels/triggers visible.
             setServices(getEagerServiceIds(socket));
+            setDisabledServices(getEagerDisabledServiceIds(socket));
             setPanels(getEagerPanels(socket));
             setTriggerDefs(getEagerTriggerDefs(socket));
             setSigilDefs(getEagerSigilDefs(socket));
@@ -216,11 +235,13 @@ export function useRunnerServices(socket: Socket | null, runnerInfo: RunnerInfo 
             const useRunnerFeed = data._runnerRef === true && runnerInfo?.runnerId === data.runnerId && hasRunnerServiceMetadata(runnerInfo);
             const next = useRunnerFeed ? runnerInfoToServices(runnerInfo) : {
                 services: new Set(data.serviceIds),
+                disabledServices: new Set(data.disabledServiceIds ?? []),
                 panels: data.panels ?? [],
                 triggerDefs: data.triggerDefs ?? [],
                 sigilDefs: data.sigilDefs ?? [],
             };
             setServices(next.services);
+            setDisabledServices(next.disabledServices);
             setPanels(next.panels);
             setTriggerDefs(next.triggerDefs);
             setSigilDefs(next.sigilDefs);
@@ -234,6 +255,7 @@ export function useRunnerServices(socket: Socket | null, runnerInfo: RunnerInfo 
             // Apply the delta to socket cache (already done by the persistent listener)
             // and then read back the updated values for React state.
             const newIds = (socket as any)[SERVICE_IDS_KEY] as string[] | undefined;
+            const newDisabledIds = (socket as any)[DISABLED_SERVICE_IDS_KEY] as string[] | undefined;
             const newPanels = (socket as any)[PANELS_KEY] as ServicePanelInfo[] | undefined;
             const newTriggerDefs = (socket as any)[TRIGGER_DEFS_KEY] as ServiceTriggerDef[] | undefined;
             const newSigilDefs = (socket as any)[SIGIL_DEFS_KEY] as ServiceSigilDef[] | undefined;
@@ -241,12 +263,14 @@ export function useRunnerServices(socket: Socket | null, runnerInfo: RunnerInfo 
             if (useRunnerFeed) {
                 const next = runnerInfoToServices(runnerInfo);
                 setServices(next.services);
+                setDisabledServices(next.disabledServices);
                 setPanels(next.panels);
                 setTriggerDefs(next.triggerDefs);
                 setSigilDefs(next.sigilDefs);
                 return;
             }
             setServices(new Set(newIds ?? []));
+            setDisabledServices(new Set(newDisabledIds ?? []));
             setPanels(newPanels ?? []);
             setTriggerDefs(newTriggerDefs ?? []);
             setSigilDefs(newSigilDefs ?? []);
@@ -270,5 +294,5 @@ export function useRunnerServices(socket: Socket | null, runnerInfo: RunnerInfo 
         };
     }, [socket, runnerInfo]);
 
-    return { services, panels, triggerDefs, sigilDefs };
+    return { services, disabledServices, panels, triggerDefs, sigilDefs };
 }
