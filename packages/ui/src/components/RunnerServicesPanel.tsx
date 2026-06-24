@@ -102,6 +102,7 @@ export function RunnerServicesPanel({ runnerId }: RunnerServicesPanelProps) {
   const [togglingServices, setTogglingServices] = React.useState<Set<string>>(new Set());
   const toggleErrorRef = React.useRef<string | null>(null);
   const [toggleError, setToggleError] = React.useState<string | null>(null);
+  const [restartNotice, setRestartNotice] = React.useState<string | null>(null);
 
   const fetchServices = React.useCallback(async () => {
     setLoading(true);
@@ -178,6 +179,7 @@ export function RunnerServicesPanel({ runnerId }: RunnerServicesPanelProps) {
       }
       // Refresh the full service list to reflect the updated state
       await fetchServices();
+      setRestartNotice(`Service "${serviceId}" ${enabled ? "enabled" : "disabled"}. Restart the runner to fully apply this change.`);
     } catch (err) {
       console.error(`Failed to toggle service ${serviceId}:`, err);
       const msg = err instanceof Error ? err.message : "Failed to toggle service";
@@ -256,6 +258,18 @@ export function RunnerServicesPanel({ runnerId }: RunnerServicesPanelProps) {
           <button
             onClick={() => { setToggleError(null); toggleErrorRef.current = null; }}
             className="text-destructive/60 hover:text-destructive transition-colors"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+      {restartNotice && (
+        <div role="status" className="col-span-1 sm:col-span-2 flex items-center gap-2 px-3 py-2 rounded-lg border border-amber-500/50 bg-amber-500/10 text-amber-700 dark:text-amber-300 text-sm">
+          <span className="flex-1">{restartNotice}</span>
+          <button
+            aria-label="Dismiss restart notice"
+            onClick={() => setRestartNotice(null)}
+            className="text-amber-700/60 hover:text-amber-700 dark:text-amber-300/60 dark:hover:text-amber-300 transition-colors"
           >
             ✕
           </button>
