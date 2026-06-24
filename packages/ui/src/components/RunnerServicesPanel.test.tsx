@@ -56,36 +56,17 @@ const fetchSpy = mock(async (_url: string, opts?: RequestInit) => {
 });
 (globalThis as any).fetch = fetchSpy;
 
-mock.module("@/components/ui/tooltip", () => {
-  const R = require("react");
-  return {
-    Tooltip: ({ children }: any) => R.createElement(R.Fragment, null, children),
-    TooltipTrigger: ({ children }: any) => R.createElement(R.Fragment, null, children),
-    TooltipContent: ({ children }: any) => R.createElement("div", null, children),
-  };
-});
+const actualUtils = await import("../lib/utils");
+mock.module("@/lib/utils", () => actualUtils);
 
-mock.module("@/components/service-panels/lucide-icon", () => {
-  const R = require("react");
-  return { DynamicLucideIcon: () => R.createElement("span", { "data-testid": "icon" }) };
-});
+const actualTooltip = await import("./ui/tooltip");
+mock.module("@/components/ui/tooltip", () => actualTooltip);
 
-mock.module("@/components/ui/switch", () => {
-  const R = require("react");
-  return {
-    Switch: ({ checked, onCheckedChange, disabled }: any) => R.createElement("button", {
-      type: "button",
-      role: "switch",
-      "aria-checked": checked,
-      disabled,
-      onClick: () => onCheckedChange?.(!checked),
-    }),
-  };
-});
+const actualLucideIcon = await import("./service-panels/lucide-icon");
+mock.module("@/components/service-panels/lucide-icon", () => actualLucideIcon);
 
-mock.module("@/lib/utils", () => ({
-  cn: (...args: any[]) => args.filter(Boolean).join(" "),
-}));
+const actualSwitch = await import("./ui/switch");
+mock.module("@/components/ui/switch", () => actualSwitch);
 
 const { RunnerServicesPanel } = await import("./RunnerServicesPanel");
 
@@ -100,10 +81,14 @@ afterEach(() => {
 });
 
 describe("RunnerServicesPanel", () => {
-  test("shows a runner restart notice after toggling a service", async () => {
+  test("shows an immediate-apply notice after toggling a service", async () => {
     let container!: HTMLElement;
     await act(async () => {
-      ({ container } = render(<RunnerServicesPanel runnerId="runner-1" />));
+      ({ container } = render(
+        <actualTooltip.TooltipProvider>
+          <RunnerServicesPanel runnerId="runner-1" />
+        </actualTooltip.TooltipProvider>,
+      ));
     });
 
     await waitFor(() => expect(container.textContent).toContain("Demo"));
@@ -116,7 +101,7 @@ describe("RunnerServicesPanel", () => {
     });
 
     await waitFor(() => {
-      expect(container.textContent).toContain('Service "demo" disabled. Restart the runner to fully apply this change.');
+      expect(container.textContent).toContain('Service "demo" disabled. Change applied immediately.');
     });
   });
 });

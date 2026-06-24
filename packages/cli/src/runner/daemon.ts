@@ -155,6 +155,20 @@ type TriggerReconciliationLogger = {
  * must treat `subscriptionId` as the stable identity when they maintain
  * runtime state so same-session same-type subscriptions can coexist.
  */
+export function applyTriggerSubscriptionDeltaToCache(
+    current: TriggerSubscriptionEntry[],
+    action: "subscribe" | "update" | "unsubscribe",
+    subscription: TriggerSubscriptionEntry,
+): TriggerSubscriptionEntry[] {
+    const subscriptionId = subscription.subscriptionId;
+    const useExactId = subscriptionId && !subscriptionId.startsWith("legacy:all:");
+    const matches = (existing: TriggerSubscriptionEntry) => useExactId
+        ? existing.subscriptionId === subscriptionId
+        : existing.sessionId === subscription.sessionId && existing.triggerType === subscription.triggerType;
+    const next = current.filter((existing) => !matches(existing));
+    return action === "unsubscribe" ? next : [...next, subscription];
+}
+
 export function reconcileSnapshotSubscriptions(
     registry: ServiceRegistry,
     subscriptions: TriggerSubscriptionEntry[],
@@ -533,10 +547,11 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
         /** Emit service_announce with current service IDs, panel metadata, and trigger defs. */
         const emitServiceAnnounce = () => {
             const allServiceIds = registry.getAll().map((s) => s.id);
+            const activeServiceIds = new Set(allServiceIds);
             const disabledServiceIds = resolveAnnouncedDisabledRunnerServices(disabledServices);
             // Map panel entries to ServicePanelInfo, resolving requires → panelParams
             const panels = Array.from(panelEntries.values())
-                .filter((p): p is PanelEntry & { port: number } => p.port != null && p.hasPanel !== false)
+                .filter((p): p is PanelEntry & { port: number } => activeServiceIds.has(p.serviceId) && p.port != null && p.hasPanel !== false)
                 .map((p) => ({
                     serviceId: p.serviceId,
                     port: p.port,
@@ -548,6 +563,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             const allTriggerDefs: ServiceTriggerDef[] = [];
             const allSigilDefs: ServiceSigilDef[] = [];
             for (const entry of panelEntries.values()) {
+                if (!activeServiceIds.has(entry.serviceId)) continue;
                 if (entry.triggers && entry.triggers.length > 0) {
                     allTriggerDefs.push(...entry.triggers);
                 }
@@ -856,6 +872,8 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             }
         });
 
+        let cachedTriggerSubscriptions: TriggerSubscriptionEntry[] = [];
+
         // ── Service reconfiguration ───────────────────────────────────────
         // Update the disabled services list at runtime and reinitialize services.
         socket.on("reconfigure_services", async (data: any) => {
@@ -944,6 +962,11 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                             });
                         }
                         handler.init(socket, optsForInit(handler.id));
+                        if (typeof handler.reconcileSubscriptions === "function") {
+                            const subs = cachedTriggerSubscriptions.filter((sub) => sub.triggerType?.split(":")[0] === handler.id);
+                            const result = handler.reconcileSubscriptions(subs, { mode: "snapshot" });
+                            logInfo(`[trigger-reconciliation] service "${handler.id}" hot-reload applied ${result.applied}/${subs.length} cached subscriptions${result.errors?.length ? `, errors=${result.errors.length}` : ""}`);
+                        }
                     } catch (err) {
                         logWarn(`[services] failed to register plugin service "${handler.id}": ${err}`);
                     }
@@ -1006,8 +1029,9 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                 lastAppliedRevision = revision;
 
                 logInfo(`[trigger-reconciliation] received snapshot revision=${revision} with ${subscriptions.length} subscriptions`);
+                cachedTriggerSubscriptions = subscriptions as TriggerSubscriptionEntry[];
 
-                const { applied: totalApplied, errors: allErrors } = reconcileSnapshotSubscriptions(registry, subscriptions);
+                const { applied: totalApplied, errors: allErrors } = reconcileSnapshotSubscriptions(registry, cachedTriggerSubscriptions);
 
                 // Ack back to the server
                 socket.emit("trigger_subscriptions_applied" as any, {
@@ -1042,7 +1066,10 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                 }
                 lastAppliedRevision = revision;
 
-                const prefix = subscription.triggerType.split(":")[0];
+                const typedSubscription = subscription as TriggerSubscriptionEntry;
+                cachedTriggerSubscriptions = applyTriggerSubscriptionDeltaToCache(cachedTriggerSubscriptions, action, typedSubscription);
+
+                const prefix = typedSubscription.triggerType.split(":")[0];
                 if (!prefix) return;
 
                 let applied = 0;
@@ -1054,7 +1081,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                     logInfo(`[trigger-reconciliation] service "${prefix}" does not implement reconcileSubscriptions, skipping delta ${action}`);
                 } else {
                     try {
-                        const result = service.reconcileSubscriptions([subscription], {
+                        const result = service.reconcileSubscriptions([typedSubscription], {
                             mode: "delta",
                             action,
                         });

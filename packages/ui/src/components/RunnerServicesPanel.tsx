@@ -179,7 +179,7 @@ export function RunnerServicesPanel({ runnerId }: RunnerServicesPanelProps) {
       }
       // Refresh the full service list to reflect the updated state
       await fetchServices();
-      setRestartNotice(`Service "${serviceId}" ${enabled ? "enabled" : "disabled"}. Restart the runner to fully apply this change.`);
+      setRestartNotice(`Service "${serviceId}" ${enabled ? "enabled" : "disabled"}. Change applied immediately.`);
     } catch (err) {
       console.error(`Failed to toggle service ${serviceId}:`, err);
       const msg = err instanceof Error ? err.message : "Failed to toggle service";
