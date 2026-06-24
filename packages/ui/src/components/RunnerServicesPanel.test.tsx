@@ -36,18 +36,16 @@ const win = new Window({ url: "http://localhost/" });
   disconnect() {}
 };
 
-let getCount = 0;
 const fetchSpy = mock(async (_url: string, opts?: RequestInit) => {
   if (opts?.method === "PUT") {
     return { ok: true, json: async () => ({ ok: true, serviceId: "demo", enabled: false }) } as Response;
   }
 
-  getCount += 1;
   return {
     ok: true,
     json: async () => ({
-      serviceIds: getCount === 1 ? ["demo"] : [],
-      disabledServiceIds: getCount === 1 ? [] : ["demo"],
+      serviceIds: ["demo"],
+      disabledServiceIds: [],
       panels: [{ serviceId: "demo", port: 1234, label: "Demo", icon: "server" }],
       triggerDefs: [],
       sigilDefs: [],
@@ -77,7 +75,6 @@ afterEach(() => {
   document.body.innerHTML = "";
   localStorage.clear();
   fetchSpy.mockClear();
-  getCount = 0;
 });
 
 describe("RunnerServicesPanel", () => {
@@ -101,6 +98,8 @@ describe("RunnerServicesPanel", () => {
     });
 
     await waitFor(() => {
+      expect(toggle.getAttribute("aria-checked")).toBe("false");
+      expect(container.textContent).toContain("Disabled");
       expect(container.textContent).toContain('Service "demo" disabled. Change applied immediately.');
     });
   });
