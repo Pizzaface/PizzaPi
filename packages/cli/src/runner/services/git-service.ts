@@ -88,6 +88,34 @@ type GitUpstreamResolution =
         mergeBranches?: string[];
     };
 
+type GitStashEntry = {
+    index: number;
+    ref: string;
+    message: string;
+    shortHash: string;
+    date: string;
+};
+
+type GitLogEntry = {
+    hash: string;
+    shortHash: string;
+    author: string;
+    authorDate: string;
+    commitDate: string;
+    subject: string;
+    body: string;
+    refs: string[];
+};
+
+type GitBlameLine = {
+    hash: string;
+    author: string;
+    authorDate: string;
+    summary: string;
+    finalLine: number;
+    sourceLine: number;
+};
+
 // ── Validation helpers ──────────────────────────────────────────────────────
 
 /** Validate that a branch name doesn't contain shell-dangerous characters. */
@@ -241,6 +269,30 @@ export class GitService implements ServiceHandler {
                     break;
                 case "git_worktree_remove":
                     void this.handleWorktreeRemove(payload, requestId, sessionId);
+                    break;
+                case "git_stash_list":
+                    void this.handleStashList(payload, requestId, sessionId);
+                    break;
+                case "git_stash_push":
+                    void this.handleStashPush(payload, requestId, sessionId);
+                    break;
+                case "git_stash_pop":
+                    void this.handleStashPop(payload, requestId, sessionId);
+                    break;
+                case "git_stash_apply":
+                    void this.handleStashApply(payload, requestId, sessionId);
+                    break;
+                case "git_stash_drop":
+                    void this.handleStashDrop(payload, requestId, sessionId);
+                    break;
+                case "git_log":
+                    void this.handleLog(payload, requestId, sessionId);
+                    break;
+                case "git_diff_revs":
+                    void this.handleDiffRevs(payload, requestId, sessionId);
+                    break;
+                case "git_blame":
+                    void this.handleBlame(payload, requestId, sessionId);
                     break;
             }
         };
@@ -1799,6 +1851,426 @@ export class GitService implements ServiceHandler {
             this.emitError("git_worktree_remove_result", err instanceof Error ? err.message : String(err), requestId, sessionId);
         } finally {
             this.endRepoMutation(mutation);
+        }
+    }
+
+    // ── git stash list ──────────────────────────────────────────────────
+
+    private async handleStashList(
+        payload: Record<string, unknown>,
+        requestId?: string,
+        sessionId?: string,
+    ): Promise<void> {
+        const cwd = this.validateCwd(payload.cwd, "git_stash_list_result", requestId, sessionId);
+        if (!cwd) return;
+
+        try {
+            // NUL-delimited fields: ref, short hash, ISO author date, subject (message).
+            const format = "%gd%x00%h%x00%aI%x00%s%x00";
+            const { stdout } = await this._execGit(
+                ["stash", "list", `--format=${format}`],
+                { cwd, timeout: 10000 },
+            );
+
+            const stashes: GitStashEntry[] = [];
+            for (const line of stdout.split("\n")) {
+                if (!line.trim()) continue;
+                const fields = line.split("\0");
+                const ref = fields[0]?.trim() ?? "";
+                const shortHash = fields[1]?.trim() ?? "";
+                const date = fields[2]?.trim() ?? "";
+                const message = fields[3]?.trim() ?? "";
+                if (!ref) continue;
+                const indexMatch = ref.match(/stash@\{(\d+)\}/);
+                const index = indexMatch ? parseInt(indexMatch[1], 10) : 0;
+                stashes.push({ index, ref, message, shortHash, date });
+            }
+
+            this.emit("git_stash_list_result", { ok: true, stashes }, requestId, sessionId);
+        } catch (err) {
+            this.emitError("git_stash_list_result", err instanceof Error ? err.message : String(err), requestId, sessionId);
+        }
+    }
+
+    // ── git stash push ─────────────────────────────────────────────────
+
+    private async handleStashPush(
+        payload: Record<string, unknown>,
+        requestId?: string,
+        sessionId?: string,
+    ): Promise<void> {
+        const cwd = this.validateCwd(payload.cwd, "git_stash_result", requestId, sessionId);
+        if (!cwd) return;
+
+        const message = typeof payload.message === "string" ? payload.message.trim() : "";
+        const includeUntracked = payload.includeUntracked === true;
+
+        const mutation = await this.beginRepoMutation(cwd, "git_stash_result", "stash-push", requestId, sessionId);
+        if (!mutation) return;
+
+        try {
+            const args = ["stash", "push"];
+            if (includeUntracked) args.push("-u");
+            if (message) args.push("-m", message);
+            const { stdout, stderr } = await this._execGit(args, { cwd, timeout: 15000 });
+            const output = (stdout + "\n" + stderr).trim();
+            await this.invalidateStatusCacheFamily(cwd);
+            this.emit(
+                "git_stash_result",
+                { ok: true, ...(output ? { message: output } : {}) },
+                requestId,
+                sessionId,
+            );
+        } catch (err) {
+            this.emitError("git_stash_result", err instanceof Error ? err.message : String(err), requestId, sessionId);
+        } finally {
+            this.endRepoMutation(mutation);
+        }
+    }
+
+    // ── git stash pop ────────────────────────────────────────────────────
+
+    private async handleStashPop(
+        payload: Record<string, unknown>,
+        requestId?: string,
+        sessionId?: string,
+    ): Promise<void> {
+        const cwd = this.validateCwd(payload.cwd, "git_stash_result", requestId, sessionId);
+        if (!cwd) return;
+
+        const index = typeof payload.index === "number" && payload.index >= 0 ? payload.index : 0;
+
+        const mutation = await this.beginRepoMutation(cwd, "git_stash_result", "stash-pop", requestId, sessionId);
+        if (!mutation) return;
+
+        try {
+            const { stdout, stderr } = await this._execGit(
+                ["stash", "pop", `stash@{${index}}`],
+                { cwd, timeout: 30000 },
+            );
+            const output = (stdout + "\n" + stderr).trim();
+            await this.invalidateStatusCacheFamily(cwd);
+            this.emit(
+                "git_stash_result",
+                { ok: true, ...(output ? { message: output } : {}) },
+                requestId,
+                sessionId,
+            );
+        } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            const conflict = /CONFLICT|could not apply|unmerged|Automatic merge failed/i.test(message);
+            if (conflict) await this.invalidateStatusCacheFamily(cwd);
+            this.emit(
+                "git_stash_result",
+                { ok: true, conflict, ...(message ? { message } : {}) },
+                requestId,
+                sessionId,
+            );
+        } finally {
+            this.endRepoMutation(mutation);
+        }
+    }
+
+    // ── git stash apply ─────────────────────────────────────────────────
+
+    private async handleStashApply(
+        payload: Record<string, unknown>,
+        requestId?: string,
+        sessionId?: string,
+    ): Promise<void> {
+        const cwd = this.validateCwd(payload.cwd, "git_stash_result", requestId, sessionId);
+        if (!cwd) return;
+
+        const index = typeof payload.index === "number" && payload.index >= 0 ? payload.index : 0;
+        const keep = payload.keep === true;
+
+        const mutation = await this.beginRepoMutation(cwd, "git_stash_result", "stash-apply", requestId, sessionId);
+        if (!mutation) return;
+
+        try {
+            const args = ["stash", "apply"];
+            if (keep) args.push("--index");
+            args.push(`stash@{${index}}`);
+            const { stdout, stderr } = await this._execGit(args, { cwd, timeout: 30000 });
+            const output = (stdout + "\n" + stderr).trim();
+            await this.invalidateStatusCacheFamily(cwd);
+            this.emit(
+                "git_stash_result",
+                { ok: true, ...(output ? { message: output } : {}) },
+                requestId,
+                sessionId,
+            );
+        } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            const conflict = /CONFLICT|could not apply|unmerged|Automatic merge failed/i.test(message);
+            if (conflict) await this.invalidateStatusCacheFamily(cwd);
+            this.emit(
+                "git_stash_result",
+                { ok: true, conflict, ...(message ? { message } : {}) },
+                requestId,
+                sessionId,
+            );
+        } finally {
+            this.endRepoMutation(mutation);
+        }
+    }
+
+    // ── git stash drop ──────────────────────────────────────────────────
+
+    private async handleStashDrop(
+        payload: Record<string, unknown>,
+        requestId?: string,
+        sessionId?: string,
+    ): Promise<void> {
+        const cwd = this.validateCwd(payload.cwd, "git_stash_result", requestId, sessionId);
+        if (!cwd) return;
+
+        const index = typeof payload.index === "number" && payload.index >= 0 ? payload.index : 0;
+
+        const mutation = await this.beginRepoMutation(cwd, "git_stash_result", "stash-drop", requestId, sessionId);
+        if (!mutation) return;
+
+        try {
+            const { stdout, stderr } = await this._execGit(
+                ["stash", "drop", `stash@{${index}}`],
+                { cwd, timeout: 15000 },
+            );
+            const output = (stdout + "\n" + stderr).trim();
+            await this.invalidateStatusCacheFamily(cwd);
+            this.emit(
+                "git_stash_result",
+                { ok: true, ...(output ? { message: output } : {}) },
+                requestId,
+                sessionId,
+            );
+        } catch (err) {
+            this.emitError("git_stash_result", err instanceof Error ? err.message : String(err), requestId, sessionId);
+        } finally {
+            this.endRepoMutation(mutation);
+        }
+    }
+
+    // ── git log ─────────────────────────────────────────────────────────
+
+    private async handleLog(
+        payload: Record<string, unknown>,
+        requestId?: string,
+        sessionId?: string,
+    ): Promise<void> {
+        const cwd = this.validateCwd(payload.cwd, "git_log_result", requestId, sessionId);
+        if (!cwd) return;
+
+        let limit = typeof payload.limit === "number" ? payload.limit : 50;
+        if (!Number.isFinite(limit) || limit < 1) limit = 50;
+        if (limit > 200) limit = 200;
+
+        const path = typeof payload.path === "string" ? payload.path : "";
+        const revisionRange = typeof payload.revisionRange === "string" ? payload.revisionRange.trim() : "";
+
+        if (path && !isValidPath(path)) {
+            this.emitError("git_log_result", `Invalid path: ${path}`, requestId, sessionId);
+            return;
+        }
+
+        try {
+            // NUL-delimited fixed-field format with a trailing empty sentinel so we can
+            // parse without relying on newlines (commit body may contain newlines).
+            // Fields: hash, shortHash, author, authorDate, commitDate, subject, body, refs, sentinel.
+            const format = "%H%x00%h%x00%an%x00%aI%x00%cI%x00%s%x00%b%x00%D%x00%x00";
+            const args = ["log", `--format=${format}`, "--decorate=short", "-n", String(limit)];
+            if (revisionRange) args.push(revisionRange);
+            if (path) args.push("--", path);
+
+            const { stdout } = await this._execGit(args, { cwd, timeout: 30000 });
+            const fields = stdout.split("\0");
+            const entries: GitLogEntry[] = [];
+
+            for (let i = 0; i + 8 < fields.length; i += 9) {
+                const hash = fields[i].replace(/^\n+/, "").trim();
+                if (!hash) continue;
+                const shortHash = fields[i + 1].replace(/^\n+/, "").trim();
+                const author = fields[i + 2].replace(/^\n+/, "").trim();
+                const authorDate = fields[i + 3].replace(/^\n+/, "").trim();
+                const commitDate = fields[i + 4].replace(/^\n+/, "").trim();
+                const subject = fields[i + 5].replace(/^\n+/, "").trim();
+                const body = fields[i + 6].replace(/^\n+/, "");
+                const refsField = fields[i + 7].replace(/^\n+/, "").trim();
+
+                const refs = refsField
+                    ? refsField.split(", ").map((r) => {
+                        let s = r.trim();
+                        if (s.startsWith("HEAD -> ")) s = s.substring(8);
+                        if (s.startsWith("tag: ")) s = s.substring(5);
+                        return s;
+                    }).filter(Boolean)
+                    : [];
+
+                entries.push({ hash, shortHash, author, authorDate, commitDate, subject, body, refs });
+            }
+
+            this.emit("git_log_result", { ok: true, entries }, requestId, sessionId);
+        } catch (err) {
+            this.emitError("git_log_result", err instanceof Error ? err.message : String(err), requestId, sessionId);
+        }
+    }
+
+    // ── git diff between two revisions ──────────────────────────────────
+
+    private async handleDiffRevs(
+        payload: Record<string, unknown>,
+        requestId?: string,
+        sessionId?: string,
+    ): Promise<void> {
+        const cwd = this.validateCwd(payload.cwd, "git_diff_revs_result", requestId, sessionId);
+        if (!cwd) return;
+
+        const base = typeof payload.base === "string" ? payload.base.trim() : "";
+        const head = typeof payload.head === "string" ? payload.head.trim() : "";
+        const path = typeof payload.path === "string" ? payload.path : "";
+
+        if (!base) {
+            this.emitError("git_diff_revs_result", "Missing base revision", requestId, sessionId);
+            return;
+        }
+        if (!head) {
+            this.emitError("git_diff_revs_result", "Missing head revision", requestId, sessionId);
+            return;
+        }
+        if (base.startsWith("-") || head.startsWith("-")) {
+            this.emitError("git_diff_revs_result", "Invalid revision", requestId, sessionId);
+            return;
+        }
+        if (path && !isValidPath(path)) {
+            this.emitError("git_diff_revs_result", `Invalid path: ${path}`, requestId, sessionId);
+            return;
+        }
+
+        try {
+            const repoRoot = this._cwdRepoRoot.get(cwd) ?? (await this.resolveRepoRoot(cwd));
+            if (!this._cwdRepoRoot.has(cwd)) this._cwdRepoRoot.set(cwd, repoRoot);
+
+            const args = ["diff", base, head];
+            if (path) args.push("--", path);
+            const { stdout: diff } = await this._execGit(args, { cwd: repoRoot, timeout: 30000 });
+            this.emit("git_diff_revs_result", { ok: true, diff }, requestId, sessionId);
+        } catch (err) {
+            this.emitError("git_diff_revs_result", err instanceof Error ? err.message : String(err), requestId, sessionId);
+        }
+    }
+
+    // ── git blame ───────────────────────────────────────────────────────
+
+    private async handleBlame(
+        payload: Record<string, unknown>,
+        requestId?: string,
+        sessionId?: string,
+    ): Promise<void> {
+        const cwd = this.validateCwd(payload.cwd, "git_blame_result", requestId, sessionId);
+        if (!cwd) return;
+
+        const path = typeof payload.path === "string" ? payload.path : "";
+        if (!path) {
+            this.emitError("git_blame_result", "Missing path", requestId, sessionId);
+            return;
+        }
+        if (!isValidPath(path)) {
+            this.emitError("git_blame_result", `Invalid path: ${path}`, requestId, sessionId);
+            return;
+        }
+
+        const revision = typeof payload.revision === "string" && payload.revision.trim()
+            ? payload.revision.trim()
+            : "HEAD";
+        if (revision.startsWith("-")) {
+            this.emitError("git_blame_result", "Invalid revision", requestId, sessionId);
+            return;
+        }
+
+        try {
+            const repoRoot = this._cwdRepoRoot.get(cwd) ?? (await this.resolveRepoRoot(cwd));
+            if (!this._cwdRepoRoot.has(cwd)) this._cwdRepoRoot.set(cwd, repoRoot);
+
+            const blameArgs = ["blame", "--line-porcelain", revision, "--", path];
+            const { stdout } = await this._execGit(blameArgs, { cwd: repoRoot, timeout: 30000 });
+
+            const lines: GitBlameLine[] = [];
+            let current: Partial<GitBlameLine> & { authorTime?: number } = {};
+            let currentFinalLine: number | null = null;
+            let currentSourceLine: number | null = null;
+
+            const flush = () => {
+                if (
+                    current.hash &&
+                    current.author &&
+                    current.authorDate &&
+                    current.summary &&
+                    currentFinalLine != null &&
+                    currentSourceLine != null
+                ) {
+                    lines.push({
+                        hash: current.hash,
+                        author: current.author,
+                        authorDate: current.authorDate,
+                        summary: current.summary,
+                        finalLine: currentFinalLine,
+                        sourceLine: currentSourceLine,
+                    });
+                }
+                current = {};
+                currentFinalLine = null;
+                currentSourceLine = null;
+            };
+
+            for (const rawLine of stdout.split("\n")) {
+                if (rawLine.startsWith("\t")) {
+                    // Content line — ignored here; we fetch full content below.
+                    continue;
+                }
+
+                const line = rawLine;
+                const headerMatch = line.match(/^([0-9a-f]{8,})\s+(\d+)\s+(\d+)\s+(\d+)$/);
+                if (headerMatch) {
+                    flush();
+                    current.hash = headerMatch[1].substring(0, 7);
+                    currentSourceLine = parseInt(headerMatch[2], 10);
+                    currentFinalLine = parseInt(headerMatch[3], 10);
+                    continue;
+                }
+                if (line.startsWith("author ")) {
+                    current.author = line.substring(7);
+                    continue;
+                }
+                if (line.startsWith("author-time ")) {
+                    const ts = parseInt(line.substring(12), 10);
+                    if (!Number.isNaN(ts)) {
+                        current.authorTime = ts;
+                        current.authorDate = new Date(ts * 1000).toISOString();
+                    }
+                    continue;
+                }
+                if (line.startsWith("summary ")) {
+                    current.summary = line.substring(8);
+                    continue;
+                }
+            }
+            flush();
+
+            let content: string[] = [];
+            try {
+                const { stdout: contentStdout } = await this._execGit(
+                    ["show", `${revision}:${path}`],
+                    { cwd: repoRoot, timeout: 30000 },
+                );
+                content = contentStdout.split("\n");
+                if (content.length > 0 && content[content.length - 1] === "") content.pop();
+            } catch {
+                // If the file cannot be read at this revision, fall back to empty lines.
+                content = [];
+            }
+
+            this.emit("git_blame_result", { ok: true, lines, content }, requestId, sessionId);
+        } catch (err) {
+            this.emitError("git_blame_result", err instanceof Error ? err.message : String(err), requestId, sessionId);
         }
     }
 }

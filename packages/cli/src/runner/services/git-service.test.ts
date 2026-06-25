@@ -1244,3 +1244,627 @@ describe("GitService worktree add/remove", () => {
         expect((r.payload as any).message).toContain("not a known git worktree");
     });
 });
+
+describe("GitService stash operations", () => {
+    function mockRepoRootExec(cwd: string) {
+        return async (args: string[], _options: { cwd: string; timeout: number }) => {
+            const cmd = args[0];
+            if (cmd === "rev-parse" && args[1] === "--show-toplevel") {
+                return { stdout: `${cwd}\n`, stderr: "" };
+            }
+            return null;
+        };
+    }
+
+    test("stash list parses NUL-delimited stash entries", async () => {
+        const service = new GitService({
+            execGit: async (args) => {
+                if (args[0] === "stash" && args[1] === "list") {
+                    return {
+                        stdout:
+                            "stash@{0}\x00abc1234\x002026-06-25T10:00:00+00:00\x00WIP on main\x00\n" +
+                            "stash@{1}\x00def5678\x002026-06-24T09:00:00+00:00\x00Feature backup\x00\n",
+                        stderr: "",
+                    };
+                }
+                throw new Error(`Unexpected git args: ${args.join(" ")}`);
+            },
+        });
+
+        const socket = createMockSocket();
+        service.init(socket as any, { isShuttingDown: () => false });
+
+        dispatchServiceMessage(socket, {
+            serviceId: "git",
+            type: "git_stash_list",
+            requestId: "stash-list-1",
+            payload: { cwd: "/tmp/pizzapi-test" },
+        });
+        const result = await waitForResult(socket, "stash-list-1", "git_stash_list_result");
+        const payload = result.payload as any;
+
+        expect(payload.ok).toBe(true);
+        expect(payload.stashes).toHaveLength(2);
+        expect(payload.stashes[0]).toEqual({
+            index: 0,
+            ref: "stash@{0}",
+            message: "WIP on main",
+            shortHash: "abc1234",
+            date: "2026-06-25T10:00:00+00:00",
+        });
+        expect(payload.stashes[1]).toEqual({
+            index: 1,
+            ref: "stash@{1}",
+            message: "Feature backup",
+            shortHash: "def5678",
+            date: "2026-06-24T09:00:00+00:00",
+        });
+    });
+
+    test("stash list emits error on git failure", async () => {
+        const service = new GitService({
+            execGit: async (args) => {
+                if (args[0] === "stash" && args[1] === "list") {
+                    throw new Error("not a git repository");
+                }
+                throw new Error(`Unexpected git args: ${args.join(" ")}`);
+            },
+        });
+
+        const socket = createMockSocket();
+        service.init(socket as any, { isShuttingDown: () => false });
+
+        dispatchServiceMessage(socket, {
+            serviceId: "git",
+            type: "git_stash_list",
+            requestId: "stash-list-err",
+            payload: { cwd: "/tmp/pizzapi-test" },
+        });
+        const result = await waitForResult(socket, "stash-list-err", "git_stash_list_result");
+        expect(result.payload).toMatchObject({ ok: false, message: expect.stringContaining("not a git repository") });
+    });
+
+    test("stash push with message and includeUntracked", async () => {
+        const cwd = "/tmp/pizzapi-test";
+        const gitCalls: string[][] = [];
+        const service = new GitService({
+            execGit: async (args, options) => {
+                gitCalls.push([...args]);
+                const mock = mockRepoRootExec(cwd);
+                const result = await mock(args, options);
+                if (result) return result;
+                const cmd = args[0];
+                if (cmd === "stash" && args[1] === "push") {
+                    return { stdout: "Saved working directory and index state\n", stderr: "" };
+                }
+                throw new Error(`Unexpected git args: ${args.join(" ")}`);
+            },
+        });
+
+        const socket = createMockSocket();
+        service.init(socket as any, { isShuttingDown: () => false });
+
+        dispatchServiceMessage(socket, {
+            serviceId: "git",
+            type: "git_stash_push",
+            requestId: "stash-push-1",
+            payload: { cwd, message: "my stash", includeUntracked: true },
+        });
+        const result = await waitForResult(socket, "stash-push-1", "git_stash_result");
+        const payload = result.payload as any;
+
+        expect(payload.ok).toBe(true);
+        expect(payload.message).toContain("Saved working directory");
+        expect(gitCalls).toContainEqual(["stash", "push", "-u", "-m", "my stash"]);
+    });
+
+    test("stash push emits error on git failure", async () => {
+        const cwd = "/tmp/pizzapi-test";
+        const service = new GitService({
+            execGit: async (args, options) => {
+                const mock = mockRepoRootExec(cwd);
+                const result = await mock(args, options);
+                if (result) return result;
+                if (args[0] === "stash" && args[1] === "push") {
+                    throw new Error("No local changes to save");
+                }
+                throw new Error(`Unexpected git args: ${args.join(" ")}`);
+            },
+        });
+
+        const socket = createMockSocket();
+        service.init(socket as any, { isShuttingDown: () => false });
+
+        dispatchServiceMessage(socket, {
+            serviceId: "git",
+            type: "git_stash_push",
+            requestId: "stash-push-err",
+            payload: { cwd },
+        });
+        const result = await waitForResult(socket, "stash-push-err", "git_stash_result");
+        expect(result.payload).toMatchObject({ ok: false, message: expect.stringContaining("No local changes") });
+    });
+
+    test("stash pop at index", async () => {
+        const cwd = "/tmp/pizzapi-test";
+        const gitCalls: string[][] = [];
+        const service = new GitService({
+            execGit: async (args, options) => {
+                gitCalls.push([...args]);
+                const mock = mockRepoRootExec(cwd);
+                const result = await mock(args, options);
+                if (result) return result;
+                if (args[0] === "stash" && args[1] === "pop") {
+                    return { stdout: "Dropped stash@{2}\n", stderr: "" };
+                }
+                throw new Error(`Unexpected git args: ${args.join(" ")}`);
+            },
+        });
+
+        const socket = createMockSocket();
+        service.init(socket as any, { isShuttingDown: () => false });
+
+        dispatchServiceMessage(socket, {
+            serviceId: "git",
+            type: "git_stash_pop",
+            requestId: "stash-pop-1",
+            payload: { cwd, index: 2 },
+        });
+        const result = await waitForResult(socket, "stash-pop-1", "git_stash_result");
+        const payload = result.payload as any;
+
+        expect(payload.ok).toBe(true);
+        expect(gitCalls).toContainEqual(["stash", "pop", "stash@{2}"]);
+    });
+
+    test("stash pop conflict returns ok:true with conflict:true", async () => {
+        const cwd = "/tmp/pizzapi-test";
+        const service = new GitService({
+            execGit: async (args, options) => {
+                const mock = mockRepoRootExec(cwd);
+                const result = await mock(args, options);
+                if (result) return result;
+                if (args[0] === "stash" && args[1] === "pop") {
+                    throw new Error("CONFLICT (content): Merge conflict in src/app.ts");
+                }
+                throw new Error(`Unexpected git args: ${args.join(" ")}`);
+            },
+        });
+
+        const socket = createMockSocket();
+        service.init(socket as any, { isShuttingDown: () => false });
+
+        dispatchServiceMessage(socket, {
+            serviceId: "git",
+            type: "git_stash_pop",
+            requestId: "stash-pop-conflict",
+            payload: { cwd, index: 0 },
+        });
+        const result = await waitForResult(socket, "stash-pop-conflict", "git_stash_result");
+        const payload = result.payload as any;
+
+        expect(payload.ok).toBe(true);
+        expect(payload.conflict).toBe(true);
+        expect(payload.message).toContain("CONFLICT");
+    });
+
+    test("stash apply with keep index", async () => {
+        const cwd = "/tmp/pizzapi-test";
+        const gitCalls: string[][] = [];
+        const service = new GitService({
+            execGit: async (args, options) => {
+                gitCalls.push([...args]);
+                const mock = mockRepoRootExec(cwd);
+                const result = await mock(args, options);
+                if (result) return result;
+                if (args[0] === "stash" && args[1] === "apply") {
+                    return { stdout: "Applied stash\n", stderr: "" };
+                }
+                throw new Error(`Unexpected git args: ${args.join(" ")}`);
+            },
+        });
+
+        const socket = createMockSocket();
+        service.init(socket as any, { isShuttingDown: () => false });
+
+        dispatchServiceMessage(socket, {
+            serviceId: "git",
+            type: "git_stash_apply",
+            requestId: "stash-apply-1",
+            payload: { cwd, index: 1, keep: true },
+        });
+        const result = await waitForResult(socket, "stash-apply-1", "git_stash_result");
+        const payload = result.payload as any;
+
+        expect(payload.ok).toBe(true);
+        expect(gitCalls).toContainEqual(["stash", "apply", "--index", "stash@{1}"]);
+    });
+
+    test("stash apply conflict returns ok:true with conflict:true", async () => {
+        const cwd = "/tmp/pizzapi-test";
+        const service = new GitService({
+            execGit: async (args, options) => {
+                const mock = mockRepoRootExec(cwd);
+                const result = await mock(args, options);
+                if (result) return result;
+                if (args[0] === "stash" && args[1] === "apply") {
+                    throw new Error("could not apply stash@{0}... Automatic merge failed");
+                }
+                throw new Error(`Unexpected git args: ${args.join(" ")}`);
+            },
+        });
+
+        const socket = createMockSocket();
+        service.init(socket as any, { isShuttingDown: () => false });
+
+        dispatchServiceMessage(socket, {
+            serviceId: "git",
+            type: "git_stash_apply",
+            requestId: "stash-apply-conflict",
+            payload: { cwd, index: 0 },
+        });
+        const result = await waitForResult(socket, "stash-apply-conflict", "git_stash_result");
+        const payload = result.payload as any;
+
+        expect(payload.ok).toBe(true);
+        expect(payload.conflict).toBe(true);
+    });
+
+    test("stash drop at index", async () => {
+        const cwd = "/tmp/pizzapi-test";
+        const gitCalls: string[][] = [];
+        const service = new GitService({
+            execGit: async (args, options) => {
+                gitCalls.push([...args]);
+                const mock = mockRepoRootExec(cwd);
+                const result = await mock(args, options);
+                if (result) return result;
+                if (args[0] === "stash" && args[1] === "drop") {
+                    return { stdout: "Dropped stash@{3}\n", stderr: "" };
+                }
+                throw new Error(`Unexpected git args: ${args.join(" ")}`);
+            },
+        });
+
+        const socket = createMockSocket();
+        service.init(socket as any, { isShuttingDown: () => false });
+
+        dispatchServiceMessage(socket, {
+            serviceId: "git",
+            type: "git_stash_drop",
+            requestId: "stash-drop-1",
+            payload: { cwd, index: 3 },
+        });
+        const result = await waitForResult(socket, "stash-drop-1", "git_stash_result");
+        const payload = result.payload as any;
+
+        expect(payload.ok).toBe(true);
+        expect(gitCalls).toContainEqual(["stash", "drop", "stash@{3}"]);
+    });
+
+    test("stash drop emits error on git failure", async () => {
+        const cwd = "/tmp/pizzapi-test";
+        const service = new GitService({
+            execGit: async (args, options) => {
+                const mock = mockRepoRootExec(cwd);
+                const result = await mock(args, options);
+                if (result) return result;
+                if (args[0] === "stash" && args[1] === "drop") {
+                    throw new Error("fatal: log for 'ref/stash' only has 1 entry");
+                }
+                throw new Error(`Unexpected git args: ${args.join(" ")}`);
+            },
+        });
+
+        const socket = createMockSocket();
+        service.init(socket as any, { isShuttingDown: () => false });
+
+        dispatchServiceMessage(socket, {
+            serviceId: "git",
+            type: "git_stash_drop",
+            requestId: "stash-drop-err",
+            payload: { cwd, index: 5 },
+        });
+        const result = await waitForResult(socket, "stash-drop-err", "git_stash_result");
+        expect(result.payload).toMatchObject({ ok: false, message: expect.stringContaining("fatal") });
+    });
+});
+
+describe("GitService log", () => {
+    function makeLogStdout(entries: Array<{
+        hash: string;
+        shortHash: string;
+        author: string;
+        authorDate: string;
+        commitDate: string;
+        subject: string;
+        body: string;
+        refs: string;
+    }>) {
+        return entries
+            .map(
+                (e) =>
+                    `${e.hash}\0${e.shortHash}\0${e.author}\0${e.authorDate}\0${e.commitDate}\0${e.subject}\0${e.body}\0${e.refs}\0\0`,
+            )
+            .join("\n");
+    }
+
+    test("git_log parses entries with body, refs, and newline-separated bodies", async () => {
+        const service = new GitService({
+            execGit: async (args) => {
+                if (args[0] === "log") {
+                    const stdout = makeLogStdout([
+                        {
+                            hash: "abc123456789abcdef123456789abcdef1234567",
+                            shortHash: "abc1234",
+                            author: "Alice",
+                            authorDate: "2026-06-25T10:00:00+00:00",
+                            commitDate: "2026-06-25T10:00:00+00:00",
+                            subject: "Fix bug",
+                            body: "More detail\nAnother body line",
+                            refs: "HEAD -> main, tag: v1.0",
+                        },
+                        {
+                            hash: "def56789abcdef123456789abcdef123456789ab",
+                            shortHash: "def5678",
+                            author: "Bob",
+                            authorDate: "2026-06-24T09:00:00+00:00",
+                            commitDate: "2026-06-24T09:00:00+00:00",
+                            subject: "Add feature",
+                            body: "",
+                            refs: "origin/main",
+                        },
+                    ]);
+                    return { stdout, stderr: "" };
+                }
+                throw new Error(`Unexpected git args: ${args.join(" ")}`);
+            },
+        });
+
+        const socket = createMockSocket();
+        service.init(socket as any, { isShuttingDown: () => false });
+
+        dispatchServiceMessage(socket, {
+            serviceId: "git",
+            type: "git_log",
+            requestId: "log-1",
+            payload: { cwd: "/tmp/pizzapi-test", limit: 10 },
+        });
+        const result = await waitForResult(socket, "log-1", "git_log_result");
+        const payload = result.payload as any;
+
+        expect(payload.ok).toBe(true);
+        expect(payload.entries).toHaveLength(2);
+        expect(payload.entries[0]).toMatchObject({
+            hash: "abc123456789abcdef123456789abcdef1234567",
+            shortHash: "abc1234",
+            author: "Alice",
+            subject: "Fix bug",
+            body: "More detail\nAnother body line",
+            refs: ["main", "v1.0"],
+        });
+        expect(payload.entries[1]).toMatchObject({
+            hash: "def56789abcdef123456789abcdef123456789ab",
+            shortHash: "def5678",
+            author: "Bob",
+            subject: "Add feature",
+            refs: ["origin/main"],
+        });
+    });
+
+    test("git_log caps limit at 200", async () => {
+        const seenLimits: number[] = [];
+        const service = new GitService({
+            execGit: async (args) => {
+                if (args[0] === "log") {
+                    const limitIdx = args.indexOf("-n");
+                    if (limitIdx >= 0 && limitIdx + 1 < args.length) {
+                        seenLimits.push(parseInt(args[limitIdx + 1], 10));
+                    }
+                    return { stdout: "", stderr: "" };
+                }
+                throw new Error(`Unexpected git args: ${args.join(" ")}`);
+            },
+        });
+
+        const socket = createMockSocket();
+        service.init(socket as any, { isShuttingDown: () => false });
+
+        dispatchServiceMessage(socket, {
+            serviceId: "git",
+            type: "git_log",
+            requestId: "log-limit",
+            payload: { cwd: "/tmp/pizzapi-test", limit: 500 },
+        });
+        const result = await waitForResult(socket, "log-limit", "git_log_result");
+        expect((result.payload as any).ok).toBe(true);
+        expect(seenLimits).toEqual([200]);
+    });
+
+    test("git_log rejects invalid paths", async () => {
+        const service = new GitService();
+        const socket = createMockSocket();
+        service.init(socket as any, { isShuttingDown: () => false });
+
+        dispatchServiceMessage(socket, {
+            serviceId: "git",
+            type: "git_log",
+            requestId: "log-bad-path",
+            payload: { cwd: "/tmp/pizzapi-test", path: "../escape" },
+        });
+        const result = await waitForResult(socket, "log-bad-path", "git_log_result");
+        expect(result.payload).toMatchObject({ ok: false, message: expect.stringContaining("Invalid path") });
+    });
+
+    test("git_log emits error on git failure", async () => {
+        const service = new GitService({
+            execGit: async (args) => {
+                if (args[0] === "log") throw new Error("bad revision");
+                throw new Error(`Unexpected git args: ${args.join(" ")}`);
+            },
+        });
+
+        const socket = createMockSocket();
+        service.init(socket as any, { isShuttingDown: () => false });
+
+        dispatchServiceMessage(socket, {
+            serviceId: "git",
+            type: "git_log",
+            requestId: "log-err",
+            payload: { cwd: "/tmp/pizzapi-test", revisionRange: "dead..beef" },
+        });
+        const result = await waitForResult(socket, "log-err", "git_log_result");
+        expect(result.payload).toMatchObject({ ok: false, message: expect.stringContaining("bad revision") });
+    });
+});
+
+describe("GitService diff/blame", () => {
+    test("git_diff_revs returns raw diff output", async () => {
+        const cwd = "/tmp/pizzapi-test";
+        const service = new GitService({
+            execGit: async (args) => {
+                const cmd = args[0];
+                if (cmd === "rev-parse" && args[1] === "--show-toplevel") {
+                    return { stdout: `${cwd}\n`, stderr: "" };
+                }
+                if (cmd === "diff") {
+                    return { stdout: "diff --git a/file.ts b/file.ts\n+change\n", stderr: "" };
+                }
+                throw new Error(`Unexpected git args: ${args.join(" ")}`);
+            },
+        });
+
+        const socket = createMockSocket();
+        service.init(socket as any, { isShuttingDown: () => false });
+
+        dispatchServiceMessage(socket, {
+            serviceId: "git",
+            type: "git_diff_revs",
+            requestId: "diff-revs-1",
+            payload: { cwd, base: "main", head: "feature", path: "src/file.ts" },
+        });
+        const result = await waitForResult(socket, "diff-revs-1", "git_diff_revs_result");
+        const payload = result.payload as any;
+
+        expect(payload.ok).toBe(true);
+        expect(payload.diff).toContain("diff --git");
+    });
+
+    test("git_diff_revs rejects missing revisions", async () => {
+        const service = new GitService();
+        const socket = createMockSocket();
+        service.init(socket as any, { isShuttingDown: () => false });
+
+        dispatchServiceMessage(socket, {
+            serviceId: "git",
+            type: "git_diff_revs",
+            requestId: "diff-revs-missing",
+            payload: { cwd: "/tmp/pizzapi-test" },
+        });
+        const result = await waitForResult(socket, "diff-revs-missing", "git_diff_revs_result");
+        expect(result.payload).toMatchObject({ ok: false, message: expect.stringContaining("base") });
+    });
+
+    test("git_blame parses porcelain output and content", async () => {
+        const cwd = "/tmp/pizzapi-test";
+        const service = new GitService({
+            execGit: async (args) => {
+                const cmd = args[0];
+                if (cmd === "rev-parse" && args[1] === "--show-toplevel") {
+                    return { stdout: `${cwd}\n`, stderr: "" };
+                }
+                if (cmd === "blame" && args.includes("--line-porcelain")) {
+                    return {
+                        stdout:
+                            "abc123456789abcdef123456789abcdef1234567 1 1 1\n" +
+                            "author Alice\n" +
+                            "author-mail alice@example.com\n" +
+                            "author-time 1750845600\n" +
+                            "author-tz +0000\n" +
+                            "committer Alice\n" +
+                            "committer-mail alice@example.com\n" +
+                            "committer-time 1750845600\n" +
+                            "committer-tz +0000\n" +
+                            "summary Fix bug\n" +
+                            "previous 0000000000000000000000000000000000000000 src/file.ts\n" +
+                            "filename src/file.ts\n" +
+                            "\tcontent line 1\n" +
+                            "def56789abcdef123456789abcdef123456789ab 2 2 1\n" +
+                            "author Bob\n" +
+                            "author-mail bob@example.com\n" +
+                            "author-time 1750845601\n" +
+                            "author-tz +0000\n" +
+                            "committer Bob\n" +
+                            "committer-mail bob@example.com\n" +
+                            "committer-time 1750845601\n" +
+                            "committer-tz +0000\n" +
+                            "summary Add feature\n" +
+                            "previous abc123456789abcdef123456789abcdef1234567 src/file.ts\n" +
+                            "filename src/file.ts\n" +
+                            "\tcontent line 2\n",
+                        stderr: "",
+                    };
+                }
+                if (cmd === "show") {
+                    return { stdout: "content line 1\ncontent line 2\n", stderr: "" };
+                }
+                throw new Error(`Unexpected git args: ${args.join(" ")}`);
+            },
+        });
+
+        const socket = createMockSocket();
+        service.init(socket as any, { isShuttingDown: () => false });
+
+        dispatchServiceMessage(socket, {
+            serviceId: "git",
+            type: "git_blame",
+            requestId: "blame-1",
+            payload: { cwd, path: "src/file.ts" },
+        });
+        const result = await waitForResult(socket, "blame-1", "git_blame_result");
+        const payload = result.payload as any;
+
+        expect(payload.ok).toBe(true);
+        expect(payload.content).toEqual(["content line 1", "content line 2"]);
+        expect(payload.lines).toHaveLength(2);
+        expect(payload.lines[0]).toMatchObject({
+            hash: "abc1234",
+            author: "Alice",
+            authorDate: new Date(1750845600 * 1000).toISOString(),
+            summary: "Fix bug",
+            finalLine: 1,
+            sourceLine: 1,
+        });
+        expect(payload.lines[1]).toMatchObject({
+            hash: "def5678",
+            author: "Bob",
+            summary: "Add feature",
+            finalLine: 2,
+            sourceLine: 2,
+        });
+    });
+
+    test("git_blame rejects missing or invalid path", async () => {
+        const service = new GitService();
+        const socket = createMockSocket();
+        service.init(socket as any, { isShuttingDown: () => false });
+
+        dispatchServiceMessage(socket, {
+            serviceId: "git",
+            type: "git_blame",
+            requestId: "blame-missing",
+            payload: { cwd: "/tmp/pizzapi-test" },
+        });
+        const r1 = await waitForResult(socket, "blame-missing", "git_blame_result");
+        expect(r1.payload).toMatchObject({ ok: false, message: expect.stringContaining("Missing path") });
+
+        dispatchServiceMessage(socket, {
+            serviceId: "git",
+            type: "git_blame",
+            requestId: "blame-bad-path",
+            payload: { cwd: "/tmp/pizzapi-test", path: "../escape" },
+        });
+        const r2 = await waitForResult(socket, "blame-bad-path", "git_blame_result");
+        expect(r2.payload).toMatchObject({ ok: false, message: expect.stringContaining("Invalid path") });
+    });
+});
