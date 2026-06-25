@@ -133,10 +133,6 @@ mock.module("./GitHistoryView", () => ({
     GitHistoryView: () => <div data-testid="history-view" />,
 }));
 
-mock.module("./GitBlameView", () => ({
-    GitBlameView: () => <div data-testid="blame-view" />,
-}));
-
 mock.module("./GitDiffRevsView", () => ({
     GitDiffRevsView: () => <div data-testid="diff-revs-view" />,
 }));

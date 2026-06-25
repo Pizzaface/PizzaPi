@@ -40,17 +40,15 @@ import { GitDiffView } from "./GitDiffView";
 import { GitWorktreeList } from "./GitWorktreeList";
 import { GitStashList } from "./GitStashList";
 import { GitHistoryView } from "./GitHistoryView";
-import { GitBlameView } from "./GitBlameView";
 import { GitDiffRevsView } from "./GitDiffRevsView";
 import { getGitOperationFeedback, parseUpstreamRef, type GitOperationFeedback } from "./git-operation-feedback";
 
-type GitTab = "changes" | "stash" | "history" | "blame" | "compare";
+type GitTab = "changes" | "stash" | "history" | "compare";
 
 const GIT_TABS: Array<{ id: GitTab; label: string }> = [
     { id: "changes", label: "Changes" },
     { id: "stash", label: "Stash" },
     { id: "history", label: "History" },
-    { id: "blame", label: "Blame" },
     { id: "compare", label: "Compare" },
 ];
 
@@ -569,20 +567,17 @@ export function GitPanel({ cwd, className }: GitPanelProps) {
                 ))}
             </div>
 
-            {/* Optional path filter for history/blame/compare */}
+            {/* Optional path filter for history/compare */}
             {activeTab !== "changes" && activeTab !== "stash" && (
                 <div className="flex items-center gap-1.5 px-2 py-1.5 border-b border-border bg-muted/20 min-w-0">
-                    <span className="text-xs text-muted-foreground shrink-0">
-                        {activeTab === "blame" ? "File" : "Path"}
-                    </span>
+                    <span className="text-xs text-muted-foreground shrink-0">Path</span>
                     <input
                         type="text"
                         value={pathFilter}
                         onChange={(e) => setPathFilter(e.target.value)}
-                        placeholder={activeTab === "blame" ? "path/to/file (required)" : "optional path/dir"}
+                        placeholder="optional path/dir"
                         className={cn(
                             "min-w-0 flex-1 h-7 rounded border border-input bg-background px-2 text-xs",
-                            activeTab === "blame" && !pathFilter.trim() && "border-red-500/60",
                         )}
                     />
                 </div>
@@ -610,11 +605,6 @@ export function GitPanel({ cwd, className }: GitPanelProps) {
                 )}
                 {activeTab === "stash" && <GitStashList cwd={cwd} />}
                 {activeTab === "history" && <GitHistoryView cwd={cwd} path={pathFilter.trim() || undefined} />}
-                {activeTab === "blame" && (
-                    pathFilter.trim()
-                        ? <GitBlameView cwd={cwd} path={pathFilter.trim()} />
-                        : <div className="p-4 text-xs text-muted-foreground">Enter a file path above to blame.</div>
-                )}
                 {activeTab === "compare" && <GitDiffRevsView cwd={cwd} path={pathFilter.trim() || undefined} />}
             </div>
 

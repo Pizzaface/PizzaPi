@@ -321,6 +321,7 @@ export function FileExplorer({ runnerId, cwd, className, onClose, position = "le
           <FileViewer
             runnerId={runnerId}
             filePath={viewingFile}
+            cwd={cwd}
             onClose={() => setViewingFile(null)}
           />
         )}
