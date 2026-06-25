@@ -52,6 +52,34 @@ export interface GitWorktree {
     behind: number;
 }
 
+export interface GitStashEntry {
+    index: number;
+    ref: string;
+    message: string;
+    shortHash: string;
+    date: string;
+}
+
+export interface GitLogEntry {
+    hash: string;
+    shortHash: string;
+    author: string;
+    authorDate: string;
+    commitDate: string;
+    subject: string;
+    body: string;
+    refs: string[];
+}
+
+export interface GitBlameLine {
+    hash: string;
+    author: string;
+    authorDate: string;
+    summary: string;
+    finalLine: number;
+    sourceLine: number;
+}
+
 export interface GitOperationResult {
     ok: boolean;
     message?: string;
@@ -75,6 +103,9 @@ export interface UseGitServiceReturn {
     branchesState: BranchesState;
     worktrees: GitWorktree[];
     currentBranch: string;
+    stashes: GitStashEntry[];
+    log: GitLogEntry[];
+    blame: { lines: GitBlameLine[]; content: string[] } | null;
     loading: boolean;
     error: string | null;
 
@@ -88,7 +119,15 @@ export interface UseGitServiceReturn {
     fetchStatus: () => void;
     fetchWorktrees: () => void;
     fetchDiff: (path: string, staged?: boolean) => Promise<string>;
+    fetchDiffRevs: (base: string, head: string, path?: string) => Promise<string>;
     fetchBranches: () => void;
+    fetchLog: (path?: string, limit?: number, revisionRange?: string) => Promise<GitLogEntry[]>;
+    fetchBlame: (path: string, revision?: string) => Promise<GitBlameLine[]>;
+    stashList: () => void;
+    stashPush: (message?: string, includeUntracked?: boolean) => void;
+    stashPop: (index?: number) => void;
+    stashApply: (index?: number, keep?: boolean) => void;
+    stashDrop: (index?: number) => void;
     checkout: (branch: string, isRemote?: boolean) => void;
     stage: (paths: string[]) => void;
     stageAll: () => void;
@@ -116,6 +155,9 @@ export function useGitService(cwd: string): UseGitServiceReturn {
     const [branchesState, setBranchesState] = useState<BranchesState>({ loading: false, error: null, partial: false });
     const [worktrees, setWorktrees] = useState<GitWorktree[]>([]);
     const [currentBranch, setCurrentBranch] = useState("");
+    const [stashes, setStashes] = useState<GitStashEntry[]>([]);
+    const [log, setLog] = useState<GitLogEntry[]>([]);
+    const [blame, setBlame] = useState<{ lines: GitBlameLine[]; content: string[] } | null>(null);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [operationInProgress, setOperationInProgress] = useState<string | null>(null);
@@ -125,6 +167,12 @@ export function useGitService(cwd: string): UseGitServiceReturn {
     // Track pending diff requests: requestId → resolve callback
     const pendingDiffsRef = useRef(new Map<string, (diff: string) => void>());
     const pendingDiffTimeoutsRef = useRef(new Map<string, ReturnType<typeof setTimeout>>());
+    const pendingLogsRef = useRef(new Map<string, (entries: GitLogEntry[]) => void>());
+    const pendingLogTimeoutsRef = useRef(new Map<string, ReturnType<typeof setTimeout>>());
+    const pendingDiffRevsRef = useRef(new Map<string, (diff: string) => void>());
+    const pendingDiffRevTimeoutsRef = useRef(new Map<string, ReturnType<typeof setTimeout>>());
+    const pendingBlamesRef = useRef(new Map<string, (lines: GitBlameLine[]) => void>());
+    const pendingBlameTimeoutsRef = useRef(new Map<string, ReturnType<typeof setTimeout>>());
     const pendingFullStatusRequestRef = useRef<string | null>(null);
     const fullStatusFallbackTimersRef = useRef(new Map<string, ReturnType<typeof setTimeout>>());
     const statusRequestRetireTimersRef = useRef(new Map<string, ReturnType<typeof setTimeout>>());
@@ -249,17 +297,27 @@ export function useGitService(cwd: string): UseGitServiceReturn {
 
         return requestId;
     }, [makeRequestId, markStatusRequestInFlight, markStatusRequestSettled, registerRequestGeneration, sendLegacySnapshotRequests]);
-    const clearPendingDiffs = useCallback((resolution: string) => {
-        for (const timeoutId of pendingDiffTimeoutsRef.current.values()) {
-            clearTimeout(timeoutId);
-        }
-        pendingDiffTimeoutsRef.current.clear();
+    const clearPendingRequests = useCallback((resolution: string) => {
+        const clearMap = <T, >(
+            pending: Map<string, (value: T) => void>,
+            timeouts: Map<string, ReturnType<typeof setTimeout>>,
+            fallback: T,
+        ) => {
+            for (const timeoutId of timeouts.values()) {
+                clearTimeout(timeoutId);
+            }
+            timeouts.clear();
+            for (const [requestId, resolve] of pending.entries()) {
+                requestGenerationRef.current.delete(requestId);
+                resolve(fallback);
+            }
+            pending.clear();
+        };
 
-        for (const [requestId, resolveDiff] of pendingDiffsRef.current.entries()) {
-            requestGenerationRef.current.delete(requestId);
-            resolveDiff(resolution);
-        }
-        pendingDiffsRef.current.clear();
+        clearMap(pendingDiffsRef.current, pendingDiffTimeoutsRef.current, resolution);
+        clearMap(pendingLogsRef.current, pendingLogTimeoutsRef.current, []);
+        clearMap(pendingDiffRevsRef.current, pendingDiffRevTimeoutsRef.current, resolution);
+        clearMap(pendingBlamesRef.current, pendingBlameTimeoutsRef.current, []);
     }, []);
 
     const postMutationRefreshSchedulerRef = useRef(
@@ -369,6 +427,61 @@ export function useGitService(cwd: string): UseGitServiceReturn {
                     }
                     break;
                 }
+                case "git_log_result": {
+                    if (requestId && pendingLogsRef.current.has(requestId)) {
+                        const timeoutId = pendingLogTimeoutsRef.current.get(requestId);
+                        if (timeoutId) {
+                            clearTimeout(timeoutId);
+                            pendingLogTimeoutsRef.current.delete(requestId);
+                        }
+                        const isCurrent = isRequestCurrentGeneration(requestId);
+                        const resolve = pendingLogsRef.current.get(requestId)!;
+                        pendingLogsRef.current.delete(requestId);
+                        const entries = payload.ok ? ((payload.entries as GitLogEntry[]) ?? []) : [];
+                        if (isCurrent) {
+                            setLog(entries);
+                        }
+                        resolve(entries);
+                    }
+                    break;
+                }
+                case "git_diff_revs_result": {
+                    if (requestId && pendingDiffRevsRef.current.has(requestId)) {
+                        const timeoutId = pendingDiffRevTimeoutsRef.current.get(requestId);
+                        if (timeoutId) {
+                            clearTimeout(timeoutId);
+                            pendingDiffRevTimeoutsRef.current.delete(requestId);
+                        }
+                        requestGenerationRef.current.delete(requestId);
+                        const resolve = pendingDiffRevsRef.current.get(requestId)!;
+                        pendingDiffRevsRef.current.delete(requestId);
+                        resolve(
+                            payload.ok
+                                ? ((payload.diff as string) ?? "(no diff)")
+                                : ((payload.message as string) ?? "(failed to load diff)"),
+                        );
+                    }
+                    break;
+                }
+                case "git_blame_result": {
+                    if (requestId && pendingBlamesRef.current.has(requestId)) {
+                        const timeoutId = pendingBlameTimeoutsRef.current.get(requestId);
+                        if (timeoutId) {
+                            clearTimeout(timeoutId);
+                            pendingBlameTimeoutsRef.current.delete(requestId);
+                        }
+                        const isCurrent = isRequestCurrentGeneration(requestId);
+                        const resolve = pendingBlamesRef.current.get(requestId)!;
+                        pendingBlamesRef.current.delete(requestId);
+                        const lines = payload.ok ? ((payload.lines as GitBlameLine[]) ?? []) : [];
+                        const content = payload.ok ? ((payload.content as string[]) ?? []) : [];
+                        if (isCurrent) {
+                            setBlame({ lines, content });
+                        }
+                        resolve(lines);
+                    }
+                    break;
+                }
                 case "git_branches_result": {
                     if (!isRequestCurrentGeneration(requestId)) break;
                     if (payload.ok) {
@@ -384,6 +497,13 @@ export function useGitService(cwd: string): UseGitServiceReturn {
                     if (!isRequestCurrentGeneration(requestId)) break;
                     if (payload.ok) {
                         setWorktrees((payload.worktrees as GitWorktree[]) ?? []);
+                    }
+                    break;
+                }
+                case "git_stash_list_result": {
+                    if (!isRequestCurrentGeneration(requestId)) break;
+                    if (payload.ok) {
+                        setStashes((payload.stashes as GitStashEntry[]) ?? []);
                     }
                     break;
                 }
@@ -416,6 +536,22 @@ export function useGitService(cwd: string): UseGitServiceReturn {
                         payload.ok
                         || ((type === "git_pull_result" || type === "git_merge_result" || type === "git_rebase_result" || type === "git_rebase_continue_result") && payload.reason === "conflict")
                     ) {
+                        postMutationRefreshSchedulerRef.current.schedule();
+                    }
+                    break;
+                }
+                case "git_stash_result": {
+                    if (!isRequestCurrentGeneration(requestId)) break;
+                    setOperationInProgress(null);
+                    setLastOperationResult(payload as GitOperationResult);
+                    if (payload.conflict === true) {
+                        setLastConflictType(type);
+                        conflictActiveRef.current = true;
+                    } else if (payload.ok) {
+                        setLastConflictType(null);
+                        conflictActiveRef.current = false;
+                    }
+                    if (payload.ok || payload.conflict === true) {
                         postMutationRefreshSchedulerRef.current.schedule();
                     }
                     break;
@@ -454,10 +590,10 @@ export function useGitService(cwd: string): UseGitServiceReturn {
     // Keep send ref current
     sendRef.current = send;
 
-    // Clean up pending diffs on unmount
+    // Clean up pending requests on unmount
     useEffect(() => {
         return () => {
-            clearPendingDiffs("(diff request cancelled)");
+            clearPendingRequests("(request cancelled)");
             optimisticSnapshotsRef.current.clear();
             statusRequestsInFlightRef.current.clear();
             requestGenerationRef.current.clear();
@@ -471,7 +607,7 @@ export function useGitService(cwd: string): UseGitServiceReturn {
             }
             statusRequestRetireTimersRef.current.clear();
         };
-    }, [clearPendingDiffs]);
+    }, [clearPendingRequests]);
 
     // ── Actions ─────────────────────────────────────────────────────────
 
@@ -502,6 +638,118 @@ export function useGitService(cwd: string): UseGitServiceReturn {
             }, 15000);
             pendingDiffTimeoutsRef.current.set(reqId, timeoutId);
         });
+    }, [available, send, cwd, makeRequestId, registerRequestGeneration]);
+
+    const fetchDiffRevs = useCallback((base: string, head: string, path?: string): Promise<string> => {
+        return new Promise((resolve) => {
+            if (!available) {
+                resolve("(git service unavailable)");
+                return;
+            }
+            const reqId = makeRequestId();
+            registerRequestGeneration(reqId);
+            pendingDiffRevsRef.current.set(reqId, resolve);
+            send("git_diff_revs", { cwd, base, head, path }, reqId);
+
+            const timeoutId = setTimeout(() => {
+                pendingDiffRevTimeoutsRef.current.delete(reqId);
+                requestGenerationRef.current.delete(reqId);
+                if (pendingDiffRevsRef.current.has(reqId)) {
+                    pendingDiffRevsRef.current.delete(reqId);
+                    resolve("(diff request timed out)");
+                }
+            }, 15000);
+            pendingDiffRevTimeoutsRef.current.set(reqId, timeoutId);
+        });
+    }, [available, send, cwd, makeRequestId, registerRequestGeneration]);
+
+    const fetchLog = useCallback((path?: string, limit?: number, revisionRange?: string): Promise<GitLogEntry[]> => {
+        return new Promise((resolve) => {
+            if (!available) {
+                resolve([]);
+                return;
+            }
+            const reqId = makeRequestId();
+            registerRequestGeneration(reqId);
+            pendingLogsRef.current.set(reqId, resolve);
+            send("git_log", { cwd, path, limit, revisionRange }, reqId);
+
+            const timeoutId = setTimeout(() => {
+                pendingLogTimeoutsRef.current.delete(reqId);
+                requestGenerationRef.current.delete(reqId);
+                if (pendingLogsRef.current.has(reqId)) {
+                    pendingLogsRef.current.delete(reqId);
+                    resolve([]);
+                }
+            }, 15000);
+            pendingLogTimeoutsRef.current.set(reqId, timeoutId);
+        });
+    }, [available, send, cwd, makeRequestId, registerRequestGeneration]);
+
+    const fetchBlame = useCallback((path: string, revision?: string): Promise<GitBlameLine[]> => {
+        return new Promise((resolve) => {
+            if (!available) {
+                resolve([]);
+                return;
+            }
+            const reqId = makeRequestId();
+            registerRequestGeneration(reqId);
+            pendingBlamesRef.current.set(reqId, resolve);
+            send("git_blame", { cwd, path, revision }, reqId);
+
+            const timeoutId = setTimeout(() => {
+                pendingBlameTimeoutsRef.current.delete(reqId);
+                requestGenerationRef.current.delete(reqId);
+                if (pendingBlamesRef.current.has(reqId)) {
+                    pendingBlamesRef.current.delete(reqId);
+                    resolve([]);
+                }
+            }, 15000);
+            pendingBlameTimeoutsRef.current.set(reqId, timeoutId);
+        });
+    }, [available, send, cwd, makeRequestId, registerRequestGeneration]);
+
+    const stashList = useCallback(() => {
+        if (!available) return;
+        const requestId = makeRequestId();
+        registerRequestGeneration(requestId);
+        send("git_stash_list", { cwd }, requestId);
+    }, [available, send, cwd, makeRequestId, registerRequestGeneration]);
+
+    const stashPush = useCallback((message?: string, includeUntracked?: boolean) => {
+        if (!available) return;
+        const requestId = makeRequestId();
+        registerRequestGeneration(requestId);
+        setOperationInProgress("stash-push");
+        setLastOperationResult(null);
+        send("git_stash_push", { cwd, message, includeUntracked }, requestId);
+    }, [available, send, cwd, makeRequestId, registerRequestGeneration]);
+
+    const stashPop = useCallback((index?: number) => {
+        if (!available) return;
+        const requestId = makeRequestId();
+        registerRequestGeneration(requestId);
+        setOperationInProgress("stash-pop");
+        setLastOperationResult(null);
+        send("git_stash_pop", { cwd, index }, requestId);
+    }, [available, send, cwd, makeRequestId, registerRequestGeneration]);
+
+    const stashApply = useCallback((index?: number, keep?: boolean) => {
+        if (!available) return;
+        const requestId = makeRequestId();
+        registerRequestGeneration(requestId);
+        setOperationInProgress("stash-apply");
+        setLastOperationResult(null);
+        send("git_stash_apply", { cwd, index, keep }, requestId);
+    }, [available, send, cwd, makeRequestId, registerRequestGeneration]);
+
+    const stashDrop = useCallback((index?: number) => {
+        if (!available) return;
+        const requestId = makeRequestId();
+        registerRequestGeneration(requestId);
+        setOperationInProgress("stash-drop");
+        setLastOperationResult(null);
+        send("git_stash_drop", { cwd, index }, requestId);
     }, [available, send, cwd, makeRequestId, registerRequestGeneration]);
 
     const fetchBranches = useCallback(() => {
@@ -696,12 +944,15 @@ export function useGitService(cwd: string): UseGitServiceReturn {
         setBranchesState({ loading: false, error: null, partial: false });
         setWorktrees([]);
         setCurrentBranch("");
+        setStashes([]);
+        setLog([]);
+        setBlame(null);
         setError(null);
         setOperationInProgress(null);
         setLastOperationResult(null);
         setLastConflictType(null);
         conflictActiveRef.current = false;
-        clearPendingDiffs("(diff request cancelled)");
+        clearPendingRequests("(request cancelled)");
         requestGenerationRef.current.clear();
         pendingFullStatusRequestRef.current = null;
         optimisticSnapshotsRef.current.clear();
@@ -727,7 +978,7 @@ export function useGitService(cwd: string): UseGitServiceReturn {
         } else {
             setLoading(false);
         }
-    }, [available, clearPendingDiffs, cwd, markStatusRequestSettled, sendFullStatusRequest, sendStatusRequest]);
+    }, [available, clearPendingRequests, cwd, markStatusRequestSettled, sendFullStatusRequest, sendStatusRequest]);
 
     return {
         available,
@@ -736,6 +987,9 @@ export function useGitService(cwd: string): UseGitServiceReturn {
         branchesState,
         worktrees,
         currentBranch,
+        stashes,
+        log,
+        blame,
         loading,
         error,
         operationInProgress,
@@ -743,8 +997,16 @@ export function useGitService(cwd: string): UseGitServiceReturn {
         lastConflictType,
         fetchStatus,
         fetchDiff,
+        fetchDiffRevs,
         fetchBranches,
+        fetchLog,
+        fetchBlame,
         fetchWorktrees,
+        stashList,
+        stashPush,
+        stashPop,
+        stashApply,
+        stashDrop,
         checkout,
         stage,
         stageAll,
