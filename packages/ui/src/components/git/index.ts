@@ -5,3 +5,7 @@ export { GitStagingArea, partitionChanges } from "./GitStagingArea";
 export { GitChangesTree } from "./GitChangesTree";
 export { GitCommitForm } from "./GitCommitForm";
 export { GitWorktreeList } from "./GitWorktreeList";
+export { GitStashList } from "./GitStashList";
+export { GitHistoryView } from "./GitHistoryView";
+export { GitBlameView } from "./GitBlameView";
+export { GitDiffRevsView } from "./GitDiffRevsView";

@@ -32,7 +32,21 @@ import { GitStagingArea, partitionChanges } from "./GitStagingArea";
 import { GitCommitForm } from "./GitCommitForm";
 import { GitDiffView } from "./GitDiffView";
 import { GitWorktreeList } from "./GitWorktreeList";
+import { GitStashList } from "./GitStashList";
+import { GitHistoryView } from "./GitHistoryView";
+import { GitBlameView } from "./GitBlameView";
+import { GitDiffRevsView } from "./GitDiffRevsView";
 import { getGitOperationFeedback, parseUpstreamRef, type GitOperationFeedback } from "./git-operation-feedback";
+
+type GitTab = "changes" | "stash" | "history" | "blame" | "compare";
+
+const GIT_TABS: Array<{ id: GitTab; label: string }> = [
+    { id: "changes", label: "Changes" },
+    { id: "stash", label: "Stash" },
+    { id: "history", label: "History" },
+    { id: "blame", label: "Blame" },
+    { id: "compare", label: "Compare" },
+];
 
 // ── Props ───────────────────────────────────────────────────────────────────
 
@@ -50,6 +64,20 @@ export function GitPanel({ cwd, className }: GitPanelProps) {
     const [selectedDiff, setSelectedDiff] = useState<{ path: string; diff: string } | null>(null);
     const [diffLoading, setDiffLoading] = useState(false);
     const diffContainerRef = useRef<HTMLDivElement>(null);
+
+    // Tab + optional path filter (used by history/blame/compare)
+    const [activeTab, setActiveTab] = useState<GitTab>("changes");
+    const [pathFilter, setPathFilter] = useState("");
+
+    // Fetch the last commit subject for the status row. Falls back to the
+    // branch list's date text if log hasn't resolved yet.
+    const branchNameForLog = git.status?.branch;
+    useEffect(() => {
+        if (!branchNameForLog) return;
+        // ponytail: one-entry log fetch, fire-and-forget; hook discards stale cwd results
+        git.fetchLog(undefined, 1).catch(() => {});
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [branchNameForLog]);
 
     // Toast-style feedback for operations
     const [toast, setToast] = useState<GitOperationFeedback | null>(null);
@@ -221,9 +249,12 @@ export function GitPanel({ cwd, className }: GitPanelProps) {
     const showPull = git.status.behind > 0 && git.status.hasUpstream;
 
     const currentBranchInfo = git.branches.find((b) => b.isCurrent);
-    const lastCommitText = currentBranchInfo
-        ? `${currentBranchInfo.shortHash} ${currentBranchInfo.lastCommit}`
-        : undefined;
+    const lastCommitSubject = git.log[0]?.subject;
+    const lastCommitText = lastCommitSubject
+        ? `${currentBranchInfo?.shortHash ?? ""} ${lastCommitSubject}`.trim()
+        : currentBranchInfo
+            ? `${currentBranchInfo.shortHash} ${currentBranchInfo.lastCommit}`
+            : undefined;
 
     return (
         <div className={cn("flex flex-col h-full overflow-hidden", className)}>
@@ -479,37 +510,86 @@ export function GitPanel({ cwd, className }: GitPanelProps) {
                 </div>
             )}
 
-            {/* Content area */}
-            <div className="flex-1 overflow-auto">
-                {!hasChanges ? (
-                    <div className="flex flex-col items-center justify-center py-8 text-muted-foreground gap-2">
-                        <GitCommit className="size-8 opacity-30" />
-                        <p className="text-sm">Working tree clean</p>
-                    </div>
-                ) : (
-                    <GitStagingArea
-                        changes={git.status.changes}
-                        onViewDiff={viewDiff}
-                        onStage={git.stage}
-                        onStageAll={git.stageAll}
-                        onUnstage={git.unstage}
-                        onUnstageAll={git.unstageAll}
-                        operationInProgress={git.operationInProgress}
-                    />
-                )}
+            {/* Tab strip */}
+            <div className="flex items-center gap-0.5 px-1 border-b border-border bg-muted/30 overflow-x-auto min-w-0">
+                {GIT_TABS.map((t) => (
+                    <button
+                        key={t.id}
+                        type="button"
+                        onClick={() => setActiveTab(t.id)}
+                        className={cn(
+                            "px-2.5 py-1.5 text-xs font-medium whitespace-nowrap border-b-2 -mb-px transition-colors shrink-0",
+                            activeTab === t.id
+                                ? "border-primary text-foreground"
+                                : "border-transparent text-muted-foreground hover:text-foreground",
+                        )}
+                    >
+                        {t.label}
+                    </button>
+                ))}
             </div>
 
-            {/* Worktrees section */}
-            <GitWorktreeList
-                worktrees={git.worktrees}
-                onOpen={git.fetchWorktrees}
-                onAdd={git.addWorktree}
-                onRemove={git.removeWorktree}
-                operationInProgress={git.operationInProgress}
-            />
+            {/* Optional path filter for history/blame/compare */}
+            {activeTab !== "changes" && activeTab !== "stash" && (
+                <div className="flex items-center gap-1.5 px-2 py-1.5 border-b border-border bg-muted/20 min-w-0">
+                    <span className="text-xs text-muted-foreground shrink-0">
+                        {activeTab === "blame" ? "File" : "Path"}
+                    </span>
+                    <input
+                        type="text"
+                        value={pathFilter}
+                        onChange={(e) => setPathFilter(e.target.value)}
+                        placeholder={activeTab === "blame" ? "path/to/file (required)" : "optional path/dir"}
+                        className={cn(
+                            "min-w-0 flex-1 h-7 rounded border border-input bg-background px-2 text-xs",
+                            activeTab === "blame" && !pathFilter.trim() && "border-red-500/60",
+                        )}
+                    />
+                </div>
+            )}
 
-            {/* Commit form — always visible at bottom when there are changes */}
-            {hasChanges && (
+            {/* Content area */}
+            <div className="flex-1 overflow-auto min-h-0">
+                {activeTab === "changes" && (
+                    !hasChanges ? (
+                        <div className="flex flex-col items-center justify-center py-8 text-muted-foreground gap-2">
+                            <GitCommit className="size-8 opacity-30" />
+                            <p className="text-sm">Working tree clean</p>
+                        </div>
+                    ) : (
+                        <GitStagingArea
+                            changes={git.status.changes}
+                            onViewDiff={viewDiff}
+                            onStage={git.stage}
+                            onStageAll={git.stageAll}
+                            onUnstage={git.unstage}
+                            onUnstageAll={git.unstageAll}
+                            operationInProgress={git.operationInProgress}
+                        />
+                    )
+                )}
+                {activeTab === "stash" && <GitStashList cwd={cwd} />}
+                {activeTab === "history" && <GitHistoryView cwd={cwd} path={pathFilter.trim() || undefined} />}
+                {activeTab === "blame" && (
+                    pathFilter.trim()
+                        ? <GitBlameView cwd={cwd} path={pathFilter.trim()} />
+                        : <div className="p-4 text-xs text-muted-foreground">Enter a file path above to blame.</div>
+                )}
+                {activeTab === "compare" && <GitDiffRevsView cwd={cwd} path={pathFilter.trim() || undefined} />}
+            </div>
+
+            {/* Worktrees + commit form — only on the Changes tab to keep other views full-height */}
+            {activeTab === "changes" && (
+                <GitWorktreeList
+                    worktrees={git.worktrees}
+                    onOpen={git.fetchWorktrees}
+                    onAdd={git.addWorktree}
+                    onRemove={git.removeWorktree}
+                    operationInProgress={git.operationInProgress}
+                />
+            )}
+
+            {activeTab === "changes" && hasChanges && (
                 <GitCommitForm
                     hasStagedChanges={staged.length > 0}
                     onCommit={git.commit}

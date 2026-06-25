@@ -61,6 +61,18 @@ const gitState = {
     addWorktree: mock(() => {}),
     removeWorktree: mock(() => {}),
     clearOperationResult: mock(() => {}),
+    // New git-UX methods/state
+    stashes: [] as any[],
+    log: [] as any[],
+    blame: null,
+    stashList: mock(() => {}),
+    stashPush: mock(() => {}),
+    stashPop: mock(() => {}),
+    stashApply: mock(() => {}),
+    stashDrop: mock(() => {}),
+    fetchLog: mock(async () => []),
+    fetchDiffRevs: mock(async () => ""),
+    fetchBlame: mock(async () => []),
 };
 
 mock.module("@/lib/utils", () => ({
@@ -104,6 +116,22 @@ mock.module("./GitDiffView", () => ({
 
 mock.module("./GitWorktreeList", () => ({
     GitWorktreeList: () => <div data-testid="worktree-list" />,
+}));
+
+mock.module("./GitStashList", () => ({
+    GitStashList: () => <div data-testid="stash-list" />,
+}));
+
+mock.module("./GitHistoryView", () => ({
+    GitHistoryView: () => <div data-testid="history-view" />,
+}));
+
+mock.module("./GitBlameView", () => ({
+    GitBlameView: () => <div data-testid="blame-view" />,
+}));
+
+mock.module("./GitDiffRevsView", () => ({
+    GitDiffRevsView: () => <div data-testid="diff-revs-view" />,
 }));
 
 afterAll(() => mock.restore());
