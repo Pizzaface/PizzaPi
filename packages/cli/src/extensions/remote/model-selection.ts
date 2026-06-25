@@ -5,7 +5,6 @@
  */
 
 import type { RelayContext } from "../remote-types.js";
-import { emitModelChanged, emitAuthSourceChanged } from "../remote-meta-events.js";
 import { getAuthSource } from "../remote-auth-source.js";
 import { emitSessionActive } from "./chunked-delivery.js";
 import { getCachedOllamaCloudModels, toOllamaCloudRuntimeModel } from "../../ollama-cloud-models.js";
@@ -47,14 +46,17 @@ export async function setModelFromWeb(
             message: ok ? undefined : "Model selected, but no valid credentials were found.",
         });
         if (ok) {
-            emitModelChanged(rctx, {
-                provider: model.provider,
-                id: model.id,
-                name: model.name,
-                reasoning: model.reasoning,
-                contextWindow: model.contextWindow,
+            rctx.forwardEvent({
+                type: "model_changed",
+                model: {
+                    provider: model.provider,
+                    id: model.id,
+                    name: model.name,
+                    reasoning: model.reasoning,
+                    contextWindow: model.contextWindow,
+                },
             });
-            emitAuthSourceChanged(rctx, getAuthSource(rctx.latestCtx));
+            rctx.forwardEvent({ type: "auth_source_changed", source: getAuthSource(rctx.latestCtx) });
             emitSessionActive(rctx);
         }
     } catch (error) {
