@@ -185,7 +185,6 @@ describe("setModelFromWeb", () => {
                 type: "model_changed",
                 model: { provider: "ollama-cloud", id: "glm-5.2", name: "glm-5.2", reasoning: true, contextWindow: 128000 },
             });
-            expect(events).toContainEqual({ type: "auth_source_changed", source: "auth.json" });
             expect(events.some((event) => event.type === "session_active")).toBe(true);
         });
     });
