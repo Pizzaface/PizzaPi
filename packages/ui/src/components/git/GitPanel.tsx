@@ -26,6 +26,12 @@ import {
 } from "lucide-react";
 import { Spinner } from "@/components/ui/spinner";
 import { Button } from "@/components/ui/button";
+import {
+    Tooltip,
+    TooltipContent,
+    TooltipProvider,
+    TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { useGitService } from "@/hooks/useGitService";
 import { GitBranchSelector } from "./GitBranchSelector";
 import { GitStagingArea, partitionChanges } from "./GitStagingArea";
@@ -250,8 +256,11 @@ export function GitPanel({ cwd, className }: GitPanelProps) {
 
     const currentBranchInfo = git.branches.find((b) => b.isCurrent);
     const lastCommitSubject = git.log[0]?.subject;
-    const lastCommitText = lastCommitSubject
-        ? `${currentBranchInfo?.shortHash ?? ""} ${lastCommitSubject}`.trim()
+    const lastCommitShortHash = lastCommitSubject
+        ? currentBranchInfo?.shortHash ?? git.log[0]?.shortHash
+        : currentBranchInfo?.shortHash;
+    const lastCommitTooltip = lastCommitSubject
+        ? `${currentBranchInfo?.shortHash ?? git.log[0]?.shortHash} ${lastCommitSubject}`
         : currentBranchInfo
             ? `${currentBranchInfo.shortHash} ${currentBranchInfo.lastCommit}`
             : undefined;
@@ -300,14 +309,22 @@ export function GitPanel({ cwd, className }: GitPanelProps) {
                         </span>
                     )}
 
-                    {lastCommitText && (
-                        <span
-                            className="hidden sm:inline-flex items-center gap-1 min-w-0 text-xs text-muted-foreground"
-                            title="Last commit"
-                        >
-                            <GitCommit className="size-3 shrink-0" />
-                            <span className="truncate">{lastCommitText}</span>
-                        </span>
+                    {lastCommitShortHash && (
+                        <TooltipProvider>
+                            <Tooltip>
+                                <TooltipTrigger asChild>
+                                    <span
+                                        className="hidden sm:inline-flex items-center gap-1 min-w-0 text-xs text-muted-foreground cursor-help"
+                                    >
+                                        <GitCommit className="size-3 shrink-0" />
+                                        <span className="truncate">{lastCommitShortHash}</span>
+                                    </span>
+                                </TooltipTrigger>
+                                <TooltipContent side="bottom">
+                                    <p className="max-w-xs break-words">{lastCommitTooltip}</p>
+                                </TooltipContent>
+                            </Tooltip>
+                        </TooltipProvider>
                     )}
 
                     {/* Sync dropdown */}

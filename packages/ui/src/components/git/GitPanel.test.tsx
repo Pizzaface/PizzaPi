@@ -89,6 +89,13 @@ mock.module("@/components/ui/button", () => ({
     ),
 }));
 
+mock.module("@/components/ui/tooltip", () => ({
+    TooltipProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+    Tooltip: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+    TooltipTrigger: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+    TooltipContent: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+}));
+
 mock.module("@/hooks/useGitService", () => ({
     useGitService: () => gitState,
 }));
