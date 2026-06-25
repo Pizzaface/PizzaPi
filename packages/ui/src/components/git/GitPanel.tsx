@@ -11,6 +11,7 @@ import {
     ArrowUp,
     ArrowDown,
     Download,
+    Edit3,
     RefreshCw,
     GitCommit,
     Upload,
@@ -219,163 +220,189 @@ export function GitPanel({ cwd, className }: GitPanelProps) {
     const showPush = git.status.ahead > 0 || !git.status.hasUpstream;
     const showPull = git.status.behind > 0 && git.status.hasUpstream;
 
+    const currentBranchInfo = git.branches.find((b) => b.isCurrent);
+    const lastCommitText = currentBranchInfo
+        ? `${currentBranchInfo.shortHash} ${currentBranchInfo.lastCommit}`
+        : undefined;
+
     return (
         <div className={cn("flex flex-col h-full overflow-hidden", className)}>
-            {/* Branch header */}
-            <div className="flex items-center gap-1 px-2 py-1.5 border-b border-border bg-muted/50 min-h-[40px] overflow-hidden">
-                <GitBranchSelector
-                    currentBranch={git.status.branch}
-                    branches={git.branches}
-                    branchesState={git.branchesState}
-                    onCheckout={git.checkout}
-                    onOpen={git.fetchBranches}
-                    disabled={isMutating}
-                    isCheckingOut={git.operationInProgress === "checkout"}
-                />
-
-                <div className="flex-1" />
-
-                {/* Ahead/behind badges */}
-                {git.status.ahead > 0 && (
-                    <span
-                        className="inline-flex items-center gap-0.5 text-[0.65rem] text-green-600 dark:text-green-400"
-                        title={`${git.status.ahead} commit(s) ahead`}
-                    >
-                        <ArrowUp className="size-3" /> {git.status.ahead}
-                    </span>
-                )}
-                {git.status.behind > 0 && (
-                    <span
-                        className="inline-flex items-center gap-0.5 text-[0.65rem] text-amber-500 dark:text-amber-400"
-                        title={`${git.status.behind} commit(s) behind`}
-                    >
-                        <ArrowDown className="size-3" /> {git.status.behind}
-                    </span>
-                )}
-
-                {/* Sync dropdown */}
-                <div className="relative" ref={syncMenuRef}>
-                    <button
-                        type="button"
-                        onClick={() => setSyncMenuOpen((o) => !o)}
+            {/* Status / branch header */}
+            <div className="flex flex-col sm:flex-row sm:items-center gap-2 px-2 py-1.5 border-b border-border bg-muted/50 min-h-[40px] overflow-hidden">
+                <div className="flex items-center gap-1.5 min-w-0 w-full sm:w-auto">
+                    <GitBranchSelector
+                        currentBranch={git.status.branch}
+                        branches={git.branches}
+                        branchesState={git.branchesState}
+                        onCheckout={git.checkout}
+                        onOpen={git.fetchBranches}
                         disabled={isMutating}
-                        className={cn(
-                            "inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium transition-colors",
-                            "bg-muted/60 hover:bg-muted text-foreground",
-                            git.operationInProgress && "opacity-70",
-                        )}
-                        title="Sync options"
-                    >
-                        <MoreHorizontal className="size-3" /> Sync
-                    </button>
-                    {syncMenuOpen && ReactDOM.createPortal(
-                        <div
-                            ref={syncMenuContentRef}
-                            style={{
-                                position: "fixed",
-                                top: syncMenuRef.current ? syncMenuRef.current.getBoundingClientRect().bottom : 0,
-                                left: syncMenuRef.current ? syncMenuRef.current.getBoundingClientRect().left : 0,
-                                zIndex: 100,
-                                minWidth: 180,
-                            }}
-                            className="mt-1 w-48 bg-popover border border-border rounded-md shadow-lg text-sm"
+                        isCheckingOut={git.operationInProgress === "checkout"}
+                    />
+                    {hasChanges && (
+                        <span
+                            className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-amber-500/15 text-amber-600 dark:text-amber-400 text-xs font-medium shrink-0"
+                            title={`${git.status.changes.length} dirty change(s)`}
                         >
-                            <button
-                                type="button"
-                                onClick={() => {
-                                    setSyncMenuOpen(false);
-                                    git.pull(false);
-                                }}
-                                className="w-full text-left px-3 py-2 hover:bg-accent/50 disabled:opacity-50"
-                                disabled={git.operationInProgress !== null}
-                            >
-                                <div className="flex items-center gap-2"><Download className="size-3" /> Pull (fast-forward)</div>
-                            </button>
-                            <button
-                                type="button"
-                                onClick={() => {
-                                    setSyncMenuOpen(false);
-                                    git.pull(true);
-                                }}
-                                className="w-full text-left px-3 py-2 hover:bg-accent/50 disabled:opacity-50"
-                                disabled={git.operationInProgress !== null}
-                            >
-                                <div className="flex items-center gap-2"><Download className="size-3" /> Pull --rebase</div>
-                            </button>
-                            <button
-                                type="button"
-                                onClick={() => {
-                                    setSyncMenuOpen(false);
-                                    handleMerge();
-                                }}
-                                className="w-full text-left px-3 py-2 hover:bg-accent/50 disabled:opacity-50"
-                                disabled={git.operationInProgress !== null}
-                            >
-                                <div className="flex items-center gap-2"><GitMerge className="size-3" /> Merge into current…</div>
-                            </button>
-                            <button
-                                type="button"
-                                onClick={() => {
-                                    setSyncMenuOpen(false);
-                                    handleRebase();
-                                }}
-                                className="w-full text-left px-3 py-2 hover:bg-accent/50 disabled:opacity-50"
-                                disabled={git.operationInProgress !== null}
-                            >
-                                <div className="flex items-center gap-2"><ArrowRightLeft className="size-3" /> Rebase onto…</div>
-                            </button>
-                        </div>,
-                        document.body,
+                            <Edit3 className="size-3" />
+                            {git.status.changes.length}
+                        </span>
                     )}
                 </div>
 
-                {/* Pull button */}
-                {showPull && (
+                <div className="flex flex-wrap items-center gap-1.5 min-w-0 w-full sm:w-auto sm:ml-auto">
+                    {/* Ahead/behind badges */}
+                    {git.status.ahead > 0 && (
+                        <span
+                            className="inline-flex items-center gap-0.5 text-[0.65rem] text-green-600 dark:text-green-400"
+                            title={`${git.status.ahead} commit(s) ahead`}
+                        >
+                            <ArrowUp className="size-3" /> {git.status.ahead}
+                        </span>
+                    )}
+                    {git.status.behind > 0 && (
+                        <span
+                            className="inline-flex items-center gap-0.5 text-[0.65rem] text-amber-500 dark:text-amber-400"
+                            title={`${git.status.behind} commit(s) behind`}
+                        >
+                            <ArrowDown className="size-3" /> {git.status.behind}
+                        </span>
+                    )}
+
+                    {lastCommitText && (
+                        <span
+                            className="inline-flex items-center gap-1 min-w-0 text-xs text-muted-foreground"
+                            title="Last commit"
+                        >
+                            <GitCommit className="size-3 shrink-0" />
+                            <span className="truncate">{lastCommitText}</span>
+                        </span>
+                    )}
+
+                    {/* Sync dropdown */}
+                    <div className="relative" ref={syncMenuRef}>
+                        <button
+                            type="button"
+                            onClick={() => setSyncMenuOpen((o) => !o)}
+                            disabled={isMutating}
+                            className={cn(
+                                "inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium transition-colors",
+                                "bg-muted/60 hover:bg-muted text-foreground",
+                                git.operationInProgress && "opacity-70",
+                            )}
+                            title="Sync options"
+                        >
+                            <MoreHorizontal className="size-3" /> Sync
+                        </button>
+                        {syncMenuOpen && ReactDOM.createPortal(
+                            <div
+                                ref={syncMenuContentRef}
+                                style={{
+                                    position: "fixed",
+                                    top: syncMenuRef.current ? syncMenuRef.current.getBoundingClientRect().bottom : 0,
+                                    left: syncMenuRef.current ? syncMenuRef.current.getBoundingClientRect().left : 0,
+                                    zIndex: 100,
+                                    minWidth: 180,
+                                }}
+                                className="mt-1 w-48 bg-popover border border-border rounded-md shadow-lg text-sm"
+                            >
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        setSyncMenuOpen(false);
+                                        git.pull(false);
+                                    }}
+                                    className="w-full text-left px-3 py-2 hover:bg-accent/50 disabled:opacity-50"
+                                    disabled={git.operationInProgress !== null}
+                                >
+                                    <div className="flex items-center gap-2"><Download className="size-3" /> Pull (fast-forward)</div>
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        setSyncMenuOpen(false);
+                                        git.pull(true);
+                                    }}
+                                    className="w-full text-left px-3 py-2 hover:bg-accent/50 disabled:opacity-50"
+                                    disabled={git.operationInProgress !== null}
+                                >
+                                    <div className="flex items-center gap-2"><Download className="size-3" /> Pull --rebase</div>
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        setSyncMenuOpen(false);
+                                        handleMerge();
+                                    }}
+                                    className="w-full text-left px-3 py-2 hover:bg-accent/50 disabled:opacity-50"
+                                    disabled={git.operationInProgress !== null}
+                                >
+                                    <div className="flex items-center gap-2"><GitMerge className="size-3" /> Merge into current…</div>
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        setSyncMenuOpen(false);
+                                        handleRebase();
+                                    }}
+                                    className="w-full text-left px-3 py-2 hover:bg-accent/50 disabled:opacity-50"
+                                    disabled={git.operationInProgress !== null}
+                                >
+                                    <div className="flex items-center gap-2"><ArrowRightLeft className="size-3" /> Rebase onto…</div>
+                                </button>
+                            </div>,
+                            document.body,
+                        )}
+                    </div>
+
+                    {/* Pull button */}
+                    {showPull && (
+                        <button
+                            type="button"
+                            onClick={() => git.pull()}
+                            disabled={isMutating}
+                            className={cn(
+                                "inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium transition-colors",
+                                "bg-amber-500/20 text-amber-600 dark:text-amber-400 hover:bg-amber-500/30",
+                                "disabled:opacity-50",
+                            )}
+                            title="Pull from remote"
+                        >
+                            {isPulling ? <Loader2 className="size-3 animate-spin" /> : <Download className="size-3" />}
+                            Pull
+                        </button>
+                    )}
+
+                    {/* Push button */}
+                    {showPush && (
+                        <button
+                            type="button"
+                            onClick={() => git.push(!git.status!.hasUpstream)}
+                            disabled={isMutating}
+                            className={cn(
+                                "inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium transition-colors",
+                                "bg-green-600/20 text-green-600 dark:text-green-400 hover:bg-green-600/30",
+                                "disabled:opacity-50",
+                            )}
+                            title={git.status!.hasUpstream ? "Push to remote" : "Push & set upstream"}
+                        >
+                            {isPushing ? <Loader2 className="size-3 animate-spin" /> : <Upload className="size-3" />}
+                            {git.status!.hasUpstream ? "Push" : "Publish"}
+                        </button>
+                    )}
+
+                    {/* Refresh */}
                     <button
                         type="button"
-                        onClick={() => git.pull()}
-                        disabled={isMutating}
-                        className={cn(
-                            "inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium transition-colors",
-                            "bg-amber-500/20 text-amber-600 dark:text-amber-400 hover:bg-amber-500/30",
-                            "disabled:opacity-50",
-                        )}
-                        title="Pull from remote"
+                        onClick={git.fetchStatus}
+                        disabled={git.loading}
+                        className="text-muted-foreground hover:text-foreground transition-colors p-1"
+                        title="Refresh git status"
+                        aria-label="Refresh git status"
                     >
-                        {isPulling ? <Loader2 className="size-3 animate-spin" /> : <Download className="size-3" />}
-                        Pull
+                        <RefreshCw className={cn("size-3.5", git.loading && "animate-spin")} />
                     </button>
-                )}
-
-                {/* Push button */}
-                {showPush && (
-                    <button
-                        type="button"
-                        onClick={() => git.push(!git.status!.hasUpstream)}
-                        disabled={isMutating}
-                        className={cn(
-                            "inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium transition-colors",
-                            "bg-green-600/20 text-green-600 dark:text-green-400 hover:bg-green-600/30",
-                            "disabled:opacity-50",
-                        )}
-                        title={git.status!.hasUpstream ? "Push to remote" : "Push & set upstream"}
-                    >
-                        {isPushing ? <Loader2 className="size-3 animate-spin" /> : <Upload className="size-3" />}
-                        {git.status!.hasUpstream ? "Push" : "Publish"}
-                    </button>
-                )}
-
-                {/* Refresh */}
-                <button
-                    type="button"
-                    onClick={git.fetchStatus}
-                    disabled={git.loading}
-                    className="text-muted-foreground hover:text-foreground transition-colors p-1"
-                    title="Refresh git status"
-                    aria-label="Refresh git status"
-                >
-                    <RefreshCw className={cn("size-3.5", git.loading && "animate-spin")} />
-                </button>
+                </div>
             </div>
 
             {/* Toast notification */}

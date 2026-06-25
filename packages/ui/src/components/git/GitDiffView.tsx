@@ -22,8 +22,8 @@ export function GitDiffView({ path, diff, onClose }: GitDiffViewProps) {
                 </button>
                 <span className="text-sm font-mono truncate flex-1">{path}</span>
             </div>
-            <div className="flex-1 overflow-auto">
-                <pre className="p-3 text-xs font-mono leading-relaxed whitespace-pre-wrap break-all">
+            <div className="flex-1 min-w-0">
+                <pre className="p-3 text-xs font-mono leading-relaxed whitespace-pre overflow-x-auto">
                     {diff.split("\n").map((line, i) => {
                         let color = "text-muted-foreground";
                         if (line.startsWith("+") && !line.startsWith("+++")) color = "text-green-600 dark:text-green-400";

@@ -90,15 +90,15 @@ export function GitStagingArea({
         <div className="py-1">
             {/* View mode toggle in staged header */}
             {staged.length > 0 && (
-                <div className="flex items-center px-3 py-1.5">
-                    <span className="text-[0.65rem] font-semibold uppercase tracking-wider text-muted-foreground flex-1">
+                <div className="flex flex-col sm:flex-row sm:items-center gap-2 px-3 py-1.5">
+                    <span className="text-[0.65rem] font-semibold uppercase tracking-wider text-muted-foreground sm:flex-1">
                         Staged Changes ({staged.length})
                     </span>
                     <button
                         type="button"
                         onClick={onUnstageAll}
                         disabled={isBusy}
-                        className="text-[0.6rem] text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50 flex items-center gap-0.5"
+                        className="text-[0.6rem] text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50 flex items-center justify-center gap-0.5 w-full sm:w-auto min-h-9"
                         title="Unstage all"
                     >
                         <ChevronDown className="size-3" /> Unstage All
@@ -149,15 +149,15 @@ export function GitStagingArea({
                     {/* Unstaged/untracked changes */}
                     {unstaged.length > 0 && (
                         <div>
-                            <div className="flex items-center px-3 py-1.5">
-                                <span className="text-[0.65rem] font-semibold uppercase tracking-wider text-muted-foreground flex-1">
+                            <div className="flex flex-col sm:flex-row sm:items-center gap-2 px-3 py-1.5">
+                                <span className="text-[0.65rem] font-semibold uppercase tracking-wider text-muted-foreground sm:flex-1">
                                     Changes ({unstaged.length})
                                 </span>
                                 <button
                                     type="button"
                                     onClick={onStageAll}
                                     disabled={isBusy}
-                                    className="text-[0.6rem] text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50 flex items-center gap-0.5"
+                                    className="text-[0.6rem] text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50 flex items-center justify-center gap-0.5 w-full sm:w-auto min-h-9"
                                     title="Stage all"
                                 >
                                     <ChevronUp className="size-3" /> Stage All

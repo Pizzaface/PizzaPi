@@ -126,7 +126,7 @@ export function GitBranchSelector({
                 )}
             >
                 <GitBranchIcon className="size-4 text-green-600 dark:text-green-400" />
-                <span className="truncate max-w-[200px]">{currentBranch || "detached"}</span>
+                <span className="truncate min-w-0 flex-1">{currentBranch || "detached"}</span>
                 {isCheckingOut ? (
                     <Loader2 className="size-3 animate-spin" />
                 ) : (
