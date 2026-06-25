@@ -19,6 +19,7 @@ import { shouldInterceptEscape, isImageFile, isMarkdownFile, getFileIcon, format
 import { ImageViewer } from "./image-viewer";
 import { FileViewer } from "./file-viewer";
 import { MarkdownViewer } from "./markdown-viewer";
+import { useGitService } from "@/hooks/useGitService";
 
 // ── Flat tree node ────────────────────────────────────────────────────────────
 
@@ -138,6 +139,8 @@ const FileTreeRow = React.memo(function FileTreeRow({ node, isExpanded, isLoadin
 
 export function FileExplorer({ runnerId, cwd, className, onClose, position = "left", onPositionChange, onDragStart }: FileExplorerProps) {
   const storageKey = `file-explorer:${runnerId}:${cwd}`;
+  const git = useGitService(cwd);
+  const canBlame = Boolean(git.available && git.status);
 
   const [files, setFiles] = React.useState<FileEntry[] | null>(null);
   const [loading, setLoading] = React.useState(true);
@@ -315,6 +318,8 @@ export function FileExplorer({ runnerId, cwd, className, onClose, position = "le
           <MarkdownViewer
             runnerId={runnerId}
             filePath={viewingFile}
+            cwd={cwd}
+            canBlame={canBlame}
             onClose={() => setViewingFile(null)}
           />
         ) : (
@@ -322,6 +327,7 @@ export function FileExplorer({ runnerId, cwd, className, onClose, position = "le
             runnerId={runnerId}
             filePath={viewingFile}
             cwd={cwd}
+            canBlame={canBlame}
             onClose={() => setViewingFile(null)}
           />
         )}

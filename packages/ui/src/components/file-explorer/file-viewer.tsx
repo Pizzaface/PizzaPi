@@ -2,7 +2,6 @@ import * as React from "react";
 import { Spinner } from "@/components/ui/spinner";
 import { ChevronLeft, GitCommit } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { useGitService } from "@/hooks/useGitService";
 import { GitBlameView } from "@/components/git/GitBlameView";
 import { getFileIcon, formatSize } from "./utils";
 
@@ -12,11 +11,13 @@ export function FileViewer({
   runnerId,
   filePath,
   cwd,
+  canBlame,
   onClose,
 }: {
   runnerId: string;
   filePath: string;
   cwd: string;
+  canBlame: boolean;
   onClose: () => void;
 }) {
   const [content, setContent] = React.useState<string | null>(null);
@@ -25,9 +26,6 @@ export function FileViewer({
   const [truncated, setTruncated] = React.useState(false);
   const [fileSize, setFileSize] = React.useState<number | undefined>();
   const [showBlame, setShowBlame] = React.useState(false);
-
-  const git = useGitService(cwd);
-  const canBlame = git.available && git.status;
 
   // Reset blame view when the open file changes.
   React.useEffect(() => {

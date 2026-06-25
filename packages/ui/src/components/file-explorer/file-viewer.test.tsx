@@ -33,12 +33,9 @@ mock.module("@/components/ui/spinner", () => ({
 }));
 
 mock.module("@/hooks/useGitService", () => ({
-  useGitService: (cwd: string) => ({
-    available: cwd === "/repo",
-    status:
-      cwd === "/repo"
-        ? { branch: "main", changes: [], ahead: 0, behind: 0, hasUpstream: true, diffStaged: "" }
-        : null,
+  useGitService: (_cwd: string) => ({
+    available: true,
+    status: { branch: "main", changes: [], ahead: 0, behind: 0, hasUpstream: true, diffStaged: "" },
   }),
 }));
 
@@ -64,7 +61,7 @@ afterEach(() => {
 describe("FileViewer", () => {
   test("shows blame button inside a git repo and toggles blame view", async () => {
     const { getByText, queryByText, queryByTestId } = render(
-      <FileViewer runnerId="r1" filePath="/repo/readme.txt" cwd="/repo" onClose={mock(() => {})} />,
+      <FileViewer runnerId="r1" filePath="/repo/readme.txt" cwd="/repo" canBlame={true} onClose={mock(() => {})} />,
     );
 
     await waitFor(() => expect(queryByText(/hello/)).toBeTruthy());
@@ -76,9 +73,9 @@ describe("FileViewer", () => {
     expect(queryByTestId("blame-view")?.getAttribute("data-path")).toBe("/repo/readme.txt");
   });
 
-  test("hides blame button when cwd is not a git repo", async () => {
-    const { getByText, queryByText } = render(
-      <FileViewer runnerId="r1" filePath="/other/readme.txt" cwd="/other" onClose={mock(() => {})} />,
+  test("hides blame button when not in a git repo", async () => {
+    const { queryByText } = render(
+      <FileViewer runnerId="r1" filePath="/other/readme.txt" cwd="/other" canBlame={false} onClose={mock(() => {})} />,
     );
 
     await waitFor(() => expect(queryByText(/hello/)).toBeTruthy());
