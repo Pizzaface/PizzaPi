@@ -153,9 +153,9 @@ export function GitStashList({ cwd, className }: GitStashListProps) {
                                     </span>
                                     <span className="truncate text-sm font-medium">{stash.message}</span>
                                 </div>
-                                <div className="flex items-center gap-3 text-xs text-muted-foreground shrink-0">
-                                    <span className="font-mono">{stash.shortHash}</span>
-                                    <span>{stash.date}</span>
+                                <div className="flex items-center gap-3 text-xs text-muted-foreground shrink-0 min-w-0">
+                                    <span className="font-mono shrink-0">{stash.shortHash}</span>
+                                    <span className="truncate">{stash.date}</span>
                                 </div>
                                 <div className="flex flex-col sm:flex-row gap-2 w-full sm:w-auto">
                                     <Button

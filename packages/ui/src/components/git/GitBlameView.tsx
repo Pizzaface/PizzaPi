@@ -130,7 +130,7 @@ export function GitBlameView({ cwd, path, revision, className }: GitBlameViewPro
                                 className={cn(
                                     "flex flex-col justify-center px-2 py-1 text-left shrink-0",
                                     "border-r border-border/50 bg-muted/20 hover:bg-accent/40 transition-colors",
-                                    "w-28 sm:w-40",
+                                    "w-24 sm:w-28 md:w-40",
                                 )}
                                 title={`${group.hash} — ${group.summary}`}
                             >

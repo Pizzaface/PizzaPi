@@ -281,7 +281,7 @@ export function GitPanel({ cwd, className }: GitPanelProps) {
                     )}
                 </div>
 
-                <div className="flex flex-wrap items-center gap-1.5 min-w-0 w-full sm:w-auto sm:ml-auto">
+                <div className="flex flex-wrap items-center justify-end gap-1.5 min-w-0 w-full sm:w-auto sm:ml-auto">
                     {/* Ahead/behind badges */}
                     {git.status.ahead > 0 && (
                         <span
@@ -302,7 +302,7 @@ export function GitPanel({ cwd, className }: GitPanelProps) {
 
                     {lastCommitText && (
                         <span
-                            className="inline-flex items-center gap-1 min-w-0 text-xs text-muted-foreground"
+                            className="hidden sm:inline-flex items-center gap-1 min-w-0 text-xs text-muted-foreground"
                             title="Last commit"
                         >
                             <GitCommit className="size-3 shrink-0" />
@@ -328,13 +328,22 @@ export function GitPanel({ cwd, className }: GitPanelProps) {
                         {syncMenuOpen && ReactDOM.createPortal(
                             <div
                                 ref={syncMenuContentRef}
-                                style={{
-                                    position: "fixed",
-                                    top: syncMenuRef.current ? syncMenuRef.current.getBoundingClientRect().bottom : 0,
-                                    left: syncMenuRef.current ? syncMenuRef.current.getBoundingClientRect().left : 0,
-                                    zIndex: 100,
-                                    minWidth: 180,
-                                }}
+                                style={(() => {
+                                    const rect = syncMenuRef.current?.getBoundingClientRect();
+                                    const width = 192;
+                                    const padding = 8;
+                                    const viewportW = typeof window !== "undefined" ? window.innerWidth : width + padding * 2;
+                                    const left = rect
+                                        ? Math.max(padding, Math.min(rect.left, viewportW - width - padding))
+                                        : padding;
+                                    return {
+                                        position: "fixed",
+                                        top: rect ? rect.bottom : 0,
+                                        left,
+                                        zIndex: 100,
+                                        minWidth: width,
+                                    };
+                                })()}
                                 className="mt-1 w-48 bg-popover border border-border rounded-md shadow-lg text-sm"
                             >
                                 <button
@@ -478,31 +487,33 @@ export function GitPanel({ cwd, className }: GitPanelProps) {
                 const isStashConflict = git.lastConflictType === "git_stash_result";
                 const isMergeConflict = git.lastConflictType === "git_merge_result";
                 return (
-                    <div className="flex items-center gap-2 px-3 py-2 text-xs border-b bg-amber-500/10 border-amber-500/20 text-amber-600 dark:text-amber-400"
+                    <div className="flex flex-col sm:flex-row items-start sm:items-center gap-2 px-3 py-2 text-xs border-b bg-amber-500/10 border-amber-500/20 text-amber-600 dark:text-amber-400"
                     >
-                        <AlertCircle className="size-3 shrink-0" />
-                        <span className="truncate flex-1">
-                            {isStashConflict
-                                ? "Stash apply hit conflicts. Resolve them in the working tree; the stash entry is preserved."
-                                : "Conflicts detected. Resolve them to continue."}
-                        </span>
+                        <div className="flex items-center gap-2 min-w-0 w-full">
+                            <AlertCircle className="size-3 shrink-0" />
+                            <span className="truncate flex-1">
+                                {isStashConflict
+                                    ? "Stash apply hit conflicts. Resolve them in the working tree; the stash entry is preserved."
+                                    : "Conflicts detected. Resolve them to continue."}
+                            </span>
+                        </div>
                         {isMergeConflict ? (
                             <button
                                 type="button"
                                 onClick={() => git.mergeAbort()}
                                 disabled={git.operationInProgress !== null}
-                                className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-red-500/20 text-red-500 dark:text-red-400 hover:bg-red-500/30 disabled:opacity-50"
+                                className="inline-flex items-center justify-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-red-500/20 text-red-500 dark:text-red-400 hover:bg-red-500/30 disabled:opacity-50 w-full sm:w-auto"
                                 title="Abort the merge"
                             >
                                 <StopCircle className="size-3" /> Abort Merge
                             </button>
                         ) : isStashConflict ? null : (
-                            <>
+                            <div className="flex items-center gap-2 w-full sm:w-auto">
                                 <button
                                     type="button"
                                     onClick={() => git.rebaseContinue()}
                                     disabled={git.operationInProgress !== null}
-                                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-green-600/20 text-green-600 dark:text-green-400 hover:bg-green-600/30 disabled:opacity-50"
+                                    className="inline-flex items-center justify-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-green-600/20 text-green-600 dark:text-green-400 hover:bg-green-600/30 disabled:opacity-50 flex-1 sm:flex-initial"
                                     title="Continue rebase after resolving conflicts"
                                 >
                                     <Play className="size-3" /> Continue
@@ -511,26 +522,26 @@ export function GitPanel({ cwd, className }: GitPanelProps) {
                                     type="button"
                                     onClick={() => git.rebaseAbort()}
                                     disabled={git.operationInProgress !== null}
-                                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-red-500/20 text-red-500 dark:text-red-400 hover:bg-red-500/30 disabled:opacity-50"
+                                    className="inline-flex items-center justify-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-red-500/20 text-red-500 dark:text-red-400 hover:bg-red-500/30 disabled:opacity-50 flex-1 sm:flex-initial"
                                     title="Abort the rebase"
                                 >
                                     <StopCircle className="size-3" /> Abort
                                 </button>
-                            </>
+                            </div>
                         )}
                     </div>
                 );
             })()}
 
             {/* Tab strip */}
-            <div className="flex items-center gap-0.5 px-1 border-b border-border bg-muted/30 overflow-x-auto min-w-0">
+            <div className="flex items-center gap-0.5 px-1 border-b border-border bg-muted/30 overflow-x-auto min-w-0 [scrollbar-width:thin]">
                 {GIT_TABS.map((t) => (
                     <button
                         key={t.id}
                         type="button"
                         onClick={() => setActiveTab(t.id)}
                         className={cn(
-                            "px-2.5 py-1.5 text-xs font-medium whitespace-nowrap border-b-2 -mb-px transition-colors shrink-0",
+                            "px-2 py-1 text-[0.65rem] sm:px-2.5 sm:py-1.5 sm:text-xs font-medium whitespace-nowrap border-b-2 -mb-px transition-colors shrink-0",
                             activeTab === t.id
                                 ? "border-primary text-foreground"
                                 : "border-transparent text-muted-foreground hover:text-foreground",

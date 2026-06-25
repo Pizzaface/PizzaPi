@@ -234,7 +234,7 @@ function WorktreeRow({ worktree: wt, onRemove, isBusy }: { worktree: GitWorktree
 
             {/* Actions: remove */}
             {showActions && !wt.isMain && onRemove && (
-                <div className="flex items-center gap-1 min-w-0 md:justify-end">
+                <div className="flex items-center gap-1 min-w-0 md:justify-end opacity-100 transition-opacity md:opacity-0 md:group-hover:opacity-100">
                     <button
                         type="button"
                         onClick={handleRemove}
