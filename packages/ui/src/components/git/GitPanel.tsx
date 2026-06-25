@@ -468,47 +468,59 @@ export function GitPanel({ cwd, className }: GitPanelProps) {
             )}
 
             {/* Conflict resolution bar */}
-            {git.lastOperationResult && !git.lastOperationResult.ok && git.lastOperationResult.reason === "conflict" && (
-                git.operationInProgress === null
-            ) && (
-                <div className="flex items-center gap-2 px-3 py-2 text-xs border-b bg-amber-500/10 border-amber-500/20 text-amber-600 dark:text-amber-400"
-                >
-                    <AlertCircle className="size-3 shrink-0" />
-                    <span className="truncate flex-1">Conflicts detected. Resolve them to continue.</span>
-                    {git.lastConflictType === "git_merge_result" ? (
-                        <button
-                            type="button"
-                            onClick={() => git.mergeAbort()}
-                            disabled={git.operationInProgress !== null}
-                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-red-500/20 text-red-500 dark:text-red-400 hover:bg-red-500/30 disabled:opacity-50"
-                            title="Abort the merge"
-                        >
-                            <StopCircle className="size-3" /> Abort Merge
-                        </button>
-                    ) : (
-                        <>
+            {(() => {
+                const r = git.lastOperationResult;
+                const isConflict =
+                    r && git.operationInProgress === null
+                    && ((r.reason === "conflict")
+                        || (r.conflict === true && git.lastConflictType === "git_stash_result"));
+                if (!isConflict) return null;
+                const isStashConflict = git.lastConflictType === "git_stash_result";
+                const isMergeConflict = git.lastConflictType === "git_merge_result";
+                return (
+                    <div className="flex items-center gap-2 px-3 py-2 text-xs border-b bg-amber-500/10 border-amber-500/20 text-amber-600 dark:text-amber-400"
+                    >
+                        <AlertCircle className="size-3 shrink-0" />
+                        <span className="truncate flex-1">
+                            {isStashConflict
+                                ? "Stash apply hit conflicts. Resolve them in the working tree; the stash entry is preserved."
+                                : "Conflicts detected. Resolve them to continue."}
+                        </span>
+                        {isMergeConflict ? (
                             <button
                                 type="button"
-                                onClick={() => git.rebaseContinue()}
-                                disabled={git.operationInProgress !== null}
-                                className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-green-600/20 text-green-600 dark:text-green-400 hover:bg-green-600/30 disabled:opacity-50"
-                                title="Continue rebase after resolving conflicts"
-                            >
-                                <Play className="size-3" /> Continue
-                            </button>
-                            <button
-                                type="button"
-                                onClick={() => git.rebaseAbort()}
+                                onClick={() => git.mergeAbort()}
                                 disabled={git.operationInProgress !== null}
                                 className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-red-500/20 text-red-500 dark:text-red-400 hover:bg-red-500/30 disabled:opacity-50"
-                                title="Abort the rebase"
+                                title="Abort the merge"
                             >
-                                <StopCircle className="size-3" /> Abort
+                                <StopCircle className="size-3" /> Abort Merge
                             </button>
-                        </>
-                    )}
-                </div>
-            )}
+                        ) : isStashConflict ? null : (
+                            <>
+                                <button
+                                    type="button"
+                                    onClick={() => git.rebaseContinue()}
+                                    disabled={git.operationInProgress !== null}
+                                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-green-600/20 text-green-600 dark:text-green-400 hover:bg-green-600/30 disabled:opacity-50"
+                                    title="Continue rebase after resolving conflicts"
+                                >
+                                    <Play className="size-3" /> Continue
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => git.rebaseAbort()}
+                                    disabled={git.operationInProgress !== null}
+                                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-red-500/20 text-red-500 dark:text-red-400 hover:bg-red-500/30 disabled:opacity-50"
+                                    title="Abort the rebase"
+                                >
+                                    <StopCircle className="size-3" /> Abort
+                                </button>
+                            </>
+                        )}
+                    </div>
+                );
+            })()}
 
             {/* Tab strip */}
             <div className="flex items-center gap-0.5 px-1 border-b border-border bg-muted/30 overflow-x-auto min-w-0">

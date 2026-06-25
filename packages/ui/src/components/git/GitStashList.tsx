@@ -63,8 +63,8 @@ export function GitStashList({ cwd, className }: GitStashListProps) {
 
     const handleApply = (index: number) => {
         if (isBusy) return;
-        // Keep the stash entry after applying so it can be popped later if desired.
-        git.stashApply(index, true);
+        // `git stash apply` keeps the entry by default; use Pop to remove it.
+        git.stashApply(index);
     };
 
     const handleDrop = (index: number) => {

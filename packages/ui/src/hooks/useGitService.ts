@@ -126,7 +126,7 @@ export interface UseGitServiceReturn {
     stashList: () => void;
     stashPush: (message?: string, includeUntracked?: boolean) => void;
     stashPop: (index?: number) => void;
-    stashApply: (index?: number, keep?: boolean) => void;
+    stashApply: (index?: number) => void;
     stashDrop: (index?: number) => void;
     checkout: (branch: string, isRemote?: boolean) => void;
     stage: (paths: string[]) => void;
@@ -734,13 +734,13 @@ export function useGitService(cwd: string): UseGitServiceReturn {
         send("git_stash_pop", { cwd, index }, requestId);
     }, [available, send, cwd, makeRequestId, registerRequestGeneration]);
 
-    const stashApply = useCallback((index?: number, keep?: boolean) => {
+    const stashApply = useCallback((index?: number) => {
         if (!available) return;
         const requestId = makeRequestId();
         registerRequestGeneration(requestId);
         setOperationInProgress("stash-apply");
         setLastOperationResult(null);
-        send("git_stash_apply", { cwd, index, keep }, requestId);
+        send("git_stash_apply", { cwd, index }, requestId);
     }, [available, send, cwd, makeRequestId, registerRequestGeneration]);
 
     const stashDrop = useCallback((index?: number) => {

@@ -1448,7 +1448,7 @@ describe("GitService stash operations", () => {
         expect(payload.message).toContain("CONFLICT");
     });
 
-    test("stash apply with keep index", async () => {
+    test("stash apply keeps the entry by default (no --index)", async () => {
         const cwd = "/tmp/pizzapi-test";
         const gitCalls: string[][] = [];
         const service = new GitService({
@@ -1471,13 +1471,16 @@ describe("GitService stash operations", () => {
             serviceId: "git",
             type: "git_stash_apply",
             requestId: "stash-apply-1",
-            payload: { cwd, index: 1, keep: true },
+            payload: { cwd, index: 1 },
         });
         const result = await waitForResult(socket, "stash-apply-1", "git_stash_result");
         const payload = result.payload as any;
 
         expect(payload.ok).toBe(true);
-        expect(gitCalls).toContainEqual(["stash", "apply", "--index", "stash@{1}"]);
+        expect(gitCalls).toContainEqual(["stash", "apply", "stash@{1}"]);
+        // `keep` is ignored — `apply` keeps the entry; restoring the index is a
+        // separate feature not exposed via this op.
+        expect(gitCalls.some((c) => c.includes("--index"))).toBe(false);
     });
 
     test("stash apply conflict returns ok:true with conflict:true", async () => {
@@ -1693,6 +1696,36 @@ describe("GitService log", () => {
             payload: { cwd: "/tmp/pizzapi-test", path: "../escape" },
         });
         const result = await waitForResult(socket, "log-bad-path", "git_log_result");
+        expect(result.payload).toMatchObject({ ok: false, message: expect.stringContaining("Invalid path") });
+    });
+
+    test("git_log rejects a revisionRange that looks like a flag", async () => {
+        const service = new GitService();
+        const socket = createMockSocket();
+        service.init(socket as any, { isShuttingDown: () => false });
+
+        dispatchServiceMessage(socket, {
+            serviceId: "git",
+            type: "git_log",
+            requestId: "log-bad-range",
+            payload: { cwd: "/tmp/pizzapi-test", revisionRange: "--format=%H" },
+        });
+        const result = await waitForResult(socket, "log-bad-range", "git_log_result");
+        expect(result.payload).toMatchObject({ ok: false, message: expect.stringContaining("Invalid revision range") });
+    });
+
+    test("git_diff rejects invalid paths (path traversal via service channel)", async () => {
+        const service = new GitService();
+        const socket = createMockSocket();
+        service.init(socket as any, { isShuttingDown: () => false });
+
+        dispatchServiceMessage(socket, {
+            serviceId: "git",
+            type: "git_diff",
+            requestId: "diff-bad-path",
+            payload: { cwd: "/tmp/pizzapi-test", path: "../../etc/passwd" },
+        });
+        const result = await waitForResult(socket, "diff-bad-path", "git_diff_result");
         expect(result.payload).toMatchObject({ ok: false, message: expect.stringContaining("Invalid path") });
     });
 

@@ -291,12 +291,12 @@ describe("stash actions", () => {
         const { result } = renderGitHook();
 
         act(() => {
-            result.current.stashApply(2, true);
+            result.current.stashApply(2);
         });
 
         const { type, payload } = lastSendCall();
         expect(type).toBe("git_stash_apply");
-        expect(payload).toEqual({ cwd: "/repo", index: 2, keep: true });
+        expect(payload).toEqual({ cwd: "/repo", index: 2 });
         expect(result.current.operationInProgress).toBe("stash-apply");
     });
 

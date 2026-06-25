@@ -167,4 +167,21 @@ describe("GitPanel", () => {
         expect(getByText("Continue")).toBeTruthy();
         expect(getByText("Abort")).toBeTruthy();
     });
+
+    test("shows stash conflict banner (no abort/continue) when stash apply conflicts", () => {
+        gitState.operationInProgress = null;
+        gitState.lastConflictType = "git_stash_result";
+        gitState.lastOperationResult = { ok: true, conflict: true, message: "CONFLICT" };
+
+        const { getByText, queryByText } = render(<GitPanel cwd="/repo" />);
+
+        expect(getByText(/Stash apply hit conflicts/)).toBeTruthy();
+        // Stash conflicts have no abort/continue — those belong to merge/rebase only.
+        expect(queryByText("Continue")).toBeNull();
+        expect(queryByText("Abort")).toBeNull();
+        expect(queryByText("Abort Merge")).toBeNull();
+
+        // reset for afterEach
+        gitState.lastConflictType = null;
+    });
 });

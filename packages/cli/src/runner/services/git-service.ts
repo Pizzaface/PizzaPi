@@ -802,6 +802,10 @@ export class GitService implements ServiceHandler {
             this.emitError("git_diff_result", "Missing path", requestId, sessionId);
             return;
         }
+        if (!isValidPath(filePath)) {
+            this.emitError("git_diff_result", `Invalid path: ${filePath}`, requestId, sessionId);
+            return;
+        }
 
         try {
             // Resolve repo root — paths from git status are repo-root-relative,
@@ -1982,15 +1986,15 @@ export class GitService implements ServiceHandler {
         if (!cwd) return;
 
         const index = typeof payload.index === "number" && payload.index >= 0 ? payload.index : 0;
-        const keep = payload.keep === true;
 
         const mutation = await this.beginRepoMutation(cwd, "git_stash_result", "stash-apply", requestId, sessionId);
         if (!mutation) return;
 
         try {
-            const args = ["stash", "apply"];
-            if (keep) args.push("--index");
-            args.push(`stash@{${index}}`);
+            // `git stash apply` keeps the stash entry by default (unlike pop).
+            // ponytail: no `--index` option — restoring the staged index is a
+            // separate feature; add a `restoreIndex` param if a caller needs it.
+            const args = ["stash", "apply", `stash@{${index}}`];
             const { stdout, stderr } = await this._execGit(args, { cwd, timeout: 30000 });
             const output = (stdout + "\n" + stderr).trim();
             await this.invalidateStatusCacheFamily(cwd);
@@ -2071,8 +2075,17 @@ export class GitService implements ServiceHandler {
             this.emitError("git_log_result", `Invalid path: ${path}`, requestId, sessionId);
             return;
         }
+        if (revisionRange.startsWith("-")) {
+            this.emitError("git_log_result", "Invalid revision range", requestId, sessionId);
+            return;
+        }
 
         try {
+            // Resolve repo root — path is repo-root-relative, so the log must
+            // run from repo root for path filters to resolve correctly.
+            const repoRoot = this._cwdRepoRoot.get(cwd) ?? (await this.resolveRepoRoot(cwd));
+            if (!this._cwdRepoRoot.has(cwd)) this._cwdRepoRoot.set(cwd, repoRoot);
+
             // NUL-delimited fixed-field format with a trailing empty sentinel so we can
             // parse without relying on newlines (commit body may contain newlines).
             // Fields: hash, shortHash, author, authorDate, commitDate, subject, body, refs, sentinel.
@@ -2081,7 +2094,7 @@ export class GitService implements ServiceHandler {
             if (revisionRange) args.push(revisionRange);
             if (path) args.push("--", path);
 
-            const { stdout } = await this._execGit(args, { cwd, timeout: 30000 });
+            const { stdout } = await this._execGit(args, { cwd: repoRoot, timeout: 30000 });
             const fields = stdout.split("\0");
             const entries: GitLogEntry[] = [];
 
