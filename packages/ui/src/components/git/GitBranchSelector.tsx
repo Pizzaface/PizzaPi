@@ -126,7 +126,7 @@ export function GitBranchSelector({
                 onClick={handleOpen}
                 disabled={disabled || isCheckingOut}
                 className={cn(
-                    "inline-flex items-center gap-1.5 px-2 py-1 rounded text-sm font-medium transition-colors min-w-0",
+                    "inline-flex items-center gap-1.5 px-2 py-1 rounded text-sm font-medium transition-colors min-w-0 max-w-full",
                     "hover:bg-accent/60 text-foreground",
                     disabled && "opacity-50 cursor-not-allowed",
                 )}

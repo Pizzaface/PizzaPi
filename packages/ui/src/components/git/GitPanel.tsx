@@ -260,7 +260,7 @@ export function GitPanel({ cwd, className }: GitPanelProps) {
         <div className={cn("flex flex-col h-full overflow-hidden", className)}>
             {/* Status / branch header */}
             <div className="flex flex-col sm:flex-row sm:items-center gap-2 px-2 py-1.5 border-b border-border bg-muted/50 min-h-[40px] overflow-hidden">
-                <div className="flex items-center gap-1.5 min-w-0 w-full sm:w-auto">
+                <div className="flex items-center gap-1.5 min-w-0 w-full sm:w-auto sm:flex-1 overflow-hidden">
                     <GitBranchSelector
                         currentBranch={git.status.branch}
                         branches={git.branches}
@@ -281,7 +281,7 @@ export function GitPanel({ cwd, className }: GitPanelProps) {
                     )}
                 </div>
 
-                <div className="flex flex-wrap items-center justify-end gap-1.5 min-w-0 w-full sm:w-auto sm:ml-auto">
+                <div className="flex flex-wrap items-center justify-end gap-1.5 min-w-0 w-full sm:w-auto sm:shrink-0 sm:ml-auto">
                     {/* Ahead/behind badges */}
                     {git.status.ahead > 0 && (
                         <span
