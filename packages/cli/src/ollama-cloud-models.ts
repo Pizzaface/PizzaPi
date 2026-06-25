@@ -9,6 +9,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import type { Model } from "@earendil-works/pi-ai";
 
 const OLLAMA_CLOUD_MODELS_URL = "https://ollama.com/v1/models";
 const OLLAMA_CLOUD_SHOW_URL = "https://ollama.com/api/show";
@@ -63,7 +64,9 @@ function readCache(): OllamaCloudCacheEntry | null {
             Array.isArray(raw.models) &&
             typeof raw.fetchedAt === "number"
         ) {
-            return raw as OllamaCloudCacheEntry;
+            const models = raw.models.filter(isOllamaCloudModel);
+            if (raw.models.length > 0 && models.length === 0) return null;
+            return { models, fetchedAt: raw.fetchedAt };
         }
     } catch {
         // ignore corrupt cache
@@ -75,6 +78,24 @@ function writeCache(entry: OllamaCloudCacheEntry): void {
     const dir = join(homeDir(), ".pizzapi");
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
     writeFileSync(cachePath(), JSON.stringify(entry, null, 2), { mode: 0o600 });
+}
+
+function isOllamaCloudModel(value: unknown): value is OllamaCloudModel {
+    if (typeof value !== "object" || value === null) return false;
+    const model = value as Record<string, unknown>;
+    return (
+        typeof model.id === "string" &&
+        typeof model.name === "string" &&
+        model.provider === "ollama-cloud" &&
+        model.api === "openai-completions" &&
+        typeof model.baseUrl === "string" &&
+        typeof model.reasoning === "boolean" &&
+        Array.isArray(model.input) &&
+        model.input.length > 0 &&
+        model.input.every((item) => item === "text" || item === "image") &&
+        typeof model.contextWindow === "number" &&
+        typeof model.maxTokens === "number"
+    );
 }
 
 async function fetchJson(url: string, options?: RequestInit): Promise<unknown> {
@@ -110,6 +131,22 @@ export function getCachedOllamaCloudModels(): OllamaCloudModel[] | null {
     return null;
 }
 
+export function toOllamaCloudRuntimeModel(model: OllamaCloudModel): Model<"openai-completions"> {
+    return {
+        ...model,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        compat: {
+            supportsStore: false,
+            supportsDeveloperRole: false,
+            supportsReasoningEffort: false,
+            supportsUsageInStreaming: true,
+            supportsLongCacheRetention: false,
+            supportsStrictMode: false,
+            maxTokensField: "max_tokens",
+        },
+    };
+}
+
 export async function fetchOllamaCloudModels({ signal }: { signal?: AbortSignal } = {}): Promise<OllamaCloudModel[]> {
     const cached = readCache();
     if (cached && Date.now() - cached.fetchedAt < CACHE_TTL_MS) {
@@ -131,11 +168,8 @@ export async function fetchOllamaCloudModels({ signal }: { signal?: AbortSignal 
         }),
     );
 
-    // Filter out any entries we couldn't enrich (e.g. transient /api/show failures)
-    const valid = models.filter((m): m is OllamaCloudModel => m !== null);
-
-    writeCache({ models: valid, fetchedAt: Date.now() });
-    return valid;
+    writeCache({ models, fetchedAt: Date.now() });
+    return models;
 }
 
 async function fetchModelMetadata(
@@ -162,7 +196,7 @@ async function fetchModelMetadata(
     return null;
 }
 
-function buildModel(id: string, info: OllamaApiShowResponse | null): OllamaCloudModel | null {
+function buildModel(id: string, info: OllamaApiShowResponse | null): OllamaCloudModel {
     const caps = info?.capabilities ?? [];
     const contextWindow = extractContextLength(info?.model_info) ?? 128000;
     const reasoning = capabilitiesInclude(caps, "thinking");

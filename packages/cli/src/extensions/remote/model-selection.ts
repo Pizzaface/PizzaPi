@@ -5,9 +5,9 @@
  */
 
 import type { RelayContext } from "../remote-types.js";
-import { emitModelChanged, emitAuthSourceChanged } from "../remote-meta-events.js";
 import { getAuthSource } from "../remote-auth-source.js";
 import { emitSessionActive } from "./chunked-delivery.js";
+import { getCachedOllamaCloudModels, toOllamaCloudRuntimeModel } from "../../ollama-cloud-models.js";
 
 /**
  * Handle a web-initiated model change request.
@@ -22,19 +22,21 @@ export async function setModelFromWeb(
 ): Promise<void> {
     if (!rctx.latestCtx) return;
 
-    const model = rctx.latestCtx.modelRegistry.find(provider, modelId);
-    if (!model) {
-        rctx.forwardEvent({
-            type: "model_set_result",
-            ok: false,
-            provider,
-            modelId,
-            message: "Model is not configured for this session.",
-        });
-        return;
-    }
-
     try {
+        const model =
+            rctx.latestCtx.modelRegistry.find(provider, modelId) ??
+            findCachedOllamaCloudModel(provider, modelId);
+        if (!model) {
+            rctx.forwardEvent({
+                type: "model_set_result",
+                ok: false,
+                provider,
+                modelId,
+                message: "Model is not configured for this session.",
+            });
+            return;
+        }
+
         const ok = await (pi as any).setModel(model);
         rctx.forwardEvent({
             type: "model_set_result",
@@ -44,19 +46,17 @@ export async function setModelFromWeb(
             message: ok ? undefined : "Model selected, but no valid credentials were found.",
         });
         if (ok) {
-            emitModelChanged(
-                rctx,
-                rctx.latestCtx?.model
-                    ? {
-                          provider: rctx.latestCtx.model.provider,
-                          id: rctx.latestCtx.model.id,
-                          name: rctx.latestCtx.model.name,
-                          reasoning: rctx.latestCtx.model.reasoning,
-                          contextWindow: rctx.latestCtx.model.contextWindow,
-                      }
-                    : null,
-            );
-            emitAuthSourceChanged(rctx, getAuthSource(rctx.latestCtx));
+            rctx.forwardEvent({
+                type: "model_changed",
+                model: {
+                    provider: model.provider,
+                    id: model.id,
+                    name: model.name,
+                    reasoning: model.reasoning,
+                    contextWindow: model.contextWindow,
+                },
+            });
+            rctx.forwardEvent({ type: "auth_source_changed", source: getAuthSource(rctx.latestCtx) });
             emitSessionActive(rctx);
         }
     } catch (error) {
@@ -68,4 +68,11 @@ export async function setModelFromWeb(
             message: error instanceof Error ? error.message : String(error),
         });
     }
+}
+
+function findCachedOllamaCloudModel(provider: string, modelId: string) {
+    if (provider !== "ollama-cloud") return undefined;
+    const cached = getCachedOllamaCloudModels();
+    const model = cached?.find((m) => m.id === modelId);
+    return model ? toOllamaCloudRuntimeModel(model) : undefined;
 }

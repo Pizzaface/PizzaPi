@@ -6,6 +6,7 @@ import {
     fetchOllamaCloudModels,
     extractContextLength,
     capabilitiesInclude,
+    getCachedOllamaCloudModels,
 } from "../ollama-cloud-models.js";
 
 const originalHome = process.env.HOME;
@@ -36,6 +37,17 @@ describe("ollama-cloud dynamic model discovery", () => {
     test("capabilitiesInclude is case-insensitive", () => {
         expect(capabilitiesInclude(["Thinking", "completion"], "thinking")).toBe(true);
         expect(capabilitiesInclude(["completion"], "thinking")).toBe(false);
+    });
+
+    test("invalid cached models are ignored", () => {
+        const dir = join(tempHome, ".pizzapi");
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(
+            join(dir, "ollama-cloud-models-cache.json"),
+            JSON.stringify({ models: [{ id: "broken" }], fetchedAt: Date.now() }),
+        );
+
+        expect(getCachedOllamaCloudModels()).toBeNull();
     });
 
     test("fetchOllamaCloudModels returns cached data when cache is fresh", async () => {
