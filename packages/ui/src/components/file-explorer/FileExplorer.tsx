@@ -15,7 +15,7 @@ import {
   ChevronsDownUp,
 } from "lucide-react";
 import { FileEntry, FileExplorerProps } from "./types";
-import { shouldInterceptEscape, isImageFile, isMarkdownFile, getFileIcon, formatSize } from "./utils";
+import { shouldInterceptEscape, isImageFile, isMarkdownFile, getFileIcon, formatSize, repoRelativePath } from "./utils";
 import { ImageViewer } from "./image-viewer";
 import { FileViewer } from "./file-viewer";
 import { MarkdownViewer } from "./markdown-viewer";
@@ -318,6 +318,7 @@ export function FileExplorer({ runnerId, cwd, className, onClose, position = "le
           <MarkdownViewer
             runnerId={runnerId}
             filePath={viewingFile}
+            blamePath={repoRelativePath(cwd, viewingFile)}
             cwd={cwd}
             canBlame={canBlame}
             onClose={() => setViewingFile(null)}
@@ -326,6 +327,7 @@ export function FileExplorer({ runnerId, cwd, className, onClose, position = "le
           <FileViewer
             runnerId={runnerId}
             filePath={viewingFile}
+            blamePath={repoRelativePath(cwd, viewingFile)}
             cwd={cwd}
             canBlame={canBlame}
             onClose={() => setViewingFile(null)}
@@ -465,4 +467,5 @@ export {
   IMAGE_EXTENSIONS,
   MARKDOWN_EXTENSIONS,
   POSITION_OPTIONS,
+  repoRelativePath,
 } from "./utils";

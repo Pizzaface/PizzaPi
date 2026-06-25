@@ -3,19 +3,21 @@ import { Spinner } from "@/components/ui/spinner";
 import { ChevronLeft, GitCommit } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { GitBlameView } from "@/components/git/GitBlameView";
-import { getFileIcon, formatSize } from "./utils";
+import { getFileIcon, formatSize, repoRelativePath } from "./utils";
 
 // ── File Viewer ───────────────────────────────────────────────────────────────
 
 export function FileViewer({
   runnerId,
   filePath,
+  blamePath,
   cwd,
   canBlame,
   onClose,
 }: {
   runnerId: string;
   filePath: string;
+  blamePath: string;
   cwd: string;
   canBlame: boolean;
   onClose: () => void;
@@ -101,7 +103,7 @@ export function FileViewer({
       </div>
       <div className="flex-1 overflow-auto">
         {showBlame ? (
-          <GitBlameView cwd={cwd} path={filePath} />
+          <GitBlameView cwd={cwd} path={blamePath} />
         ) : (
           <>
             {loading && (

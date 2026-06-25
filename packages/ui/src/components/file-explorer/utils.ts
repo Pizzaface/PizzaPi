@@ -122,3 +122,18 @@ export function gitStatusLabel(status: string): { label: string; color: string; 
       return { label: status, color: "text-muted-foreground", icon: React.createElement(File, { className: "size-3" }) };
   }
 }
+
+/** Return a repo-relative path string for git blame/diff commands.
+ *  Git rejects absolute paths, so strip the leading cwd prefix when the file
+ *  sits under the current working directory. Falls back to the original path
+ *  if it is already relative or outside the cwd.
+ */
+export function repoRelativePath(cwd: string, filePath: string): string {
+  if (!cwd || !filePath) return filePath;
+  const withSlash = cwd.endsWith("/") ? cwd : `${cwd}/`;
+  if (filePath === cwd) return "";
+  if (filePath.startsWith(withSlash)) {
+    return filePath.slice(withSlash.length);
+  }
+  return filePath;
+}

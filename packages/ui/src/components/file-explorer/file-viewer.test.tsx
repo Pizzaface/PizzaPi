@@ -61,7 +61,7 @@ afterEach(() => {
 describe("FileViewer", () => {
   test("shows blame button inside a git repo and toggles blame view", async () => {
     const { getByText, queryByText, queryByTestId } = render(
-      <FileViewer runnerId="r1" filePath="/repo/readme.txt" cwd="/repo" canBlame={true} onClose={mock(() => {})} />,
+      <FileViewer runnerId="r1" filePath="/repo/readme.txt" blamePath="readme.txt" cwd="/repo" canBlame={true} onClose={mock(() => {})} />,
     );
 
     await waitFor(() => expect(queryByText(/hello/)).toBeTruthy());
@@ -70,12 +70,12 @@ describe("FileViewer", () => {
     fireEvent.click(getByText("Blame"));
 
     await waitFor(() => expect(queryByTestId("blame-view")).toBeTruthy());
-    expect(queryByTestId("blame-view")?.getAttribute("data-path")).toBe("/repo/readme.txt");
+    expect(queryByTestId("blame-view")?.getAttribute("data-path")).toBe("readme.txt");
   });
 
   test("hides blame button when not in a git repo", async () => {
     const { queryByText } = render(
-      <FileViewer runnerId="r1" filePath="/other/readme.txt" cwd="/other" canBlame={false} onClose={mock(() => {})} />,
+      <FileViewer runnerId="r1" filePath="/other/readme.txt" blamePath="readme.txt" cwd="/other" canBlame={false} onClose={mock(() => {})} />,
     );
 
     await waitFor(() => expect(queryByText(/hello/)).toBeTruthy());

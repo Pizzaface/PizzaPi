@@ -22,12 +22,14 @@ const safeRehypePlugins = [...Object.values(defaultRehypePlugins)] as any;
 export function MarkdownViewer({
   runnerId,
   filePath,
+  blamePath,
   cwd,
   canBlame,
   onClose,
 }: {
   runnerId: string;
   filePath: string;
+  blamePath: string;
   cwd: string;
   canBlame: boolean;
   onClose: () => void;
@@ -190,7 +192,7 @@ export function MarkdownViewer({
               </div>
             )}
             {showBlame ? (
-              <GitBlameView cwd={cwd} path={filePath} />
+              <GitBlameView cwd={cwd} path={blamePath} />
             ) : mode === "preview" ? (
               <div className="p-4 prose prose-sm dark:prose-invert max-w-none">
                 <Streamdown
