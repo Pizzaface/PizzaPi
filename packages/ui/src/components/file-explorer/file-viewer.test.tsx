@@ -36,13 +36,9 @@ mock.module("@/hooks/useGitService", () => ({
   useGitService: (_cwd: string) => ({
     available: true,
     status: { branch: "main", changes: [], ahead: 0, behind: 0, hasUpstream: true, diffStaged: "" },
+    blame: null,
+    fetchBlame: mock(async () => []),
   }),
-}));
-
-mock.module("@/components/git/GitBlameView", () => ({
-  GitBlameView: ({ cwd, path }: { cwd: string; path: string }) => (
-    <div data-testid="blame-view" data-cwd={cwd} data-path={path} />
-  ),
 }));
 
 const actualUtils = await import("../../lib/utils");
@@ -69,8 +65,7 @@ describe("FileViewer", () => {
 
     fireEvent.click(getByText("Blame"));
 
-    await waitFor(() => expect(queryByTestId("blame-view")).toBeTruthy());
-    expect(queryByTestId("blame-view")?.getAttribute("data-path")).toBe("readme.txt");
+    await waitFor(() => expect(queryByText(/Loading blame/)).toBeTruthy());
   });
 
   test("hides blame button when not in a git repo", async () => {
