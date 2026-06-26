@@ -10,6 +10,7 @@ import { UserPreferencesPanel } from "@/components/UserPreferencesPanel";
 import { AuthPage } from "@/components/AuthPage";
 import { ApiKeyManager } from "@/components/ApiKeyManager";
 import { RunnerTokenManager } from "@/components/RunnerTokenManager";
+import { DeviceSetupScanner } from "@/components/DeviceSetupScanner";
 import { RunnerManager } from "@/components/RunnerManager";
 import { NewSessionWizardDialog } from "@/components/NewSessionWizardDialog";
 import { HistoryCommandPalette } from "@/components/HistoryCommandPalette";
@@ -418,6 +419,7 @@ export function App() {
   const [showPreferences, setShowPreferences] = React.useState(false);
   const [showApiKeys, setShowApiKeys] = React.useState(false);
   const [apiKeyVersion, setApiKeyVersion] = React.useState(0);
+  const [setupClaimOpen, setSetupClaimOpen] = React.useState(false);
   const [showRunners, setShowRunners] = React.useState(false);
   const [historyOpen, setHistoryOpen] = React.useState(false);
   const [selectedRunnerId, setSelectedRunnerId] = React.useState<string | null>(null);
@@ -453,6 +455,15 @@ export function App() {
       try { sessionStorage.setItem(sidebarCacheKey, JSON.stringify(runners)); } catch { /* ignore */ }
     }
   }, [sidebarCacheKey]);
+
+  // Open the device-setup scanner automatically when landing with ?t=<claim-token>.
+  React.useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("t")) {
+      setSetupClaimOpen(true);
+    }
+  }, []);
+
   const panelLayout = usePanelLayout(activeSessionId);
   const {
     showTerminal, setShowTerminal,
@@ -5206,12 +5217,19 @@ export function App() {
               <div className="flex flex-col gap-4">
                 <ApiKeyManager refreshSignal={apiKeyVersion} onKeysChanged={() => setApiKeyVersion((v) => v + 1)} />
                 <RunnerTokenManager refreshSignal={apiKeyVersion} onKeysChanged={() => setApiKeyVersion((v) => v + 1)} />
+                <DeviceSetupScanner onClose={() => setShowApiKeys(false)} />
               </div>
             </div>
           </div>
         )}
 
         <ShortcutsDialog open={showShortcutsHelp} onOpenChange={setShowShortcutsHelp} />
+
+        <Dialog open={setupClaimOpen} onOpenChange={setSetupClaimOpen}>
+          <DialogContent className="max-w-md p-0 overflow-hidden">
+            <DeviceSetupScanner onClose={() => setSetupClaimOpen(false)} />
+          </DialogContent>
+        </Dialog>
 
         {/* PATCH(pizzapi): Toast notifications for ctx.ui.notify() */}
         <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2 pointer-events-none">

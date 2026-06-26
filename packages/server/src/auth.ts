@@ -165,6 +165,19 @@ export interface WebhookTable {
     updatedAt: string;
 }
 
+export interface SetupClaimTable {
+    id: string;
+    status: "pending" | "approved" | "redeemed" | "expired";
+    relayUrl: string;
+    apiKey: string | null;
+    userId: string | null;
+    userName: string | null;
+    createdAt: string;
+    expiresAt: string;
+    approvedAt: string | null;
+    redeemedAt: string | null;
+}
+
 export interface DB {
     user: UserTable;
     session: SessionTable;
@@ -179,6 +192,7 @@ export interface DB {
     user_hidden_model: UserHiddenModelTable;
     extracted_attachment: ExtractedAttachmentTable;
     webhook: WebhookTable;
+    setup_claim: SetupClaimTable;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

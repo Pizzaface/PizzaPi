@@ -95,6 +95,16 @@ Run (or re-run) the first-time setup wizard. Prompts for the relay server URL, e
 pizzapi setup
 ```
 
+#### `pizzapi setup --scan`
+
+Enroll a new PC by QR code instead of typing credentials. The CLI prompts for the relay URL, prints a terminal QR code, and polls for approval. Scan the QR code from an authenticated PizzaPi web browser (or open the printed URL) and tap **Allow Camera & Scan** to approve the device.
+
+```bash
+pizzapi setup --scan
+```
+
+The claim expires after 10 minutes. Once approved, the CLI receives an API key and writes `~/.pizzapi/config.json` automatically.
+
 <Aside type="tip">
   You can re-run setup at any time to switch relay servers or update credentials.
 </Aside>

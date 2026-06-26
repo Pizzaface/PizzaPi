@@ -12,6 +12,7 @@ import { serverHealth } from "../health.js";
 import { getServerRuntimeInfo } from "../runtime-version.js";
 import { createLogger } from "@pizzapi/tools";
 import { handleAuthRoute } from "./auth.js";
+import { handleSetupClaimsRoute } from "./setup-claims.js";
 import { handleRunnersRoute } from "./runners.js";
 import { handleSessionsRoute } from "./sessions.js";
 import { handleAttachmentsRoute } from "./attachments.js";
@@ -32,6 +33,7 @@ let lastHealthSignature = "";
 const routers: RouteHandler[] = [
     handleMcpOAuthRoute,   // Before auth — OAuth callback must be unauthenticated
     handleAuthRoute,
+    handleSetupClaimsRoute, // QR-code setup claim lifecycle
     handleTunnelRoute,     // Before runners — /api/tunnel/* is session-scoped, not runner-scoped
     handleRunnersRoute,
     handleRunnerSettingsRoute,
