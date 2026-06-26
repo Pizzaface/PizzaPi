@@ -61,6 +61,18 @@ const gitState = {
     addWorktree: mock(() => {}),
     removeWorktree: mock(() => {}),
     clearOperationResult: mock(() => {}),
+    // New git-UX methods/state
+    stashes: [] as any[],
+    log: [] as any[],
+    blame: null,
+    stashList: mock(() => {}),
+    stashPush: mock(() => {}),
+    stashPop: mock(() => {}),
+    stashApply: mock(() => {}),
+    stashDrop: mock(() => {}),
+    fetchLog: mock(async () => []),
+    fetchDiffRevs: mock(async () => ""),
+    fetchBlame: mock(async () => []),
 };
 
 mock.module("@/lib/utils", () => ({
@@ -75,6 +87,13 @@ mock.module("@/components/ui/button", () => ({
     Button: ({ children, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement>) => (
         <button type="button" {...props}>{children}</button>
     ),
+}));
+
+mock.module("@/components/ui/tooltip", () => ({
+    TooltipProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+    Tooltip: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+    TooltipTrigger: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+    TooltipContent: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }));
 
 mock.module("@/hooks/useGitService", () => ({
@@ -104,6 +123,18 @@ mock.module("./GitDiffView", () => ({
 
 mock.module("./GitWorktreeList", () => ({
     GitWorktreeList: () => <div data-testid="worktree-list" />,
+}));
+
+mock.module("./GitStashList", () => ({
+    GitStashList: () => <div data-testid="stash-list" />,
+}));
+
+mock.module("./GitHistoryView", () => ({
+    GitHistoryView: () => <div data-testid="history-view" />,
+}));
+
+mock.module("./GitDiffRevsView", () => ({
+    GitDiffRevsView: () => <div data-testid="diff-revs-view" />,
 }));
 
 afterAll(() => mock.restore());
@@ -138,5 +169,22 @@ describe("GitPanel", () => {
         expect(getByText("Conflicts detected. Resolve them to continue.")).toBeTruthy();
         expect(getByText("Continue")).toBeTruthy();
         expect(getByText("Abort")).toBeTruthy();
+    });
+
+    test("shows stash conflict banner (no abort/continue) when stash apply conflicts", () => {
+        gitState.operationInProgress = null;
+        gitState.lastConflictType = "git_stash_result";
+        gitState.lastOperationResult = { ok: true, conflict: true, message: "CONFLICT" };
+
+        const { getByText, queryByText } = render(<GitPanel cwd="/repo" />);
+
+        expect(getByText(/Stash apply hit conflicts/)).toBeTruthy();
+        // Stash conflicts have no abort/continue — those belong to merge/rebase only.
+        expect(queryByText("Continue")).toBeNull();
+        expect(queryByText("Abort")).toBeNull();
+        expect(queryByText("Abort Merge")).toBeNull();
+
+        // reset for afterEach
+        gitState.lastConflictType = null;
     });
 });

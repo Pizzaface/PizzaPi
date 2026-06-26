@@ -55,10 +55,10 @@ export function GitCommitForm({ hasStagedChanges, onCommit, isCommitting, disabl
                     "text-xs font-mono placeholder:text-muted-foreground/50",
                     "outline-none focus:ring-1 focus:ring-ring",
                     "disabled:opacity-50 disabled:cursor-not-allowed",
-                    "min-h-[32px]",
+                    "min-h-[36px]",
                 )}
             />
-            <div className="flex items-center justify-between">
+            <div className="flex flex-col sm:flex-row items-start sm:items-center gap-2 sm:justify-between">
                 <span className="text-[0.6rem] text-muted-foreground">
                     {hasStagedChanges
                         ? `${typeof navigator !== "undefined" && /Mac|iPod|iPhone|iPad/.test(navigator.platform) ? "⌘" : "Ctrl+"}↵ to commit`
@@ -69,7 +69,7 @@ export function GitCommitForm({ hasStagedChanges, onCommit, isCommitting, disabl
                     onClick={handleCommit}
                     disabled={!canCommit}
                     className={cn(
-                        "inline-flex items-center gap-1.5 px-3 py-1 rounded text-xs font-medium transition-colors",
+                        "inline-flex items-center justify-center gap-1.5 px-3 py-1 rounded text-xs font-medium transition-colors w-full sm:w-auto min-h-9",
                         canCommit
                             ? "bg-primary text-primary-foreground hover:bg-primary/90"
                             : "bg-muted text-muted-foreground cursor-not-allowed",

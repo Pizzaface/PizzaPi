@@ -72,10 +72,16 @@ export function GitBranchSelector({
             const trigger = containerRef.current;
             if (!trigger) return;
             const rect = trigger.getBoundingClientRect();
+            const minWidth = rect.width || 260;
+            const maxWidth = Math.min(288, typeof window !== "undefined" ? window.innerWidth * 0.9 : 288);
+            const width = Math.max(minWidth, Math.min(288, maxWidth));
+            const padding = 8;
+            const viewportW = typeof window !== "undefined" ? window.innerWidth : width + padding * 2;
+            const left = Math.max(padding, Math.min(rect.left + window.scrollX, viewportW - width - padding));
             setDropdownStyle({
                 top: rect.bottom + window.scrollY,
-                left: rect.left + window.scrollX,
-                width: rect.width,
+                left,
+                width,
             });
         };
         updatePosition();
@@ -120,13 +126,13 @@ export function GitBranchSelector({
                 onClick={handleOpen}
                 disabled={disabled || isCheckingOut}
                 className={cn(
-                    "inline-flex items-center gap-1.5 px-2 py-1 rounded text-sm font-medium transition-colors",
+                    "inline-flex items-center gap-1.5 px-2 py-1 rounded text-sm font-medium transition-colors min-w-0 max-w-full",
                     "hover:bg-accent/60 text-foreground",
                     disabled && "opacity-50 cursor-not-allowed",
                 )}
             >
                 <GitBranchIcon className="size-4 text-green-600 dark:text-green-400" />
-                <span className="truncate max-w-[200px]">{currentBranch || "detached"}</span>
+                <span className="truncate min-w-0 flex-1">{currentBranch || "detached"}</span>
                 {isCheckingOut ? (
                     <Loader2 className="size-3 animate-spin" />
                 ) : (
@@ -141,11 +147,11 @@ export function GitBranchSelector({
                         position: "absolute",
                         top: dropdownStyle.top,
                         left: dropdownStyle.left,
-                        minWidth: dropdownStyle.width || 260,
+                        width: dropdownStyle.width || 260,
                         maxWidth: "90vw",
                         zIndex: 60,
                     }}
-                    className="mt-1 w-72 max-h-80 bg-popover border border-border rounded-lg shadow-xl flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-100"
+                    className="mt-1 max-h-80 bg-popover border border-border rounded-lg shadow-xl flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-100"
                 >
                     {/* Search / header */}
                     <div className="flex items-center gap-2 px-3 py-2 border-b border-border/50">

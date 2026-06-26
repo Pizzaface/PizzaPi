@@ -11,6 +11,7 @@ import {
     ArrowUp,
     ArrowDown,
     Download,
+    Edit3,
     RefreshCw,
     GitCommit,
     Upload,
@@ -25,13 +26,31 @@ import {
 } from "lucide-react";
 import { Spinner } from "@/components/ui/spinner";
 import { Button } from "@/components/ui/button";
+import {
+    Tooltip,
+    TooltipContent,
+    TooltipProvider,
+    TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { useGitService } from "@/hooks/useGitService";
 import { GitBranchSelector } from "./GitBranchSelector";
 import { GitStagingArea, partitionChanges } from "./GitStagingArea";
 import { GitCommitForm } from "./GitCommitForm";
 import { GitDiffView } from "./GitDiffView";
 import { GitWorktreeList } from "./GitWorktreeList";
+import { GitStashList } from "./GitStashList";
+import { GitHistoryView } from "./GitHistoryView";
+import { GitDiffRevsView } from "./GitDiffRevsView";
 import { getGitOperationFeedback, parseUpstreamRef, type GitOperationFeedback } from "./git-operation-feedback";
+
+type GitTab = "changes" | "stash" | "history" | "compare";
+
+const GIT_TABS: Array<{ id: GitTab; label: string }> = [
+    { id: "changes", label: "Changes" },
+    { id: "stash", label: "Stash" },
+    { id: "history", label: "History" },
+    { id: "compare", label: "Compare" },
+];
 
 // ── Props ───────────────────────────────────────────────────────────────────
 
@@ -49,6 +68,20 @@ export function GitPanel({ cwd, className }: GitPanelProps) {
     const [selectedDiff, setSelectedDiff] = useState<{ path: string; diff: string } | null>(null);
     const [diffLoading, setDiffLoading] = useState(false);
     const diffContainerRef = useRef<HTMLDivElement>(null);
+
+    // Tab + optional path filter (used by history/blame/compare)
+    const [activeTab, setActiveTab] = useState<GitTab>("changes");
+    const [pathFilter, setPathFilter] = useState("");
+
+    // Fetch the last commit subject for the status row. Falls back to the
+    // branch list's date text if log hasn't resolved yet.
+    const branchNameForLog = git.status?.branch;
+    useEffect(() => {
+        if (!branchNameForLog) return;
+        // ponytail: one-entry log fetch, fire-and-forget; hook discards stale cwd results
+        git.fetchLog(undefined, 1).catch(() => {});
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [branchNameForLog]);
 
     // Toast-style feedback for operations
     const [toast, setToast] = useState<GitOperationFeedback | null>(null);
@@ -219,163 +252,212 @@ export function GitPanel({ cwd, className }: GitPanelProps) {
     const showPush = git.status.ahead > 0 || !git.status.hasUpstream;
     const showPull = git.status.behind > 0 && git.status.hasUpstream;
 
+    const currentBranchInfo = git.branches.find((b) => b.isCurrent);
+    const lastCommitSubject = git.log[0]?.subject;
+    const lastCommitShortHash = lastCommitSubject
+        ? currentBranchInfo?.shortHash ?? git.log[0]?.shortHash
+        : currentBranchInfo?.shortHash;
+    const lastCommitTooltip = lastCommitSubject
+        ? `${currentBranchInfo?.shortHash ?? git.log[0]?.shortHash} ${lastCommitSubject}`
+        : currentBranchInfo
+            ? `${currentBranchInfo.shortHash} ${currentBranchInfo.lastCommit}`
+            : undefined;
+
     return (
         <div className={cn("flex flex-col h-full overflow-hidden", className)}>
-            {/* Branch header */}
-            <div className="flex items-center gap-1 px-2 py-1.5 border-b border-border bg-muted/50 min-h-[40px] overflow-hidden">
-                <GitBranchSelector
-                    currentBranch={git.status.branch}
-                    branches={git.branches}
-                    branchesState={git.branchesState}
-                    onCheckout={git.checkout}
-                    onOpen={git.fetchBranches}
-                    disabled={isMutating}
-                    isCheckingOut={git.operationInProgress === "checkout"}
-                />
-
-                <div className="flex-1" />
-
-                {/* Ahead/behind badges */}
-                {git.status.ahead > 0 && (
-                    <span
-                        className="inline-flex items-center gap-0.5 text-[0.65rem] text-green-600 dark:text-green-400"
-                        title={`${git.status.ahead} commit(s) ahead`}
-                    >
-                        <ArrowUp className="size-3" /> {git.status.ahead}
-                    </span>
-                )}
-                {git.status.behind > 0 && (
-                    <span
-                        className="inline-flex items-center gap-0.5 text-[0.65rem] text-amber-500 dark:text-amber-400"
-                        title={`${git.status.behind} commit(s) behind`}
-                    >
-                        <ArrowDown className="size-3" /> {git.status.behind}
-                    </span>
-                )}
-
-                {/* Sync dropdown */}
-                <div className="relative" ref={syncMenuRef}>
-                    <button
-                        type="button"
-                        onClick={() => setSyncMenuOpen((o) => !o)}
+            {/* Status / branch header */}
+            <div className="flex flex-col sm:flex-row sm:items-center gap-2 px-2 py-1.5 border-b border-border bg-muted/50 min-h-[40px] overflow-hidden">
+                <div className="flex items-center gap-1.5 min-w-0 w-full sm:w-auto sm:flex-1 overflow-hidden">
+                    <GitBranchSelector
+                        currentBranch={git.status.branch}
+                        branches={git.branches}
+                        branchesState={git.branchesState}
+                        onCheckout={git.checkout}
+                        onOpen={git.fetchBranches}
                         disabled={isMutating}
-                        className={cn(
-                            "inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium transition-colors",
-                            "bg-muted/60 hover:bg-muted text-foreground",
-                            git.operationInProgress && "opacity-70",
-                        )}
-                        title="Sync options"
-                    >
-                        <MoreHorizontal className="size-3" /> Sync
-                    </button>
-                    {syncMenuOpen && ReactDOM.createPortal(
-                        <div
-                            ref={syncMenuContentRef}
-                            style={{
-                                position: "fixed",
-                                top: syncMenuRef.current ? syncMenuRef.current.getBoundingClientRect().bottom : 0,
-                                left: syncMenuRef.current ? syncMenuRef.current.getBoundingClientRect().left : 0,
-                                zIndex: 100,
-                                minWidth: 180,
-                            }}
-                            className="mt-1 w-48 bg-popover border border-border rounded-md shadow-lg text-sm"
+                        isCheckingOut={git.operationInProgress === "checkout"}
+                    />
+                    {hasChanges && (
+                        <span
+                            className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-amber-500/15 text-amber-600 dark:text-amber-400 text-xs font-medium shrink-0"
+                            title={`${git.status.changes.length} dirty change(s)`}
                         >
-                            <button
-                                type="button"
-                                onClick={() => {
-                                    setSyncMenuOpen(false);
-                                    git.pull(false);
-                                }}
-                                className="w-full text-left px-3 py-2 hover:bg-accent/50 disabled:opacity-50"
-                                disabled={git.operationInProgress !== null}
-                            >
-                                <div className="flex items-center gap-2"><Download className="size-3" /> Pull (fast-forward)</div>
-                            </button>
-                            <button
-                                type="button"
-                                onClick={() => {
-                                    setSyncMenuOpen(false);
-                                    git.pull(true);
-                                }}
-                                className="w-full text-left px-3 py-2 hover:bg-accent/50 disabled:opacity-50"
-                                disabled={git.operationInProgress !== null}
-                            >
-                                <div className="flex items-center gap-2"><Download className="size-3" /> Pull --rebase</div>
-                            </button>
-                            <button
-                                type="button"
-                                onClick={() => {
-                                    setSyncMenuOpen(false);
-                                    handleMerge();
-                                }}
-                                className="w-full text-left px-3 py-2 hover:bg-accent/50 disabled:opacity-50"
-                                disabled={git.operationInProgress !== null}
-                            >
-                                <div className="flex items-center gap-2"><GitMerge className="size-3" /> Merge into current…</div>
-                            </button>
-                            <button
-                                type="button"
-                                onClick={() => {
-                                    setSyncMenuOpen(false);
-                                    handleRebase();
-                                }}
-                                className="w-full text-left px-3 py-2 hover:bg-accent/50 disabled:opacity-50"
-                                disabled={git.operationInProgress !== null}
-                            >
-                                <div className="flex items-center gap-2"><ArrowRightLeft className="size-3" /> Rebase onto…</div>
-                            </button>
-                        </div>,
-                        document.body,
+                            <Edit3 className="size-3" />
+                            {git.status.changes.length}
+                        </span>
                     )}
                 </div>
 
-                {/* Pull button */}
-                {showPull && (
+                <div className="flex flex-wrap items-center justify-end gap-1.5 min-w-0 w-full sm:w-auto sm:shrink-0 sm:ml-auto">
+                    {/* Ahead/behind badges */}
+                    {git.status.ahead > 0 && (
+                        <span
+                            className="inline-flex items-center gap-0.5 text-[0.65rem] text-green-600 dark:text-green-400"
+                            title={`${git.status.ahead} commit(s) ahead`}
+                        >
+                            <ArrowUp className="size-3" /> {git.status.ahead}
+                        </span>
+                    )}
+                    {git.status.behind > 0 && (
+                        <span
+                            className="inline-flex items-center gap-0.5 text-[0.65rem] text-amber-500 dark:text-amber-400"
+                            title={`${git.status.behind} commit(s) behind`}
+                        >
+                            <ArrowDown className="size-3" /> {git.status.behind}
+                        </span>
+                    )}
+
+                    {lastCommitShortHash && (
+                        <TooltipProvider>
+                            <Tooltip>
+                                <TooltipTrigger asChild>
+                                    <span
+                                        className="hidden sm:inline-flex items-center gap-1 min-w-0 text-xs text-muted-foreground cursor-help"
+                                    >
+                                        <GitCommit className="size-3 shrink-0" />
+                                        <span className="truncate">{lastCommitShortHash}</span>
+                                    </span>
+                                </TooltipTrigger>
+                                <TooltipContent side="bottom">
+                                    <p className="max-w-xs break-words">{lastCommitTooltip}</p>
+                                </TooltipContent>
+                            </Tooltip>
+                        </TooltipProvider>
+                    )}
+
+                    {/* Sync dropdown */}
+                    <div className="relative" ref={syncMenuRef}>
+                        <button
+                            type="button"
+                            onClick={() => setSyncMenuOpen((o) => !o)}
+                            disabled={isMutating}
+                            className={cn(
+                                "inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium transition-colors",
+                                "bg-muted/60 hover:bg-muted text-foreground",
+                                git.operationInProgress && "opacity-70",
+                            )}
+                            title="Sync options"
+                        >
+                            <MoreHorizontal className="size-3" /> Sync
+                        </button>
+                        {syncMenuOpen && ReactDOM.createPortal(
+                            <div
+                                ref={syncMenuContentRef}
+                                style={(() => {
+                                    const rect = syncMenuRef.current?.getBoundingClientRect();
+                                    const width = 192;
+                                    const padding = 8;
+                                    const viewportW = typeof window !== "undefined" ? window.innerWidth : width + padding * 2;
+                                    const left = rect
+                                        ? Math.max(padding, Math.min(rect.left, viewportW - width - padding))
+                                        : padding;
+                                    return {
+                                        position: "fixed",
+                                        top: rect ? rect.bottom : 0,
+                                        left,
+                                        zIndex: 100,
+                                        minWidth: width,
+                                    };
+                                })()}
+                                className="mt-1 w-48 bg-popover border border-border rounded-md shadow-lg text-sm"
+                            >
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        setSyncMenuOpen(false);
+                                        git.pull(false);
+                                    }}
+                                    className="w-full text-left px-3 py-2 hover:bg-accent/50 disabled:opacity-50"
+                                    disabled={git.operationInProgress !== null}
+                                >
+                                    <div className="flex items-center gap-2"><Download className="size-3" /> Pull (fast-forward)</div>
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        setSyncMenuOpen(false);
+                                        git.pull(true);
+                                    }}
+                                    className="w-full text-left px-3 py-2 hover:bg-accent/50 disabled:opacity-50"
+                                    disabled={git.operationInProgress !== null}
+                                >
+                                    <div className="flex items-center gap-2"><Download className="size-3" /> Pull --rebase</div>
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        setSyncMenuOpen(false);
+                                        handleMerge();
+                                    }}
+                                    className="w-full text-left px-3 py-2 hover:bg-accent/50 disabled:opacity-50"
+                                    disabled={git.operationInProgress !== null}
+                                >
+                                    <div className="flex items-center gap-2"><GitMerge className="size-3" /> Merge into current…</div>
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        setSyncMenuOpen(false);
+                                        handleRebase();
+                                    }}
+                                    className="w-full text-left px-3 py-2 hover:bg-accent/50 disabled:opacity-50"
+                                    disabled={git.operationInProgress !== null}
+                                >
+                                    <div className="flex items-center gap-2"><ArrowRightLeft className="size-3" /> Rebase onto…</div>
+                                </button>
+                            </div>,
+                            document.body,
+                        )}
+                    </div>
+
+                    {/* Pull button */}
+                    {showPull && (
+                        <button
+                            type="button"
+                            onClick={() => git.pull()}
+                            disabled={isMutating}
+                            className={cn(
+                                "inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium transition-colors",
+                                "bg-amber-500/20 text-amber-600 dark:text-amber-400 hover:bg-amber-500/30",
+                                "disabled:opacity-50",
+                            )}
+                            title="Pull from remote"
+                        >
+                            {isPulling ? <Loader2 className="size-3 animate-spin" /> : <Download className="size-3" />}
+                            Pull
+                        </button>
+                    )}
+
+                    {/* Push button */}
+                    {showPush && (
+                        <button
+                            type="button"
+                            onClick={() => git.push(!git.status!.hasUpstream)}
+                            disabled={isMutating}
+                            className={cn(
+                                "inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium transition-colors",
+                                "bg-green-600/20 text-green-600 dark:text-green-400 hover:bg-green-600/30",
+                                "disabled:opacity-50",
+                            )}
+                            title={git.status!.hasUpstream ? "Push to remote" : "Push & set upstream"}
+                        >
+                            {isPushing ? <Loader2 className="size-3 animate-spin" /> : <Upload className="size-3" />}
+                            {git.status!.hasUpstream ? "Push" : "Publish"}
+                        </button>
+                    )}
+
+                    {/* Refresh */}
                     <button
                         type="button"
-                        onClick={() => git.pull()}
-                        disabled={isMutating}
-                        className={cn(
-                            "inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium transition-colors",
-                            "bg-amber-500/20 text-amber-600 dark:text-amber-400 hover:bg-amber-500/30",
-                            "disabled:opacity-50",
-                        )}
-                        title="Pull from remote"
+                        onClick={git.fetchStatus}
+                        disabled={git.loading}
+                        className="text-muted-foreground hover:text-foreground transition-colors p-1"
+                        title="Refresh git status"
+                        aria-label="Refresh git status"
                     >
-                        {isPulling ? <Loader2 className="size-3 animate-spin" /> : <Download className="size-3" />}
-                        Pull
+                        <RefreshCw className={cn("size-3.5", git.loading && "animate-spin")} />
                     </button>
-                )}
-
-                {/* Push button */}
-                {showPush && (
-                    <button
-                        type="button"
-                        onClick={() => git.push(!git.status!.hasUpstream)}
-                        disabled={isMutating}
-                        className={cn(
-                            "inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium transition-colors",
-                            "bg-green-600/20 text-green-600 dark:text-green-400 hover:bg-green-600/30",
-                            "disabled:opacity-50",
-                        )}
-                        title={git.status!.hasUpstream ? "Push to remote" : "Push & set upstream"}
-                    >
-                        {isPushing ? <Loader2 className="size-3 animate-spin" /> : <Upload className="size-3" />}
-                        {git.status!.hasUpstream ? "Push" : "Publish"}
-                    </button>
-                )}
-
-                {/* Refresh */}
-                <button
-                    type="button"
-                    onClick={git.fetchStatus}
-                    disabled={git.loading}
-                    className="text-muted-foreground hover:text-foreground transition-colors p-1"
-                    title="Refresh git status"
-                    aria-label="Refresh git status"
-                >
-                    <RefreshCw className={cn("size-3.5", git.loading && "animate-spin")} />
-                </button>
+                </div>
             </div>
 
             {/* Toast notification */}
@@ -410,79 +492,134 @@ export function GitPanel({ cwd, className }: GitPanelProps) {
             )}
 
             {/* Conflict resolution bar */}
-            {git.lastOperationResult && !git.lastOperationResult.ok && git.lastOperationResult.reason === "conflict" && (
-                git.operationInProgress === null
-            ) && (
-                <div className="flex items-center gap-2 px-3 py-2 text-xs border-b bg-amber-500/10 border-amber-500/20 text-amber-600 dark:text-amber-400"
-                >
-                    <AlertCircle className="size-3 shrink-0" />
-                    <span className="truncate flex-1">Conflicts detected. Resolve them to continue.</span>
-                    {git.lastConflictType === "git_merge_result" ? (
-                        <button
-                            type="button"
-                            onClick={() => git.mergeAbort()}
-                            disabled={git.operationInProgress !== null}
-                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-red-500/20 text-red-500 dark:text-red-400 hover:bg-red-500/30 disabled:opacity-50"
-                            title="Abort the merge"
-                        >
-                            <StopCircle className="size-3" /> Abort Merge
-                        </button>
-                    ) : (
-                        <>
+            {(() => {
+                const r = git.lastOperationResult;
+                const isConflict =
+                    r && git.operationInProgress === null
+                    && ((r.reason === "conflict")
+                        || (r.conflict === true && git.lastConflictType === "git_stash_result"));
+                if (!isConflict) return null;
+                const isStashConflict = git.lastConflictType === "git_stash_result";
+                const isMergeConflict = git.lastConflictType === "git_merge_result";
+                return (
+                    <div className="flex flex-col sm:flex-row items-start sm:items-center gap-2 px-3 py-2 text-xs border-b bg-amber-500/10 border-amber-500/20 text-amber-600 dark:text-amber-400"
+                    >
+                        <div className="flex items-center gap-2 min-w-0 w-full">
+                            <AlertCircle className="size-3 shrink-0" />
+                            <span className="truncate flex-1">
+                                {isStashConflict
+                                    ? "Stash apply hit conflicts. Resolve them in the working tree; the stash entry is preserved."
+                                    : "Conflicts detected. Resolve them to continue."}
+                            </span>
+                        </div>
+                        {isMergeConflict ? (
                             <button
                                 type="button"
-                                onClick={() => git.rebaseContinue()}
+                                onClick={() => git.mergeAbort()}
                                 disabled={git.operationInProgress !== null}
-                                className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-green-600/20 text-green-600 dark:text-green-400 hover:bg-green-600/30 disabled:opacity-50"
-                                title="Continue rebase after resolving conflicts"
+                                className="inline-flex items-center justify-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-red-500/20 text-red-500 dark:text-red-400 hover:bg-red-500/30 disabled:opacity-50 w-full sm:w-auto"
+                                title="Abort the merge"
                             >
-                                <Play className="size-3" /> Continue
+                                <StopCircle className="size-3" /> Abort Merge
                             </button>
-                            <button
-                                type="button"
-                                onClick={() => git.rebaseAbort()}
-                                disabled={git.operationInProgress !== null}
-                                className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-red-500/20 text-red-500 dark:text-red-400 hover:bg-red-500/30 disabled:opacity-50"
-                                title="Abort the rebase"
-                            >
-                                <StopCircle className="size-3" /> Abort
-                            </button>
-                        </>
-                    )}
+                        ) : isStashConflict ? null : (
+                            <div className="flex items-center gap-2 w-full sm:w-auto">
+                                <button
+                                    type="button"
+                                    onClick={() => git.rebaseContinue()}
+                                    disabled={git.operationInProgress !== null}
+                                    className="inline-flex items-center justify-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-green-600/20 text-green-600 dark:text-green-400 hover:bg-green-600/30 disabled:opacity-50 flex-1 sm:flex-initial"
+                                    title="Continue rebase after resolving conflicts"
+                                >
+                                    <Play className="size-3" /> Continue
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => git.rebaseAbort()}
+                                    disabled={git.operationInProgress !== null}
+                                    className="inline-flex items-center justify-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-red-500/20 text-red-500 dark:text-red-400 hover:bg-red-500/30 disabled:opacity-50 flex-1 sm:flex-initial"
+                                    title="Abort the rebase"
+                                >
+                                    <StopCircle className="size-3" /> Abort
+                                </button>
+                            </div>
+                        )}
+                    </div>
+                );
+            })()}
+
+            {/* Tab strip */}
+            <div className="flex items-center gap-0.5 px-1 border-b border-border bg-muted/30 overflow-x-auto min-w-0 [scrollbar-width:thin]">
+                {GIT_TABS.map((t) => (
+                    <button
+                        key={t.id}
+                        type="button"
+                        onClick={() => setActiveTab(t.id)}
+                        className={cn(
+                            "px-2 py-1 text-[0.65rem] sm:px-2.5 sm:py-1.5 sm:text-xs font-medium whitespace-nowrap border-b-2 -mb-px transition-colors shrink-0",
+                            activeTab === t.id
+                                ? "border-primary text-foreground"
+                                : "border-transparent text-muted-foreground hover:text-foreground",
+                        )}
+                    >
+                        {t.label}
+                    </button>
+                ))}
+            </div>
+
+            {/* Optional path filter for history/compare */}
+            {activeTab !== "changes" && activeTab !== "stash" && (
+                <div className="flex items-center gap-1.5 px-2 py-1.5 border-b border-border bg-muted/20 min-w-0">
+                    <span className="text-xs text-muted-foreground shrink-0">Path</span>
+                    <input
+                        type="text"
+                        value={pathFilter}
+                        onChange={(e) => setPathFilter(e.target.value)}
+                        placeholder="optional path/dir"
+                        className={cn(
+                            "min-w-0 flex-1 h-7 rounded border border-input bg-background px-2 text-xs",
+                        )}
+                    />
                 </div>
             )}
 
             {/* Content area */}
-            <div className="flex-1 overflow-auto">
-                {!hasChanges ? (
-                    <div className="flex flex-col items-center justify-center py-8 text-muted-foreground gap-2">
-                        <GitCommit className="size-8 opacity-30" />
-                        <p className="text-sm">Working tree clean</p>
-                    </div>
-                ) : (
-                    <GitStagingArea
-                        changes={git.status.changes}
-                        onViewDiff={viewDiff}
-                        onStage={git.stage}
-                        onStageAll={git.stageAll}
-                        onUnstage={git.unstage}
-                        onUnstageAll={git.unstageAll}
-                        operationInProgress={git.operationInProgress}
-                    />
+            <div className="flex-1 overflow-auto min-h-0">
+                {activeTab === "changes" && (
+                    !hasChanges ? (
+                        <div className="flex flex-col items-center justify-center py-8 text-muted-foreground gap-2">
+                            <GitCommit className="size-8 opacity-30" />
+                            <p className="text-sm">Working tree clean</p>
+                        </div>
+                    ) : (
+                        <GitStagingArea
+                            changes={git.status.changes}
+                            onViewDiff={viewDiff}
+                            onStage={git.stage}
+                            onStageAll={git.stageAll}
+                            onUnstage={git.unstage}
+                            onUnstageAll={git.unstageAll}
+                            operationInProgress={git.operationInProgress}
+                        />
+                    )
                 )}
+                {activeTab === "stash" && <GitStashList cwd={cwd} />}
+                {activeTab === "history" && <GitHistoryView cwd={cwd} path={pathFilter.trim() || undefined} />}
+                {activeTab === "compare" && <GitDiffRevsView cwd={cwd} path={pathFilter.trim() || undefined} />}
             </div>
 
-            {/* Worktrees section */}
-            <GitWorktreeList
-                worktrees={git.worktrees}
-                onOpen={git.fetchWorktrees}
-                onAdd={git.addWorktree}
-                onRemove={git.removeWorktree}
-                operationInProgress={git.operationInProgress}
-            />
+            {/* Worktrees + commit form — only on the Changes tab to keep other views full-height */}
+            {activeTab === "changes" && (
+                <GitWorktreeList
+                    worktrees={git.worktrees}
+                    onOpen={git.fetchWorktrees}
+                    onAdd={git.addWorktree}
+                    onRemove={git.removeWorktree}
+                    operationInProgress={git.operationInProgress}
+                />
+            )}
 
-            {/* Commit form — always visible at bottom when there are changes */}
-            {hasChanges && (
+            {activeTab === "changes" && hasChanges && (
                 <GitCommitForm
                     hasStagedChanges={staged.length > 0}
                     onCommit={git.commit}

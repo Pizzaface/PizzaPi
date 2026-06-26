@@ -61,7 +61,7 @@ export function GitWorktreeList({ worktrees, onOpen, onAdd, onRemove, operationI
                     type="button"
                     onClick={() => { setExpanded(true); onOpen(); }}
                     className={cn(
-                        "flex items-center gap-1.5 w-full px-3 py-1.5 text-xs text-muted-foreground",
+                        "flex items-center gap-1.5 w-full px-3 py-1.5 text-xs text-muted-foreground min-h-9",
                         "hover:text-foreground hover:bg-muted/50 transition-colors",
                     )}
                 >
@@ -75,7 +75,7 @@ export function GitWorktreeList({ worktrees, onOpen, onAdd, onRemove, operationI
                         onClick={handleAdd}
                         disabled={isBusy}
                         className={cn(
-                            "flex items-center gap-1.5 w-full px-3 py-1 text-xs text-muted-foreground/70",
+                            "flex items-center justify-center gap-1.5 w-full px-3 py-1 text-xs text-muted-foreground/70 min-h-9",
                             "hover:text-foreground hover:bg-muted/50 transition-colors disabled:opacity-50 border-t border-border/50",
                         )}
                     >
@@ -103,7 +103,7 @@ export function GitWorktreeList({ worktrees, onOpen, onAdd, onRemove, operationI
                 type="button"
                 onClick={() => setExpanded((v) => !v)}
                 className={cn(
-                    "flex items-center gap-1.5 w-full px-3 py-1.5 text-xs font-medium",
+                    "flex items-center gap-1.5 w-full px-3 py-1.5 text-xs font-medium min-h-9",
                     "text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors",
                 )}
             >
@@ -170,34 +170,36 @@ function WorktreeRow({ worktree: wt, onRemove, isBusy }: { worktree: GitWorktree
     return (
         <div
             className={cn(
-                "flex items-center gap-2 px-3 py-1 mx-1 rounded text-xs",
+                "grid grid-cols-1 md:grid-cols-[1fr_auto_auto] gap-2 px-3 py-2 md:py-1 mx-1 rounded text-xs",
                 "hover:bg-muted/60 transition-colors group",
             )}
             title={wt.path}
             onMouseEnter={() => setShowActions(true)}
             onMouseLeave={() => setShowActions(false)}
         >
-            {/* Branch icon + name */}
-            <GitBranch className="size-3 shrink-0 text-muted-foreground" />
-            <div className="flex flex-col min-w-0 flex-1">
-                <div className="flex items-center gap-1.5">
-                    <span className={cn(
-                        "font-medium truncate",
-                        wt.isMain ? "text-foreground" : "text-foreground/90",
-                    )}>
-                        {wt.isDetached ? `(${wt.shortHash})` : wt.branch}
+            {/* Branch / path */}
+            <div className="flex items-center gap-2 min-w-0">
+                <GitBranch className="size-3 shrink-0 text-muted-foreground" />
+                <div className="flex flex-col min-w-0">
+                    <div className="flex items-center gap-1.5">
+                        <span className={cn(
+                            "font-medium truncate",
+                            wt.isMain ? "text-foreground" : "text-foreground/90",
+                        )}>
+                            {wt.isDetached ? `(${wt.shortHash})` : wt.branch}
+                        </span>
+                        {wt.isMain && (
+                            <Star className="size-2.5 shrink-0 text-amber-500 dark:text-amber-400 fill-current" />
+                        )}
+                    </div>
+                    <span className="text-[0.6rem] text-muted-foreground/70 truncate">
+                        {wt.isMain ? "(main worktree)" : wt.displayPath}
                     </span>
-                    {wt.isMain && (
-                        <Star className="size-2.5 shrink-0 text-amber-500 dark:text-amber-400 fill-current" />
-                    )}
                 </div>
-                <span className="text-[0.6rem] text-muted-foreground/70 truncate">
-                    {wt.isMain ? "(main worktree)" : wt.displayPath}
-                </span>
             </div>
 
             {/* Badges: changes, ahead, behind */}
-            <div className="flex items-center gap-1.5 shrink-0">
+            <div className="flex items-center gap-1.5 min-w-0 md:justify-end">
                 {wt.changeCount > 0 && (
                     <span
                         className="inline-flex items-center gap-0.5 text-[0.6rem] text-amber-500 dark:text-amber-400"
@@ -232,12 +234,12 @@ function WorktreeRow({ worktree: wt, onRemove, isBusy }: { worktree: GitWorktree
 
             {/* Actions: remove */}
             {showActions && !wt.isMain && onRemove && (
-                <div className="flex items-center gap-1 shrink-0">
+                <div className="flex items-center gap-1 min-w-0 md:justify-end opacity-100 transition-opacity md:opacity-0 md:group-hover:opacity-100">
                     <button
                         type="button"
                         onClick={handleRemove}
                         disabled={isBusy}
-                        className="p-0.5 rounded text-muted-foreground/60 hover:text-red-500 dark:hover:text-red-400 transition-colors disabled:opacity-50"
+                        className="inline-flex items-center justify-center min-h-9 p-0.5 rounded text-muted-foreground/60 hover:text-red-500 dark:hover:text-red-400 transition-colors disabled:opacity-50"
                         title={`Remove worktree ${wt.branch}`}
                     >
                         <Trash2 className="size-3" />

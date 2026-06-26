@@ -2,12 +2,13 @@ import * as React from "react";
 import { Spinner } from "@/components/ui/spinner";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
-import { ChevronLeft, Code, Eye } from "lucide-react";
+import { ChevronLeft, Code, Eye, GitCommit } from "lucide-react";
 import { cjk } from "@streamdown/cjk";
 import { code } from "@streamdown/code";
 import { math } from "@streamdown/math";
 import { mermaid } from "@streamdown/mermaid";
 import { Streamdown, defaultRehypePlugins } from "streamdown";
+import { GitBlameView } from "@/components/git/GitBlameView";
 import { getFileIcon, formatSize } from "./utils";
 
 // ── Markdown Viewer ───────────────────────────────────────────────────────────
@@ -21,10 +22,16 @@ const safeRehypePlugins = [...Object.values(defaultRehypePlugins)] as any;
 export function MarkdownViewer({
   runnerId,
   filePath,
+  blamePath,
+  cwd,
+  canBlame,
   onClose,
 }: {
   runnerId: string;
   filePath: string;
+  blamePath: string;
+  cwd: string;
+  canBlame: boolean;
   onClose: () => void;
 }) {
   const [content, setContent] = React.useState<string | null>(null);
@@ -33,6 +40,12 @@ export function MarkdownViewer({
   const [truncated, setTruncated] = React.useState(false);
   const [fileSize, setFileSize] = React.useState<number | undefined>();
   const [mode, setMode] = React.useState<"preview" | "raw">("preview");
+  const [showBlame, setShowBlame] = React.useState(false);
+
+  // Reset blame view when the open file changes.
+  React.useEffect(() => {
+    setShowBlame(false);
+  }, [filePath]);
 
   React.useEffect(() => {
     let cancelled = false;
@@ -94,6 +107,23 @@ export function MarkdownViewer({
           <span className="text-[0.6rem] text-muted-foreground tabular-nums flex-shrink-0">
             {formatSize(fileSize)}
           </span>
+        )}
+        {canBlame && (
+          <button
+            type="button"
+            onClick={() => setShowBlame((s) => !s)}
+            className={cn(
+              "ml-1 inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium transition-colors",
+              showBlame
+                ? "bg-primary text-primary-foreground"
+                : "bg-muted/60 hover:bg-muted text-foreground"
+            )}
+            title="Toggle blame"
+            aria-pressed={showBlame}
+          >
+            <GitCommit className="size-3" />
+            Blame
+          </button>
         )}
       </div>
 
@@ -161,7 +191,9 @@ export function MarkdownViewer({
                 File truncated (showing first 512 KB of {formatSize(fileSize)})
               </div>
             )}
-            {mode === "preview" ? (
+            {showBlame ? (
+              <GitBlameView cwd={cwd} path={blamePath} />
+            ) : mode === "preview" ? (
               <div className="p-4 prose prose-sm dark:prose-invert max-w-none">
                 <Streamdown
                   className="size-full break-words [&>*:first-child]:mt-0 [&>*:last-child]:mb-0"

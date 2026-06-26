@@ -1,17 +1,25 @@
 import * as React from "react";
 import { Spinner } from "@/components/ui/spinner";
-import { ChevronLeft } from "lucide-react";
-import { getFileIcon, formatSize } from "./utils";
+import { ChevronLeft, GitCommit } from "lucide-react";
+import { cn } from "@/lib/utils";
+import { GitBlameView } from "@/components/git/GitBlameView";
+import { getFileIcon, formatSize, repoRelativePath } from "./utils";
 
 // ── File Viewer ───────────────────────────────────────────────────────────────
 
 export function FileViewer({
   runnerId,
   filePath,
+  blamePath,
+  cwd,
+  canBlame,
   onClose,
 }: {
   runnerId: string;
   filePath: string;
+  blamePath: string;
+  cwd: string;
+  canBlame: boolean;
   onClose: () => void;
 }) {
   const [content, setContent] = React.useState<string | null>(null);
@@ -19,6 +27,12 @@ export function FileViewer({
   const [error, setError] = React.useState<string | null>(null);
   const [truncated, setTruncated] = React.useState(false);
   const [fileSize, setFileSize] = React.useState<number | undefined>();
+  const [showBlame, setShowBlame] = React.useState(false);
+
+  // Reset blame view when the open file changes.
+  React.useEffect(() => {
+    setShowBlame(false);
+  }, [filePath]);
 
   React.useEffect(() => {
     let cancelled = false;
@@ -69,27 +83,50 @@ export function FileViewer({
         {fileSize !== undefined && (
           <span className="text-[0.6rem] text-muted-foreground tabular-nums">{formatSize(fileSize)}</span>
         )}
+        {canBlame && (
+          <button
+            type="button"
+            onClick={() => setShowBlame((s) => !s)}
+            className={cn(
+              "ml-1 inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium transition-colors",
+              showBlame
+                ? "bg-primary text-primary-foreground"
+                : "bg-muted/60 hover:bg-muted text-foreground"
+            )}
+            title="Toggle blame"
+            aria-pressed={showBlame}
+          >
+            <GitCommit className="size-3" />
+            Blame
+          </button>
+        )}
       </div>
       <div className="flex-1 overflow-auto">
-        {loading && (
-          <div className="flex items-center justify-center p-8">
-            <Spinner className="size-5" />
-          </div>
-        )}
-        {error && (
-          <div className="p-4 text-sm text-red-400">{error}</div>
-        )}
-        {content !== null && (
-          <div className="relative">
-            {truncated && (
-              <div className="sticky top-0 z-10 bg-amber-500/10 border-b border-amber-500/20 px-3 py-1 text-xs text-amber-600 dark:text-amber-400">
-                File truncated (showing first 512 KB of {formatSize(fileSize)})
+        {showBlame ? (
+          <GitBlameView cwd={cwd} path={blamePath} />
+        ) : (
+          <>
+            {loading && (
+              <div className="flex items-center justify-center p-8">
+                <Spinner className="size-5" />
               </div>
             )}
-            <pre className="p-3 text-xs font-mono text-foreground/80 leading-relaxed whitespace-pre-wrap break-all">
-              {content}
-            </pre>
-          </div>
+            {error && (
+              <div className="p-4 text-sm text-red-400">{error}</div>
+            )}
+            {content !== null && (
+              <div className="relative">
+                {truncated && (
+                  <div className="sticky top-0 z-10 bg-amber-500/10 border-b border-amber-500/20 px-3 py-1 text-xs text-amber-600 dark:text-amber-400">
+                    File truncated (showing first 512 KB of {formatSize(fileSize)})
+                  </div>
+                )}
+                <pre className="p-3 text-xs font-mono text-foreground/80 leading-relaxed whitespace-pre-wrap break-all">
+                  {content}
+                </pre>
+              </div>
+            )}
+          </>
         )}
       </div>
     </div>
