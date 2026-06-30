@@ -225,9 +225,161 @@ function isLoopbackIp(rawIp: string): boolean {
 }
 
 /**
+ * Parse an IPv4 address into a 4-byte Uint8Array. Returns null if invalid.
+ */
+function parseIpv4(ip: string): Uint8Array | null {
+    const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(ip);
+    if (!m) return null;
+    const out = new Uint8Array(4);
+    for (let i = 0; i < 4; i++) {
+        const n = Number(m[i + 1]);
+        if (n > 255) return null;
+        out[i] = n;
+    }
+    return out;
+}
+
+/**
+ * Parse an IPv6 address (including :: compression and IPv4-mapped form like ::ffff:1.2.3.4)
+ * into a 16-byte Uint8Array. Returns null if invalid.
+ */
+function parseIpv6(ip: string): Uint8Array | null {
+    // IPv4-embedded form (e.g. ::ffff:1.2.3.4). Convert the dotted-quad tail to two
+    // hex groups so the rest of the parser doesn't need a special case.
+    if (ip.includes(".")) {
+        const lastColon = ip.lastIndexOf(":");
+        if (lastColon === -1) return null;
+        const v4 = parseIpv4(ip.slice(lastColon + 1));
+        if (!v4) return null;
+        const g1 = (((v4[0] << 8) | v4[1]) >>> 0).toString(16);
+        const g2 = (((v4[2] << 8) | v4[3]) >>> 0).toString(16);
+        ip = ip.slice(0, lastColon + 1) + g1 + ":" + g2;
+    }
+    const halves = ip.split("::");
+    if (halves.length > 2) return null;
+    const left = halves[0] ? halves[0].split(":") : [];
+    const right = halves.length === 2 && halves[1] ? halves[1].split(":") : [];
+    const fillCount = 8 - left.length - right.length;
+    if (halves.length === 1) {
+        if (left.length !== 8) return null;
+    } else {
+        if (fillCount < 0) return null;
+    }
+    const groups = halves.length === 1
+        ? left
+        : [...left, ...Array(fillCount).fill("0"), ...right];
+    const out = new Uint8Array(16);
+    for (let i = 0; i < 8; i++) {
+        const g = groups[i];
+        if (!g || g.length > 4 || !/^[0-9a-fA-F]+$/.test(g)) return null;
+        const n = parseInt(g, 16);
+        out[i * 2] = (n >> 8) & 0xff;
+        out[i * 2 + 1] = n & 0xff;
+    }
+    return out;
+}
+
+interface ParsedCidr {
+    family: 4 | 6;
+    bytes: Uint8Array;
+    prefix: number;
+}
+
+function parseCidr(cidr: string): ParsedCidr | null {
+    const s = cidr.trim();
+    if (!s) return null;
+    const slash = s.indexOf("/");
+    const ipStr = slash === -1 ? s : s.slice(0, slash);
+    const v4 = parseIpv4(ipStr);
+    if (v4) {
+        const prefix = slash === -1 ? 32 : Number(s.slice(slash + 1));
+        if (!Number.isInteger(prefix) || prefix < 0 || prefix > 32) return null;
+        return { family: 4, bytes: v4, prefix };
+    }
+    const v6 = parseIpv6(ipStr);
+    if (v6) {
+        const prefix = slash === -1 ? 128 : Number(s.slice(slash + 1));
+        if (!Number.isInteger(prefix) || prefix < 0 || prefix > 128) return null;
+        return { family: 6, bytes: v6, prefix };
+    }
+    return null;
+}
+
+function matchPrefix(a: Uint8Array, b: Uint8Array, prefix: number): boolean {
+    const fullBytes = prefix >> 3;
+    const remBits = prefix & 7;
+    for (let i = 0; i < fullBytes; i++) {
+        if (a[i] !== b[i]) return false;
+    }
+    if (remBits === 0) return true;
+    const mask = (0xff << (8 - remBits)) & 0xff;
+    return (a[fullBytes] & mask) === (b[fullBytes] & mask);
+}
+
+// Cache parsed CIDRs keyed on the raw env string so we re-parse only when the
+// env var changes (which in practice means at server start, but tests mutate it).
+let _trustedProxyCidrCache: { raw: string | undefined; parsed: ParsedCidr[] } | null = null;
+let _warnedInvalidCidrs = new Set<string>();
+
+/**
+ * Parse PIZZAPI_TRUSTED_PROXY_CIDRS — a comma-separated list of CIDR ranges
+ * (IPv4 or IPv6) whose peers are trusted to set X-Forwarded-For.
+ *
+ * Invalid entries are skipped and logged once. Returns an empty array when
+ * the env var is unset or empty.
+ */
+function getTrustedProxyCidrs(): ParsedCidr[] {
+    const raw = process.env.PIZZAPI_TRUSTED_PROXY_CIDRS;
+    if (_trustedProxyCidrCache && _trustedProxyCidrCache.raw === raw) {
+        return _trustedProxyCidrCache.parsed;
+    }
+    const parsed: ParsedCidr[] = [];
+    if (raw) {
+        for (const part of raw.split(",")) {
+            const trimmed = part.trim();
+            if (!trimmed) continue;
+            const cidr = parseCidr(trimmed);
+            if (cidr) {
+                parsed.push(cidr);
+            } else if (!_warnedInvalidCidrs.has(trimmed)) {
+                _warnedInvalidCidrs.add(trimmed);
+                console.warn(`[security] Ignoring invalid CIDR in PIZZAPI_TRUSTED_PROXY_CIDRS: ${trimmed}`);
+            }
+        }
+    }
+    _trustedProxyCidrCache = { raw, parsed };
+    return parsed;
+}
+
+/**
+ * Returns true if the given peer IP is in PIZZAPI_TRUSTED_PROXY_CIDRS.
+ * Handles IPv4-mapped IPv6 (::ffff:1.2.3.4) by normalizing first.
+ */
+function isTrustedProxyByCidr(rawIp: string): boolean {
+    const cidrs = getTrustedProxyCidrs();
+    if (cidrs.length === 0) return false;
+    const ip = normalizeIp(rawIp);
+    const v4 = parseIpv4(ip);
+    const bytes = v4 ?? parseIpv6(ip);
+    if (!bytes) return false;
+    const family: 4 | 6 = v4 ? 4 : 6;
+    for (const cidr of cidrs) {
+        if (cidr.family !== family) continue;
+        if (matchPrefix(bytes, cidr.bytes, cidr.prefix)) return true;
+    }
+    return false;
+}
+
+// Test-only: reset CIDR cache so tests can mutate the env var between cases.
+export function _resetTrustedProxyCidrCacheForTests(): void {
+    _trustedProxyCidrCache = null;
+    _warnedInvalidCidrs = new Set();
+}
+
+/**
  * Check if an IP address is loopback or a private/internal range (RFC 1918 / RFC 4193).
- * Used when PIZZAPI_TRUST_PROXY=true to validate that XFF is only trusted from
- * peers that could plausibly be a reverse proxy (not a direct public-internet client).
+ * Used when PIZZAPI_TRUST_PROXY=true (without a CIDR allowlist) to validate that XFF
+ * is only trusted from peers that could plausibly be a reverse proxy.
  *
  * This covers:
  *   - Loopback: 127.x / ::1
@@ -263,37 +415,37 @@ function isPrivateOrLoopbackIp(rawIp: string): boolean {
  * client IP. Only loopback is auto-detected — broader private ranges are not
  * trusted because the server may be directly accessible on the LAN.
  *
- * The `PIZZAPI_TRUST_PROXY` env var can explicitly enable/disable proxy mode:
- * - Set to "true" for any proxy setup, including cloud load balancers with public IPs.
- *   XFF is trusted unconditionally when the operator explicitly opts in. This is the
- *   right setting for cloud load balancers where the peer IP is a public address.
- * - Set to "false" to disable proxy detection entirely (overrides auto-detection)
+ * Trust resolution (highest precedence first):
+ * - `PIZZAPI_TRUST_PROXY=false`: never trust XFF, even from loopback. Overrides everything.
+ * - `PIZZAPI_TRUSTED_PROXY_CIDRS` set: trust XFF only when the peer IP falls inside one of
+ *   the listed CIDR ranges (loopback is always also trusted). This is the recommended
+ *   setting for cloud load balancers (public peer IPs), shared LANs/VPCs, and any
+ *   deployment where the proxy's IP is known and stable.
+ * - `PIZZAPI_TRUST_PROXY=true`: trust XFF from any loopback or RFC1918/ULA private peer.
+ *   Convenience setting for single-tenant Docker Compose deployments. Do NOT use on
+ *   shared LANs/VPCs where untrusted hosts share the private network — they can spoof.
+ * - unset (default): auto-detect — trust XFF only from a loopback peer.
  */
 export function getClientIp(req: Request): string {
     const clientIp = req.headers.get("x-pizzapi-client-ip") || "unknown";
-    
-    // PIZZAPI_TRUST_PROXY is a three-state toggle:
-    //   "true"  → trust x-forwarded-for if peer is private/loopback.
-    //             Use this when the operator has explicitly configured a reverse proxy
-    //             on a private network (like a Docker bridge). Prevents spoofing from
-    //             direct public clients. For cloud load balancers with public IPs, CIDR
-    //             support (e.g. PIZZAPI_TRUST_PROXY=10.0.0.0/8,172.16.0.0/12) could be
-    //             added in the future.
-    //   "false" → never trust x-forwarded-for, even for loopback (disables auto-detection)
-    //   unset   → auto-detect: trust x-forwarded-for only if directly connected to loopback
+
     const envTrustProxy = process.env.PIZZAPI_TRUST_PROXY?.toLowerCase();
+    const cidrs = getTrustedProxyCidrs();
     let trustProxy: boolean;
     if (envTrustProxy === "false") {
-        // Explicitly disabled — never trust XFF.
+        // Explicit kill switch — never trust XFF.
         trustProxy = false;
+    } else if (cidrs.length > 0) {
+        // Explicit allowlist — trust XFF iff peer is loopback or in an allowed CIDR.
+        // Loopback is always safe to trust and saves operators from having to enumerate it.
+        trustProxy = clientIp !== "unknown"
+            && (isLoopbackIp(clientIp) || isTrustedProxyByCidr(clientIp));
     } else if (envTrustProxy === "true") {
-        // Explicitly enabled — trust XFF from loopback or private ranges.
-        // Gating on isPrivateOrLoopbackIp prevents IP spoofing by direct public clients
-        // when the proxy setting is enabled.
+        // Legacy opt-in: trust XFF from any private/loopback peer. Suitable for
+        // single-tenant Docker Compose but NOT for shared LANs/VPCs (use CIDR allowlist there).
         trustProxy = clientIp !== "unknown" && isPrivateOrLoopbackIp(clientIp);
     } else {
         // Auto-detect (default) — only trust XFF from loopback peers.
-        // Private ranges are NOT auto-trusted since the server may be LAN-accessible.
         trustProxy = clientIp !== "unknown" && isLoopbackIp(clientIp);
     }
 
