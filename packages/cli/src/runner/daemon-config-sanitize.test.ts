@@ -4,6 +4,7 @@ import {
     restoreMaskedServerEntry,
     SENSITIVE_NAME_RE,
     MASK_SENTINEL,
+    findRenamedServerMatch,
 } from "./daemon-config-sanitize.js";
 
 // ── SENSITIVE_NAME_RE ─────────────────────────────────────────────────────────
@@ -301,5 +302,57 @@ describe("restoreMaskedServerEntry", () => {
         const result = restoreMaskedServerEntry(incoming, existing);
         expect((result.env as any).TOKEN).toBe("tok123");
         expect((result.headers as any).Authorization).toBe("Bearer abc");
+    });
+});
+
+
+// ── findRenamedServerMatch ──────────────────────────────────────────────────
+
+describe("findRenamedServerMatch", () => {
+    test("finds a match when command and args are identical and there's exactly one match", () => {
+        const incoming = { name: "new-name", command: "node", args: ["foo.js"], env: { KEY: MASK_SENTINEL } };
+        const deleted = [
+            { name: "old-name", command: "node", args: ["foo.js"], env: { KEY: "secret" } },
+            { name: "other", command: "bun", args: ["bar.js"] }
+        ];
+        const match = findRenamedServerMatch(incoming, deleted);
+        expect(match).toEqual(deleted[0]);
+    });
+
+    test("returns undefined if no sentinel in incoming entry", () => {
+        const incoming = { name: "new-name", command: "node", args: ["foo.js"], env: { KEY: "new-secret" } };
+        const deleted = [
+            { name: "old-name", command: "node", args: ["foo.js"], env: { KEY: "secret" } }
+        ];
+        const match = findRenamedServerMatch(incoming, deleted);
+        expect(match).toBeUndefined();
+    });
+
+    test("returns undefined if args mismatch", () => {
+        const incoming = { name: "new-name", command: "node", args: ["foo.js"], env: { KEY: MASK_SENTINEL } };
+        const deleted = [
+            { name: "old-name", command: "node", args: ["foo.js", "--verbose"], env: { KEY: "secret" } }
+        ];
+        const match = findRenamedServerMatch(incoming, deleted);
+        expect(match).toBeUndefined();
+    });
+
+    test("returns undefined if multiple structural matches found", () => {
+        const incoming = { name: "new-name", command: "node", args: ["foo.js"], env: { KEY: MASK_SENTINEL } };
+        const deleted = [
+            { name: "old-name1", command: "node", args: ["foo.js"], env: { KEY: "secret1" } },
+            { name: "old-name2", command: "node", args: ["foo.js"], env: { KEY: "secret2" } }
+        ];
+        const match = findRenamedServerMatch(incoming, deleted);
+        expect(match).toBeUndefined();
+    });
+
+    test("matches on url for SSE servers", () => {
+        const incoming = { name: "new-sse", url: "http://localhost/sse", env: { KEY: MASK_SENTINEL } };
+        const deleted = [
+            { name: "old-sse", url: "http://localhost/sse", env: { KEY: "secret" } }
+        ];
+        const match = findRenamedServerMatch(incoming, deleted);
+        expect(match).toEqual(deleted[0]);
     });
 });

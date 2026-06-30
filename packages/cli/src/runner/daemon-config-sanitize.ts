@@ -159,3 +159,45 @@ export function restoreMaskedServerEntry(
 
     return merged;
 }
+
+
+/**
+ * Tries to find a unique structural match for a renamed server among deleted servers.
+ * Matches strictly on `command`, `url`, and `args`.
+ */
+export function findRenamedServerMatch(
+    incomingEntry: Record<string, unknown>,
+    deletedEntries: Record<string, unknown>[]
+): Record<string, unknown> | undefined {
+    // Only attempt matching if there's actually a sentinel to resolve
+    let hasSentinel = false;
+    if (incomingEntry.env && typeof incomingEntry.env === "object") {
+        hasSentinel = Object.values(incomingEntry.env).includes(MASK_SENTINEL);
+    }
+    if (!hasSentinel && incomingEntry.headers && typeof incomingEntry.headers === "object") {
+        hasSentinel = Object.values(incomingEntry.headers).includes(MASK_SENTINEL);
+    }
+
+    if (!hasSentinel) {
+        return undefined;
+    }
+
+    const matches = deletedEntries.filter(deleted => {
+        const sameCommand = deleted.command === incomingEntry.command;
+        const sameUrl = deleted.url === incomingEntry.url;
+
+        let sameArgs = false;
+        const delArgs = Array.isArray(deleted.args) ? deleted.args : [];
+        const incArgs = Array.isArray(incomingEntry.args) ? incomingEntry.args : [];
+        if (delArgs.length === incArgs.length) {
+            sameArgs = delArgs.every((val, idx) => val === incArgs[idx]);
+        }
+
+        return sameCommand && sameUrl && sameArgs;
+    });
+
+    if (matches.length === 1) {
+        return matches[0];
+    }
+    return undefined;
+}
