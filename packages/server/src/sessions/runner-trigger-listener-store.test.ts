@@ -31,9 +31,15 @@ const mockRedisClient = {
     }),
     hGet: mock((key: string, field: string) => Promise.resolve(hashes.get(key)?.get(field) ?? null)),
     hGetAll: mock((key: string) => Promise.resolve(Object.fromEntries(hashes.get(key)?.entries() ?? []))),
-    hDel: mock((key: string, field: string) => {
-        const existed = hashes.get(key)?.delete(field) ? 1 : 0;
-        return Promise.resolve(existed);
+    hDel: mock((key: string, fieldOrFields: string | string[]) => {
+        const bucket = hashes.get(key);
+        if (!bucket) return Promise.resolve(0);
+        const fields = Array.isArray(fieldOrFields) ? fieldOrFields : [fieldOrFields];
+        let removed = 0;
+        for (const field of fields) {
+            if (bucket.delete(field)) removed++;
+        }
+        return Promise.resolve(removed);
     }),
 };
 
