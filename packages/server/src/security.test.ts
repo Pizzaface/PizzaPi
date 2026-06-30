@@ -1,5 +1,5 @@
 import { describe, expect, test, beforeAll, afterAll } from "bun:test";
-import { RateLimiter, isValidEmail, isValidPassword, cwdMatchesRoots, getClientIp } from "./security";
+import { RateLimiter, isValidEmail, isValidPassword, cwdMatchesRoots, getClientIp, _resetTrustedProxyCidrCacheForTests } from "./security";
 
 describe("RateLimiter", () => {
     test("allows requests within limit", () => {
@@ -397,11 +397,15 @@ describe("getClientIp", () => {
 
     const originalTrustProxy = process.env.PIZZAPI_TRUST_PROXY;
     const originalProxyDepth = process.env.PIZZAPI_PROXY_DEPTH;
+    const originalTrustedCidrs = process.env.PIZZAPI_TRUSTED_PROXY_CIDRS;
     afterAll(() => {
         if (originalTrustProxy === undefined) delete process.env.PIZZAPI_TRUST_PROXY;
         else process.env.PIZZAPI_TRUST_PROXY = originalTrustProxy;
         if (originalProxyDepth === undefined) delete process.env.PIZZAPI_PROXY_DEPTH;
         else process.env.PIZZAPI_PROXY_DEPTH = originalProxyDepth;
+        if (originalTrustedCidrs === undefined) delete process.env.PIZZAPI_TRUSTED_PROXY_CIDRS;
+        else process.env.PIZZAPI_TRUSTED_PROXY_CIDRS = originalTrustedCidrs;
+        _resetTrustedProxyCidrCacheForTests();
     });
 
     test("returns x-pizzapi-client-ip for direct connections", () => {
@@ -591,17 +595,14 @@ describe("getClientIp", () => {
         expect(getClientIp(req)).toBe("198.51.100.1");
     });
 
-    test("PIZZAPI_TRUST_PROXY=true trusts XFF from public-IP peers (explicit cloud LB opt-in)", () => {
-        // When the operator explicitly sets PIZZAPI_TRUST_PROXY=true they are asserting
-        // that all traffic arrives via a trusted proxy — including public cloud load
-        // balancers whose peer address is a public IP.  The explicit opt-in is the
-        // authorization; no additional peer-IP check is applied.
+    test("PIZZAPI_TRUST_PROXY=true does NOT trust XFF from public-IP peers to prevent spoofing", () => {
         process.env.PIZZAPI_TRUST_PROXY = "true";
         const req = makeReq({
             "x-pizzapi-client-ip": "203.0.113.50",
             "x-forwarded-for": "198.51.100.1",
         });
-        expect(getClientIp(req)).toBe("198.51.100.1");
+        // Returns the public client IP directly, ignoring the spoofed XFF
+        expect(getClientIp(req)).toBe("203.0.113.50");
     });
 
     test("PIZZAPI_TRUST_PROXY=true trusts XFF from 10.x.x.x peers (private Docker/LAN proxy)", () => {
@@ -644,5 +645,157 @@ describe("getClientIp", () => {
         delete process.env.PIZZAPI_TRUST_PROXY;
         const req = makeReq({});
         expect(getClientIp(req)).toBe("unknown");
+    });
+
+    // ---- PIZZAPI_TRUSTED_PROXY_CIDRS ----
+
+    test("TRUSTED_PROXY_CIDRS trusts XFF from a public LB inside the allowlist", () => {
+        delete process.env.PIZZAPI_TRUST_PROXY;
+        process.env.PIZZAPI_TRUSTED_PROXY_CIDRS = "203.0.113.0/24";
+        _resetTrustedProxyCidrCacheForTests();
+        const req = makeReq({
+            "x-pizzapi-client-ip": "203.0.113.50",
+            "x-forwarded-for": "198.51.100.1",
+        });
+        expect(getClientIp(req)).toBe("198.51.100.1");
+        delete process.env.PIZZAPI_TRUSTED_PROXY_CIDRS;
+        _resetTrustedProxyCidrCacheForTests();
+    });
+
+    test("TRUSTED_PROXY_CIDRS rejects XFF from a peer outside the allowlist", () => {
+        delete process.env.PIZZAPI_TRUST_PROXY;
+        process.env.PIZZAPI_TRUSTED_PROXY_CIDRS = "203.0.113.0/24";
+        _resetTrustedProxyCidrCacheForTests();
+        // Public IP not in the allowlist — do not trust XFF.
+        const req = makeReq({
+            "x-pizzapi-client-ip": "198.51.100.99",
+            "x-forwarded-for": "1.2.3.4",
+        });
+        expect(getClientIp(req)).toBe("198.51.100.99");
+        delete process.env.PIZZAPI_TRUSTED_PROXY_CIDRS;
+        _resetTrustedProxyCidrCacheForTests();
+    });
+
+    test("TRUSTED_PROXY_CIDRS rejects untrusted private peer even when set (LAN-spoofing fix)", () => {
+        // The whole point of CIDR allowlists: even a 192.168.x.x peer that's NOT in
+        // the allowlist cannot spoof. This is the regression test for the LAN-spoofing
+        // concern raised in PR #554 review.
+        delete process.env.PIZZAPI_TRUST_PROXY;
+        process.env.PIZZAPI_TRUSTED_PROXY_CIDRS = "10.0.0.0/8"; // only trust the "real" proxy subnet
+        _resetTrustedProxyCidrCacheForTests();
+        const req = makeReq({
+            "x-pizzapi-client-ip": "192.168.1.50", // attacker on the same LAN
+            "x-forwarded-for": "1.2.3.4",          // spoofed
+        });
+        expect(getClientIp(req)).toBe("192.168.1.50");
+        delete process.env.PIZZAPI_TRUSTED_PROXY_CIDRS;
+        _resetTrustedProxyCidrCacheForTests();
+    });
+
+    test("TRUSTED_PROXY_CIDRS still trusts loopback peers", () => {
+        delete process.env.PIZZAPI_TRUST_PROXY;
+        process.env.PIZZAPI_TRUSTED_PROXY_CIDRS = "203.0.113.0/24";
+        _resetTrustedProxyCidrCacheForTests();
+        const req = makeReq({
+            "x-pizzapi-client-ip": "127.0.0.1",
+            "x-forwarded-for": "198.51.100.1",
+        });
+        expect(getClientIp(req)).toBe("198.51.100.1");
+        delete process.env.PIZZAPI_TRUSTED_PROXY_CIDRS;
+        _resetTrustedProxyCidrCacheForTests();
+    });
+
+    test("TRUSTED_PROXY_CIDRS supports multiple CIDRs (comma-separated)", () => {
+        delete process.env.PIZZAPI_TRUST_PROXY;
+        process.env.PIZZAPI_TRUSTED_PROXY_CIDRS = "10.0.0.0/8, 203.0.113.0/24";
+        _resetTrustedProxyCidrCacheForTests();
+        const r1 = makeReq({
+            "x-pizzapi-client-ip": "10.5.6.7",
+            "x-forwarded-for": "198.51.100.1",
+        });
+        expect(getClientIp(r1)).toBe("198.51.100.1");
+        const r2 = makeReq({
+            "x-pizzapi-client-ip": "203.0.113.10",
+            "x-forwarded-for": "198.51.100.2",
+        });
+        expect(getClientIp(r2)).toBe("198.51.100.2");
+        delete process.env.PIZZAPI_TRUSTED_PROXY_CIDRS;
+        _resetTrustedProxyCidrCacheForTests();
+    });
+
+    test("TRUSTED_PROXY_CIDRS supports /32 single-host entries", () => {
+        delete process.env.PIZZAPI_TRUST_PROXY;
+        process.env.PIZZAPI_TRUSTED_PROXY_CIDRS = "203.0.113.50"; // implicit /32
+        _resetTrustedProxyCidrCacheForTests();
+        const ok = makeReq({
+            "x-pizzapi-client-ip": "203.0.113.50",
+            "x-forwarded-for": "198.51.100.1",
+        });
+        expect(getClientIp(ok)).toBe("198.51.100.1");
+        const nope = makeReq({
+            "x-pizzapi-client-ip": "203.0.113.51",
+            "x-forwarded-for": "198.51.100.1",
+        });
+        expect(getClientIp(nope)).toBe("203.0.113.51");
+        delete process.env.PIZZAPI_TRUSTED_PROXY_CIDRS;
+        _resetTrustedProxyCidrCacheForTests();
+    });
+
+    test("TRUSTED_PROXY_CIDRS supports IPv6 CIDR matching", () => {
+        delete process.env.PIZZAPI_TRUST_PROXY;
+        process.env.PIZZAPI_TRUSTED_PROXY_CIDRS = "2001:db8::/32";
+        _resetTrustedProxyCidrCacheForTests();
+        const inRange = makeReq({
+            "x-pizzapi-client-ip": "2001:db8:1::1",
+            "x-forwarded-for": "198.51.100.1",
+        });
+        expect(getClientIp(inRange)).toBe("198.51.100.1");
+        const outOfRange = makeReq({
+            "x-pizzapi-client-ip": "2001:db9::1",
+            "x-forwarded-for": "198.51.100.1",
+        });
+        expect(getClientIp(outOfRange)).toBe("2001:db9::1");
+        delete process.env.PIZZAPI_TRUSTED_PROXY_CIDRS;
+        _resetTrustedProxyCidrCacheForTests();
+    });
+
+    test("TRUSTED_PROXY_CIDRS handles IPv4-mapped IPv6 peers (::ffff:1.2.3.4)", () => {
+        delete process.env.PIZZAPI_TRUST_PROXY;
+        process.env.PIZZAPI_TRUSTED_PROXY_CIDRS = "203.0.113.0/24";
+        _resetTrustedProxyCidrCacheForTests();
+        const req = makeReq({
+            "x-pizzapi-client-ip": "::ffff:203.0.113.50",
+            "x-forwarded-for": "198.51.100.1",
+        });
+        expect(getClientIp(req)).toBe("198.51.100.1");
+        delete process.env.PIZZAPI_TRUSTED_PROXY_CIDRS;
+        _resetTrustedProxyCidrCacheForTests();
+    });
+
+    test("PIZZAPI_TRUST_PROXY=false overrides TRUSTED_PROXY_CIDRS", () => {
+        process.env.PIZZAPI_TRUST_PROXY = "false";
+        process.env.PIZZAPI_TRUSTED_PROXY_CIDRS = "203.0.113.0/24";
+        _resetTrustedProxyCidrCacheForTests();
+        const req = makeReq({
+            "x-pizzapi-client-ip": "203.0.113.50",
+            "x-forwarded-for": "198.51.100.1",
+        });
+        expect(getClientIp(req)).toBe("203.0.113.50");
+        delete process.env.PIZZAPI_TRUST_PROXY;
+        delete process.env.PIZZAPI_TRUSTED_PROXY_CIDRS;
+        _resetTrustedProxyCidrCacheForTests();
+    });
+
+    test("invalid CIDR entries are skipped; valid entries still work", () => {
+        delete process.env.PIZZAPI_TRUST_PROXY;
+        process.env.PIZZAPI_TRUSTED_PROXY_CIDRS = "not-an-ip, 203.0.113.0/24, 999.0.0.0/8";
+        _resetTrustedProxyCidrCacheForTests();
+        const req = makeReq({
+            "x-pizzapi-client-ip": "203.0.113.50",
+            "x-forwarded-for": "198.51.100.1",
+        });
+        expect(getClientIp(req)).toBe("198.51.100.1");
+        delete process.env.PIZZAPI_TRUSTED_PROXY_CIDRS;
+        _resetTrustedProxyCidrCacheForTests();
     });
 });

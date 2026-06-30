@@ -233,15 +233,39 @@ In Docker Compose, **all inter-container traffic goes over a bridge network** (e
 
 ### Non-Loopback Proxies
 
-If your reverse proxy reaches PizzaPi via a **non-loopback address** — including any Docker Compose setup, a Docker overlay network, or a cloud load balancer — set `PIZZAPI_TRUST_PROXY=true`.
+If your reverse proxy reaches PizzaPi via a **non-loopback address** — a Docker Compose bridge, a Docker overlay network, a cloud load balancer, or anything else that isn't `127.0.0.1`/`::1` — you need to tell PizzaPi which peers are trusted to set `X-Forwarded-For`.
 
-The simplest approach is to pass the variable inline — it will be forwarded to the Docker container:
+There are two settings, in order of preference:
+
+#### Preferred: `PIZZAPI_TRUSTED_PROXY_CIDRS` (CIDR allowlist)
+
+A comma-separated list of CIDR ranges (IPv4 or IPv6) whose peers are trusted as proxies. This is the only safe option when:
+
+- The proxy has a **public IP** (cloud load balancers, CDNs).
+- The server shares its private network with **untrusted hosts** (multi-tenant VPC, shared LAN, multi-app Docker bridge) — any of which could otherwise spoof their IP by sending `X-Forwarded-For` directly.
+
+```bash
+# Cloud LB with a fixed CIDR
+PIZZAPI_TRUSTED_PROXY_CIDRS="203.0.113.0/24" pizzapi web
+
+# Single-host LB
+PIZZAPI_TRUSTED_PROXY_CIDRS="203.0.113.50" pizzapi web
+
+# Multiple proxies (mix of IPv4 / IPv6, bare IPs default to /32 or /128)
+PIZZAPI_TRUSTED_PROXY_CIDRS="10.0.0.0/8, 2001:db8::/32, 203.0.113.50" pizzapi web
+```
+
+Loopback (`127.0.0.1`, `::1`) is always trusted in addition to the allowlist — you don't have to enumerate it.
+
+#### Convenience: `PIZZAPI_TRUST_PROXY=true` (private/loopback only)
+
+Trusts `X-Forwarded-For` from **any** loopback or RFC1918/ULA private peer (`10.x`, `172.16–31.x`, `192.168.x`, `fc00::/7`, `fe80::/10`, `169.254.x`). Convenient for single-tenant Docker Compose where you control every container on the bridge network.
 
 ```bash
 PIZZAPI_TRUST_PROXY=true pizzapi web
 ```
 
-Alternatively, add it to `docker/compose.override.yml` and pass **both** compose files explicitly (Docker only auto-merges `compose.override.yml` when you omit `-f`):
+Or in `docker/compose.override.yml` (pass **both** compose files explicitly when using `-f`):
 
 ```yaml
 # docker/compose.override.yml
@@ -255,8 +279,16 @@ services:
 docker compose -f docker/compose.yml -f docker/compose.override.yml up -d
 ```
 
+:::caution[Don't use `PIZZAPI_TRUST_PROXY=true` on shared networks]
+If untrusted hosts share the private network with the PizzaPi server — e.g. multi-tenant VPC, shared corporate LAN, or a Docker bridge with other apps reachable by attackers — those hosts can spoof their IP by sending `X-Forwarded-For` directly. Use `PIZZAPI_TRUSTED_PROXY_CIDRS` instead, scoped to just your proxy's IP.
+:::
+
+:::tip[Precedence]
+`PIZZAPI_TRUST_PROXY=false` disables proxy trust entirely (kill switch). Otherwise, if `PIZZAPI_TRUSTED_PROXY_CIDRS` is set it takes precedence over `PIZZAPI_TRUST_PROXY=true`.
+:::
+
 <Aside type="caution">
-  Only set `PIZZAPI_TRUST_PROXY=true` if you have a reverse proxy in front of PizzaPi. Enabling this without a proxy allows clients to spoof their IP address and bypass rate limiting.
+  Only enable proxy trust if you actually have a reverse proxy in front of PizzaPi. Enabling without a proxy lets clients spoof their IP and bypass rate limiting.
 </Aside>
 
 ### Multi-Proxy Chains
