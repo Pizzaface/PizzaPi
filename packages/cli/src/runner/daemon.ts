@@ -2026,13 +2026,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                         // substitutes the original on-disk secret for each key still carrying the
                         // sentinel.
                         //
-                        // TODO(P2): Rename edge case -- if an MCP server is renamed in the UI
-                        // before saving, the masked "***" values can't be matched to the old
-                        // on-disk entry (key lookup by new name finds no existing server).
-                        // Those entries will be written as literal "***", which the user will
-                        // notice as obviously broken credentials.  A full fix requires tracking
-                        // server identity across renames (e.g. a stable ID field or a diff
-                        // protocol).  For now the failure is visible and recoverable by the user.
+
                         const existingMcpServers = ((existing as any).mcpServers ?? {}) as Record<string, any>;
                         const mergedServers: Record<string, any> = {};
                         for (const [name, entry] of Object.entries(servers)) {
@@ -2051,9 +2045,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                         // before writing to disk.  We look up each server by its `name` field in
                         // the on-disk array so we can restore the original secret.
                         //
-                        // TODO(P2): Same rename edge case as mcpServers — if a server's name is
-                        // changed in the UI the lookup by name will find nothing and the sentinel
-                        // will be written as-is.  Visible and recoverable by the user.
+
                         const incomingMcp = (value ?? {}) as { servers?: any[] };
                         const existingMcp = ((existing as any).mcp ?? {}) as { servers?: any[] };
 
