@@ -9,24 +9,30 @@ const log = createLogger("usage");
 let db: Database | null = null;
 let lastScanAt = 0;
 let scanning = false;
+let _scanPromise: Promise<void> | null = null;
 
-export function initUsage(): void {
+export function initUsage(): Promise<void> {
   db = openUsageDb();
-  // Initial scan in background
-  triggerScan().catch((err) => {
+  // Initial scan in background — returned so callers (e.g. tests) can await it.
+  const scan = triggerScan().catch((err) => {
     log.error("initial scan failed:", err);
   });
+  return scan;
 }
 
 export async function triggerScan(): Promise<void> {
   if (!db || scanning) return;
   scanning = true;
-  try {
-    await scanSessions(db);
-    lastScanAt = Date.now();
-  } finally {
-    scanning = false;
-  }
+  _scanPromise = (async () => {
+    try {
+      await scanSessions(db!);
+      lastScanAt = Date.now();
+    } finally {
+      scanning = false;
+      _scanPromise = null;
+    }
+  })();
+  return _scanPromise;
 }
 
 export function getData(range: UsageRange = "90d"): UsageData | null {
@@ -40,7 +46,15 @@ export function getData(range: UsageRange = "90d"): UsageData | null {
   return getUsageData(db, range);
 }
 
-export function closeUsage(): void {
-  db?.close();
+export async function closeUsage(): Promise<void> {
+  // Set db to null FIRST so concurrent triggerScan/getData bail out
+  // immediately, then await any in-flight scan before closing the handle.
+  const handle = db;
   db = null;
+  if (_scanPromise) {
+    await _scanPromise.catch(() => {});
+  }
+  handle?.close();
+  lastScanAt = 0;
+  scanning = false;
 }
