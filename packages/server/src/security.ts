@@ -273,10 +273,12 @@ export function getClientIp(req: Request): string {
     const clientIp = req.headers.get("x-pizzapi-client-ip") || "unknown";
     
     // PIZZAPI_TRUST_PROXY is a three-state toggle:
-    //   "true"  → trust x-forwarded-for unconditionally, regardless of peer address.
+    //   "true"  → trust x-forwarded-for if peer is private/loopback.
     //             Use this when the operator has explicitly configured a reverse proxy
-    //             (including cloud load balancers with public IPs). The operator's
-    //             explicit opt-in is the authorization — no peer-IP check is applied.
+    //             on a private network (like a Docker bridge). Prevents spoofing from
+    //             direct public clients. For cloud load balancers with public IPs, CIDR
+    //             support (e.g. PIZZAPI_TRUST_PROXY=10.0.0.0/8,172.16.0.0/12) could be
+    //             added in the future.
     //   "false" → never trust x-forwarded-for, even for loopback (disables auto-detection)
     //   unset   → auto-detect: trust x-forwarded-for only if directly connected to loopback
     const envTrustProxy = process.env.PIZZAPI_TRUST_PROXY?.toLowerCase();
@@ -285,11 +287,10 @@ export function getClientIp(req: Request): string {
         // Explicitly disabled — never trust XFF.
         trustProxy = false;
     } else if (envTrustProxy === "true") {
-        // Explicitly enabled — trust XFF unconditionally. The operator's explicit
-        // opt-in is the authorization; no peer-IP check is applied. This supports
-        // cloud load balancers and any other proxy topology where the immediate peer
-        // has a public or non-loopback address.
-        trustProxy = clientIp !== "unknown";
+        // Explicitly enabled — trust XFF from loopback or private ranges.
+        // Gating on isPrivateOrLoopbackIp prevents IP spoofing by direct public clients
+        // when the proxy setting is enabled.
+        trustProxy = clientIp !== "unknown" && isPrivateOrLoopbackIp(clientIp);
     } else {
         // Auto-detect (default) — only trust XFF from loopback peers.
         // Private ranges are NOT auto-trusted since the server may be LAN-accessible.

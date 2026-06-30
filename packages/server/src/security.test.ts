@@ -591,17 +591,14 @@ describe("getClientIp", () => {
         expect(getClientIp(req)).toBe("198.51.100.1");
     });
 
-    test("PIZZAPI_TRUST_PROXY=true trusts XFF from public-IP peers (explicit cloud LB opt-in)", () => {
-        // When the operator explicitly sets PIZZAPI_TRUST_PROXY=true they are asserting
-        // that all traffic arrives via a trusted proxy — including public cloud load
-        // balancers whose peer address is a public IP.  The explicit opt-in is the
-        // authorization; no additional peer-IP check is applied.
+    test("PIZZAPI_TRUST_PROXY=true does NOT trust XFF from public-IP peers to prevent spoofing", () => {
         process.env.PIZZAPI_TRUST_PROXY = "true";
         const req = makeReq({
             "x-pizzapi-client-ip": "203.0.113.50",
             "x-forwarded-for": "198.51.100.1",
         });
-        expect(getClientIp(req)).toBe("198.51.100.1");
+        // Returns the public client IP directly, ignoring the spoofed XFF
+        expect(getClientIp(req)).toBe("203.0.113.50");
     });
 
     test("PIZZAPI_TRUST_PROXY=true trusts XFF from 10.x.x.x peers (private Docker/LAN proxy)", () => {
