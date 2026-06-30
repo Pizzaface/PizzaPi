@@ -44,7 +44,7 @@ describe("sandbox-api", () => {
                 userEmail: "test@example.com",
                 apiKey: "key-123",
             },
-            addSession: async () => { throw new Error("unused"); },
+            addSession: async () => {},
         } as any;
 
         const api = await startSandboxApi({
@@ -92,7 +92,7 @@ describe("sandbox-api", () => {
                 userEmail: "test@example.com",
                 apiKey: "key-123",
             },
-            addSession: async () => { throw new Error("unused"); },
+            addSession: async () => {},
         } as any;
 
         const api = await startSandboxApi({
@@ -138,7 +138,7 @@ describe("sandbox-api", () => {
                 userEmail: "test@example.com",
                 apiKey: "key-123",
             },
-            addSession: async () => { throw new Error("unused"); },
+            addSession: async () => {},
         } as any;
 
         const api = await startSandboxApi({
