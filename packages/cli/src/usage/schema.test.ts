@@ -21,6 +21,7 @@ beforeAll(() => {
 });
 
 afterAll(() => {
+  mock.restore();
   if (tempDir) {
     rmSync(tempDir, { recursive: true, force: true });
   }
