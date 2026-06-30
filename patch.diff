@@ -1,0 +1,20 @@
+--- packages/server/src/sessions/runner-trigger-listener-store.ts
++++ packages/server/src/sessions/runner-trigger-listener-store.ts
+@@ -201,13 +201,17 @@
+
+     const entries = await redis.hGetAll(LISTENERS_KEY(runnerId));
+     let removed = 0;
++    const fieldsToDelete: string[] = [];
+     for (const [field, json] of Object.entries(entries)) {
+         const parsed = parseListenerJson(json);
+         if (!parsed) continue;
+         if (parsed.triggerType === listenerIdOrTriggerType) {
+-            removed += await redis.hDel(LISTENERS_KEY(runnerId), field);
++            fieldsToDelete.push(field);
+         }
+     }
++    if (fieldsToDelete.length > 0) {
++        removed = await redis.hDel(LISTENERS_KEY(runnerId), fieldsToDelete);
++    }
+     return removed;
+ }
