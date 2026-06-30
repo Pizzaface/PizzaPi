@@ -1,4 +1,4 @@
-import { describe, test, expect, mock, beforeEach, afterEach } from "bun:test";
+import { describe, test, expect, mock, beforeEach, afterEach, afterAll } from "bun:test";
 import { Database } from "bun:sqlite";
 
 // Mock dependencies
@@ -18,6 +18,9 @@ const mockScanSessions = mock(() => {
 const mockGetUsageData = mock(() => ({ mockData: true }));
 
 mock.module("./schema.js", () => ({ openUsageDb: mockOpenUsageDb }));
+// ponytail: mock.module for local modules leaks across test files in Bun 1.3.10.
+// scanner.test.ts must run in a separate worker. If Bun fixes mock isolation,
+// remove this comment and add mock.restore() in afterAll.
 mock.module("./scanner.js", () => ({ scanSessions: mockScanSessions }));
 mock.module("./aggregator.js", () => ({ getUsageData: mockGetUsageData }));
 mock.module("@pizzapi/tools", () => ({
@@ -40,8 +43,12 @@ describe("triggerScan", () => {
     scanPromise = null;
   });
 
-  afterEach(() => {
-    closeUsage();
+  afterEach(async () => {
+    await closeUsage();
+  });
+
+  afterAll(() => {
+    mock.restore();
   });
 
   test("noop when db is null", async () => {
@@ -135,11 +142,11 @@ describe("triggerScan", () => {
 });
 
 describe("closeUsage", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     mockCloseFn.mockClear();
     mockScanSessions.mockClear();
     scanPromise = null;
-    closeUsage(); // ensure starting fresh (also resets lastScanAt/scanning)
+    await closeUsage(); // ensure starting fresh (also resets lastScanAt/scanning)
   });
 
   test("closes the database and sets db to null", async () => {
@@ -157,7 +164,7 @@ describe("closeUsage", () => {
     expect(getData()).toEqual({ mockData: true } as any);
 
     // Call closeUsage
-    closeUsage();
+    await closeUsage();
 
     // Verify close was called
     expect(mockCloseFn).toHaveBeenCalledTimes(1);
@@ -166,9 +173,9 @@ describe("closeUsage", () => {
     expect(getData()).toBeNull();
   });
 
-  test("does not throw if db is already null", () => {
-    closeUsage(); // make sure it is null
-    expect(() => closeUsage()).not.toThrow();
+  test("does not throw if db is already null", async () => {
+    await closeUsage(); // make sure it is null
+    await expect(closeUsage()).resolves.toBeUndefined();
     expect(mockCloseFn).not.toHaveBeenCalled();
   });
 });

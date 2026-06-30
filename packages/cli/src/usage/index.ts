@@ -9,6 +9,7 @@ const log = createLogger("usage");
 let db: Database | null = null;
 let lastScanAt = 0;
 let scanning = false;
+let _scanPromise: Promise<void> | null = null;
 
 export function initUsage(): Promise<void> {
   db = openUsageDb();
@@ -22,12 +23,16 @@ export function initUsage(): Promise<void> {
 export async function triggerScan(): Promise<void> {
   if (!db || scanning) return;
   scanning = true;
-  try {
-    await scanSessions(db);
-    lastScanAt = Date.now();
-  } finally {
-    scanning = false;
-  }
+  _scanPromise = (async () => {
+    try {
+      await scanSessions(db!);
+      lastScanAt = Date.now();
+    } finally {
+      scanning = false;
+      _scanPromise = null;
+    }
+  })();
+  return _scanPromise;
 }
 
 export function getData(range: UsageRange = "90d"): UsageData | null {
@@ -41,13 +46,14 @@ export function getData(range: UsageRange = "90d"): UsageData | null {
   return getUsageData(db, range);
 }
 
-export function closeUsage(): void {
+export async function closeUsage(): Promise<void> {
+  // Await any in-flight scan before closing the db to prevent it from
+  // touching a closed database handle.
+  if (_scanPromise) {
+    await _scanPromise.catch(() => {});
+  }
   db?.close();
   db = null;
-  // Reset module-level scan state so tests (and re-init in long-running
-  // processes) start from a clean slate. Any in-flight scan will no-op when
-  // it sees db === null on the next check; its trailing `scanning = false`
-  // in the finally block is harmless because we re-clear it here.
   lastScanAt = 0;
   scanning = false;
 }
