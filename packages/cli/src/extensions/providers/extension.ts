@@ -5,6 +5,9 @@ import { join } from "node:path";
 import { ProviderBridge } from "../../providers/bridge";
 import type { ProviderContext, SessionCloseResult } from "../../providers/types";
 import { loadGlobalConfig } from "../../config/io";
+import { createLogger } from "@pizzapi/tools";
+
+const log = createLogger("provider-extension");
 
 let bridge: ProviderBridge | null = null;
 /** Provider instances tracked separately for disposal (bridge doesn't own lifecycle). */
@@ -74,7 +77,7 @@ export async function providerExtension(pi: ExtensionAPI) {
       allowProject: loadGlobalConfig().allowProjectProviders === true,
     });
     for (const err of result.errors) {
-      console.error(`[provider-extension] Load error: ${err.path} — ${err.error}`);
+      log.error(`Load error: ${err.path} — ${err.error}`);
     }
 
     // Dispose any providers from a prior session (defensive — session_shutdown
@@ -83,7 +86,7 @@ export async function providerExtension(pi: ExtensionAPI) {
       try {
         await instance.dispose();
       } catch (err) {
-        console.error(`[provider-extension] Error disposing ${instance.id} on re-init:`, err);
+        log.error(`Error disposing ${instance.id} on re-init:`, err);
       }
     }
     providerInstances = [];
@@ -92,7 +95,7 @@ export async function providerExtension(pi: ExtensionAPI) {
     const enabledProviders = result.providers.filter(({ provider }) => {
       const cfg = configs[provider.id];
       if (cfg?.enabled === false) {
-        console.log(`[provider-extension] Skipping disabled provider "${provider.id}"`);
+        log.info(`Skipping disabled provider "${provider.id}"`);
         return false;
       }
       return true;
@@ -115,9 +118,9 @@ export async function providerExtension(pi: ExtensionAPI) {
           publishMetadata: () => {},
         });
         instances.push(provider);
-        console.log(`[provider-extension] Initialized provider "${provider.id}"`);
+        log.info(`Initialized provider "${provider.id}"`);
       } catch (err) {
-        console.error(`[provider-extension] Failed to init "${provider.id}":`, err);
+        log.error(`Failed to init "${provider.id}":`, err);
       }
     }
 
@@ -216,7 +219,7 @@ export async function providerExtension(pi: ExtensionAPI) {
       try {
         await instance.dispose();
       } catch (err) {
-        console.error(`[provider-extension] Error disposing ${instance.id}:`, err);
+        log.error(`Error disposing ${instance.id}:`, err);
       }
     }
 
