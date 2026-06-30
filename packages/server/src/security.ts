@@ -221,7 +221,7 @@ function normalizeIp(ip: string): string {
  */
 function isLoopbackIp(rawIp: string): boolean {
     const ip = normalizeIp(rawIp);
-    return ip === "127.0.0.1" || ip === "::1" || ip === "localhost";
+    return ip.startsWith("127.") || ip === "::1" || ip === "localhost";
 }
 
 /**
@@ -389,8 +389,8 @@ export function _resetTrustedProxyCidrCacheForTests(): void {
  */
 function isPrivateOrLoopbackIp(rawIp: string): boolean {
     const ip = normalizeIp(rawIp);
-    // Loopback
-    if (ip === "127.0.0.1" || ip === "::1" || ip === "localhost") return true;
+    // Loopback (127.0.0.0/8)
+    if (ip.startsWith("127.") || ip === "::1" || ip === "localhost") return true;
     // IPv4 private ranges (RFC 1918)
     if (ip.startsWith("10.")) return true;
     if (ip.startsWith("172.") && /^172\.(1[6-9]|2\d|3[01])\./.test(ip)) return true;
