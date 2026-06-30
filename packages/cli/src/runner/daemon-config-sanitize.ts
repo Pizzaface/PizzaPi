@@ -159,3 +159,75 @@ export function restoreMaskedServerEntry(
 
     return merged;
 }
+
+
+/**
+ * Collect env/header keys that carry the mask sentinel on the given entry.
+ */
+function collectSentinelKeys(entry: Record<string, unknown>): { env: string[]; headers: string[] } {
+    const envKeys: string[] = [];
+    const headerKeys: string[] = [];
+    if (entry.env && typeof entry.env === "object") {
+        for (const [k, v] of Object.entries(entry.env as Record<string, unknown>)) {
+            if (v === MASK_SENTINEL) envKeys.push(k);
+        }
+    }
+    if (entry.headers && typeof entry.headers === "object") {
+        for (const [k, v] of Object.entries(entry.headers as Record<string, unknown>)) {
+            if (v === MASK_SENTINEL) headerKeys.push(k);
+        }
+    }
+    return { env: envKeys, headers: headerKeys };
+}
+
+/**
+ * Tries to find a unique match for a renamed server among deleted servers.
+ *
+ * Strategy: match on the sentinel keys themselves. The masked keys in the
+ * incoming entry came from masking the deleted entry's secrets, so the deleted
+ * entry must contain those exact keys with real (non-sentinel) string values.
+ * This survives the user editing `command` / `url` / `args` in the same save.
+ *
+ * If multiple deleted entries qualify, tiebreak by structural similarity
+ * (command / url / args). If still ambiguous, return undefined.
+ */
+export function findRenamedServerMatch(
+    incomingEntry: Record<string, unknown>,
+    deletedEntries: Record<string, unknown>[]
+): Record<string, unknown> | undefined {
+    const { env: sentinelEnvKeys, headers: sentinelHeaderKeys } = collectSentinelKeys(incomingEntry);
+    if (sentinelEnvKeys.length === 0 && sentinelHeaderKeys.length === 0) {
+        return undefined;
+    }
+
+    const hasRealValue = (obj: unknown, key: string): boolean => {
+        if (!obj || typeof obj !== "object") return false;
+        const v = (obj as Record<string, unknown>)[key];
+        return typeof v === "string" && v !== MASK_SENTINEL;
+    };
+
+    const candidates = deletedEntries.filter(deleted => {
+        for (const k of sentinelEnvKeys) {
+            if (!hasRealValue(deleted.env, k)) return false;
+        }
+        for (const k of sentinelHeaderKeys) {
+            if (!hasRealValue(deleted.headers, k)) return false;
+        }
+        return true;
+    });
+
+    if (candidates.length === 1) return candidates[0];
+    if (candidates.length === 0) return undefined;
+
+    // Multiple candidates carry the same sentinel keys — tiebreak structurally.
+    const structural = candidates.filter(deleted => {
+        if (deleted.command !== incomingEntry.command) return false;
+        if (deleted.url !== incomingEntry.url) return false;
+        const delArgs = Array.isArray(deleted.args) ? deleted.args : [];
+        const incArgs = Array.isArray(incomingEntry.args) ? incomingEntry.args : [];
+        if (delArgs.length !== incArgs.length) return false;
+        return delArgs.every((val, idx) => val === incArgs[idx]);
+    });
+
+    return structural.length === 1 ? structural[0] : undefined;
+}

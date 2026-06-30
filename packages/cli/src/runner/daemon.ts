@@ -30,7 +30,7 @@ import { AuthStorage, ModelRegistry } from "@earendil-works/pi-coding-agent";
 import type { ServiceTriggerDef, ServiceSigilDef, TriggerSubscriptionEntry } from "@pizzapi/protocol";
 import { setLogComponent, logInfo, logWarn, logError } from "./logger.js";
 import { extractHookSummary } from "./hook-summary.js";
-import { sanitizeConfigForUI, restoreMaskedServerEntry, MASK_SENTINEL } from "./daemon-config-sanitize.js";
+import { sanitizeConfigForUI, restoreMaskedServerEntry, findRenamedServerMatch, MASK_SENTINEL } from "./daemon-config-sanitize.js";
 import { defaultStatePath, acquireStateAndIdentity, releaseStateLock } from "./runner-state.js";
 import { startUsageRefreshLoop, stopUsageRefreshLoop } from "./runner-usage-cache.js";
 import { getWorkspaceRoots, isCwdAllowed } from "./workspace.js";
@@ -2026,20 +2026,32 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                         // substitutes the original on-disk secret for each key still carrying the
                         // sentinel.
                         //
-                        // TODO(P2): Rename edge case -- if an MCP server is renamed in the UI
-                        // before saving, the masked "***" values can't be matched to the old
-                        // on-disk entry (key lookup by new name finds no existing server).
-                        // Those entries will be written as literal "***", which the user will
-                        // notice as obviously broken credentials.  A full fix requires tracking
-                        // server identity across renames (e.g. a stable ID field or a diff
-                        // protocol).  For now the failure is visible and recoverable by the user.
+                        // Renames are handled heuristically by findRenamedServerMatch() below:
+                        // when an incoming entry has masked secrets but no on-disk entry under its
+                        // name, we look for a deleted entry whose env/header keys would supply the
+                        // sentinels.  This survives the user editing command/url/args in the same
+                        // save.  Truly ambiguous cases (multiple plausible renames) still fall back
+                        // to writing the sentinel — visible and recoverable.
                         const existingMcpServers = ((existing as any).mcpServers ?? {}) as Record<string, any>;
+
+                        // Identify deleted servers to heuristically match renames
+                        const incomingNames = new Set(Object.keys(servers));
+                        const deletedServers = Object.entries(existingMcpServers)
+                            .filter(([name]) => !incomingNames.has(name))
+                            .map(([_name, srv]) => srv)
+                            .filter((srv) => srv && typeof srv === "object");
+
                         const mergedServers: Record<string, any> = {};
                         for (const [name, entry] of Object.entries(servers)) {
                             if (entry && typeof entry === "object") {
+                                let existingEntry = existingMcpServers[name];
+                                if (!existingEntry) {
+                                    existingEntry = findRenamedServerMatch(entry as Record<string, unknown>, deletedServers);
+                                }
+
                                 mergedServers[name] = restoreMaskedServerEntry(
                                     entry as Record<string, unknown>,
-                                    existingMcpServers[name],
+                                    existingEntry,
                                 );
                             } else {
                                 mergedServers[name] = entry;
@@ -2051,9 +2063,8 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                         // before writing to disk.  We look up each server by its `name` field in
                         // the on-disk array so we can restore the original secret.
                         //
-                        // TODO(P2): Same rename edge case as mcpServers — if a server's name is
-                        // changed in the UI the lookup by name will find nothing and the sentinel
-                        // will be written as-is.  Visible and recoverable by the user.
+                        // Renames in the array format are likewise resolved via
+                        // findRenamedServerMatch() against deleted entries.
                         const incomingMcp = (value ?? {}) as { servers?: any[] };
                         const existingMcp = ((existing as any).mcp ?? {}) as { servers?: any[] };
 
@@ -2067,13 +2078,38 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                             }
                         }
 
+                        // Identify deleted servers to heuristically match renames
+                        const incomingNamesArray = new Set(
+                            Array.isArray(incomingMcp.servers)
+                                ? incomingMcp.servers
+                                      .map((s: any) => s && typeof s === "object" ? s.name : undefined)
+                                      .filter((n): n is string => typeof n === "string")
+                                : []
+                        );
+
+                        const deletedServersArray: Record<string, unknown>[] = [];
+                        if (Array.isArray(existingMcp.servers)) {
+                            for (const srv of existingMcp.servers) {
+                                if (srv && typeof srv === "object" && typeof (srv as any).name === "string") {
+                                    if (!incomingNamesArray.has((srv as any).name)) {
+                                        deletedServersArray.push(srv as Record<string, unknown>);
+                                    }
+                                }
+                            }
+                        }
+
                         const mergedMcpServers: any[] = Array.isArray(incomingMcp.servers)
                             ? incomingMcp.servers.map((entry: any) => {
                                   if (!entry || typeof entry !== "object") return entry;
-                                  const existingEntry =
-                                      typeof entry.name === "string"
-                                          ? existingByName.get(entry.name)
-                                          : undefined;
+
+                                  let existingEntry: Record<string, unknown> | undefined = undefined;
+                                  if (typeof entry.name === "string") {
+                                      existingEntry = existingByName.get(entry.name);
+                                      if (!existingEntry) {
+                                          existingEntry = findRenamedServerMatch(entry as Record<string, unknown>, deletedServersArray);
+                                      }
+                                  }
+
                                   return restoreMaskedServerEntry(
                                       entry as Record<string, unknown>,
                                       existingEntry,
