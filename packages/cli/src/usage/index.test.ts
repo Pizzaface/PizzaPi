@@ -137,12 +137,21 @@ describe("triggerScan", () => {
 describe("closeUsage", () => {
   beforeEach(() => {
     mockCloseFn.mockClear();
-    closeUsage(); // ensure starting fresh
+    mockScanSessions.mockClear();
+    scanPromise = null;
+    closeUsage(); // ensure starting fresh (also resets lastScanAt/scanning)
   });
 
-  test("closes the database and sets db to null", () => {
-    // Initialize so db is not null
-    initUsage();
+  test("closes the database and sets db to null", async () => {
+    // Initialize so db is not null. initUsage kicks off a background scan
+    // (controlled by the module-level resolveScan handle) — drive it to
+    // completion before continuing so the in-flight promise can't leak
+    // module state (`scanning`, `lastScanAt`) into the next test.
+    const initPromise = initUsage();
+    await Promise.resolve(); // let triggerScan start and assign scanPromise
+    resolveScan();
+    await scanPromise;
+    await initPromise;
 
     // getData should return mock data since db is initialized
     expect(getData()).toEqual({ mockData: true } as any);
