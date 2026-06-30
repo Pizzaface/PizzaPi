@@ -707,7 +707,9 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             void tunnelClient?.dispose();
             registry.disposeAll();
             stopUsageRefreshLoop();
-            await closeUsage().catch((err) => log.error("closeUsage failed during shutdown:", err));
+            await closeUsage().catch((err) =>
+                logError("closeUsage failed during shutdown: " + (err instanceof Error ? err.message : String(err))),
+            );
             releaseStateLock(statePath);
             socket.disconnect();
             resolve(code);
