@@ -47,13 +47,14 @@ export function getData(range: UsageRange = "90d"): UsageData | null {
 }
 
 export async function closeUsage(): Promise<void> {
-  // Await any in-flight scan before closing the db to prevent it from
-  // touching a closed database handle.
+  // Set db to null FIRST so concurrent triggerScan/getData bail out
+  // immediately, then await any in-flight scan before closing the handle.
+  const handle = db;
+  db = null;
   if (_scanPromise) {
     await _scanPromise.catch(() => {});
   }
-  db?.close();
-  db = null;
+  handle?.close();
   lastScanAt = 0;
   scanning = false;
 }

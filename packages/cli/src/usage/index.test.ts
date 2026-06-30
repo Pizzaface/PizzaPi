@@ -18,21 +18,32 @@ const mockScanSessions = mock(() => {
 const mockGetUsageData = mock(() => ({ mockData: true }));
 
 mock.module("./schema.js", () => ({ openUsageDb: mockOpenUsageDb }));
-// ponytail: mock.module for local modules leaks across test files in Bun 1.3.10.
+// ponytail: Bun mock.module for local modules leaks across test files (1.3.10).
 // scanner.test.ts must run in a separate worker. If Bun fixes mock isolation,
-// remove this comment and add mock.restore() in afterAll.
+// switch to import-and-spread pattern used for @pizzapi/tools above.
 mock.module("./scanner.js", () => ({ scanSessions: mockScanSessions }));
 mock.module("./aggregator.js", () => ({ getUsageData: mockGetUsageData }));
+// Preserve real @pizzapi/tools exports so other test files (e.g. remote-payload-cap)
+// that import log.warn etc. don't break when running in the same process.
+import * as realTools from "@pizzapi/tools";
 mock.module("@pizzapi/tools", () => ({
+  ...realTools,
   createLogger: () => ({
     error: mock(),
     info: mock(),
     debug: mock(),
+    warn: mock(),
   }),
 }));
 
 // Dynamic import after mocking to prevent hoisting issues
 const { triggerScan, initUsage, closeUsage, getData } = await import("./index.js");
+
+// Top-level afterAll so mocks are restored after ALL describe blocks finish.
+// Nesting afterAll inside a describe block only restores after that block.
+afterAll(() => {
+  mock.restore();
+});
 
 describe("triggerScan", () => {
   beforeEach(() => {
@@ -45,10 +56,6 @@ describe("triggerScan", () => {
 
   afterEach(async () => {
     await closeUsage();
-  });
-
-  afterAll(() => {
-    mock.restore();
   });
 
   test("noop when db is null", async () => {

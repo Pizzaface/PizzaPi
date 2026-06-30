@@ -698,7 +698,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             triggerScan();
         }, 5 * 60 * 1000);
 
-        const shutdown = (code: number) => {
+        const shutdown = async (code: number) => {
             if (isShuttingDown) return;
             isShuttingDown = true;
             clearInterval(endedSessionSweep);
@@ -707,7 +707,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             void tunnelClient?.dispose();
             registry.disposeAll();
             stopUsageRefreshLoop();
-            closeUsage();
+            await closeUsage().catch((err) => log.error("closeUsage failed during shutdown:", err));
             releaseStateLock(statePath);
             socket.disconnect();
             resolve(code);
