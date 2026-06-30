@@ -1,5 +1,6 @@
-import { expect, test, describe, mock, afterEach, beforeAll } from "bun:test";
+import { expect, test, describe, mock, afterEach, beforeAll, afterAll } from "bun:test";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 
 // Mock node:os BEFORE importing the module under test.
 // Static imports are hoisted and resolved before any top-level code runs,
@@ -7,6 +8,7 @@ import { join } from "node:path";
 const mockHomedir = mock(() => "/mock/home/dir");
 mock.module("node:os", () => ({
   homedir: mockHomedir,
+  tmpdir, // preserve original tmpdir so other tests don't break
 }));
 
 let getUsageDbPath: typeof import("./schema.js").getUsageDbPath;
@@ -14,6 +16,10 @@ let getSessionsDir: typeof import("./schema.js").getSessionsDir;
 
 beforeAll(async () => {
   ({ getUsageDbPath, getSessionsDir } = await import("./schema.js"));
+});
+
+afterAll(() => {
+  mock.restore();
 });
 
 describe("schema path functions", () => {
