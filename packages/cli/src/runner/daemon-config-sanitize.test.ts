@@ -328,20 +328,42 @@ describe("findRenamedServerMatch", () => {
         expect(match).toBeUndefined();
     });
 
-    test("returns undefined if args mismatch", () => {
+    test("matches even when args/command/url are simultaneously edited (rename + edit)", () => {
+        // Regression: prior heuristic required exact command/url/args match, so a
+        // rename combined with any other field edit would fail and leak '***' to disk.
+        const incoming = { name: "new-name", command: "bun", args: ["foo.js", "--verbose"], env: { KEY: MASK_SENTINEL } };
+        const deleted = [
+            { name: "old-name", command: "node", args: ["foo.js"], env: { KEY: "secret" } }
+        ];
+        const match = findRenamedServerMatch(incoming, deleted);
+        expect(match).toEqual(deleted[0]);
+    });
+
+    test("returns undefined when multiple deleted entries share the same sentinel keys and structure is ambiguous", () => {
         const incoming = { name: "new-name", command: "node", args: ["foo.js"], env: { KEY: MASK_SENTINEL } };
         const deleted = [
-            { name: "old-name", command: "node", args: ["foo.js", "--verbose"], env: { KEY: "secret" } }
+            { name: "old-name1", command: "node", args: ["foo.js"], env: { KEY: "secret1" } },
+            { name: "old-name2", command: "node", args: ["foo.js"], env: { KEY: "secret2" } }
         ];
         const match = findRenamedServerMatch(incoming, deleted);
         expect(match).toBeUndefined();
     });
 
-    test("returns undefined if multiple structural matches found", () => {
+    test("breaks ties via command/args when multiple candidates share sentinel keys", () => {
         const incoming = { name: "new-name", command: "node", args: ["foo.js"], env: { KEY: MASK_SENTINEL } };
         const deleted = [
-            { name: "old-name1", command: "node", args: ["foo.js"], env: { KEY: "secret1" } },
-            { name: "old-name2", command: "node", args: ["foo.js"], env: { KEY: "secret2" } }
+            { name: "old-A", command: "node", args: ["foo.js"], env: { KEY: "secretA" } },
+            { name: "old-B", command: "bun", args: ["bar.js"], env: { KEY: "secretB" } }
+        ];
+        const match = findRenamedServerMatch(incoming, deleted);
+        expect(match).toEqual(deleted[0]);
+    });
+
+    test("returns undefined when deleted entries lack the sentinel keys", () => {
+        const incoming = { name: "new-name", command: "node", args: ["foo.js"], env: { API_KEY: MASK_SENTINEL } };
+        const deleted = [
+            // Different env key — cannot restore API_KEY from this entry.
+            { name: "old-name", command: "node", args: ["foo.js"], env: { OTHER_KEY: "secret" } }
         ];
         const match = findRenamedServerMatch(incoming, deleted);
         expect(match).toBeUndefined();

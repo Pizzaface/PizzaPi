@@ -2026,13 +2026,12 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                         // substitutes the original on-disk secret for each key still carrying the
                         // sentinel.
                         //
-                        // TODO(P2): Rename edge case -- if an MCP server is renamed in the UI
-                        // before saving, the masked "***" values can't be matched to the old
-                        // on-disk entry (key lookup by new name finds no existing server).
-                        // Those entries will be written as literal "***", which the user will
-                        // notice as obviously broken credentials.  A full fix requires tracking
-                        // server identity across renames (e.g. a stable ID field or a diff
-                        // protocol).  For now the failure is visible and recoverable by the user.
+                        // Renames are handled heuristically by findRenamedServerMatch() below:
+                        // when an incoming entry has masked secrets but no on-disk entry under its
+                        // name, we look for a deleted entry whose env/header keys would supply the
+                        // sentinels.  This survives the user editing command/url/args in the same
+                        // save.  Truly ambiguous cases (multiple plausible renames) still fall back
+                        // to writing the sentinel — visible and recoverable.
                         const existingMcpServers = ((existing as any).mcpServers ?? {}) as Record<string, any>;
 
                         // Identify deleted servers to heuristically match renames
@@ -2064,9 +2063,8 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                         // before writing to disk.  We look up each server by its `name` field in
                         // the on-disk array so we can restore the original secret.
                         //
-                        // TODO(P2): Same rename edge case as mcpServers — if a server's name is
-                        // changed in the UI the lookup by name will find nothing and the sentinel
-                        // will be written as-is.  Visible and recoverable by the user.
+                        // Renames in the array format are likewise resolved via
+                        // findRenamedServerMatch() against deleted entries.
                         const incomingMcp = (value ?? {}) as { servers?: any[] };
                         const existingMcp = ((existing as any).mcp ?? {}) as { servers?: any[] };
 
