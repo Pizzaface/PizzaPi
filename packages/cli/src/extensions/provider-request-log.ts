@@ -1,61 +1,71 @@
 /**
- * Diagnostic: log which provider/api actually handles each outbound request,
- * plus the shape of what PizzaPi puts on the wire (system-block sizes, tool
- * names). Used to prove whether a turn routes through a custom provider's
- * native path (e.g. `claude-subscription-native`) or falls back to a built-in
- * API handler (e.g. `anthropic-messages`), and whether PizzaPi's system prompt
- * diverges from what the provider expects.
+ * Diagnostic: capture the ACTUAL outbound HTTP request to Anthropic's
+ * /v1/messages endpoint (headers + body), so we can compare byte-for-byte what
+ * PizzaPi sends vs what vanilla pi sends through the same claude-subscription
+ * extension. The `before_provider_request` event payload is NOT the real wire
+ * request (custom providers build their own via streamSimple), so we wrap
+ * global fetch instead.
  *
  * ponytail: temporarily always-on for debugging the claude-subscription
- * routing issue. Remove this extension (or re-gate it) once resolved.
+ * routing/billing issue. Remove this extension once resolved.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { logInfo } from "../runner/logger.js";
 
-function summarizeSystem(system: unknown): { blocks: number; chars: number; firstBlock: string } {
-    if (typeof system === "string") {
-        return { blocks: 1, chars: system.length, firstBlock: system.slice(0, 60) };
-    }
-    if (Array.isArray(system)) {
-        let chars = 0;
-        for (const b of system) {
-            const t = b && typeof b === "object" ? (b as { text?: unknown }).text : undefined;
-            if (typeof t === "string") chars += t.length;
-        }
-        const first = system[0] && typeof system[0] === "object" ? (system[0] as { text?: unknown }).text : undefined;
-        return { blocks: system.length, chars, firstBlock: typeof first === "string" ? first.slice(0, 60) : "" };
-    }
-    return { blocks: 0, chars: 0, firstBlock: "" };
+let fetchWrapped = false;
+
+/** Redact a bearer token to a short, non-reversible fingerprint. */
+function tokenFingerprint(auth: string | undefined): string {
+    if (!auth) return "(none)";
+    const tok = auth.replace(/^Bearer\s+/i, "");
+    // last 6 chars + length — enough to tell "same token?" without leaking it.
+    return `…${tok.slice(-6)}(len=${tok.length})`;
 }
 
-export function providerRequestLogExtension(pi: ExtensionAPI): void {
-    pi.on("before_provider_request", (event, ctx) => {
-        try {
-            const model = (ctx as { model?: { provider?: string; id?: string; api?: string } }).model;
-            const payload = event.payload as { model?: unknown; system?: unknown; tools?: unknown[] } | undefined;
-            const sys = summarizeSystem(payload?.system);
-            const tools = Array.isArray(payload?.tools) ? payload!.tools : [];
-            const toolNames = tools
-                .map((t) => (t && typeof t === "object" ? (t as { name?: unknown }).name : undefined))
-                .filter((n): n is string => typeof n === "string");
-
-            logInfo(
-                "[provider-request] " +
-                    JSON.stringify({
-                        provider: model?.provider,
-                        api: model?.api,
-                        modelId: model?.id,
-                        payloadModel: payload?.model,
-                        systemBlocks: sys.blocks,
-                        systemChars: sys.chars,
-                        systemFirstBlock: sys.firstBlock,
-                        toolCount: toolNames.length,
-                        toolNames: toolNames.slice(0, 40),
-                    }),
-            );
-        } catch {
-            // Diagnostic only — never disrupt the request.
+function summarizeBody(bodyText: string): Record<string, unknown> {
+    let body: any;
+    try { body = JSON.parse(bodyText); } catch { return { parseError: true, rawLen: bodyText.length }; }
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(body)) {
+        if (k === "system") {
+            const chars = Array.isArray(v)
+                ? v.reduce((n, b: any) => n + (typeof b?.text === "string" ? b.text.length : 0), 0)
+                : (typeof v === "string" ? v.length : 0);
+            out.systemBlocks = Array.isArray(v) ? v.length : 1;
+            out.systemChars = chars;
+        } else if (k === "messages") {
+            out.messageCount = Array.isArray(v) ? v.length : 0;
+        } else if (k === "tools") {
+            out.toolNames = Array.isArray(v) ? v.map((t: any) => t?.name).filter(Boolean) : [];
+        } else {
+            out[k] = v; // model, max_tokens, thinking, output_config, metadata, fallbacks, temperature, stream, …
         }
-    });
+    }
+    return out;
+}
+
+function wrapFetch(): void {
+    if (fetchWrapped) return;
+    fetchWrapped = true;
+    const orig = globalThis.fetch;
+    globalThis.fetch = (async (input: any, init?: any) => {
+        try {
+            const url = typeof input === "string" ? input : input?.url ?? String(input);
+            if (typeof url === "string" && url.includes("api.anthropic.com") && url.includes("/v1/messages")) {
+                const headers = new Headers(init?.headers ?? (typeof input === "object" ? input.headers : undefined));
+                const hdr: Record<string, string> = {};
+                headers.forEach((v, k) => { hdr[k] = k.toLowerCase() === "authorization" ? tokenFingerprint(v) : v; });
+                let bodyText = "";
+                const b = init?.body ?? (typeof input === "object" ? input.body : undefined);
+                if (typeof b === "string") bodyText = b;
+                logInfo("[anthropic-request] " + JSON.stringify({ url, headers: hdr, body: summarizeBody(bodyText) }));
+            }
+        } catch { /* never disrupt the request */ }
+        return orig(input, init);
+    }) as typeof fetch;
+}
+
+export function providerRequestLogExtension(_pi: ExtensionAPI): void {
+    wrapFetch();
 }
