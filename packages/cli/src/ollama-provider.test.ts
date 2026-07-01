@@ -13,7 +13,7 @@ function piCodingAgentPath(subpath: string): string {
 
 describe("Ollama built-in provider", () => {
   test("pi-ai exposes bundled Ollama Cloud models with cloud base URL", async () => {
-    const { getModels } = await import("@earendil-works/pi-ai");
+    const { getModels } = await import("@earendil-works/pi-ai/compat");
     const models = getModels("ollama-cloud");
     const modelRecords = models as Array<any>;
 
@@ -40,7 +40,7 @@ describe("Ollama built-in provider", () => {
   });
 
   test("pi-ai exposes Ollama Cloud models with scraped context windows", async () => {
-    const { getModels } = await import("@earendil-works/pi-ai");
+    const { getModels } = await import("@earendil-works/pi-ai/compat");
     const models = getModels("ollama-cloud");
     const contextById = new Map((models as Array<any>).map((model) => [model.id, model.contextWindow]));
 
@@ -58,7 +58,7 @@ describe("Ollama built-in provider", () => {
   });
 
   test("pi-ai resolves OLLAMA_API_KEY from environment for ollama-cloud", async () => {
-    const { getEnvApiKey } = await import("@earendil-works/pi-ai");
+    const { getEnvApiKey } = await import("@earendil-works/pi-ai/compat");
     const prev = process.env.OLLAMA_API_KEY;
     process.env.OLLAMA_API_KEY = "test-ollama-key";
     try {
@@ -70,7 +70,7 @@ describe("Ollama built-in provider", () => {
   });
 
   test("pi-ai requests streaming usage for Ollama Cloud so tokens are counted", async () => {
-    const { complete, getModels } = await import("@earendil-works/pi-ai");
+    const { complete, getModels } = await import("@earendil-works/pi-ai/compat");
     const model = (getModels("ollama-cloud") as Array<any>).find((m) => m.id === "glm-5.1");
     expect(model).toBeDefined();
 
@@ -118,7 +118,7 @@ describe("Ollama built-in provider", () => {
   });
 
   test("vision ollama-cloud models send image content as image_url", async () => {
-    const { complete, getModels } = await import("@earendil-works/pi-ai");
+    const { complete, getModels } = await import("@earendil-works/pi-ai/compat");
     const model = (getModels("ollama-cloud") as Array<any>).find((m) => m.id === "gemma3:12b");
     expect(model).toBeDefined();
     expect(model.input).toContain("image");
@@ -180,7 +180,7 @@ describe("Ollama built-in provider", () => {
   });
 
   test("non-vision ollama-cloud models downgrade images to placeholder text", async () => {
-    const { complete, getModels } = await import("@earendil-works/pi-ai");
+    const { complete, getModels } = await import("@earendil-works/pi-ai/compat");
     const model = (getModels("ollama-cloud") as Array<any>).find((m) => m.id === "glm-5.1");
     expect(model).toBeDefined();
     expect(model.input).not.toContain("image");

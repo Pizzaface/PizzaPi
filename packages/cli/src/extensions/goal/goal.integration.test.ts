@@ -55,7 +55,7 @@ const fakeCompleteSimple = mock(async (_model: unknown, context: { messages: Arr
     };
 });
 
-mock.module("@earendil-works/pi-ai", () => ({
+mock.module("@earendil-works/pi-ai/compat", () => ({
     completeSimple: fakeCompleteSimple,
 }));
 
