@@ -6,17 +6,12 @@
  * API handler (e.g. `anthropic-messages`), and whether PizzaPi's system prompt
  * diverges from what the provider expects.
  *
- * Enabled only when PIZZAPI_LOG_PROVIDER_REQUEST is set (off by default so it
- * never adds log noise or per-request cost in normal operation).
+ * ponytail: temporarily always-on for debugging the claude-subscription
+ * routing issue. Remove this extension (or re-gate it) once resolved.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { logInfo } from "../runner/logger.js";
-
-function isEnabled(): boolean {
-    const v = process.env.PIZZAPI_LOG_PROVIDER_REQUEST;
-    return !!v && !["0", "false", "no", "off"].includes(v.toLowerCase());
-}
 
 function summarizeSystem(system: unknown): { blocks: number; chars: number; firstBlock: string } {
     if (typeof system === "string") {
@@ -35,8 +30,6 @@ function summarizeSystem(system: unknown): { blocks: number; chars: number; firs
 }
 
 export function providerRequestLogExtension(pi: ExtensionAPI): void {
-    if (!isEnabled()) return;
-
     pi.on("before_provider_request", (event, ctx) => {
         try {
             const model = (ctx as { model?: { provider?: string; id?: string; api?: string } }).model;
