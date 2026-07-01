@@ -1,5 +1,12 @@
-import { describe, test, expect, mock, beforeEach, afterEach, afterAll } from "bun:test";
+import { describe, test, expect, mock, spyOn, beforeEach, afterEach, afterAll } from "bun:test";
 import { Database } from "bun:sqlite";
+// spyOn the real module namespaces instead of mock.module — Bun's
+// mock.module is process-global and leaks across test files (breaking
+// schema.test.ts/scanner.test.ts when they run after this file). spyOn
+// is per-process but mockRestore() reliably restores the real exports.
+import * as schema from "./schema.js";
+import * as scanner from "./scanner.js";
+import * as aggregator from "./aggregator.js";
 
 // Mock dependencies
 const mockCloseFn = mock(() => {});
@@ -17,12 +24,9 @@ const mockScanSessions = mock(() => {
 
 const mockGetUsageData = mock(() => ({ mockData: true }));
 
-mock.module("./schema.js", () => ({ openUsageDb: mockOpenUsageDb }));
-// ponytail: Bun mock.module for local modules leaks across test files (1.3.10).
-// scanner.test.ts must run in a separate worker. If Bun fixes mock isolation,
-// switch to import-and-spread pattern used for @pizzapi/tools above.
-mock.module("./scanner.js", () => ({ scanSessions: mockScanSessions }));
-mock.module("./aggregator.js", () => ({ getUsageData: mockGetUsageData }));
+const openUsageDbSpy = spyOn(schema, "openUsageDb").mockImplementation(mockOpenUsageDb);
+const scanSessionsSpy = spyOn(scanner, "scanSessions").mockImplementation(mockScanSessions);
+const getUsageDataSpy = spyOn(aggregator, "getUsageData").mockImplementation(mockGetUsageData as unknown as typeof aggregator.getUsageData);
 // Preserve real @pizzapi/tools exports so other test files (e.g. remote-payload-cap)
 // that import log.warn etc. don't break when running in the same process.
 import * as realTools from "@pizzapi/tools";
@@ -36,13 +40,16 @@ mock.module("@pizzapi/tools", () => ({
   }),
 }));
 
-// Dynamic import after mocking to prevent hoisting issues
+// Dynamic import after spying to prevent hoisting issues
 const { triggerScan, initUsage, closeUsage, getData } = await import("./index.js");
 
 // Top-level afterAll so mocks are restored after ALL describe blocks finish.
 // Nesting afterAll inside a describe block only restores after that block.
 afterAll(() => {
   mock.restore();
+  openUsageDbSpy.mockRestore();
+  scanSessionsSpy.mockRestore();
+  getUsageDataSpy.mockRestore();
 });
 
 describe("triggerScan", () => {

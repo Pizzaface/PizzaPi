@@ -18,7 +18,7 @@ import type {
     AssistantMessage,
     ToolResultMessage,
 } from "@earendil-works/pi-ai";
-import { completeSimple } from "@earendil-works/pi-ai";
+import { completeSimple } from "@earendil-works/pi-ai/compat";
 import type {
     BeforeAgentStartEvent,
     ExtensionAPI,

@@ -4,7 +4,7 @@ Patches in this directory are applied automatically by Bun via the
 `patchedDependencies` field in the root `package.json`. They are reapplied on
 every `bun install` — no postinstall script is needed.
 
-## @earendil-works/pi-agent-core@0.79.3
+## @earendil-works/pi-agent-core@0.80.3
 
 Adds one PizzaPi-specific runtime fix:
 
@@ -24,39 +24,46 @@ Adds one PizzaPi-specific runtime fix:
 
 **Tests:** `packages/cli/src/patches.test.ts` verifies the regression behavior with a live `Agent` instance.
 
-## @earendil-works/pi-coding-agent@0.79.3
+## @earendil-works/pi-coding-agent@0.80.3
 
-PizzaPi integration changes ported to the current `@earendil-works` package
-scope and 0.79.x upstream layout. Upstream provides session-control actions for
-command contexts; PizzaPi also exposes those actions on the general extension API
-so remote event handlers can trigger `/new` and `/resume`.
+PizzaPi integration changes ported forward to the 0.80.x upstream layout.
+Upstream provides session-control actions for command contexts; PizzaPi also
+exposes those actions on the general extension API so remote event handlers can
+trigger `/new` and `/resume`. The retryable-JSON-parse hunk that lived here in
+0.79.x moved with upstream into `@earendil-works/pi-ai` (see the pi-ai patch
+below).
 
 **What it changes:**
 
 | File | Change |
 |------|--------|
 | `dist/config.js` | Hardcodes `".pizzapi"`, flattens `getAgentDir()`, and honors `PIZZAPI_CHANGELOG_PATH` |
-| `dist/core/agent-session.js` | Retries transient JSON parse stream failures |
+| `dist/core/agent-session.js` | Extension `sendUserMessage` path accepts an `expandPromptTemplates` opt-in (default `false`) so web UI input can opt into slash-command/template expansion |
 | `dist/core/extensions/loader.js` / `dist/core/extensions/runner.js` | Exposes `newSession()` and `switchSession()` on the general extension API for remote exec handlers |
+| `dist/core/extensions/types.d.ts` | Types `newSession`/`switchSession` on `ExtensionAPI`, `expandPromptTemplates` on `sendUserMessage`/`SendUserMessageHandler`, and `newSession`/`switchSession` on `ExtensionActions` |
 | `dist/core/model-resolver.js` | Adds built-in default model selection for `ollama-cloud` (`glm-5.1`) |
 | `dist/core/provider-display-names.js` | Exposes `Ollama Cloud` as a built-in provider display name |
-| `dist/modes/interactive/interactive-mode.js` | Removes upstream version-notification UI |
+| `dist/modes/interactive/interactive-mode.js` | Removes upstream version-notification UI (import, `run()` call, and `showNewVersionNotification()` method) |
 | `dist/index.js` / `dist/index.d.ts` | Re-exports `handlePackageCommand` and `handleConfigCommand` so the `pizza` CLI can inherit `install`/`remove`/`update`/`list`/`config` without a subpath import |
 
-## @earendil-works/pi-ai@0.79.3
+## @earendil-works/pi-ai@0.80.3
 
-Same Anthropic web-search and Claude Code credential fallback changes as 0.70.6,
-ported to the current `@earendil-works` package scope, plus built-in
-**Ollama Cloud** provider support.
+Same Anthropic web-search and Claude Code credential fallback changes as 0.79.3,
+ported to the 0.80.x upstream layout (the Anthropic streaming implementation
+moved from `dist/providers/anthropic.js` into `dist/api/anthropic-messages.js`),
+plus built-in **Ollama Cloud** provider support and the retryable-JSON-parse
+patterns that upstream relocated into `dist/utils/retry.js`.
 
 **What it changes:**
 
 | File | Change |
 |------|--------|
-| `dist/providers/anthropic.js` | Preserves PizzaPi's Anthropic web-search patch |
-| `dist/utils/oauth/anthropic.js` | Preserves Claude Code Keychain / credential-file fallback |
+| `dist/api/anthropic-messages.js` | Preserves PizzaPi's Anthropic web-search patch (server-tool-use / web-search-result block handling, `PIZZAPI_WEB_SEARCH` injection, message round-tripping, server-side tool passthrough) |
+| `dist/utils/oauth/anthropic.js` | Preserves Claude Code Keychain / credential-file fallback in `anthropicOAuthProvider.refreshToken()` |
 | `dist/env-api-keys.js` | Recognizes `OLLAMA_API_KEY` for provider `ollama-cloud` |
-| `dist/models.generated.js` / `dist/models.generated.d.ts` / `dist/types.d.ts` | Adds typed bundled `ollama-cloud` provider models targeting `https://ollama.com/v1` with conservative OpenAI-compatible defaults and context windows scraped from Ollama's cloud model tables |
+| `dist/utils/retry.js` | Adds `json.?parse.?error` / `unexpected.?end.?of.?json` to `RETRYABLE_PROVIDER_ERROR_PATTERN` (moved here from `pi-coding-agent` in 0.80.x) |
+| `dist/models.generated.js` | Inlines `createOllamaModel()` helper and `OLLAMA_CLOUD_MODELS` catalog, registers the `ollama-cloud` key in `MODELS` (inlined rather than a separate file to work around [oven-sh/bun#13330](https://github.com/oven-sh/bun/issues/13330) — `bun patch` fails on `new file` in nested dirs) |
+| `dist/models.generated.d.ts` / `dist/types.d.ts` | Adds `ollama-cloud` model typing to `MODELS` and `KnownProvider` |
 
 ## @mariozechner/pi-coding-agent@0.70.6 (replaced by 0.79.3 patch)
 
@@ -96,7 +103,7 @@ Notable upstream changes in 0.66.1:
 | `dist/modes/interactive/interactive-mode.js` — section headers | Box-drawing themed headers, compact extension table |
 | `dist/modes/interactive/interactive-mode.js` — diagnostics | Uses themed section headers for skill/prompt/extension/theme issues |
 
-## @earendil-works/pi-tui@0.79.3
+## @earendil-works/pi-tui@0.80.3
 
 Adds Windows console output lifecycle management so Unicode glyphs render
 reliably on Windows terminals.
@@ -295,6 +302,15 @@ syntactic validity. Run with `bun test packages/cli/src/patches.test.ts`.
 this patch can be deleted.
 
 ## Previously patched (no longer needed)
+
+### @earendil-works/*@0.79.3 (replaced by 0.80.3 patches)
+
+The 0.79.3 patch files are retained in this directory for history but are no
+longer referenced by `patchedDependencies`. The 0.80.3 patches port the same
+intent forward; note that the retryable-JSON-parse hunk moved with upstream from
+`pi-coding-agent` (`dist/core/agent-session.js`) to `pi-ai` (`dist/utils/retry.js`),
+and the Anthropic streaming implementation moved from `pi-ai`
+`dist/providers/anthropic.js` to `dist/api/anthropic-messages.js`.
 
 ### @mariozechner/pi-coding-agent@0.58.3 (replaced by 0.63.1 patch)
 

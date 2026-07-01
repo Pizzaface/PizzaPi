@@ -13,12 +13,12 @@ import { describe, test, expect } from "bun:test";
 
 describe("pi-ai API compatibility", () => {
     test("getModel is exported and callable", async () => {
-        const { getModel } = await import("@earendil-works/pi-ai");
+        const { getModel } = await import("@earendil-works/pi-ai/compat");
         expect(typeof getModel).toBe("function");
     });
 
     test("getProviders is exported and returns an array", async () => {
-        const { getProviders } = await import("@earendil-works/pi-ai");
+        const { getProviders } = await import("@earendil-works/pi-ai/compat");
         expect(typeof getProviders).toBe("function");
         const providers = getProviders();
         expect(Array.isArray(providers)).toBe(true);
@@ -26,7 +26,7 @@ describe("pi-ai API compatibility", () => {
     });
 
     test("getModels is exported and returns models for a provider", async () => {
-        const { getProviders, getModels } = await import("@earendil-works/pi-ai");
+        const { getProviders, getModels } = await import("@earendil-works/pi-ai/compat");
         expect(typeof getModels).toBe("function");
 
         const providers = getProviders();
@@ -51,7 +51,7 @@ describe("pi-ai API compatibility", () => {
     });
 
     test("getModel returns model with expected properties", async () => {
-        const { getProviders, getModels, getModel } = await import("@earendil-works/pi-ai");
+        const { getProviders, getModels, getModel } = await import("@earendil-works/pi-ai/compat");
         const providers = getProviders();
         if (providers.length === 0) return;
 
@@ -80,7 +80,7 @@ describe("pi-agent-core API compatibility", () => {
 
     test("Agent accepts initialState with systemPrompt, model, tools", async () => {
         const { Agent } = await import("@earendil-works/pi-agent-core");
-        const { getProviders, getModels, getModel } = await import("@earendil-works/pi-ai");
+        const { getProviders, getModels, getModel } = await import("@earendil-works/pi-ai/compat");
 
         const providers = getProviders();
         if (providers.length === 0) return;
@@ -109,7 +109,7 @@ describe("pi-agent-core API compatibility", () => {
 
     test("Agent subscribe returns unsubscribe function", async () => {
         const { Agent } = await import("@earendil-works/pi-agent-core");
-        const { getProviders, getModels, getModel } = await import("@earendil-works/pi-ai");
+        const { getProviders, getModels, getModel } = await import("@earendil-works/pi-ai/compat");
 
         const providers = getProviders();
         if (providers.length === 0) return;

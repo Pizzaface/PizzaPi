@@ -63,15 +63,14 @@ function piTuiPath(subpath: string): string {
 // ---------------------------------------------------------------------------
 
 describe("pi-coding-agent patch application", () => {
-    test("agent-session.js: retryable error regex includes JSON parse errors", async () => {
+    test("agent-session.js: extension sendUserMessage accepts expandPromptTemplates opt-in", async () => {
         const source = await Bun.file(
             piCodingAgentPath("dist/core/agent-session.js"),
         ).text();
 
-        // The patch adds JSON parse error patterns to the retryable error regex
-        expect(source).toContain("PATCH(pizzapi): add JSON parse errors to retryable patterns");
-        expect(source).toContain("json.?parse.?error");
-        expect(source).toContain("unexpected.?end.?of.?json");
+        // The patch lets callers opt into command/template expansion (default false)
+        expect(source).toContain("PATCH(pizzapi): allow callers to opt into command/template expansion");
+        expect(source).toContain("options?.expandPromptTemplates ?? false");
     });
 
     test("interactive-mode.js: version check call is removed from run()", async () => {
@@ -143,30 +142,6 @@ describe("pi-coding-agent patch application", () => {
 // ---------------------------------------------------------------------------
 
 describe("pi-coding-agent patched runtime behavior", () => {
-    test("retryable error regex matches JSON parse errors from truncated streams", async () => {
-        // Extract the regex from the patched source and verify it matches
-        // the actual error messages that Bun/JavaScriptCore produces.
-        const source = await Bun.file(
-            piCodingAgentPath("dist/core/agent-session.js"),
-        ).text();
-
-        // Find the regex pattern in the source
-        const match = source.match(/return (\/overloaded.*?\/i)\.test\(err\)/);
-        expect(match).not.toBeNull();
-        const regex = eval(match![1]); // Safe: we're evaluating a known regex literal from our own patched code
-
-        // Bun/JavaScriptCore format
-        expect(regex.test("JSON Parse error: Expected '}'")).toBe(true);
-        expect(regex.test("JSON Parse error: Unexpected end of input")).toBe(true);
-        // V8/Node format
-        expect(regex.test("Unexpected end of JSON input")).toBe(true);
-        // Ensure existing patterns still match
-        expect(regex.test("overloaded_error")).toBe(true);
-        expect(regex.test("rate limit exceeded")).toBe(true);
-        expect(regex.test("Error 529: overloaded")).toBe(true);
-        expect(regex.test("fetch failed")).toBe(true);
-    });
-
     test("CONFIG_DIR_NAME exports as .pizzapi at runtime", async () => {
         const { CONFIG_DIR_NAME } = await import(
             piCodingAgentPath("dist/config.js")
@@ -408,10 +383,37 @@ describe("pi-agent-core patch application", () => {
 // pi-ai patches (Anthropic web search support)
 // ===========================================================================
 
+describe("pi-ai patch application — retryable JSON parse errors", () => {
+    test("retry.js: includes JSON parse error patterns", async () => {
+        const source = await Bun.file(piAiPath("dist/utils/retry.js")).text();
+        // The retryable-JSON-parse hunk moved here from pi-coding-agent in 0.80.x
+        expect(source).toContain("PATCH(pizzapi): retry transient JSON parse failures");
+        expect(source).toContain('"json.?parse.?error"');
+        expect(source).toContain('"unexpected.?end.?of.?json"');
+    });
+
+    test("isRetryableAssistantError matches JSON parse errors from truncated streams", async () => {
+        const { isRetryableAssistantError } = await import(piAiPath("dist/utils/retry.js"));
+        const err = (errorMessage: string) => ({ stopReason: "error" as const, errorMessage });
+        // Bun/JavaScriptCore format
+        expect(isRetryableAssistantError(err("JSON Parse error: Expected '}'"))).toBe(true);
+        expect(isRetryableAssistantError(err("JSON Parse error: Unexpected end of input"))).toBe(true);
+        // V8/Node format
+        expect(isRetryableAssistantError(err("Unexpected end of JSON input"))).toBe(true);
+        // Existing patterns still match
+        expect(isRetryableAssistantError(err("overloaded_error"))).toBe(true);
+        expect(isRetryableAssistantError(err("rate limit exceeded"))).toBe(true);
+        expect(isRetryableAssistantError(err("Error 529: overloaded"))).toBe(true);
+        expect(isRetryableAssistantError(err("fetch failed"))).toBe(true);
+        // Non-error stop reasons are not retryable
+        expect(isRetryableAssistantError({ stopReason: "stop", errorMessage: "" })).toBe(false);
+    });
+});
+
 describe("pi-ai patch application — Anthropic web search", () => {
-    test("anthropic.js: convertTools passes through server-side tool objects", async () => {
+    test("anthropic-messages.js: convertTools passes through server-side tool objects", async () => {
         const source = await Bun.file(
-            piAiPath("dist/providers/anthropic.js"),
+            piAiPath("dist/api/anthropic-messages.js"),
         ).text();
 
         // The patch checks for tool.type before converting
@@ -419,9 +421,9 @@ describe("pi-ai patch application — Anthropic web search", () => {
         expect(source).toContain('tool.type && typeof tool.type === "string"');
     });
 
-    test("anthropic.js: buildParams injects web search tool from PIZZAPI_WEB_SEARCH env", async () => {
+    test("anthropic-messages.js: buildParams injects web search tool from PIZZAPI_WEB_SEARCH env", async () => {
         const source = await Bun.file(
-            piAiPath("dist/providers/anthropic.js"),
+            piAiPath("dist/api/anthropic-messages.js"),
         ).text();
 
         expect(source).toContain("PATCH(pizzapi): inject Anthropic web search tool");
@@ -434,9 +436,9 @@ describe("pi-ai patch application — Anthropic web search", () => {
         expect(source).toMatch(/\["0",\s*"false",\s*"no",\s*"off"\]/);
     });
 
-    test("anthropic.js: stream handler processes server_tool_use blocks", async () => {
+    test("anthropic-messages.js: stream handler processes server_tool_use blocks", async () => {
         const source = await Bun.file(
-            piAiPath("dist/providers/anthropic.js"),
+            piAiPath("dist/api/anthropic-messages.js"),
         ).text();
 
         expect(source).toContain("PATCH(pizzapi): handle server_tool_use");
@@ -444,9 +446,9 @@ describe("pi-ai patch application — Anthropic web search", () => {
         expect(source).toContain("_serverToolUse");
     });
 
-    test("anthropic.js: stream handler processes web_search_tool_result blocks", async () => {
+    test("anthropic-messages.js: stream handler processes web_search_tool_result blocks", async () => {
         const source = await Bun.file(
-            piAiPath("dist/providers/anthropic.js"),
+            piAiPath("dist/api/anthropic-messages.js"),
         ).text();
 
         expect(source).toContain("PATCH(pizzapi): handle web_search_tool_result");
@@ -454,9 +456,9 @@ describe("pi-ai patch application — Anthropic web search", () => {
         expect(source).toContain("_webSearchResult");
     });
 
-    test("anthropic.js: convertMessages round-trips server tool blocks", async () => {
+    test("anthropic-messages.js: convertMessages round-trips server tool blocks", async () => {
         const source = await Bun.file(
-            piAiPath("dist/providers/anthropic.js"),
+            piAiPath("dist/api/anthropic-messages.js"),
         ).text();
 
         expect(source).toContain("PATCH(pizzapi): round-trip server tool use");
@@ -465,11 +467,11 @@ describe("pi-ai patch application — Anthropic web search", () => {
         expect(source).toContain("block._webSearchResult");
     });
 
-    test("anthropic.js: file is syntactically valid", async () => {
+    test("anthropic-messages.js: file is syntactically valid", async () => {
         // If the patch broke the JS syntax, this import will throw
-        const mod = await import(piAiPath("dist/providers/anthropic.js"));
-        expect(typeof mod.streamAnthropic).toBe("function");
-        expect(typeof mod.streamSimpleAnthropic).toBe("function");
+        const mod = await import(piAiPath("dist/api/anthropic-messages.js"));
+        expect(typeof mod.stream).toBe("function");
+        expect(typeof mod.streamSimple).toBe("function");
     });
 });
 
