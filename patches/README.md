@@ -62,8 +62,8 @@ patterns that upstream relocated into `dist/utils/retry.js`.
 | `dist/utils/oauth/anthropic.js` | Preserves Claude Code Keychain / credential-file fallback in `anthropicOAuthProvider.refreshToken()` |
 | `dist/env-api-keys.js` | Recognizes `OLLAMA_API_KEY` for provider `ollama-cloud` |
 | `dist/utils/retry.js` | Adds `json.?parse.?error` / `unexpected.?end.?of.?json` to `RETRYABLE_PROVIDER_ERROR_PATTERN` (moved here from `pi-coding-agent` in 0.80.x) |
-| `dist/providers/ollama-cloud.models.js` | New file: bundled `ollama-cloud` provider models targeting `https://ollama.com/v1` with conservative OpenAI-compatible defaults and context windows scraped from Ollama's cloud model tables |
-| `dist/models.generated.js` / `dist/models.generated.d.ts` / `dist/types.d.ts` | Imports and registers `OLLAMA_CLOUD_MODELS`, and adds `ollama-cloud` to `KnownProvider` |
+| `dist/models.generated.js` | Inlines `createOllamaModel()` helper and `OLLAMA_CLOUD_MODELS` catalog, registers the `ollama-cloud` key in `MODELS` (inlined rather than a separate file to work around [oven-sh/bun#13330](https://github.com/oven-sh/bun/issues/13330) — `bun patch` fails on `new file` in nested dirs) |
+| `dist/models.generated.d.ts` / `dist/types.d.ts` | Adds `ollama-cloud` model typing to `MODELS` and `KnownProvider` |
 
 ## @mariozechner/pi-coding-agent@0.70.6 (replaced by 0.79.3 patch)
 
