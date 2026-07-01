@@ -109,8 +109,7 @@ export default function EnvVarsSettings({ config, onSave, saving }: SectionProps
             <div className="flex items-start gap-2 rounded-md border border-border bg-muted/50 px-4 py-3 text-sm text-muted-foreground">
                 <Terminal className="mt-0.5 size-4 shrink-0" />
                 <span>
-                    Environment variable overrides are applied when the runner starts. Restart the runner for
-                    changes to take effect.
+                    Environment variable overrides are applied to new runner sessions.
                 </span>
             </div>
 

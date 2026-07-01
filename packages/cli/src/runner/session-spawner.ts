@@ -5,6 +5,7 @@ import { cleanupSessionAttachments } from "../extensions/session-attachments.js"
 import { logInfo } from "./logger.js";
 import { runnerUsageCacheFilePath, trackSessionCwd, untrackSessionCwd } from "./runner-usage-cache.js";
 import { isCwdAllowed } from "./workspace.js";
+import { loadConfig } from "../config.js";
 
 export interface RunnerSession {
     sessionId: string;
@@ -129,8 +130,16 @@ export function spawnSession(
         }
     }
 
+    const envOverrides: Record<string, string> = {};
+    for (const [key, val] of Object.entries(loadConfig(effectiveCwd).envOverrides ?? {})) {
+        if (key.startsWith("PIZZAPI_") && !WORKER_ENV_DENYLIST.has(key) && typeof val === "string") {
+            envOverrides[key] = val;
+        }
+    }
+
     const env: Record<string, string> = {
         ...baseEnv,
+        ...envOverrides,
         // Use the daemon's resolved relay URL so workers always connect to the
         // same relay the daemon is using (not a potentially-changed config file).
         PIZZAPI_RELAY_URL: relayUrl,

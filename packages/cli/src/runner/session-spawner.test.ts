@@ -85,6 +85,17 @@ describe("session-spawner child", () => {
             isCwdAllowed,
         }));
 
+        mock.module("../config.js", () => ({
+            loadConfig: () => ({
+                envOverrides: {
+                    PIZZAPI_NO_MCP: "1",
+                    PIZZAPI_RELAY_URL: "ignored",
+                    ANTHROPIC_API_KEY: "ignored",
+                    NODE_OPTIONS: "ignored",
+                },
+            }),
+        }));
+
         const { spawnSession } = await import("./session-spawner.js");
         const tempCwd = mkdtempSync(join(tmpdir(), "session-spawner-child-"));
 
@@ -122,6 +133,7 @@ describe("session-spawner child", () => {
             expect(lastSpawnCall?.stdio).toEqual(["ignore", "inherit", "inherit", "ipc"]);
             expect(lastSpawnCall?.env).toMatchObject({
                 ANTHROPIC_API_KEY: "keep-me",
+                PIZZAPI_NO_MCP: "1",
                 PIZZAPI_RELAY_URL: "https://relay.example",
                 PIZZAPI_API_KEY: "api-key",
                 PIZZAPI_SESSION_ID: "sess-main",
