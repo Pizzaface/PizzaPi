@@ -22,6 +22,7 @@ import { toolSearchExtension } from "./tool-search.js";
 import { ollamaWebToolsExtension } from "./ollama-web-tools.js";
 import { providerExtension } from "./providers/extension.js";
 import { sessionAnalysisExtension } from "./session-analysis.js";
+import { providerRequestLogExtension } from "./provider-request-log.js";
 
 export interface BuildExtensionFactoriesOptions {
     cwd: string;
@@ -48,6 +49,10 @@ function named(factory: ExtensionFactory, displayName: string): ExtensionFactory
  */
 export function buildPizzaPiExtensionFactories(options: BuildExtensionFactoriesOptions): ExtensionFactory[] {
     const factories: ExtensionFactory[] = [];
+
+    // Diagnostic (off unless PIZZAPI_LOG_PROVIDER_REQUEST is set): log the
+    // resolved provider/api and request shape for each outbound turn.
+    factories.push(named(providerRequestLogExtension, "provider-request-log"));
 
     // triggersExtension provides tell_child, respond_to_trigger, escalate_trigger tools.
     // session_complete is fired from remoteExtension's shutdown handler (before disconnect).
