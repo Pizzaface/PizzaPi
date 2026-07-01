@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { buildSystemPrompt, BUILTIN_SYSTEM_PROMPT } from "./system-prompt.js";
+import { buildSystemPrompt, maybeBuildSystemPrompt, BUILTIN_SYSTEM_PROMPT } from "./system-prompt.js";
 
 describe("buildSystemPrompt", () => {
     test("returns a non-empty string", () => {
@@ -143,6 +143,18 @@ describe("buildSystemPrompt", () => {
         expect(result).toContain("subagent-model-selection");
         expect(result).toContain("automatically selects the most cost-effective");
         expect(result).toContain("model: { provider, id }");
+    });
+});
+
+
+describe("maybeBuildSystemPrompt", () => {
+    test("returns the built-in prompt by default", () => {
+        expect(maybeBuildSystemPrompt({})).toContain('section name="sandbox"');
+        expect(maybeBuildSystemPrompt({ builtinSystemPrompt: true })).toContain('section name="sandbox"');
+    });
+
+    test("returns undefined when builtinSystemPrompt is false", () => {
+        expect(maybeBuildSystemPrompt({ builtinSystemPrompt: false })).toBeUndefined();
     });
 });
 

@@ -314,6 +314,8 @@ export interface PizzaPiConfig {
     agentDir?: string;
     /** Prepend text to the system prompt without replacing it */
     appendSystemPrompt?: string;
+    /** Set to false to skip PizzaPi's built-in system prompt (vanilla pi prompt). Default: true */
+    builtinSystemPrompt?: boolean;
     /** API key for authenticating with the PizzaPi relay server */
     apiKey?: string;
     /** WebSocket URL of the PizzaPi relay server. Default: ws://localhost:7492. Set to "off" to disable relay entirely. */

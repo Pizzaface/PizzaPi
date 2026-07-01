@@ -114,6 +114,7 @@ You can also override any setting with **environment variables**.
 | `relayUrl` | `string` | `ws://localhost:7492` | WebSocket URL of the relay server. Set to `"off"` to disable relay entirely. |
 | `systemPrompt` | `string` | *(pi default)* | Fully replace the default system prompt |
 | `appendSystemPrompt` | `string` | — | Append to the default system prompt |
+| `builtinSystemPrompt` | `boolean` | `true` | Set to `false` to skip PizzaPi's built-in system prompt additions (subagents, plan mode, sigils, tunnels, PizzaPi config guidance) for a vanilla pi prompt |
 | `agentDir` | `string` | `~/.pizzapi` | Agent config directory (skills, extensions, etc.) |
 | `skills` | `string[]` | `[]` | Additional skill directories. Supports `~` expansion. |
 | `allowProjectHooks` | `boolean` | `false` | Trust gate: allow project-local hooks to run. **Global config only.** |

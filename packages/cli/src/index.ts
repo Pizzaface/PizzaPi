@@ -10,7 +10,7 @@ import {
     SessionManager,
 } from "@earendil-works/pi-coding-agent";
 import { join } from "path";
-import { buildSystemPrompt, defaultAgentDir, expandHome, loadConfig, resolveSandboxConfig, validateSandboxOverride, applyProviderSettingsEnv } from "./config.js";
+import { maybeBuildSystemPrompt, defaultAgentDir, expandHome, loadConfig, resolveSandboxConfig, validateSandboxOverride, applyProviderSettingsEnv } from "./config.js";
 import { isPackageCommand, runPackageCommand } from "./package-commands.js";
 import { getOAuthAccessToken } from "./runner/usage-auth.js";
 import { c, usageBar, colorPct, colorRemaining } from "./cli-colors.js";
@@ -487,7 +487,7 @@ async function main() {
             : {}
         ),
         appendSystemPrompt: (() => {
-            const parts = [buildSystemPrompt({ cwd }), config.appendSystemPrompt].filter(Boolean) as string[];
+            const parts = [maybeBuildSystemPrompt(config, { cwd }), config.appendSystemPrompt].filter(Boolean) as string[];
             return parts;
         })(),
         ...(agentsFilesOverride && { agentsFilesOverride }),
@@ -510,7 +510,7 @@ async function main() {
                 ...(config.systemPrompt !== undefined && {
                     systemPromptOverride: () => config.systemPrompt,
                 }),
-                appendSystemPrompt: [buildSystemPrompt({ cwd: opts.cwd }), config.appendSystemPrompt].filter(Boolean) as string[],
+                appendSystemPrompt: [maybeBuildSystemPrompt(config, { cwd: opts.cwd }), config.appendSystemPrompt].filter(Boolean) as string[],
                 ...(agentsFilesOverride && { agentsFilesOverride }),
             },
         });

@@ -1,7 +1,7 @@
 import { createAgentSession, DefaultResourceLoader, AuthStorage } from "@earendil-works/pi-coding-agent";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { buildSystemPrompt, defaultAgentDir, expandHome, loadConfig, resolveSandboxConfig, validateSandboxOverride, applyProviderSettingsEnv } from "../config.js";
+import { maybeBuildSystemPrompt, defaultAgentDir, expandHome, loadConfig, resolveSandboxConfig, validateSandboxOverride, applyProviderSettingsEnv } from "../config.js";
 import { buildSkillPaths, buildPromptTemplatePaths, createAgentsFilesOverride } from "../skills.js";
 import { getPluginSkillPaths } from "../extensions/claude-plugins.js";
 import { initSandbox, cleanupSandbox, isSandboxActive } from "@pizzapi/tools";
@@ -179,7 +179,7 @@ function injectContextTrackingEntries(
     session: any,
     cwd: string,
     agentDir: string,
-    config: { appendSystemPrompt?: string },
+    config: { appendSystemPrompt?: string; builtinSystemPrompt?: boolean },
 ): void {
     const sm = session.sessionManager;
     if (!sm || typeof sm.appendCustomEntry !== "function") return;
@@ -213,10 +213,8 @@ function injectContextTrackingEntries(
 
     // ── Built-in system prompt ─────────────────────────────────────────────
     try {
-        appendContextTelemetry(
-            "context:builtin-prompt",
-            buildSystemPrompt({ cwd, isRunner: true }),
-        );
+        const builtin = maybeBuildSystemPrompt(config, { cwd, isRunner: true });
+        if (builtin) appendContextTelemetry("context:builtin-prompt", builtin);
     } catch { /* skip */ }
 
     // ── User append system prompt (from ~/.pizzapi/config.json) ───────────
@@ -334,7 +332,7 @@ async function main(): Promise<void> {
             : {}
         ),
         appendSystemPrompt: (() => {
-            const parts = [buildSystemPrompt({ cwd, isRunner: true }), config.appendSystemPrompt, agentSystemPrompt].filter(Boolean) as string[];
+            const parts = [maybeBuildSystemPrompt(config, { cwd, isRunner: true }), config.appendSystemPrompt, agentSystemPrompt].filter(Boolean) as string[];
             return parts;
         })(),
         ...(agentsFilesOverride && { agentsFilesOverride }),
