@@ -15,6 +15,9 @@ export default function SystemPromptSettings({ config, onSave, saving }: Section
     const [builtinSystemPrompt, setBuiltinSystemPrompt] = useState<boolean>(
         (config.builtinSystemPrompt as boolean) ?? true,
     );
+    const [sendAgentsMd, setSendAgentsMd] = useState<boolean>(
+        (config.sendAgentsMd as boolean) ?? true,
+    );
     const [skills, setSkills] = useState<string[]>(
         Array.isArray(config.skills) ? (config.skills as string[]) : [],
     );
@@ -40,7 +43,7 @@ export default function SystemPromptSettings({ config, onSave, saving }: Section
     };
 
     const handleSave = () => {
-        void onSave("systemPrompt", { appendSystemPrompt, builtinSystemPrompt, skills });
+        void onSave("systemPrompt", { appendSystemPrompt, builtinSystemPrompt, sendAgentsMd, skills });
     };
 
     return (
@@ -61,6 +64,23 @@ export default function SystemPromptSettings({ config, onSave, saving }: Section
                 <p className="text-xs text-muted-foreground leading-relaxed">
                     PizzaPi&rsquo;s built-in prompt covers subagents, plan mode, sigils, tunnels, and
                     PizzaPi configuration. Turn off for a vanilla pi system prompt.
+                </p>
+            </div>
+
+            <div className="flex flex-col gap-2">
+                <div className="flex items-center justify-between">
+                    <Label htmlFor="send-agents-md" className="flex items-center gap-2 text-sm font-medium">
+                        <FileText className="h-4 w-4 text-muted-foreground" />
+                        Send AGENTS.md Context
+                    </Label>
+                    <Switch
+                        id="send-agents-md"
+                        checked={sendAgentsMd}
+                        onCheckedChange={setSendAgentsMd}
+                    />
+                </div>
+                <p className="text-xs text-muted-foreground leading-relaxed">
+                    Turn off to omit AGENTS.md files from automatic prompt context. The agent can still read them with tools.
                 </p>
             </div>
 

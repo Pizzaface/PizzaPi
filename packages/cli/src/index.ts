@@ -457,7 +457,9 @@ async function main() {
 
     // Build shared agentsFilesOverride (loads AGENTS.md + .agents/*.md from cwd,
     // deduplicating against what DefaultResourceLoader already discovers).
-    const agentsFilesOverride = createAgentsFilesOverride(cwd);
+    const agentsFilesOverride = createAgentsFilesOverride(cwd, {
+        sendAgentsMd: config.sendAgentsMd !== false,
+    });
 
     // Override relay URL if --no-relay was passed
     if (noRelay) {

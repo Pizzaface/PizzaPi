@@ -179,7 +179,7 @@ function injectContextTrackingEntries(
     session: any,
     cwd: string,
     agentDir: string,
-    config: { appendSystemPrompt?: string; builtinSystemPrompt?: boolean },
+    config: { appendSystemPrompt?: string; builtinSystemPrompt?: boolean; sendAgentsMd?: boolean },
 ): void {
     const sm = session.sessionManager;
     if (!sm || typeof sm.appendCustomEntry !== "function") return;
@@ -189,26 +189,28 @@ function injectContextTrackingEntries(
         sm.appendCustomEntry(customType, { content });
     };
 
-    // ── Global rules (from ~/.pizzapi/AGENTS.md) ──────────────────────────
-    const globalAgentsPath = join(agentDir, "AGENTS.md");
-    if (existsSync(globalAgentsPath)) {
-        try {
-            appendContextTelemetry(
-                "context:global-rules",
-                readFileSync(globalAgentsPath, "utf-8"),
-            );
-        } catch { /* skip unreadable */ }
-    }
+    if (config.sendAgentsMd !== false) {
+        // ── Global rules (from ~/.pizzapi/AGENTS.md) ──────────────────────────
+        const globalAgentsPath = join(agentDir, "AGENTS.md");
+        if (existsSync(globalAgentsPath)) {
+            try {
+                appendContextTelemetry(
+                    "context:global-rules",
+                    readFileSync(globalAgentsPath, "utf-8"),
+                );
+            } catch { /* skip unreadable */ }
+        }
 
-    // ── Project rules (from <cwd>/AGENTS.md) ──────────────────────────────
-    const projectAgentsPath = join(cwd, "AGENTS.md");
-    if (existsSync(projectAgentsPath)) {
-        try {
-            appendContextTelemetry(
-                "context:project-rules",
-                readFileSync(projectAgentsPath, "utf-8"),
-            );
-        } catch { /* skip unreadable */ }
+        // ── Project rules (from <cwd>/AGENTS.md) ──────────────────────────────
+        const projectAgentsPath = join(cwd, "AGENTS.md");
+        if (existsSync(projectAgentsPath)) {
+            try {
+                appendContextTelemetry(
+                    "context:project-rules",
+                    readFileSync(projectAgentsPath, "utf-8"),
+                );
+            } catch { /* skip unreadable */ }
+        }
     }
 
     // ── Built-in system prompt ─────────────────────────────────────────────
@@ -308,7 +310,9 @@ async function main(): Promise<void> {
 
     // Build shared agentsFilesOverride (loads AGENTS.md + .agents/*.md from cwd,
     // deduplicating against what DefaultResourceLoader already discovers).
-    const agentsFilesOverride = createAgentsFilesOverride(cwd);
+    const agentsFilesOverride = createAgentsFilesOverride(cwd, {
+        sendAgentsMd: config.sendAgentsMd !== false,
+    });
 
     bootTimer.start("[boot] resource-loader");
     const loader = new DefaultResourceLoader({

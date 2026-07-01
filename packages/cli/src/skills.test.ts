@@ -564,6 +564,24 @@ describe("createAgentsFilesOverride", () => {
         expect(override).toBeNull();
     });
 
+    test("returns override when AGENTS.md sending is disabled", () => {
+        const override = createAgentsFilesOverride(dir, { sendAgentsMd: false });
+        expect(override).toBeInstanceOf(Function);
+    });
+
+    test("filters AGENTS.md files when sending is disabled", () => {
+        writeFileSync(join(dir, "AGENTS.md"), "# Agents", "utf-8");
+        const override = createAgentsFilesOverride(dir, { sendAgentsMd: false })!;
+        const base = {
+            agentsFiles: [
+                { path: "/home/user/.pizzapi/AGENTS.md", content: "# Global" },
+                { path: "/repo/CLAUDE.md", content: "# Claude" },
+            ],
+        };
+        const result = override(base);
+        expect(result.agentsFiles).toEqual([{ path: "/repo/CLAUDE.md", content: "# Claude" }]);
+    });
+
     test("returns override function when files exist", () => {
         writeFileSync(join(dir, "AGENTS.md"), "# Agents", "utf-8");
         const override = createAgentsFilesOverride(dir);

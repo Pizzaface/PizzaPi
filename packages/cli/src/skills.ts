@@ -7,7 +7,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expandHome } from "./config.js";
 
@@ -264,17 +264,32 @@ export function loadProjectAgentFiles(cwd: string): AgentFile[] {
  *
  * Returns null if there are no additional files to add.
  */
+export interface AgentsFilesOverrideOptions {
+    /** When false, do not send AGENTS.md context files automatically. */
+    sendAgentsMd?: boolean;
+}
+
+function isAgentsMdPath(path: string): boolean {
+    return basename(path).toLowerCase() === "agents.md";
+}
+
 export function createAgentsFilesOverride(
     cwd: string,
+    options: AgentsFilesOverrideOptions = {},
 ): ((base: { agentsFiles: AgentFile[] }) => { agentsFiles: AgentFile[] }) | null {
-    const additionalFiles = loadProjectAgentFiles(cwd);
-    if (additionalFiles.length === 0) return null;
+    const sendAgentsMd = options.sendAgentsMd !== false;
+    const additionalFiles = loadProjectAgentFiles(cwd)
+        .filter((file) => sendAgentsMd || !isAgentsMdPath(file.path));
+    if (additionalFiles.length === 0 && sendAgentsMd) return null;
 
     return (base) => {
-        const seenPaths = new Set(base.agentsFiles.map(f => f.path));
+        const baseFiles = sendAgentsMd
+            ? base.agentsFiles
+            : base.agentsFiles.filter((file) => !isAgentsMdPath(file.path));
+        const seenPaths = new Set(baseFiles.map(f => f.path));
         const deduped = additionalFiles.filter(f => !seenPaths.has(f.path));
         return {
-            agentsFiles: [...base.agentsFiles, ...deduped],
+            agentsFiles: [...baseFiles, ...deduped],
         };
     };
 }

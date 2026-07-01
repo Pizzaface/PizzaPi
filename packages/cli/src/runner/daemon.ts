@@ -1917,6 +1917,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                         const updates: Record<string, any> = {};
                         if (v?.appendSystemPrompt !== undefined) updates.appendSystemPrompt = v.appendSystemPrompt;
                         if (v?.builtinSystemPrompt !== undefined) updates.builtinSystemPrompt = v.builtinSystemPrompt;
+                        if (v?.sendAgentsMd !== undefined) updates.sendAgentsMd = v.sendAgentsMd;
                         if (v?.skills !== undefined) updates.skills = v.skills;
                         saveGlobal(updates);
                     } else if (section === "envVars") {

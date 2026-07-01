@@ -43,6 +43,10 @@ You can also override any setting with **environment variables**.
   // Append to the default system prompt without replacing it
   "appendSystemPrompt": "Always write tests for new code.",
 
+  // Send AGENTS.md files automatically as context. Set false to omit them
+  // unless the agent explicitly reads them with tools. Default: true.
+  "sendAgentsMd": true,
+
   // Override the agent config directory (skills, extensions, etc.)
   // Default: ~/.pizzapi
   "agentDir": "~/.pizzapi",
@@ -115,6 +119,7 @@ You can also override any setting with **environment variables**.
 | `systemPrompt` | `string` | *(pi default)* | Fully replace the default system prompt |
 | `appendSystemPrompt` | `string` | — | Append to the default system prompt |
 | `builtinSystemPrompt` | `boolean` | `true` | Set to `false` to skip PizzaPi's built-in system prompt additions (subagents, plan mode, sigils, tunnels, PizzaPi config guidance) for a vanilla pi prompt |
+| `sendAgentsMd` | `boolean` | `true` | Set to `false` to omit AGENTS.md files from automatic prompt context. The agent can still read them explicitly with tools. |
 | `agentDir` | `string` | `~/.pizzapi` | Agent config directory (skills, extensions, etc.) |
 | `skills` | `string[]` | `[]` | Additional skill directories. Supports `~` expansion. |
 | `allowProjectHooks` | `boolean` | `false` | Trust gate: allow project-local hooks to run. **Global config only.** |
