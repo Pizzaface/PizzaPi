@@ -11,6 +11,7 @@ const WebSearchSettings = React.lazy(() => import("./WebSearchSettings"));
 const ToolSearchSettings = React.lazy(() => import("./ToolSearchSettings"));
 const EnvVarsSettings = React.lazy(() => import("./EnvVarsSettings"));
 const SystemPromptSettings = React.lazy(() => import("./SystemPromptSettings"));
+const ProviderOverridesSettings = React.lazy(() => import("./ProviderOverridesSettings"));
 const TuiPrefsSettings = React.lazy(() => import("./TuiPrefsSettings"));
 const FastModelSettings = React.lazy(() => import("./FastModelSettings"));
 const PackagesSettings = React.lazy(() => import("./PackagesSettings"));
@@ -23,6 +24,7 @@ export type SettingsSection =
     | "toolSearch"
     | "envVars"
     | "systemPrompt"
+    | "providerOverrides"
     | "tuiPreferences"
     | "goal"
     | "packages";
@@ -53,6 +55,7 @@ const SETTINGS_TABS: { key: SettingsSection; label: string }[] = [
     { key: "toolSearch", label: "Tool Search" },
     { key: "envVars", label: "Env Vars" },
     { key: "systemPrompt", label: "System Prompt" },
+    { key: "providerOverrides", label: "Provider Overrides" },
     { key: "tuiPreferences", label: "TUI Prefs" },
     { key: "packages", label: "Packages" },
 ];
@@ -169,6 +172,9 @@ export function RunnerSettingsPanel({ runnerId }: RunnerSettingsPanelProps) {
             break;
         case "systemPrompt":
             content = <SystemPromptSettings {...sectionProps} />;
+            break;
+        case "providerOverrides":
+            content = <ProviderOverridesSettings {...sectionProps} />;
             break;
         case "tuiPreferences":
             content = <TuiPrefsSettings {...sectionProps} />;

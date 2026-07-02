@@ -205,7 +205,8 @@ For Ollama Cloud, enable web search under `providerSettings["ollama-cloud"].webS
 ## Per-Provider Overrides
 
 System prompt controls, AGENTS.md inclusion, and MCP server availability can be
-overridden per model provider via `providerSettings.<provider>.overrides`. The
+overridden per model provider via `providerSettings.<provider>.overrides` —
+editable in the web UI under **Runner → Settings → Provider Overrides**. The
 overrides apply when a session **starts** on that provider — either because it
 was spawned with an explicit model, or because it matches `defaultProvider` in
 `~/.pizzapi/settings.json`.

@@ -161,6 +161,102 @@ export function restoreMaskedServerEntry(
 }
 
 
+// ── Provider overrides section ─────────────────────────────────────────────
+
+const OVERRIDE_KEYS = [
+    "systemPrompt",
+    "appendSystemPrompt",
+    "builtinSystemPrompt",
+    "sendAgentsMd",
+    "disabledMcpServers",
+] as const;
+
+/**
+ * Validate a `providerOverrides` settings payload — a map of
+ * provider name → ProviderOverrides. Returns a list of human-readable
+ * problems (empty = valid).
+ */
+export function validateProviderOverridesSection(value: unknown): string[] {
+    if (value == null) return [];
+    if (typeof value !== "object" || Array.isArray(value)) {
+        return ["providerOverrides must be a JSON object (Record<provider, overrides>)"];
+    }
+    const errors: string[] = [];
+    for (const [provider, entry] of Object.entries(value as Record<string, unknown>)) {
+        if (entry == null || typeof entry !== "object" || Array.isArray(entry)) {
+            errors.push(`"${provider}": must be an object`);
+            continue;
+        }
+        const e = entry as Record<string, unknown>;
+        if (e.systemPrompt !== undefined && typeof e.systemPrompt !== "string") {
+            errors.push(`"${provider}".systemPrompt must be a string`);
+        }
+        if (e.appendSystemPrompt !== undefined && typeof e.appendSystemPrompt !== "string") {
+            errors.push(`"${provider}".appendSystemPrompt must be a string`);
+        }
+        if (e.builtinSystemPrompt !== undefined && typeof e.builtinSystemPrompt !== "boolean") {
+            errors.push(`"${provider}".builtinSystemPrompt must be a boolean`);
+        }
+        if (e.sendAgentsMd !== undefined && typeof e.sendAgentsMd !== "boolean") {
+            errors.push(`"${provider}".sendAgentsMd must be a boolean`);
+        }
+        if (
+            e.disabledMcpServers !== undefined &&
+            (!Array.isArray(e.disabledMcpServers) ||
+                e.disabledMcpServers.some((s) => typeof s !== "string"))
+        ) {
+            errors.push(`"${provider}".disabledMcpServers must be an array of strings`);
+        }
+    }
+    return errors;
+}
+
+/**
+ * Merge a `providerOverrides` payload into existing `providerSettings`.
+ *
+ * The incoming map is authoritative for the `overrides` key: providers absent
+ * from the payload (or with no recognised override fields) lose their
+ * overrides. Other per-provider settings (e.g. `webSearch`) are preserved.
+ * Only recognised override keys are copied — unknown keys are dropped.
+ */
+export function mergeProviderOverridesSection(
+    existing: Record<string, unknown> | undefined,
+    incoming: Record<string, unknown>,
+): Record<string, unknown> {
+    const ps: Record<string, any> = { ...(existing ?? {}) };
+
+    // Drop all existing overrides — the payload replaces them wholesale.
+    for (const key of Object.keys(ps)) {
+        const entry = ps[key];
+        if (entry && typeof entry === "object" && "overrides" in entry) {
+            const { overrides: _dropped, ...rest } = entry;
+            if (Object.keys(rest).length > 0) ps[key] = rest;
+            else delete ps[key];
+        }
+    }
+
+    for (const [provider, value] of Object.entries(incoming)) {
+        if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+        const overrides: Record<string, unknown> = {};
+        for (const k of OVERRIDE_KEYS) {
+            if ((value as Record<string, unknown>)[k] !== undefined) {
+                overrides[k] = (value as Record<string, unknown>)[k];
+            }
+        }
+        // Skip empty override objects and empty disable lists with nothing else set.
+        if (
+            Array.isArray(overrides.disabledMcpServers) &&
+            overrides.disabledMcpServers.length === 0
+        ) {
+            delete overrides.disabledMcpServers;
+        }
+        if (Object.keys(overrides).length === 0) continue;
+        ps[provider] = { ...(ps[provider] ?? {}), overrides };
+    }
+
+    return ps;
+}
+
 /**
  * Collect env/header keys that carry the mask sentinel on the given entry.
  */

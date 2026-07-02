@@ -41,6 +41,25 @@ describe("handleRunnerSettingsRoute", () => {
     mockSendRunnerCommand.mockReturnValue(Promise.resolve({ ok: true } as any));
   });
 
+  test("accepts providerOverrides as a valid settings section", async () => {
+    const payload = {
+      "claude-subscription": { builtinSystemPrompt: false, sendAgentsMd: false },
+    };
+
+    const [req, url] = makeReq("PUT", "/api/runners/runner-A/settings", {
+      section: "providerOverrides",
+      value: payload,
+    });
+    const res = await handleRunnerSettingsRoute(req, url);
+    expect(res).toBeTruthy();
+    expect(res!.status).toBe(200);
+    expect(mockSendRunnerCommand).toHaveBeenCalledWith("runner-A", {
+      type: "settings_update_section",
+      section: "providerOverrides",
+      value: payload,
+    });
+  });
+
   test("accepts toolSearch as a valid settings section", async () => {
     const payload = {
       enabled: true,
