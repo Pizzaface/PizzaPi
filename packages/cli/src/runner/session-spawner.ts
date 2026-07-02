@@ -116,6 +116,9 @@ export function spawnSession(
     const WORKER_ENV_DENYLIST = new Set([
         "PIZZAPI_RUNNER_TOKEN",
         "PIZZAPI_RUNNER_API_KEY",
+        // Per-session provider snapshot — each worker derives its own from
+        // PIZZAPI_WORKER_INITIAL_MODEL_PROVIDER; never inherit the daemon's.
+        "PIZZAPI_SESSION_PROVIDER",
         "NODE_OPTIONS",
         "BUN_OPTIONS",           // Bun equivalent of NODE_OPTIONS — can inject code via --preload
         "LD_PRELOAD",

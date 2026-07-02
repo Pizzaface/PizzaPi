@@ -7,6 +7,7 @@ import {
     type PizzaPiConfig,
     type HooksConfig,
     type HookEntry,
+    type ProviderOverrides,
     isPlainObject,
 } from "./types.js";
 import { mergeSandboxConfig } from "./sandbox.js";
@@ -310,7 +311,69 @@ export function loadConfig(cwd: string = process.cwd()): PizzaPiConfig {
         delete config.disabledRunnerServices;
     }
 
-    return config;
+    return applyProviderOverrides(config);
+}
+
+// ── Per-provider overrides ──────────────────────────────────────────────────────────
+
+/**
+ * Resolve the model provider this session will start on.
+ *
+ * Order:
+ *   1. PIZZAPI_SESSION_PROVIDER — stable snapshot set by the worker at boot
+ *   2. PIZZAPI_WORKER_INITIAL_MODEL_PROVIDER — spawn-time model override
+ *   3. `defaultProvider` in ~/.pizzapi/settings.json
+ *
+ * ponytail: provider is resolved once at session start — resumed sessions and
+ * mid-session /model switches keep boot-time config. Per-turn re-resolution
+ * would need dynamic tool/context reload; add if that ever matters.
+ */
+export function resolveSessionProvider(): string | undefined {
+    const envProvider =
+        process.env.PIZZAPI_SESSION_PROVIDER?.trim() ||
+        process.env.PIZZAPI_WORKER_INITIAL_MODEL_PROVIDER?.trim();
+    if (envProvider) return envProvider;
+    try {
+        const settings = JSON.parse(
+            readFileSync(join(globalConfigDir(), "settings.json"), "utf-8"),
+        );
+        if (typeof settings.defaultProvider === "string" && settings.defaultProvider.trim()) {
+            return settings.defaultProvider.trim();
+        }
+    } catch {
+        // settings.json missing or malformed — no provider default
+    }
+    return undefined;
+}
+
+/**
+ * Apply `providerSettings.<provider>.overrides` on top of the merged config.
+ *
+ * Only the explicitly supported fields are copied (no blind spread — a
+ * project-supplied overrides object must not smuggle in trust-gated keys).
+ * `disabledMcpServers` is a union with the existing list, matching the
+ * global/project merge semantics.
+ */
+export function applyProviderOverrides(
+    config: PizzaPiConfig,
+    provider: string | undefined = resolveSessionProvider(),
+): PizzaPiConfig {
+    const raw = provider ? config.providerSettings?.[provider]?.overrides : undefined;
+    if (!raw || !isPlainObject(raw)) return config;
+    const o = raw as ProviderOverrides;
+    const merged = { ...config };
+    if (typeof o.systemPrompt === "string") merged.systemPrompt = o.systemPrompt;
+    if (typeof o.appendSystemPrompt === "string") merged.appendSystemPrompt = o.appendSystemPrompt;
+    if (typeof o.builtinSystemPrompt === "boolean") merged.builtinSystemPrompt = o.builtinSystemPrompt;
+    if (typeof o.sendAgentsMd === "boolean") merged.sendAgentsMd = o.sendAgentsMd;
+    if (Array.isArray(o.disabledMcpServers)) {
+        const union = [
+            ...(merged.disabledMcpServers ?? []),
+            ...o.disabledMcpServers.filter((s): s is string => typeof s === "string"),
+        ];
+        if (union.length > 0) merged.disabledMcpServers = [...new Set(union)];
+    }
+    return merged;
 }
 
 // ── Path utilities ────────────────────────────────────────────────────────────

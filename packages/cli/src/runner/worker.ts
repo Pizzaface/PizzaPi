@@ -258,6 +258,13 @@ async function main(): Promise<void> {
         process.exit(1);
     }
 
+    // Snapshot the session's provider before extensions clear the spawn-time
+    // model env vars — every later loadConfig() (MCP init, /mcp reload) must
+    // resolve per-provider overrides against the same provider.
+    if (process.env.PIZZAPI_WORKER_INITIAL_MODEL_PROVIDER?.trim()) {
+        process.env.PIZZAPI_SESSION_PROVIDER = process.env.PIZZAPI_WORKER_INITIAL_MODEL_PROVIDER.trim();
+    }
+
     bootTimer.start("[boot] config");
     const config = loadConfig(cwd);
     const agentDir = config.agentDir ? expandHome(config.agentDir) : defaultAgentDir();

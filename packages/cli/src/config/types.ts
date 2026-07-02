@@ -263,12 +263,36 @@ export interface WebSearchConfig {
 }
 
 /**
+ * Per-provider config overrides, applied on top of the merged global+project
+ * config when a session's model provider matches the key.
+ *
+ * The provider is resolved once at session start (spawned model → env var,
+ * otherwise `defaultProvider` from ~/.pizzapi/settings.json). Mid-session
+ * model switches do NOT re-apply overrides — same "next session start"
+ * semantics as every other config change.
+ */
+export interface ProviderOverrides {
+    /** Replace the default system prompt for sessions on this provider. */
+    systemPrompt?: string;
+    /** Append to the system prompt for sessions on this provider. */
+    appendSystemPrompt?: string;
+    /** Set false to skip PizzaPi's built-in prompt additions on this provider. */
+    builtinSystemPrompt?: boolean;
+    /** Set false to omit AGENTS.md context on this provider. */
+    sendAgentsMd?: boolean;
+    /** Additional MCP server names to disable on this provider (union with global/project lists). */
+    disabledMcpServers?: string[];
+}
+
+/**
  * Provider-specific settings. Keys are provider names (e.g., "anthropic").
  */
 export interface ProviderSettings {
     [provider: string]: {
         /** Web search configuration. */
         webSearch?: WebSearchConfig;
+        /** Config overrides applied when a session starts on this provider. */
+        overrides?: ProviderOverrides;
     };
 }
 
