@@ -14,7 +14,7 @@ import type {
     TerminalInterServerEvents,
     TerminalSocketData,
 } from "@pizzapi/protocol";
-import { sessionCookieAuthMiddleware } from "./auth.js";
+import { browserAuthMiddleware } from "./auth.js";
 import { bindSocketHandlersToAuthContext } from "./context.js";
 import {
     getTerminalEntry,
@@ -36,7 +36,7 @@ export function registerTerminalNamespace(io: SocketIOServer, context: AuthConte
     > = io.of("/terminal");
 
     // Auth: validate session cookie from handshake
-    terminal.use(sessionCookieAuthMiddleware(context) as Parameters<typeof terminal.use>[0]);
+    terminal.use(browserAuthMiddleware(context) as Parameters<typeof terminal.use>[0]);
 
     terminal.on("connection", bindAuthContext(context, async (socket) => {
         bindSocketHandlersToAuthContext(socket, context);

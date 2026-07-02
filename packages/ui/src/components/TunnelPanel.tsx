@@ -1,5 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useServiceChannel } from "@/hooks/useServiceChannel";
+import { useTunnelSrc } from "@/hooks/useTunnelSrc";
+import { reportError } from "@/lib/frontend-log";
 import { ExternalLink, Plus, X, RefreshCw, Loader2 } from "lucide-react";
 
 interface TunnelInfo {
@@ -28,7 +30,9 @@ export function TunnelPanel({ sessionId, runnerId }: TunnelPanelProps) {
     const { send, available } = useServiceChannel<unknown, unknown>("tunnel", {
         onMessage: (type, payload) => {
             const p = payload as Record<string, unknown>;
-            if (type === "tunnel_list_result") {
+            if (type === "tunnel_error") {
+                reportError("tunnel", (p.error as string) || "Tunnel operation failed");
+            } else if (type === "tunnel_list_result") {
                 setTunnels(((p.tunnels as TunnelInfo[]) ?? []).filter((t: TunnelInfo) => !t.pinned));
             } else if (type === "tunnel_registered") {
                 const info = p as unknown as TunnelInfo;
@@ -77,12 +81,17 @@ export function TunnelPanel({ sessionId, runnerId }: TunnelPanelProps) {
         setIframeKey(k => k + 1);
     }, []);
 
-    if (!available) return null;
+    // Resolve the iframe URL for the active preview (web = relative, mobile =
+    // signed token against the relay). This is the fix for blank iframes in the
+    // Capacitor app, where a relative /api/tunnel/... hit the local bundle.
+    const { base: previewBase, loading: previewLoading, error: previewError } = useTunnelSrc({
+        sessionId,
+        port: previewPort,
+        runnerId,
+        enabled: available && previewPort !== null,
+    });
 
-    const tunnelUrl = (port: number) =>
-        runnerId
-            ? `/api/tunnel/runner/${encodeURIComponent(runnerId)}/${port}/`
-            : `/api/tunnel/${sessionId}/${port}/`;
+    if (!available) return null;
 
     return (
         <div className="flex flex-col h-full overflow-hidden">
@@ -129,15 +138,17 @@ export function TunnelPanel({ sessionId, runnerId }: TunnelPanelProps) {
                         >
                             <RefreshCw size={12} />
                         </button>
-                        <a
-                            href={tunnelUrl(previewPort)}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="p-1 text-muted-foreground hover:text-foreground rounded"
-                            title="Open in new tab"
-                        >
-                            <ExternalLink size={12} />
-                        </a>
+                        {previewBase && (
+                            <a
+                                href={previewBase}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="p-1 text-muted-foreground hover:text-foreground rounded"
+                                title="Open in new tab"
+                            >
+                                <ExternalLink size={12} />
+                            </a>
+                        )}
                     </>
                 )}
 
@@ -178,9 +189,14 @@ export function TunnelPanel({ sessionId, runnerId }: TunnelPanelProps) {
 
             {/* Preview area */}
             <div className="flex-1 relative bg-background">
-                {previewPort ? (
+                {previewPort && previewError ? (
+                    <div className="flex h-full flex-col items-center justify-center gap-1 p-4 text-center text-xs text-muted-foreground">
+                        <div className="text-destructive">Could not open port {previewPort}</div>
+                        <div className="break-all font-mono opacity-80">{previewError}</div>
+                    </div>
+                ) : previewPort && previewBase ? (
                     <>
-                        {iframeLoading && (
+                        {(iframeLoading || previewLoading) && (
                             <div className="absolute inset-0 flex items-center justify-center bg-background/80 z-10">
                                 <Loader2 className="size-5 animate-spin text-muted-foreground" />
                             </div>
@@ -194,7 +210,7 @@ export function TunnelPanel({ sessionId, runnerId }: TunnelPanelProps) {
                         <iframe
                             key={iframeKey}
                             ref={iframeRef}
-                            src={tunnelUrl(previewPort)}
+                            src={previewBase}
                             className="w-full h-full border-0"
                             title={`Tunnel preview — port ${previewPort}`}
                             // SECURITY: allow-same-origin is needed because tunnel content is same-origin. TODO: serve tunnel content from a separate origin to enable full sandbox isolation.
@@ -203,6 +219,10 @@ export function TunnelPanel({ sessionId, runnerId }: TunnelPanelProps) {
                             onLoadStart={() => setIframeLoading(true)}
                         />
                     </>
+                ) : previewPort && previewLoading ? (
+                    <div className="absolute inset-0 flex items-center justify-center">
+                        <Loader2 className="size-5 animate-spin text-muted-foreground" />
+                    </div>
                 ) : tunnels.length === 0 ? (
                     <div className="flex items-center justify-center h-full text-xs text-muted-foreground">
                         No tunnels active — expose a port to preview it here

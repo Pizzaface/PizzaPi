@@ -14,7 +14,7 @@ import type {
     RunnersInterServerEvents,
     RunnersSocketData,
 } from "@pizzapi/protocol";
-import { sessionCookieAuthMiddleware } from "./auth.js";
+import { browserAuthMiddleware } from "./auth.js";
 import { bindSocketHandlersToAuthContext } from "./context.js";
 import { getRunners, runnersUserRoom } from "../sio-registry.js";
 import { createLogger } from "@pizzapi/tools";
@@ -30,7 +30,7 @@ export function registerRunnersNamespace(io: SocketIOServer, context: AuthContex
     > = io.of("/runners");
 
     // Auth: validate session cookie from handshake (same as /hub)
-    runners.use(sessionCookieAuthMiddleware(context) as Parameters<typeof runners.use>[0]);
+    runners.use(browserAuthMiddleware(context) as Parameters<typeof runners.use>[0]);
 
     runners.on("connection", bindAuthContext(context, async (socket) => {
         bindSocketHandlersToAuthContext(socket, context);

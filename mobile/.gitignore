@@ -1,0 +1,3 @@
+# Bundled PWA copied from packages/ui/dist during build:mobile
+app/
+node_modules/

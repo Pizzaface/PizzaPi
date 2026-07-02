@@ -48,6 +48,12 @@ services:
       - PORT=7492
       - PIZZAPI_REDIS_URL=redis://redis:6379
       - AUTH_DB_PATH=/app/data/auth.db
+      # ── ntfy (self-hosted push). Internal publish URL is fixed; the public
+      # URL + publish token must be provided by the operator. If unset, the
+      # ntfy push branch is a silent no-op and only Web Push runs.
+      - PIZZAPI_NTFY_URL=http://ntfy
+      # - PIZZAPI_NTFY_PUBLIC_URL=https://push.example.com
+      # - PIZZAPI_NTFY_PUBLISH_TOKEN=tk_...
       # Disable new signups after the first user has registered (default: true)
       # Set to false to allow unlimited registrations.
       # - PIZZAPI_DISABLE_SIGNUP_AFTER_FIRST_USER=true
@@ -64,10 +70,52 @@ services:
         condition: service_healthy
       ui:
         condition: service_healthy
+      # ntfy is best-effort — the push branch degrades gracefully if it's down,
+      # so no health condition. Starts before the server for ordering only.
+      ntfy:
+        condition: service_started
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "bun", "-e", "fetch('http://localhost:7492/health').then(r => process.exit(r.ok ? 0 : 1))"]
       interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── ntfy (self-hosted push, Google-free Android background notifications) ──
+  # The PizzaPi server publishes to ntfy over the internal Docker network
+  # (PIZZAPI_NTFY_URL=http://ntfy). Devices subscribe to their per-user topic
+  # over the public internet, so you MUST expose ntfy behind your reverse proxy
+  # at a dedicated subdomain (e.g. https://push.example.com) and set
+  # PIZZAPI_NTFY_PUBLIC_URL to that URL on the server.
+  # See packages/docs/src/content/docs/deployment/mobile-push.mdx for the
+  # reverse-proxy snippet, publish-user provisioning, and the security model.
+  ntfy:
+    image: binwiederhier/ntfy:v2.25.0
+    command: serve
+    restart: unless-stopped
+    environment:
+      # Operator must set these. base-url = the PUBLIC url devices use.
+      - NTFY_BASE_URL=${PIZZAPI_NTFY_PUBLIC_URL:-http://localhost:2586}
+      - NTFY_AUTH_FILE=/var/lib/ntfy/auth.db
+      # deny-all: anonymous cannot read/write any topic. The operator provisions
+      # one ntfy user+token with write access (set as PIZZAPI_NTFY_PUBLISH_TOKEN
+      # on the server). Devices subscribe using per-device credentials (Phase 3)
+      # or, in Phase 1, the unguessable topic name acts as the secret.
+      - NTFY_AUTH_DEFAULT_ACCESS=deny-all
+      - NTFY_BEHIND_PROXY=true
+      # Cache so devices can retrieve messages missed while offline (catch-up).
+      - NTFY_CACHE_FILE=/var/lib/ntfy/cache.db
+    volumes:
+      - ntfy-data:/var/lib/ntfy
+    # No host port published by default — the server reaches ntfy internally as
+    # http://ntfy. For device access, reverse-proxy a push. subdomain to
+    # http://ntfy and set PIZZAPI_NTFY_PUBLIC_URL. Uncomment the port mapping
+    # only for local testing without a reverse proxy.
+    # ports:
+    #   - "2586:80"
+    healthcheck:
+      test: ["CMD", "ntfy", "healthy"]
+      interval: 15s
       timeout: 5s
       retries: 5
 
@@ -93,4 +141,5 @@ services:
 volumes:
   pizzapi-data:
   ui-dist:
+  ntfy-data:
   # redis_data:

@@ -14,7 +14,7 @@ import type {
     HubInterServerEvents,
     HubSocketData,
 } from "@pizzapi/protocol";
-import { sessionCookieAuthMiddleware } from "./auth.js";
+import { browserAuthMiddleware } from "./auth.js";
 import { bindSocketHandlersToAuthContext } from "./context.js";
 import {
     addHubClient,
@@ -36,7 +36,7 @@ export function registerHubNamespace(io: SocketIOServer, context: AuthContext): 
     > = io.of("/hub");
 
     // Auth: validate session cookie from handshake
-    hub.use(sessionCookieAuthMiddleware(context) as Parameters<typeof hub.use>[0]);
+    hub.use(browserAuthMiddleware(context) as Parameters<typeof hub.use>[0]);
 
     hub.on("connection", bindAuthContext(context, async (socket) => {
         bindSocketHandlersToAuthContext(socket, context);

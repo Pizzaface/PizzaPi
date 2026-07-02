@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, beforeEach, afterAll, afterEach } from "bun:test";
 import { createTestAuthContext, getKysely, runWithAuthContext } from "./auth.js";
-import { unsubscribePush, updateSuppressChildNotifications, getSubscriptionsForUser, isValidPushEndpoint } from "./push.js";
+import { unsubscribePush, updateSuppressChildNotifications, getSubscriptionsForUser, isValidPushEndpoint, registerNativePush, unregisterNativePush, getNativeRegistrationsForUser, ensureNativePushRegistrationTable, sendPushToUser } from "./push.js";
 import { mkdtempSync, rmSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
@@ -24,12 +24,14 @@ beforeAll(async () => {
         .addColumn("enabledEvents", "text", (col) => col.notNull().defaultTo("*"))
         .addColumn("suppressChildNotifications", "integer", (col) => col.notNull().defaultTo(0))
         .execute());
+    await withAuth(() => ensureNativePushRegistrationTable());
 });
 
 beforeEach(() => withAuth(() => undefined));
 
 afterEach(async () => {
     await withAuth(() => getKysely().deleteFrom("push_subscription" as any).execute());
+    await withAuth(() => getKysely().deleteFrom("native_push_registration" as any).execute());
 });
 
 afterAll(() => {
@@ -289,5 +291,163 @@ describe("isValidPushEndpoint", () => {
 
     authIt("rejects 0.0.0.0 (IPv4 all-interfaces bind address)", () => {
         expect(isValidPushEndpoint("https://0.0.0.0/push")).toBe(false);
+    });
+});
+
+// ── Native push (ntfy) ───────────────────────────────────────────────────────
+//
+// These tests cover the registration store + ntfy publish mapping. They mock
+// `fetch` so no real network call is made (CI-safe). The ntfy branch is gated
+// on PIZZAPI_NTFY_URL — tests set it via env to exercise the publish path.
+
+describe("native push registration", () => {
+    authIt("registerNativePush assigns an unguessable topic and persists it", async () => {
+        const reg = await registerNativePush({ userId: "user-A", platform: "android" });
+        expect(reg.userId).toBe("user-A");
+        expect(reg.platform).toBe("android");
+        expect(reg.topic).toMatch(/^pizzapi-[0-9a-f]{48}$/);
+        expect(reg.ntfyUser).toBeNull();
+        expect(reg.ntfyPass).toBeNull();
+
+        // Round-trips through the store.
+        const rows = await getNativeRegistrationsForUser("user-A");
+        expect(rows).toHaveLength(1);
+        expect(rows[0].topic).toBe(reg.topic);
+    });
+
+    authIt("registerNativePush is idempotent per user+platform (reuses topic)", async () => {
+        const first = await registerNativePush({ userId: "user-B", platform: "android" });
+        const second = await registerNativePush({ userId: "user-B", platform: "android" });
+        expect(second.topic).toBe(first.topic);
+        const rows = await getNativeRegistrationsForUser("user-B");
+        expect(rows).toHaveLength(1);
+    });
+
+    authIt("unregisterNativePush deletes the registration and reports removal", async () => {
+        await registerNativePush({ userId: "user-C", platform: "android" });
+        const removed = await unregisterNativePush("user-C", "android");
+        expect(removed).toBe(true);
+        const rows = await getNativeRegistrationsForUser("user-C");
+        expect(rows).toHaveLength(0);
+
+        // Second call reports no removal.
+        const removed2 = await unregisterNativePush("user-C", "android");
+        expect(removed2).toBe(false);
+    });
+
+    authIt("sendPushToUser is a no-op for ntfy when PIZZAPI_NTFY_URL is unset", async () => {
+        // No ntfy env set in this process → branch should silently skip.
+        // Register a row anyway; sendPushToUser must not throw and must not
+        // attempt any fetch.
+        await registerNativePush({ userId: "user-D", platform: "android" });
+        let fetchCalled = false;
+        const origFetch = globalThis.fetch;
+        (globalThis as any).fetch = () => { fetchCalled = true; return Promise.resolve(new Response("ok")); };
+        try {
+            await sendPushToUser("user-D", {
+                type: "agent_finished",
+                title: "Agent finished",
+                body: "done",
+                sessionId: "sess-1",
+            });
+        } finally {
+            (globalThis as any).fetch = origFetch;
+        }
+        expect(fetchCalled).toBe(false);
+    });
+
+    authIt("sendPushToUser publishes to ntfy with mapped headers when configured", async () => {
+        await registerNativePush({ userId: "user-E", platform: "android" });
+        const reg = (await getNativeRegistrationsForUser("user-E"))[0];
+
+        // Enable the ntfy branch for this test only.
+        process.env.PIZZAPI_NTFY_URL = "http://ntfy-test";
+        process.env.PIZZAPI_NTFY_PUBLIC_URL = "https://push.example.com";
+        process.env.PIZZAPI_NTFY_PUBLISH_TOKEN = "tk_test_publish";
+
+        const captured: { url: string; init: RequestInit }[] = [];
+        const origFetch = globalThis.fetch;
+        (globalThis as any).fetch = (url: string, init: RequestInit) => {
+            captured.push({ url, init });
+            return Promise.resolve(new Response("ok", { status: 200 }));
+        };
+        try {
+            await sendPushToUser("user-E", {
+                type: "agent_needs_input",
+                title: "Input needed",
+                body: "Agent asks: ship it?",
+                sessionId: "sess-2",
+            });
+        } finally {
+            (globalThis as any).fetch = origFetch;
+            delete process.env.PIZZAPI_NTFY_URL;
+            delete process.env.PIZZAPI_NTFY_PUBLIC_URL;
+            delete process.env.PIZZAPI_NTFY_PUBLISH_TOKEN;
+        }
+
+        expect(captured).toHaveLength(1);
+        expect(captured[0].url).toBe(`http://ntfy-test/${reg.topic}`);
+        const headers = captured[0].init.headers as Record<string, string>;
+        expect(headers["Title"]).toBe("Input needed");
+        expect(headers["Priority"]).toBe("4"); // high for agent_needs_input
+        expect(headers["Authorization"]).toBe("Bearer tk_test_publish");
+        expect(headers["Click"]).toContain("/#/sessions/sess-2");
+        expect(String(captured[0].init.body)).toBe("Agent asks: ship it?");
+    });
+
+    authIt("ntfy Title prefers sessionName so Android can group by conversation", async () => {
+        await registerNativePush({ userId: "user-E2", platform: "android" });
+        process.env.PIZZAPI_NTFY_URL = "http://ntfy-test";
+        process.env.PIZZAPI_NTFY_PUBLIC_URL = "https://push.example.com";
+
+        const captured: { init: RequestInit }[] = [];
+        const origFetch = globalThis.fetch;
+        (globalThis as any).fetch = (_url: string, init: RequestInit) => {
+            captured.push({ init });
+            return Promise.resolve(new Response("ok", { status: 200 }));
+        };
+        try {
+            await sendPushToUser("user-E2", {
+                type: "agent_finished",
+                title: "Agent finished",
+                body: "Here's the summary of what I did.",
+                sessionId: "sess-9",
+                sessionName: "My Session",
+            });
+        } finally {
+            (globalThis as any).fetch = origFetch;
+            delete process.env.PIZZAPI_NTFY_URL;
+            delete process.env.PIZZAPI_NTFY_PUBLIC_URL;
+        }
+
+        expect(captured).toHaveLength(1);
+        const headers = captured[0].init.headers as Record<string, string>;
+        expect(headers["Title"]).toBe("My Session");
+    });
+
+    authIt("sendPushToUser prunes ntfy registrations on 403/404", async () => {
+        await registerNativePush({ userId: "user-F", platform: "android" });
+        process.env.PIZZAPI_NTFY_URL = "http://ntfy-test";
+        process.env.PIZZAPI_NTFY_PUBLISH_TOKEN = "tk_test_publish";
+
+        const origFetch = globalThis.fetch;
+        (globalThis as any).fetch = () =>
+            Promise.resolve(new Response("forbidden", { status: 403 }));
+        try {
+            await sendPushToUser("user-F", {
+                type: "agent_finished",
+                title: "done",
+                body: "x",
+                sessionId: "s",
+            });
+        } finally {
+            (globalThis as any).fetch = origFetch;
+            delete process.env.PIZZAPI_NTFY_URL;
+            delete process.env.PIZZAPI_NTFY_PUBLISH_TOKEN;
+        }
+
+        // The 403 should have pruned the registration.
+        const rows = await getNativeRegistrationsForUser("user-F");
+        expect(rows).toHaveLength(0);
     });
 });

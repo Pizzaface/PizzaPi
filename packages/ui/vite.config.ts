@@ -15,6 +15,13 @@ const uiVersion =
         ? uiPackageJson.version.trim()
         : "0.0.0";
 
+// A service worker must NOT run inside the Capacitor native shell: it's served
+// from https://localhost/app/ but the SW config is root-oriented (scope "/",
+// navigateFallback "/index.html"), so a stale precache serves cached HTML that
+// references old asset hashes → blank/black screen after a rebuild. Disable PWA
+// for the mobile build (VITE_MOBILE=1, also implied by the relative base).
+const enablePWA = !(process.env.VITE_MOBILE === "1" || (process.env.VITE_BASE_URL ?? "/") === "./");
+
 // Derive extra allowed hosts from the PIZZAPI_EXTRA_ORIGINS env var so the
 // Vite dev server accepts requests from those origins without hardcoding them.
 // e.g. PIZZAPI_EXTRA_ORIGINS=https://myhost.ts.net,http://myhost.ts.net:5173
@@ -36,6 +43,7 @@ const tlsConfig =
             : undefined;
 
 export default defineConfig({
+    base: process.env.VITE_BASE_URL ?? "/",
     plugins: [
         react(),
         tailwindcss(),
@@ -51,7 +59,7 @@ export default defineConfig({
                 });
             },
         },
-        VitePWA({
+        ...(enablePWA ? [VitePWA({
             registerType: "autoUpdate",
             includeAssets: ["favicon.ico", "pizza.svg", "apple-touch-icon-180x180.png"],
             manifest: {
@@ -129,7 +137,7 @@ export default defineConfig({
                     },
                 ],
             },
-        }),
+        })] : []),
     ],
     define: {
         __PIZZAPI_UI_VERSION__: JSON.stringify(uiVersion),

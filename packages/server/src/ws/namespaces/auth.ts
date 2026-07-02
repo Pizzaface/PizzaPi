@@ -67,6 +67,59 @@ export function apiKeyAuthMiddleware(context: AuthContext) {
     });
 }
 
+/**
+ * Browser/mobile UI auth: tries API key first (no origin check), then falls back
+ * to cookie session with trusted-origin validation. Lets the bundled Capacitor
+ * app authenticate without relying on WebView cookies.
+ */
+export function browserAuthMiddleware(context: AuthContext) {
+    return bindAuthContext(context, async (socket: Socket, next: (err?: Error) => void): Promise<void> => {
+        try {
+            applyHandshakeClientMetadata(socket);
+
+            const apiKey = socket.handshake.auth?.apiKey;
+            if (typeof apiKey === "string" && apiKey) {
+                const result = await getAuth().api.verifyApiKey({ body: { key: apiKey } });
+                if (result.valid && result.key?.userId) {
+                    const userId = result.key.userId;
+                    const row = await getKysely()
+                        .selectFrom("user")
+                        .select("name")
+                        .where("id", "=", userId)
+                        .executeTakeFirst();
+                    socket.data.userId = userId;
+                    socket.data.userName = row?.name ?? userId;
+                    return next();
+                }
+            }
+
+            const origin = socket.handshake.headers.origin;
+            if (origin && !getTrustedOrigins().includes(origin)) {
+                return next(new Error("forbidden: untrusted origin"));
+            }
+
+            const cookieHeader = socket.handshake.headers.cookie;
+            if (!cookieHeader) {
+                return next(new Error("unauthorized"));
+            }
+
+            const headers = new Headers();
+            headers.set("cookie", cookieHeader);
+
+            const session = await getAuth().api.getSession({ headers });
+            if (!session?.user?.id) {
+                return next(new Error("unauthorized"));
+            }
+
+            socket.data.userId = session.user.id;
+            socket.data.userName = session.user.name ?? session.user.id;
+            next();
+        } catch {
+            next(new Error("unauthorized"));
+        }
+    });
+}
+
 export function sessionCookieAuthMiddleware(context: AuthContext) {
     return bindAuthContext(context, async (socket: Socket, next: (err?: Error) => void): Promise<void> => {
         try {
