@@ -6,7 +6,7 @@ import type {
     RunnerInfo,
 } from "@pizzapi/protocol";
 import { SOCKET_PROTOCOL_VERSION } from "@pizzapi/protocol";
-import { getSocketIOBase } from "./relay.js";
+import { getSocketIOBase, getSocketIOAuth } from "./relay.js";
 import { upsert } from "./runnerHelpers.js";
 
 declare const __PIZZAPI_UI_VERSION__: string;
@@ -80,10 +80,10 @@ export function useRunnersFeed(options: UseRunnersFeedOptions = {}): RunnersFeed
             base ? `${base}/runners` : "/runners",
             {
                 withCredentials: true,
-                auth: {
+                auth: getSocketIOAuth({
                     protocolVersion: SOCKET_PROTOCOL_VERSION,
                     clientVersion: UI_VERSION,
-                },
+                }),
             },
         );
 

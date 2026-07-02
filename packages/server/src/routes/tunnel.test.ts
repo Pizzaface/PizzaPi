@@ -710,3 +710,50 @@ describe("tunnel CSS rewriting", () => {
         expect(rewritten).toBe(css);
     });
 });
+
+describe("tunnel auth header forwarding", () => {
+    test("session-based tunnel strips cookie/authorization but forwards x-api-key", async () => {
+        let capturedHeaders: Record<string, string> = {};
+        const relay = {
+            proxyHttpRequest: (_runnerId: string, request: { headers: Record<string, string> }, cb: {
+                onResponseStart: (code: number, statusMessage: string, headers: Record<string, string>) => void;
+                onResponseEnd: () => void;
+            }) => {
+                capturedHeaders = request.headers;
+                setTimeout(() => {
+                    cb.onResponseStart(200, "OK", { "content-type": "text/plain" });
+                    cb.onResponseEnd();
+                }, 0);
+                return { cancel() {} };
+            },
+            sendRequestDataEnd() {},
+        };
+
+        const req = new Request("http://localhost/api/tunnel/s-1/3000/data", {
+            headers: {
+                "x-api-key": "mobile-key-123",
+                cookie: "session=abc",
+                authorization: "Bearer xyz",
+            },
+        });
+
+        const response = await proxyTunnelRequestViaRelay(
+            req,
+            relay as never,
+            "runner-1",
+            "request-1",
+            "/api/tunnel/s-1/3000",
+            3000,
+            "/data",
+            "/data",
+            {
+                "x-api-key": "mobile-key-123",
+            },
+        );
+
+        expect(response.status).toBe(200);
+        expect(capturedHeaders["x-api-key"]).toBe("mobile-key-123");
+        expect(capturedHeaders["cookie"]).toBeUndefined();
+        expect(capturedHeaders["authorization"]).toBeUndefined();
+    });
+});

@@ -7,6 +7,9 @@ import { ensureRunnerTriggerListenersTable } from "./sessions/runner-trigger-lis
 import { ensureUserHiddenModelTable } from "./user-hidden-models.js";
 import { ensureExtractedAttachmentTable } from "./attachments/store.js";
 import { ensureWebhookTable } from "./webhooks/store.js";
+import { ensureSetupClaimsTable } from "./setup-claims.js";
+import { ensureMobileLinkTable } from "./mobile-links.js";
+import { ensureNativePushRegistrationTable } from "./push.js";
 import { createLogger } from "@pizzapi/tools";
 
 const log = createLogger("startup");
@@ -58,6 +61,9 @@ export async function runAllMigrations(context: AuthContext): Promise<void> {
             await ensureRunnerTriggerListenersTable();
             await ensureExtractedAttachmentTable();
             await ensureWebhookTable();
+            await ensureSetupClaimsTable();
+            await ensureMobileLinkTable();
+            await ensureNativePushRegistrationTable();
             log.info("All database migrations complete.");
         });
     } catch (e) {

@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- allowBackup=false: this app has no cross-device restorable state, and
+         backup would exfiltrate the WebView cookie jar (session cookies) and the
+         persisted ntfy token/config. Simpler + guaranteed vs. backup exclude
+         rules (P0-3/#18). -->
+    <application
+        android:allowBackup="false"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/AppTheme">
+
+        <activity
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|smallestScreenSize|screenLayout|uiMode|navigation|density"
+            android:name=".MainActivity"
+            android:label="@string/title_activity_main"
+            android:theme="@style/AppTheme.NoActionBarLaunch"
+            android:launchMode="singleTask"
+            android:exported="true">
+
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+        </activity>
+
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths"></meta-data>
+        </provider>
+
+        <!-- ntfy foreground service: holds the persistent subscribe stream for
+             Google-free Android background push. dataSync type (Android 14+
+             requires an explicit foregroundServiceType). -->
+        <service
+            android:name=".NtfyForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+    </application>
+
+    <!-- Permissions -->
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.CAMERA" />
+
+    <!-- Notifications (local + push). POST_NOTIFICATIONS is runtime on API 33+. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Haptics. -->
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- Local notifications: reschedule after device reboot. -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!-- Local notifications: exact alarm scheduling (Android 12+). User-grantable
+         via Settings; unlike USE_EXACT_ALARM it needs no restricted Play Console
+         use-case declaration (P1-4/#13). -->
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+    <!-- Push notifications: keep the device awake to process incoming FCM
+         messages. The MessagingService itself is registered by
+         @capacitor/push-notifications' merged manifest. -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- ntfy foreground service (Google-free background push). -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+</manifest>

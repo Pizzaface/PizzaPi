@@ -231,6 +231,218 @@ export interface PushSubscribeInput {
     suppressChildNotifications?: boolean;
 }
 
+// ── Native push (ntfy) configuration ─────────────────────────────────────────
+//
+// Self-hosted ntfy delivers Android background push without Google/FCM. The
+// device holds a persistent subscribe stream to a per-device topic; the server
+// publishes to that topic via one HTTP POST. All three env vars are optional —
+// if `PIZZAPI_NTFY_URL` is unset the ntfy branch is a silent no-op and only the
+// existing Web Push path runs.
+//
+// Read lazily from `process.env` at call time (not module load) so runtime
+// changes and tests take effect without a restart.
+
+function ntfyConfig() {
+    return {
+        url: process.env.PIZZAPI_NTFY_URL ?? "",
+        publicUrl: process.env.PIZZAPI_NTFY_PUBLIC_URL ?? "",
+        publishToken: process.env.PIZZAPI_NTFY_PUBLISH_TOKEN ?? "",
+    };
+}
+
+/** True when the server is configured to publish via ntfy. */
+export function isNtfyConfigured(): boolean {
+    return ntfyConfig().url.length > 0;
+}
+
+/** Public ntfy base URL to hand to devices (for their subscribe stream). */
+export function getNtfyPublicUrl(): string {
+    return ntfyConfig().publicUrl;
+}
+
+/**
+ * Generate an unguessable per-device ntfy topic. 24 random bytes → 48 hex chars.
+ * Topic unguessability is the Phase-1 security boundary (alongside the
+ * operator's `auth-default-access: deny-all` and the server publish token).
+ */
+function generateNtfyTopic(): string {
+    return `pizzapi-${crypto.getRandomValues(new Uint8Array(24)).reduce(
+        (s, b) => s + b.toString(16).padStart(2, "0"),
+        "",
+    )}`;
+}
+
+export interface NativePushRegistrationTable {
+    id: string;
+    userId: string;
+    platform: string;
+    topic: string;
+    ntfyUser: string | null;
+    ntfyPass: string | null;
+    createdAt: string;
+}
+
+export async function ensureNativePushRegistrationTable(): Promise<void> {
+    await getKysely().schema
+        .createTable("native_push_registration")
+        .ifNotExists()
+        .addColumn("id", "text", (col) => col.primaryKey())
+        .addColumn("userId", "text", (col) => col.notNull())
+        .addColumn("platform", "text", (col) => col.notNull())
+        .addColumn("topic", "text", (col) => col.notNull())
+        .addColumn("ntfyUser", "text")
+        .addColumn("ntfyPass", "text")
+        .addColumn("createdAt", "text", (col) => col.notNull())
+        .execute();
+
+    await getKysely().schema
+        .createIndex("native_push_registration_user_idx")
+        .ifNotExists()
+        .on("native_push_registration")
+        .column("userId")
+        .execute();
+
+    await getKysely().schema
+        .createIndex("native_push_registration_topic_idx")
+        .ifNotExists()
+        .on("native_push_registration")
+        .column("topic")
+        .execute();
+}
+
+export interface RegisterNativeInput {
+    userId: string;
+    platform: string;
+}
+
+/**
+ * Register (or refresh) a native push registration for a user, returning the
+ * unguessable topic the device should subscribe to. Idempotent per user+platform
+ * — re-registering reuses the existing topic so the device keeps its topic
+ * across reinstalls of the same user.
+ */
+export async function registerNativePush(input: RegisterNativeInput): Promise<NativePushRegistrationTable> {
+    const platform = input.platform === "android" ? "android" : "android"; // only android today
+    // Upsert: reuse an existing registration for this user+platform if present.
+    const existing = await getKysely()
+        .selectFrom("native_push_registration" as any)
+        .selectAll()
+        .where("userId", "=", input.userId)
+        .where("platform", "=", platform)
+        .executeTakeFirst();
+    if (existing) return existing as unknown as NativePushRegistrationTable;
+
+    const row: NativePushRegistrationTable = {
+        id: crypto.randomUUID(),
+        userId: input.userId,
+        platform,
+        topic: generateNtfyTopic(),
+        ntfyUser: null,
+        ntfyPass: null,
+        createdAt: new Date().toISOString(),
+    };
+    await getKysely()
+        .insertInto("native_push_registration" as any)
+        .values(row as any)
+        .execute();
+    return row;
+}
+
+export async function unregisterNativePush(userId: string, platform: string): Promise<boolean> {
+    const result = await getKysely()
+        .deleteFrom("native_push_registration" as any)
+        .where("userId", "=", userId)
+        .where("platform", "=", platform)
+        .execute();
+    return Number((result as any)[0]?.numDeletedRows ?? 0) > 0;
+}
+
+export async function getNativeRegistrationsForUser(userId: string): Promise<NativePushRegistrationTable[]> {
+    const rows = await getKysely()
+        .selectFrom("native_push_registration" as any)
+        .selectAll()
+        .where("userId", "=", userId)
+        .execute();
+    return rows as unknown as NativePushRegistrationTable[];
+}
+
+/**
+ * Map a PizzaPi push payload to ntfy publish headers + body.
+ * ntfy: `Title`, `Priority` (1-5), `Tags` (emoji/csv), `Click` (open URL on tap).
+ */
+function buildNtfyPublish(payload: PushPayload): { headers: Record<string, string>; body: string } {
+    const priorityByType: Record<PushEventType, string> = {
+        agent_needs_input: "4", // high
+        agent_error: "4",
+        agent_finished: "3", // default
+        session_started: "2", // low
+        session_ended: "3",
+    };
+    const { publicUrl } = ntfyConfig();
+    const headers: Record<string, string> = {
+        // Prefer the session name so the Android client can render one
+        // conversation per session (MessagingStyle groups by title + click URL).
+        Title: payload.sessionName ?? payload.title,
+        Priority: priorityByType[payload.type] ?? "3",
+        Tags: "pizza",
+    };
+    // Click-through deep link to the relay session. The device opens this URL
+    // on tap; the web UI routes `/sessions/<id>` to the session viewer.
+    if (payload.sessionId) {
+        headers["Click"] = `${publicUrl.replace(/\/+$/, "")}/#/sessions/${payload.sessionId}`;
+    }
+    return { headers, body: payload.body };
+}
+
+/**
+ * Publish a push payload to all native (ntfy) registrations for a user.
+ * Never throws — failures are logged and stale registrations pruned. Caller
+ * (sendPushToUser) treats this as best-effort alongside the Web Push fan-out.
+ */
+async function sendNtfyToUser(userId: string, payload: PushPayload, isChildSession: boolean): Promise<void> {
+    const cfg = ntfyConfig();
+    if (!cfg.url) return;
+    const registrations = await getNativeRegistrationsForUser(userId);
+    if (registrations.length === 0) return;
+
+    const { headers, body } = buildNtfyPublish(payload);
+    const authHeaders: Record<string, string> = { ...headers };
+    if (cfg.publishToken) {
+        authHeaders["Authorization"] = `Bearer ${cfg.publishToken}`;
+    }
+    const base = cfg.url.replace(/\/+$/, "");
+    const staleIds: string[] = [];
+
+    await Promise.allSettled(
+        registrations.map(async (reg) => {
+            try {
+                const res = await fetch(`${base}/${reg.topic}`, {
+                    method: "POST",
+                    headers: { ...authHeaders, "content-type": "text/plain; charset=utf-8" },
+                    body,
+                });
+                // 403/404 = topic forbidden/unknown → prune the registration.
+                if (res.status === 403 || res.status === 404) {
+                    staleIds.push(reg.id);
+                } else if (!res.ok) {
+                    log.error(`ntfy publish to topic ${reg.topic.slice(0, 16)}… failed: ${res.status}`);
+                }
+            } catch (err) {
+                log.error("ntfy publish error:", err);
+            }
+            // isChildSession suppression mirrors the Web Push path.
+            void isChildSession;
+        }),
+    );
+
+    if (staleIds.length > 0) {
+        await getKysely()
+            .deleteFrom("native_push_registration" as any)
+            .where("id", "in", staleIds)
+            .execute();
+    }
+}
+
 export async function subscribePush(input: PushSubscribeInput): Promise<string> {
     const id = crypto.randomUUID();
     const now = new Date().toISOString();
@@ -332,6 +544,8 @@ export interface PushPayload {
     body: string;
     /** Session ID (for click-through navigation) */
     sessionId?: string;
+    /** Human-readable session name (used as the conversation title on native) */
+    sessionName?: string;
     /** Arbitrary extra data */
     data?: Record<string, unknown>;
     /** Notification actions (MC options for "agent_needs_input") */
@@ -353,6 +567,16 @@ function isEventEnabled(enabledEvents: string, eventType: PushEventType): boolea
  */
 export async function sendPushToUser(userId: string, payload: PushPayload, isChildSession = false): Promise<void> {
     const subscriptions = await getSubscriptionsForUser(userId);
+
+    // Native (ntfy) fan-out runs regardless of Web Push subscriptions — a user
+    // may have only the native app registered, with zero browser subs. Run it
+    // first (best-effort) so a slow ntfy instance can't delay browser delivery.
+    try {
+        await sendNtfyToUser(userId, payload, isChildSession);
+    } catch (err) {
+        log.error("ntfy fan-out failed:", err);
+    }
+
     if (subscriptions.length === 0) return;
 
     const payloadStr = JSON.stringify(payload);
@@ -401,13 +625,23 @@ export async function sendPushToUser(userId: string, payload: PushPayload, isChi
 /**
  * Convenience: notify a user that their agent finished working.
  */
-export function notifyAgentFinished(userId: string, sessionId: string, sessionName?: string | null, isChildSession = false): void {
+export function notifyAgentFinished(
+    userId: string,
+    sessionId: string,
+    sessionName?: string | null,
+    isChildSession = false,
+    replyText?: string,
+): void {
     const label = sessionName ?? sessionId.slice(0, 8);
+    const reply = replyText?.trim();
     void sendPushToUser(userId, {
         type: "agent_finished",
         title: "Agent finished",
-        body: `Your agent in "${label}" has finished its task.`,
+        body: reply
+            ? (reply.length > 300 ? reply.slice(0, 297) + "…" : reply)
+            : `Your agent in "${label}" has finished its task.`,
         sessionId,
+        sessionName: label,
     }, isChildSession).catch((err) => {
         log.error("notifyAgentFinished failed:", err);
     });
@@ -462,6 +696,7 @@ export function notifyAgentNeedsInput(
         title: "Input needed",
         body,
         sessionId,
+        sessionName: label,
         actions: actions.length > 0 ? actions : undefined,
         data: {
             ...(options && options.length > 0 ? { options } : {}),
@@ -485,6 +720,7 @@ export function notifyAgentError(userId: string, sessionId: string, errorMessage
         title: "Agent error",
         body,
         sessionId,
+        sessionName: label,
     }, isChildSession).catch((err) => {
         log.error("notifyAgentError failed:", err);
     });

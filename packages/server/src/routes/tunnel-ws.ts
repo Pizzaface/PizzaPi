@@ -5,9 +5,13 @@ import { getAuth } from "../auth.js";
 import { getTunnelRelay } from "../tunnel-relay.js";
 import { getSession } from "../ws/sio-state/index.js";
 import { getRunnerData } from "../ws/sio-registry.js";
+import { verifyTunnelToken } from "./tunnel-token.js";
 import { createLogger } from "@pizzapi/tools";
 
 const log = createLogger("tunnel-ws");
+
+/** Pattern: /api/tunnel/auth/:token/:sessionId/:port/<rest> — mobile iframe auth. */
+const AUTH_TUNNEL_PATH_RE = /^\/api\/tunnel\/auth\/([^/]+)\/([^/]+)\/(\d+)(\/.*)?$/;
 
 /** Pattern: /api/tunnel/runner/:runnerId/:port/<rest> — checked first (more specific). */
 const RUNNER_TUNNEL_PATH_RE = /^\/api\/tunnel\/runner\/([^/]+)\/(\d+)(\/.*)?$/;
@@ -43,6 +47,15 @@ export function handleTunnelWsUpgrade(
     const url = req.url ?? "/";
     const pathname = url.split("?")[0];
 
+    const authMatch = pathname.match(AUTH_TUNNEL_PATH_RE);
+    if (authMatch) {
+        handleAuthUpgradeAsync(req, socket, head, authMatch, url).catch((err) => {
+            log.error("Unexpected error in auth-token upgrade handler:", err);
+            if (!socket.destroyed) rejectUpgrade(socket, 500, "Internal Server Error");
+        });
+        return true;
+    }
+
     // Try runner-based path first (more specific).
     const runnerMatch = pathname.match(RUNNER_TUNNEL_PATH_RE);
     if (runnerMatch) {
@@ -65,12 +78,46 @@ export function handleTunnelWsUpgrade(
     return true;
 }
 
+async function handleAuthUpgradeAsync(
+    req: IncomingMessage,
+    rawSocket: Duplex,
+    head: Buffer,
+    match: RegExpMatchArray,
+    fullUrl: string,
+): Promise<void> {
+    let token: string;
+    let sessionId: string;
+    try {
+        token = decodeURIComponent(match[1]);
+        sessionId = decodeURIComponent(match[2]);
+    } catch {
+        rejectUpgrade(rawSocket, 400, "Bad Request");
+        return;
+    }
+    const port = parseInt(match[3], 10);
+    const payload = verifyTunnelToken(token);
+    if (!payload || payload.sessionId !== sessionId || payload.port !== port) {
+        rejectUpgrade(rawSocket, 401, "Unauthorized");
+        return;
+    }
+
+    await handleUpgradeAsync(
+        req,
+        rawSocket,
+        head,
+        [match[0], match[2], match[3], match[4] ?? "/"] as unknown as RegExpMatchArray,
+        fullUrl,
+        payload.userId,
+    );
+}
+
 async function handleUpgradeAsync(
     req: IncomingMessage,
     rawSocket: Duplex,
     head: Buffer,
     match: RegExpMatchArray,
     fullUrl: string,
+    preauthenticatedUserId?: string,
 ): Promise<void> {
     let sessionId: string;
     try {
@@ -88,6 +135,7 @@ async function handleUpgradeAsync(
     if (qIdx >= 0) {
         const qs = new URLSearchParams(fullUrl.slice(qIdx + 1));
         qs.delete("apiKey");
+        qs.delete("tunnelToken");
         const qsStr = qs.toString();
         pathWithQuery = qsStr ? `${proxyPath}?${qsStr}` : proxyPath;
     } else {
@@ -99,7 +147,7 @@ async function handleUpgradeAsync(
         return;
     }
 
-    const identity = await authenticateUpgrade(req);
+    const identity = preauthenticatedUserId ? { userId: preauthenticatedUserId } : await authenticateUpgrade(req);
     if (!identity) {
         rejectUpgrade(rawSocket, 401, "Unauthorized");
         return;
@@ -137,7 +185,7 @@ async function handleUpgradeAsync(
         if (value === undefined) continue;
         const lowerKey = key.toLowerCase();
         if (HOP_BY_HOP.has(lowerKey)) continue;
-        if (lowerKey === "cookie" || lowerKey === "authorization" || lowerKey === "x-api-key") continue;
+        if (lowerKey === "cookie" || lowerKey === "authorization" || lowerKey === "x-api-key" || lowerKey === "referer") continue;
         forwardHeaders[key] = Array.isArray(value) ? value.join(", ") : value;
     }
 
@@ -268,6 +316,7 @@ async function handleRunnerUpgradeAsync(
     if (qIdx >= 0) {
         const qs = new URLSearchParams(fullUrl.slice(qIdx + 1));
         qs.delete("apiKey");
+        qs.delete("tunnelToken");
         const qsStr = qs.toString();
         pathWithQuery = qsStr ? `${proxyPath}?${qsStr}` : proxyPath;
     } else {
@@ -313,7 +362,7 @@ async function handleRunnerUpgradeAsync(
         if (value === undefined) continue;
         const lowerKey = key.toLowerCase();
         if (HOP_BY_HOP.has(lowerKey)) continue;
-        if (lowerKey === "cookie" || lowerKey === "authorization" || lowerKey === "x-api-key") continue;
+        if (lowerKey === "cookie" || lowerKey === "authorization" || lowerKey === "x-api-key" || lowerKey === "referer") continue;
         forwardHeaders[key] = Array.isArray(value) ? value.join(", ") : value;
     }
 

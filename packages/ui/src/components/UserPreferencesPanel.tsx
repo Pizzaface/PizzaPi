@@ -26,6 +26,7 @@ function NotificationsPreferencesSection() {
     subscribed,
     loading,
     supported,
+    native,
     permissionDenied,
     toggle,
     suppressChild,
@@ -47,7 +48,9 @@ function NotificationsPreferencesSection() {
     : loading
       ? "Checking notification status…"
       : permissionDenied
-        ? "Blocked by your browser settings"
+        ? native
+          ? "Blocked — enable notifications in system settings"
+          : "Blocked by your browser settings"
         : subscribed
           ? "Enabled"
           : "Disabled";
@@ -66,7 +69,7 @@ function NotificationsPreferencesSection() {
         </div>
       )}
 
-      {supported && subscribed && (
+      {supported && subscribed && !native && (
         <div className="flex items-center justify-between gap-4">
           <div className="min-w-0">
             <p className="text-sm font-medium">Suppress child session notifications</p>

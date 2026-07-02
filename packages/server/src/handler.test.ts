@@ -338,6 +338,20 @@ describe("withSecurityHeaders", () => {
         expect(res.headers.get("content-security-policy")).toBeNull();
     });
 
+    test("token-authenticated tunnel responses allow mobile cross-origin framing", () => {
+        const res = withSecurityHeaders(new Response("ok", {
+            headers: {
+                "x-pizzapi-tunnel": "1",
+                "x-pizzapi-tunnel-frame": "cross-origin",
+                "x-frame-options": "SAMEORIGIN",
+                "content-security-policy": "frame-ancestors 'self'",
+            },
+        }));
+        expect(res.headers.get("x-frame-options")).toBeNull();
+        expect(res.headers.get("content-security-policy")).toBeNull();
+        expect(res.headers.get("x-pizzapi-tunnel-frame")).toBeNull();
+    });
+
     test("non-tunnel responses still get DENY and CSP", () => {
         const res = withSecurityHeaders(new Response("ok"));
         expect(res.headers.get("x-frame-options")).toBe("DENY");

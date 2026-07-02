@@ -1,6 +1,9 @@
 import * as React from "react";
 import * as ReactDOM from "react-dom";
-import { WebTerminal } from "./WebTerminal";
+// ponytail: lazy — keeps @xterm (~330KB) out of the main chunk until a terminal opens
+const WebTerminal = React.lazy(() =>
+  import("./WebTerminal").then((m) => ({ default: m.WebTerminal })),
+);
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -406,11 +409,13 @@ export function TerminalManager({
               activeTabId === tab.terminalId ? "z-10" : "z-0 invisible",
             )}
           >
-            <WebTerminal
-              terminalId={tab.terminalId}
-              onClose={() => onTabClose(tab.terminalId)}
-              className="h-full rounded-none border-0"
-            />
+            <React.Suspense fallback={null}>
+              <WebTerminal
+                terminalId={tab.terminalId}
+                onClose={() => onTabClose(tab.terminalId)}
+                className="h-full rounded-none border-0"
+              />
+            </React.Suspense>
           </div>
         ))}
 

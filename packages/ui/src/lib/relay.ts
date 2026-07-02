@@ -1,3 +1,5 @@
+import { getMobileRuntimeConfig } from "./mobile-runtime.js";
+
 export function getRelayWsBase(): string {
     const configured = import.meta.env?.VITE_RELAY_URL?.trim();
     const fallback = window.location.origin.replace(/^http/, "ws");
@@ -27,10 +29,23 @@ export function getRelayWsBase(): string {
  * Can be overridden with the `VITE_SOCKETIO_URL` env var if needed.
  */
 export function getSocketIOBase(): string {
+    // Capacitor bundled app: the webview origin is local, so we must use the
+    // relay URL injected by the bootstrap page.
+    const { isMobileBundled, serverUrl } = getMobileRuntimeConfig();
+    if (isMobileBundled && serverUrl) {
+        return serverUrl.replace(/\/$/, "");
+    }
+
     // Explicit override
     const configured = import.meta.env?.VITE_SOCKETIO_URL?.trim();
     if (configured && configured.length > 0) return configured.replace(/\/$/, "");
 
     // Default: same origin (Socket.IO is on the same port as the REST API)
     return "";
+}
+
+/** Build the Socket.IO auth payload, including the mobile API key if present. */
+export function getSocketIOAuth(extra: Record<string, unknown> = {}): Record<string, unknown> {
+    const { apiKey } = getMobileRuntimeConfig();
+    return { ...extra, ...(apiKey ? { apiKey } : {}) };
 }

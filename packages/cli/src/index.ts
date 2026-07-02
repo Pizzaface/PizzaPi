@@ -79,7 +79,7 @@ async function main() {
     }
 
     if (args[0] === "setup") {
-        await runSetup({ force: true });
+        await runSetup({ force: true, scan: args.includes("--scan") });
         return;
     }
 
