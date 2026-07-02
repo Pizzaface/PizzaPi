@@ -62,6 +62,17 @@ export function buildSystemPrompt(ctx?: Partial<SystemPromptContext>): string {
 }
 
 /**
+ * Build the built-in system prompt unless the user disabled it via
+ * `builtinSystemPrompt: false` in ~/.pizzapi/config.json.
+ */
+export function maybeBuildSystemPrompt(
+    config: { builtinSystemPrompt?: boolean },
+    ctx?: Partial<SystemPromptContext>,
+): string | undefined {
+    return config.builtinSystemPrompt === false ? undefined : buildSystemPrompt(ctx);
+}
+
+/**
  * @deprecated Use `buildSystemPrompt()` for dynamic context support.
  * Kept for backward compatibility — evaluates with current date/time.
  */

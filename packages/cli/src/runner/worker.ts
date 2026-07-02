@@ -1,7 +1,7 @@
 import { createAgentSession, DefaultResourceLoader, AuthStorage } from "@earendil-works/pi-coding-agent";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { buildSystemPrompt, defaultAgentDir, expandHome, loadConfig, resolveSandboxConfig, validateSandboxOverride, applyProviderSettingsEnv } from "../config.js";
+import { maybeBuildSystemPrompt, defaultAgentDir, expandHome, loadConfig, resolveSandboxConfig, validateSandboxOverride, applyProviderSettingsEnv } from "../config.js";
 import { buildSkillPaths, buildPromptTemplatePaths, createAgentsFilesOverride } from "../skills.js";
 import { getPluginSkillPaths } from "../extensions/claude-plugins.js";
 import { initSandbox, cleanupSandbox, isSandboxActive } from "@pizzapi/tools";
@@ -179,7 +179,7 @@ function injectContextTrackingEntries(
     session: any,
     cwd: string,
     agentDir: string,
-    config: { appendSystemPrompt?: string },
+    config: { appendSystemPrompt?: string; builtinSystemPrompt?: boolean; sendAgentsMd?: boolean },
 ): void {
     const sm = session.sessionManager;
     if (!sm || typeof sm.appendCustomEntry !== "function") return;
@@ -189,34 +189,34 @@ function injectContextTrackingEntries(
         sm.appendCustomEntry(customType, { content });
     };
 
-    // ── Global rules (from ~/.pizzapi/AGENTS.md) ──────────────────────────
-    const globalAgentsPath = join(agentDir, "AGENTS.md");
-    if (existsSync(globalAgentsPath)) {
-        try {
-            appendContextTelemetry(
-                "context:global-rules",
-                readFileSync(globalAgentsPath, "utf-8"),
-            );
-        } catch { /* skip unreadable */ }
-    }
+    if (config.sendAgentsMd !== false) {
+        // ── Global rules (from ~/.pizzapi/AGENTS.md) ──────────────────────────
+        const globalAgentsPath = join(agentDir, "AGENTS.md");
+        if (existsSync(globalAgentsPath)) {
+            try {
+                appendContextTelemetry(
+                    "context:global-rules",
+                    readFileSync(globalAgentsPath, "utf-8"),
+                );
+            } catch { /* skip unreadable */ }
+        }
 
-    // ── Project rules (from <cwd>/AGENTS.md) ──────────────────────────────
-    const projectAgentsPath = join(cwd, "AGENTS.md");
-    if (existsSync(projectAgentsPath)) {
-        try {
-            appendContextTelemetry(
-                "context:project-rules",
-                readFileSync(projectAgentsPath, "utf-8"),
-            );
-        } catch { /* skip unreadable */ }
+        // ── Project rules (from <cwd>/AGENTS.md) ──────────────────────────────
+        const projectAgentsPath = join(cwd, "AGENTS.md");
+        if (existsSync(projectAgentsPath)) {
+            try {
+                appendContextTelemetry(
+                    "context:project-rules",
+                    readFileSync(projectAgentsPath, "utf-8"),
+                );
+            } catch { /* skip unreadable */ }
+        }
     }
 
     // ── Built-in system prompt ─────────────────────────────────────────────
     try {
-        appendContextTelemetry(
-            "context:builtin-prompt",
-            buildSystemPrompt({ cwd, isRunner: true }),
-        );
+        const builtin = maybeBuildSystemPrompt(config, { cwd, isRunner: true });
+        if (builtin) appendContextTelemetry("context:builtin-prompt", builtin);
     } catch { /* skip */ }
 
     // ── User append system prompt (from ~/.pizzapi/config.json) ───────────
@@ -256,6 +256,13 @@ async function main(): Promise<void> {
     } catch (err) {
         logError(`failed to chdir to ${cwd}: ${err instanceof Error ? err.message : String(err)}`);
         process.exit(1);
+    }
+
+    // Snapshot the session's provider before extensions clear the spawn-time
+    // model env vars — every later loadConfig() (MCP init, /mcp reload) must
+    // resolve per-provider overrides against the same provider.
+    if (process.env.PIZZAPI_WORKER_INITIAL_MODEL_PROVIDER?.trim()) {
+        process.env.PIZZAPI_SESSION_PROVIDER = process.env.PIZZAPI_WORKER_INITIAL_MODEL_PROVIDER.trim();
     }
 
     bootTimer.start("[boot] config");
@@ -310,7 +317,9 @@ async function main(): Promise<void> {
 
     // Build shared agentsFilesOverride (loads AGENTS.md + .agents/*.md from cwd,
     // deduplicating against what DefaultResourceLoader already discovers).
-    const agentsFilesOverride = createAgentsFilesOverride(cwd);
+    const agentsFilesOverride = createAgentsFilesOverride(cwd, {
+        sendAgentsMd: config.sendAgentsMd !== false,
+    });
 
     bootTimer.start("[boot] resource-loader");
     const loader = new DefaultResourceLoader({
@@ -334,7 +343,7 @@ async function main(): Promise<void> {
             : {}
         ),
         appendSystemPrompt: (() => {
-            const parts = [buildSystemPrompt({ cwd, isRunner: true }), config.appendSystemPrompt, agentSystemPrompt].filter(Boolean) as string[];
+            const parts = [maybeBuildSystemPrompt(config, { cwd, isRunner: true }), config.appendSystemPrompt, agentSystemPrompt].filter(Boolean) as string[];
             return parts;
         })(),
         ...(agentsFilesOverride && { agentsFilesOverride }),

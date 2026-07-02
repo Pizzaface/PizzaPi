@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Plus, X, Save, FileText, Info, Shield } from "lucide-react";
+import { Plus, X, Save, FileText, Info } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -12,8 +12,11 @@ export default function SystemPromptSettings({ config, onSave, saving }: Section
     const [appendSystemPrompt, setAppendSystemPrompt] = useState<string>(
         (config.appendSystemPrompt as string) ?? "",
     );
-    const [claudeCodeProvider, setClaudeCodeProvider] = useState<boolean>(
-        (config.claudeCodeProvider as boolean) ?? false,
+    const [builtinSystemPrompt, setBuiltinSystemPrompt] = useState<boolean>(
+        (config.builtinSystemPrompt as boolean) ?? true,
+    );
+    const [sendAgentsMd, setSendAgentsMd] = useState<boolean>(
+        (config.sendAgentsMd as boolean) ?? true,
     );
     const [skills, setSkills] = useState<string[]>(
         Array.isArray(config.skills) ? (config.skills as string[]) : [],
@@ -40,32 +43,47 @@ export default function SystemPromptSettings({ config, onSave, saving }: Section
     };
 
     const handleSave = () => {
-        void onSave("systemPrompt", { appendSystemPrompt, skills, claudeCodeProvider });
+        void onSave("systemPrompt", { appendSystemPrompt, builtinSystemPrompt, sendAgentsMd, skills });
     };
 
     return (
         <div className="flex flex-col gap-6">
-            {/* ── Claude Code Provider Mode ────────────────────────── */}
+            {/* ── Built-in System Prompt ───────────────────── */}
             <div className="flex flex-col gap-2">
                 <div className="flex items-center justify-between">
-                    <Label htmlFor="claude-code-provider" className="flex items-center gap-2 text-sm font-medium">
-                        <Shield className="h-4 w-4 text-muted-foreground" />
-                        Claude Code Provider Mode
+                    <Label htmlFor="builtin-system-prompt" className="flex items-center gap-2 text-sm font-medium">
+                        <FileText className="h-4 w-4 text-muted-foreground" />
+                        Built-in System Prompt
                     </Label>
                     <Switch
-                        id="claude-code-provider"
-                        checked={claudeCodeProvider}
-                        onCheckedChange={setClaudeCodeProvider}
+                        id="builtin-system-prompt"
+                        checked={builtinSystemPrompt}
+                        onCheckedChange={setBuiltinSystemPrompt}
                     />
                 </div>
                 <p className="text-xs text-muted-foreground leading-relaxed">
-                    Rewrites the system prompt to use &ldquo;Claude Code&rdquo; branding instead of
-                    &ldquo;pi&rdquo; / &ldquo;PizzaPi&rdquo;. Useful for Anthropic Max subscriptions where
-                    server-side detection checks the system prompt content.
+                    PizzaPi&rsquo;s built-in prompt covers subagents, plan mode, sigils, tunnels, and
+                    PizzaPi configuration. Turn off for a vanilla pi system prompt.
                 </p>
             </div>
 
-            {/* ── Append System Prompt ──────────────────────────────── */}
+            <div className="flex flex-col gap-2">
+                <div className="flex items-center justify-between">
+                    <Label htmlFor="send-agents-md" className="flex items-center gap-2 text-sm font-medium">
+                        <FileText className="h-4 w-4 text-muted-foreground" />
+                        Send AGENTS.md Context
+                    </Label>
+                    <Switch
+                        id="send-agents-md"
+                        checked={sendAgentsMd}
+                        onCheckedChange={setSendAgentsMd}
+                    />
+                </div>
+                <p className="text-xs text-muted-foreground leading-relaxed">
+                    Turn off to omit AGENTS.md files from automatic prompt context. The agent can still read them with tools.
+                </p>
+            </div>
+
             <div className="flex flex-col gap-2">
                 <Label htmlFor="append-system-prompt" className="flex items-center gap-2 text-sm font-medium">
                     <FileText className="h-4 w-4 text-muted-foreground" />

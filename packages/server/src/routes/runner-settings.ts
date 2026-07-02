@@ -21,6 +21,7 @@ const VALID_SECTIONS = new Set([
     "hooks",
     "sandbox",
     "webSearch",
+    "providerOverrides",
     "toolSearch",
     "security",
     "envVars",

@@ -30,7 +30,7 @@ import { AuthStorage, ModelRegistry } from "@earendil-works/pi-coding-agent";
 import type { ServiceTriggerDef, ServiceSigilDef, TriggerSubscriptionEntry } from "@pizzapi/protocol";
 import { setLogComponent, logInfo, logWarn, logError } from "./logger.js";
 import { extractHookSummary } from "./hook-summary.js";
-import { sanitizeConfigForUI, restoreMaskedServerEntry, findRenamedServerMatch, MASK_SENTINEL } from "./daemon-config-sanitize.js";
+import { sanitizeConfigForUI, restoreMaskedServerEntry, findRenamedServerMatch, MASK_SENTINEL, validateProviderOverridesSection, mergeProviderOverridesSection } from "./daemon-config-sanitize.js";
 import { defaultStatePath, acquireStateAndIdentity, releaseStateLock } from "./runner-state.js";
 import { startUsageRefreshLoop, stopUsageRefreshLoop } from "./runner-usage-cache.js";
 import { getWorkspaceRoots, isCwdAllowed } from "./workspace.js";
@@ -1916,6 +1916,8 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                         const v = value as any;
                         const updates: Record<string, any> = {};
                         if (v?.appendSystemPrompt !== undefined) updates.appendSystemPrompt = v.appendSystemPrompt;
+                        if (v?.builtinSystemPrompt !== undefined) updates.builtinSystemPrompt = v.builtinSystemPrompt;
+                        if (v?.sendAgentsMd !== undefined) updates.sendAgentsMd = v.sendAgentsMd;
                         if (v?.skills !== undefined) updates.skills = v.skills;
                         saveGlobal(updates);
                     } else if (section === "envVars") {
@@ -1933,6 +1935,23 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                         }
                         const updates: Record<string, any> = { envOverrides: restoredOverrides };
                         saveGlobal(updates);
+                    } else if (section === "providerOverrides") {
+                        // Per-provider overrides (system prompt, AGENTS.md, MCP disable
+                        // list) go into providerSettings.<provider>.overrides.
+                        const validationErrors = validateProviderOverridesSection(value);
+                        if (validationErrors.length > 0) {
+                            socket.emit("file_result", {
+                                requestId,
+                                ok: false,
+                                message: `Invalid provider overrides:\n${validationErrors.join("\n")}`,
+                            });
+                            return;
+                        }
+                        const ps = mergeProviderOverridesSection(
+                            (existing as any).providerSettings,
+                            (value ?? {}) as Record<string, unknown>,
+                        );
+                        saveGlobal({ providerSettings: ps } as any);
                     } else if (section === "webSearch") {
                         // Web search config goes into providerSettings
                         const v = value as any;

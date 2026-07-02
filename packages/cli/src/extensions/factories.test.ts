@@ -25,8 +25,10 @@ import { pizzapiHeaderExtension } from "./pizzapi-header.js";
 import { toolSearchExtension } from "./tool-search.js";
 import { ollamaWebToolsExtension } from "./ollama-web-tools.js";
 import { sessionAnalysisExtension } from "./session-analysis.js";
+import { providerRequestLogExtension } from "./provider-request-log.js";
 
 const CORE_EXTENSIONS: ExtensionFactory[] = [
+    providerRequestLogExtension,
     triggersExtension,  // Must be before remoteExtension (shutdown ordering)
     remoteExtension,
     tunnelToolsExtension,

@@ -43,6 +43,10 @@ You can also override any setting with **environment variables**.
   // Append to the default system prompt without replacing it
   "appendSystemPrompt": "Always write tests for new code.",
 
+  // Send AGENTS.md files automatically as context. Set false to omit them
+  // unless the agent explicitly reads them with tools. Default: true.
+  "sendAgentsMd": true,
+
   // Override the agent config directory (skills, extensions, etc.)
   // Default: ~/.pizzapi
   "agentDir": "~/.pizzapi",
@@ -114,6 +118,8 @@ You can also override any setting with **environment variables**.
 | `relayUrl` | `string` | `ws://localhost:7492` | WebSocket URL of the relay server. Set to `"off"` to disable relay entirely. |
 | `systemPrompt` | `string` | *(pi default)* | Fully replace the default system prompt |
 | `appendSystemPrompt` | `string` | — | Append to the default system prompt |
+| `builtinSystemPrompt` | `boolean` | `true` | Set to `false` to skip PizzaPi's built-in system prompt additions (subagents, plan mode, sigils, tunnels, PizzaPi config guidance) for a vanilla pi prompt |
+| `sendAgentsMd` | `boolean` | `true` | Set to `false` to omit AGENTS.md files from automatic prompt context. The agent can still read them explicitly with tools. |
 | `agentDir` | `string` | `~/.pizzapi` | Agent config directory (skills, extensions, etc.) |
 | `skills` | `string[]` | `[]` | Additional skill directories. Supports `~` expansion. |
 | `allowProjectHooks` | `boolean` | `false` | Trust gate: allow project-local hooks to run. **Global config only.** |
@@ -133,7 +139,7 @@ You can also override any setting with **environment variables**.
 | `subagent.maxConcurrency` | `number` | `4` | Max concurrent agent sessions running simultaneously. **Global config only.** |
 | `goal.evaluatorModel` | `string` | cheapest available Haiku/mini | Model (`provider:modelId` or `modelId`) used by the `/goal` LLM evaluator. |
 | `goal.evaluatorMaxTokens` | `number` | `512` | Maximum output tokens for each `/goal` evaluator call. |
-| `providerSettings` | `object` | — | Provider-specific settings. See [Web Search](#web-search) below. |
+| `providerSettings` | `object` | — | Provider-specific settings. See [Web Search](#web-search) and [Per-Provider Overrides](#per-provider-overrides) below. |
 
 ---
 
@@ -195,6 +201,48 @@ For Ollama Cloud, enable web search under `providerSettings["ollama-cloud"].webS
 | `maxResults` | `number` | `5` | Default number of search results to request from Ollama (`1`–`10`). |
 | `maxContentChars` | `number` | `8000` | Truncate fetched page content to this many characters (`1`–`100000`). |
 | `maxLinks` | `number` | `100` | Truncate fetched page links to this many entries (`1`–`1000`). |
+
+## Per-Provider Overrides
+
+System prompt controls, AGENTS.md inclusion, and MCP server availability can be
+overridden per model provider via `providerSettings.<provider>.overrides` —
+editable in the web UI under **Runner → Settings → Provider Overrides**. The
+overrides apply when a session **starts** on that provider — either because it
+was spawned with an explicit model, or because it matches `defaultProvider` in
+`~/.pizzapi/settings.json`.
+
+```jsonc
+// ~/.pizzapi/config.json
+{
+  "providerSettings": {
+    "claude-subscription": {
+      "overrides": {
+        // Vanilla prompt for subscription sessions
+        "builtinSystemPrompt": false,
+        "sendAgentsMd": false,
+        "appendSystemPrompt": "",
+        // Disable heavyweight MCP servers on this provider
+        "disabledMcpServers": ["playwright"]
+      }
+    }
+  }
+}
+```
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `systemPrompt` | `string` | Fully replace the default system prompt for this provider. |
+| `appendSystemPrompt` | `string` | Replace the global `appendSystemPrompt` for this provider. |
+| `builtinSystemPrompt` | `boolean` | Override the global built-in prompt toggle. |
+| `sendAgentsMd` | `boolean` | Override automatic AGENTS.md context inclusion. |
+| `disabledMcpServers` | `string[]` | Additional MCP servers to disable (union with global/project lists). |
+
+:::note
+The provider is resolved once at session start. Switching models mid-session
+(or resuming a session saved on a different provider) does **not** re-apply
+overrides — the same “changes apply on next session start” semantics as all
+other config.
+:::
 
 ### Environment Variables
 

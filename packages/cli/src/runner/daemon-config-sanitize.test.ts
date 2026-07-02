@@ -5,7 +5,105 @@ import {
     SENSITIVE_NAME_RE,
     MASK_SENTINEL,
     findRenamedServerMatch,
+    validateProviderOverridesSection,
+    mergeProviderOverridesSection,
 } from "./daemon-config-sanitize.js";
+
+// ── validateProviderOverridesSection ──────────────────────────────────────
+
+describe("validateProviderOverridesSection", () => {
+    test("accepts null/undefined and empty objects", () => {
+        expect(validateProviderOverridesSection(null)).toEqual([]);
+        expect(validateProviderOverridesSection(undefined)).toEqual([]);
+        expect(validateProviderOverridesSection({})).toEqual([]);
+    });
+
+    test("rejects non-object payloads", () => {
+        expect(validateProviderOverridesSection(["x"]).length).toBe(1);
+        expect(validateProviderOverridesSection("x").length).toBe(1);
+    });
+
+    test("accepts a valid override set", () => {
+        expect(
+            validateProviderOverridesSection({
+                anthropic: {
+                    builtinSystemPrompt: false,
+                    sendAgentsMd: false,
+                    appendSystemPrompt: "",
+                    disabledMcpServers: ["playwright"],
+                },
+            }),
+        ).toEqual([]);
+    });
+
+    test("reports each wrongly-typed field", () => {
+        const errors = validateProviderOverridesSection({
+            anthropic: {
+                builtinSystemPrompt: "no",
+                sendAgentsMd: 1,
+                appendSystemPrompt: 5,
+                disabledMcpServers: [1],
+            },
+            openai: "not-an-object",
+        });
+        expect(errors.length).toBe(5);
+    });
+});
+
+// ── mergeProviderOverridesSection ─────────────────────────────────────────
+
+describe("mergeProviderOverridesSection", () => {
+    test("adds overrides while preserving webSearch settings", () => {
+        const existing = {
+            anthropic: { webSearch: { enabled: true } },
+        };
+        const merged = mergeProviderOverridesSection(existing, {
+            anthropic: { sendAgentsMd: false },
+        });
+        expect(merged.anthropic).toEqual({
+            webSearch: { enabled: true },
+            overrides: { sendAgentsMd: false },
+        });
+    });
+
+    test("payload is authoritative — removed providers lose overrides", () => {
+        const existing = {
+            anthropic: { webSearch: { enabled: true }, overrides: { sendAgentsMd: false } },
+            openai: { overrides: { builtinSystemPrompt: false } },
+        };
+        const merged = mergeProviderOverridesSection(existing, {});
+        expect(merged.anthropic).toEqual({ webSearch: { enabled: true } });
+        expect(merged.openai).toBeUndefined();
+    });
+
+    test("drops unknown override keys", () => {
+        const merged = mergeProviderOverridesSection({}, {
+            anthropic: { sendAgentsMd: false, apiKey: "sneaky" },
+        });
+        expect((merged.anthropic as any).overrides).toEqual({ sendAgentsMd: false });
+    });
+
+    test("skips entries with no effective overrides", () => {
+        const merged = mergeProviderOverridesSection({}, {
+            anthropic: {},
+            openai: { disabledMcpServers: [] },
+        });
+        expect(merged).toEqual({});
+    });
+
+    test("keeps empty-string appendSystemPrompt as a real override", () => {
+        const merged = mergeProviderOverridesSection({}, {
+            anthropic: { appendSystemPrompt: "" },
+        });
+        expect((merged.anthropic as any).overrides).toEqual({ appendSystemPrompt: "" });
+    });
+
+    test("does not mutate the existing settings object", () => {
+        const existing = { anthropic: { overrides: { sendAgentsMd: false } } };
+        mergeProviderOverridesSection(existing, {});
+        expect(existing.anthropic.overrides).toEqual({ sendAgentsMd: false });
+    });
+});
 
 // ── SENSITIVE_NAME_RE ─────────────────────────────────────────────────────────
 
