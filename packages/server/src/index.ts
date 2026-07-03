@@ -7,6 +7,8 @@ import {
 import { deleteRelayEventCaches, initializeRelayRedisCache } from "./sessions/redis.js";
 import { sweepExpiredSessions, sweepOrphanedRunners } from "./ws/sio-registry.js";
 import { sweepExpiredAttachments, rehydrateExtractedAttachments } from "./attachments/store.js";
+import { sweepExpiredSetupClaims } from "./setup-claims.js";
+import { sweepExpiredMobileLinks } from "./mobile-links.js";
 import { runAllMigrations } from "./migrations.js";
 
 import { setServerShuttingDown } from "./health.js";
@@ -397,6 +399,20 @@ setInterval(() => {
 }, sweepMs);
 
 log.info(`Relay session maintenance enabled (every ${Math.round(sweepMs / 1000)}s).`);
+
+// Hourly cleanup of expired device-enrollment rows (setup claims + mobile links).
+// Unref'd so it never keeps the process alive on its own.
+const ENROLLMENT_SWEEP_MS = 60 * 60 * 1000;
+setInterval(() => {
+    void runWithAuthContext(authContext, async () => {
+        try {
+            await sweepExpiredSetupClaims();
+            await sweepExpiredMobileLinks();
+        } catch (err) {
+            log.error("Failed to sweep expired device-enrollment rows:", err);
+        }
+    });
+}, ENROLLMENT_SWEEP_MS).unref();
 
 // ── Post-startup orphaned runner sweep ───────────────────────────────────────
 // After a graceful shutdown, runner Redis entries are intentionally preserved

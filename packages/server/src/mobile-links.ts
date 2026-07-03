@@ -113,7 +113,11 @@ export async function scanMobileLink(
     const row = await getKysely().selectFrom("mobile_link").selectAll().where("id", "=", id).executeTakeFirst();
     if (!row) return null;
     const current = await expireIfNeeded(row);
-    if (current.status !== "pending" && current.status !== "scanned") return toStatus(current);
+    // Single-shot: only a pending link may be scanned. Once scanned, the
+    // verification token is frozen so an attacker who learns the id cannot
+    // re-scan (swapping deviceName/token) between the user's visual check and
+    // their approve click.
+    if (current.status !== "pending") return toStatus(current);
 
     const now = new Date().toISOString();
     await getKysely()
@@ -131,7 +135,11 @@ export async function scanMobileLink(
     return getMobileLink(id);
 }
 
-export async function approveMobileLink(id: string, userId: string): Promise<MobileLinkStatus | null> {
+export async function approveMobileLink(
+    id: string,
+    userId: string,
+    expectedVerificationToken: string,
+): Promise<MobileLinkStatus | null> {
     const row = await getKysely()
         .selectFrom("mobile_link")
         .selectAll()
@@ -141,6 +149,10 @@ export async function approveMobileLink(id: string, userId: string): Promise<Mob
     if (!row) return null;
     const current = await expireIfNeeded(row);
     if (current.status !== "scanned") return null;
+    // Reject unless the approver confirmed the code that is currently stored.
+    // This closes the TOCTOU window: if the stored token changed (or the caller
+    // never saw it), approval fails instead of blessing an attacker's device.
+    if (!current.verificationToken || current.verificationToken !== expectedVerificationToken) return null;
 
     const apiKey = await mintEphemeralApiKey(userId, `mobile-link-${id.slice(0, 8)}`, MOBILE_API_KEY_TTL_SECONDS);
 
@@ -185,4 +197,14 @@ export async function redeemMobileLink(id: string): Promise<MobileLinkStatus | n
     }
 
     return status;
+}
+
+/** Delete expired mobile links. Safe to call periodically. */
+export async function sweepExpiredMobileLinks(): Promise<number> {
+    const now = new Date().toISOString();
+    const result = await getKysely()
+        .deleteFrom("mobile_link")
+        .where("expiresAt", "<", now)
+        .execute();
+    return Number(result[0]?.numDeletedRows ?? 0);
 }

@@ -6,7 +6,7 @@
  * - POST /api/setup-claim/:token/approve — authenticated; approve and attach API key.
  */
 
-import { requireSession } from "../middleware.js";
+import { requireBrowserSession } from "../middleware.js";
 import { createSetupClaim, pollSetupClaim, approveSetupClaim } from "../setup-claims.js";
 import type { RouteHandler } from "./types.js";
 
@@ -48,7 +48,10 @@ export const handleSetupClaimsRoute: RouteHandler = async (req, url) => {
             return Response.json({ error: "Missing claim token" }, { status: 400 });
         }
 
-        const identity = await requireSession(req);
+        // Approval must come from a genuine logged-in browser session, never an
+        // API key — otherwise any valid key (e.g. a leaked mobile/ephemeral key)
+        // could mint a fresh key and escalate privileges.
+        const identity = await requireBrowserSession(req);
         if (identity instanceof Response) return identity;
 
         const result = await approveSetupClaim(token, identity.userId, identity.userName);

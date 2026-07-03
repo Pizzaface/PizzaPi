@@ -15,12 +15,17 @@
  */
 
 import { getKysely, type SetupClaimTable } from "./auth.js";
+import { mintEphemeralApiKey } from "./routes/utils.js";
 import { createLogger } from "@pizzapi/tools";
-import { randomBytes } from "node:crypto";
 
 const log = createLogger("setup-claims");
 
 const DEFAULT_CLAIM_TTL_MS = 10 * 60 * 1000;
+// A setup claim mints a key for a persistent CLI node, so a long TTL is fine.
+// Minting goes through mintEphemeralApiKey so rate-limit config is applied
+// (the old inline insert hard-coded rateLimitEnabled: 0 and expiresAt: null,
+// which let a leaked key escalate to a permanent, un-rate-limited one).
+const SETUP_CLAIM_API_KEY_TTL_SECONDS = 365 * 24 * 60 * 60;
 
 export type { SetupClaimTable };
 
@@ -134,42 +139,11 @@ export async function approveSetupClaim(
     if (row.status !== "pending") return null;
     if (new Date(row.expiresAt) < new Date()) return null;
 
-    const apiKey = randomBytes(32).toString("hex");
-
-    // Hash using SHA-256 + base64url to match better-auth api-key plugin.
-    const keyHashBuf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(apiKey));
-    const hashedKey = btoa(String.fromCharCode(...new Uint8Array(keyHashBuf)))
-        .replace(/\+/g, "-")
-        .replace(/\//g, "_")
-        .replace(/=/g, "");
-
-    const now = new Date().toISOString();
-    await getKysely()
-        .insertInto("apikey")
-        .values({
-            id: crypto.randomUUID(),
-            name: `setup-claim-${token.slice(0, 8)}`,
-            start: apiKey.slice(0, 8),
-            prefix: null,
-            key: hashedKey,
-            userId,
-            refillInterval: null,
-            refillAmount: null,
-            lastRefillAt: null,
-            enabled: 1,
-            rateLimitEnabled: 0,
-            rateLimitTimeWindow: null,
-            rateLimitMax: null,
-            requestCount: 0,
-            remaining: null,
-            lastRequest: null,
-            expiresAt: null,
-            createdAt: now,
-            updatedAt: now,
-            permissions: null,
-            metadata: JSON.stringify({ via: "qr-setup", claim: token.slice(0, 8) }),
-        })
-        .execute();
+    const apiKey = await mintEphemeralApiKey(
+        userId,
+        `setup-claim-${token.slice(0, 8)}`,
+        SETUP_CLAIM_API_KEY_TTL_SECONDS,
+    );
 
     await getKysely()
         .updateTable("setup_claim")

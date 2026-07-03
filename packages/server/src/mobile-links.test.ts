@@ -4,7 +4,8 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createTestAuthContext, runWithAuthContext } from "./auth.js";
 import { runAllMigrations } from "./migrations.js";
-import { approveMobileLink, createMobileLink, getMobileLink, redeemMobileLink, scanMobileLink } from "./mobile-links.js";
+import { approveMobileLink, createMobileLink, getMobileLink, redeemMobileLink, scanMobileLink, sweepExpiredMobileLinks } from "./mobile-links.js";
+import { getKysely } from "./auth.js";
 import { handleMobileLinksRoute } from "./routes/mobile-links.js";
 
 const tmpDir = mkdtempSync(join(tmpdir(), "pizzapi-mobile-links-"));
@@ -53,10 +54,14 @@ describe("mobile-links store", () => {
             expect(scanned!.verificationToken).toBe("ABC123");
             expect(scanned!.deviceName).toBe("Pixel");
 
-            const wrongUser = await approveMobileLink(pending.id, "user-2");
+            const wrongUser = await approveMobileLink(pending.id, "user-2", "ABC123");
             expect(wrongUser).toBeNull();
 
-            const approved = await approveMobileLink(pending.id, "user-1");
+            // Wrong verification code must be rejected (TOCTOU guard).
+            const wrongCode = await approveMobileLink(pending.id, "user-1", "WRONG9");
+            expect(wrongCode).toBeNull();
+
+            const approved = await approveMobileLink(pending.id, "user-1", "ABC123");
             expect(approved!.status).toBe("approved");
             expect(approved!.apiKey).toBeUndefined();
 
@@ -69,6 +74,39 @@ describe("mobile-links store", () => {
 
             const secondRedeem = await redeemMobileLink(pending.id);
             expect(secondRedeem!.apiKey).toBeUndefined();
+        });
+    });
+
+    test("scan is single-shot: a re-scan cannot overwrite the verification token", async () => {
+        await runWithAuthContext(authContext, async () => {
+            const pending = await createMobileLink("http://localhost:7492", "user-9", "Sam");
+            const first = await scanMobileLink(pending.id, { verificationToken: "AAA111", deviceName: "Pixel" });
+            expect(first!.status).toBe("scanned");
+            expect(first!.verificationToken).toBe("AAA111");
+
+            // Attacker re-scans with a different token/device — must not overwrite.
+            const second = await scanMobileLink(pending.id, { verificationToken: "BBB222", deviceName: "EvilPhone" });
+            expect(second!.status).toBe("scanned");
+            expect(second!.verificationToken).toBe("AAA111");
+            expect(second!.deviceName).toBe("Pixel");
+
+            // Approval with the code the user actually saw still succeeds.
+            const approved = await approveMobileLink(pending.id, "user-9", "AAA111");
+            expect(approved!.status).toBe("approved");
+        });
+    });
+
+    test("sweep deletes expired mobile links", async () => {
+        await runWithAuthContext(authContext, async () => {
+            const link = await createMobileLink("http://localhost:7492", "user-sweep", "Sweep");
+            await getKysely()
+                .updateTable("mobile_link")
+                .set({ expiresAt: new Date(Date.now() - 1000).toISOString() })
+                .where("id", "=", link.id)
+                .execute();
+            const deleted = await sweepExpiredMobileLinks();
+            expect(deleted).toBeGreaterThanOrEqual(1);
+            expect(await getMobileLink(link.id)).toBeNull();
         });
     });
 });

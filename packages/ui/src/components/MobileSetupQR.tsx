@@ -87,8 +87,16 @@ export function MobileSetupQR() {
 
     const approve = async () => {
         if (state.kind !== "ready") return;
+        // Submit the exact code the user visually confirmed. The server rejects
+        // approval unless it still matches the stored verification token, which
+        // closes the re-scan TOCTOU window.
+        const verificationToken = state.claim.verificationToken;
+        if (!verificationToken) return;
         try {
-            const data = await apiFetch<MobileLinkStatus>(`/api/mobile-link/${state.claim.id}/approve`, { method: "POST" });
+            const data = await apiFetch<MobileLinkStatus>(`/api/mobile-link/${state.claim.id}/approve`, {
+                method: "POST",
+                body: JSON.stringify({ verificationToken }),
+            });
             setState({ ...state, claim: data });
         } catch (err) {
             setState({ kind: "error", message: err instanceof Error ? err.message : "Could not approve mobile device" });

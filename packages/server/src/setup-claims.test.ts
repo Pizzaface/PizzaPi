@@ -78,6 +78,26 @@ describe("setup-claims store", () => {
         });
     });
 
+    test("approved key is time-limited and not hand-rolled with rateLimitEnabled 0", async () => {
+        await runWithAuthContext(authContext, async () => {
+            const { token } = await createSetupClaim("http://localhost:7492");
+            const approve = await approveSetupClaim(token, "user-ttl", "Dana");
+            expect(approve).not.toBeNull();
+
+            const { getKysely } = await import("./auth.js");
+            const row = await getKysely()
+                .selectFrom("apikey")
+                .select(["expiresAt"])
+                .where("name", "=", `setup-claim-${token.slice(0, 8)}`)
+                .executeTakeFirst();
+            expect(row).toBeTruthy();
+            // Old inline insert used expiresAt: null (permanent). Minting via
+            // mintEphemeralApiKey gives it a real, future expiry.
+            expect(row!.expiresAt).not.toBeNull();
+            expect(new Date(row!.expiresAt as string).getTime()).toBeGreaterThan(Date.now());
+        });
+    });
+
     test("approval fails for already-approved claims", async () => {
         await runWithAuthContext(authContext, async () => {
             const { token } = await createSetupClaim("http://localhost:7492");

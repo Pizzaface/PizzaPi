@@ -11,6 +11,22 @@ export async function requireSession(
     return validateApiKey(req);
 }
 
+/**
+ * Requires a genuine interactive browser (better-auth cookie) session. Unlike
+ * requireSession, this does NOT fall back to API-key auth — use it for
+ * privileged actions like approving a device enrollment, where an API key
+ * (including a leaked mobile/ephemeral key) must never be sufficient.
+ */
+export async function requireBrowserSession(
+    req: Request,
+): Promise<{ userId: string; userName: string } | Response> {
+    const session = await getAuth().api.getSession({ headers: req.headers });
+    if (session?.user?.id) {
+        return { userId: session.user.id, userName: session.user.name ?? session.user.id };
+    }
+    return new Response("Interactive browser session required", { status: 401 });
+}
+
 /** Validates x-api-key header; returns user info or a 401 Response. */
 export async function validateApiKey(
     req: Request,
