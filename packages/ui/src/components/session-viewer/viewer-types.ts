@@ -132,4 +132,6 @@ export interface SessionViewerProps {
   onMcpServerDisable?: (serverName: string) => void;
   /** Live session context & cache analysis data */
   analysis?: SessionAnalysis | null;
+  /** Called when the user click-and-holds a toolbar button to reposition it. */
+  onButtonDragStart?: (buttonId: import("@/hooks/useButtonPosition").ToolbarButtonId) => void;
 }

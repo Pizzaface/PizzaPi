@@ -99,6 +99,8 @@ import {
 import { ComposerSubmitButton } from "@/components/session-viewer/composer-submit";
 import { SessionMessageItem, PaginationSentinel } from "@/components/session-viewer/message-item";
 import { GoalStatusBadge } from "@/components/session-viewer/goal-status-badge";
+import { DraggableToolbarButton } from "@/components/session-viewer/DraggableToolbarButton";
+import type { ToolbarButtonId } from "@/hooks/useButtonPosition";
 
 // ── Public re-exports (existing consumers import these from SessionViewer) ────
 export type { RelayMessage } from "@/components/session-viewer/types";
@@ -169,6 +171,7 @@ export function SessionViewer({
   onMcpOAuthPaste,
   onMcpOAuthPasteDismiss,
   onMcpServerDisable,
+  onButtonDragStart,
   hasMoreServerMessages,
   onLoadMoreServerMessages,
   loadingOlderMessages,
@@ -547,6 +550,7 @@ export function SessionViewer({
               <div className="flex items-center gap-1.5 flex-shrink-0">
                 <HeartbeatStaleBadge lastHeartbeatAt={lastHeartbeatAt} />
                 {(activeModel?.reasoning || effortLevel != null) && (
+                  <DraggableToolbarButton buttonId="effort" onDragStart={onButtonDragStart}>
                   <button
                     className="rounded-full border border-border bg-muted px-2 py-0.5 text-[0.65rem] font-medium text-muted-foreground uppercase tracking-wide hover:bg-muted/80 transition-colors cursor-pointer"
                     onClick={() => {
@@ -560,8 +564,10 @@ export function SessionViewer({
                   >
                     {effortLevel && effortLevel !== "off" ? effortLevel : "off"}
                   </button>
+                  </DraggableToolbarButton>
                 )}
                 {planModeEnabled && (
+                  <DraggableToolbarButton buttonId="plan" onDragStart={onButtonDragStart}>
                   <button
                     className="rounded-full border border-yellow-500/40 bg-yellow-500/10 px-2 py-0.5 text-[0.65rem] font-medium text-yellow-600 dark:text-yellow-400 uppercase tracking-wide hover:bg-yellow-500/20 transition-colors cursor-pointer"
                     onClick={() => {
@@ -575,9 +581,11 @@ export function SessionViewer({
                   >
                     ⏸ plan
                   </button>
+                  </DraggableToolbarButton>
                 )}
                 <GoalStatusBadge goal={goal} />
                 {tokenUsage && (tokenUsage.input > 0 || tokenUsage.output > 0) && (
+                  <DraggableToolbarButton buttonId="tokens" onDragStart={onButtonDragStart}>
                   <span
                     className="text-[0.7rem] text-muted-foreground tabular-nums hidden xs:inline"
                     title={`Input: ${tokenUsage.input.toLocaleString()} tokens\nOutput: ${tokenUsage.output.toLocaleString()} tokens${tokenUsage.cacheRead ? `\nCache read: ${tokenUsage.cacheRead.toLocaleString()}` : ""}${tokenUsage.cacheWrite ? `\nCache write: ${tokenUsage.cacheWrite.toLocaleString()}` : ""}${tokenUsage.cost ? `\nCost: $${tokenUsage.cost.toFixed(4)}` : ""}`}
@@ -587,8 +595,10 @@ export function SessionViewer({
                       {tokenUsage.cost > 0 && ` · $${tokenUsage.cost.toFixed(3)}`}
                     </span>
                   </span>
+                  </DraggableToolbarButton>
                 )}
                 {showTerminalButton && onToggleTerminal && (
+                  <DraggableToolbarButton buttonId="terminal" onDragStart={onButtonDragStart}>
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <Button className="hidden md:inline-flex h-7 w-7" onClick={onToggleTerminal} size="icon" type="button" variant="outline" aria-label="Toggle terminal">
@@ -597,8 +607,10 @@ export function SessionViewer({
                     </TooltipTrigger>
                     <TooltipContent>Terminal</TooltipContent>
                   </Tooltip>
+                  </DraggableToolbarButton>
                 )}
                 {showFileExplorerButton && onToggleFileExplorer && (
+                  <DraggableToolbarButton buttonId="files" onDragStart={onButtonDragStart}>
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <Button className="hidden md:inline-flex h-7 w-7" onClick={onToggleFileExplorer} size="icon" type="button" variant="outline" aria-label="Toggle file explorer">
@@ -607,8 +619,10 @@ export function SessionViewer({
                     </TooltipTrigger>
                     <TooltipContent>Files</TooltipContent>
                   </Tooltip>
+                  </DraggableToolbarButton>
                 )}
                 {showGitButton && onToggleGit && (
+                  <DraggableToolbarButton buttonId="git" onDragStart={onButtonDragStart}>
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <Button className="hidden md:inline-flex h-7 w-7" onClick={onToggleGit} size="icon" type="button" variant="outline" aria-label="Toggle git panel">
@@ -617,8 +631,10 @@ export function SessionViewer({
                     </TooltipTrigger>
                     <TooltipContent>Git</TooltipContent>
                   </Tooltip>
+                  </DraggableToolbarButton>
                 )}
                 {showTriggersButton && onToggleTriggers && (
+                  <DraggableToolbarButton buttonId="triggers" onDragStart={onButtonDragStart}>
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <Button className="hidden md:inline-flex h-7 w-7 relative" onClick={onToggleTriggers} size="icon" type="button" variant="outline" aria-label="Toggle triggers panel">
@@ -645,6 +661,7 @@ export function SessionViewer({
                       {(triggerCount?.subscriptions ?? 0) > 0 && ` • ${triggerCount!.subscriptions} subscribed`}
                     </TooltipContent>
                   </Tooltip>
+                  </DraggableToolbarButton>
                 )}
                 {showAnalyzerButton && onToggleAnalyzer && (
                   <Tooltip>
@@ -657,6 +674,7 @@ export function SessionViewer({
                   </Tooltip>
                 )}
                 {extraHeaderButtons}
+                <DraggableToolbarButton buttonId="export" onDragStart={onButtonDragStart}>
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <ConversationExport
@@ -669,7 +687,9 @@ export function SessionViewer({
                   </TooltipTrigger>
                   <TooltipContent>Export</TooltipContent>
                 </Tooltip>
+                </DraggableToolbarButton>
                 {onDuplicateSession && (
+                  <DraggableToolbarButton buttonId="duplicate" onDragStart={onButtonDragStart}>
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <Button className="hidden md:inline-flex h-7 w-7" onClick={onDuplicateSession} size="icon" type="button" variant="outline" aria-label="Duplicate session">
@@ -678,6 +698,7 @@ export function SessionViewer({
                     </TooltipTrigger>
                     <TooltipContent>Duplicate</TooltipContent>
                   </Tooltip>
+                  </DraggableToolbarButton>
                 )}
                 <HeaderOverflowMenu
                   showTerminalButton={showTerminalButton}
@@ -700,6 +721,7 @@ export function SessionViewer({
                   messages={sortedMessages}
                   sessionId={sessionId}
                 />
+                <DraggableToolbarButton buttonId="delete" onDragStart={onButtonDragStart}>
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <Button
@@ -723,6 +745,7 @@ export function SessionViewer({
                   </TooltipTrigger>
                   <TooltipContent>End Session</TooltipContent>
                 </Tooltip>
+                </DraggableToolbarButton>
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <Button
