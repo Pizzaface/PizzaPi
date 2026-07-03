@@ -1,0 +1,13 @@
+{
+    "name": "@pizzapi/mobile",
+    "version": "0.0.0",
+    "private": true,
+    "type": "module",
+    "description": "Capacitor mobile bootstrap for PizzaPi",
+    "devDependencies": {
+        "happy-dom": "^20.8.4"
+    },
+    "dependencies": {
+        "jsqr": "^1.4.0"
+    }
+}

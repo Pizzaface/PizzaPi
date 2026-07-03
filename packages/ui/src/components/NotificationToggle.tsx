@@ -25,19 +25,39 @@ import {
     getSuppressChildNotifications,
     setSuppressChildNotifications,
 } from "@/lib/push";
+import {
+    isNativePushAvailable,
+    isNativePushDisabled,
+    setNativePushDisabled,
+    hasNativePushPermission,
+    requestNativePushPermission,
+    startNtfyPush,
+    stopNtfyPush,
+} from "@/lib/ntfy-push";
 import { createLogger } from "@pizzapi/tools";
 
 const log = createLogger("push");
 
 export function usePushState() {
+    // Android native app: no service worker / Web Push in the WebView — use the
+    // ntfy foreground-service path gated on the OS notification permission.
+    const native = isNativePushAvailable();
     const [subscribed, setSubscribed] = React.useState(false);
     const [loading, setLoading] = React.useState(true);
     const [supported, setSupported] = React.useState(false);
+    const [nativeDenied, setNativeDenied] = React.useState(false);
     const [suppressChild, setSuppressChild] = React.useState(false);
     const [suppressChildLoading, setSuppressChildLoading] = React.useState(false);
 
     // Initial load + sync when another instance changes state
     const refreshState = React.useCallback(() => {
+        if (native) {
+            hasNativePushPermission().then((granted) => {
+                setSubscribed(granted && !isNativePushDisabled());
+                setLoading(false);
+            });
+            return;
+        }
         if (!isPushSupported()) return;
         isPushSubscribed().then((s) => {
             setSubscribed(s);
@@ -50,10 +70,10 @@ export function usePushState() {
                 setSuppressChild(false);
             }
         });
-    }, []);
+    }, [native]);
 
     React.useEffect(() => {
-        const sup = isPushSupported();
+        const sup = native || isPushSupported();
         setSupported(sup);
         if (!sup) {
             setLoading(false);
@@ -64,13 +84,28 @@ export function usePushState() {
         const onSync = () => refreshState();
         window.addEventListener("pp-push-state-changed", onSync);
         return () => window.removeEventListener("pp-push-state-changed", onSync);
-    }, [refreshState]);
+    }, [refreshState, native]);
 
     const toggle = React.useCallback(async () => {
         if (loading) return;
         setLoading(true);
         try {
-            if (subscribed) {
+            if (native) {
+                if (subscribed) {
+                    setNativePushDisabled(true);
+                    await stopNtfyPush();
+                    setSubscribed(false);
+                } else {
+                    const granted = await requestNativePushPermission();
+                    setNativeDenied(!granted);
+                    if (granted) {
+                        setNativePushDisabled(false);
+                        await startNtfyPush();
+                        setSubscribed(true);
+                    }
+                }
+                window.dispatchEvent(new CustomEvent("pp-push-state-changed"));
+            } else if (subscribed) {
                 const ok = await unsubscribeFromPush();
                 if (ok) {
                     setSubscribed(false);
@@ -92,7 +127,7 @@ export function usePushState() {
         } finally {
             setLoading(false);
         }
-    }, [subscribed, loading]);
+    }, [subscribed, loading, native]);
 
     const toggleSuppressChild = React.useCallback(async () => {
         if (suppressChildLoading || !subscribed) return;
@@ -111,20 +146,25 @@ export function usePushState() {
         }
     }, [suppressChild, suppressChildLoading, subscribed]);
 
-    const permissionDenied = getNotificationPermission() === "denied";
+    // On native, "denied" only after an explicit request came back denied —
+    // Android can't distinguish never-asked from denied, and the fix lives in
+    // system settings, not another prompt.
+    const permissionDenied = native ? nativeDenied : getNotificationPermission() === "denied";
 
-    return { subscribed, loading, supported, permissionDenied, toggle, suppressChild, suppressChildLoading, toggleSuppressChild };
+    return { subscribed, loading, supported, native, permissionDenied, toggle, suppressChild, suppressChildLoading, toggleSuppressChild };
 }
 
 export function NotificationToggle() {
-    const { subscribed, loading, supported, permissionDenied, toggle, suppressChild, suppressChildLoading, toggleSuppressChild } = usePushState();
+    const { subscribed, loading, supported, native, permissionDenied, toggle, suppressChild, suppressChildLoading, toggleSuppressChild } = usePushState();
 
     if (!supported) return null;
 
     const label = loading
         ? "Loading…"
         : permissionDenied
-          ? "Notifications blocked by browser"
+          ? native
+              ? "Notifications blocked — enable in system settings"
+              : "Notifications blocked by browser"
           : subscribed
             ? "Notifications enabled"
             : "Enable notifications";
@@ -163,6 +203,8 @@ export function NotificationToggle() {
                 <DropdownMenuContent align="end" className="w-64">
                     <DropdownMenuLabel>Notification settings</DropdownMenuLabel>
                     <DropdownMenuSeparator />
+                    {/* Suppress-child is a Web Push (endpoint) setting — hidden on native. */}
+                    {!native && (<>
                     {/*
                      * Suppress child session notifications.
                      * The Switch is a pure visual indicator — clicking anywhere on the
@@ -187,6 +229,7 @@ export function NotificationToggle() {
                         />
                     </DropdownMenuItem>
                     <DropdownMenuSeparator />
+                    </>)}
                     <DropdownMenuItem
                         className="text-destructive focus:text-destructive"
                         onSelect={(e) => {
@@ -230,7 +273,7 @@ export function NotificationToggle() {
  * Notification toggle rendered as a DropdownMenuItem (for mobile menus).
  */
 export function MobileNotificationMenuItem() {
-    const { subscribed, loading, supported, permissionDenied, toggle, suppressChild, suppressChildLoading, toggleSuppressChild } = usePushState();
+    const { subscribed, loading, supported, native, permissionDenied, toggle, suppressChild, suppressChildLoading, toggleSuppressChild } = usePushState();
 
     if (!supported) return null;
 
@@ -251,7 +294,7 @@ export function MobileNotificationMenuItem() {
                 )}
                 {subscribed ? "Disable notifications" : "Enable notifications"}
             </DropdownMenuItem>
-            {subscribed && (
+            {subscribed && !native && (
                 <DropdownMenuItem
                     className="md:hidden flex items-center justify-between gap-2 cursor-default"
                     disabled={suppressChildLoading}

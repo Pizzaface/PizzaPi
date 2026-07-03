@@ -49,6 +49,22 @@ function shouldCloseSidebar(offset: number): boolean {
   return offset < -80;
 }
 
+/**
+ * Opening-drag clamping — mirrors handleSidebarPointerMove when opening:
+ * `Math.max(-288, Math.min(-1, -288 + dx))`.
+ */
+function clampOpenSwipeOffset(dx: number): number {
+  return Math.max(-288, Math.min(-1, -288 + dx));
+}
+
+/**
+ * Open decision — mirrors handleSidebarPointerUp when opening:
+ * "Open if dragged more than 80 px out from the edge."
+ */
+function shouldOpenSidebar(offset: number): boolean {
+  return offset > -288 + 80;
+}
+
 // ── Axis-lock detection ───────────────────────────────────────────────────────
 
 describe("detectAxisDecision", () => {
@@ -127,6 +143,28 @@ describe("shouldCloseSidebar", () => {
     expect(shouldCloseSidebar(-79)).toBe(false);
     expect(shouldCloseSidebar(0)).toBe(false);
     expect(shouldCloseSidebar(8)).toBe(false); // rightward overscroll
+  });
+});
+
+// ── Open decision ────────────────────────────────────────────────────────────
+
+describe("edge-swipe-to-open", () => {
+  test("clamps opening drag between -288 (closed) and -1 (never 0 mid-drag)", () => {
+    expect(clampOpenSwipeOffset(0)).toBe(-288);
+    expect(clampOpenSwipeOffset(-50)).toBe(-288);
+    expect(clampOpenSwipeOffset(100)).toBe(-188);
+    expect(clampOpenSwipeOffset(288)).toBe(-1);
+    expect(clampOpenSwipeOffset(500)).toBe(-1);
+  });
+
+  test("opens after dragging more than 80px out from the edge", () => {
+    expect(shouldOpenSidebar(clampOpenSwipeOffset(81))).toBe(true);
+    expect(shouldOpenSidebar(clampOpenSwipeOffset(200))).toBe(true);
+  });
+
+  test("does not open on short drags", () => {
+    expect(shouldOpenSidebar(clampOpenSwipeOffset(80))).toBe(false);
+    expect(shouldOpenSidebar(clampOpenSwipeOffset(20))).toBe(false);
   });
 });
 

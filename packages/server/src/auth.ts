@@ -165,6 +165,59 @@ export interface WebhookTable {
     updatedAt: string;
 }
 
+export interface SetupClaimTable {
+    id: string;
+    status: "pending" | "approved" | "redeemed" | "expired";
+    relayUrl: string;
+    apiKey: string | null;
+    userId: string | null;
+    userName: string | null;
+    createdAt: string;
+    expiresAt: string;
+    approvedAt: string | null;
+    redeemedAt: string | null;
+}
+
+export interface MobileLinkTable {
+    id: string;
+    status: "pending" | "scanned" | "approved" | "expired";
+    relayUrl: string;
+    userId: string;
+    userName: string | null;
+    verificationToken: string | null;
+    deviceName: string | null;
+    scannedUrl: string | null;
+    apiKey: string | null;
+    createdAt: string;
+    expiresAt: string;
+    scannedAt: string | null;
+    approvedAt: string | null;
+}
+
+/**
+ * Native (Capacitor app) push registration — currently an ntfy topic per
+ * device. The device subscribes to `topic` on the public ntfy instance and
+ * holds the connection in an Android foreground service; the server publishes
+ * to the same topic via the internal ntfy URL + publish token.
+ *
+ * `ntfyUser`/`ntfyPass` are reserved for Phase 3 per-device ntfy auth (read-only
+ * ACL per device); Phase 1 relies on topic unguessability + the operator's
+ * `auth-default-access: deny-all` + the server publish token.
+ */
+export interface NativePushRegistrationTable {
+    id: string;
+    userId: string;
+    /** "android" today (iOS background push is out of scope). */
+    platform: string;
+    /** Unguessable random topic, e.g. `pizzapi-<24-byte-hex>`. */
+    topic: string;
+    /** Per-device ntfy username (Phase 3; null in Phase 1). */
+    ntfyUser: string | null;
+    /** Per-device ntfy password (Phase 3; null in Phase 1). */
+    ntfyPass: string | null;
+    createdAt: string;
+}
+
 export interface DB {
     user: UserTable;
     session: SessionTable;
@@ -179,6 +232,9 @@ export interface DB {
     user_hidden_model: UserHiddenModelTable;
     extracted_attachment: ExtractedAttachmentTable;
     webhook: WebhookTable;
+    setup_claim: SetupClaimTable;
+    mobile_link: MobileLinkTable;
+    native_push_registration: NativePushRegistrationTable;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -313,6 +369,11 @@ export function createAuthContext(config: AuthConfig = {}): AuthContext {
         (process.env.PIZZAPI_EXTRA_ORIGINS
             ? process.env.PIZZAPI_EXTRA_ORIGINS.split(",").map((o) => o.trim()).filter(Boolean)
             : []);
+
+    // Capacitor mobile app origins. Disable with PIZZAPI_TRUST_MOBILE_ORIGINS=false.
+    const trustMobile = process.env.PIZZAPI_TRUST_MOBILE_ORIGINS !== "false";
+    const mobileOrigins = trustMobile ? ["capacitor://localhost", "https://localhost"] : [];
+
     const isProduction = process.env.NODE_ENV === "production";
     if (isProduction && !process.env.PIZZAPI_BASE_URL) {
         log.warn("WARNING: PIZZAPI_BASE_URL is not set in production. This may cause CORS or WebSocket connection issues.");
@@ -323,7 +384,7 @@ export function createAuthContext(config: AuthConfig = {}): AuthContext {
     } else if (!isProduction) {
         baseOrigins.push("http://localhost:5173", "http://127.0.0.1:5173");
     }
-    const trustedOrigins = [...baseOrigins, ...extraOrigins];
+    const trustedOrigins = [...baseOrigins, ...extraOrigins, ...mobileOrigins];
 
     const sqliteDb = new Database(dbPath);
     const dialect = new BunSqliteDialect({ database: sqliteDb });

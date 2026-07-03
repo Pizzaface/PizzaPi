@@ -15,11 +15,6 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
-import { cjk } from "@streamdown/cjk";
-import { code } from "@streamdown/code";
-import { math } from "@streamdown/math";
-import { mermaid } from "@streamdown/mermaid";
-import { rehypeSigils } from "@/lib/sigils/rehype-sigils";
 import { SigilInline } from "@/components/sigils/SigilPill";
 import { ActionSigilProvider } from "@/components/sigils/ActionSigilContext";
 import { ChevronLeftIcon, ChevronRightIcon } from "lucide-react";
@@ -32,7 +27,7 @@ import {
   useMemo,
   useState,
 } from "react";
-import { Streamdown, defaultRehypePlugins } from "streamdown";
+import { LazyStreamdown, type StreamdownProps } from "./lazy-streamdown";
 
 export type MessageProps = HTMLAttributes<HTMLDivElement> & {
   from: UIMessage["role"];
@@ -323,19 +318,11 @@ export const MessageBranchPage = ({
   );
 };
 
-export type MessageResponseProps = ComponentProps<typeof Streamdown> & {
+export type MessageResponseProps = StreamdownProps & {
   sigilCanInteract?: boolean;
   sigilMessageComplete?: boolean;
   onActionSigilResponse?: (text: string) => Promise<boolean>;
 };
-
-const streamdownPlugins = { cjk, code, math, mermaid };
-
-// Merge rehypeSigils WITH Streamdown's built-in sanitize/harden rehype plugins
-// instead of replacing them. Spreading defaultRehypePlugins preserves XSS
-// protections (rehype-sanitize etc.) that Streamdown applies by default.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const sigilRehypePlugins = [...Object.values(defaultRehypePlugins), [rehypeSigils]] as any;
 
 /** Span override that renders sigil pills or sigil groups. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -363,13 +350,12 @@ export const MessageResponse = memo(
         sendResponse: onActionSigilResponse,
       }}
     >
-      <Streamdown
+      <LazyStreamdown
         className={cn(
           "size-full break-words [&>*:first-child]:mt-0 [&>*:last-child]:mb-0",
           className
         )}
-        plugins={streamdownPlugins}
-        rehypePlugins={sigilRehypePlugins}
+        rehypeMode="sigils"
         components={sigilComponents}
         {...props}
       />

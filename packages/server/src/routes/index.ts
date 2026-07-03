@@ -11,7 +11,10 @@ import { getLatestNpmVersion } from "../version.js";
 import { serverHealth } from "../health.js";
 import { getServerRuntimeInfo } from "../runtime-version.js";
 import { createLogger } from "@pizzapi/tools";
+import { requireSession } from "../middleware.js";
 import { handleAuthRoute } from "./auth.js";
+import { handleSetupClaimsRoute } from "./setup-claims.js";
+import { handleMobileLinksRoute } from "./mobile-links.js";
 import { handleRunnersRoute } from "./runners.js";
 import { handleSessionsRoute } from "./sessions.js";
 import { handleAttachmentsRoute } from "./attachments.js";
@@ -32,6 +35,8 @@ let lastHealthSignature = "";
 const routers: RouteHandler[] = [
     handleMcpOAuthRoute,   // Before auth — OAuth callback must be unauthenticated
     handleAuthRoute,
+    handleSetupClaimsRoute, // QR-code setup claim lifecycle
+    handleMobileLinksRoute, // Android app pairing lifecycle
     handleTunnelRoute,     // Before runners — /api/tunnel/* is session-scoped, not runner-scoped
     handleRunnersRoute,
     handleRunnerSettingsRoute,
@@ -80,6 +85,12 @@ export async function handleApi(req: Request, url: URL): Promise<Response | unde
     if (url.pathname === "/api/version" && req.method === "GET") {
         const version = await getLatestNpmVersion();
         return Response.json({ version });
+    }
+
+    if (url.pathname === "/api/me" && req.method === "GET") {
+        const identity = await requireSession(req);
+        if (identity instanceof Response) return identity;
+        return Response.json({ userId: identity.userId, userName: identity.userName });
     }
 
     // ── Domain routers ─────────────────────────────────────────────────

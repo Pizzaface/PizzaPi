@@ -20,7 +20,7 @@ import type {
 // node_modules/@pizzapi/protocol points to the main branch's dist, not this
 // worktree's updated dist.
 type ServiceEnvelope = { serviceId: string; type: string; requestId?: string; payload: unknown };
-import { sessionCookieAuthMiddleware } from "./auth.js";
+import { browserAuthMiddleware } from "./auth.js";
 import { bindSocketHandlersToAuthContext } from "./context.js";
 import { getRunnerServiceAnnounce } from "./runner.js";
 import { withRunnerRefHint } from "./runner-ref.js";
@@ -233,7 +233,7 @@ export function registerViewerNamespace(io: SocketIOServer, context: AuthContext
     > = io.of("/viewer");
 
     // Auth: validate session cookie from handshake
-    viewer.use(sessionCookieAuthMiddleware(context) as Parameters<typeof viewer.use>[0]);
+    viewer.use(browserAuthMiddleware(context) as Parameters<typeof viewer.use>[0]);
 
     viewer.on("connection", bindAuthContext(context, async (socket) => {
         bindSocketHandlersToAuthContext(socket, context);

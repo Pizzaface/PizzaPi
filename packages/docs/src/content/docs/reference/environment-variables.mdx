@@ -152,6 +152,20 @@ These variables control which subsystems are loaded by runner-spawned worker ses
 | `VAPID_PRIVATE_KEY` | VAPID private key for Web Push. | — |
 | `VAPID_SUBJECT` | VAPID subject, typically a `mailto:` URI identifying the server operator. | `mailto:admin@pizzapi.local` |
 
+### Native (ntfy) Push — Google-free Android background notifications
+
+Self-hosted [ntfy](https://ntfy.sh) delivers background push to the Android
+Capacitor app without Google/FCM. All three variables are optional — if
+`PIZZAPI_NTFY_URL` is unset, the ntfy branch is a silent no-op and only Web
+Push runs. See [Mobile push](../deployment/mobile-push.mdx) for the full
+setup (compose service, reverse proxy, publish-user provisioning, security).
+
+| Variable | Description | Default |
+|---|---|---|
+| `PIZZAPI_NTFY_URL` | Internal URL the server uses to publish to ntfy (e.g. `http://ntfy` on the Docker network). | — |
+| `PIZZAPI_NTFY_PUBLIC_URL` | Public URL devices use to subscribe (e.g. `https://push.example.com`). | — |
+| `PIZZAPI_NTFY_PUBLISH_TOKEN` | ntfy access token for the server's publish user (provisioned via `ntfy user` + `ntfy token`). | — |
+
 <Aside type="caution">
   `BETTER_AUTH_SECRET` must be a strong, unique secret in production. If left unset, better-auth will warn or refuse to start.
 </Aside>

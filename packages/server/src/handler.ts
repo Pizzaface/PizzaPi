@@ -167,8 +167,10 @@ export async function enforceBodySizeLimit(req: Request, url: URL): Promise<Resp
 export function withSecurityHeaders(res: Response): Response {
     const headers = new Headers(res.headers);
     const isTunnel = headers.has("x-pizzapi-tunnel");
-    // Strip internal marker before sending to client
+    const allowCrossOriginTunnelFrame = headers.get("x-pizzapi-tunnel-frame") === "cross-origin";
+    // Strip internal markers before sending to client
     headers.delete("x-pizzapi-tunnel");
+    headers.delete("x-pizzapi-tunnel-frame");
 
     headers.set("X-Content-Type-Options", "nosniff");
     headers.set("X-XSS-Protection", "0");
@@ -176,10 +178,16 @@ export function withSecurityHeaders(res: Response): Response {
     headers.set("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
 
     if (isTunnel) {
-        // Tunnel responses: allow same-origin framing (for the TunnelPanel iframe)
-        // and use a permissive CSP so the tunneled app's scripts/styles/resources load.
-        headers.set("X-Frame-Options", "SAMEORIGIN");
-        // Intentionally omit Content-Security-Policy — the tunneled app may need
+        // Tunnel responses: allow same-origin framing for the web UI iframe.
+        // Token-authenticated mobile iframes are cross-origin (https://localhost → relay),
+        // so omit frame/CSP blockers only for that scoped tunnel-token path.
+        if (allowCrossOriginTunnelFrame) {
+            headers.delete("X-Frame-Options");
+            headers.delete("Content-Security-Policy");
+        } else {
+            headers.set("X-Frame-Options", "SAMEORIGIN");
+        }
+        // Intentionally omit our own Content-Security-Policy — the tunneled app may need
         // inline scripts, external CDN resources, etc. that PizzaPi's strict CSP
         // would block. The iframe sandbox attribute provides defence-in-depth.
     } else {

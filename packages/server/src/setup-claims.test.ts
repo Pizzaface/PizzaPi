@@ -1,0 +1,130 @@
+import { describe, test, expect, beforeAll, afterAll } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { createTestAuthContext } from "./auth.js";
+import { runAllMigrations } from "./migrations.js";
+import {
+    createSetupClaim,
+    pollSetupClaim,
+    approveSetupClaim,
+    sweepExpiredSetupClaims,
+} from "./setup-claims.js";
+import { runWithAuthContext } from "./auth.js";
+
+const tmpDir = mkdtempSync(join(tmpdir(), "pizzapi-setup-claims-"));
+const dbPath = join(tmpDir, "test.db");
+const authContext = createTestAuthContext({ dbPath, baseURL: "http://localhost:7492" });
+
+beforeAll(async () => {
+    await runAllMigrations(authContext);
+});
+
+afterAll(() => {
+    try { rmSync(tmpDir, { recursive: true, force: true }); } catch {}
+});
+
+describe("setup-claims store", () => {
+    test("creates a pending claim", async () => {
+        await runWithAuthContext(authContext, async () => {
+            const { token, expiresAt } = await createSetupClaim("http://localhost:7492");
+            expect(token.length).toBeGreaterThan(30);
+            expect(new Date(expiresAt).getTime()).toBeGreaterThan(Date.now());
+
+            const status = await pollSetupClaim(token);
+            expect(status).not.toBeNull();
+            expect(status!.status).toBe("pending");
+            expect(status!.apiKey).toBeUndefined();
+        });
+    });
+
+    test("approving stores an API key and polling redeems it", async () => {
+        await runWithAuthContext(authContext, async () => {
+            const { token } = await createSetupClaim("http://localhost:7492");
+            const approve = await approveSetupClaim(token, "user-1", "Jordan");
+            expect(approve).not.toBeNull();
+            expect(approve!.apiKey.length).toBe(64);
+
+            const first = await pollSetupClaim(token);
+            expect(first!.status).toBe("approved");
+            expect(first!.apiKey).toBe(approve!.apiKey);
+
+            const second = await pollSetupClaim(token);
+            expect(second!.status).toBe("redeemed");
+            expect(second!.apiKey).toBeUndefined();
+        });
+    });
+
+    test("unknown token returns null", async () => {
+        await runWithAuthContext(authContext, async () => {
+            const status = await pollSetupClaim("definitely-not-a-token");
+            expect(status).toBeNull();
+        });
+    });
+
+    test("expired claims are rejected", async () => {
+        await runWithAuthContext(authContext, async () => {
+            const { token } = await createSetupClaim("http://localhost:7492");
+            // Force expiry by rewriting the row.
+            const { getKysely } = await import("./auth.js");
+            await getKysely()
+                .updateTable("setup_claim")
+                .set({ expiresAt: new Date(Date.now() - 1000).toISOString() })
+                .where("id", "=", token)
+                .execute();
+
+            const status = await pollSetupClaim(token);
+            expect(status!.status).toBe("expired");
+        });
+    });
+
+    test("approved key is time-limited and not hand-rolled with rateLimitEnabled 0", async () => {
+        await runWithAuthContext(authContext, async () => {
+            const { token } = await createSetupClaim("http://localhost:7492");
+            const approve = await approveSetupClaim(token, "user-ttl", "Dana");
+            expect(approve).not.toBeNull();
+
+            const { getKysely } = await import("./auth.js");
+            const row = await getKysely()
+                .selectFrom("apikey")
+                .select(["expiresAt"])
+                .where("name", "=", `setup-claim-${token.slice(0, 8)}`)
+                .executeTakeFirst();
+            expect(row).toBeTruthy();
+            // Old inline insert used expiresAt: null (permanent). Minting via
+            // mintEphemeralApiKey gives it a real, future expiry.
+            expect(row!.expiresAt).not.toBeNull();
+            expect(new Date(row!.expiresAt as string).getTime()).toBeGreaterThan(Date.now());
+        });
+    });
+
+    test("minted key lifetime is capped to the approver's maxTtlSeconds", async () => {
+        await runWithAuthContext(authContext, async () => {
+            const { token } = await createSetupClaim("http://localhost:7492");
+            const capSeconds = 3600; // 1h — far below the 365d default
+            const approve = await approveSetupClaim(token, "user-cap", "Cap", capSeconds);
+            expect(approve).not.toBeNull();
+
+            const { getKysely } = await import("./auth.js");
+            const row = await getKysely()
+                .selectFrom("apikey")
+                .select(["expiresAt"])
+                .where("name", "=", `setup-claim-${token.slice(0, 8)}`)
+                .executeTakeFirst();
+            const expMs = new Date(row!.expiresAt as string).getTime();
+            // Never longer than the cap (+ small skew), and clearly not the default.
+            expect(expMs).toBeLessThanOrEqual(Date.now() + (capSeconds + 60) * 1000);
+            expect(expMs).toBeLessThan(Date.now() + 2 * 24 * 60 * 60 * 1000);
+        });
+    });
+
+    test("approval fails for already-approved claims", async () => {
+        await runWithAuthContext(authContext, async () => {
+            const { token } = await createSetupClaim("http://localhost:7492");
+            const first = await approveSetupClaim(token, "user-1", "Jordan");
+            expect(first).not.toBeNull();
+            const second = await approveSetupClaim(token, "user-2", "Other");
+            expect(second).toBeNull();
+        });
+    });
+});

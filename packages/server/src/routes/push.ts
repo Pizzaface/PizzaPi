@@ -11,6 +11,10 @@ import {
     updateEnabledEvents,
     updateSuppressChildNotifications,
     isValidPushEndpoint,
+    isNtfyConfigured,
+    getNtfyPublicUrl,
+    registerNativePush,
+    unregisterNativePush,
 } from "../push.js";
 import { getSharedSession, getLocalTuiSocket } from "../ws/sio-registry.js";
 import { getPushPendingQuestion, consumePushPendingQuestionIfMatches } from "../ws/sio-state/index.js";
@@ -197,6 +201,44 @@ export const handlePushRoute: RouteHandler = async (req, url) => {
         });
 
         return Response.json({ ok: true });
+    }
+
+    // ── Native (ntfy) push registration — Android background push w/o Google ──
+
+    if (url.pathname === "/api/push/register-native" && req.method === "POST") {
+        const identity = await requireSession(req);
+        if (identity instanceof Response) return identity;
+
+        if (!isNtfyConfigured()) {
+            return Response.json(
+                { error: "Native push is not configured on this server (PIZZAPI_NTFY_URL unset)" },
+                { status: 503 },
+            );
+        }
+
+        // Only Android is supported today (iOS background push requires APNs,
+        // intentionally out of scope for the Google-free path).
+        const platform = "android";
+
+        const reg = await registerNativePush({ userId: identity.userId, platform });
+        return Response.json({
+            ok: true,
+            ntfyPublicUrl: getNtfyPublicUrl(),
+            topic: reg.topic,
+            // ntfyUser/ntfyPass are null in Phase 1; populated in Phase 3 when
+            // per-device ntfy users are provisioned.
+            ntfyUser: reg.ntfyUser,
+            ntfyPass: reg.ntfyPass,
+        });
+    }
+
+    if (url.pathname === "/api/push/unregister-native" && req.method === "POST") {
+        const identity = await requireSession(req);
+        if (identity instanceof Response) return identity;
+
+        const platform = "android";
+        const removed = await unregisterNativePush(identity.userId, platform);
+        return Response.json({ ok: true, removed });
     }
 
     return undefined;

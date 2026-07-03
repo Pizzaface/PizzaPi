@@ -1,0 +1,928 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#1c1917" />
+  <title>PizzaPi</title>
+  <style>
+    :root {
+      --bg: #1c1917;
+      --fg: #fafaf9;
+      --muted: #a8a29e;
+      --accent: #22c55e;
+      --accent-fg: #052e16;
+      --input-bg: #292524;
+      --input-border: #44403c;
+      --error: #ef4444;
+      --warn: #ca8a04;
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      padding: 0;
+      min-height: 100vh;
+      min-height: 100dvh;
+      background: var(--bg);
+      color: var(--fg);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      -webkit-font-smoothing: antialiased;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .screen {
+      width: 100%;
+      max-width: 400px;
+      /* W19: respect the notch / gesture bar. */
+      padding: calc(32px + env(safe-area-inset-top)) calc(24px + env(safe-area-inset-right)) calc(32px + env(safe-area-inset-bottom)) calc(24px + env(safe-area-inset-left));
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 24px;
+    }
+    .logo {
+      width: 140px;
+      height: 140px;
+    }
+    h1 {
+      margin: 0;
+      font-size: 28px;
+      font-weight: 600;
+      letter-spacing: -0.02em;
+      text-align: center;
+    }
+    .subtitle {
+      color: var(--muted);
+      font-size: 14px;
+      text-align: center;
+      margin: 0;
+      line-height: 1.5;
+    }
+    form {
+      width: 100%;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .field {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    label {
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    input {
+      width: 100%;
+      padding: 14px 16px;
+      background: var(--input-bg);
+      color: var(--fg);
+      border: 1px solid var(--input-border);
+      border-radius: 12px;
+      font-size: 16px;
+      font-family: inherit;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+    input:focus {
+      border-color: var(--accent);
+    }
+    input::placeholder {
+      color: #78716c;
+    }
+    button {
+      width: 100%;
+      padding: 14px 20px;
+      background: var(--accent);
+      color: var(--accent-fg);
+      border: none;
+      border-radius: 12px;
+      font-size: 16px;
+      font-weight: 600;
+      font-family: inherit;
+      cursor: pointer;
+      transition: opacity 0.15s, transform 0.05s;
+    }
+    button:active {
+      opacity: 0.9;
+      transform: scale(0.98);
+    }
+    button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    button.secondary {
+      background: var(--input-bg);
+      color: var(--fg);
+      border: 1px solid var(--input-border);
+    }
+    button.secondary:active {
+      background: var(--input-border);
+    }
+    div[role="group"] {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      width: 100%;
+    }
+    .status {
+      font-size: 13px;
+      text-align: center;
+      min-height: 1em;
+    }
+    .status.error {
+      color: var(--error);
+    }
+    .hint {
+      color: var(--muted);
+      font-size: 12px;
+      text-align: center;
+      margin-top: 8px;
+      line-height: 1.5;
+    }
+    /* Hidden screen: used when URL is already configured. */
+    .hidden {
+      display: none;
+    }
+    /* Connecting screen. */
+    .connecting {
+      text-align: center;
+    }
+    .connecting .url,
+    .verification-code {
+      color: var(--accent);
+      font-family: ui-monospace, monospace;
+      font-size: 14px;
+      word-break: break-all;
+      margin: 4px 0 16px;
+      padding: 12px 16px;
+      background: var(--input-bg);
+      border-radius: 10px;
+    }
+    .verification-code {
+      color: var(--fg);
+      font-size: 32px;
+      letter-spacing: 0.16em;
+      text-align: center;
+    }
+    .connecting .actions {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      margin-top: 8px;
+    }
+    .link-button {
+      background: transparent;
+      color: var(--muted);
+      border: none;
+      font-size: 13px;
+      padding: 8px;
+      min-height: 44px; /* W19: accessible touch target */
+      text-decoration: underline;
+      text-underline-offset: 3px;
+    }
+    /* Scanner viewport. */
+    .scanner-wrap {
+      width: 100%;
+      position: relative;
+      border-radius: 16px;
+      overflow: hidden;
+      aspect-ratio: 1;
+      background: #000;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+    }
+    .scanner-wrap video {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+    .scanner-overlay {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: flex-end;
+      padding-bottom: 16px;
+      pointer-events: none;
+    }
+    .scanner-hint {
+      color: #fff;
+      font-size: 13px;
+      background: rgba(0,0,0,0.55);
+      padding: 6px 12px;
+      border-radius: 999px;
+      backdrop-filter: blur(4px);
+      -webkit-backdrop-filter: blur(4px);
+    }
+    /* Scanning animation on the frame edge. */
+    .scanner-border {
+      position: absolute;
+      inset: 16px;
+      border: 2px solid rgba(34,197,94,0.8);
+      border-radius: 12px;
+      pointer-events: none;
+      box-shadow: 0 0 0 9999px rgba(0,0,0,0.35);
+    }
+    [hidden] { display: none !important; }
+  </style>
+</head>
+<body>
+
+  <!-- First-run URL entry screen -->
+  <div id="screen-setup" class="screen">
+    <!-- Inline PizzaPi logo (pizza.svg, simplified) -->
+    <svg class="logo" xmlns="http://www.w3.org/2000/svg" viewBox="30 70 540 540" width="140" height="140" aria-label="PizzaPi">
+      <circle cx="300" cy="340" r="270" fill="#1c1917"/>
+      <circle cx="300" cy="340" r="250" fill="#edb574"/>
+      <circle cx="300" cy="340" r="236" fill="none" stroke="#d99c52" stroke-width="12"/>
+      <circle cx="300" cy="340" r="248" fill="none" stroke="#fce4c5" stroke-width="3" opacity="0.5"/>
+      <circle cx="300" cy="340" r="225" fill="#cc3721"/>
+      <circle cx="300" cy="340" r="218" fill="none" stroke="#a3200e" stroke-width="5" opacity="0.5"/>
+      <circle cx="300" cy="340" r="215" fill="#f7d54d"/>
+      <g stroke="#d6a924" stroke-width="2.5" opacity="0.5" stroke-linecap="round">
+        <line x1="300" y1="125" x2="300" y2="555"/>
+        <line x1="85" y1="340" x2="515" y2="340"/>
+        <line x1="148" y1="188" x2="452" y2="492"/>
+        <line x1="148" y1="492" x2="452" y2="188"/>
+      </g>
+    </svg>
+    <h1>Welcome to PizzaPi</h1>
+    <p class="subtitle">Connect this device to your PizzaPi server to get started.</p>
+    <form id="connect-form" autocomplete="off" novalidate>
+      <div class="field">
+        <label for="server-url">Server URL</label>
+        <input
+          id="server-url"
+          type="url"
+          inputmode="url"
+          autocomplete="url"
+          autocapitalize="off"
+          spellcheck="false"
+          placeholder="https://relay.example.com"
+          required
+        />
+      </div>
+      <div role="group">
+        <button type="submit" id="connect-btn">Connect</button>
+        <button type="button" id="scan-btn" class="secondary">Scan QR code</button>
+      </div>
+      <p id="status" class="status" aria-live="polite"></p>
+    </form>
+    <p class="hint">
+      Your server address is stored locally on this device. You can change it later from the Android app settings.
+    </p>
+    <!-- QR scanner viewport, shown only when scanning is active. -->
+    <div id="scanner-wrap" class="scanner-wrap" hidden>
+      <video id="scanner-video" autoplay playsinline muted></video>
+      <div class="scanner-border"></div>
+      <div class="scanner-overlay">
+        <span class="scanner-hint">Point at the PizzaPi QR code</span>
+      </div>
+    </div>
+    <button type="button" id="cancel-scan-btn" class="link-button" hidden>Cancel scan</button>
+  </div>
+
+  <!-- Connecting / already-configured screen -->
+  <div id="screen-connecting" class="screen connecting hidden" aria-hidden="true">
+    <svg class="logo" xmlns="http://www.w3.org/2000/svg" viewBox="30 70 540 540" width="140" height="140" aria-label="PizzaPi">
+      <circle cx="300" cy="340" r="270" fill="#1c1917"/>
+      <circle cx="300" cy="340" r="250" fill="#edb574"/>
+      <circle cx="300" cy="340" r="225" fill="#cc3721"/>
+      <circle cx="300" cy="340" r="215" fill="#f7d54d"/>
+      <g stroke="#d6a924" stroke-width="2.5" opacity="0.5" stroke-linecap="round">
+        <line x1="300" y1="125" x2="300" y2="555"/>
+        <line x1="85" y1="340" x2="515" y2="340"/>
+        <line x1="148" y1="188" x2="452" y2="492"/>
+        <line x1="148" y1="492" x2="452" y2="188"/>
+      </g>
+    </svg>
+    <h1>Connecting…</h1>
+    <p class="url" id="connected-url"></p>
+    <p class="subtitle">Redirecting to your PizzaPi server. You'll be asked to sign in.</p>
+    <div class="actions">
+      <button type="button" id="reconfigure-btn" class="link-button">Change server</button>
+    </div>
+  </div>
+
+  <!-- Waiting for web approval screen -->
+  <div id="screen-waiting" class="screen connecting hidden" aria-hidden="true">
+    <svg class="logo" xmlns="http://www.w3.org/2000/svg" viewBox="30 70 540 540" width="140" height="140" aria-label="PizzaPi">
+      <circle cx="300" cy="340" r="270" fill="#1c1917"/>
+      <circle cx="300" cy="340" r="250" fill="#edb574"/>
+      <circle cx="300" cy="340" r="225" fill="#cc3721"/>
+      <circle cx="300" cy="340" r="215" fill="#f7d54d"/>
+    </svg>
+    <h1>Approve on Web</h1>
+    <p class="subtitle">Confirm this code in the PizzaPi web app to link this device.</p>
+    <div class="verification-code" id="verification-code"></div>
+    <p class="url" id="waiting-url"></p>
+    <p id="waiting-status" class="status" aria-live="polite">Waiting for approval…</p>
+    <button type="button" id="cancel-link-btn" class="link-button">Cancel</button>
+  </div>
+
+  <!-- Confirm a scanned host before contacting/persisting it (W7/P0-1/P0-2) -->
+  <div id="screen-confirm" class="screen connecting hidden" role="dialog" aria-modal="true" aria-labelledby="confirm-title" aria-hidden="true">
+    <svg class="logo" xmlns="http://www.w3.org/2000/svg" viewBox="30 70 540 540" width="140" height="140" aria-label="PizzaPi">
+      <circle cx="300" cy="340" r="270" fill="#1c1917"/>
+      <circle cx="300" cy="340" r="250" fill="#edb574"/>
+      <circle cx="300" cy="340" r="225" fill="#cc3721"/>
+      <circle cx="300" cy="340" r="215" fill="#f7d54d"/>
+    </svg>
+    <h1 id="confirm-title">Connect to this server?</h1>
+    <p class="subtitle">A scanned QR code wants to connect this device to:</p>
+    <p class="url" id="confirm-host"></p>
+    <p class="subtitle">This will replace your current server. Only continue if you recognise this host.</p>
+    <div role="group">
+      <button type="button" id="confirm-connect-btn">Connect</button>
+      <button type="button" id="confirm-cancel-btn" class="secondary">Cancel</button>
+    </div>
+  </div>
+
+  <script src="vendor/jsqr.js"></script>
+  <script>
+    (function () {
+      'use strict';
+
+      var STORAGE_KEY = 'pizzapi.serverUrl';
+      var URL_REGEX = /^https?:\/\/[^\s/$.?#].[^\s]*$/i;
+      // Matches a setup-claim URL like https://relay.example.com/setup-claim?t=abc123
+      var SETUP_CLAIM_REGEX = /^(https?:\/\/[^/]+)(\/setup-claim\b[^\s]*)$/;
+      // Matches a mobile-link URL like https://relay.example.com/mobile-link?id=abc123
+      var MOBILE_LINK_REGEX = /^(https?:\/\/[^/]+)\/mobile-link\?id=([A-Za-z0-9_-]+)$/;
+
+      var screenSetup = document.getElementById('screen-setup');
+      var screenConnecting = document.getElementById('screen-connecting');
+      var screenWaiting = document.getElementById('screen-waiting');
+      var form = document.getElementById('connect-form');
+      var input = document.getElementById('server-url');
+      var btn = document.getElementById('connect-btn');
+      var scanBtn = document.getElementById('scan-btn');
+      var statusEl = document.getElementById('status');
+      var connectedUrlEl = document.getElementById('connected-url');
+      var waitingUrlEl = document.getElementById('waiting-url');
+      var waitingStatusEl = document.getElementById('waiting-status');
+      var verificationCodeEl = document.getElementById('verification-code');
+      var reconfigureBtn = document.getElementById('reconfigure-btn');
+      var cancelLinkBtn = document.getElementById('cancel-link-btn');
+      var screenConfirm = document.getElementById('screen-confirm');
+      var confirmHostEl = document.getElementById('confirm-host');
+      var confirmConnectBtn = document.getElementById('confirm-connect-btn');
+      var confirmCancelBtn = document.getElementById('confirm-cancel-btn');
+
+      // Scanner refs.
+      var scannerWrap = document.getElementById('scanner-wrap');
+      var scannerVideo = document.getElementById('scanner-video');
+      var cancelScanBtn = document.getElementById('cancel-scan-btn');
+
+      var scannerStream = null;
+      var scannerRafId = null;
+      var mobileLinkPollId = null;
+      var scanGen = 0;           // W1: cancel token for in-flight startScanner
+      var scanTimeoutId = null;  // W16: auto-stop timer
+      var lastDecode = 0;        // W2: throttle jsQR to ~10fps
+      var linkAbort = null;      // W6: AbortController for mobile-link fetches
+      var pollTries = 0;         // W4: poll attempt counter
+      var POLL_MAX = 120;        // W4: ~3 min at 1.5s, then give up
+      var pendingConfirm = null; // W7: callback awaiting host confirmation
+      // Offscreen canvas for jsQR frame decoding.
+      var tmpCanvas = document.createElement('canvas');
+      tmpCanvas.width = 320;
+      tmpCanvas.height = 320;
+      var tmpCtx = tmpCanvas.getContext('2d', { willReadFrequently: true });
+
+      // Force the setup screen via ?change=1 query parameter (for reconfiguration).
+      var params = new URLSearchParams(window.location.search);
+      var forceSetup = params.get('change') === '1';
+
+      function showSetup(prefill) {
+        screenSetup.classList.remove('hidden');
+        screenConnecting.classList.add('hidden');
+        screenConnecting.setAttribute('aria-hidden', 'true');
+        screenWaiting.classList.add('hidden');
+        screenWaiting.setAttribute('aria-hidden', 'true');
+        screenConfirm.classList.add('hidden');
+        screenConfirm.setAttribute('aria-hidden', 'true');
+        if (prefill) input.value = prefill;
+        // Clear any prior status message.
+        statusEl.textContent = '';
+        statusEl.classList.remove('error');
+        // W18: no input.focus() here — don't pop the soft keyboard on cold start.
+      }
+
+      function redirectToServer(url) {
+        screenSetup.classList.add('hidden');
+        screenWaiting.classList.add('hidden');
+        screenWaiting.setAttribute('aria-hidden', 'true');
+        screenConnecting.classList.remove('hidden');
+        screenConnecting.setAttribute('aria-hidden', 'false');
+        connectedUrlEl.textContent = url;
+        // Redirect after a brief moment so the user sees the connecting screen.
+        setTimeout(function () {
+          window.location.replace(url);
+        }, 400);
+      }
+
+      /**
+       * Launch the bundled UI locally, passing the server URL and API key through
+       * localStorage so the app can connect back to the relay without leaving the
+       * Capacitor webview.
+       */
+      function launchBundledUi(baseUrl, apiKey) {
+        try {
+          localStorage.setItem(STORAGE_KEY, baseUrl);
+        } catch (_) {}
+        // Pass a freshly redeemed API key to the bundled UI via the URL
+        // fragment (never localStorage). The UI stores it in native secure
+        // storage and clears the fragment on load.
+        var hash = apiKey ? '#pizzapi.apiKey=' + encodeURIComponent(apiKey) : '';
+        window.location.replace('./app/index.html' + hash);
+      }
+
+      function showWaiting(url, verificationToken) {
+        screenSetup.classList.add('hidden');
+        screenConnecting.classList.add('hidden');
+        screenConnecting.setAttribute('aria-hidden', 'true');
+        screenWaiting.classList.remove('hidden');
+        screenWaiting.setAttribute('aria-hidden', 'false');
+        waitingUrlEl.textContent = url;
+        verificationCodeEl.textContent = verificationToken;
+        waitingStatusEl.textContent = 'Waiting for approval…';
+        waitingStatusEl.classList.remove('error');
+      }
+
+      function setStatus(text, isError) {
+        statusEl.textContent = text || '';
+        if (isError) statusEl.classList.add('error');
+        else statusEl.classList.remove('error');
+      }
+
+      function setWaitingStatus(text, isError) {
+        waitingStatusEl.textContent = text || '';
+        if (isError) waitingStatusEl.classList.add('error');
+        else waitingStatusEl.classList.remove('error');
+      }
+
+      function makeVerificationToken() {
+        var alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+        var bytes = new Uint8Array(6);
+        if (window.crypto && window.crypto.getRandomValues) window.crypto.getRandomValues(bytes);
+        else for (var i = 0; i < bytes.length; i++) bytes[i] = Math.floor(Math.random() * 256);
+        var out = '';
+        for (var j = 0; j < bytes.length; j++) out += alphabet[bytes[j] % alphabet.length];
+        return out;
+      }
+
+      function deviceName() {
+        return (navigator.userAgent || 'PizzaPi Android').slice(0, 120);
+      }
+
+      function clearMobileLinkPoll() {
+        if (mobileLinkPollId) window.clearInterval(mobileLinkPollId);
+        mobileLinkPollId = null;
+      }
+
+      // W6: cancel in-flight scan/poll/redeem fetches so their callbacks don't
+      // fire on a screen the user already left.
+      function abortMobileLink() {
+        clearMobileLinkPoll();
+        if (linkAbort) { try { linkAbort.abort(); } catch (_) {} linkAbort = null; }
+      }
+
+      function startMobileLink(baseUrl, linkId, scannedUrl) {
+        stopScanner();
+        linkAbort = new AbortController();
+        pollTries = 0;
+        var verificationToken = makeVerificationToken();
+        showWaiting(baseUrl, verificationToken);
+        fetch(baseUrl + '/api/mobile-link/' + encodeURIComponent(linkId) + '/scan', {
+          method: 'POST',
+          mode: 'cors',
+          cache: 'no-store',
+          signal: linkAbort.signal,
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ verificationToken: verificationToken, deviceName: deviceName(), scannedUrl: scannedUrl })
+        })
+          .then(function (res) {
+            if (!res.ok) throw new Error('Server returned HTTP ' + res.status);
+            pollMobileLink(baseUrl, linkId);
+          })
+          .catch(function (err) {
+            if (err && err.name === 'AbortError') return;
+            setWaitingStatus('Could not start linking (' + (err.message || 'unknown error') + ').', true);
+          });
+      }
+
+      function pollMobileLink(baseUrl, linkId) {
+        clearMobileLinkPoll();
+        mobileLinkPollId = window.setInterval(function () {
+          // W4: bound the poll so errors/unknown statuses can't loop forever.
+          if (++pollTries > POLL_MAX) {
+            abortMobileLink();
+            setWaitingStatus('Timed out waiting for approval. Scan a new QR from the web app.', true);
+            return;
+          }
+          fetch(baseUrl + '/api/mobile-link/' + encodeURIComponent(linkId), { method: 'GET', mode: 'cors', cache: 'no-store', signal: linkAbort ? linkAbort.signal : undefined })
+            .then(function (res) {
+              if (!res.ok) throw new Error('Server returned HTTP ' + res.status);
+              return res.json();
+            })
+            .then(function (claim) {
+              if (claim.status === 'approved') {
+                clearMobileLinkPoll();
+                redeemMobileLink(baseUrl, linkId);
+              } else if (claim.status === 'expired') {
+                abortMobileLink();
+                setWaitingStatus('This link expired. Scan a new QR from the web app.', true);
+              }
+            })
+            .catch(function (err) {
+              if (err && err.name === 'AbortError') return;
+              setWaitingStatus('Waiting failed (' + (err.message || 'unknown error') + ').', true);
+            });
+        }, 1500);
+      }
+
+      function redeemMobileLink(baseUrl, linkId) {
+        fetch(baseUrl + '/api/mobile-link/' + encodeURIComponent(linkId) + '/redeem', {
+          method: 'POST',
+          mode: 'cors',
+          cache: 'no-store',
+          signal: linkAbort ? linkAbort.signal : undefined,
+          headers: { 'Content-Type': 'application/json' }
+        })
+          .then(function (res) {
+            if (!res.ok) throw new Error('Server returned HTTP ' + res.status);
+            return res.json();
+          })
+          .then(function (claim) {
+            if (claim.status === 'approved' && claim.apiKey) {
+              launchBundledUi(baseUrl, claim.apiKey);
+            } else {
+              throw new Error('No API key returned');
+            }
+          })
+          .catch(function (err) {
+            if (err && err.name === 'AbortError') return;
+            setWaitingStatus('Could not redeem link (' + (err.message || 'unknown error') + ').', true);
+          });
+      }
+
+      // ── QR Scanner ──────────────────────────────────────────────────────────
+
+      /** Stop any running scanner session and restore camera resources. */
+      function stopScanner() {
+        scanGen++; // W1: invalidate any in-flight startScanner
+        if (scanTimeoutId) { clearTimeout(scanTimeoutId); scanTimeoutId = null; }
+        if (scannerRafId) {
+          cancelAnimationFrame(scannerRafId);
+          scannerRafId = null;
+        }
+        if (scannerStream) {
+          scannerStream.getTracks().forEach(function (t) { t.stop(); });
+          scannerStream = null;
+        }
+        scannerVideo.srcObject = null; // W17: drop the stopped stream + frozen frame
+        scannerWrap.hidden = true;
+        cancelScanBtn.hidden = true;
+        scanBtn.hidden = false;
+      }
+
+      /**
+       * Start camera scanning. Returns true if we successfully started; false
+       * otherwise (permission denied, no camera, etc.)
+       */
+      async function startScanner() {
+        if (!window.jsQR) {
+          setStatus('QR decoder is not available on this device.', true);
+          return false;
+        }
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+          setStatus('Camera is not supported on this device.', true);
+          return false;
+        }
+
+        var myGen = ++scanGen; // W1: token to detect Cancel during getUserMedia
+
+        scanBtn.hidden = true;
+        scannerWrap.hidden = false;
+        cancelScanBtn.hidden = false;
+        setStatus('');
+        statusEl.classList.remove('error');
+
+        var stream;
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({
+            video: { facingMode: { ideal: 'environment' } },
+            audio: false,
+          });
+        } catch (err) {
+          if (myGen !== scanGen) return false; // cancelled while awaiting
+          stopScanner();
+          var msg = (err && err.name) ? err.name : 'unknown error';
+          if (msg === 'NotAllowedError' || msg === 'PermissionDeniedError') {
+            setStatus('Camera permission was denied. Type your server URL instead, or allow the camera in Android settings.', true);
+          } else if (msg === 'NotFoundError' || msg === 'DevicesNotFoundError') {
+            setStatus('No camera found on this device.', true);
+          } else {
+            setStatus('Could not open the camera: ' + msg + '.', true);
+          }
+          return false;
+        }
+
+        // W1: user tapped Cancel while the permission prompt was up — tear down
+        // the just-acquired camera instead of turning it on behind a hidden screen.
+        if (myGen !== scanGen) {
+          stream.getTracks().forEach(function (t) { t.stop(); });
+          return false;
+        }
+
+        scannerStream = stream;
+        scannerVideo.srcObject = stream;
+
+        // Wait for the video to actually start producing frames.
+        try {
+          await scannerVideo.play();
+        } catch (err) { /* autoplay blocked — ignore, scan loop handles it */ }
+        if (myGen !== scanGen) return false; // cancelled during play()
+
+        // W16: give up after a while so a dark room doesn't run the camera forever.
+        scanTimeoutId = setTimeout(function () {
+          stopScanner();
+          setStatus('Couldn\u2019t find a code \u2014 type your server URL instead.', true);
+        }, 60000);
+
+        // Begin scan loop: feed latest video frame to jsQR, throttled to ~10fps (W2).
+        function tick(now) {
+          scannerRafId = requestAnimationFrame(tick);
+          if (!scannerStream || scannerVideo.readyState < 2) return;
+          if (now && (now - lastDecode) < 100) return; // ponytail: 10fps is plenty for QR
+          lastDecode = now || 0;
+          // Sample from the centre square of the stream (320x320).
+          var vw = scannerVideo.videoWidth;
+          var vh = scannerVideo.videoHeight;
+          var side = Math.min(vw, vh);
+          var sx = (vw - side) / 2;
+          var sy = (vh - side) / 2;
+          try {
+            tmpCtx.drawImage(scannerVideo, sx, sy, side, side, 0, 0, 320, 320);
+            var imageData = tmpCtx.getImageData(0, 0, 320, 320);
+            var code = window.jsQR(imageData.data, 320, 320, { inversionAttempts: 'dontInvert' });
+            if (code && code.data) {
+              stopScanner();
+              handleScanned(code.data);
+              return;
+            }
+          } catch (_) { /* frame sampling errors are transient; keep going */ }
+        }
+        scannerRafId = requestAnimationFrame(tick);
+        return true;
+      }
+
+      /**
+       * Process a decoded QR code. Extracts a server URL from:
+       *   - a mobile-link URL (e.g. "https://relay.example.com/mobile-link?id=abc"), then waits for web approval
+       *   - a setup-claim URL (e.g. "https://relay.example.com/setup-claim?t=abc"), saving the base URL but redirecting to the claim
+       *   - a raw server URL  (e.g. "https://relay.example.com")
+       */
+      function hostOf(url) {
+        try { return new URL(url).host; } catch (_) { return url; }
+      }
+
+      // W10: http:// is blocked as mixed content inside the https bundled app,
+      // except on loopback / LAN where operators legitimately run plain http.
+      function isLoopbackHost(host) {
+        var h = (host || '').replace(/:\d+$/, '').toLowerCase();
+        return h === 'localhost' || h === '127.0.0.1' ||
+          /^10\./.test(h) || /^192\.168\./.test(h) ||
+          /^172\.(1[6-9]|2\d|3[01])\./.test(h) || /\.local$/.test(h);
+      }
+      function cleartextError(url) {
+        if (!/^http:\/\//i.test(url)) return '';
+        if (isLoopbackHost(hostOf(url))) return '';
+        return 'Insecure http:// isn\u2019t supported. Use https:// (http is only allowed for localhost or your LAN).';
+      }
+
+      // W7/P0-1/P0-2: block on an explicit host confirmation before any scanned
+      // host is contacted or persisted. Manual typed entry skips this (the user
+      // typed it themselves).
+      function confirmScannedHost(url, onConfirm) {
+        pendingConfirm = onConfirm;
+        screenSetup.classList.add('hidden');
+        screenConnecting.classList.add('hidden');
+        screenConnecting.setAttribute('aria-hidden', 'true');
+        screenWaiting.classList.add('hidden');
+        screenWaiting.setAttribute('aria-hidden', 'true');
+        screenConfirm.classList.remove('hidden');
+        screenConfirm.setAttribute('aria-hidden', 'false');
+        confirmHostEl.textContent = hostOf(url);
+      }
+
+      function handleScanned(decodedText) {
+        var text = (decodedText || '').trim();
+        var mobileMatch = text.match(MOBILE_LINK_REGEX);
+        if (mobileMatch) {
+          var mlBase = mobileMatch[1].replace(/\/+$/, '');
+          var mlErr = cleartextError(mlBase);
+          if (mlErr) { setStatus(mlErr, true); return; }
+          // W7/P0-1: confirm the host before any network call goes out to it.
+          confirmScannedHost(mlBase, function () {
+            startMobileLink(mobileMatch[1].replace(/\/+$/, ''), mobileMatch[2], text);
+          });
+          return;
+        }
+
+        var match = text.match(SETUP_CLAIM_REGEX);
+        var url = match ? match[1] : text;
+        var redirectUrl = match ? match[1] + match[2] : url;
+
+        // Normalise scheme if missing.
+        if (url && !/^https?:\/\//i.test(url) && /^[a-z0-9.-]+(:\d+)?(\/.*)?$/i.test(url)) {
+          url = 'https://' + url;
+          redirectUrl = url;
+        }
+
+        if (!URL_REGEX.test(url)) {
+          setStatus('Decoded QR code doesn\u2019t contain a valid PizzaPi server URL.', true);
+          return;
+        }
+
+        // Strip trailing slash for consistency.
+        url = url.replace(/\/+$/, '');
+
+        var httpErr = cleartextError(url);
+        if (httpErr) { setStatus(httpErr, true); return; }
+
+        input.value = url;
+
+        // W7/P0-2: confirm the scanned host before persisting/redirecting.
+        confirmScannedHost(url, function () {
+          setStatus('QR code scanned — connecting\u2026');
+          // W5/P2-8: redirect to the claim URL (with token), not the bare base.
+          attemptConnect(url, function () { redirectToServer(redirectUrl); });
+        });
+      }
+
+      /**
+       * Attempt the /health check and, on success, save + launch.
+       * Extracted from the form submit so both manual + QR flows share it.
+       */
+      function attemptConnect(raw, onSuccess) {
+        btn.disabled = true;
+        setStatus('Checking your server\u2026');
+
+        var healthUrl = raw.replace(/\/$/, '') + '/health';
+        fetch(healthUrl, { method: 'GET', mode: 'cors', cache: 'no-store' })
+          .then(function (res) {
+            if (!res.ok) throw new Error('Server returned HTTP ' + res.status);
+            return res.json();
+          })
+          .then(function (data) {
+            if (!data || typeof data !== 'object' || !data.status) {
+              throw new Error('Server did not respond as expected.');
+            }
+            form.dataset.forceSave = '0'; // W8: reset the save-anyway gate on success
+            try { localStorage.setItem(STORAGE_KEY, raw); } catch (_) {}
+            onSuccess(raw);
+          })
+          .catch(function (err) {
+            btn.disabled = false;
+            setStatus(
+              'Could not reach the server (' + (err.message || 'unknown error') + '). ' +
+              'Tap Connect again to save it anyway.',
+              true
+            );
+            if (form.dataset.forceSave === '1') {
+              form.dataset.forceSave = '0';
+              try { localStorage.setItem(STORAGE_KEY, raw); } catch (_) {}
+              onSuccess(raw);
+            } else {
+              form.dataset.forceSave = '1';
+            }
+          });
+      }
+
+      // ── Event wiring ────────────────────────────────────────────────────────
+
+      // Reconfigure: clear and return to setup screen.
+      reconfigureBtn.addEventListener('click', function () {
+        abortMobileLink();
+        try { localStorage.removeItem(STORAGE_KEY); } catch (_) {}
+        // The bundled UI owns the API key in native secure storage; clearing
+        // the server URL is enough to return to setup. A stale key for the
+        // old server remains in secure storage but is keyed per-server.
+        // Update URL to strip ?change=1 and re-show setup.
+        var cleanUrl = window.location.pathname;
+        window.history.replaceState({}, '', cleanUrl);
+        showSetup('');
+      });
+
+      cancelLinkBtn.addEventListener('click', function () {
+        abortMobileLink();
+        showSetup(input.value || '');
+      });
+
+      // Confirm / cancel a scanned host (W7).
+      confirmConnectBtn.addEventListener('click', function () {
+        var fn = pendingConfirm;
+        pendingConfirm = null;
+        screenConfirm.classList.add('hidden');
+        screenConfirm.setAttribute('aria-hidden', 'true');
+        if (fn) fn();
+      });
+      confirmCancelBtn.addEventListener('click', function () {
+        pendingConfirm = null;
+        showSetup(input.value || '');
+      });
+
+      // Scan button.
+      scanBtn.addEventListener('click', function () {
+        startScanner();
+      });
+
+      // Cancel scan.
+      cancelScanBtn.addEventListener('click', function () {
+        stopScanner();
+      });
+
+      // W8: a fresh URL must be re-confirmed — don't carry the save-anyway flag across.
+      input.addEventListener('input', function () { form.dataset.forceSave = '0'; });
+
+      // W3: release the camera when the app is backgrounded / torn down.
+      document.addEventListener('visibilitychange', function () {
+        if (document.hidden && scannerStream) stopScanner();
+      });
+      window.addEventListener('pagehide', function () { stopScanner(); abortMobileLink(); });
+
+      // W14: Android hardware back cancels the active sub-flow instead of exiting.
+      // Uses the document-level 'backbutton' event (fired by Capacitor/Cordova);
+      // no extra dependency required.
+      document.addEventListener('backbutton', function (e) {
+        if (scannerStream) { if (e.preventDefault) e.preventDefault(); stopScanner(); return; }
+        if (!screenConfirm.classList.contains('hidden')) {
+          if (e.preventDefault) e.preventDefault();
+          pendingConfirm = null; showSetup(input.value || ''); return;
+        }
+        if (!screenWaiting.classList.contains('hidden')) {
+          if (e.preventDefault) e.preventDefault();
+          abortMobileLink(); showSetup(input.value || ''); return;
+        }
+        // Otherwise allow the default back behaviour.
+      });
+
+      form.addEventListener('submit', function (e) {
+        e.preventDefault();
+
+        var raw = (input.value || '').trim();
+
+        // Normalise: prepend https:// if no scheme.
+        if (raw && !/^https?:\/\//i.test(raw)) {
+          if (/^[a-z0-9.-]+(:\d+)?(\/.*)?$/i.test(raw)) {
+            raw = 'https://' + raw;
+            input.value = raw;
+          }
+        }
+
+        if (!raw) {
+          setStatus('Please enter your server URL.', true);
+          return;
+        }
+        if (!URL_REGEX.test(raw)) {
+          setStatus('That URL doesn\u2019t look right. Use https://your-server.com', true);
+          return;
+        }
+
+        raw = raw.replace(/\/+$/, '');
+
+        var httpErr = cleartextError(raw);
+        if (httpErr) { setStatus(httpErr, true); return; }
+
+        attemptConnect(raw, redirectToServer);
+      });
+
+      // Initial routing.
+      var stored = '';
+      try { stored = localStorage.getItem(STORAGE_KEY) || ''; } catch (_) {}
+
+      if (forceSetup) {
+        // User explicitly asked to reconfigure.
+        showSetup(stored);
+      } else if (stored) {
+        // Already configured — launch the bundled UI. It loads any stored
+        // API key from native secure storage itself; no key is passed here.
+        launchBundledUi(stored);
+      } else {
+        showSetup('');
+      }
+    })();
+  </script>
+</body>
+</html>

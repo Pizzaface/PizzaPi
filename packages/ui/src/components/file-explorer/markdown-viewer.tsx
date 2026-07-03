@@ -3,21 +3,11 @@ import { Spinner } from "@/components/ui/spinner";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { ChevronLeft, Code, Eye, GitCommit } from "lucide-react";
-import { cjk } from "@streamdown/cjk";
-import { code } from "@streamdown/code";
-import { math } from "@streamdown/math";
-import { mermaid } from "@streamdown/mermaid";
-import { Streamdown, defaultRehypePlugins } from "streamdown";
+import { LazyStreamdown } from "@/components/ai-elements/lazy-streamdown";
 import { GitBlameView } from "@/components/git/GitBlameView";
 import { getFileIcon, formatSize } from "./utils";
 
 // ── Markdown Viewer ───────────────────────────────────────────────────────────
-
-const streamdownPlugins = { cjk, code, math, mermaid };
-
-// Use defaultRehypePlugins for XSS safety (same as AI message rendering).
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const safeRehypePlugins = [...Object.values(defaultRehypePlugins)] as any;
 
 export function MarkdownViewer({
   runnerId,
@@ -195,13 +185,9 @@ export function MarkdownViewer({
               <GitBlameView cwd={cwd} path={blamePath} />
             ) : mode === "preview" ? (
               <div className="p-4 prose prose-sm dark:prose-invert max-w-none">
-                <Streamdown
-                  className="size-full break-words [&>*:first-child]:mt-0 [&>*:last-child]:mb-0"
-                  plugins={streamdownPlugins}
-                  rehypePlugins={safeRehypePlugins}
-                >
+                <LazyStreamdown className="size-full break-words [&>*:first-child]:mt-0 [&>*:last-child]:mb-0">
                   {content}
-                </Streamdown>
+                </LazyStreamdown>
               </div>
             ) : (
               <pre className="p-3 text-xs font-mono text-foreground/80 leading-relaxed whitespace-pre-wrap break-all">

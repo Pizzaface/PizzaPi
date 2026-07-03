@@ -12,10 +12,14 @@
 
 import type { TunnelRelay } from "@pizzapi/tunnel";
 import { requireSession } from "../middleware.js";
+import { createTunnelToken, getAuthTunnelBasePath, verifyTunnelToken } from "./tunnel-token.js";
 import { getTunnelRelay } from "../tunnel-relay.js";
 import { getSession } from "../ws/sio-state/index.js";
 import { getRunnerData } from "../ws/sio-registry.js";
 import type { RouteHandler } from "./types.js";
+
+/** Pattern: /api/tunnel/auth/:token/:sessionId/:port/<rest> — mobile iframe auth. */
+const AUTH_TUNNEL_PATH_RE = /^\/api\/tunnel\/auth\/([^/]+)\/([^/]+)\/(\d+)(\/.*)?$/;
 
 /** Pattern: /api/tunnel/runner/:runnerId/:port/<rest> — must be checked first (more specific). */
 const RUNNER_TUNNEL_PATH_RE = /^\/api\/tunnel\/runner\/([^/]+)\/(\d+)(\/.*)?$/;
@@ -336,12 +340,13 @@ function shouldBufferTunnelResponse(contentType: string | null): boolean {
         || shouldRewriteTunnelCss(contentType);
 }
 
-function applyResponseHeadersByBasePath(responseHeaders: Headers, basePath: string): void {
+function applyResponseHeadersByBasePath(responseHeaders: Headers, basePath: string, allowCrossOriginFrame = false): void {
     const location = responseHeaders.get("location");
     if (location) {
         responseHeaders.set("location", rewriteUrlByBasePath(location, basePath));
     }
     responseHeaders.set("x-pizzapi-tunnel", "1");
+    if (allowCrossOriginFrame) responseHeaders.set("x-pizzapi-tunnel-frame", "cross-origin");
 }
 
 function rewriteBufferedResponseByBasePath(
@@ -425,6 +430,7 @@ function proxyTunnelRequestViaRelay(
     proxyPath: string,
     pathWithQuery: string,
     forwardHeaders: Record<string, string>,
+    allowCrossOriginFrame = false,
 ): Promise<Response> {
     return new Promise<Response>((resolve) => {
         let responseStarted = false;
@@ -478,7 +484,7 @@ function proxyTunnelRequestViaRelay(
                     shouldBuffer = shouldBufferTunnelResponse(responseHeaders.get("content-type"));
                     if (shouldBuffer) return;
 
-                    applyResponseHeadersByBasePath(responseHeaders, basePath);
+                    applyResponseHeadersByBasePath(responseHeaders, basePath, allowCrossOriginFrame);
                     const stream = new ReadableStream<Uint8Array>({
                         start(controller) {
                             streamController = controller;
@@ -522,7 +528,7 @@ function proxyTunnelRequestViaRelay(
                             basePath,
                             proxyPath,
                         );
-                        applyResponseHeadersByBasePath(responseHeaders, basePath);
+                        applyResponseHeadersByBasePath(responseHeaders, basePath, allowCrossOriginFrame);
                         resolveOnce(new Response(bufferToBodyInit(responseBody), {
                             status: statusCode,
                             headers: responseHeaders,
@@ -567,6 +573,124 @@ function proxyTunnelRequestViaRelay(
     });
 }
 
+async function handleTunnelTokenMint(req: Request): Promise<Response> {
+    if (req.method.toUpperCase() !== "POST") {
+        return new Response("Method not allowed", { status: 405, headers: { Allow: "POST" } });
+    }
+
+    const identity = await requireSession(req);
+    if (identity instanceof Response) return identity;
+
+    let body: unknown;
+    try {
+        body = await req.json();
+    } catch {
+        return Response.json({ error: "Invalid JSON" }, { status: 400 });
+    }
+
+    const data = body as { sessionId?: unknown; runnerId?: unknown; port?: unknown };
+    const sessionId = typeof data.sessionId === "string" ? data.sessionId : "";
+    const runnerId = typeof data.runnerId === "string" ? data.runnerId : "";
+    const port = typeof data.port === "number" ? data.port : Number(data.port);
+    if (!sessionId && !runnerId) return Response.json({ error: "Missing session or runner ID" }, { status: 400 });
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+        return Response.json({ error: "Invalid port" }, { status: 400 });
+    }
+
+    if (!sessionId) {
+        // ponytail: runner-scoped tokens reuse the sessionId slot with a "runner:"
+        // sentinel — session IDs are UUIDs, so no collision is possible.
+        const runnerData = await getRunnerData(runnerId);
+        if (!runnerData) return Response.json({ error: "Runner not found" }, { status: 404 });
+        if (!runnerData.userId || runnerData.userId !== identity.userId) {
+            return Response.json({ error: "Forbidden" }, { status: 403 });
+        }
+        const scoped = `runner:${runnerId}`;
+        const { token, expiresAt } = createTunnelToken({ userId: identity.userId, sessionId: scoped, port });
+        return Response.json({ token, expiresAt, url: `${getAuthTunnelBasePath(token, scoped, port)}/` });
+    }
+
+    const sessionData = await getSession(sessionId);
+    if (!sessionData) return Response.json({ error: "Session not found" }, { status: 404 });
+    if (!sessionData.userId || sessionData.userId !== identity.userId) {
+        return Response.json({ error: "Forbidden" }, { status: 403 });
+    }
+    if (!sessionData.runnerId) return Response.json({ error: "Session has no runner" }, { status: 503 });
+
+    const { token, expiresAt } = createTunnelToken({ userId: identity.userId, sessionId, port });
+    return Response.json({ token, expiresAt, url: `${getAuthTunnelBasePath(token, sessionId, port)}/` });
+}
+
+async function handleAuthTunnel(req: Request, url: URL, match: RegExpMatchArray): Promise<Response> {
+    const method = req.method.toUpperCase();
+    if (!["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"].includes(method)) {
+        return new Response("Method not allowed", {
+            status: 405,
+            headers: { Allow: "GET, POST, PUT, DELETE, PATCH, HEAD, OPTIONS" },
+        });
+    }
+
+    let token: string;
+    let sessionId: string;
+    try {
+        token = decodeURIComponent(match[1]);
+        sessionId = decodeURIComponent(match[2]);
+    } catch {
+        return Response.json({ error: "Bad tunnel token path" }, { status: 400 });
+    }
+    const port = parseInt(match[3], 10);
+    const proxyPath = match[4] ?? "/";
+
+    const payload = verifyTunnelToken(token);
+    if (!payload || payload.sessionId !== sessionId || payload.port !== port) {
+        return Response.json({ error: "Invalid or expired tunnel token" }, { status: 401 });
+    }
+
+    if (!sessionId) return Response.json({ error: "Missing session ID" }, { status: 400 });
+    if (!Number.isFinite(port) || port < 1 || port > 65535) {
+        return Response.json({ error: "Invalid port" }, { status: 400 });
+    }
+
+    let runnerId: string | null;
+    if (sessionId.startsWith("runner:")) {
+        // Runner-scoped token (see handleTunnelTokenMint).
+        const rid = sessionId.slice("runner:".length);
+        const runnerData = await getRunnerData(rid);
+        if (!runnerData) return Response.json({ error: "Runner not found" }, { status: 404 });
+        if (!runnerData.userId || runnerData.userId !== payload.userId) {
+            return Response.json({ error: "Forbidden" }, { status: 403 });
+        }
+        runnerId = rid;
+    } else {
+        const sessionData = await getSession(sessionId);
+        if (!sessionData) return Response.json({ error: "Session not found" }, { status: 404 });
+        if (!sessionData.userId || sessionData.userId !== payload.userId) {
+            return Response.json({ error: "Forbidden" }, { status: 403 });
+        }
+        runnerId = sessionData.runnerId;
+    }
+    if (!runnerId) return Response.json({ error: "Session has no runner" }, { status: 503 });
+
+    const relay = getTunnelRelay();
+    if (!relay?.hasRunner(runnerId)) {
+        return tunnelErrorResponse(`Runner ${runnerId} not connected`);
+    }
+
+    const requestId = `auth-${sessionId}-${port}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    return proxyTunnelRequestViaRelay(
+        req,
+        relay,
+        runnerId,
+        requestId,
+        getAuthTunnelBasePath(token, sessionId, port),
+        port,
+        proxyPath,
+        buildPathWithQuery(url, proxyPath),
+        buildForwardHeaders(req),
+        true,
+    );
+}
+
 /**
  * Tunnel route handler.
  *
@@ -576,6 +700,11 @@ function proxyTunnelRequestViaRelay(
  * runner's localhost — they should not be openly accessible to all viewers.
  */
 export const handleTunnelRoute: RouteHandler = async (req, url) => {
+    if (url.pathname === "/api/tunnel-token") return handleTunnelTokenMint(req);
+
+    const authMatch = url.pathname.match(AUTH_TUNNEL_PATH_RE);
+    if (authMatch) return handleAuthTunnel(req, url, authMatch);
+
     // Try runner-based path first (more specific prefix avoids false matches).
     const runnerMatch = url.pathname.match(RUNNER_TUNNEL_PATH_RE);
     if (runnerMatch) return handleRunnerTunnel(req, url, runnerMatch);
@@ -614,6 +743,7 @@ export const handleTunnelRoute: RouteHandler = async (req, url) => {
     if (url.search) {
         const qs = new URLSearchParams(url.search.slice(1));
         qs.delete("apiKey");
+        qs.delete("tunnelToken");
         const qsStr = qs.toString();
         pathWithQuery = qsStr ? `${proxyPath}?${qsStr}` : proxyPath;
     } else {
@@ -656,10 +786,9 @@ export const handleTunnelRoute: RouteHandler = async (req, url) => {
         "accept-encoding",
     ]);
 
-    // Auth headers that must not be forwarded to the runner/local service.
-    // x-api-key is used to authenticate against the PizzaPi server — it must
-    // never reach the tunneled localhost service (SSRF auth-leakage vector).
-    const STRIP_AUTH = new Set(["cookie", "authorization", "x-api-key"]);
+    // Auth headers/URLs must not be forwarded to the runner/local service.
+    // The tunnel handler validates them before proxying; localhost services do not need them.
+    const STRIP_AUTH = new Set(["cookie", "authorization", "x-api-key", "referer"]);
 
     const forwardHeaders: Record<string, string> = {};
     req.headers.forEach((v, k) => {
@@ -696,7 +825,7 @@ const HOP_BY_HOP_HEADERS = new Set([
     "accept-encoding",  // Strip so local service returns uncompressed
 ]);
 
-const STRIP_AUTH_HEADERS = new Set(["cookie", "authorization", "x-api-key"]);
+const STRIP_AUTH_HEADERS = new Set(["cookie", "authorization", "x-api-key", "referer"]);
 
 function buildForwardHeaders(req: Request): Record<string, string> {
     const forwardHeaders: Record<string, string> = {};
@@ -711,6 +840,7 @@ function buildPathWithQuery(url: URL, proxyPath: string): string {
     if (url.search) {
         const qs = new URLSearchParams(url.search.slice(1));
         qs.delete("apiKey");
+        qs.delete("tunnelToken");
         const qsStr = qs.toString();
         return qsStr ? `${proxyPath}?${qsStr}` : proxyPath;
     }

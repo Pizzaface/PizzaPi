@@ -6,6 +6,7 @@ import { saveGlobalConfig } from "./config.js";
 import { validatePassword, PASSWORD_REQUIREMENTS } from "@pizzapi/protocol";
 import { createLogger } from "@pizzapi/tools";
 import { c } from "./cli-colors.js";
+import qrcode from "qrcode";
 
 const log = createLogger("setup");
 const RELAY_DEFAULT = "http://localhost:7492";
@@ -73,6 +74,107 @@ async function registerCli(
     }
 }
 
+async function sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function createSetupClaim(relayUrl: string): Promise<{ token: string; expiresAt: string } | { error: string }> {
+    try {
+        const res = await fetch(`${relayUrl}/api/setup-claim`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ relayUrl }),
+        });
+        const json = (await res.json()) as { token?: string; expiresAt?: string; error?: string };
+        if (!res.ok || !json.token) return { error: json.error ?? `HTTP ${res.status}` };
+        return { token: json.token, expiresAt: json.expiresAt ?? "" };
+    } catch (err) {
+        return { error: err instanceof Error ? err.message : String(err) };
+    }
+}
+
+async function pollSetupClaim(relayUrl: string, token: string): Promise<
+    { status: string; apiKey?: string; relayUrl?: string } | { error: string }
+> {
+    try {
+        const res = await fetch(`${relayUrl}/api/setup-claim/${token}`);
+        const json = (await res.json()) as {
+            status?: string;
+            apiKey?: string;
+            relayUrl?: string;
+            error?: string;
+        };
+        if (!res.ok) return { error: json.error ?? `HTTP ${res.status}` };
+        return { status: json.status ?? "unknown", apiKey: json.apiKey, relayUrl: json.relayUrl };
+    } catch (err) {
+        return { error: err instanceof Error ? err.message : String(err) };
+    }
+}
+
+export function qrCodeUrl(relayUrl: string, token: string): string {
+    return `${relayUrl}/setup-claim?t=${encodeURIComponent(token)}`;
+}
+
+export async function runQrSetup(relayUrl: string, pollIntervalMs = 2000): Promise<boolean> {
+    const configPath = join(homedir(), ".pizzapi", "config.json");
+
+    process.stdout.write(`\n${c.dim("Creating setup claim…")} `);
+    const claim = await createSetupClaim(relayUrl);
+    if ("error" in claim) {
+        log.info(c.error("✗") + "\n");
+        log.error(`Could not create setup claim: ${claim.error}\n`);
+        return false;
+    }
+    log.info(c.success("✓") + "\n");
+
+    const claimUrl = qrCodeUrl(relayUrl, claim.token);
+    const wsRelayUrl = relayUrl.replace(/^http/, "ws");
+
+    log.info("Scan this QR code with an authenticated PizzaPi web browser:");
+    log.info("");
+    try {
+        const qr = await qrcode.toString(claimUrl, { type: "terminal", small: true });
+        log.info(qr);
+    } catch (err) {
+        log.warn("Could not render QR code; use the URL below.", err instanceof Error ? err.message : String(err));
+    }
+    log.info(c.dim("Or open:"), c.accent(claimUrl));
+    log.info("");
+    log.info(c.dim("Waiting for approval… (expires in 10 minutes)"));
+
+    const startedAt = Date.now();
+    const maxWaitMs = 10 * 60 * 1000;
+
+    while (Date.now() - startedAt < maxWaitMs) {
+        await sleep(pollIntervalMs);
+        const result = await pollSetupClaim(relayUrl, claim.token);
+        if ("error" in result) {
+            log.warn(`Poll failed: ${result.error}`);
+            continue;
+        }
+        if (result.status === "approved" && result.apiKey) {
+            saveGlobalConfig({ apiKey: result.apiKey });
+            process.env.PIZZAPI_API_KEY = result.apiKey;
+            process.env.PIZZAPI_RELAY_URL = wsRelayUrl;
+
+            log.info("");
+            log.info(`${c.success("✓")} Device approved`);
+            log.info(`${c.success("✓")} API key saved to ${c.dim(configPath)}`);
+            log.info(`${c.success("✓")} Relay: ${c.accent(wsRelayUrl)}\n`);
+            return true;
+        }
+        if (result.status === "expired" || result.status === "redeemed") {
+            log.info("");
+            log.error(`Setup claim ${result.status}. Please try again.\n`);
+            return false;
+        }
+    }
+
+    log.info("");
+    log.error("Setup claim expired before approval. Please try again.\n");
+    return false;
+}
+
 /**
  * Interactive first-run setup.
  * Prompts for relay URL, email and password, authenticates with the server,
@@ -80,7 +182,7 @@ async function registerCli(
  *
  * Returns true if setup completed successfully, false if skipped/aborted.
  */
-export async function runSetup(opts: { force?: boolean } = {}): Promise<boolean> {
+export async function runSetup(opts: { force?: boolean; scan?: boolean } = {}): Promise<boolean> {
     const iface = rl();
 
     try {
@@ -102,6 +204,13 @@ export async function runSetup(opts: { force?: boolean } = {}): Promise<boolean>
                 log.info("\nSkipping relay setup. Run `pizzapi setup` at any time to configure.\n");
                 return false;
             }
+        }
+
+        // QR-code setup path
+        if (opts.scan) {
+            const relayInput = await ask(iface, `Relay server URL [${RELAY_DEFAULT}]: `);
+            const relayUrl = (relayInput.trim() || RELAY_DEFAULT).replace(/\/$/, "");
+            return await runQrSetup(relayUrl, process.env.CI ? 100 : 2000);
         }
 
         // Relay URL

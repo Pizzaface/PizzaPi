@@ -35,6 +35,28 @@ export async function trackPushPendingState(
     }
 }
 
+/**
+ * Extract the trailing assistant reply text from an agent_end event's
+ * messages array (same shape the CLI summariser walks). Returns undefined
+ * when no assistant text is present.
+ */
+export function extractLastAssistantText(event: Record<string, unknown>): string | undefined {
+    const messages = event.messages;
+    if (!Array.isArray(messages)) return undefined;
+    for (let i = messages.length - 1; i >= 0; i--) {
+        const msg = messages[i] as { role?: string; content?: unknown };
+        if (msg?.role === "assistant" && Array.isArray(msg.content)) {
+            const text = (msg.content as Array<{ type?: string; text?: unknown }>)
+                .filter((c) => c?.type === "text" && typeof c.text === "string")
+                .map((c) => c.text as string)
+                .join("\n")
+                .trim();
+            if (text) return text;
+        }
+    }
+    return undefined;
+}
+
 export async function checkPushNotifications(
     sessionId: string,
     event: Record<string, unknown>,
@@ -78,7 +100,7 @@ export async function checkPushNotifications(
     const isChildSession = !!effectiveParentId && await isLinkedChildForSuppression(effectiveParentId, sessionId);
 
     if (event.type === "agent_end") {
-        notifyAgentFinished(userId, sessionId, sName, isChildSession);
+        notifyAgentFinished(userId, sessionId, sName, isChildSession, extractLastAssistantText(event));
     }
 
     if (event.type === "tool_execution_start" && event.toolName === "AskUserQuestion") {

@@ -1,0 +1,183 @@
+---
+title: Mobile Push (ntfy)
+description: Self-hosted, Google-free Android background push notifications via ntfy.
+---
+
+import { Steps, Aside } from "@astrojs/starlight/components";
+
+PizzaPi's native Android app can receive **background push notifications without
+Google/FCM** by using a self-hosted [ntfy](https://ntfy.sh) instance. This is the
+same approach Home Assistant and Element use for Google-free push.
+
+<Aside type="note">
+  **Scope.** This covers Android background push only. iOS background push
+  requires APNs (Apple's servers) and is intentionally not wired up — iOS keeps
+  the app-icon badge and in-app notifications, but no background delivery. The
+  existing Web Push (VAPID) path for the PWA continues to run independently.
+</Aside>
+
+---
+
+## How it works
+
+1. The PizzaPi server publishes a notification to a per-device **topic** on your
+   self-hosted ntfy instance with a single HTTP `POST`.
+2. The PizzaPi Android app holds a persistent **subscribe stream** to that topic
+   in an Android **foreground service**, and posts a local notification when a
+   message arrives.
+3. Because the connection is held by a foreground service, the app shows a
+   persistent "PizzaPi — connected" notification. This is the unavoidable price
+   of Google-free background push on Android.
+
+<Aside type="caution">
+  A foreground service with a persistent notification is **required** for
+  Google-free background push — Android does not allow third-party apps to
+  receive background push any other way. If the persistent notification is
+  unacceptable, use the Web Push (PWA) path instead, which uses the browser's
+  push infrastructure.
+</Aside>
+
+---
+
+## Setup
+
+<Steps>
+
+1. **Add the ntfy service to your compose stack.**
+
+   The bundled `docker/compose.yml` already includes an `ntfy` service (pinned
+   to `binwiederhier/ntfy:v2.25.0`, which is past the
+   [CVE-2026-39087](https://github.com/binwiederhier/ntfy/releases/tag/v2.22.0)
+   fix). It runs `auth-default-access: deny-all` with a persistent cache so
+   devices can catch up on missed messages. The server reaches ntfy internally
+   as `http://ntfy`; no host port is published by default.
+
+2. **Expose ntfy to devices behind your reverse proxy.**
+
+   Devices must reach ntfy over the public internet to hold the subscribe
+   stream. Add a dedicated subdomain (e.g. `push.example.com`) that proxies to
+   `http://ntfy`, forwarding `Connection`/`Upgrade` headers for WebSocket/SSE.
+   A minimal Caddy snippet:
+
+   ```caddy
+   push.example.com {
+       reverse_proxy http://ntfy
+   }
+   ```
+
+   Or nginx (see the [ntfy proxy docs](https://docs.ntfy.sh/config/#behind-a-proxy-tls-etc)
+   for a complete example — `proxy_buffering off` and `Connection: upgrade` are
+   required for streaming).
+
+3. **Provision a publish user + token.**
+
+   Inside the ntfy container, create an admin user and a publish token:
+
+   ```sh
+   docker compose exec ntfy ntfy user add --role=admin pizzapi-publish
+   # (set a strong password when prompted)
+   docker compose exec ntfy ntfy token add pizzapi-publish
+   # → prints tk_...
+   ```
+
+   With `auth-default-access: deny-all`, the admin role grants read/write to all
+   topics, so this token can publish to any per-device topic. (Phase 3 will
+   tighten this with per-device read-only users.)
+
+4. **Grant anonymous read-only access to device topics.**
+
+   `deny-all` also blocks *anonymous* reads, but in Phase 1 devices subscribe
+   **without credentials** — the unguessable topic name is the secret. Grant
+   anonymous (the built-in `everyone` user) read-only access to the
+   `pizzapi-*` topic namespace so the subscribe stream isn't rejected with 403:
+
+   ```sh
+   docker compose exec ntfy ntfy access everyone 'pizzapi-*' read-only
+   ```
+
+   This grants **read (subscribe) only** — anonymous *write* stays denied by
+   `deny-all`, so the publish token from step 3 remains the only writer. Skip
+   this and the Android foreground service gets a 403, treats it as a permanent
+   error, and disables push (and the server prunes the registration on 403).
+   (Phase 3 replaces this blanket grant with per-device read-only users.)
+
+5. **Configure the server env vars.**
+
+   Set these on the `server` service (the bundled compose file already wires
+   `PIZZAPI_NTFY_URL=http://ntfy` internally):
+
+   ```env
+   PIZZAPI_NTFY_URL=http://ntfy
+   PIZZAPI_NTFY_PUBLIC_URL=https://push.example.com
+   PIZZAPI_NTFY_PUBLISH_TOKEN=tk_<your-publish-token>
+   ```
+
+   If any of these are unset, the ntfy branch is a silent no-op and only Web
+   Push runs.
+
+6. **Register from the Android app.**
+
+   On first launch (or when the user enables notifications), the app calls
+   `POST /api/push/register-native` with its API key. The server assigns an
+   unguessable per-device topic (`pizzapi-<48-hex-chars>`) and returns
+   `{ ntfyPublicUrl, topic }`. The app's foreground service subscribes to
+   `${ntfyPublicUrl}/${topic}/json` and holds the stream.
+
+</Steps>
+
+---
+
+## Security model
+
+**Phase 1 (current):** the per-device topic is a 192-bit unguessable random
+string. `auth-default-access: deny-all` denies everything by default; two
+explicit grants open the minimum needed — the publish user can **write** any
+topic, and anonymous (`everyone`) has **read-only** access to `pizzapi-*` so
+devices can subscribe without credentials. Anonymous write stays denied, so the
+publish token is the only writer. The topic name is the read-side security
+boundary — anyone who learns a topic can read that user's notifications, so
+topics must never appear in logs, screenshots, or public URLs.
+
+<Aside type="danger">
+  **Before exposing this publicly,** harden it with **per-device ntfy users**
+  (Phase 3): each device gets its own ntfy username + password with a read-only
+  ACL on its topic, provisioned by the server at register time. This makes
+  credentials revocable per device and removes topic-name-as-secret from the
+  trust boundary. Until that lands, treat the Phase-1 model as suitable for
+  trusted/local networks, not the open internet.
+</Aside>
+
+ntfy access tokens are **not granular** today (a token grants full account
+access), which is why per-device isolation uses per-device *users* with ACLs,
+not per-device *tokens*.
+
+---
+
+## Limitations
+
+- **Foreground service notification is permanent.** Users see "PizzaPi —
+  connected" while push is active. This is inherent to Google-free background
+  push on Android.
+- **Force-stop cannot be auto-recovered.** If the user force-stops PizzaPi, the
+  service won't restart until the app is opened again. Same limitation applies
+  to the ntfy app itself.
+- **OEM battery killers** (Xiaomi/Oppo/Vivo/Samsung) may kill the foreground
+  service despite the persistent notification. Users on those devices may need
+  to exempt PizzaPi from battery optimization.
+- **Push is a hint, not the source of truth.** On app foreground/reconnect,
+  PizzaPi reconciles session state from the relay over the existing WebSocket —
+  missed push notifications are not lost data.
+- **No iOS background push.** By design — APNs would require Apple's servers.
+
+---
+
+## Troubleshooting
+
+- **No notifications arrive.** Check that `PIZZAPI_NTFY_URL` is set on the
+  server and that `curl -H "Authorization: Bearer $PIZZAPI_NTFY_PUBLISH_TOKEN"
+  -d "test" https://push.example.com/<topic>` returns 200. Check the app's
+  foreground service notification is present ("PizzaPi — connected").
+- **`register-native` returns 503.** The server's `PIZZAPI_NTFY_URL` is unset.
+- **429 from ntfy.** You're hitting the per-visitor rate limit. For a single
+  self-hosted user this shouldn't trigger; if it does, tune
+  `visitor-request-limit-burst` in your ntfy config.

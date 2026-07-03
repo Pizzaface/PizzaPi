@@ -1,0 +1,160 @@
+---
+title: Mobile Builds
+description: Build PizzaPi's Capacitor Android and iOS wrappers around the existing PWA.
+---
+
+import { Aside, Steps } from "@astrojs/starlight/components";
+
+PizzaPi ships a thin [Capacitor](https://capacitorjs.com/) wrapper around the existing React/Vite PWA. The web app remains the product; native projects provide packaging, app-store paths, and future native integration points.
+
+The mobile app keeps the user inside the bundled UI after setup. On first launch the bootstrap page captures the server URL (manually or via QR), completes mobile-link approval in the web UI, then loads the bundled PWA locally and authenticates it with a short-lived API key minted during approval. The bundled UI talks to the relay through native HTTP (`CapacitorHttp`) and Socket.IO using absolute URLs and the injected key, avoiding cross-origin WebView cookie issues.
+
+## What Exists
+
+- `capacitor.config.ts` points Capacitor at `mobile/`, which contains both the bootstrap page (`index.html`) and the bundled PWA (`app/`).
+- `mobile/index.html` handles first-run server URL entry, QR scanning, and mobile-link redemption.
+- `scripts/copy-mobile-ui.ts` copies the built `packages/ui/dist` assets into `mobile/app/` during `bun run build:mobile`.
+- `android/` contains the committed Android project.
+- `ios/` contains the committed iOS project.
+- Generated web assets copied into native projects are ignored; run sync/build commands to refresh them.
+- CI builds the Android debug APK on pull requests and pushes.
+- `CapacitorHttp` is enabled so `fetch`/`XHR` run through native networking for the relay server.
+
+## Commands
+
+```bash
+# Build the PWA and sync both native projects
+bun run build:mobile
+
+# Build the Android debug APK
+bun run build:mobile:android
+
+# Build a SIGNED Android release APK + AAB (requires the PIZZAPI_KEYSTORE_* vars below)
+bun run build:mobile:android:release
+
+# Build the PWA and sync iOS project files
+bun run build:mobile:ios
+```
+
+<Aside type="note">
+  Android builds require an Android SDK. If Gradle says `SDK location not found`, set `ANDROID_HOME` or create `android/local.properties` with `sdk.dir=/path/to/android-sdk`.
+</Aside>
+
+## Android CI
+
+`.github/workflows/ci.yml` includes a `mobile-android` job. It installs Java, Android SDK tooling, Bun dependencies, then runs:
+
+```bash
+bun run build:mobile:android
+```
+
+That intentionally builds a **debug** APK only — signed with Android's throwaway
+debug key, fine for smoke-testing but not distributable.
+
+## Release signing
+
+`android/app/build.gradle` defines a `release` signing config whose keystore path
+and credentials come from env vars (or gradle properties) — never hardcoded. If
+no keystore is configured the release build is left **unsigned**, so debug/local
+builds keep working without secrets.
+
+<Steps>
+
+1. **Generate a keystore once, and guard it.** This file is the identity of your
+   app on the Play Store — back it up securely; if you lose it you can never
+   ship an update to the same listing.
+
+   ```sh
+   keytool -genkeypair -v \
+     -keystore pizzapi-release.jks \
+     -alias pizzapi \
+     -keyalg RSA -keysize 2048 -validity 10000
+   ```
+
+2. **Build a signed release** by providing the four vars at build time:
+
+   ```sh
+   PIZZAPI_KEYSTORE_FILE=/abs/path/pizzapi-release.jks \
+   PIZZAPI_KEYSTORE_PASSWORD=… \
+   PIZZAPI_KEY_ALIAS=pizzapi \
+   PIZZAPI_KEY_PASSWORD=… \
+   bun run build:mobile:android:release
+   ```
+
+   This runs `assembleRelease bundleRelease`, then `scripts/verify-apk-signed.ts`,
+   which **fails the build if the APK came out unsigned** (Gradle otherwise
+   silently emits `app-release-unsigned.apk`). Outputs land in
+   `android/app/build/outputs/{apk,bundle}/release/`. Bump the build number with
+   `-PversionCode=<n> -PversionName=<x.y.z>`.
+
+3. **Verify a signature manually** any time with the SDK's apksigner:
+
+   ```sh
+   $ANDROID_HOME/build-tools/<ver>/apksigner verify --print-certs app-release.apk
+   ```
+
+</Steps>
+
+### Signing in CI
+
+The repo ships two Android workflows:
+
+- **`.github/workflows/android-debug-apk.yml`** — unsigned debug APK, no secrets;
+  runs on `workflow_dispatch` and `v*` tags, uploads `app-debug.apk`.
+- **`.github/workflows/android-release.yml`** — signed release (APK + AAB), runs
+  on `workflow_dispatch` and `v*` tags. It never runs on pull requests, so
+  secrets are never exposed to forks, and it fails fast with a clear message if
+  any secret is missing.
+
+To set up the signed workflow, add these under **Settings → Secrets and
+variables → Actions** (never commit the `.jks`):
+
+| Secret | Value |
+| --- | --- |
+| `PIZZAPI_KEYSTORE_BASE64` | `base64 -i pizzapi-release.jks` (the whole keystore, base64-encoded) |
+| `PIZZAPI_KEYSTORE_PASSWORD` | keystore password |
+| `PIZZAPI_KEY_ALIAS` | key alias (e.g. `pizzapi`) |
+| `PIZZAPI_KEY_PASSWORD` | key password |
+
+```sh
+# macOS: copy the base64 keystore straight to the clipboard
+base64 -i pizzapi-release.jks | pbcopy
+```
+
+The workflow decodes the keystore into `$RUNNER_TEMP`, sets the four
+`PIZZAPI_KEYSTORE_*` vars, and runs `bun run build:mobile:android:release`
+(which verifies the APK is signed before uploading). Trigger it from the Actions
+tab (optionally passing `versionName` / `versionCode`) or by pushing a `v*` tag —
+on a tag the `versionName` defaults to the tag minus its leading `v`.
+
+<Aside type="caution">
+  `versionCode` must strictly increase for every build uploaded to the Play
+  Store; the workflow leaves it to you (input or gradle default) rather than
+  guessing. Play Store / AAB upload is a further step (e.g.
+  `r0adkll/upload-google-play`) once you have a service-account key.
+</Aside>
+
+## iOS
+
+iOS is committed and syncable, but not built in CI yet. Add macOS/Xcode CI only when iOS distribution is active; it needs signing/provisioning setup and is slower than the Android smoke check.
+
+## Server URL and Auth
+
+The mobile bootstrap page stores the relay URL and an API key in `localStorage` before loading the bundled UI. The bundled UI reads those values and:
+
+- Rewrites relative `fetch` URLs to the configured relay server.
+- Adds the `x-api-key` header to REST calls and Socket.IO handshakes.
+- Connects to `/hub`, `/viewer`, `/runners`, and `/terminal` namespaces using an absolute server URL and the API key.
+
+Because the app uses API-key auth, the server trusts the Capacitor origins (`capacitor://localhost` and `https://localhost`) by default. Disable this with `PIZZAPI_TRUST_MOBILE_ORIGINS=false` if your deployment requires explicit origin allowlisting.
+
+QR-based setup is the recommended flow. Manual URL entry still redirects to the server's web sign-in page for now; full in-app sign-in for manual entry is planned follow-up work.
+
+## Future Native Integrations
+
+Keep integrations service-driven:
+
+- Push notifications should map native device tokens into the existing push subscription model.
+- Deep links should route to sessions or service panels, not native-only screens.
+- Share/camera/secure-storage plugins should be added only when the web API is insufficient.
+- Runner services should stay server-side; mobile can expose small typed bridge capabilities when needed.

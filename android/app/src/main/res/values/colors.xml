@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- PizzaPi brand: dark stone + green. Replaces the Capacitor demo
+         indigo/pink fallback that styles.xml was silently resolving to (build #9). -->
+    <color name="colorPrimary">#1c1917</color>
+    <color name="colorPrimaryDark">#0c0a09</color>
+    <color name="colorAccent">#22c55e</color>
+</resources>

@@ -10,12 +10,19 @@ import { UserPreferencesPanel } from "@/components/UserPreferencesPanel";
 import { AuthPage } from "@/components/AuthPage";
 import { ApiKeyManager } from "@/components/ApiKeyManager";
 import { RunnerTokenManager } from "@/components/RunnerTokenManager";
+import { DeviceSetupScanner } from "@/components/DeviceSetupScanner";
+import { MobileSetupQR } from "@/components/MobileSetupQR";
 import { RunnerManager } from "@/components/RunnerManager";
 import { NewSessionWizardDialog } from "@/components/NewSessionWizardDialog";
 import { HistoryCommandPalette } from "@/components/HistoryCommandPalette";
-import { authClient, useSession, type BetterAuthSession } from "@/lib/auth-client";
+import { authClient, type BetterAuthSession } from "@/lib/auth-client";
+import { usePizzaPiSession } from "@/lib/use-pizzapi-session";
 import { useRunnersFeed } from "@/lib/useRunnersFeed";
 import { io, type Socket } from "socket.io-client";
+import { getMobileRuntimeConfig } from "@/lib/mobile-runtime";
+import { FrontendLogOverlay } from "@/components/FrontendLogOverlay";
+import { subscribeToast, installGlobalErrorCapture, logFrontendEvent } from "@/lib/frontend-log";
+import { useMobileNativeActivity } from "@/lib/mobile-native";
 import type {
   ViewerServerToClientEvents,
   ViewerClientToServerEvents,
@@ -232,12 +239,44 @@ function createInitialSessionState(): SessionState {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export function App() {
-  const { data: session, isPending } = useSession();
+  const { data: session, isPending } = usePizzaPiSession();
+  // Drive native badge + Android activity pill from the attention store.
+  // No-op outside the bundled Capacitor app.
+  useMobileNativeActivity();
   const { runners: feedRunners, status: runnersStatus } = useRunnersFeed({
     // Only connect when auth is confirmed; reconnect if the user changes (e.g. logout → new login)
     enabled: !isPending && !!session?.user?.id,
     userId: session?.user?.id ?? undefined,
   });
+
+  // Capacitor bundled mode: sockets need an absolute server URL and the API key
+  // injected by the bootstrap page, because the webview origin is local.
+  const { isMobileBundled, serverUrl, apiKey } = getMobileRuntimeConfig();
+  const socketBaseUrl = isMobileBundled && serverUrl ? serverUrl.replace(/\/+$/, "") : null;
+
+  // Diagnostic breadcrumb: if auth stays "pending" for a long time on mobile
+  // (dark bg + tiny spinner reads as a blank screen), log it so the Logs
+  // overlay shows *something* instead of the user staring at nothing.
+  React.useEffect(() => {
+    if (!isMobileBundled || !isPending) return;
+    const t = setTimeout(() => {
+      logFrontendEvent(
+        "auth",
+        "warning",
+        "Still resolving session after 8s",
+        `serverUrl=${serverUrl ?? "(none)"} hasApiKey=${!!apiKey}`,
+      );
+    }, 8000);
+    return () => clearTimeout(t);
+  }, [isMobileBundled, isPending, serverUrl, apiKey]);
+  const socketUrl = React.useCallback(
+    (namespace: string) => (socketBaseUrl ? `${socketBaseUrl}${namespace}` : namespace),
+    [socketBaseUrl],
+  );
+  const buildSocketAuth = React.useCallback(
+    (extra: Record<string, unknown>) => ({ ...extra, ...(apiKey ? { apiKey } : {}) }),
+    [apiKey],
+  );
 
   // ─── Consolidated session state ─────────────────────────────────────────────
   // clearSelection() resets this entire object in a single atomic call.
@@ -418,6 +457,8 @@ export function App() {
   const [showPreferences, setShowPreferences] = React.useState(false);
   const [showApiKeys, setShowApiKeys] = React.useState(false);
   const [apiKeyVersion, setApiKeyVersion] = React.useState(0);
+  const [setupClaimOpen, setSetupClaimOpen] = React.useState(false);
+  const [setupClaimToken, setSetupClaimToken] = React.useState<string | null>(null);
   const [showRunners, setShowRunners] = React.useState(false);
   const [historyOpen, setHistoryOpen] = React.useState(false);
   const [selectedRunnerId, setSelectedRunnerId] = React.useState<string | null>(null);
@@ -453,6 +494,26 @@ export function App() {
       try { sessionStorage.setItem(sidebarCacheKey, JSON.stringify(runners)); } catch { /* ignore */ }
     }
   }, [sidebarCacheKey]);
+
+  // Open the device-setup scanner automatically when landing with ?t=<claim-token>
+  // (the CLI QR deep-link). Capture the token so it can be pre-filled into the
+  // scanner, then strip it from the URL so it isn't left in history/shared links.
+  React.useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const t = params.get("t");
+    if (t) {
+      setSetupClaimToken(t);
+      setSetupClaimOpen(true);
+      params.delete("t");
+      const qs = params.toString();
+      window.history.replaceState(
+        {},
+        "",
+        window.location.pathname + (qs ? `?${qs}` : "") + window.location.hash,
+      );
+    }
+  }, []);
+
   const panelLayout = usePanelLayout(activeSessionId);
   const {
     showTerminal, setShowTerminal,
@@ -545,6 +606,17 @@ export function App() {
   }
   const [toasts, setToasts] = React.useState<Toast[]>([]);
   const handleUiNotifyRef = React.useRef<(payload: { message: string; notifyType?: "info" | "warning" | "error" }) => void>(() => {});
+
+  // Bridge the frontend-log toast bus into the existing toast UI, and capture
+  // uncaught errors / unhandled rejections so they land in the viewable log.
+  React.useEffect(() => {
+    installGlobalErrorCapture();
+    return subscribeToast(({ message, type }) => {
+      const id = `toast-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      setToasts((prev) => [...prev, { id, message, type }]);
+      setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), 5000);
+    });
+  }, []);
 
   // Stale-connection detection: track the last time any event arrived from the relay.
   // If the socket believes it's connected but nothing has arrived for STALE_THRESHOLD_MS
@@ -2684,12 +2756,12 @@ export function App() {
   ]);
 
   React.useEffect(() => {
-    const socket = io("/hub", {
+    const socket = io(socketUrl("/hub"), {
       withCredentials: true,
-      auth: {
+      auth: buildSocketAuth({
         protocolVersion: SOCKET_PROTOCOL_VERSION,
         clientVersion: UI_VERSION,
-      },
+      }),
     });
     hubSocketRef.current = socket;
     setHubSocket(socket);
@@ -2986,11 +3058,11 @@ export function App() {
 
     let socket = viewerWsRef.current;
     if (!socket) {
-      socket = io("/viewer", {
-        auth: {
+      socket = io(socketUrl("/viewer"), {
+        auth: buildSocketAuth({
           protocolVersion: SOCKET_PROTOCOL_VERSION,
           clientVersion: UI_VERSION,
-        },
+        }),
         withCredentials: true,
         autoConnect: false,
       });
@@ -3548,12 +3620,12 @@ export function App() {
     // We wait for the exec_result confirmation (or a generous timeout) instead of
     // blindly disconnecting after 500ms, which was too aggressive and caused the
     // exec to be dropped when the server was still processing.
-    const tempSocket: Socket<ViewerServerToClientEvents, ViewerClientToServerEvents> = io("/viewer", {
-      auth: {
+    const tempSocket: Socket<ViewerServerToClientEvents, ViewerClientToServerEvents> = io(socketUrl("/viewer"), {
+      auth: buildSocketAuth({
         sessionId,
         protocolVersion: SOCKET_PROTOCOL_VERSION,
         clientVersion: UI_VERSION,
-      },
+      }),
       withCredentials: true,
     });
 
@@ -5204,14 +5276,25 @@ export function App() {
             </div>
             <div className="flex-1 overflow-y-auto p-4">
               <div className="flex flex-col gap-4">
+                <MobileSetupQR />
                 <ApiKeyManager refreshSignal={apiKeyVersion} onKeysChanged={() => setApiKeyVersion((v) => v + 1)} />
                 <RunnerTokenManager refreshSignal={apiKeyVersion} onKeysChanged={() => setApiKeyVersion((v) => v + 1)} />
+                <DeviceSetupScanner onClose={() => setShowApiKeys(false)} />
               </div>
             </div>
           </div>
         )}
 
         <ShortcutsDialog open={showShortcutsHelp} onOpenChange={setShowShortcutsHelp} />
+
+        <Dialog open={setupClaimOpen} onOpenChange={setSetupClaimOpen}>
+          <DialogContent className="max-w-md p-0 overflow-hidden">
+            <DeviceSetupScanner
+              initialToken={setupClaimToken ?? undefined}
+              onClose={() => setSetupClaimOpen(false)}
+            />
+          </DialogContent>
+        </Dialog>
 
         {/* PATCH(pizzapi): Toast notifications for ctx.ui.notify() */}
         <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2 pointer-events-none">
@@ -5240,6 +5323,8 @@ export function App() {
             </div>
           ))}
         </div>
+
+        <FrontendLogOverlay />
       </div>
     </div>
     </TooltipProvider>
