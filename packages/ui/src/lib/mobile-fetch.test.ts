@@ -20,7 +20,19 @@ const win = new Window({ url: "https://localhost/" });
     calls.push({ input, init });
     return Promise.resolve(new Response("ok"));
 }) as typeof fetch;
+// Install the FULL, consistent DOM global set from one Window. These files set
+// globals at module top-level, so the last-loaded file wins process-wide; a
+// partial set (window without a matching document) makes react-dom crash every
+// render test that happens to run afterwards. Mirror the canonical render-test
+// setup so this file can never poison another.
 (globalThis as any).window = win;
+(globalThis as any).document = win.document;
+(globalThis as any).navigator = win.navigator;
+(globalThis as any).HTMLElement = win.HTMLElement;
+(globalThis as any).Element = win.Element;
+(globalThis as any).Node = win.Node;
+(globalThis as any).SVGElement = win.SVGElement;
+(globalThis as any).MutationObserver = win.MutationObserver;
 (globalThis as any).localStorage = win.localStorage;
 
 const { patchedFetch } = await import("./mobile-fetch.js");
