@@ -34,6 +34,7 @@ import { loadConfig } from "../../config/io.js";
 import {
     checkBudget,
     clearGoal,
+    persist,
     clearPendingGuidance,
     formatGoalStatus,
     getActiveGoalFromEntries,
@@ -181,19 +182,6 @@ async function runGoalStopCheck(
     const usage = getAssistantUsage(event.message);
     recordTurnSpend(sessionId, usage.tokens, usage.cost);
 
-    const budgetReason = checkBudget(state);
-    if (budgetReason) {
-        clearPendingGuidance(sessionId);
-        pi.sendMessage({
-            customType: "goal_status",
-            content: `Goal budget reached: ${budgetReason}. The goal is now inactive; you may continue the session.`,
-            display: true,
-        });
-        // Do not shutdown the session; budget exhaustion only deactivates the
-        // goal and lets the agent return control to the user naturally.
-        return;
-    }
-
     const evalContext = buildEvaluationContext(state, event, ctx);
 
     let evaluator;
@@ -251,23 +239,8 @@ async function runGoalStopCheck(
         }, pi) ?? state;
     }
 
-    const lastEval = state.evaluations.at(-1);
-    if (lastEval && lastEval.verdict === "not_met" && state.status === "active") {
-        clearPendingGuidance(sessionId);
-        setPendingGuidance(sessionId, lastEval.reason);
-        // Goal loop: a "not met" verdict starts another turn instead of
-        // returning control to the user (parity with Claude Code /goal).
-        // "uncertain" verdicts do NOT auto-continue, so a broken evaluator
-        // can't spin the session forever.
-        pi.sendUserMessage(
-            `[Goal not met] ${lastEval.reason}\nContinue working toward the goal: ${state.condition.description}`,
-            { deliverAs: "followUp" },
-        );
-    } else {
-        clearPendingGuidance(sessionId);
-    }
-
     if (state.status !== "active") {
+        clearPendingGuidance(sessionId);
         if (state.stopReason === "goal_met") {
             pi.sendMessage({
                 customType: "goal_status",
@@ -281,9 +254,41 @@ async function runGoalStopCheck(
                 display: true,
             });
         }
-        // Never shutdown when the goal is met or a budget is exhausted. The
-        // agent should finish the current turn and return control to the user.
+        // Never shutdown when the goal is met. The agent finishes the current
+        // turn and returns control to the user.
         return;
+    }
+
+    // The goal is still unmet — enforce budgets before continuing the loop.
+    // Checking budgets AFTER evaluation means a goal met on the final
+    // budgeted turn reports "met" above instead of "budget reached".
+    const budgetReason = checkBudget(state);
+    if (budgetReason) {
+        clearPendingGuidance(sessionId);
+        persist(state, pi);
+        pi.sendMessage({
+            customType: "goal_status",
+            content: `Goal budget reached: ${budgetReason}. The goal is now inactive; you may continue the session.`,
+            display: true,
+        });
+        // Do not shutdown the session; budget exhaustion only deactivates the
+        // goal and lets the agent return control to the user naturally.
+        return;
+    }
+
+    const lastEval = state.evaluations.at(-1);
+    if (lastEval && lastEval.verdict === "not_met") {
+        setPendingGuidance(sessionId, lastEval.reason);
+        // Goal loop: a "not met" verdict starts another turn instead of
+        // returning control to the user (parity with Claude Code /goal).
+        // "uncertain" verdicts do NOT auto-continue, so a broken evaluator
+        // can't spin the session forever.
+        pi.sendUserMessage(
+            `[Goal not met] ${lastEval.reason}\nContinue working toward the goal: ${state.condition.description}`,
+            { deliverAs: "followUp" },
+        );
+    } else {
+        clearPendingGuidance(sessionId);
     }
 }
 

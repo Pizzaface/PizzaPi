@@ -84,7 +84,11 @@ export function parseGoalArgs(input: string): GoalCommandArgs {
 
         if (isFlag(token)) {
             if (!KNOWN_FLAGS.has(token)) {
-                throw new Error(`Unknown flag: ${token}`);
+                // Unknown "--flags" are condition text, not errors — conditions
+                // like "fix the --dry-run handling" must not throw.
+                conditionParts.push(token);
+                i += 1;
+                continue;
             }
             const next = tokens[i + 1];
             if (next === undefined || isFlag(next)) {
@@ -122,6 +126,12 @@ export function parseGoalArgs(input: string): GoalCommandArgs {
     const rawCondition = conditionParts.join(" ").trim();
     if (!rawCondition) {
         throw new Error("A goal condition is required. Example: /goal \"the tests pass\"");
+    }
+
+    // A keyword evaluator with no keywords can never be met — with the goal
+    // loop auto-continuing on not_met, that would run forever. Reject early.
+    if (evaluator === "keyword" && successKeywords.length === 0) {
+        throw new Error('--evaluator keyword requires at least one --keyword. Example: /goal "build passes" --evaluator keyword --keyword "build succeeded"');
     }
 
     const condition: GoalCondition = {

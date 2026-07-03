@@ -90,12 +90,20 @@ describe("parseGoalArgs", () => {
         expect(parsed.statusOnly).toBe(false);
     });
 
-    test("rejects unknown flags", () => {
-        expect(() => parseGoalArgs("foo --unknown bar")).toThrow("Unknown flag: --unknown");
-    });
+
 
     test("rejects missing condition", () => {
         expect(() => parseGoalArgs("--max-turns 5")).toThrow("A goal condition is required");
+    });
+
+    test("treats unknown flags as condition text", () => {
+        const parsed = parseGoalArgs("fix the --dry-run handling");
+        expect(parsed.rawCondition).toBe("fix the --dry-run handling");
+        expect(parsed.budget).toEqual({});
+    });
+
+    test("rejects keyword evaluator without keywords", () => {
+        expect(() => parseGoalArgs("build passes --evaluator keyword")).toThrow("requires at least one --keyword");
     });
 });
 
@@ -106,6 +114,23 @@ describe("goal state", () => {
         expect(state.condition.description).toBe("the tests pass");
         expect(state.status).toBe("active");
         expect(getGoal("session-1")?.id).toBe(state.id);
+    });
+
+    test("recordEvaluation caps the persisted history", () => {
+        resetSession("session-1");
+        makeGoal();
+        for (let i = 0; i < 25; i++) {
+            recordEvaluation("session-1", {
+                turnIndex: i,
+                verdict: "not_met",
+                reason: `turn ${i}`,
+                timestamp: Date.now(),
+            }, { appendEntry: fakeAppendEntry });
+        }
+        const state = getGoal("session-1")!;
+        expect(state.evaluations.length).toBe(20);
+        expect(state.evaluations.at(-1)?.reason).toBe("turn 24");
+        expect(state.evaluations[0]?.reason).toBe("turn 5");
     });
 
     test("recordTurnSpend increments counters", () => {
@@ -842,6 +867,36 @@ describe("goalExtension event wiring", () => {
         expect(result?.systemPrompt).toContain("[Goal guidance]");
         expect(result?.systemPrompt).toContain("add more tests");
         expect(getPendingGuidance("session-1")).toBe("add more tests");
+    });
+
+    test("goal met on the final budgeted turn reports met, not budget reached", async () => {
+        resetSession("session-1");
+        const { pi, handlers, messages, userMessages } = createFakePi();
+        const ctx = createFakeCtx();
+
+        goalExtension(pi);
+        setGoal(
+            "session-1",
+            { description: "tests pass", evaluator: "keyword", successKeywords: ["pass"] },
+            { maxTurns: 1 },
+            pi,
+        );
+
+        const turnHandlers = handlers.get("turn_end") ?? [];
+        for (const handler of turnHandlers) {
+            await handler({
+                type: "turn_end",
+                turnIndex: 1,
+                message: makeAssistantMessage("All tests pass"),
+                toolResults: [],
+            } as TurnEndEvent, ctx);
+        }
+
+        expect(getGoal("session-1")?.status).toBe("met");
+        expect(getGoal("session-1")?.stopReason).toBe("goal_met");
+        expect(messages.some((m) => m.content.includes("Goal met"))).toBe(true);
+        expect(messages.some((m) => m.content.includes("budget reached"))).toBe(false);
+        expect(userMessages.length).toBe(0);
     });
 
     test("turn_end budget exhaustion warns, stops the loop, and does not stop session", async () => {
