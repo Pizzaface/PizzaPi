@@ -97,31 +97,42 @@ builds keep working without secrets.
 
 ### Signing in CI
 
-Store the keystore as a base64-encoded GitHub secret (never commit the `.jks`)
-and decode it into the workspace before the release build:
+The repo ships two Android workflows:
+
+- **`.github/workflows/android-debug-apk.yml`** — unsigned debug APK, no secrets;
+  runs on `workflow_dispatch` and `v*` tags, uploads `app-debug.apk`.
+- **`.github/workflows/android-release.yml`** — signed release (APK + AAB), runs
+  on `workflow_dispatch` and `v*` tags. It never runs on pull requests, so
+  secrets are never exposed to forks, and it fails fast with a clear message if
+  any secret is missing.
+
+To set up the signed workflow, add these under **Settings → Secrets and
+variables → Actions** (never commit the `.jks`):
+
+| Secret | Value |
+| --- | --- |
+| `PIZZAPI_KEYSTORE_BASE64` | `base64 -i pizzapi-release.jks` (the whole keystore, base64-encoded) |
+| `PIZZAPI_KEYSTORE_PASSWORD` | keystore password |
+| `PIZZAPI_KEY_ALIAS` | key alias (e.g. `pizzapi`) |
+| `PIZZAPI_KEY_PASSWORD` | key password |
 
 ```sh
-base64 -i pizzapi-release.jks | pbcopy   # → paste into secret PIZZAPI_KEYSTORE_BASE64
+# macOS: copy the base64 keystore straight to the clipboard
+base64 -i pizzapi-release.jks | pbcopy
 ```
 
-```yaml
-- name: Decode keystore
-  run: echo "$PIZZAPI_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
-  env:
-    PIZZAPI_KEYSTORE_BASE64: ${{ secrets.PIZZAPI_KEYSTORE_BASE64 }}
+The workflow decodes the keystore into `$RUNNER_TEMP`, sets the four
+`PIZZAPI_KEYSTORE_*` vars, and runs `bun run build:mobile:android:release`
+(which verifies the APK is signed before uploading). Trigger it from the Actions
+tab (optionally passing `versionName` / `versionCode`) or by pushing a `v*` tag —
+on a tag the `versionName` defaults to the tag minus its leading `v`.
 
-- name: Build signed release
-  run: bun run build:mobile:android:release
-  env:
-    PIZZAPI_KEYSTORE_FILE: ${{ runner.temp }}/release.jks
-    PIZZAPI_KEYSTORE_PASSWORD: ${{ secrets.PIZZAPI_KEYSTORE_PASSWORD }}
-    PIZZAPI_KEY_ALIAS: ${{ secrets.PIZZAPI_KEY_ALIAS }}
-    PIZZAPI_KEY_PASSWORD: ${{ secrets.PIZZAPI_KEY_PASSWORD }}
-```
-
-Gate this on a tag push or `workflow_dispatch` so PR builds stay unsigned and
-secret-free. Play Store / AAB upload is a further step (e.g. `r0adkll/upload-
-google-play`) once you have a service-account key.
+<Aside type="caution">
+  `versionCode` must strictly increase for every build uploaded to the Play
+  Store; the workflow leaves it to you (input or gradle default) rather than
+  guessing. Play Store / AAB upload is a further step (e.g.
+  `r0adkll/upload-google-play`) once you have a service-account key.
+</Aside>
 
 ## iOS
 
