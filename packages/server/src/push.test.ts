@@ -221,6 +221,12 @@ describe("isValidPushEndpoint", () => {
         expect(isValidPushEndpoint("https://169.254.1.1/push")).toBe(false);
     });
 
+    authIt("rejects bare-integer and hex IPv4 forms of loopback", () => {
+        // 2130706433 === 127.0.0.1; 0x7f000001 === 127.0.0.1
+        expect(isValidPushEndpoint("https://2130706433/push")).toBe(false);
+        expect(isValidPushEndpoint("https://0x7f000001/push")).toBe(false);
+    });
+
     authIt("rejects IPv6 loopback (::1)", () => {
         expect(isValidPushEndpoint("https://[::1]/push")).toBe(false);
     });

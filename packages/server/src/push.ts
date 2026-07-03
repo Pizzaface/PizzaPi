@@ -61,32 +61,6 @@ export function getVapidPublicKey(): string {
 // ── Push endpoint validation ─────────────────────────────────────────────────
 
 /**
- * Known push service hostnames.
- * This list covers the major browser push services. It is not exhaustive —
- * enterprise / custom push proxies will fail validation and should add their
- * domains here. The primary goal is to block SSRF-style attacks where an
- * attacker registers a subscription pointing to an internal service.
- */
-const KNOWN_PUSH_SERVICE_HOSTS = new Set([
-    // Google / Chrome
-    "fcm.googleapis.com",
-    "updates.push.services.mozilla.com",
-    // Mozilla / Firefox
-    "push.services.mozilla.com",
-    "updates.push.services.mozilla.com",
-    // Apple / Safari
-    "api.push.apple.com",
-    "web.push.apple.com",
-    // Microsoft Edge
-    "wns2.notify.windows.com",
-    "wns.notify.windows.com",
-    // Samsung Internet
-    "fcm.googleapis.com", // Samsung uses FCM
-    // Opera (also FCM-based)
-    // Brave (Chromium, also FCM-based)
-]);
-
-/**
  * RFC1918 / loopback / link-local IPv4 ranges that push endpoints must not target.
  * Checked against the raw hostname to block SSRF attacks.
  */
@@ -111,11 +85,10 @@ const PRIVATE_IP_PATTERNS = [
  *   2. Must use the `https:` scheme.
  *   3. Hostname must not be a loopback, link-local, or RFC1918 address.
  *
- * Note: KNOWN_PUSH_SERVICE_HOSTS is retained as documentation of the major
- * browser push services, but is NOT used as a hard allowlist gate. Enforcing
- * an allowlist would break enterprise proxies and custom push providers that
- * use HTTPS on public addresses — those used to work and should continue to
- * work. The primary SSRF defence is the private-IP block above.
+ * The URL parser normalizes bare-integer / hex / octal IPv4 forms
+ * (2130706433, 0x7f000001) to dotted-quad, so those are covered by the
+ * private-IP patterns below. No hostname allowlist is enforced: it would break
+ * enterprise proxies and custom HTTPS push providers on public addresses.
  *
  * Returns true if the endpoint is safe; false otherwise.
  */
@@ -322,7 +295,8 @@ export interface RegisterNativeInput {
  * across reinstalls of the same user.
  */
 export async function registerNativePush(input: RegisterNativeInput): Promise<NativePushRegistrationTable> {
-    const platform = input.platform === "android" ? "android" : "android"; // only android today
+    const platform = "android"; // only android today; input.platform reserved for later
+    void input.platform;
     // Upsert: reuse an existing registration for this user+platform if present.
     const existing = await getKysely()
         .selectFrom("native_push_registration" as any)

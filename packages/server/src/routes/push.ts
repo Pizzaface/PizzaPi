@@ -216,10 +216,9 @@ export const handlePushRoute: RouteHandler = async (req, url) => {
             );
         }
 
-        const body = (await req.json().catch(() => ({}))) as { platform?: string };
         // Only Android is supported today (iOS background push requires APNs,
-        // which is intentionally out of scope for the Google-free path).
-        const platform = body.platform === "android" ? "android" : "android";
+        // intentionally out of scope for the Google-free path).
+        const platform = "android";
 
         const reg = await registerNativePush({ userId: identity.userId, platform });
         return Response.json({
@@ -237,8 +236,7 @@ export const handlePushRoute: RouteHandler = async (req, url) => {
         const identity = await requireSession(req);
         if (identity instanceof Response) return identity;
 
-        const body = (await req.json().catch(() => ({}))) as { platform?: string };
-        const platform = body.platform === "android" ? "android" : "android";
+        const platform = "android";
         const removed = await unregisterNativePush(identity.userId, platform);
         return Response.json({ ok: true, removed });
     }

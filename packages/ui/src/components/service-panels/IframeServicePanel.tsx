@@ -70,7 +70,7 @@ export function IframeServicePanel({ sessionId, port, query, fragment, panelPara
     }
 
     if (!src) {
-        return <div className="flex h-full items-center justify-center text-xs text-muted-foreground">{loading ? "Opening panel…" : "Opening panel…"}</div>;
+        return <div className="flex h-full items-center justify-center text-xs text-muted-foreground">Opening panel…</div>;
     }
 
     return (
