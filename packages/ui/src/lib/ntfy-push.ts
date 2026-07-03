@@ -135,12 +135,13 @@ export async function startNtfyPush(): Promise<void> {
             console.error("ntfy register-native returned no topic/url");
             return;
         }
-        // Phase 1: no per-device auth (topic is the secret). ntfyUser/Pass are
-        // null until Phase 3 provisions per-device ntfy users.
+        // Phase 1: subscribe anonymously. ntfy is provisioned with anonymous
+        // read-only on `pizzapi-*` (see deployment/mobile-push.mdx), and the
+        // topic is the secret. No token until Phase 3 adds per-device users.
         await PizzapiNtfy.start({
             ntfyUrl: body.ntfyPublicUrl,
             topic: body.topic,
-            token: body.ntfyUser ? undefined : undefined, // reserved for Phase 3
+            token: undefined,
         });
     } catch (err) {
         console.error("startNtfyPush failed:", err);

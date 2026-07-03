@@ -84,7 +84,24 @@ same approach Home Assistant and Element use for Google-free push.
    topics, so this token can publish to any per-device topic. (Phase 3 will
    tighten this with per-device read-only users.)
 
-4. **Configure the server env vars.**
+4. **Grant anonymous read-only access to device topics.**
+
+   `deny-all` also blocks *anonymous* reads, but in Phase 1 devices subscribe
+   **without credentials** — the unguessable topic name is the secret. Grant
+   anonymous (the built-in `everyone` user) read-only access to the
+   `pizzapi-*` topic namespace so the subscribe stream isn't rejected with 403:
+
+   ```sh
+   docker compose exec ntfy ntfy access everyone 'pizzapi-*' read-only
+   ```
+
+   This grants **read (subscribe) only** — anonymous *write* stays denied by
+   `deny-all`, so the publish token from step 3 remains the only writer. Skip
+   this and the Android foreground service gets a 403, treats it as a permanent
+   error, and disables push (and the server prunes the registration on 403).
+   (Phase 3 replaces this blanket grant with per-device read-only users.)
+
+5. **Configure the server env vars.**
 
    Set these on the `server` service (the bundled compose file already wires
    `PIZZAPI_NTFY_URL=http://ntfy` internally):
@@ -98,7 +115,7 @@ same approach Home Assistant and Element use for Google-free push.
    If any of these are unset, the ntfy branch is a silent no-op and only Web
    Push runs.
 
-5. **Register from the Android app.**
+6. **Register from the Android app.**
 
    On first launch (or when the user enables notifications), the app calls
    `POST /api/push/register-native` with its API key. The server assigns an
@@ -113,10 +130,13 @@ same approach Home Assistant and Element use for Google-free push.
 ## Security model
 
 **Phase 1 (current):** the per-device topic is a 192-bit unguessable random
-string, and `auth-default-access: deny-all` blocks anonymous access. The server
-publishes with a bearer token (the publish user). The topic name is the
-security boundary — anyone who learns a topic can read that user's
-notifications, so topics must never appear in logs, screenshots, or public URLs.
+string. `auth-default-access: deny-all` denies everything by default; two
+explicit grants open the minimum needed — the publish user can **write** any
+topic, and anonymous (`everyone`) has **read-only** access to `pizzapi-*` so
+devices can subscribe without credentials. Anonymous write stays denied, so the
+publish token is the only writer. The topic name is the read-side security
+boundary — anyone who learns a topic can read that user's notifications, so
+topics must never appear in logs, screenshots, or public URLs.
 
 <Aside type="danger">
   **Before exposing this publicly,** harden it with **per-device ntfy users**

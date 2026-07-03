@@ -367,48 +367,61 @@ export async function getNativeRegistrationsForUser(userId: string): Promise<Nat
 }
 
 /**
- * Map a PizzaPi push payload to ntfy publish headers + body.
- * ntfy: `Title`, `Priority` (1-5), `Tags` (emoji/csv), `Click` (open URL on tap).
+ * Map a PizzaPi push payload to an ntfy JSON publish body (minus the per-device
+ * `topic`, which the caller adds). Using the JSON publish API instead of HTTP
+ * headers avoids `fetch` throwing on non-Latin-1 `title`/`message` values (emoji,
+ * CJK session names) — header values must be ByteStrings, JSON bodies need not.
+ * ntfy JSON fields: `title`, `message`, `priority` (1-5), `tags`, `click`.
  */
-function buildNtfyPublish(payload: PushPayload): { headers: Record<string, string>; body: string } {
-    const priorityByType: Record<PushEventType, string> = {
-        agent_needs_input: "4", // high
-        agent_error: "4",
-        agent_finished: "3", // default
-        session_started: "2", // low
-        session_ended: "3",
+function buildNtfyPublish(payload: PushPayload): Record<string, unknown> {
+    const priorityByType: Record<PushEventType, number> = {
+        agent_needs_input: 4, // high
+        agent_error: 4,
+        agent_finished: 3, // default
+        session_started: 2, // low
+        session_ended: 3,
     };
-    const { publicUrl } = ntfyConfig();
-    const headers: Record<string, string> = {
+    const fields: Record<string, unknown> = {
         // Prefer the session name so the Android client can render one
         // conversation per session (MessagingStyle groups by title + click URL).
-        Title: payload.sessionName ?? payload.title,
-        Priority: priorityByType[payload.type] ?? "3",
-        Tags: "pizza",
+        title: payload.sessionName ?? payload.title,
+        message: payload.body,
+        priority: priorityByType[payload.type] ?? 3,
+        tags: ["pizza"],
     };
-    // Click-through deep link to the relay session. The device opens this URL
-    // on tap; the web UI routes `/sessions/<id>` to the session viewer.
-    if (payload.sessionId) {
-        headers["Click"] = `${publicUrl.replace(/\/+$/, "")}/#/sessions/${payload.sessionId}`;
+    // Click-through deep link to the relay WEB UI — NOT the ntfy server. The
+    // device opens this on tap and the web UI routes `/#/sessions/<id>` to the
+    // session viewer. Built from the relay's public base URL (PIZZAPI_BASE_URL);
+    // omitted when that is unset rather than pointing at the wrong host.
+    const baseUrl = (process.env.PIZZAPI_BASE_URL ?? "").replace(/\/+$/, "");
+    if (payload.sessionId && baseUrl) {
+        fields.click = `${baseUrl}/#/sessions/${payload.sessionId}`;
     }
-    return { headers, body: payload.body };
+    return fields;
 }
 
 /**
  * Publish a push payload to all native (ntfy) registrations for a user.
  * Never throws — failures are logged and stale registrations pruned. Caller
  * (sendPushToUser) treats this as best-effort alongside the Web Push fan-out.
+ *
+ * NOTE: native registrations have no per-subscription preference columns
+ * (enabledEvents / suppressChildNotifications) today, so — unlike the Web Push
+ * path — native currently delivers ALL events regardless of `isChildSession`.
+ * The param is kept for signature parity; wire real suppression here once the
+ * native registration schema grows those columns.
  */
 async function sendNtfyToUser(userId: string, payload: PushPayload, isChildSession: boolean): Promise<void> {
+    void isChildSession; // see note above: native has no suppression columns yet
     const cfg = ntfyConfig();
     if (!cfg.url) return;
     const registrations = await getNativeRegistrationsForUser(userId);
     if (registrations.length === 0) return;
 
-    const { headers, body } = buildNtfyPublish(payload);
-    const authHeaders: Record<string, string> = { ...headers };
+    const fields = buildNtfyPublish(payload);
+    const headers: Record<string, string> = { "content-type": "application/json" };
     if (cfg.publishToken) {
-        authHeaders["Authorization"] = `Bearer ${cfg.publishToken}`;
+        headers["Authorization"] = `Bearer ${cfg.publishToken}`;
     }
     const base = cfg.url.replace(/\/+$/, "");
     const staleIds: string[] = [];
@@ -416,10 +429,13 @@ async function sendNtfyToUser(userId: string, payload: PushPayload, isChildSessi
     await Promise.allSettled(
         registrations.map(async (reg) => {
             try {
-                const res = await fetch(`${base}/${reg.topic}`, {
+                // ntfy JSON publish: POST to the base URL with `topic` in the body.
+                // 10s timeout so a hung ntfy instance can't block forever.
+                const res = await fetch(base, {
                     method: "POST",
-                    headers: { ...authHeaders, "content-type": "text/plain; charset=utf-8" },
-                    body,
+                    headers,
+                    body: JSON.stringify({ topic: reg.topic, ...fields }),
+                    signal: AbortSignal.timeout(10_000),
                 });
                 // 403/404 = topic forbidden/unknown → prune the registration.
                 if (res.status === 403 || res.status === 404) {
@@ -430,8 +446,6 @@ async function sendNtfyToUser(userId: string, payload: PushPayload, isChildSessi
             } catch (err) {
                 log.error("ntfy publish error:", err);
             }
-            // isChildSession suppression mirrors the Web Push path.
-            void isChildSession;
         }),
     );
 
@@ -569,21 +583,19 @@ export async function sendPushToUser(userId: string, payload: PushPayload, isChi
     const subscriptions = await getSubscriptionsForUser(userId);
 
     // Native (ntfy) fan-out runs regardless of Web Push subscriptions — a user
-    // may have only the native app registered, with zero browser subs. Run it
-    // first (best-effort) so a slow ntfy instance can't delay browser delivery.
-    try {
-        await sendNtfyToUser(userId, payload, isChildSession);
-    } catch (err) {
+    // may have only the native app registered, with zero browser subs. Kick it
+    // off WITHOUT awaiting here so a slow/hung ntfy instance can't delay browser
+    // delivery; it settles alongside the Web Push sends below.
+    const ntfyPromise = sendNtfyToUser(userId, payload, isChildSession).catch((err) => {
         log.error("ntfy fan-out failed:", err);
-    }
-
-    if (subscriptions.length === 0) return;
+    });
 
     const payloadStr = JSON.stringify(payload);
     const staleIds: string[] = [];
 
-    await Promise.allSettled(
-        subscriptions.map(async (sub) => {
+    await Promise.allSettled([
+        ntfyPromise,
+        ...subscriptions.map(async (sub) => {
             if (!isEventEnabled(sub.enabledEvents, payload.type)) return;
             if (isChildSession && sub.suppressChildNotifications) return;
 
@@ -611,7 +623,7 @@ export async function sendPushToUser(userId: string, payload: PushPayload, isChi
                 }
             }
         }),
-    );
+    ]);
 
     // Remove stale subscriptions
     if (staleIds.length > 0) {

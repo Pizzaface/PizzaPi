@@ -88,7 +88,8 @@ services:
   # at a dedicated subdomain (e.g. https://push.example.com) and set
   # PIZZAPI_NTFY_PUBLIC_URL to that URL on the server.
   # See packages/docs/src/content/docs/deployment/mobile-push.mdx for the
-  # reverse-proxy snippet, publish-user provisioning, and the security model.
+  # reverse-proxy snippet, the publish-user + anonymous-read provisioning
+  # (`ntfy access` commands), and the security model.
   ntfy:
     image: binwiederhier/ntfy:v2.25.0
     command: serve
@@ -97,10 +98,15 @@ services:
       # Operator must set these. base-url = the PUBLIC url devices use.
       - NTFY_BASE_URL=${PIZZAPI_NTFY_PUBLIC_URL:-http://localhost:2586}
       - NTFY_AUTH_FILE=/var/lib/ntfy/auth.db
-      # deny-all: anonymous cannot read/write any topic. The operator provisions
-      # one ntfy user+token with write access (set as PIZZAPI_NTFY_PUBLISH_TOKEN
-      # on the server). Devices subscribe using per-device credentials (Phase 3)
-      # or, in Phase 1, the unguessable topic name acts as the secret.
+      # deny-all: anonymous cannot read/write any topic by default. Two grants
+      # are provisioned once via `ntfy access` (see mobile-push.mdx Setup):
+      #   1. a publish user+token with write access (set as
+      #      PIZZAPI_NTFY_PUBLISH_TOKEN on the server) — the only writer;
+      #   2. anonymous READ-ONLY on `pizzapi-*` so devices can subscribe to
+      #      their per-device topic without credentials. In Phase 1 the
+      #      unguessable topic name is the secret; anonymous WRITE stays denied.
+      # Without grant #2, anonymous subscribe gets 403 and push is DOA.
+      # Phase 3 replaces anonymous read with per-device read-only users.
       - NTFY_AUTH_DEFAULT_ACCESS=deny-all
       - NTFY_BEHIND_PROXY=true
       # Cache so devices can retrieve messages missed while offline (catch-up).

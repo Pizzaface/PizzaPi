@@ -364,6 +364,7 @@ describe("native push registration", () => {
         process.env.PIZZAPI_NTFY_URL = "http://ntfy-test";
         process.env.PIZZAPI_NTFY_PUBLIC_URL = "https://push.example.com";
         process.env.PIZZAPI_NTFY_PUBLISH_TOKEN = "tk_test_publish";
+        process.env.PIZZAPI_BASE_URL = "https://relay.example.com";
 
         const captured: { url: string; init: RequestInit }[] = [];
         const origFetch = globalThis.fetch;
@@ -383,16 +384,22 @@ describe("native push registration", () => {
             delete process.env.PIZZAPI_NTFY_URL;
             delete process.env.PIZZAPI_NTFY_PUBLIC_URL;
             delete process.env.PIZZAPI_NTFY_PUBLISH_TOKEN;
+            delete process.env.PIZZAPI_BASE_URL;
         }
 
         expect(captured).toHaveLength(1);
-        expect(captured[0].url).toBe(`http://ntfy-test/${reg.topic}`);
+        // JSON publish: POST to the ntfy base URL, topic carried in the body.
+        expect(captured[0].url).toBe("http://ntfy-test");
         const headers = captured[0].init.headers as Record<string, string>;
-        expect(headers["Title"]).toBe("Input needed");
-        expect(headers["Priority"]).toBe("4"); // high for agent_needs_input
         expect(headers["Authorization"]).toBe("Bearer tk_test_publish");
-        expect(headers["Click"]).toContain("/#/sessions/sess-2");
-        expect(String(captured[0].init.body)).toBe("Agent asks: ship it?");
+        expect(headers["content-type"]).toBe("application/json");
+        const body = JSON.parse(String(captured[0].init.body));
+        expect(body.topic).toBe(reg.topic);
+        expect(body.title).toBe("Input needed");
+        expect(body.priority).toBe(4); // high for agent_needs_input
+        expect(body.message).toBe("Agent asks: ship it?");
+        // Click deep link points at the relay web UI (PIZZAPI_BASE_URL), not ntfy.
+        expect(body.click).toBe("https://relay.example.com/#/sessions/sess-2");
     });
 
     authIt("ntfy Title prefers sessionName so Android can group by conversation", async () => {
@@ -421,8 +428,42 @@ describe("native push registration", () => {
         }
 
         expect(captured).toHaveLength(1);
-        const headers = captured[0].init.headers as Record<string, string>;
-        expect(headers["Title"]).toBe("My Session");
+        const body = JSON.parse(String(captured[0].init.body));
+        expect(body.title).toBe("My Session");
+    });
+
+    authIt("publishes non-Latin-1 titles (emoji/CJK) via JSON body without throwing", async () => {
+        await registerNativePush({ userId: "user-G", platform: "android" });
+        process.env.PIZZAPI_NTFY_URL = "http://ntfy-test";
+        delete process.env.PIZZAPI_BASE_URL; // unset → click must be omitted, not point at ntfy
+
+        const captured: { init: RequestInit }[] = [];
+        const origFetch = globalThis.fetch;
+        (globalThis as any).fetch = (_url: string, init: RequestInit) => {
+            // Real fetch throws on non-ByteString HEADER values; a JSON body is safe.
+            for (const v of Object.values((init.headers ?? {}) as Record<string, string>)) {
+                if (/[^\u0000-\u00ff]/.test(v)) throw new TypeError("Invalid header value (non-ByteString)");
+            }
+            captured.push({ init });
+            return Promise.resolve(new Response("ok", { status: 200 }));
+        };
+        try {
+            await sendPushToUser("user-G", {
+                type: "agent_finished",
+                title: "fallback",
+                body: "done",
+                sessionId: "sess-emoji",
+                sessionName: "🍕 会話 session",
+            });
+        } finally {
+            (globalThis as any).fetch = origFetch;
+            delete process.env.PIZZAPI_NTFY_URL;
+        }
+
+        expect(captured).toHaveLength(1);
+        const body = JSON.parse(String(captured[0].init.body));
+        expect(body.title).toBe("🍕 会話 session");
+        expect(body.click).toBeUndefined(); // PIZZAPI_BASE_URL unset → omitted
     });
 
     authIt("sendPushToUser prunes ntfy registrations on 403/404", async () => {
