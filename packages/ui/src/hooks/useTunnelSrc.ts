@@ -95,7 +95,9 @@ export function useTunnelSrc(opts: {
         setBase(null);
         setError(null);
         setLoading(true);
-        resolveTunnelHref({ sessionId, port }, controller.signal)
+        // Forward runnerId so runner-scoped tunnels mint runner-scoped tokens
+        // (resolveTunnelHref prefers runner-scoped when runnerId is set).
+        resolveTunnelHref({ sessionId, runnerId, port }, controller.signal)
             .then((href) => {
                 setBase(href);
                 setLoading(false);

@@ -101,6 +101,24 @@ async function handleAuthUpgradeAsync(
         return;
     }
 
+    // Runner-scoped tokens reuse the sessionId slot with a "runner:" sentinel
+    // (see handleTunnelTokenMint in tunnel.ts). Resolve the runner directly —
+    // getSession("runner:<id>") would 404. Keep parity with handleAuthTunnel.
+    let preauthenticatedRunnerId: string | undefined;
+    if (sessionId.startsWith("runner:")) {
+        const rid = sessionId.slice("runner:".length);
+        const runnerData = await getRunnerData(rid);
+        if (!runnerData) {
+            rejectUpgrade(rawSocket, 404, "Runner not found");
+            return;
+        }
+        if (!runnerData.userId || runnerData.userId !== payload.userId) {
+            rejectUpgrade(rawSocket, 403, "Forbidden");
+            return;
+        }
+        preauthenticatedRunnerId = rid;
+    }
+
     await handleUpgradeAsync(
         req,
         rawSocket,
@@ -108,6 +126,7 @@ async function handleAuthUpgradeAsync(
         [match[0], match[2], match[3], match[4] ?? "/"] as unknown as RegExpMatchArray,
         fullUrl,
         payload.userId,
+        preauthenticatedRunnerId,
     );
 }
 
@@ -118,6 +137,7 @@ async function handleUpgradeAsync(
     match: RegExpMatchArray,
     fullUrl: string,
     preauthenticatedUserId?: string,
+    preauthenticatedRunnerId?: string,
 ): Promise<void> {
     let sessionId: string;
     try {
@@ -153,21 +173,27 @@ async function handleUpgradeAsync(
         return;
     }
 
-    const sessionData = await getSession(sessionId);
-    if (!sessionData) {
-        rejectUpgrade(rawSocket, 404, "Session not found");
-        return;
-    }
+    let runnerId: string;
+    if (preauthenticatedRunnerId) {
+        // Runner-scoped token already resolved + ownership-checked by the caller.
+        runnerId = preauthenticatedRunnerId;
+    } else {
+        const sessionData = await getSession(sessionId);
+        if (!sessionData) {
+            rejectUpgrade(rawSocket, 404, "Session not found");
+            return;
+        }
 
-    if (!sessionData.userId || sessionData.userId !== identity.userId) {
-        rejectUpgrade(rawSocket, 403, "Forbidden");
-        return;
-    }
+        if (!sessionData.userId || sessionData.userId !== identity.userId) {
+            rejectUpgrade(rawSocket, 403, "Forbidden");
+            return;
+        }
 
-    const runnerId = sessionData.runnerId;
-    if (!runnerId) {
-        rejectUpgrade(rawSocket, 503, "Session has no runner");
-        return;
+        if (!sessionData.runnerId) {
+            rejectUpgrade(rawSocket, 503, "Session has no runner");
+            return;
+        }
+        runnerId = sessionData.runnerId;
     }
 
     const relay = getTunnelRelay();

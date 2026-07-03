@@ -14,34 +14,56 @@ import { getMobileRuntimeConfig, resolveMobileUrl } from "./mobile-runtime.js";
 
 const ORIGINAL_FETCH = window.fetch.bind(window);
 
-function patchHeaders(init?: RequestInit): RequestInit | undefined {
+/**
+ * True when the resolved URL targets the configured relay server (same origin).
+ * The api key must never leak to third-party absolute URLs — relative paths are
+ * rewritten to serverUrl by resolveMobileUrl, so they pass; cross-origin URLs do not.
+ */
+function targetsServer(resolvedUrl: string): boolean {
+    const { serverUrl } = getMobileRuntimeConfig();
+    if (!serverUrl) return false;
+    try {
+        return new URL(resolvedUrl).origin === new URL(serverUrl).origin;
+    } catch {
+        return false;
+    }
+}
+
+/** Add the x-api-key header only when the request targets the relay. Mutates in place. */
+function injectApiKey(headers: Headers, resolvedUrl: string): void {
     const { apiKey } = getMobileRuntimeConfig();
-    if (!apiKey) return init;
-    const headers = new Headers(init?.headers);
-    if (!headers.has("x-api-key")) {
+    if (apiKey && targetsServer(resolvedUrl) && !headers.has("x-api-key")) {
         headers.set("x-api-key", apiKey);
     }
+}
+
+function patchInit(resolvedUrl: string, init?: RequestInit): RequestInit {
+    const headers = new Headers(init?.headers);
+    injectApiKey(headers, resolvedUrl);
     return { ...init, headers };
 }
 
-function patchedFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+export function patchedFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
     const { isMobileBundled } = getMobileRuntimeConfig();
     if (!isMobileBundled) {
         return ORIGINAL_FETCH(input, init);
     }
 
-    let url: string;
     if (input instanceof Request) {
-        url = resolveMobileUrl(input.url);
-        const nextInit = patchHeaders({ ...input, ...init });
-        return ORIGINAL_FETCH(url, nextInit);
+        const resolvedUrl = resolveMobileUrl(input.url);
+        // Spreading a Request copies nothing useful (its fields are prototype
+        // getters), silently degrading the request to a bare GET. Rebuild against
+        // the resolved URL to preserve method/body/headers/credentials/etc.;
+        // any explicit init overrides win, matching fetch(input, init) semantics.
+        const request = init
+            ? new Request(new Request(resolvedUrl, input), init)
+            : new Request(resolvedUrl, input);
+        injectApiKey(request.headers, resolvedUrl);
+        return ORIGINAL_FETCH(request);
     }
-    if (typeof input === "string") {
-        url = resolveMobileUrl(input);
-    } else {
-        url = resolveMobileUrl(input.toString());
-    }
-    return ORIGINAL_FETCH(url, patchHeaders(init));
+
+    const url = resolveMobileUrl(typeof input === "string" ? input : input.toString());
+    return ORIGINAL_FETCH(url, patchInit(url, init));
 }
 
 /** Install the fetch patch. Safe to call multiple times. */
