@@ -1,10 +1,10 @@
-import { exec } from "node:child_process";
+import { exec, type ChildProcess } from "node:child_process";
 import { promisify } from "node:util";
 
 const execAsync = promisify(exec);
 import { hostname, homedir } from "node:os";
 import { join } from "node:path";
-import { ServiceRegistry } from "./service-handler.js";
+import { ServiceRegistry, type ServiceHandler, type ServiceInitOptions } from "./service-handler.js";
 import { TerminalService } from "./services/terminal-service.js";
 import { FileExplorerService } from "./services/file-explorer-service.js";
 import { GitService } from "./services/git-service.js";
@@ -125,6 +125,55 @@ export function resolveAnnouncedDisabledRunnerServices(disabledServices: Set<str
     // Announce the configured disabled IDs even when the service is not loaded.
     // Otherwise disabled-at-startup plugins are invisible in the web UI and cannot be re-enabled.
     return Array.from(disabledServices);
+}
+
+/**
+ * Initialize a list of service handlers, catching per-handler errors so one
+ * throwing service cannot block the rest. Already-initialized handlers (present
+ * in `initializedIds`) are skipped, so failed services are retried on the next
+ * connect and successful services are not double-initialized on reconnect.
+ */
+export function initServiceHandlers(
+    handlers: ServiceHandler[],
+    socket: Socket,
+    makeOpts: (handler: ServiceHandler) => ServiceInitOptions,
+    initializedIds: Set<string>,
+): { initialized: string[]; failed: string[] } {
+    const initialized: string[] = [];
+    const failed: string[] = [];
+    for (const handler of handlers) {
+        if (initializedIds.has(handler.id)) continue;
+        try {
+            handler.init(socket, makeOpts(handler));
+            initializedIds.add(handler.id);
+            initialized.push(handler.id);
+        } catch (err) {
+            const message = err instanceof Error ? err.stack ?? err.message : String(err);
+            logWarn(`[services] init failed for "${handler.id}": ${message}`);
+            failed.push(handler.id);
+        }
+    }
+    return { initialized, failed };
+}
+
+/**
+ * Escalate a SIGTERM to SIGKILL after `timeoutMs` if the child has not exited.
+ * The timer is cleared automatically when the child exits.
+ * ponytail: child-process escalation is hard to unit-test without real spawned
+ * processes; covered by the real SIGTERM/SIGKILL behavior in session-spawner.
+ */
+function escalateToSigkill(child: ChildProcess, label: string, timeoutMs = 5_000): void {
+    const timer = setTimeout(() => {
+        try {
+            if (!child.killed && child.exitCode === null) {
+                logWarn(`[daemon] ${label} did not exit after ${timeoutMs}ms; force-killing with SIGKILL`);
+                child.kill("SIGKILL");
+            }
+        } catch {
+            // Process already exited; ignore.
+        }
+    }, timeoutMs);
+    child.once("exit", () => clearTimeout(timer));
 }
 
 /**
@@ -349,7 +398,11 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
         const runnerName = process.env.PIZZAPI_RUNNER_NAME?.trim() || hostname();
         let runnerId: string | null = null;
         let isFirstConnect = true;
-        let servicesInitialized = false;
+        // Track which service handlers have successfully completed init(). This
+        // replaces the boolean `servicesInitialized` flag: failed services can
+        // be retried on the next reconnect, while already-initialized services
+        // are not double-initialized.
+        const initializedServiceIds = new Set<string>();
 
         // ── Service registry ──────────────────────────────────────────────
         const registry = new ServiceRegistry();
@@ -788,40 +841,57 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
 
                 // Wait for plugin service discovery to finish, then init ALL services
                 // (built-in + plugins) once and announce the full list.
-                await pluginServicesReady;
+                // Guard against a hung plugin dynamic import that would otherwise block
+                // registration forever — proceed with whatever services are ready.
+                const PLUGIN_DISCOVERY_TIMEOUT_MS = 30_000;
+                let pluginDiscoveryTimedOut = false;
+                await Promise.race([
+                    pluginServicesReady,
+                    new Promise<void>((resolve) => {
+                        setTimeout(() => {
+                            pluginDiscoveryTimedOut = true;
+                            resolve();
+                        }, PLUGIN_DISCOVERY_TIMEOUT_MS);
+                    }),
+                ]);
+                if (pluginDiscoveryTimedOut) {
+                    logWarn(`[services] plugin discovery did not complete within ${PLUGIN_DISCOVERY_TIMEOUT_MS}ms; proceeding with already-loaded services`);
+                }
                 const allServiceIds = registry.getAll().map((s) => s.id);
 
-                if (!servicesInitialized) {
-                    servicesInitialized = true;
-                    // Build announcePanel callback — when a service calls it, we register
-                    // the port with the tunnel service and re-announce to viewers.
-                    const announcePanel = (serviceId: string) => (port: number) => {
-                        const entry = panelEntries.get(serviceId);
-                        if (!entry) return;
-                        entry.port = port;
-                        tunnelService.registerPort(port, entry.label);
-                        logInfo(`[services] panel announced for "${serviceId}" on port ${port}`);
-                        // Re-announce so viewers pick up the panel
-                        emitServiceAnnounce();
-                    };
+                // Build announcePanel callback — when a service calls it, we register
+                // the port with the tunnel service and re-announce to viewers.
+                const announcePanel = (serviceId: string) => (port: number) => {
+                    const entry = panelEntries.get(serviceId);
+                    if (!entry) return;
+                    entry.port = port;
+                    tunnelService.registerPort(port, entry.label);
+                    logInfo(`[services] panel announced for "${serviceId}" on port ${port}`);
+                    // Re-announce so viewers pick up the panel
+                    emitServiceAnnounce();
+                };
 
-                    // Build announceSigilServer callback — for services that run an HTTP resolve
-                    // server but have no UI panel. Registers with the tunnel for routing and
-                    // stamps the port onto sigil defs in service_announce, without adding the
-                    // service to the panels array.
-                    const announceSigilServer = (serviceId: string) => (port: number) => {
-                        sigilServerPorts.set(serviceId, port);
-                        tunnelService.registerPort(port, serviceId);
-                        logInfo(`[services] sigil resolve server announced for "${serviceId}" on port ${port}`);
-                        emitServiceAnnounce();
-                    };
+                // Build announceSigilServer callback — for services that run an HTTP resolve
+                // server but have no UI panel. Registers with the tunnel for routing and
+                // stamps the port onto sigil defs in service_announce, without adding the
+                // service to the panels array.
+                const announceSigilServer = (serviceId: string) => (port: number) => {
+                    sigilServerPorts.set(serviceId, port);
+                    tunnelService.registerPort(port, serviceId);
+                    logInfo(`[services] sigil resolve server announced for "${serviceId}" on port ${port}`);
+                    emitServiceAnnounce();
+                };
 
-                    // Socket.IO reconnects reuse this same Socket instance, so service
-                    // listeners registered during the first init remain attached. Re-running
-                    // init() on reconnect would duplicate socket handlers and may respawn
-                    // service-owned resources; preserve the existing service instances instead.
-                    for (const handler of registry.getAll()) {
-                        const opts: any = { isShuttingDown: () => isShuttingDown };
+                // Socket.IO reconnects reuse this same Socket instance, so service
+                // listeners registered during a successful init remain attached.
+                // Re-running init() on reconnect would duplicate socket handlers and may
+                // respawn service-owned resources; only init handlers that have not yet
+                // succeeded. Failed services are retried on the next connect.
+                const initResult = initServiceHandlers(
+                    registry.getAll(),
+                    socket,
+                    (handler) => {
+                        const opts: ServiceInitOptions = { isShuttingDown: () => isShuttingDown };
                         const entry = panelEntries.get(handler.id);
                         if (entry) {
                             if (entry.hasPanel !== false) {
@@ -830,11 +900,18 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                                 opts.announceSigilServer = announceSigilServer(handler.id);
                             }
                         }
-                        handler.init(socket, opts);
-                    }
-                    logInfo(`[services] initialized ${allServiceIds.length} services: ${allServiceIds.join(", ")}`);
+                        return opts;
+                    },
+                    initializedServiceIds,
+                );
+
+                if (initResult.failed.length > 0) {
+                    logWarn(`[services] ${initResult.failed.length} service(s) failed to initialize: ${initResult.failed.join(", ")}`);
+                }
+                if (initResult.initialized.length === 0) {
+                    logInfo(`[services] reconnected; preserving ${initializedServiceIds.size} initialized service(s): ${Array.from(initializedServiceIds).join(", ") || "none"}`);
                 } else {
-                    logInfo(`[services] reconnected; preserving ${allServiceIds.length} initialized services: ${allServiceIds.join(", ")}`);
+                    logInfo(`[services] initialized ${initResult.initialized.length} new service(s); ${initializedServiceIds.size}/${allServiceIds.length} total initialized: ${Array.from(initializedServiceIds).join(", ") || "none"}`);
                 }
 
                 // Re-announce service metadata after every registration so viewers and
@@ -925,8 +1002,13 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                     .filter(s => !BUILTIN_IDS.has(s.id) && newDisabledServices.has(s.id));
                 for (const svc of pluginsToDisable) {
                     logInfo(`[services] disabling plugin service "${svc.id}"`);
-                    svc.dispose();
+                    try {
+                        svc.dispose();
+                    } catch (err) {
+                        logWarn(`[services] dispose failed for "${svc.id}": ${err instanceof Error ? err.stack ?? err.message : String(err)}`);
+                    }
                     registry.unregister(svc.id);
+                    initializedServiceIds.delete(svc.id);
                     // Keep panel entry for disabled services so they still appear in service_announce
                     sigilServerPorts.delete(svc.id);
                 }
@@ -964,6 +1046,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                             });
                         }
                         handler.init(socket, optsForInit(handler.id));
+                        initializedServiceIds.add(handler.id);
                         if (typeof handler.reconcileSubscriptions === "function") {
                             const subs = cachedTriggerSubscriptions.filter((sub) => sub.triggerType?.split(":")[0] === handler.id);
                             const result = handler.reconcileSubscriptions(subs, { mode: "snapshot" });
@@ -1219,6 +1302,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                         // arrives before SIGTERM is delivered.
                         killedSessions.add(sessionId);
                         entry.child.kill("SIGTERM");
+                        escalateToSigkill(entry.child, `session ${sessionId}`);
                     } catch {}
                 } else if (entry.adopted) {
                     // No child handle — ask the relay to disconnect the worker's

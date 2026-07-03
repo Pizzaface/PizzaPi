@@ -31,6 +31,11 @@ mock.module("@pizzapi/tools", () => ({
 	}),
 }));
 
+const reportErrorMock = mock(() => {});
+mock.module("@/lib/frontend-log", () => ({
+	reportError: reportErrorMock,
+}));
+
 // Restore all module mocks after this file so they don't bleed into other
 // test files running in the same Bun worker process.
 afterAll(() => {
@@ -448,5 +453,19 @@ describe("ErrorBoundary render: copy error details button", () => {
 
 		// After click, button should show "Copied!"
 		expect(copyBtn.textContent).toContain("Copied!");
+	});
+});
+
+// ── 8. Telemetry reporting ───────────────────────────────────────────────────
+
+describe("ErrorBoundary render: telemetry reporting", () => {
+	test("reports caught errors to the frontend log pipeline", () => {
+		const { container } = renderCrashed("telemetry crash", { level: "widget" });
+		expect(container.innerHTML).toContain("Render error");
+		expect(reportErrorMock).toHaveBeenCalledWith(
+			"error-boundary",
+			"telemetry crash",
+			expect.objectContaining({ detail: expect.any(String), toast: false }),
+		);
 	});
 });

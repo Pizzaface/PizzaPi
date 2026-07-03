@@ -13,9 +13,12 @@ import type {
   TunnelRegisterMessage,
 } from "./types.js";
 
+const PING_INTERVAL_MS = 30_000;
+const PONG_TIMEOUT_MS = 90_000;
+
 export interface TunnelRelayOptions {
-  /** Static API key list, or an async validator function. */
-  apiKeys: string[] | ((key: string) => Promise<boolean>);
+  /** Static API key list, or an async authorize function (returns owning userId, or null to reject). */
+  apiKeys: string[] | ((apiKey: string, runnerId: string) => Promise<string | null | boolean>);
   /** Optional logger (defaults to no-op). */
   log?: TunnelLogger;
 }
@@ -36,7 +39,9 @@ const noopLog: TunnelLogger = {
 
 interface RegisteredRunner {
   runnerId: string;
+  userId: string;
   ws: WebSocket;
+  lastPongAt: number;
 }
 
 export interface PendingProxyRequest {
@@ -70,8 +75,9 @@ function parseMessageText(raw: string | Buffer | ArrayBuffer | ArrayBufferView):
 }
 
 export class TunnelRelay {
-  private validateApiKey: (key: string) => Promise<boolean>;
+  private authorizeApiKey: (apiKey: string, runnerId: string) => Promise<string | null | boolean>;
   private log: TunnelLogger;
+  private heartbeatInterval: ReturnType<typeof setInterval> | null = null;
   private runners = new Map<string, RegisteredRunner>();
   private pendingRequests = new Map<string, PendingProxyRequest>();
   private pendingWs = new Map<string, PendingWsProxy>();
@@ -84,12 +90,15 @@ export class TunnelRelay {
         throw new Error("TunnelRelay: at least one non-empty API key is required");
       }
       const keySet = new Set(keys);
-      this.validateApiKey = async (key: string) => keySet.has(key);
+      this.authorizeApiKey = async (key: string) => (keySet.has(key) ? "default" : null);
     } else {
-      this.validateApiKey = options.apiKeys;
+      this.authorizeApiKey = options.apiKeys;
     }
 
     this.log = options.log ?? noopLog;
+
+    this.heartbeatInterval = setInterval(() => this.sendHeartbeats(), PING_INTERVAL_MS);
+    this.heartbeatInterval.unref();
   }
 
   getRunner(runnerId: string): WebSocket | undefined {
@@ -260,6 +269,11 @@ export class TunnelRelay {
   }
 
   dispose(): void {
+    if (this.heartbeatInterval) {
+      clearInterval(this.heartbeatInterval);
+      this.heartbeatInterval = null;
+    }
+
     for (const pending of this.pendingRequests.values()) {
       clearTimeout(pending.timer);
       pending.onError("Relay shutting down");
@@ -319,23 +333,38 @@ export class TunnelRelay {
       case "ws-error":
         this.handleWsError(msg);
         break;
-      case "pong":
+      case "pong": {
+        const runnerId = this.wsToRunner.get(ws);
+        if (runnerId) {
+          const runner = this.runners.get(runnerId);
+          if (runner) runner.lastPongAt = Date.now();
+        }
         break;
+      }
       default:
         this.log.warn("[tunnel-relay] Unknown message type:", (msg as { type: string }).type);
     }
   }
 
   private async handleRegister(ws: WebSocket, msg: TunnelRegisterMessage): Promise<void> {
-    const valid = await this.validateApiKey(msg.apiKey);
-    if (!valid) {
+    const authResult = await this.authorizeApiKey(msg.apiKey, msg.runnerId);
+    if (!authResult) {
       this.log.error("[tunnel-relay] Invalid API key from runner", msg.runnerId);
       this.send(ws, { type: "error", message: "Invalid API key" });
       ws.close();
       return;
     }
 
+    const userId = typeof authResult === "string" ? authResult : "default";
+
     const existing = this.runners.get(msg.runnerId);
+    if (existing && existing.userId !== userId) {
+      this.log.error("[tunnel-relay] Runner ownership mismatch, rejecting:", msg.runnerId);
+      this.send(ws, { type: "error", message: "Runner already registered by another user" });
+      ws.close();
+      return;
+    }
+
     if (existing) {
       this.log.warn("[tunnel-relay] Runner re-registering, closing old connection:", msg.runnerId);
       this.wsToRunner.delete(existing.ws);
@@ -346,7 +375,8 @@ export class TunnelRelay {
       }
     }
 
-    this.runners.set(msg.runnerId, { runnerId: msg.runnerId, ws });
+    const now = Date.now();
+    this.runners.set(msg.runnerId, { runnerId: msg.runnerId, userId, ws, lastPongAt: now });
     this.wsToRunner.set(ws, msg.runnerId);
     this.log.info("[tunnel-relay] Runner registered:", msg.runnerId);
     this.send(ws, { type: "registered", runnerId: msg.runnerId });
@@ -413,27 +443,51 @@ export class TunnelRelay {
     pending.onError(msg.message);
   }
 
-  private handleDisconnect(ws: WebSocket): void {
-    const runnerId = this.wsToRunner.get(ws);
-    if (!runnerId) return;
+  private sendHeartbeats(): void {
+    const now = Date.now();
+    for (const [runnerId, runner] of this.runners) {
+      if (now - runner.lastPongAt > PONG_TIMEOUT_MS) {
+        this.log.warn("[tunnel-relay] Runner missed heartbeats, removing:", runnerId);
+        this.removeRunner(runnerId, "Runner missed heartbeats");
+        continue;
+      }
+      this.send(runner.ws, { type: "ping" });
+    }
+  }
 
-    this.log.info("[tunnel-relay] Runner disconnected:", runnerId);
+  private removeRunner(runnerId: string, reason: string): void {
+    const runner = this.runners.get(runnerId);
+    if (!runner) return;
+
+    this.log.info("[tunnel-relay] Runner removed:", runnerId, reason);
     this.runners.delete(runnerId);
-    this.wsToRunner.delete(ws);
+    this.wsToRunner.delete(runner.ws);
+
+    try {
+      runner.ws.close();
+    } catch {
+      // ignore close errors
+    }
 
     for (const [id, pending] of this.pendingRequests) {
       if (!this.isRequestForRunner(id, runnerId)) continue;
       clearTimeout(pending.timer);
       this.pendingRequests.delete(id);
-      pending.onError("Runner disconnected");
+      pending.onError(reason);
     }
 
     for (const [id, pending] of this.pendingWs) {
       if (pending.runnerId !== runnerId) continue;
       clearTimeout(pending.timer);
       this.pendingWs.delete(id);
-      pending.onError("Runner disconnected");
+      pending.onError(reason);
     }
+  }
+
+  private handleDisconnect(ws: WebSocket): void {
+    const runnerId = this.wsToRunner.get(ws);
+    if (!runnerId) return;
+    this.removeRunner(runnerId, "Runner disconnected");
   }
 
   private isRequestForRunner(requestId: string, runnerId: string): boolean {

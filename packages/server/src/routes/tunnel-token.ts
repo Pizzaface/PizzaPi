@@ -1,5 +1,7 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { getAuthContext } from "../auth.js";
+import { getActiveRelaySessionUserId } from "../sessions/store.js";
+import { getRunnerData } from "../ws/sio-registry.js";
 
 export const TUNNEL_TOKEN_TTL_MS = 60 * 60 * 1000;
 
@@ -59,6 +61,32 @@ export function verifyTunnelToken(token: string, nowMs = Date.now()): TunnelToke
     if (!Number.isInteger(payload.port) || payload.port < 1 || payload.port > 65535) return null;
     if (!Number.isFinite(payload.exp) || payload.exp <= Math.floor(nowMs / 1000)) return null;
     return payload;
+}
+
+/**
+ * Re-verify a syntactically valid tunnel token against the current ownership
+ * state. Callers should invoke this after verifyTunnelToken() succeeds on the
+ * consume path. Throws if the underlying session has ended or changed owners,
+ * or if the runner-scoped session sentinel no longer resolves to a runner
+ * owned by payload.userId.
+ *
+ * ponytail: this closes the up-to-1h window when a session/runner is revoked,
+ * but the tokens are still bearer tokens (whoever holds the URL can use it).
+ */
+export async function assertTunnelTokenStillValid(payload: TunnelTokenPayload): Promise<void> {
+    if (payload.sessionId.startsWith("runner:")) {
+        const runnerId = payload.sessionId.slice("runner:".length);
+        const runner = await getRunnerData(runnerId);
+        if (!runner || runner.userId !== payload.userId) {
+            throw new Error("Tunnel token revoked");
+        }
+        return;
+    }
+
+    const ownerId = await getActiveRelaySessionUserId(payload.sessionId);
+    if (ownerId !== payload.userId) {
+        throw new Error("Tunnel token revoked");
+    }
 }
 
 export function getAuthTunnelBasePath(token: string, sessionId: string, port: number): string {

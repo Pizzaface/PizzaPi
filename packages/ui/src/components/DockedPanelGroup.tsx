@@ -1,6 +1,7 @@
 import * as React from "react";
 import { cn } from "@/lib/utils";
 import { CombinedPanel, type CombinedPanelTab } from "@/components/CombinedPanel";
+import { ErrorBoundary } from "@/components/ui/error-boundary";
 import type { PanelPosition } from "@/hooks/usePanelLayout";
 
 export type DockPosition = PanelPosition;
@@ -81,27 +82,29 @@ export function DockedPanelGroup({
   // Horizontal handle always uses row-resize cursor
 
   const panel = (
-    <div
-      className={cn(
-        "flex flex-col shrink-0",
-        // hide on mobile (mobile uses full-screen overlay)
-        "hidden md:flex",
-        className,
-        isSized && { height: effectiveSize },
-      )}
-      style={isSized ? { height: effectiveSize } : undefined}
-    >
-      <CombinedPanel
-        activeTabId={activeTabId}
-        onActiveTabChange={onActiveTabChange}
-        position={position}
-        onPositionChange={onPositionChange}
-        onDragStart={onDragStart}
-        onCollapseToggle={handleCollapseToggle}
-        className="h-full"
-        tabs={tabs}
-      />
-    </div>
+    <ErrorBoundary level="section" resetKeys={[position, activeTabId]}>
+      <div
+        className={cn(
+          "flex flex-col shrink-0",
+          // hide on mobile (mobile uses full-screen overlay)
+          "hidden md:flex",
+          className,
+          isSized && { height: effectiveSize },
+        )}
+        style={isSized ? { height: effectiveSize } : undefined}
+      >
+        <CombinedPanel
+          activeTabId={activeTabId}
+          onActiveTabChange={onActiveTabChange}
+          position={position}
+          onPositionChange={onPositionChange}
+          onDragStart={onDragStart}
+          onCollapseToggle={handleCollapseToggle}
+          className="h-full"
+          tabs={tabs}
+        />
+      </div>
+    </ErrorBoundary>
   );
 
   // Resize handle — hidden when collapsed

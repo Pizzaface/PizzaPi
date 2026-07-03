@@ -10,6 +10,7 @@
 // via the Socket.IO path.
 // ============================================================================
 
+import { randomUUID } from "node:crypto";
 import type { Server as SocketIOServer, Namespace, Socket } from "socket.io";
 import { bindAuthContext, type AuthContext } from "../../auth.js";
 import type {
@@ -99,6 +100,29 @@ import { createLogger } from "@pizzapi/tools";
 
 const log = createLogger("sio/runner");
 
+// ponytail: hard cap per pending-request map. If a runner stops responding,
+// entries time out; this prevents unbounded growth from bursts.
+export const MAX_PENDING_REQUESTS = 1000;
+
+/** True once a pending-request map is at capacity and must reject new entries. */
+export function isPendingRequestCapReached(size: number): boolean {
+    return size >= MAX_PENDING_REQUESTS;
+}
+
+/**
+ * A runner response only resolves its pending request when it arrives on the
+ * SAME socket the request was issued on. This prevents a malicious/buggy runner
+ * from resolving another connection's in-flight request with a guessed/duplicate
+ * requestId. Exported for direct unit testing (the shared-process test suite
+ * cannot mock.module the namespace machinery reliably — see TODO(ltl2EKmU)).
+ */
+export function pendingSocketMatches<T extends { socketId: string }>(
+    pending: T | undefined,
+    socketId: string,
+): pending is T {
+    return !!pending && pending.socketId === socketId;
+}
+
 // ── Skill request/response registry ──────────────────────────────────────────
 // Maps requestId → { resolve, timer }. Used to correlate skill command
 // responses (skill_result) from the runner back to the HTTP request handler.
@@ -112,6 +136,7 @@ interface PendingSkillRequest {
         name?: string;
     }) => void;
     timer: ReturnType<typeof setTimeout>;
+    socketId: string;
 }
 
 const pendingSkillRequests = new Map<string, PendingSkillRequest>();
@@ -131,17 +156,22 @@ export async function sendSkillCommand(
     const socket = getLocalRunnerSocket(runnerId);
     if (!socket) throw new Error("Runner not found");
 
-    const requestId = Math.random().toString(36).slice(2) + Date.now().toString(36);
+    const requestId = randomUUID();
     const eventName = typeof command.type === "string" ? command.type : "";
     if (!eventName) throw new Error("Missing command type");
 
     return new Promise((resolve, reject) => {
+        if (isPendingRequestCapReached(pendingSkillRequests.size)) {
+            reject(new Error(`Too many pending skill requests (max ${MAX_PENDING_REQUESTS})`));
+            return;
+        }
+
         const timer = setTimeout(() => {
             pendingSkillRequests.delete(requestId);
             reject(new Error("Skill command timed out"));
         }, timeoutMs);
 
-        pendingSkillRequests.set(requestId, { resolve, timer });
+        pendingSkillRequests.set(requestId, { resolve, timer, socketId: socket.id });
 
         try {
             const { type: _type, ...rest } = command;
@@ -168,6 +198,7 @@ interface PendingAgentRequest {
         name?: string;
     }) => void;
     timer: ReturnType<typeof setTimeout>;
+    socketId: string;
 }
 
 const pendingAgentRequests = new Map<string, PendingAgentRequest>();
@@ -184,17 +215,22 @@ export async function sendAgentCommand(
     const socket = getLocalRunnerSocket(runnerId);
     if (!socket) throw new Error("Runner not found");
 
-    const requestId = Math.random().toString(36).slice(2) + Date.now().toString(36);
+    const requestId = randomUUID();
     const eventName = typeof command.type === "string" ? command.type : "";
     if (!eventName) throw new Error("Missing command type");
 
     return new Promise((resolve, reject) => {
+        if (isPendingRequestCapReached(pendingAgentRequests.size)) {
+            reject(new Error(`Too many pending agent requests (max ${MAX_PENDING_REQUESTS})`));
+            return;
+        }
+
         const timer = setTimeout(() => {
             pendingAgentRequests.delete(requestId);
             reject(new Error("Agent command timed out"));
         }, timeoutMs);
 
-        pendingAgentRequests.set(requestId, { resolve, timer });
+        pendingAgentRequests.set(requestId, { resolve, timer, socketId: socket.id });
 
         try {
             const { type: _type, ...rest } = command;
@@ -214,6 +250,7 @@ interface PendingRunnerCommand {
     resolve: (result: Record<string, unknown>) => void;
     reject: (err: Error) => void;
     timer: ReturnType<typeof setTimeout>;
+    socketId: string;
 }
 
 const pendingRunnerCommands = new Map<string, PendingRunnerCommand>();
@@ -233,17 +270,22 @@ export async function sendRunnerCommand(
     const socket = getLocalRunnerSocket(runnerId);
     if (!socket) throw new Error("Runner not found");
 
-    const requestId = Math.random().toString(36).slice(2) + Date.now().toString(36);
+    const requestId = randomUUID();
     const eventName = typeof command.type === "string" ? command.type : "";
     if (!eventName) throw new Error("Missing command type");
 
     return new Promise((resolve, reject) => {
+        if (isPendingRequestCapReached(pendingRunnerCommands.size)) {
+            reject(new Error(`Too many pending runner commands (max ${MAX_PENDING_REQUESTS})`));
+            return;
+        }
+
         const timer = setTimeout(() => {
             pendingRunnerCommands.delete(requestId);
             reject(new Error("Runner command timed out"));
         }, timeoutMs);
 
-        pendingRunnerCommands.set(requestId, { resolve, reject, timer });
+        pendingRunnerCommands.set(requestId, { resolve, reject, timer, socketId: socket.id });
 
         try {
             const { type: _type, ...rest } = command;
@@ -518,7 +560,7 @@ export function registerRunnerNamespace(io: SocketIOServer, context: AuthContext
             const requestId = data.requestId;
             if (requestId) {
                 const pending = pendingSkillRequests.get(requestId);
-                if (pending) {
+                if (pendingSocketMatches(pending, socket.id)) {
                     clearTimeout(pending.timer);
                     pendingSkillRequests.delete(requestId);
                     pending.resolve({ ok: true, skills });
@@ -531,7 +573,7 @@ export function registerRunnerNamespace(io: SocketIOServer, context: AuthContext
             const requestId = data.requestId;
             if (requestId) {
                 const pending = pendingSkillRequests.get(requestId);
-                if (pending) {
+                if (pendingSocketMatches(pending, socket.id)) {
                     clearTimeout(pending.timer);
                     pendingSkillRequests.delete(requestId);
                     pending.resolve({
@@ -563,7 +605,7 @@ export function registerRunnerNamespace(io: SocketIOServer, context: AuthContext
             const requestId = data.requestId;
             if (requestId) {
                 const pending = pendingAgentRequests.get(requestId);
-                if (pending) {
+                if (pendingSocketMatches(pending, socket.id)) {
                     clearTimeout(pending.timer);
                     pendingAgentRequests.delete(requestId);
                     pending.resolve({ ok: true, agents });
@@ -576,7 +618,7 @@ export function registerRunnerNamespace(io: SocketIOServer, context: AuthContext
             const requestId = data.requestId;
             if (requestId) {
                 const pending = pendingAgentRequests.get(requestId);
-                if (pending) {
+                if (pendingSocketMatches(pending, socket.id)) {
                     clearTimeout(pending.timer);
                     pendingAgentRequests.delete(requestId);
                     pending.resolve({
@@ -612,7 +654,7 @@ export function registerRunnerNamespace(io: SocketIOServer, context: AuthContext
             const requestId = data?.requestId;
             if (requestId) {
                 const pending = pendingRunnerCommands.get(requestId);
-                if (pending) {
+                if (pendingSocketMatches(pending, socket.id)) {
                     clearTimeout(pending.timer);
                     pendingRunnerCommands.delete(requestId);
                     pending.resolve({ ok: scanOk, plugins, message: data?.message });
@@ -625,7 +667,7 @@ export function registerRunnerNamespace(io: SocketIOServer, context: AuthContext
             const requestId = data.requestId;
             if (requestId) {
                 const pending = pendingRunnerCommands.get(requestId);
-                if (pending) {
+                if (pendingSocketMatches(pending, socket.id)) {
                     clearTimeout(pending.timer);
                     pendingRunnerCommands.delete(requestId);
                     const { requestId: _rid, ...rest } = data;
@@ -639,7 +681,7 @@ export function registerRunnerNamespace(io: SocketIOServer, context: AuthContext
             const requestId = data.requestId;
             if (requestId) {
                 const pending = pendingRunnerCommands.get(requestId);
-                if (pending) {
+                if (pendingSocketMatches(pending, socket.id)) {
                     clearTimeout(pending.timer);
                     pendingRunnerCommands.delete(requestId);
                     pending.resolve((data.data as Record<string, unknown>) ?? {});
@@ -652,7 +694,7 @@ export function registerRunnerNamespace(io: SocketIOServer, context: AuthContext
             const requestId = data.requestId;
             if (requestId) {
                 const pending = pendingRunnerCommands.get(requestId);
-                if (pending) {
+                if (pendingSocketMatches(pending, socket.id)) {
                     clearTimeout(pending.timer);
                     pendingRunnerCommands.delete(requestId);
                     pending.reject(new Error(data.error ?? "Unknown usage error"));
@@ -665,7 +707,7 @@ export function registerRunnerNamespace(io: SocketIOServer, context: AuthContext
             const requestId = data.requestId;
             if (requestId) {
                 const pending = pendingRunnerCommands.get(requestId);
-                if (pending) {
+                if (pendingSocketMatches(pending, socket.id)) {
                     clearTimeout(pending.timer);
                     pendingRunnerCommands.delete(requestId);
                     pending.resolve((data.data as Record<string, unknown>) ?? {});
@@ -678,7 +720,7 @@ export function registerRunnerNamespace(io: SocketIOServer, context: AuthContext
             const requestId = data.requestId;
             if (requestId) {
                 const pending = pendingRunnerCommands.get(requestId);
-                if (pending) {
+                if (pendingSocketMatches(pending, socket.id)) {
                     clearTimeout(pending.timer);
                     pendingRunnerCommands.delete(requestId);
                     pending.reject(new Error(data.error ?? "Unknown analysis error"));
@@ -691,7 +733,7 @@ export function registerRunnerNamespace(io: SocketIOServer, context: AuthContext
             const requestId = data.requestId;
             if (requestId) {
                 const pending = pendingRunnerCommands.get(requestId);
-                if (pending) {
+                if (pendingSocketMatches(pending, socket.id)) {
                     clearTimeout(pending.timer);
                     pendingRunnerCommands.delete(requestId);
                     const { requestId: _rid, ...rest } = data;

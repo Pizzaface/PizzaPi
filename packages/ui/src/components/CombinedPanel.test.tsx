@@ -22,6 +22,15 @@ mock.module("@/lib/utils", () => ({
   cn: (...classes: (string | undefined | null | false)[]) => classes.filter(Boolean).join(" "),
 }));
 
+mock.module("@pizzapi/tools", () => ({
+  createLogger: () => ({
+    error: () => {},
+    warn: () => {},
+    info: () => {},
+    debug: () => {},
+  }),
+}));
+
 const { CombinedPanel } = await import("./CombinedPanel");
 
 afterAll(() => mock.restore());
@@ -154,5 +163,28 @@ describe("CombinedPanel", () => {
     expect(container.textContent).toContain("Terminal content");
     expect(container.textContent).not.toContain("Files content");
     expect(container.textContent).not.toContain("Git content");
+  });
+
+  test("isolates a crashing tab to the contained fallback", () => {
+    const Bomb = () => {
+      throw new Error("tab boom");
+    };
+    const origConsoleError = console.error;
+    console.error = () => {}; // suppress React caught-render log
+    const { container } = render(
+      <CombinedPanel
+        tabs={[
+          { id: "terminal", label: "Terminal", icon: <span>T</span>, content: <Bomb /> },
+        ]}
+        activeTabId="terminal"
+        onActiveTabChange={() => {}}
+        position="right-middle"
+      />,
+    );
+    console.error = origConsoleError;
+
+    // Tab bar stays rendered and the widget-level ErrorBoundary fallback appears
+    expect(container.textContent).toContain("Terminal");
+    expect(container.innerHTML).toContain('role="alert"');
   });
 });

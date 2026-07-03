@@ -42,6 +42,7 @@ import { randomUUID } from "crypto";
 import { createHmac, timingSafeEqual } from "crypto";
 import { createLogger } from "@pizzapi/tools";
 import { pushTriggerHistory } from "../sessions/trigger-store.js";
+import { consumeNonceOnce } from "../redis-kv-store.js";
 import {
     createWebhook,
     getWebhook,
@@ -63,16 +64,6 @@ const SESSION_CONNECT_TIMEOUT_MS = 15_000;
 const WEBHOOK_REPLAY_WINDOW_MS = 5 * 60 * 1000;
 /** Allow up to 30s of clock skew (NTP drift) before rejecting as "future". */
 const WEBHOOK_CLOCK_SKEW_MS = 30 * 1000;
-
-/** In-memory replay guard: (webhookId:nonce) -> first-seen timestamp. */
-const consumedWebhookNonces = new Map<string, number>();
-
-function pruneConsumedWebhookNonces(nowMs: number): void {
-    const cutoff = nowMs - WEBHOOK_REPLAY_WINDOW_MS;
-    for (const [key, ts] of consumedWebhookNonces) {
-        if (ts < cutoff) consumedWebhookNonces.delete(key);
-    }
-}
 
 // ── HMAC helpers ─────────────────────────────────────────────────────────────
 
@@ -524,12 +515,10 @@ export const handleWebhooksRoute: RouteHandler = async (req, url) => {
                 return Response.json({ error: "Invalid signature" }, { status: 401 });
             }
 
-            pruneConsumedWebhookNonces(nowMs);
-            const nonceKey = `${webhookId}:${nonce}`;
-            if (consumedWebhookNonces.has(nonceKey)) {
+            const consumed = await consumeNonceOnce("webhook", `${webhookId}:${nonce}`, WEBHOOK_REPLAY_WINDOW_MS);
+            if (!consumed) {
                 return Response.json({ error: "Webhook nonce has already been used" }, { status: 409 });
             }
-            consumedWebhookNonces.set(nonceKey, nowMs);
         } else {
             // Legacy verification: HMAC of raw body only (no replay protection).
             const expected = computeHmac(webhook.secret, rawBodyText);

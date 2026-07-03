@@ -28,21 +28,25 @@ if (!existsSync(signed)) {
     process.exit(1);
 }
 
-// ponytail: best-effort apksigner verify when the SDK is available; the
-// signed-filename check above is the hard gate on its own.
+// ponytail: apksigner verification is required for release integrity. If the
+// Android SDK build-tools are unavailable the gate fails closed so we never
+// ship an APK whose signature has not been checked.
 const sdk = process.env.ANDROID_HOME ?? process.env.ANDROID_SDK_ROOT;
 const apksigner = sdk ? findApksigner(join(sdk, "build-tools")) : null;
-if (apksigner) {
-    try {
-        const out = execFileSync(apksigner, ["verify", "--print-certs", signed], { encoding: "utf8" });
-        console.log(out.trim());
-    } catch (err) {
-        console.error(`✗ apksigner could not verify ${signed}:`);
-        console.error(err instanceof Error ? err.message : String(err));
-        process.exit(1);
-    }
-} else {
-    console.log("ℹ apksigner not found (ANDROID_HOME unset) — skipped cert verification.");
+if (!apksigner) {
+    console.error("✗ apksigner not found — release signature verification cannot run.");
+    console.error("  Install Android SDK build-tools and set ANDROID_HOME (or ANDROID_SDK_ROOT).");
+    console.error("  Example: sdkmanager 'build-tools;35.0.0'");
+    process.exit(1);
+}
+
+try {
+    const out = execFileSync(apksigner, ["verify", "--print-certs", signed], { encoding: "utf8" });
+    console.log(out.trim());
+} catch (err) {
+    console.error(`✗ apksigner could not verify ${signed}:`);
+    console.error(err instanceof Error ? err.message : String(err));
+    process.exit(1);
 }
 
 console.log(`✓ Signed release APK: ${signed}`);

@@ -30,11 +30,12 @@ import type { RunnerInfo, RunnerSkill, RunnerAgent, RunnerHook, ServiceTriggerDe
 import {
     localTuiSockets,
     localRunnerSockets,
-    runnerSecrets,
     runnerRoom,
     safeJsonParse,
     modelFromHeartbeat,
     getIo,
+    validateAndPersistRunnerSecret,
+    deleteRunnerSecret,
 } from "./context.js";
 import { broadcastToHub } from "./hub.js";
 import { broadcastToRunnersNs } from "./runners-broadcast.js";
@@ -137,16 +138,13 @@ export async function registerRunner(
     let runnerId: string;
 
     if (requestedId && secret) {
-        const existingSecret = runnerSecrets.get(requestedId);
-        if (existingSecret !== undefined) {
-            if (existingSecret !== secret) {
-                return new Error(`Runner authentication failed: secret mismatch for runner ${requestedId}`);
-            }
-            // Re-registration: clean up stale socket
-            localRunnerSockets.delete(requestedId);
-        } else {
-            runnerSecrets.set(requestedId, secret);
+        const auth = await validateAndPersistRunnerSecret(requestedId, secret);
+        if (auth === "mismatch") {
+            return new Error(`Runner authentication failed: secret mismatch for runner ${requestedId}`);
         }
+        // Re-registration (existing secret matched) or first claim: clean up any
+        // stale local socket association for this runnerId.
+        localRunnerSockets.delete(requestedId);
         runnerId = requestedId;
     } else {
         runnerId = randomUUID();
@@ -494,7 +492,7 @@ export async function removeRunner(runnerId: string): Promise<void> {
     // Read userId before deleting so we can target the correct user room
     const existing = await getRunnerState(runnerId);
     localRunnerSockets.delete(runnerId);
-    runnerSecrets.delete(runnerId);
+    await deleteRunnerSecret(runnerId);
     await deleteRunnerState(runnerId);
     if (existing) {
         void broadcastToRunnersNs(

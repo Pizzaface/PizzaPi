@@ -14,6 +14,7 @@ import type { Server as SocketIOServer, Socket } from "socket.io";
 import type { ModelInfo } from "@pizzapi/protocol";
 import { getEphemeralTtlMs } from "../../sessions/store.js";
 import { createLogger } from "@pizzapi/tools";
+import { getValue, setValue, deleteValue } from "../../redis-kv-store.js";
 
 const log = createLogger("sio-registry");
 
@@ -95,8 +96,80 @@ export const localTerminalGcTimers = new Map<string, ReturnType<typeof setTimeou
  * Runner credential store (in-memory, per-server).
  * Maps runnerId → runnerSecret for persistent runner identity validation.
  * Matches the behavior of the existing registry.ts.
+ *
+ * This Map is also the synchronous cache for the Redis-backed store below.
+ * When Redis is available, secrets are persisted to Redis and the Map is
+ * populated from Redis on first miss, so callers can keep reading it sync.
+ * When Redis is disabled, this Map is the only store, so a server restart
+ * resets runner identity — see validateAndPersistRunnerSecret().
  */
 export const runnerSecrets = new Map<string, string>();
+
+/** Reset module-level state for tests. */
+export function _resetRunnerSecretsForTesting(): void {
+    runnerSecrets.clear();
+}
+
+function secretKey(runnerId: string): string {
+    return `pizzapi:runner:secret:${runnerId}`;
+}
+
+/** Read a runner secret, populating the local cache from Redis on miss. */
+export async function getRunnerSecret(runnerId: string): Promise<string | undefined> {
+    const cached = runnerSecrets.get(runnerId);
+    if (cached !== undefined) return cached;
+
+    const stored = await getValue(secretKey(runnerId));
+    if (stored !== null) {
+        runnerSecrets.set(runnerId, stored);
+        return stored;
+    }
+    return undefined;
+}
+
+/** Persist a runner secret to both the local cache and Redis. */
+export async function setRunnerSecret(runnerId: string, secret: string): Promise<void> {
+    runnerSecrets.set(runnerId, secret);
+    await setValue(secretKey(runnerId), secret);
+}
+
+/** Remove a runner secret from both the local cache and Redis. */
+export async function deleteRunnerSecret(runnerId: string): Promise<void> {
+    runnerSecrets.delete(runnerId);
+    await deleteValue(secretKey(runnerId));
+}
+
+/**
+ * Validate a runner secret claim. Returns:
+ *   - "match": secret matches the stored value (cache or Redis)
+ *   - "mismatch": a different secret is already stored for this runnerId
+ *   - "claimed": this is the first claim for this runnerId; persisted to both
+ *                cache and Redis
+ *
+ * ponytail: when Redis is disabled the Map is the only store, so a server
+ * restart still resets identity. That's acceptable for single-node dev but
+ * must be documented — multi-node production requires Redis.
+ */
+export async function validateAndPersistRunnerSecret(
+    runnerId: string,
+    secret: string,
+): Promise<"match" | "mismatch" | "claimed"> {
+    const cached = runnerSecrets.get(runnerId);
+    if (cached !== undefined) {
+        return cached === secret ? "match" : "mismatch";
+    }
+
+    const stored = await getValue(secretKey(runnerId));
+    if (stored !== null) {
+        runnerSecrets.set(runnerId, stored);
+        return stored === secret ? "match" : "mismatch";
+    }
+
+    // First claim for this runnerId.
+    runnerSecrets.set(runnerId, secret);
+    await setValue(secretKey(runnerId), secret);
+    return "claimed";
+}
 
 // ── Touch-throttle state ─────────────────────────────────────────────────────
 

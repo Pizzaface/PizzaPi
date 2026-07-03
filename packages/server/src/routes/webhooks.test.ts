@@ -6,9 +6,21 @@
  */
 
 import { describe, test, expect, beforeEach, afterAll, mock } from "bun:test";
+import {
+    _injectRedisForTesting as _injectKvRedis,
+    _resetRedisKvStoreForTesting as _resetKvStore,
+} from "../redis-kv-store.js";
 
 afterAll(() => mock.restore());
 import { createHmac } from "crypto";
+
+// Force the shared nonce store onto its in-memory path and clear it before every
+// test. Otherwise fixed nonces (e.g. "nonce-skew-ok") persist in the real Redis
+// that the test harness boots, making replay assertions fail on the second run.
+beforeEach(() => {
+    _resetKvStore();
+    _injectKvRedis(null);
+});
 
 // ── Helper: compute HMAC-SHA256 ──────────────────────────────────────────────
 function signBody(secret: string, timestamp: string, nonce: string, body: string): string {

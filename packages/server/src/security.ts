@@ -1,35 +1,55 @@
 import { posix as path } from "path";
 
+import { incrementRateLimitCounter, getRateLimitWindow } from "./redis-kv-store.js";
+
 /**
- * In-memory, per-process rate limiter using a sliding fixed window.
+ * Rate limiter with an optional Redis-backed counter path.
  *
- * **IMPORTANT — SINGLE-PROCESS LIMITATION:**
- * This limiter stores state in a `Map` local to the Node/Bun process. In
- * multi-instance deployments (e.g. horizontal scaling behind a load balancer),
- * each instance maintains independent counters. An attacker can bypass the
- * per-user cap by distributing requests across instances — each instance will
- * individually allow up to `limit` requests per window.
+ * The public interface (`check(key)` / `getRetryAfter(key)`) remains
+ * synchronous so existing callers do not need to change. The in-memory Map
+ * is the authoritative source of truth for each process; Redis is used as a
+ * shared backing store and is kept in sync via write-through on every allowed
+ * hit and a periodic background sync.
  *
- * For production multi-instance deployments, replace this with a Redis-backed
- * implementation (e.g. using `ioredis` with a Lua INCR script or a library such
- * as `rate-limiter-flexible` with its `RedisRateLimiter` store). The interface
- * (`check(key)` / `getRetryAfter(key)`) is intentionally minimal so the swap is
- * a drop-in replacement with no changes to callers.
+ * When Redis is disabled or unavailable, the limiter falls back to the
+ * previous per-process Map behavior. Because `check()` is synchronous, there
+ * is a small bounded window (the sync interval) during which a request that
+ * lands on a different node may not see the latest cross-node count. The
+ * in-memory path prevents cross-node coordination latency from blocking the
+ * hot path.
  */
 export class RateLimiter {
     private hits = new Map<string, { count: number; resetTime: number }>();
+    private knownKeys = new Set<string>();
     private cleanupInterval: ReturnType<typeof setInterval>;
+    private redisSyncInterval?: ReturnType<typeof setInterval>;
 
     /**
      * @param limit Max requests per window
      * @param windowMs Time window in milliseconds
+     * @param redisSyncMs How often to refresh the in-memory Map from Redis
+     *                    (default 5000ms). Only used when Redis is available.
      */
-    constructor(private limit: number, private windowMs: number) {
+    constructor(
+        private limit: number,
+        private windowMs: number,
+        private redisSyncMs: number = 5_000,
+    ) {
         // Clean up expired entries every minute to prevent memory leaks
         this.cleanupInterval = setInterval(() => this.cleanup(), 60_000);
         // Ensure cleanup stops if the process exits (though for a long-running server this isn't strictly necessary)
         if (typeof this.cleanupInterval === 'object' && 'unref' in this.cleanupInterval) {
             (this.cleanupInterval as any).unref();
+        }
+
+        // Background sync from Redis keeps cross-node counts visible within
+        // one sync interval. The in-memory Map remains authoritative so that
+        // check() stays synchronous.
+        if (this.redisSyncMs > 0) {
+            this.redisSyncInterval = setInterval(() => this.syncFromRedis(), this.redisSyncMs);
+            if (typeof this.redisSyncInterval === 'object' && 'unref' in this.redisSyncInterval) {
+                (this.redisSyncInterval as any).unref();
+            }
         }
     }
 
@@ -39,11 +59,13 @@ export class RateLimiter {
      * @returns true if allowed, false if limit exceeded
      */
     check(key: string): boolean {
+        this.knownKeys.add(key);
         const now = Date.now();
         const record = this.hits.get(key);
 
         if (!record || now > record.resetTime) {
             this.hits.set(key, { count: 1, resetTime: now + this.windowMs });
+            this.writeThroughToRedis(key);
             return true;
         }
 
@@ -52,7 +74,28 @@ export class RateLimiter {
         }
 
         record.count++;
+        this.writeThroughToRedis(key);
         return true;
+    }
+
+    private writeThroughToRedis(key: string): void {
+        // Fire-and-forget: latency of the Redis round-trip must not block
+        // the synchronous check() interface.
+        incrementRateLimitCounter(key, this.windowMs).catch(() => {});
+    }
+
+    private async syncFromRedis(): Promise<void> {
+        for (const key of this.knownKeys) {
+            const window = await getRateLimitWindow(key);
+            if (!window) continue;
+            const record = this.hits.get(key);
+            // Adopt the Redis window when it has a higher count or when our
+            // local window has expired. This prevents long-running nodes from
+            // falling behind the cluster-wide counter.
+            if (!record || Date.now() > record.resetTime || window.count > record.count) {
+                this.hits.set(key, window);
+            }
+        }
     }
 
     /**
@@ -93,6 +136,7 @@ export class RateLimiter {
     // For testing purposes
     destroy() {
         clearInterval(this.cleanupInterval);
+        if (this.redisSyncInterval) clearInterval(this.redisSyncInterval);
     }
 }
 

@@ -19,6 +19,8 @@ import {
     withMetaViaHubHint,
     withLivenessOnlyHint,
     sendCachedDeltaReplayEvents,
+    checkServiceMessageSize,
+    checkServiceMessageRateLimit,
 } from "./viewer.js";
 
 // ── isAgentEndEvent ──────────────────────────────────────────────────────────
@@ -299,5 +301,48 @@ describe("sendCachedDeltaReplayEvents", () => {
 
         expect(sent).toBe(false);
         expect(calls.length).toBe(0);
+    });
+});
+
+// ── service_message guard helpers ───────────────────────────────────────────
+
+describe("checkServiceMessageSize", () => {
+    test("allows small serializable envelopes", () => {
+        const envelope = { serviceId: "svc", type: "ping", payload: { x: 1 } };
+        const result = checkServiceMessageSize(envelope as any);
+        expect(result.ok).toBe(true);
+        expect(result.bytes).toBeGreaterThan(0);
+    });
+
+    test("rejects oversized payloads", () => {
+        const envelope = { serviceId: "svc", type: "big", payload: "x".repeat(300 * 1024) };
+        const result = checkServiceMessageSize(envelope as any);
+        expect(result.ok).toBe(false);
+        expect(result.bytes).toBeGreaterThan(256 * 1024);
+    });
+
+    test("rejects non-serializable payloads", () => {
+        const payload: any = {};
+        payload.self = payload;
+        const envelope = { serviceId: "svc", type: "cyclic", payload };
+        const result = checkServiceMessageSize(envelope as any);
+        expect(result.ok).toBe(false);
+    });
+});
+
+describe("checkServiceMessageRateLimit", () => {
+    test("allows messages up to the per-window limit", () => {
+        const state = { count: 0, resetAt: 0 };
+        for (let i = 0; i < 50; i++) {
+            expect(checkServiceMessageRateLimit(1000, state).allowed).toBe(true);
+        }
+        expect(checkServiceMessageRateLimit(1000, state).allowed).toBe(false);
+    });
+
+    test("resets the counter after the window expires", () => {
+        const state = { count: 50, resetAt: 2000 };
+        const result = checkServiceMessageRateLimit(2000, state);
+        expect(result.allowed).toBe(true);
+        expect(state.count).toBe(1);
     });
 });
