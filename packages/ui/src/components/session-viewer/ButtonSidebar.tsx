@@ -23,6 +23,7 @@ interface ButtonSidebarProps {
   onToggleGit?: () => void;
   onToggleTriggers?: () => void;
   onDuplicateSession?: () => void;
+  onExport?: () => void;
   onExec?: (payload: unknown) => boolean | void;
   sessionId?: string | null;
   effortLevel?: string | null;
@@ -68,6 +69,7 @@ export function ButtonSidebar({
   onToggleGit,
   onToggleTriggers,
   onDuplicateSession,
+  onExport,
   onExec,
   sessionId,
   effortLevel,
@@ -147,7 +149,7 @@ export function ButtonSidebar({
                       case "git": onToggleGit?.(); break;
                       case "triggers": onToggleTriggers?.(); break;
                       case "duplicate": onDuplicateSession?.(); break;
-                      case "export": break;
+                      case "export": onExport?.(); break;
                       case "delete":
                         if (onExec && sessionId) {
                           onExec({ type: "exec", id: `${Date.now()}`, command: "end_session" });

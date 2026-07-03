@@ -126,6 +126,7 @@ import { deriveSessionMetadataUpdatePatch } from "@/lib/session-metadata-update"
 import { usePanelLayout } from "@/hooks/usePanelLayout";
 import { useTriggerCount } from "@/hooks/useTriggerCount";
 import { useButtonPosition, type ToolbarButtonId, type ButtonSlot } from "@/hooks/useButtonPosition";
+import { exportToMarkdown } from "@/lib/export-markdown";
 // Attention store: AttentionProvider is mounted in main.ts around <App/>
 import { useAttentionIngestion } from "@/hooks/useAttentionIngestion";
 import { useMobileSidebar } from "@/hooks/useMobileSidebar";
@@ -3970,6 +3971,17 @@ export function App() {
     setNewSessionOpen(true);
   }, []);
 
+  const handleExport = React.useCallback(() => {
+    if (!messages.length) return;
+    const blob = new Blob([exportToMarkdown(messages)], { type: "text/markdown" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `session-${activeSessionId || "export"}.md`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }, [messages, activeSessionId]);
+
   // ── Session live waiter — resolves via /hub feed, no polling ──────────────
   const sessionWaitersRef = React.useRef<Map<string, {
     resolve: (found: boolean) => void;
@@ -4986,6 +4998,7 @@ export function App() {
                   onToggleGit={() => setShowGit((v) => !v)}
                   onToggleTriggers={() => setShowTriggers((v) => !v)}
                   onDuplicateSession={activeSessionInfo?.runnerId ? () => handleDuplicateSession(activeSessionInfo.runnerId!, activeSessionInfo.cwd || "") : undefined}
+                  onExport={handleExport}
                   onExec={sendRemoteExec}
                   sessionId={activeSessionId}
                   effortLevel={effortLevel}
@@ -5133,6 +5146,7 @@ export function App() {
                   onToggleGit={() => setShowGit((v) => !v)}
                   onToggleTriggers={() => setShowTriggers((v) => !v)}
                   onDuplicateSession={activeSessionInfo?.runnerId ? () => handleDuplicateSession(activeSessionInfo.runnerId!, activeSessionInfo.cwd || "") : undefined}
+                  onExport={handleExport}
                   onExec={sendRemoteExec}
                   sessionId={activeSessionId}
                   effortLevel={effortLevel}
