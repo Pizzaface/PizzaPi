@@ -128,6 +128,7 @@ export async function approveSetupClaim(
     token: string,
     userId: string,
     userName: string,
+    maxTtlSeconds?: number | null,
 ): Promise<{ ok: true; apiKey: string } | null> {
     const row = await getKysely()
         .selectFrom("setup_claim")
@@ -139,11 +140,11 @@ export async function approveSetupClaim(
     if (row.status !== "pending") return null;
     if (new Date(row.expiresAt) < new Date()) return null;
 
-    const apiKey = await mintEphemeralApiKey(
-        userId,
-        `setup-claim-${token.slice(0, 8)}`,
-        SETUP_CLAIM_API_KEY_TTL_SECONDS,
-    );
+    // Never let the CLI key outlive the credential that approved it.
+    const ttl = maxTtlSeconds == null
+        ? SETUP_CLAIM_API_KEY_TTL_SECONDS
+        : Math.min(SETUP_CLAIM_API_KEY_TTL_SECONDS, maxTtlSeconds);
+    const apiKey = await mintEphemeralApiKey(userId, `setup-claim-${token.slice(0, 8)}`, ttl);
 
     await getKysely()
         .updateTable("setup_claim")

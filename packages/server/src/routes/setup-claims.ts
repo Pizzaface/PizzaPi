@@ -6,7 +6,7 @@
  * - POST /api/setup-claim/:token/approve — authenticated; approve and attach API key.
  */
 
-import { requireBrowserSession } from "../middleware.js";
+import { requireEnrollmentAuth } from "../middleware.js";
 import { createSetupClaim, pollSetupClaim, approveSetupClaim } from "../setup-claims.js";
 import type { RouteHandler } from "./types.js";
 
@@ -41,20 +41,20 @@ export const handleSetupClaimsRoute: RouteHandler = async (req, url) => {
         return Response.json(claim);
     }
 
-    // Approve a pending claim (called by the authenticated web UI).
+    // Approve a pending claim (from the authenticated web UI or mobile app).
     if (url.pathname.startsWith("/api/setup-claim/") && url.pathname.endsWith("/approve") && req.method === "POST") {
         const token = url.pathname.slice("/api/setup-claim/".length, -"/approve".length);
         if (!token) {
             return Response.json({ error: "Missing claim token" }, { status: 400 });
         }
 
-        // Approval must come from a genuine logged-in browser session, never an
-        // API key — otherwise any valid key (e.g. a leaked mobile/ephemeral key)
-        // could mint a fresh key and escalate privileges.
-        const identity = await requireBrowserSession(req);
+        // Browser session OR API key; the minted CLI key is capped to the
+        // approver's own lifetime so an API key can't escalate to a longer-lived
+        // credential (see requireEnrollmentAuth).
+        const identity = await requireEnrollmentAuth(req);
         if (identity instanceof Response) return identity;
 
-        const result = await approveSetupClaim(token, identity.userId, identity.userName);
+        const result = await approveSetupClaim(token, identity.userId, identity.userName, identity.maxMintTtlSeconds);
         if (!result) {
             return Response.json({ error: "Claim not found, expired, or already processed" }, { status: 410 });
         }

@@ -1,4 +1,4 @@
-import { requireBrowserSession, requireSession } from "../middleware.js";
+import { requireEnrollmentAuth, requireSession } from "../middleware.js";
 import { approveMobileLink, createMobileLink, getMobileLink, redeemMobileLink, scanMobileLink } from "../mobile-links.js";
 import type { RouteHandler } from "./types.js";
 
@@ -71,9 +71,10 @@ export const handleMobileLinksRoute: RouteHandler = async (req, url) => {
         const id = url.pathname.slice("/api/mobile-link/".length, -"/approve".length);
         if (!id) return Response.json({ error: "Missing mobile link id" }, { status: 400 });
 
-        // Approval is a privileged action: require a real browser session, not
-        // an API key. An API key must never be able to approve a device.
-        const identity = await requireBrowserSession(req);
+        // Browser session OR API key; the minted device key is capped to the
+        // approver's own lifetime so an API key can't escalate (see
+        // requireEnrollmentAuth).
+        const identity = await requireEnrollmentAuth(req);
         if (identity instanceof Response) return identity;
 
         let verificationToken = "";
@@ -87,7 +88,7 @@ export const handleMobileLinksRoute: RouteHandler = async (req, url) => {
             return Response.json({ error: "verificationToken must be 6 uppercase letters/digits" }, { status: 400 });
         }
 
-        const claim = await approveMobileLink(id, identity.userId, verificationToken);
+        const claim = await approveMobileLink(id, identity.userId, verificationToken, identity.maxMintTtlSeconds);
         if (!claim) return Response.json({ error: "Mobile link not found, expired, or not ready" }, { status: 410 });
         return Response.json(claim);
     }

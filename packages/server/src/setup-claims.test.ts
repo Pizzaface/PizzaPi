@@ -98,6 +98,26 @@ describe("setup-claims store", () => {
         });
     });
 
+    test("minted key lifetime is capped to the approver's maxTtlSeconds", async () => {
+        await runWithAuthContext(authContext, async () => {
+            const { token } = await createSetupClaim("http://localhost:7492");
+            const capSeconds = 3600; // 1h — far below the 365d default
+            const approve = await approveSetupClaim(token, "user-cap", "Cap", capSeconds);
+            expect(approve).not.toBeNull();
+
+            const { getKysely } = await import("./auth.js");
+            const row = await getKysely()
+                .selectFrom("apikey")
+                .select(["expiresAt"])
+                .where("name", "=", `setup-claim-${token.slice(0, 8)}`)
+                .executeTakeFirst();
+            const expMs = new Date(row!.expiresAt as string).getTime();
+            // Never longer than the cap (+ small skew), and clearly not the default.
+            expect(expMs).toBeLessThanOrEqual(Date.now() + (capSeconds + 60) * 1000);
+            expect(expMs).toBeLessThan(Date.now() + 2 * 24 * 60 * 60 * 1000);
+        });
+    });
+
     test("approval fails for already-approved claims", async () => {
         await runWithAuthContext(authContext, async () => {
             const { token } = await createSetupClaim("http://localhost:7492");

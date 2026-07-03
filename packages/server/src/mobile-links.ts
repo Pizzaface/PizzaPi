@@ -139,6 +139,7 @@ export async function approveMobileLink(
     id: string,
     userId: string,
     expectedVerificationToken: string,
+    maxTtlSeconds?: number | null,
 ): Promise<MobileLinkStatus | null> {
     const row = await getKysely()
         .selectFrom("mobile_link")
@@ -154,7 +155,11 @@ export async function approveMobileLink(
     // never saw it), approval fails instead of blessing an attacker's device.
     if (!current.verificationToken || current.verificationToken !== expectedVerificationToken) return null;
 
-    const apiKey = await mintEphemeralApiKey(userId, `mobile-link-${id.slice(0, 8)}`, MOBILE_API_KEY_TTL_SECONDS);
+    // Never let the device key outlive the credential that approved it.
+    const ttl = maxTtlSeconds == null
+        ? MOBILE_API_KEY_TTL_SECONDS
+        : Math.min(MOBILE_API_KEY_TTL_SECONDS, maxTtlSeconds);
+    const apiKey = await mintEphemeralApiKey(userId, `mobile-link-${id.slice(0, 8)}`, ttl);
 
     await getKysely()
         .updateTable("mobile_link")
