@@ -5,7 +5,7 @@ import { getAuth } from "../auth.js";
 import { getTunnelRelay } from "../tunnel-relay.js";
 import { getSession } from "../ws/sio-state/index.js";
 import { getRunnerData } from "../ws/sio-registry.js";
-import { verifyTunnelToken } from "./tunnel-token.js";
+import { assertTunnelTokenStillValid, verifyTunnelToken } from "./tunnel-token.js";
 import { createLogger } from "@pizzapi/tools";
 
 const log = createLogger("tunnel-ws");
@@ -97,6 +97,14 @@ async function handleAuthUpgradeAsync(
     const port = parseInt(match[3], 10);
     const payload = verifyTunnelToken(token);
     if (!payload || payload.sessionId !== sessionId || payload.port !== port) {
+        rejectUpgrade(rawSocket, 401, "Unauthorized");
+        return;
+    }
+    // Authoritative revocation check (parity with handleAuthTunnel): reject if the
+    // session has ended or the owner no longer matches, even within the token TTL.
+    try {
+        await assertTunnelTokenStillValid(payload);
+    } catch {
         rejectUpgrade(rawSocket, 401, "Unauthorized");
         return;
     }

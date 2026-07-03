@@ -22,7 +22,8 @@ mock.module("@pizzapi/tools", () => ({
     }),
 }));
 
-import { registerServiceMessageHandler } from "./service-message.js";
+import { registerServiceMessageHandler, checkServiceMessageSize, checkServiceMessageRateLimit } from "./service-message.js";
+import type { ServiceEnvelope } from "@pizzapi/protocol";
 
 // Restore module mocks after this file so they don't bleed into other
 // test files sharing the same Bun worker process.
@@ -37,6 +38,7 @@ function createMockSocket(sessionId?: string) {
             sessionId: sessionId ?? null,
             token: "test-token",
         },
+        id: `mock-${sessionId ?? "none"}`,
         on: (event: string, handler: Function) => {
             handlers.set(event, handler);
         },
@@ -142,5 +144,75 @@ describe("registerServiceMessageHandler", () => {
 
         await new Promise((r) => setTimeout(r, 50));
         expect(mockEmitToRunner).not.toHaveBeenCalled();
+    });
+
+    test("does not forward payloads that exceed the size cap", async () => {
+        const socket = createMockSocket("sess-1");
+        mockGetSharedSession.mockResolvedValue({ collabMode: true, runnerId: "runner-1" });
+        registerServiceMessageHandler(socket as any);
+
+        socket.fireEvent("service_message", {
+            serviceId: "tunnel",
+            type: "big",
+            payload: "x".repeat(300 * 1024),
+        });
+
+        await new Promise((r) => setTimeout(r, 50));
+        expect(mockEmitToRunner).not.toHaveBeenCalled();
+    });
+
+    test("drops messages once the per-socket rate limit is exceeded", async () => {
+        const socket = createMockSocket("sess-1");
+        mockGetSharedSession.mockResolvedValue({ collabMode: true, runnerId: "runner-1" });
+        registerServiceMessageHandler(socket as any);
+
+        const envelope = { serviceId: "tunnel", type: "ping", payload: {} };
+        for (let i = 0; i < 55; i++) {
+            socket.fireEvent("service_message", envelope);
+        }
+
+        await new Promise((r) => setTimeout(r, 50));
+        expect(mockEmitToRunner).toHaveBeenCalledTimes(50);
+    });
+});
+
+describe("checkServiceMessageSize", () => {
+    test("allows small serializable envelopes", () => {
+        const envelope: ServiceEnvelope = { serviceId: "svc", type: "ping", payload: { x: 1 } };
+        const result = checkServiceMessageSize(envelope);
+        expect(result.ok).toBe(true);
+        expect(result.bytes).toBeGreaterThan(0);
+    });
+
+    test("rejects oversized payloads", () => {
+        const envelope: ServiceEnvelope = { serviceId: "svc", type: "big", payload: "x".repeat(300 * 1024) };
+        const result = checkServiceMessageSize(envelope);
+        expect(result.ok).toBe(false);
+        expect(result.bytes).toBeGreaterThan(256 * 1024);
+    });
+
+    test("rejects non-serializable payloads", () => {
+        const payload: any = {};
+        payload.self = payload;
+        const envelope: ServiceEnvelope = { serviceId: "svc", type: "cyclic", payload };
+        const result = checkServiceMessageSize(envelope);
+        expect(result.ok).toBe(false);
+    });
+});
+
+describe("checkServiceMessageRateLimit", () => {
+    test("allows messages up to the per-window limit", () => {
+        const state = { count: 0, resetAt: 0 };
+        for (let i = 0; i < 50; i++) {
+            expect(checkServiceMessageRateLimit(1000, state).allowed).toBe(true);
+        }
+        expect(checkServiceMessageRateLimit(1000, state).allowed).toBe(false);
+    });
+
+    test("resets the counter after the window expires", () => {
+        const state = { count: 50, resetAt: 2000 };
+        const result = checkServiceMessageRateLimit(2000, state);
+        expect(result.allowed).toBe(true);
+        expect(state.count).toBe(1);
     });
 });

@@ -4900,14 +4900,16 @@ export function App() {
 
               <div id="main-content" tabIndex={-1} className="flex flex-col flex-1 min-w-0 min-h-0 overflow-hidden">
                   {showRunners ? (
-                    <RunnerManager
-                      runners={feedRunners}
-                      runnersStatus={runnersStatus}
-                      sessions={liveSessions}
-                      onOpenSession={(id) => { handleOpenSession(id); setShowRunners(false); }}
-                      selectedRunnerId={selectedRunnerId}
-                      onSelectRunner={setSelectedRunnerId}
-                    />
+                    <ErrorBoundary level="section" resetKeys={[activeSessionId]}>
+                      <RunnerManager
+                        runners={feedRunners}
+                        runnersStatus={runnersStatus}
+                        sessions={liveSessions}
+                        onOpenSession={(id) => { handleOpenSession(id); setShowRunners(false); }}
+                        selectedRunnerId={selectedRunnerId}
+                        onSelectRunner={setSelectedRunnerId}
+                      />
+                    </ErrorBoundary>
                   ) : (
                     <ErrorBoundary level="section" resetKeys={[activeSessionId]}>
                       <SigilProvider sigilDefs={runnerSigilDefs} panels={dynamicPanels} runnerId={activeSessionInfo?.runnerId ?? undefined}>

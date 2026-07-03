@@ -4,6 +4,7 @@ import { cn } from "@/lib/utils";
 import { GripHorizontal, X } from "lucide-react";
 import type { PanelPosition } from "@/hooks/usePanelLayout";
 import { computePositionDropdownCoords } from "../utils/panelLayoutHelpers";
+import { ErrorBoundary } from "@/components/ui/error-boundary";
 
 // ── 9-zone grid definition ───────────────────────────────────────────────────
 // Row 0 = top, Row 1 = middle (center-middle is main content), Row 2 = bottom.
@@ -377,7 +378,9 @@ export function CombinedPanel({
               className={cn("absolute inset-0", !isActive && "hidden")}
               aria-hidden={!isActive}
             >
-              {tab.content}
+              <ErrorBoundary level="widget" resetKeys={[tab.id, activeTabId]}>
+                {tab.content}
+              </ErrorBoundary>
             </div>
           );
         })}

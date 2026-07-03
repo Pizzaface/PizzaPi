@@ -4,6 +4,7 @@ import { TunnelRelay } from "@pizzapi/tunnel";
 import { WebSocketServer, type WebSocket as NodeWebSocket, type RawData } from "ws";
 import { createLogger } from "@pizzapi/tools";
 import { bindAuthContext, getAuth, type AuthContext } from "./auth.js";
+import { getRunnerData } from "./ws/sio-registry.js";
 
 const log = createLogger("tunnel-relay");
 
@@ -73,12 +74,15 @@ export function initTunnelRelay(context: AuthContext): TunnelRelay {
     if (relay && wss) return relay;
 
     relay = new TunnelRelay({
-        apiKeys: bindAuthContext(context, async (key: string): Promise<boolean> => {
+        apiKeys: bindAuthContext(context, async (apiKey: string, runnerId: string): Promise<string | null> => {
             try {
-                const result = await getAuth().api.verifyApiKey({ body: { key } });
-                return !!(result.valid && result.key?.userId);
+                const result = await getAuth().api.verifyApiKey({ body: { key: apiKey } });
+                if (!result.valid || !result.key?.userId) return null;
+                const runnerData = await getRunnerData(runnerId);
+                if (runnerData?.userId && runnerData.userId !== result.key.userId) return null;
+                return result.key.userId;
             } catch {
-                return false;
+                return null;
             }
         }),
         log: {

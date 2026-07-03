@@ -30,8 +30,18 @@ export function createBashTool(deps?: Partial<BashDeps>): AgentTool {
             timeout: Type.Optional(Type.Number({ description: "Timeout in milliseconds" })),
         }),
         async execute(_toolCallId, params: any) {
+            if (!params || typeof params.command !== "string" || params.command.trim() === "") {
+                const text = "❌ Invalid bash command: command must be a non-empty string.";
+                return {
+                    content: [{ type: "text" as const, text }],
+                    details: { command: params?.command ?? "", stdout: "", stderr: text, validationError: true },
+                };
+            }
+
             const execAsync = promisify(execFn);
             const timeout = params.timeout ?? 30_000;
+            // ponytail: 10 MB stdout+stderr cap; raise if a legitimate tool genuinely needs larger output
+            const maxBuffer = 10 * 1024 * 1024;
 
             let command: string = params.command;
             let env: NodeJS.ProcessEnv = process.env;
@@ -52,12 +62,30 @@ export function createBashTool(deps?: Partial<BashDeps>): AgentTool {
             }
 
             try {
-                const { stdout, stderr } = await execAsync(command, { timeout, env });
+                const { stdout, stderr } = await execAsync(command, { timeout, env, maxBuffer });
                 return {
                     content: [{ type: "text" as const, text: stdout + (stderr ? `\nstderr: ${stderr}` : "") }],
                     details: { command: params.command, stdout, stderr },
                 };
             } catch (error: any) {
+                if (error?.code === "ERR_CHILD_PROCESS_STDOUT_MAXBUFFER") {
+                    const partialStdout = error.stdout || "";
+                    const partialStderr = error.stderr || "";
+                    const text =
+                        `Command output exceeded the ${maxBuffer} byte buffer and was truncated. Partial output follows:\n` +
+                        partialStdout +
+                        (partialStderr ? `\nstderr: ${partialStderr}` : "");
+                    return {
+                        content: [{ type: "text" as const, text }],
+                        details: {
+                            command: params.command,
+                            stdout: partialStdout,
+                            stderr: partialStderr,
+                            truncated: true,
+                        },
+                    };
+                }
+
                 // execAsync throws on non-zero exit code.
                 // Return stdout/stderr rather than crashing the tool call.
                 const stdout = error.stdout || "";

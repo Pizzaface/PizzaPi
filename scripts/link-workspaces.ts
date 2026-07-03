@@ -36,6 +36,11 @@ for (const pkg of packages) {
   try {
     symlinkSync(target, link);
   } catch (err) {
-    console.error(`[link-workspaces] Failed to symlink ${pkg}: ${(err as Error).message}`);
+    console.error(
+      `[link-workspaces] Failed to symlink @pizzapi/${pkg} → ${target}: ${(err as Error).message}\n` +
+        "Likely cause: symlink creation is blocked (Windows without Developer Mode/admin, or an existing file blocks the link).\n" +
+        "Fix the underlying issue, then re-run `bun install`.",
+    );
+    process.exit(1);
   }
 }

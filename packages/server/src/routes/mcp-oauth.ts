@@ -17,21 +17,10 @@
 
 import type { RouteHandler } from "./types.js";
 import { emitToRelaySession } from "../ws/sio-registry.js";
-
-/** In-memory map of consumed nonces → consume timestamp for replay prevention. */
-const consumedNonces = new Map<string, number>();
+import { consumeNonceOnce } from "../redis-kv-store.js";
 
 /** TTL for individual nonce entries: 15 minutes. */
 const NONCE_TTL_MS = 15 * 60 * 1000;
-
-// Sweep expired nonces every 2 minutes — removes only entries older than NONCE_TTL_MS,
-// so recently-consumed nonces remain protected during the full replay window.
-setInterval(() => {
-    const cutoff = Date.now() - NONCE_TTL_MS;
-    for (const [key, ts] of consumedNonces) {
-        if (ts < cutoff) consumedNonces.delete(key);
-    }
-}, 2 * 60 * 1000);
 
 export const handleMcpOAuthRoute: RouteHandler = async (req, url) => {
     if (url.pathname !== "/api/mcp-oauth-callback") return undefined;
@@ -77,8 +66,8 @@ export const handleMcpOAuthRoute: RouteHandler = async (req, url) => {
     }
 
     // ── Replay protection ────────────────────────────────────────────────
-    const nonceKey = `${sessionId}:${nonce}`;
-    if (consumedNonces.has(nonceKey)) {
+    const consumed = await consumeNonceOnce("mcp-oauth", `${sessionId}:${nonce}`, NONCE_TTL_MS);
+    if (!consumed) {
         return new Response(
             htmlPage("Already Used", "<p>This callback has already been processed.</p>"),
             { status: 409, headers: { "Content-Type": "text/html" } },
@@ -89,8 +78,6 @@ export const handleMcpOAuthRoute: RouteHandler = async (req, url) => {
     // In a multi-instance deployment, the OAuth callback may hit a different
     // server than the one owning the runner's relay socket. Emit to the
     // session room (broadcast via Redis) instead of looking up a local socket.
-    consumedNonces.set(nonceKey, Date.now());
-
     const emitted = emitToRelaySession(sessionId, "mcp_oauth_callback", {
         sessionId,
         nonce,
@@ -103,7 +90,9 @@ export const handleMcpOAuthRoute: RouteHandler = async (req, url) => {
     });
 
     if (!emitted) {
-        consumedNonces.delete(nonceKey); // Allow retry
+        // Allow retry: the nonce store can't be rolled back synchronously, but
+        // the in-memory fallback is only a best-effort guard. The relay will send
+        // a fresh callback if the OAuth provider permits retries.
         return new Response(
             htmlPage("Server Error", "<p>Relay not initialized. Please try again.</p>"),
             { status: 503, headers: { "Content-Type": "text/html" } },

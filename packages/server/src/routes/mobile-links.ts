@@ -1,4 +1,5 @@
 import { requireEnrollmentAuth, requireSession } from "../middleware.js";
+import { getTrustedOrigins } from "../auth.js";
 import { approveMobileLink, createMobileLink, getMobileLink, redeemMobileLink, scanMobileLink } from "../mobile-links.js";
 import type { RouteHandler } from "./types.js";
 
@@ -6,10 +7,38 @@ function cleanString(value: unknown): string {
     return typeof value === "string" ? value.trim() : "";
 }
 
-function mobileCorsHeaders(req: Request): HeadersInit {
-    const origin = req.headers.get("origin") || "*";
+// Capacitor-based mobile clients send opaque origins; keep this list minimal
+// and match only the exact schemes the app is known to use.
+// ponytail: capacitor-origin exception — these origins are hard-coded because
+// the mobile runtime sends opaque/null origins and cannot participate in the
+// better-auth trustedOrigins list.
+const KNOWN_CAPACITOR_ORIGINS = [
+    "capacitor://localhost",
+    "http://localhost",
+    "ionic://localhost",
+    "null",
+];
+
+function safeTrustedOrigins(): string[] {
+    // getTrustedOrigins() reads the AsyncLocalStorage auth context and throws
+    // when none is bound (e.g. the unauthenticated CORS preflight path). Fall
+    // back to an empty list so the Capacitor-origin allowlist below still works.
+    try {
+        return getTrustedOrigins();
+    } catch {
+        return [];
+    }
+}
+
+export function mobileCorsHeaders(req: Request, trustedOrigins?: string[]): Record<string, string> {
+    const origins = trustedOrigins ?? safeTrustedOrigins();
+    const origin = req.headers.get("origin");
+    const allowedOrigin =
+        origin && (origins.includes(origin) || KNOWN_CAPACITOR_ORIGINS.includes(origin))
+            ? origin
+            : (origins[0] ?? "*");
     return {
-        "Access-Control-Allow-Origin": origin,
+        "Access-Control-Allow-Origin": allowedOrigin,
         "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
         "Access-Control-Allow-Headers": "Content-Type",
         "Vary": "Origin",

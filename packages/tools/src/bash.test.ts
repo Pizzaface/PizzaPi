@@ -34,7 +34,7 @@ let mockSuccess: MockSuccess | null = null;
 let mockError: MockError | null = null;
 /** Captured from the most recent exec() call inside bashTool.execute() */
 let capturedCmd = "";
-let capturedOpts: { timeout?: number; env?: NodeJS.ProcessEnv } = {};
+let capturedOpts: { timeout?: number; env?: NodeJS.ProcessEnv; maxBuffer?: number } = {};
 
 /** Sandbox state controlled per-test */
 let sandboxActive = false;
@@ -75,7 +75,7 @@ function mockExecCallback(
     callback: (err: any, stdout: string, stderr: string) => void
 ): void {
     capturedCmd = cmd;
-    capturedOpts = { timeout: opts?.timeout, env: opts?.env };
+    capturedOpts = { timeout: opts?.timeout, env: opts?.env, maxBuffer: opts?.maxBuffer };
 
     if (mockError) {
         const err = Object.assign(new Error(mockError.message), {
@@ -309,6 +309,68 @@ describe("bashTool", () => {
             expect(result).toBeDefined();
             expect(result.content).toBeDefined();
             expect(result.content[0].text).toBeDefined();
+        });
+    });
+
+    // ── Input validation ─────────────────────────────────────────────────
+
+    describe("input validation", () => {
+        test("rejects missing command with a clear validation error", async () => {
+            const result = await testTool.execute("test-call", {});
+            expect(result.content[0].text).toContain("Invalid bash command");
+            expect(result.details.validationError).toBe(true);
+            expect(result.details.command).toBe("");
+        });
+
+        test("rejects empty/whitespace command", async () => {
+            const result = await testTool.execute("test-call", { command: "   " });
+            expect(result.content[0].text).toContain("Invalid bash command");
+            expect(result.details.validationError).toBe(true);
+        });
+
+        test("rejects non-string command", async () => {
+            const result = await testTool.execute("test-call", { command: 123 });
+            expect(result.content[0].text).toContain("Invalid bash command");
+            expect(result.details.validationError).toBe(true);
+        });
+    });
+
+    // ── maxBuffer handling ─────────────────────────────────────────────────
+
+    describe("maxBuffer handling", () => {
+        test("passes a 10 MB maxBuffer to exec", async () => {
+            setSuccess("ok");
+            await execBash("echo ok");
+            expect(capturedOpts.maxBuffer).toBe(10 * 1024 * 1024);
+        });
+
+        test("returns a clear truncated message when output exceeds the buffer", async () => {
+            setError({
+                message: "stdout maxBuffer length exceeded",
+                code: "ERR_CHILD_PROCESS_STDOUT_MAXBUFFER",
+                stdout: "partial stdout\n",
+                stderr: "partial stderr\n",
+            });
+            const result = await execBash("big-cmd");
+            expect(result.content[0].text).toContain("truncated");
+            expect(result.content[0].text).toContain("partial stdout");
+            expect(result.content[0].text).toContain("stderr: partial stderr");
+            expect(result.details.truncated).toBe(true);
+            expect(result.details.stdout).toBe("partial stdout\n");
+            expect(result.details.stderr).toBe("partial stderr\n");
+            expect(result.details.exitCode).toBeUndefined();
+        });
+
+        test("handles maxBuffer errors without partial output", async () => {
+            setError({
+                message: "stdout maxBuffer length exceeded",
+                code: "ERR_CHILD_PROCESS_STDOUT_MAXBUFFER",
+            });
+            const result = await execBash("big-cmd");
+            expect(result.content[0].text).toContain("truncated");
+            expect(result.details.truncated).toBe(true);
+            expect(result.details.stdout).toBe("");
+            expect(result.details.stderr).toBe("");
         });
     });
 

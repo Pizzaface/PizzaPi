@@ -12,11 +12,13 @@
 
 import type { TunnelRelay } from "@pizzapi/tunnel";
 import { requireSession } from "../middleware.js";
-import { createTunnelToken, getAuthTunnelBasePath, verifyTunnelToken } from "./tunnel-token.js";
+import { assertTunnelTokenStillValid, createTunnelToken, getAuthTunnelBasePath, verifyTunnelToken } from "./tunnel-token.js";
 import { getTunnelRelay } from "../tunnel-relay.js";
 import { getSession } from "../ws/sio-state/index.js";
 import { getRunnerData } from "../ws/sio-registry.js";
 import type { RouteHandler } from "./types.js";
+
+const TUNNEL_MAX_BUFFERED_BYTES = 25 * 1024 * 1024; // ponytail: fixed ceiling, raise if legit large HTML responses appear
 
 /** Pattern: /api/tunnel/auth/:token/:sessionId/:port/<rest> — mobile iframe auth. */
 const AUTH_TUNNEL_PATH_RE = /^\/api\/tunnel\/auth\/([^/]+)\/([^/]+)\/(\d+)(\/.*)?$/;
@@ -387,6 +389,10 @@ function tunnelErrorResponse(message: string): Response {
         return Response.json({ error: "Tunnel request timed out" }, { status: 504 });
     }
 
+    if (message.includes("body too large") || message.includes("too large")) {
+        return Response.json({ error: `Tunnel error: ${message}` }, { status: 413 });
+    }
+
     return Response.json({ error: `Tunnel error: ${message}` }, { status: 502 });
 }
 
@@ -440,6 +446,7 @@ function proxyTunnelRequestViaRelay(
         let streamController: ReadableStreamDefaultController<Uint8Array> | null = null;
         let streamClosed = false;
         let shouldBuffer = false;
+        let bufferedBytes = 0;
         const bodyChunks: Buffer[] = [];
 
         const closeStream = (): void => {
@@ -482,6 +489,15 @@ function proxyTunnelRequestViaRelay(
                     }
 
                     shouldBuffer = shouldBufferTunnelResponse(responseHeaders.get("content-type"));
+                    const contentLength = responseHeaders.get("content-length");
+                    if (shouldBuffer && contentLength) {
+                        const length = Number.parseInt(contentLength, 10);
+                        if (Number.isFinite(length) && length > TUNNEL_MAX_BUFFERED_BYTES) {
+                            cancel();
+                            resolveOnce(tunnelErrorResponse("Response body too large"));
+                            return;
+                        }
+                    }
                     if (shouldBuffer) return;
 
                     applyResponseHeadersByBasePath(responseHeaders, basePath, allowCrossOriginFrame);
@@ -502,6 +518,12 @@ function proxyTunnelRequestViaRelay(
                 },
                 onResponseData: (chunk) => {
                     if (shouldBuffer) {
+                        if (bufferedBytes + chunk.length > TUNNEL_MAX_BUFFERED_BYTES) {
+                            cancel();
+                            resolveOnce(tunnelErrorResponse("Response body too large"));
+                            return;
+                        }
+                        bufferedBytes += chunk.length;
                         bodyChunks.push(chunk);
                         return;
                     }
@@ -644,6 +666,15 @@ async function handleAuthTunnel(req: Request, url: URL, match: RegExpMatchArray)
     const payload = verifyTunnelToken(token);
     if (!payload || payload.sessionId !== sessionId || payload.port !== port) {
         return Response.json({ error: "Invalid or expired tunnel token" }, { status: 401 });
+    }
+    // Authoritative revocation check: even within the token's TTL, reject if the
+    // referenced session has ended or the runner/session owner no longer matches.
+    // getActiveRelaySessionUserId queries endedAt IS NULL, catching ended sessions
+    // that getSession()'s Redis hash may still cache below.
+    try {
+        await assertTunnelTokenStillValid(payload);
+    } catch {
+        return Response.json({ error: "Tunnel token revoked" }, { status: 401 });
     }
 
     if (!sessionId) return Response.json({ error: "Missing session ID" }, { status: 400 });

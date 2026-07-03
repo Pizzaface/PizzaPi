@@ -36,6 +36,24 @@ export interface TerminalEntry {
 
 const runningTerminals = new Map<string, TerminalEntry>();
 
+/**
+ * Escalate a terminal worker SIGTERM to SIGKILL after `timeoutMs` if the process
+ * has not exited. The timer is cleared automatically when the worker exits.
+ * ponytail: real process-kill paths are not unit-tested here; escalation is
+ * exercised through the actual terminal worker lifecycle.
+ */
+function escalateTerminalKill(worker: ChildProcess, terminalId: string, timeoutMs = 5_000): void {
+    const timer = setTimeout(() => {
+        try {
+            if (!worker.killed && worker.exitCode === null) {
+                logWarn(`[terminal] terminal ${terminalId} did not exit after ${timeoutMs}ms; force-killing with SIGKILL`);
+                worker.kill("SIGKILL");
+            }
+        } catch {}
+    }, timeoutMs);
+    worker.once("exit", () => clearTimeout(timer));
+}
+
 /** Is this process running inside a compiled Bun single-file binary? */
 // Detect compiled Bun single-file binary.
 // - Unix: import.meta.url contains "$bunfs"
@@ -287,6 +305,7 @@ export function killTerminal(terminalId: string): boolean {
     } catch {}
     try {
         entry.worker.kill("SIGTERM");
+        escalateTerminalKill(entry.worker, terminalId);
     } catch (err) {
         logWarn(`[terminal] killTerminal: worker.kill() failed for terminalId=${terminalId}: ${err}`);
     }
@@ -302,7 +321,10 @@ export function listTerminals(): string[] {
 export function killAllTerminals(): void {
     for (const [id, entry] of runningTerminals) {
         try { entry.worker.send({ type: "kill" }); } catch {}
-        try { entry.worker.kill("SIGTERM"); } catch {}
+        try {
+            entry.worker.kill("SIGTERM");
+            escalateTerminalKill(entry.worker, id);
+        } catch {}
         runningTerminals.delete(id);
     }
 }

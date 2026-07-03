@@ -636,13 +636,28 @@ async function main(): Promise<void> {
     bootTimer.end("[boot] total");
     logInfo(`started (cwd=${cwd}${agentName ? `, agent=${agentName}` : ""})`);
 
+    let isShuttingDown = false;
     const shutdown = async () => {
+        if (isShuttingDown) return;
+        isShuttingDown = true;
+        // ponytail: process-coupled shutdown path; not unit-tested because it
+        // would require a spawned worker process and signal delivery harness.
+        const cleanupTimeoutMs = 5_000;
+        const hardExitTimeoutMs = 10_000;
+        const hardTimer = setTimeout(() => {
+            logWarn("[worker] cleanup did not finish in time; forcing process exit");
+            process.exit(0);
+        }, hardExitTimeoutMs);
         try {
-            await cleanupSandbox();
+            await Promise.race([
+                cleanupSandbox(),
+                new Promise<void>((resolve) => setTimeout(resolve, cleanupTimeoutMs)),
+            ]);
         } catch {}
         try {
             session.dispose();
         } catch {}
+        clearTimeout(hardTimer);
         process.exit(0);
     };
 

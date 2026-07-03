@@ -2,6 +2,7 @@ import * as React from "react";
 import { AlertCircle, Check, Copy, RefreshCw } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { createLogger } from "@pizzapi/tools";
+import { reportError } from "@/lib/frontend-log";
 
 const log = createLogger("error-boundary");
 
@@ -50,6 +51,14 @@ export class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoun
 
   componentDidCatch(error: Error, errorInfo: React.ErrorInfo): void {
     log.error("Caught render error:", error, errorInfo.componentStack);
+    try {
+      reportError("error-boundary", error.message, {
+        detail: errorInfo.componentStack ?? undefined,
+        toast: false,
+      });
+    } catch {
+      // Telemetry must never re-crash the boundary.
+    }
     this.setState({ errorInfo });
   }
 
