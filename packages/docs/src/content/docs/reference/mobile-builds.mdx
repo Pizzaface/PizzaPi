@@ -29,6 +29,9 @@ bun run build:mobile
 # Build the Android debug APK
 bun run build:mobile:android
 
+# Build a SIGNED Android release APK + AAB (requires the PIZZAPI_KEYSTORE_* vars below)
+bun run build:mobile:android:release
+
 # Build the PWA and sync iOS project files
 bun run build:mobile:ios
 ```
@@ -45,7 +48,80 @@ bun run build:mobile:ios
 bun run build:mobile:android
 ```
 
-That intentionally builds a debug APK only. Release signing, Play Store upload, and AAB artifacts should be added later with dedicated secrets.
+That intentionally builds a **debug** APK only — signed with Android's throwaway
+debug key, fine for smoke-testing but not distributable.
+
+## Release signing
+
+`android/app/build.gradle` defines a `release` signing config whose keystore path
+and credentials come from env vars (or gradle properties) — never hardcoded. If
+no keystore is configured the release build is left **unsigned**, so debug/local
+builds keep working without secrets.
+
+<Steps>
+
+1. **Generate a keystore once, and guard it.** This file is the identity of your
+   app on the Play Store — back it up securely; if you lose it you can never
+   ship an update to the same listing.
+
+   ```sh
+   keytool -genkeypair -v \
+     -keystore pizzapi-release.jks \
+     -alias pizzapi \
+     -keyalg RSA -keysize 2048 -validity 10000
+   ```
+
+2. **Build a signed release** by providing the four vars at build time:
+
+   ```sh
+   PIZZAPI_KEYSTORE_FILE=/abs/path/pizzapi-release.jks \
+   PIZZAPI_KEYSTORE_PASSWORD=… \
+   PIZZAPI_KEY_ALIAS=pizzapi \
+   PIZZAPI_KEY_PASSWORD=… \
+   bun run build:mobile:android:release
+   ```
+
+   This runs `assembleRelease bundleRelease`, then `scripts/verify-apk-signed.ts`,
+   which **fails the build if the APK came out unsigned** (Gradle otherwise
+   silently emits `app-release-unsigned.apk`). Outputs land in
+   `android/app/build/outputs/{apk,bundle}/release/`. Bump the build number with
+   `-PversionCode=<n> -PversionName=<x.y.z>`.
+
+3. **Verify a signature manually** any time with the SDK's apksigner:
+
+   ```sh
+   $ANDROID_HOME/build-tools/<ver>/apksigner verify --print-certs app-release.apk
+   ```
+
+</Steps>
+
+### Signing in CI
+
+Store the keystore as a base64-encoded GitHub secret (never commit the `.jks`)
+and decode it into the workspace before the release build:
+
+```sh
+base64 -i pizzapi-release.jks | pbcopy   # → paste into secret PIZZAPI_KEYSTORE_BASE64
+```
+
+```yaml
+- name: Decode keystore
+  run: echo "$PIZZAPI_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
+  env:
+    PIZZAPI_KEYSTORE_BASE64: ${{ secrets.PIZZAPI_KEYSTORE_BASE64 }}
+
+- name: Build signed release
+  run: bun run build:mobile:android:release
+  env:
+    PIZZAPI_KEYSTORE_FILE: ${{ runner.temp }}/release.jks
+    PIZZAPI_KEYSTORE_PASSWORD: ${{ secrets.PIZZAPI_KEYSTORE_PASSWORD }}
+    PIZZAPI_KEY_ALIAS: ${{ secrets.PIZZAPI_KEY_ALIAS }}
+    PIZZAPI_KEY_PASSWORD: ${{ secrets.PIZZAPI_KEY_PASSWORD }}
+```
+
+Gate this on a tag push or `workflow_dispatch` so PR builds stay unsigned and
+secret-free. Play Store / AAB upload is a further step (e.g. `r0adkll/upload-
+google-play`) once you have a service-account key.
 
 ## iOS
 
