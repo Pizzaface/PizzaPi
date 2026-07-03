@@ -216,8 +216,11 @@ describe("mobile-native (android path)", () => {
 
         expect(pluginCalls.schedule).toBe(1);
         const notification = lastSchedule.value.notifications[0];
+        // Must stay out of NtfyForegroundService.java's id range
+        // (SUMMARY=0x8_FFFF, SERVICE=0x9_0000, FIRST_MESSAGE=0x9_0001+).
+        expect(notification.id).toBe(0xa_0000);
         expect(notification).toMatchObject({
-            id: 0x9_0001,
+            id: 0xa_0000,
             title: "PizzaPi",
             body: "Agent session running",
             channelId: "pizzapi-agent-activity",

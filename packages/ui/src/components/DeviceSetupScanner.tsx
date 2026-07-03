@@ -10,8 +10,10 @@ import { Spinner } from "@/components/ui/spinner";
 import { Smartphone, Camera, AlertCircle, CheckCircle2 } from "lucide-react";
 
 interface ScannerState {
-    kind: "idle" | "requesting" | "scanning" | "approving" | "approved" | "error";
+    kind: "idle" | "requesting" | "scanning" | "confirm" | "approving" | "approved" | "error";
     message?: string;
+    /** Decoded token awaiting explicit user confirmation (kind === "confirm"). */
+    token?: string;
 }
 
 function extractToken(decodedText: string): string | null {
@@ -41,9 +43,11 @@ async function approveClaim(token: string): Promise<{ ok: boolean; error?: strin
     }
 }
 
-export function DeviceSetupScanner({ onClose }: { onClose?: () => void }) {
+export function DeviceSetupScanner({ initialToken, onClose }: { initialToken?: string; onClose?: () => void }) {
     const [state, setState] = React.useState<ScannerState>({ kind: "idle" });
-    const [manualToken, setManualToken] = React.useState("");
+    // A deep-link (?t=…) token is pre-filled into the manual-approve field; the
+    // user still has to click Approve, so nothing is approved without a click.
+    const [manualToken, setManualToken] = React.useState(initialToken ?? "");
     const [cameraError, setCameraError] = React.useState<string | null>(null);
     const scannerRef = React.useRef<Html5Qrcode | null>(null);
     const readerId = React.useId() + "-qr-reader";
@@ -124,7 +128,9 @@ export function DeviceSetupScanner({ onClose }: { onClose?: () => void }) {
                     } catch {
                         // Ignore.
                     }
-                    await handleApprove(token);
+                    // Require an explicit confirmation click before approving — a QR
+                    // that merely lands in frame must not auto-approve a device.
+                    setState({ kind: "confirm", token });
                 },
                 () => {
                     // Scan failures are frequent and noisy; ignore them.
@@ -163,7 +169,24 @@ export function DeviceSetupScanner({ onClose }: { onClose?: () => void }) {
             </CardHeader>
 
             <CardContent className="flex flex-col gap-4">
-                {state.kind === "approved" ? (
+                {state.kind === "confirm" && state.token ? (
+                    <div className="flex flex-col items-center gap-3 py-4">
+                        <AlertCircle className="h-10 w-10 text-amber-600" />
+                        <p className="text-sm font-medium">Approve this device?</p>
+                        <p className="text-center text-xs text-muted-foreground">
+                            Only approve if you started this setup. Approving grants the device an API key for your account.
+                        </p>
+                        <code className="max-w-full break-all rounded bg-muted px-2 py-1 text-xs font-mono">{state.token}</code>
+                        <div className="mt-2 flex gap-2">
+                            <Button variant="outline" onClick={() => setState({ kind: "idle" })}>
+                                Cancel
+                            </Button>
+                            <Button onClick={() => handleApprove(state.token!)}>
+                                Approve this device
+                            </Button>
+                        </div>
+                    </div>
+                ) : state.kind === "approved" ? (
                     <div className="flex flex-col items-center gap-3 py-6">
                         <CheckCircle2 className="h-12 w-12 text-green-500" />
                         <p className="text-sm font-medium">Device approved successfully.</p>

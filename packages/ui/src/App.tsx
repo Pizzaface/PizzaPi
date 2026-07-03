@@ -458,6 +458,7 @@ export function App() {
   const [showApiKeys, setShowApiKeys] = React.useState(false);
   const [apiKeyVersion, setApiKeyVersion] = React.useState(0);
   const [setupClaimOpen, setSetupClaimOpen] = React.useState(false);
+  const [setupClaimToken, setSetupClaimToken] = React.useState<string | null>(null);
   const [showRunners, setShowRunners] = React.useState(false);
   const [historyOpen, setHistoryOpen] = React.useState(false);
   const [selectedRunnerId, setSelectedRunnerId] = React.useState<string | null>(null);
@@ -494,11 +495,22 @@ export function App() {
     }
   }, [sidebarCacheKey]);
 
-  // Open the device-setup scanner automatically when landing with ?t=<claim-token>.
+  // Open the device-setup scanner automatically when landing with ?t=<claim-token>
+  // (the CLI QR deep-link). Capture the token so it can be pre-filled into the
+  // scanner, then strip it from the URL so it isn't left in history/shared links.
   React.useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    if (params.get("t")) {
+    const t = params.get("t");
+    if (t) {
+      setSetupClaimToken(t);
       setSetupClaimOpen(true);
+      params.delete("t");
+      const qs = params.toString();
+      window.history.replaceState(
+        {},
+        "",
+        window.location.pathname + (qs ? `?${qs}` : "") + window.location.hash,
+      );
     }
   }, []);
 
@@ -5277,7 +5289,10 @@ export function App() {
 
         <Dialog open={setupClaimOpen} onOpenChange={setSetupClaimOpen}>
           <DialogContent className="max-w-md p-0 overflow-hidden">
-            <DeviceSetupScanner onClose={() => setSetupClaimOpen(false)} />
+            <DeviceSetupScanner
+              initialToken={setupClaimToken ?? undefined}
+              onClose={() => setSetupClaimOpen(false)}
+            />
           </DialogContent>
         </Dialog>
 

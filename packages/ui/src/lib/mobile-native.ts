@@ -24,8 +24,16 @@ import { getMobileRuntimeConfig } from "./mobile-runtime.js";
 import { startNtfyPush } from "./ntfy-push.js";
 import { useNeedsResponseCount, useRunningCount } from "../attention/index.js";
 
-/** Stable notification id for the Android activity pill. */
-const ACTIVITY_NOTIF_ID = 0x9_0001;
+/**
+ * Stable notification id for the Android activity pill.
+ *
+ * Must NOT collide with the native ntfy service's ids in
+ * android/.../NtfyForegroundService.java: SUMMARY=0x8_FFFF, SERVICE=0x9_0000,
+ * FIRST_MESSAGE=0x9_0001 and counting up for each message. We sit well above
+ * that range so message notifications never overwrite the pill (and vice versa).
+ * Keep these two files in sync if either range grows.
+ */
+const ACTIVITY_NOTIF_ID = 0xa_0000;
 
 /** Dedicated low-importance channel id for the Android activity pill. */
 const ACTIVITY_CHANNEL_ID = "pizzapi-agent-activity";
