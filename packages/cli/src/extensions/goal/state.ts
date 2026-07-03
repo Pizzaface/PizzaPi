@@ -28,6 +28,13 @@ const pendingGuidanceBySessionId = new Map<string, string>();
 /** Goals that have stopped are kept in memory for 24 hours, then pruned. */
 const STOPPED_GOAL_RETENTION_MS = 24 * 60 * 60 * 1000;
 
+/**
+ * Only the most recent evaluations are kept. The full state is persisted to
+ * the session file on every evaluation, so an unbounded history means O(n²)
+ * file growth on long-running goals. Nothing reads more than the latest entry.
+ */
+const MAX_EVALUATIONS = 20;
+
 function generateGoalId(): string {
     return `goal_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -134,6 +141,9 @@ export function recordEvaluation(
     if (!state || state.status !== "active") return undefined;
 
     state.evaluations.push(feedback);
+    if (state.evaluations.length > MAX_EVALUATIONS) {
+        state.evaluations.splice(0, state.evaluations.length - MAX_EVALUATIONS);
+    }
     if (feedback.cost) state.costSpend += Math.max(0, feedback.cost);
     if (feedback.tokensUsed) state.tokenSpend += feedback.tokensUsed;
 

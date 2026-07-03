@@ -65,6 +65,7 @@ interface FakePi {
     pi: ExtensionAPI;
     handlers: Map<string, Array<(event: unknown, ctx: ExtensionContext) => unknown>>;
     messages: Array<{ customType: string; content: string; display: boolean }>;
+    userMessages: Array<{ content: string; options?: { deliverAs?: string } }>;
     entries: Array<{ customType: string; data: unknown }>;
     events: Map<string, unknown[]>;
     commands: Map<string, (args: string, ctx: ExtensionCommandContext) => unknown>;
@@ -73,6 +74,7 @@ interface FakePi {
 function createFakePi(): FakePi {
     const handlers = new Map<string, Array<(event: unknown, ctx: ExtensionContext) => unknown>>();
     const messages: Array<{ customType: string; content: string; display: boolean }> = [];
+    const userMessages: Array<{ content: string; options?: { deliverAs?: string } }> = [];
     const entries: Array<{ customType: string; data: unknown }> = [];
     const events = new Map<string, unknown[]>();
     const commands = new Map<string, (args: string, ctx: ExtensionCommandContext) => unknown>();
@@ -85,6 +87,9 @@ function createFakePi(): FakePi {
         },
         sendMessage: (msg: { customType: string; content: string; display: boolean }) => {
             messages.push(msg);
+        },
+        sendUserMessage: (content: string, options?: { deliverAs?: string }) => {
+            userMessages.push({ content, options });
         },
         appendEntry: (customType: string, data?: unknown) => {
             entries.push({ customType, data });
@@ -101,7 +106,7 @@ function createFakePi(): FakePi {
         },
     } as unknown as ExtensionAPI;
 
-    return { pi, handlers, messages, entries, events, commands };
+    return { pi, handlers, messages, userMessages, entries, events, commands };
 }
 
 function createFakeCtx(overrides: {

@@ -90,12 +90,20 @@ describe("parseGoalArgs", () => {
         expect(parsed.statusOnly).toBe(false);
     });
 
-    test("rejects unknown flags", () => {
-        expect(() => parseGoalArgs("foo --unknown bar")).toThrow("Unknown flag: --unknown");
-    });
+
 
     test("rejects missing condition", () => {
         expect(() => parseGoalArgs("--max-turns 5")).toThrow("A goal condition is required");
+    });
+
+    test("treats unknown flags as condition text", () => {
+        const parsed = parseGoalArgs("fix the --dry-run handling");
+        expect(parsed.rawCondition).toBe("fix the --dry-run handling");
+        expect(parsed.budget).toEqual({});
+    });
+
+    test("rejects keyword evaluator without keywords", () => {
+        expect(() => parseGoalArgs("build passes --evaluator keyword")).toThrow("requires at least one --keyword");
     });
 });
 
@@ -106,6 +114,23 @@ describe("goal state", () => {
         expect(state.condition.description).toBe("the tests pass");
         expect(state.status).toBe("active");
         expect(getGoal("session-1")?.id).toBe(state.id);
+    });
+
+    test("recordEvaluation caps the persisted history", () => {
+        resetSession("session-1");
+        makeGoal();
+        for (let i = 0; i < 25; i++) {
+            recordEvaluation("session-1", {
+                turnIndex: i,
+                verdict: "not_met",
+                reason: `turn ${i}`,
+                timestamp: Date.now(),
+            }, { appendEntry: fakeAppendEntry });
+        }
+        const state = getGoal("session-1")!;
+        expect(state.evaluations.length).toBe(20);
+        expect(state.evaluations.at(-1)?.reason).toBe("turn 24");
+        expect(state.evaluations[0]?.reason).toBe("turn 5");
     });
 
     test("recordTurnSpend increments counters", () => {
@@ -363,6 +388,15 @@ describe("parseLlmVerdict", () => {
     test("returns uncertain for ambiguous responses", () => {
         expect(parseLlmVerdict("maybe later").verdict).toBe("uncertain");
     });
+
+    test.each([
+        ["The goal has not been met yet"],
+        ["The goal has not yet been met"],
+        ["The condition hasn't been met"],
+        ["The goal was never met"],
+    ])("parses negated free-text %p as not_met", (input) => {
+        expect(parseLlmVerdict(input).verdict).toBe("not_met");
+    });
 });
 
 describe("resolveEvaluatorModel", () => {
@@ -582,12 +616,14 @@ function createFakePi(): {
     pi: ExtensionAPI;
     handlers: Map<string, ((event: unknown, ctx: ExtensionContext) => unknown)[]>;
     messages: Array<{ customType: string; content: string; display: boolean }>;
+    userMessages: Array<{ content: string; options?: { deliverAs?: string } }>;
     entries: Array<{ customType: string; data: unknown }>;
     events: Map<string, unknown[]>;
     commands: Map<string, (args: string, ctx: ExtensionCommandContext) => unknown>;
 } {
     const handlers = new Map<string, ((event: unknown, ctx: ExtensionContext) => unknown)[]>();
     const messages: Array<{ customType: string; content: string; display: boolean }> = [];
+    const userMessages: Array<{ content: string; options?: { deliverAs?: string } }> = [];
     const entries: Array<{ customType: string; data: unknown }> = [];
     const events = new Map<string, unknown[]>();
     const commands = new Map<string, (args: string, ctx: ExtensionCommandContext) => unknown>();
@@ -600,6 +636,9 @@ function createFakePi(): {
         },
         sendMessage: (msg: { customType: string; content: string; display: boolean }) => {
             messages.push(msg);
+        },
+        sendUserMessage: (content: string, options?: { deliverAs?: string }) => {
+            userMessages.push({ content, options });
         },
         appendEntry: (customType: string, data?: unknown) => {
             entries.push({ customType, data });
@@ -616,7 +655,7 @@ function createFakePi(): {
         },
     } as unknown as ExtensionAPI;
 
-    return { pi, handlers, messages, entries, events, commands };
+    return { pi, handlers, messages, userMessages, entries, events, commands };
 }
 
 function createFakeCtx(overrides: {
@@ -701,9 +740,9 @@ describe("goalExtension event wiring", () => {
         expect(messages.some((m) => m.content.includes("Goal met"))).toBe(true);
     });
 
-    test("turn_end keyword not met stores guidance for next turn", async () => {
+    test("turn_end keyword not met stores guidance and auto-continues the loop", async () => {
         resetSession("session-1");
-        const { pi, handlers } = createFakePi();
+        const { pi, handlers, userMessages } = createFakePi();
         const ctx = createFakeCtx();
 
         goalExtension(pi);
@@ -726,6 +765,56 @@ describe("goalExtension event wiring", () => {
 
         expect(getGoal("session-1")?.status).toBe("active");
         expect(getPendingGuidance("session-1")).toContain("pass");
+        // The goal loop keeps working: a not_met verdict triggers a follow-up turn.
+        expect(userMessages.length).toBe(1);
+        expect(userMessages[0]!.content).toContain("Goal not met");
+        expect(userMessages[0]!.content).toContain("tests pass");
+        expect(userMessages[0]!.options?.deliverAs).toBe("followUp");
+    });
+
+    test("turn_end goal met does not auto-continue", async () => {
+        resetSession("session-1");
+        const { pi, handlers, userMessages } = createFakePi();
+        const ctx = createFakeCtx();
+
+        goalExtension(pi);
+        setGoal(
+            "session-1",
+            { description: "tests pass", evaluator: "keyword", successKeywords: ["pass"] },
+            {},
+            pi,
+        );
+
+        const turnHandlers = handlers.get("turn_end") ?? [];
+        for (const handler of turnHandlers) {
+            await handler({
+                type: "turn_end",
+                turnIndex: 1,
+                message: makeAssistantMessage("All tests pass"),
+                toolResults: [],
+            } as TurnEndEvent, ctx);
+        }
+
+        expect(getGoal("session-1")?.status).toBe("met");
+        expect(userMessages.length).toBe(0);
+    });
+
+    test("setting a goal kicks off a turn with the condition as directive", async () => {
+        resetSession("session-1");
+        const { pi, commands, userMessages } = createFakePi();
+        const ctx = createFakeCtx();
+
+        goalExtension(pi);
+        const goalHandler = commands.get("goal")!;
+        await goalHandler("tests pass --evaluator keyword --keyword pass", ctx as ExtensionCommandContext);
+
+        expect(userMessages.length).toBe(1);
+        expect(userMessages[0]!.content).toContain("tests pass");
+
+        // Status and clear do not kick off turns.
+        await goalHandler("status", ctx as ExtensionCommandContext);
+        await goalHandler("clear", ctx as ExtensionCommandContext);
+        expect(userMessages.length).toBe(1);
     });
 
     test("turn_end clears previous guidance after evaluation", async () => {
@@ -780,9 +869,39 @@ describe("goalExtension event wiring", () => {
         expect(getPendingGuidance("session-1")).toBe("add more tests");
     });
 
-    test("turn_end budget exhaustion warns but does not stop session", async () => {
+    test("goal met on the final budgeted turn reports met, not budget reached", async () => {
         resetSession("session-1");
-        const { pi, handlers, messages } = createFakePi();
+        const { pi, handlers, messages, userMessages } = createFakePi();
+        const ctx = createFakeCtx();
+
+        goalExtension(pi);
+        setGoal(
+            "session-1",
+            { description: "tests pass", evaluator: "keyword", successKeywords: ["pass"] },
+            { maxTurns: 1 },
+            pi,
+        );
+
+        const turnHandlers = handlers.get("turn_end") ?? [];
+        for (const handler of turnHandlers) {
+            await handler({
+                type: "turn_end",
+                turnIndex: 1,
+                message: makeAssistantMessage("All tests pass"),
+                toolResults: [],
+            } as TurnEndEvent, ctx);
+        }
+
+        expect(getGoal("session-1")?.status).toBe("met");
+        expect(getGoal("session-1")?.stopReason).toBe("goal_met");
+        expect(messages.some((m) => m.content.includes("Goal met"))).toBe(true);
+        expect(messages.some((m) => m.content.includes("budget reached"))).toBe(false);
+        expect(userMessages.length).toBe(0);
+    });
+
+    test("turn_end budget exhaustion warns, stops the loop, and does not stop session", async () => {
+        resetSession("session-1");
+        const { pi, handlers, messages, userMessages } = createFakePi();
         let shutdownCalled = false;
         const ctx = createFakeCtx({ shutdown: () => { shutdownCalled = true; } });
 
@@ -810,6 +929,8 @@ describe("goalExtension event wiring", () => {
         expect(getGoal("session-1")?.stopReason).toBe("max_turns");
         expect(shutdownCalled).toBe(false);
         expect(messages.some((m) => m.content.includes("budget reached"))).toBe(true);
+        // Turn 1 auto-continued (not met); turn 2 hit the budget — no continuation.
+        expect(userMessages.length).toBe(1);
     });
 
     test("broadcasts active goal status on set, update, and clear", async () => {
