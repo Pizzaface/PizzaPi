@@ -6,9 +6,11 @@
  * - `pi.registerCommand("goal", …)` handles the slash command.
  * - `session_start` restores any persisted goal from custom entries.
  * - `turn_end` records turn spend, checks budgets, and runs the configured
- *   evaluator (keyword or LLM). When the goal is met or a budget is exhausted,
- *   it logs a status message and calls `ctx.shutdown()` to trigger the normal
- *   stop/session-shutdown hooks.
+ *   evaluator (keyword or LLM). A `not_met` verdict auto-continues the loop by
+ *   sending a follow-up user message, so the agent keeps working toward the
+ *   goal without the user prompting each turn. When the goal is met or a
+ *   budget is exhausted, it logs a status message and returns control to the
+ *   user.
  * - `before_agent_start` injects evaluator feedback as system-prompt guidance
  *   for the next turn when the goal has not yet been met.
  * - `session_shutdown` clears the in-memory entry for the session.
@@ -120,6 +122,7 @@ function handleGoalCommand(
             success: true,
             message: `Goal set: ${state.condition.description}`,
             state,
+            kickoff: true,
         };
     } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -169,7 +172,7 @@ function buildEvaluationContext(
 async function runGoalStopCheck(
     event: TurnEndEvent,
     ctx: ExtensionContext,
-    pi: Pick<ExtensionAPI, "appendEntry" | "sendMessage">,
+    pi: Pick<ExtensionAPI, "appendEntry" | "sendMessage" | "sendUserMessage">,
 ): Promise<void> {
     const sessionId = getSessionId(ctx);
     let state = getGoal(sessionId);
@@ -249,9 +252,17 @@ async function runGoalStopCheck(
     }
 
     const lastEval = state.evaluations.at(-1);
-    if (lastEval && lastEval.verdict === "not_met") {
+    if (lastEval && lastEval.verdict === "not_met" && state.status === "active") {
         clearPendingGuidance(sessionId);
         setPendingGuidance(sessionId, lastEval.reason);
+        // Goal loop: a "not met" verdict starts another turn instead of
+        // returning control to the user (parity with Claude Code /goal).
+        // "uncertain" verdicts do NOT auto-continue, so a broken evaluator
+        // can't spin the session forever.
+        pi.sendUserMessage(
+            `[Goal not met] ${lastEval.reason}\nContinue working toward the goal: ${state.condition.description}`,
+            { deliverAs: "followUp" },
+        );
     } else {
         clearPendingGuidance(sessionId);
     }
@@ -287,6 +298,14 @@ export const goalExtension: ExtensionFactory = (pi) => {
                 display: true,
             });
             broadcastGoalStatus(getSessionId(ctx), getGoal(getSessionId(ctx)), ctx, pi);
+            if (result.kickoff && result.state) {
+                // Setting a goal starts a turn immediately, with the condition
+                // itself as the directive (parity with Claude Code /goal).
+                pi.sendUserMessage(
+                    `Work toward this goal until it is met: ${result.state.condition.description}`,
+                    { deliverAs: "followUp" },
+                );
+            }
         },
     });
 

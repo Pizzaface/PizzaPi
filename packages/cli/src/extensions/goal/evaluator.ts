@@ -91,23 +91,36 @@ export function parseLlmVerdict(raw: string): { verdict: GoalVerdict; reason: st
 
     const firstLine = text.split("\n")[0] ?? text;
 
-    const yes = /\byes\b/i.test(firstLine) || /\bmet\b/i.test(firstLine);
-    const no = /\bno\b/i.test(firstLine) || /\bnot_met\b/i.test(firstLine) || /\bnot met\b/i.test(firstLine);
-
-    if (no) return { verdict: "not_met", reason: extractReason(text) };
-    if (yes) return { verdict: "met", reason: extractReason(text) };
+    if (isNegative(firstLine)) return { verdict: "not_met", reason: extractReason(text) };
+    if (isPositive(firstLine)) return { verdict: "met", reason: extractReason(text) };
 
     // Fallback: scan the whole response for a clear yes/no.
-    const fullNo = /\bno\b/i.test(lower) || /\bnot_met\b/i.test(lower) || /\bnot met\b/i.test(lower);
-    const fullYes = /\byes\b/i.test(lower) || /\bmet\b/i.test(lower);
-
-    if (fullNo) return { verdict: "not_met", reason: extractReason(text) };
-    if (fullYes) return { verdict: "met", reason: extractReason(text) };
+    if (isNegative(lower)) return { verdict: "not_met", reason: extractReason(text) };
+    if (isPositive(lower)) return { verdict: "met", reason: extractReason(text) };
 
     return {
         verdict: "uncertain",
         reason: `Could not parse a yes/no decision. Model said: ${text.slice(0, 200)}`,
     };
+}
+
+/**
+ * Free-text negative detection. Catches "no", "not_met", and negated forms of
+ * "met" such as "not met", "not been met", "not yet met", "hasn't been met" —
+ * these must be checked before any positive \bmet\b match to avoid parsing
+ * "the goal has not been met" as met.
+ */
+function isNegative(text: string): boolean {
+    return (
+        /\bno\b/i.test(text) ||
+        /\bnot_met\b/i.test(text) ||
+        /\b(?:not|never)\b[\s\S]{0,30}?\bmet\b/i.test(text) ||
+        /n't\b[\s\S]{0,30}?\bmet\b/i.test(text)
+    );
+}
+
+function isPositive(text: string): boolean {
+    return /\byes\b/i.test(text) || /\bmet\b/i.test(text);
 }
 
 function extractReason(text: string): string {

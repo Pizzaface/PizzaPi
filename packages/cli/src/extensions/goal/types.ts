@@ -180,4 +180,7 @@ export interface GoalCommandResult {
     success: boolean;
     message: string;
     state?: GoalState;
+
+    /** True when a new goal was just set and a kickoff turn should start. */
+    kickoff?: boolean;
 }
