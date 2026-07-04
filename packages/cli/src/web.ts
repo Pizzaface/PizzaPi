@@ -1192,6 +1192,18 @@ export async function runWeb(args: string[]): Promise<void> {
         uiDistHash: prebuildResult.distHash,
     });
 
+    // ponytail: TERMINAL_WORKER_ID is inherited from a PizzaPi relay-terminal PTY.
+    // Restarting the web stack from such a terminal kills the very relay the
+    // terminal is connected through: the socket drops, the relay loses the
+    // terminal mapping, and the PTY is orphaned on the runner. Warn so the
+    // disconnect reads as expected instead of "the terminal is broken".
+    if (process.env.TERMINAL_WORKER_ID) {
+        log.warn("⚠️  This terminal runs through the PizzaPi relay you are about to restart.");
+        log.warn("   The restart will finish in the background (Docker), but this terminal");
+        log.warn("   will disconnect and cannot be reattached — open a new terminal after.");
+        log.warn("");
+    }
+
     log.info(`Starting PizzaPi web on port ${config.port}...`);
     log.info(`  Repo:    ${repoPath}`);
     log.info(`  Config:  ${CONFIG_PATH}`);
