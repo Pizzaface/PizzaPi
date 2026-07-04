@@ -14,8 +14,18 @@ import {
   OctagonX,
 } from "lucide-react";
 
+export interface ServicePanelButtonMeta {
+  serviceId: string;
+  label: string;
+  icon: React.ReactNode;
+  active?: boolean;
+}
+
 export interface CommonButtonProps {
   onDragStart?: (buttonId: ToolbarButtonId) => void;
+  /** Metadata for runner service panel buttons (ids of the form "service:<id>"). */
+  servicePanels?: ServicePanelButtonMeta[];
+  onToggleServicePanel?: (serviceId: string) => void;
   onToggleTerminal?: () => void;
   onToggleFileExplorer?: () => void;
   onToggleGit?: () => void;
@@ -78,7 +88,36 @@ function ToolbarButton({
   effortLevel,
   planModeEnabled,
   tokenUsage,
+  servicePanels,
+  onToggleServicePanel,
 }: ToolbarButtonRenderProps): React.ReactElement | null {
+  if (id.startsWith("service:")) {
+    const serviceId = id.slice("service:".length);
+    const meta = servicePanels?.find((p) => p.serviceId === serviceId);
+    // Service not available on this runner right now — render nothing.
+    if (!meta) return null;
+    return (
+      <DraggableToolbarButton key={id} buttonId={id} onDragStart={onDragStart}>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              className={cn("h-10 w-10 md:h-8 md:w-8", meta.active && "bg-accent text-accent-foreground")}
+              size="icon"
+              variant="ghost"
+              onClick={() => onToggleServicePanel?.(serviceId)}
+              aria-label={`Toggle ${meta.label}`}
+            >
+              {meta.icon}
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent side={tooltipSide}>
+            {meta.label} · click-and-hold to reposition
+          </TooltipContent>
+        </Tooltip>
+      </DraggableToolbarButton>
+    );
+  }
+
   if (id === "effort" && effortLevel != null) {
     return (
       <DraggableToolbarButton key={id} buttonId={id} onDragStart={onDragStart}>
@@ -161,14 +200,26 @@ function ToolbarButton({
   );
 }
 
+/** Drop service ids whose panel isn't available on the current runner. */
+function renderableIds(ids: ToolbarButtonId[], servicePanels?: ServicePanelButtonMeta[]): ToolbarButtonId[] {
+  return ids.filter(
+    (id) => !id.startsWith("service:") || servicePanels?.some((p) => `service:${p.serviceId}` === id),
+  );
+}
+
 export function ButtonRail({
   side,
-  groups,
+  groups: rawGroups,
   ...rest
 }: CommonButtonProps & {
   side: "left" | "right";
   groups: { top: ToolbarButtonId[]; middle: ToolbarButtonId[]; bottom: ToolbarButtonId[] };
 }): React.ReactElement | null {
+  const groups = {
+    top: renderableIds(rawGroups.top, rest.servicePanels),
+    middle: renderableIds(rawGroups.middle, rest.servicePanels),
+    bottom: renderableIds(rawGroups.bottom, rest.servicePanels),
+  };
   if (groups.top.length === 0 && groups.middle.length === 0 && groups.bottom.length === 0) {
     return null;
   }
@@ -204,12 +255,13 @@ export function ButtonRail({
 
 export function ButtonStrip({
   position,
-  buttonIds,
+  buttonIds: rawButtonIds,
   ...rest
 }: CommonButtonProps & {
   position: "center-top" | "center-bottom";
   buttonIds: ToolbarButtonId[];
 }): React.ReactElement | null {
+  const buttonIds = renderableIds(rawButtonIds, rest.servicePanels);
   if (buttonIds.length === 0) return null;
 
   const tooltipSide = position === "center-top" ? "bottom" : "top";

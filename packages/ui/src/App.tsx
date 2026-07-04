@@ -87,7 +87,7 @@ import { useRunnerServices, attachServiceAnnounceListener, seedServiceCache, set
 import { useRunnerData } from "@/hooks/useRunnerData";
 import { SigilProvider } from "@/components/sigils/SigilContext";
 import { PizzaPiNavProvider, type PizzaPiNavActions } from "@/components/sigils/PizzaPiNavContext";
-import { ServicePanelButtons, useServicePanelState } from "@/components/service-panels/ServicePanels";
+import { ServicePanelButtons, useServicePanelState, useVisibleServicePanels } from "@/components/service-panels/ServicePanels";
 import { SERVICE_PANELS } from "@/components/service-panels/registry";
 import { DynamicLucideIcon } from "@/components/service-panels/lucide-icon";
 import { resolveNewPanelPosition, resolveActiveTabIdFromIds, resolvePanelToggleAction } from "@/utils/servicePanelUtils";
@@ -4388,7 +4388,7 @@ export function App() {
   // toggle handler can check zone contents without a dependency cycle.
   const panelGroupsRef = React.useRef<Record<PanelPosition, CombinedPanelTab[]> | null>(null);
 
-  const handleToggleServicePanel = React.useCallback((serviceId: string, query?: string, fragment?: string) => {
+  const handleToggleServicePanel = React.useCallback((serviceId: string, query?: string, fragment?: string, positionOverride?: PanelPosition) => {
     // When called with nav params on an already-open panel, update params
     // and re-navigate rather than closing.
     const hasNavParams = !!(query || fragment);
@@ -4404,7 +4404,11 @@ export function App() {
         handleCombinedTabChange(serviceId);
       }
     } else {
-      if (!activeServicePanels.has(serviceId)) {
+      if (!activeServicePanels.has(serviceId) && positionOverride) {
+        // Opened from a docked button — the button's dock zone wins over
+        // auto-placement so the panel opens on the side the icon is on.
+        setServicePanelPosition(serviceId, positionOverride);
+      } else if (!activeServicePanels.has(serviceId)) {
         // Resolve the correct position for the new panel using the shared pure
         // helper (also tested in ServicePanels.test.ts).  When the currently-
         // active tab is a service panel, the new panel inherits that panel's
@@ -4429,7 +4433,19 @@ export function App() {
       toggleServicePanel(serviceId, query, fragment);
       handleCombinedTabChange(serviceId);
     }
-  }, [activeServicePanels, closeServicePanelById, toggleServicePanel, handleCombinedTabChange, combinedActiveTab, setEphemeralServicePanelPosition, getServicePanelPosition]);
+  }, [activeServicePanels, closeServicePanelById, toggleServicePanel, handleCombinedTabChange, combinedActiveTab, setEphemeralServicePanelPosition, getServicePanelPosition, setServicePanelPosition]);
+
+  // ── Service panel buttons in rails/strips ────────────────────────────
+  const visibleServicePanels = useVisibleServicePanels(availableServices, dynamicPanels);
+  const railServicePanels = React.useMemo(
+    () => visibleServicePanels.map((p) => ({ ...p, active: activeServicePanels.has(p.serviceId) })),
+    [visibleServicePanels, activeServicePanels],
+  );
+  const handleToggleServicePanelFromDock = React.useCallback((serviceId: string) => {
+    const slot = buttonPositions.positions[`service:${serviceId}`];
+    const override = !activeServicePanels.has(serviceId) && slot && slot !== "top" ? slot : undefined;
+    handleToggleServicePanel(serviceId, undefined, undefined, override);
+  }, [buttonPositions.positions, activeServicePanels, handleToggleServicePanel]);
 
   const pizzaPiNavActions = React.useMemo<PizzaPiNavActions>(() => ({
     toggleServicePanel: handleToggleServicePanel,
@@ -5001,6 +5017,8 @@ export function App() {
                   side="left"
                   groups={{ top: buttonPositions.slots["left-top"], middle: buttonPositions.slots["left-middle"], bottom: buttonPositions.slots["left-bottom"] }}
                   onDragStart={handleButtonDragStart}
+                  servicePanels={railServicePanels}
+                  onToggleServicePanel={handleToggleServicePanelFromDock}
                   onToggleTerminal={() => openPanelFromDockedButton("terminal", showTerminal, setShowTerminal, handleTerminalPositionChange)}
                   onToggleFileExplorer={() => openPanelFromDockedButton("files", showFileExplorer, setShowFileExplorer, handleFilesPositionChange)}
                   onToggleGit={() => openPanelFromDockedButton("git", showGit, setShowGit, handleGitPositionChange)}
@@ -5018,6 +5036,8 @@ export function App() {
                     position="center-top"
                     buttonIds={buttonPositions.slots["center-top"]}
                     onDragStart={handleButtonDragStart}
+                    servicePanels={railServicePanels}
+                    onToggleServicePanel={handleToggleServicePanelFromDock}
                     onToggleTerminal={() => openPanelFromDockedButton("terminal", showTerminal, setShowTerminal, handleTerminalPositionChange)}
                     onToggleFileExplorer={() => openPanelFromDockedButton("files", showFileExplorer, setShowFileExplorer, handleFilesPositionChange)}
                     onToggleGit={() => openPanelFromDockedButton("git", showGit, setShowGit, handleGitPositionChange)}
@@ -5099,6 +5119,8 @@ export function App() {
                             dynamicPanels={dynamicPanels}
                             activePanelIds={activeServicePanels}
                             onTogglePanel={handleToggleServicePanel}
+                            onButtonDragStart={handleButtonDragStart}
+                            toolbarPositions={buttonPositions.positions}
                           />
                         }
                         todoList={todoList}
@@ -5167,6 +5189,8 @@ export function App() {
                   position="center-bottom"
                   buttonIds={buttonPositions.slots["center-bottom"]}
                   onDragStart={handleButtonDragStart}
+                  servicePanels={railServicePanels}
+                  onToggleServicePanel={handleToggleServicePanelFromDock}
                   onToggleTerminal={() => openPanelFromDockedButton("terminal", showTerminal, setShowTerminal, handleTerminalPositionChange)}
                   onToggleFileExplorer={() => openPanelFromDockedButton("files", showFileExplorer, setShowFileExplorer, handleFilesPositionChange)}
                   onToggleGit={() => openPanelFromDockedButton("git", showGit, setShowGit, handleGitPositionChange)}
@@ -5184,6 +5208,8 @@ export function App() {
                 side="right"
                 groups={{ top: buttonPositions.slots["right-top"], middle: buttonPositions.slots["right-middle"], bottom: buttonPositions.slots["right-bottom"] }}
                 onDragStart={handleButtonDragStart}
+                servicePanels={railServicePanels}
+                onToggleServicePanel={handleToggleServicePanelFromDock}
                 onToggleTerminal={() => openPanelFromDockedButton("terminal", showTerminal, setShowTerminal, handleTerminalPositionChange)}
                 onToggleFileExplorer={() => openPanelFromDockedButton("files", showFileExplorer, setShowFileExplorer, handleFilesPositionChange)}
                 onToggleGit={() => openPanelFromDockedButton("git", showGit, setShowGit, handleGitPositionChange)}

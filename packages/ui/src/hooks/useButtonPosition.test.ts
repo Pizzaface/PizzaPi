@@ -140,6 +140,31 @@ describe("useButtonPosition", () => {
     expect(result.current.slots["right-middle"]).toHaveLength(3);
   });
 
+  test("tracks dynamic service panel button ids", () => {
+    const { result, unmount } = renderHook(() => useButtonPosition());
+    act(() => result.current.setButtonPosition("service:godmother-panel", "right-top"));
+    expect(result.current.positions["service:godmother-panel"]).toBe("right-top");
+    expect(result.current.slots["right-top"]).toContain("service:godmother-panel");
+
+    // Round-trips through localStorage on remount
+    unmount();
+    const { result: result2 } = renderHook(() => useButtonPosition());
+    expect(result2.current.positions["service:godmother-panel"]).toBe("right-top");
+    expect(result2.current.slots["right-top"]).toContain("service:godmother-panel");
+    // Untracked service ids default to header (undefined → treated as "top")
+    expect(result2.current.positions["service:unknown"]).toBeUndefined();
+  });
+
+  test("drops invalid stored service slot values back to top", () => {
+    win.localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({ "service:tunnel": "bogus", "service:nightshift": "left" }),
+    );
+    const { result } = renderHook(() => useButtonPosition());
+    expect(result.current.positions["service:tunnel"]).toBe("top");
+    expect(result.current.positions["service:nightshift"]).toBe("left-middle");
+  });
+
   test("round-trips a new zone value through save and load", () => {
     const { result, unmount } = renderHook(() => useButtonPosition());
     act(() => result.current.setButtonPosition("files", "left-bottom"));

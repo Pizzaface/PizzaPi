@@ -6,6 +6,9 @@ export type ButtonSlot =
   | "center-top" | "center-bottom"
   | "right-top" | "right-middle" | "right-bottom";
 
+/** Dynamic ID for a runner service panel button (e.g. "service:godmother-panel"). */
+export type ServiceButtonId = `service:${string}`;
+
 /** IDs for each draggable toolbar button in the SessionViewer. */
 export type ToolbarButtonId =
   | "effort"
@@ -17,7 +20,8 @@ export type ToolbarButtonId =
   | "triggers"
   | "export"
   | "duplicate"
-  | "delete";
+  | "delete"
+  | ServiceButtonId;
 
 const ALL_BUTTON_IDS: readonly ToolbarButtonId[] = [
   "effort", "plan", "tokens",
@@ -27,14 +31,21 @@ const ALL_BUTTON_IDS: readonly ToolbarButtonId[] = [
 
 const STORAGE_KEY = "pp-toolbar-button-positions";
 
-function loadPositions(): Record<ToolbarButtonId, ButtonSlot> {
-  const valid = new Set<string>([
-    "top",
-    "left-top", "left-middle", "left-bottom",
-    "center-top", "center-bottom",
-    "right-top", "right-middle", "right-bottom",
-  ]);
+const VALID_SLOTS = new Set<string>([
+  "top",
+  "left-top", "left-middle", "left-bottom",
+  "center-top", "center-bottom",
+  "right-top", "right-middle", "right-bottom",
+]);
 
+function migrateSlot(v: unknown): ButtonSlot {
+  if (v === "left") return "left-middle";
+  if (v === "right") return "right-middle";
+  if (typeof v === "string" && VALID_SLOTS.has(v)) return v as ButtonSlot;
+  return "top";
+}
+
+function loadPositions(): Record<ToolbarButtonId, ButtonSlot> {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) {
@@ -42,15 +53,12 @@ function loadPositions(): Record<ToolbarButtonId, ButtonSlot> {
       if (parsed && typeof parsed === "object") {
         const result = {} as Record<ToolbarButtonId, ButtonSlot>;
         for (const id of ALL_BUTTON_IDS) {
-          const v = parsed[id];
-          if (v === "left") {
-            result[id] = "left-middle";
-          } else if (v === "right") {
-            result[id] = "right-middle";
-          } else if (valid.has(v)) {
-            result[id] = v as ButtonSlot;
-          } else {
-            result[id] = "top";
+          result[id] = migrateSlot(parsed[id]);
+        }
+        // Dynamic service panel buttons: keep any stored "service:*" entries.
+        for (const key of Object.keys(parsed)) {
+          if (key.startsWith("service:")) {
+            result[key as ServiceButtonId] = migrateSlot(parsed[key]);
           }
         }
         return result;
@@ -94,7 +102,7 @@ export function useButtonPosition(): ButtonPositionState {
       "center-top": [], "center-bottom": [],
       "right-top": [], "right-middle": [], "right-bottom": [],
     };
-    for (const id of ALL_BUTTON_IDS) {
+    for (const id of Object.keys(positions) as ToolbarButtonId[]) {
       slots[positions[id]].push(id);
     }
     return slots;
