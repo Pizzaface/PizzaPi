@@ -1,5 +1,13 @@
 import { beforeEach, describe, expect, mock, test } from "bun:test";
-import { createFollowUpGrace, type FollowUpGraceState } from "./followup-grace.js";
+import { createFollowUpGrace, isManualAbort, type FollowUpGraceState } from "./followup-grace.js";
+
+describe("isManualAbort", () => {
+    test("true only for an abort outside shutdown", () => {
+        expect(isManualAbort({ wasAborted: true, shuttingDown: false })).toBe(true);
+        expect(isManualAbort({ wasAborted: true, shuttingDown: true })).toBe(false);
+        expect(isManualAbort({ wasAborted: false, shuttingDown: false })).toBe(false);
+    });
+});
 
 const mockEmitSessionCompleteWithAck = mock(async (_opts: any) => ({ ok: true }));
 const mockLogger = {

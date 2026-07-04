@@ -231,7 +231,7 @@ export function GitPanel({ cwd, className }: GitPanelProps) {
 
     if (selectedDiff) {
         return (
-            <div ref={diffContainerRef} tabIndex={-1} className={cn("flex flex-col h-full outline-none", className)}>
+            <div ref={diffContainerRef} tabIndex={-1} data-escape-abort-guard className={cn("flex flex-col h-full outline-none", className)}>
                 <GitDiffView
                     path={selectedDiff.path}
                     diff={selectedDiff.diff}

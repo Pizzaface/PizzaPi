@@ -155,7 +155,7 @@ export function GitChangesView({
 
   if (selectedDiff) {
     return (
-      <div ref={diffContainerRef} tabIndex={-1} className="flex flex-col h-full overflow-hidden outline-none">
+      <div ref={diffContainerRef} tabIndex={-1} data-escape-abort-guard className="flex flex-col h-full overflow-hidden outline-none">
         <div className="flex items-center gap-2 px-3 py-2 border-b border-border bg-muted/50">
           <button
             type="button"
