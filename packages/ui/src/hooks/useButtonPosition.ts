@@ -1,6 +1,10 @@
 import * as React from "react";
 
-export type ButtonSlot = "left" | "right" | "top";
+export type ButtonSlot =
+  | "top" // the session header toolbar (default)
+  | "left-top" | "left-middle" | "left-bottom"
+  | "center-top" | "center-bottom"
+  | "right-top" | "right-middle" | "right-bottom";
 
 /** IDs for each draggable toolbar button in the SessionViewer. */
 export type ToolbarButtonId =
@@ -24,6 +28,13 @@ const ALL_BUTTON_IDS: readonly ToolbarButtonId[] = [
 const STORAGE_KEY = "pp-toolbar-button-positions";
 
 function loadPositions(): Record<ToolbarButtonId, ButtonSlot> {
+  const valid = new Set<string>([
+    "top",
+    "left-top", "left-middle", "left-bottom",
+    "center-top", "center-bottom",
+    "right-top", "right-middle", "right-bottom",
+  ]);
+
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) {
@@ -32,7 +43,15 @@ function loadPositions(): Record<ToolbarButtonId, ButtonSlot> {
         const result = {} as Record<ToolbarButtonId, ButtonSlot>;
         for (const id of ALL_BUTTON_IDS) {
           const v = parsed[id];
-          result[id] = v === "left" || v === "right" || v === "top" ? v : "top";
+          if (v === "left") {
+            result[id] = "left-middle";
+          } else if (v === "right") {
+            result[id] = "right-middle";
+          } else if (valid.has(v)) {
+            result[id] = v as ButtonSlot;
+          } else {
+            result[id] = "top";
+          }
         }
         return result;
       }
@@ -69,7 +88,12 @@ export function useButtonPosition(): ButtonPositionState {
   }, []);
 
   const slots = React.useMemo(() => {
-    const slots: Record<ButtonSlot, ToolbarButtonId[]> = { left: [], right: [], top: [] };
+    const slots: Record<ButtonSlot, ToolbarButtonId[]> = {
+      top: [],
+      "left-top": [], "left-middle": [], "left-bottom": [],
+      "center-top": [], "center-bottom": [],
+      "right-top": [], "right-middle": [], "right-bottom": [],
+    };
     for (const id of ALL_BUTTON_IDS) {
       slots[positions[id]].push(id);
     }

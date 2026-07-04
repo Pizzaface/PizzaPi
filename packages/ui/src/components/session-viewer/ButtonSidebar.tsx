@@ -229,20 +229,3 @@ export function ButtonStrip({
   );
 }
 
-/** @deprecated Use ButtonRail or ButtonStrip instead. */
-export function ButtonSidebar({
-  side,
-  buttonIds,
-  ...rest
-}: CommonButtonProps & {
-  side: "left" | "right";
-  buttonIds: ToolbarButtonId[];
-}): React.ReactElement | null {
-  return (
-    <ButtonRail
-      side={side}
-      groups={{ top: [], middle: buttonIds, bottom: [] }}
-      {...rest}
-    />
-  );
-}

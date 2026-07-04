@@ -134,4 +134,6 @@ export interface SessionViewerProps {
   analysis?: SessionAnalysis | null;
   /** Called when the user click-and-holds a toolbar button to reposition it. */
   onButtonDragStart?: (buttonId: import("@/hooks/useButtonPosition").ToolbarButtonId) => void;
+  /** Current slot of each toolbar button; header renders only buttons in the "top" slot. */
+  toolbarPositions?: Partial<Record<import("@/hooks/useButtonPosition").ToolbarButtonId, import("@/hooks/useButtonPosition").ButtonSlot>>;
 }

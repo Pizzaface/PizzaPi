@@ -110,7 +110,7 @@ import { DegradedBanner } from "@/components/DegradedBanner";
 import { RunnerWarningBanner } from "@/components/RunnerWarningBanner";
 import { VersionBanner } from "@/components/VersionBanner";
 import { ShortcutsDialog } from "@/components/ShortcutsDialog";
-import { ButtonSidebar } from "@/components/session-viewer/ButtonSidebar";
+import { ButtonRail, ButtonStrip } from "@/components/session-viewer/ButtonSidebar";
 import {
   beginInputAttempt,
   completeInputAttempt,
@@ -564,6 +564,15 @@ export function App() {
     setButtonDragZone(null);
   }, []);
 
+  const openPanelFromDockedButton = React.useCallback(
+    (buttonId: ToolbarButtonId, isOpen: boolean, setOpen: (updater: (v: boolean) => boolean) => void, setPosition: (pos: PanelPosition) => void) => {
+      const slot = buttonPositions.positions[buttonId];
+      if (!isOpen && slot !== "top") setPosition(slot);
+      setOpen((v) => !v);
+    },
+    [buttonPositions.positions],
+  );
+
   // Document-level listeners for button drag (can't use pointer capture from timer)
   React.useEffect(() => {
     if (!draggingButton) return;
@@ -573,11 +582,18 @@ export function App() {
       const rect = terminalColumnRef.current.getBoundingClientRect();
       const pctX = (e.clientX - rect.left) / rect.width;
       const pctY = (e.clientY - rect.top) / rect.height;
-      let zone: ButtonSlot = "top";
-      if (pctY < 0.2) zone = "top";
-      else if (pctX < 0.25) zone = "left";
-      else if (pctX > 0.75) zone = "right";
-      else zone = "top";
+      const col = pctX < 1 / 3 ? "left" : pctX > 2 / 3 ? "right" : "center";
+      const row = pctY < 1 / 3 ? "top" : pctY > 2 / 3 ? "bottom" : "middle";
+      let zone: ButtonSlot;
+      if (col === "left" && row === "top") zone = "left-top";
+      else if (col === "center" && row === "top") zone = "center-top";
+      else if (col === "right" && row === "top") zone = "right-top";
+      else if (col === "left" && row === "middle") zone = "left-middle";
+      else if (col === "center" && row === "middle") zone = "top";
+      else if (col === "right" && row === "middle") zone = "right-middle";
+      else if (col === "left" && row === "bottom") zone = "left-bottom";
+      else if (col === "center" && row === "bottom") zone = "center-bottom";
+      else zone = "right-bottom";
       buttonDragZoneRef.current = zone;
       setButtonDragZone(zone);
     };
@@ -602,14 +618,6 @@ export function App() {
     };
   }, [draggingButton, buttonPositions, terminalColumnRef]);
 
-  // ── Combined outer pointer handler (panels + buttons) ───────────────────
-  const handleOuterPointerMoveCombined = React.useCallback((e: React.PointerEvent) => {
-    handleOuterPointerMove(e);
-  }, [handleOuterPointerMove]);
-
-  const handleOuterPointerUpCombined = React.useCallback(() => {
-    handleOuterPointerUp();
-  }, [handleOuterPointerUp]);
   const [newSessionOpen, setNewSessionOpen] = React.useState(false);
   const [spawnRunnerId, setSpawnRunnerId] = React.useState<string | undefined>(undefined);
   const [spawnCwd, setSpawnCwd] = React.useState<string>("");
@@ -4888,9 +4896,9 @@ export function App() {
         <div
           ref={terminalColumnRef}
           className="relative flex flex-1 min-w-0 h-full overflow-hidden flex-col"
-          onPointerMove={hasPanels ? handleOuterPointerMoveCombined : undefined}
-          onPointerUp={hasPanels ? handleOuterPointerUpCombined : undefined}
-          onPointerCancel={hasPanels ? handleOuterPointerUpCombined : undefined}
+          onPointerMove={hasPanels ? handleOuterPointerMove : undefined}
+          onPointerUp={hasPanels ? handleOuterPointerUp : undefined}
+          onPointerCancel={hasPanels ? handleOuterPointerUp : undefined}
         >
           {/* center-top spans full width when no left/right top panels exist */}
           {centerTopFullWidth && (
@@ -4987,16 +4995,16 @@ export function App() {
                 />
               )}
 
-              {/* ── Center content with button sidebars ──────────────── */}
+              {/* ── Center content with button rails/strips ──────────────── */}
               <div className="flex flex-1 min-w-0 min-h-0">
-                <ButtonSidebar
+                <ButtonRail
                   side="left"
-                  buttonIds={buttonPositions.slots.left}
+                  groups={{ top: buttonPositions.slots["left-top"], middle: buttonPositions.slots["left-middle"], bottom: buttonPositions.slots["left-bottom"] }}
                   onDragStart={handleButtonDragStart}
-                  onToggleTerminal={() => setShowTerminal((v) => !v)}
-                  onToggleFileExplorer={() => setShowFileExplorer((v) => !v)}
-                  onToggleGit={() => setShowGit((v) => !v)}
-                  onToggleTriggers={() => setShowTriggers((v) => !v)}
+                  onToggleTerminal={() => openPanelFromDockedButton("terminal", showTerminal, setShowTerminal, handleTerminalPositionChange)}
+                  onToggleFileExplorer={() => openPanelFromDockedButton("files", showFileExplorer, setShowFileExplorer, handleFilesPositionChange)}
+                  onToggleGit={() => openPanelFromDockedButton("git", showGit, setShowGit, handleGitPositionChange)}
+                  onToggleTriggers={() => openPanelFromDockedButton("triggers", showTriggers, setShowTriggers, handleTriggersPositionChange)}
                   onDuplicateSession={activeSessionInfo?.runnerId ? () => handleDuplicateSession(activeSessionInfo.runnerId!, activeSessionInfo.cwd || "") : undefined}
                   onExport={handleExport}
                   onExec={sendRemoteExec}
@@ -5005,7 +5013,24 @@ export function App() {
                   planModeEnabled={planModeEnabled}
                   tokenUsage={tokenUsage}
                 />
-                <div id="main-content" tabIndex={-1} className="flex flex-col flex-1 min-w-0 min-h-0 overflow-hidden">
+                <div className="flex flex-col flex-1 min-w-0 min-h-0">
+                  <ButtonStrip
+                    position="center-top"
+                    buttonIds={buttonPositions.slots["center-top"]}
+                    onDragStart={handleButtonDragStart}
+                    onToggleTerminal={() => openPanelFromDockedButton("terminal", showTerminal, setShowTerminal, handleTerminalPositionChange)}
+                    onToggleFileExplorer={() => openPanelFromDockedButton("files", showFileExplorer, setShowFileExplorer, handleFilesPositionChange)}
+                    onToggleGit={() => openPanelFromDockedButton("git", showGit, setShowGit, handleGitPositionChange)}
+                    onToggleTriggers={() => openPanelFromDockedButton("triggers", showTriggers, setShowTriggers, handleTriggersPositionChange)}
+                    onDuplicateSession={activeSessionInfo?.runnerId ? () => handleDuplicateSession(activeSessionInfo.runnerId!, activeSessionInfo.cwd || "") : undefined}
+                    onExport={handleExport}
+                    onExec={sendRemoteExec}
+                  sessionId={activeSessionId}
+                  effortLevel={effortLevel}
+                  planModeEnabled={planModeEnabled}
+                  tokenUsage={tokenUsage}
+                  />
+                  <div id="main-content" tabIndex={-1} className="flex flex-col flex-1 min-w-0 min-h-0 overflow-hidden">
                   {showRunners ? (
                     <ErrorBoundary level="section" resetKeys={[activeSessionId]}>
                       <RunnerManager
@@ -5131,20 +5156,21 @@ export function App() {
                           }
                         }}
                         onButtonDragStart={handleButtonDragStart}
+                        toolbarPositions={buttonPositions.positions}
                       />
                       </PizzaPiNavProvider>
                       </SigilProvider>
                     </ErrorBoundary>
                   )}
                 </div>
-                <ButtonSidebar
-                  side="right"
-                  buttonIds={buttonPositions.slots.right}
+                <ButtonStrip
+                  position="center-bottom"
+                  buttonIds={buttonPositions.slots["center-bottom"]}
                   onDragStart={handleButtonDragStart}
-                  onToggleTerminal={() => setShowTerminal((v) => !v)}
-                  onToggleFileExplorer={() => setShowFileExplorer((v) => !v)}
-                  onToggleGit={() => setShowGit((v) => !v)}
-                  onToggleTriggers={() => setShowTriggers((v) => !v)}
+                  onToggleTerminal={() => openPanelFromDockedButton("terminal", showTerminal, setShowTerminal, handleTerminalPositionChange)}
+                  onToggleFileExplorer={() => openPanelFromDockedButton("files", showFileExplorer, setShowFileExplorer, handleFilesPositionChange)}
+                  onToggleGit={() => openPanelFromDockedButton("git", showGit, setShowGit, handleGitPositionChange)}
+                  onToggleTriggers={() => openPanelFromDockedButton("triggers", showTriggers, setShowTriggers, handleTriggersPositionChange)}
                   onDuplicateSession={activeSessionInfo?.runnerId ? () => handleDuplicateSession(activeSessionInfo.runnerId!, activeSessionInfo.cwd || "") : undefined}
                   onExport={handleExport}
                   onExec={sendRemoteExec}
@@ -5153,6 +5179,23 @@ export function App() {
                   planModeEnabled={planModeEnabled}
                   tokenUsage={tokenUsage}
                 />
+              </div>
+              <ButtonRail
+                side="right"
+                groups={{ top: buttonPositions.slots["right-top"], middle: buttonPositions.slots["right-middle"], bottom: buttonPositions.slots["right-bottom"] }}
+                onDragStart={handleButtonDragStart}
+                onToggleTerminal={() => openPanelFromDockedButton("terminal", showTerminal, setShowTerminal, handleTerminalPositionChange)}
+                onToggleFileExplorer={() => openPanelFromDockedButton("files", showFileExplorer, setShowFileExplorer, handleFilesPositionChange)}
+                onToggleGit={() => openPanelFromDockedButton("git", showGit, setShowGit, handleGitPositionChange)}
+                onToggleTriggers={() => openPanelFromDockedButton("triggers", showTriggers, setShowTriggers, handleTriggersPositionChange)}
+                onDuplicateSession={activeSessionInfo?.runnerId ? () => handleDuplicateSession(activeSessionInfo.runnerId!, activeSessionInfo.cwd || "") : undefined}
+                onExport={handleExport}
+                onExec={sendRemoteExec}
+                sessionId={activeSessionId}
+                effortLevel={effortLevel}
+                planModeEnabled={planModeEnabled}
+                tokenUsage={tokenUsage}
+              />
               </div>{/* end center-with-sidebars flex row */}
 
               {/* center-bottom zone */}
@@ -5264,57 +5307,40 @@ export function App() {
             </div>
           )}
 
-          {/* ── BUTTON DRAG OVERLAY (3 zones) ──────────────────────── */}
+          {/* ── BUTTON DRAG OVERLAY (3×3) ──────────────────────── */}
           {draggingButton && (
-            <div className="absolute inset-0 z-50 pointer-events-none hidden md:flex">
-              {/* Left zone */}
-              <div
-                className={cn(
-                  "flex-1 flex items-center justify-center transition-colors duration-100",
-                  buttonDragZone === "left"
-                    ? "bg-blue-500/20 border-2 border-blue-500 rounded-l-lg"
-                    : "bg-zinc-900/30 border border-dashed border-zinc-700/30",
-                )}
-              >
-                <span className={cn(
-                  "text-xs font-medium transition-colors",
-                  buttonDragZone === "left" ? "text-blue-300" : "text-zinc-600",
-                )}>
-                  Left
-                </span>
-              </div>
-              {/* Center/top zone */}
-              <div
-                className={cn(
-                  "flex-[3] flex items-start justify-center pt-16 transition-colors duration-100",
-                  buttonDragZone === "top"
-                    ? "bg-blue-500/20 border-2 border-blue-500 rounded-t-lg"
-                    : "bg-zinc-900/20 border border-dashed border-zinc-700/20",
-                )}
-              >
-                <span className={cn(
-                  "text-xs font-medium transition-colors",
-                  buttonDragZone === "top" ? "text-blue-300" : "text-zinc-600",
-                )}>
-                  Top
-                </span>
-              </div>
-              {/* Right zone */}
-              <div
-                className={cn(
-                  "flex-1 flex items-center justify-center transition-colors duration-100",
-                  buttonDragZone === "right"
-                    ? "bg-blue-500/20 border-2 border-blue-500 rounded-r-lg"
-                    : "bg-zinc-900/30 border border-dashed border-zinc-700/30",
-                )}
-              >
-                <span className={cn(
-                  "text-xs font-medium transition-colors",
-                  buttonDragZone === "right" ? "text-blue-300" : "text-zinc-600",
-                )}>
-                  Right
-                </span>
-              </div>
+            <div className="absolute inset-0 z-50 pointer-events-none grid grid-cols-3 grid-rows-3">
+              {([
+                { pos: "left-top",      label: "Left\ntop"    },
+                { pos: "center-top",    label: "Top"          },
+                { pos: "right-top",     label: "Right\ntop"   },
+                { pos: "left-middle",   label: "Left"         },
+                { pos: "top",           label: "Header"       },
+                { pos: "right-middle",  label: "Right"        },
+                { pos: "left-bottom",   label: "Left\nbottom" },
+                { pos: "center-bottom", label: "Bottom"       },
+                { pos: "right-bottom",  label: "Right\nbottom"},
+              ] as const).map((zone) => {
+                const isActive = buttonDragZone === zone.pos;
+                return (
+                  <div
+                    key={zone.pos}
+                    className={cn(
+                      "flex items-center justify-center border transition-colors duration-100",
+                      isActive
+                        ? "bg-blue-500/20 border-blue-500"
+                        : "bg-zinc-900/40 border-zinc-700/30",
+                    )}
+                  >
+                    <span className={cn(
+                      "text-[10px] font-medium text-center transition-colors whitespace-pre-line leading-tight",
+                      isActive ? "text-blue-300" : "text-zinc-600",
+                    )}>
+                      {zone.label}
+                    </span>
+                  </div>
+                );
+              })}
             </div>
           )}
 
