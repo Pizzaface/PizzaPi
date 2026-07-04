@@ -19,6 +19,17 @@ const FOLLOWUP_GRACE_MS = 10 * 60 * 1_000;
 const SESSION_COMPLETE_RETRY_MS = 3_000;
 const log = createLogger("remote");
 
+/**
+ * True when an agent_end on a child session came from a manual abort (Esc /
+ * abort exec) rather than a real shutdown. In that case session_complete must
+ * NOT be sent — the parent would ack "killed" and tear the session down — and
+ * no follow-up grace timer should start: the user took control and will steer
+ * or end the session themselves.
+ */
+export function isManualAbort(opts: { wasAborted: boolean; shuttingDown: boolean }): boolean {
+    return opts.wasAborted && !opts.shuttingDown;
+}
+
 export interface FollowUpGraceState {
     /** Set to true once session_complete has been emitted — prevents double-fire. */
     sessionCompleteFired: boolean;

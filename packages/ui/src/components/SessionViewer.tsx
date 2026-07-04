@@ -48,6 +48,7 @@ import { PlanModePanel, type PlanModeAnswer } from "@/components/ai-elements/pla
 import { formatAnswersForAgent } from "@/lib/ask-user-questions";
 import { exportToMarkdown } from "@/lib/export-markdown";
 import { dismissNotificationsForSession } from "@/lib/push";
+import { isEscapeAbortBlocked } from "@/lib/escape-abort-guard";
 import {
   AlertTriangleIcon,
   BookOpen,
@@ -366,6 +367,8 @@ export function SessionViewer({
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
       if (showEndSessionDialog || showIncompleteTriggerDialog || commandOpen || atMentionOpen) return;
+      // Never abort while a file/diff preview or a dialog is on screen.
+      if (isEscapeAbortBlocked()) return;
       e.preventDefault();
       onExec({ type: "exec", id: `${Date.now()}-${Math.random().toString(16).slice(2)}`, command: "abort" });
     };

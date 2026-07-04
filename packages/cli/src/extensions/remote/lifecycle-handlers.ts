@@ -52,6 +52,7 @@ import type { RelayContext } from "../remote-types.js";
 import type { TriggerWaitManager } from "../trigger-wait-manager.js";
 import type { DelinkManager } from "./delink-management.js";
 import type { CancellationManager } from "./trigger-cancellation.js";
+import { isManualAbort } from "./followup-grace.js";
 import type { FollowUpGraceManager } from "./followup-grace.js";
 
 const log = createLogger("remote");
@@ -407,7 +408,18 @@ export function registerLifecycleHandlers(deps: LifecycleHandlersDeps): void {
             }
 
             const exitReason = rctx.wasAborted ? "killed" : lastError ? "error" : "completed";
-            void followUpGrace.fireSessionComplete(summary, fullOutputPath, exitReason);
+            // Manual abort (Esc in the web UI / abort exec) on a child session:
+            // skip session_complete — the parent would ack "killed" and tear the
+            // session down, wiping it (and its transcript) from the web UI.
+            // Keep it alive for steering instead. session_shutdown still reports
+            // "killed" when the session is actually ending (end_session sets
+            // shuttingDown before shutdown()).
+            const manualAbort = isManualAbort(rctx);
+            if (rctx.isChildSession && manualAbort) {
+                log.info("pizzapi: turn aborted manually — keeping child session alive");
+            } else {
+                void followUpGrace.fireSessionComplete(summary, fullOutputPath, exitReason);
+            }
 
             // Fire session_error for terminal usage-limit errors (one-shot, only at agent_end).
             if (
@@ -428,7 +440,9 @@ export function registerLifecycleHandlers(deps: LifecycleHandlersDeps): void {
             }
 
             if (rctx.isChildSession) {
-                followUpGrace.startFollowUpGrace(ctx);
+                // No grace-period auto-shutdown after a manual abort — the user
+                // took control and will steer or end the session themselves.
+                if (!manualAbort) followUpGrace.startFollowUpGrace(ctx);
             } else if (process.env.PIZZAPI_WORKER_AUTO_CLOSE === "true" && exitReason === "completed") {
                 // Auto-close: trigger-spawned sessions with autoClose shut down
                 // immediately on successful completion — no follow-up grace.

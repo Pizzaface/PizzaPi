@@ -307,7 +307,7 @@ export function FileExplorer({ runnerId, cwd, className, onClose, position = "le
     const isMarkdown = isMarkdownFile(viewingFileName);
 
     return (
-      <div ref={previewContainerRef} tabIndex={-1} className={cn("flex flex-col bg-background text-foreground outline-none", className)}>
+      <div ref={previewContainerRef} tabIndex={-1} data-escape-abort-guard className={cn("flex flex-col bg-background text-foreground outline-none", className)}>
         {isImage ? (
           <ImageViewer
             runnerId={runnerId}
