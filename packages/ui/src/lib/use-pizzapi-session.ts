@@ -94,12 +94,20 @@ export function usePizzaPiSession(): PizzaPiSession {
         };
     }, [isMobileBundled, apiKey, cookieSession?.user?.id]);
 
+    // Memoize: a fresh object every render makes App.tsx's [session]-keyed
+    // effects re-fire in a render loop (each effect's state update triggers a
+    // re-render → new session identity → effects again → fetch flood).
+    const syntheticSession = React.useMemo(
+        () => (apiKeySession ? createSyntheticSession(apiKeySession.user.id, apiKeySession.user.name) : null),
+        [apiKeySession],
+    );
+
     if (cookieSession?.user?.id) {
         return { data: cookieSession, isPending: cookiePending };
     }
 
-    if (apiKeySession) {
-        return { data: createSyntheticSession(apiKeySession.user.id, apiKeySession.user.name), isPending: false };
+    if (syntheticSession) {
+        return { data: syntheticSession, isPending: false };
     }
 
     return { data: null, isPending: cookiePending || apiKeyPending };

@@ -48,23 +48,38 @@ function send(msg: Record<string, unknown>): void {
 
 // ── Spawn PTY ──────────────────────────────────────────────────────────────────
 
+// @zenyr/bun-pty's FFI (bun_pty_spawn) accepts no environment: the `env` and
+// `name` options are silently ignored and the PTY child starts with a minimal
+// env — critically, NO TERM. Without TERM, zsh/bash load no termcap and line
+// editing degrades: Backspace erases in the line buffer but repaints as a bare
+// space, so deleted characters stay visible on screen. Arrow keys, vim, less
+// are similarly broken. Smuggle the vars in via /usr/bin/env on the command
+// line instead (POSIX only — PowerShell/cmd don't use TERM).
+const ptyEnvPairs = [
+    "TERM=xterm-256color",
+    "COLORTERM=truecolor",
+    `LANG=${process.env.LANG || "en_US.UTF-8"}`,
+    // Lets `pizza web` detect it's running inside a relay terminal.
+    `TERMINAL_WORKER_ID=${terminalId}`,
+    // Use Bun's built-in shell for `bun run` scripts instead of
+    // /bin/bash, which fails with EBADF in PTY environments.
+    // See: https://github.com/oven-sh/bun/issues/21447
+    `BUN_OPTIONS=${[process.env.BUN_OPTIONS, "--shell=bun"].filter(Boolean).join(" ")}`,
+];
+
 let ptyProcess: ReturnType<typeof spawnPty>;
 try {
-    ptyProcess = spawnPty(shell, getShellArgs(shell), {
-        name: "xterm-256color",
-        cols,
-        rows,
-        cwd,
-        env: {
-            ...process.env,
-            TERM: "xterm-256color",
-            COLORTERM: "truecolor",
-            // Use Bun's built-in shell for `bun run` scripts instead of
-            // /bin/bash, which fails with EBADF in PTY environments.
-            // See: https://github.com/oven-sh/bun/issues/21447
-            BUN_OPTIONS: [process.env.BUN_OPTIONS, "--shell=bun"].filter(Boolean).join(" "),
+    const useEnvWrapper = process.platform !== "win32";
+    ptyProcess = spawnPty(
+        useEnvWrapper ? "/usr/bin/env" : shell,
+        useEnvWrapper ? [...ptyEnvPairs, shell, ...getShellArgs(shell)] : getShellArgs(shell),
+        {
+            name: "xterm-256color",
+            cols,
+            rows,
+            cwd,
         },
-    });
+    );
 } catch (err) {
     send({ type: "error", message: err instanceof Error ? err.message : String(err) });
     process.exit(1);

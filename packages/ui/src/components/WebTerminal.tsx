@@ -7,6 +7,7 @@ import "@xterm/xterm/css/xterm.css";
 import { io, type Socket } from "socket.io-client";
 import type { TerminalServerToClientEvents, TerminalClientToServerEvents } from "@pizzapi/protocol";
 import { SOCKET_PROTOCOL_VERSION } from "@pizzapi/protocol";
+import { getSocketIOBase, getSocketIOAuth } from "@/lib/relay";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { TerminalIcon, X, Maximize2, Minimize2 } from "lucide-react";
@@ -146,13 +147,16 @@ export function WebTerminal({ terminalId, onClose, className }: WebTerminalProps
     const retryTimer1 = setTimeout(doFit, 50);
     const retryTimer2 = setTimeout(doFit, 200);
 
-    // Connect to relay terminal via Socket.IO
-    const socket: Socket<TerminalServerToClientEvents, TerminalClientToServerEvents> = io("/terminal", {
-      auth: {
+    // Connect to relay terminal via Socket.IO. On the bundled Capacitor app
+    // the webview origin is local, so we must target the configured relay
+    // base and authenticate with the stored API key (same as useRunnersFeed).
+    const base = getSocketIOBase();
+    const socket: Socket<TerminalServerToClientEvents, TerminalClientToServerEvents> = io(base ? `${base}/terminal` : "/terminal", {
+      auth: getSocketIOAuth({
         terminalId,
         protocolVersion: SOCKET_PROTOCOL_VERSION,
         clientVersion: UI_VERSION,
-      },
+      }),
       withCredentials: true,
     });
     wsRef.current = socket;
@@ -239,6 +243,36 @@ export function WebTerminal({ terminalId, onClose, className }: WebTerminalProps
       }
     });
 
+    // Android soft keyboards (Gboard) deliver Backspace as an IME input
+    // event (inputType "deleteContentBackward") instead of a real keydown.
+    // xterm.js only handles "insertText" input events, so Backspace silently
+    // does nothing on Android. Translate delete inputs to control bytes here.
+    // Skip while the IME has an active composition — the user is editing the
+    // underlined word locally and nothing has reached the PTY yet.
+    let imeComposing = false;
+    const onCompositionStart = () => { imeComposing = true; };
+    const onCompositionEnd = () => { imeComposing = false; };
+    const onBeforeInput = (e: Event) => {
+      const ev = e as InputEvent;
+      if (imeComposing || ev.isComposing) return;
+      const data =
+        ev.inputType === "deleteContentBackward" ? "\x7f" :
+        ev.inputType === "deleteContentForward" ? "\x1b[3~" :
+        null;
+      if (data) {
+        ev.preventDefault();
+        ev.stopImmediatePropagation();
+        if (socket.connected) {
+          socket.emit("terminal_input", { terminalId, data: utf8ToBase64(data) });
+        }
+      }
+    };
+    const textarea = term.textarea;
+    textarea?.addEventListener("compositionstart", onCompositionStart);
+    textarea?.addEventListener("compositionend", onCompositionEnd);
+    // Capture phase so we run before xterm's own input handling.
+    textarea?.addEventListener("beforeinput", onBeforeInput, true);
+
     // Handle resize
     const resizeObserver = new ResizeObserver(() => {
       requestAnimationFrame(() => {
@@ -260,6 +294,9 @@ export function WebTerminal({ terminalId, onClose, className }: WebTerminalProps
     return () => {
       clearTimeout(retryTimer1);
       clearTimeout(retryTimer2);
+      textarea?.removeEventListener("compositionstart", onCompositionStart);
+      textarea?.removeEventListener("compositionend", onCompositionEnd);
+      textarea?.removeEventListener("beforeinput", onBeforeInput, true);
       inputDisposable.dispose();
       resizeObserver.disconnect();
       socket.disconnect();
