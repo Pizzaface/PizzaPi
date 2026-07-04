@@ -49,13 +49,13 @@ const authToken = await AuthStorage.create(join(homedir(), ".pizzapi", "auth.jso
 const file = fileToken();
 const kc = keychainToken();
 const mins = (c: { expiresAt: number } | null) => c ? Math.round((c.expiresAt - Date.now()) / 60000) : null;
-console.log(`pizzapi auth.json token:  ${authToken ? fp(authToken) : "(none)"}`);
-console.log(`.credentials.json token:  ${file ? `${fp(file.token)} expires in ${mins(file)}min` : "(none)"}`);
-console.log(`keychain CC token:        ${kc ? `${fp(kc.token)} expires in ${mins(kc)}min` : "(none)"}`);
+console.log(`pizzapi auth.json token:  ${authToken ? "(present)" : "(none)"}`);
+console.log(`.credentials.json token:  ${file ? `(present) expires in ${mins(file)}min` : "(none)"}`);
+console.log(`keychain CC token:        ${kc ? `(present) expires in ${mins(kc)}min` : "(none)"}`);
 const fresh = [file, kc].filter((c): c is NonNullable<typeof c> => !!c && c.expiresAt > Date.now() + 60000);
 const token = fresh[0]?.token ?? authToken;
 if (!token) { console.error("no unexpired anthropic token — log in with Claude Code first"); process.exit(1); }
-console.log(`using: ${fp(token)}\n`);
+console.log("using: (token selected)\n");
 
 const bigSystem = "You are a coding assistant.\n".repeat(2300); // ~63k chars
 const smallSystem = "You are a coding assistant.";
