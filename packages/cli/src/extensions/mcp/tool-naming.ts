@@ -47,7 +47,11 @@ function clampToolName(name: string, seed: string): string {
  * Generate a provider-safe, collision-free tool name for an MCP tool.
  *
  * The resulting name:
- *  - Uses the `mcp_<server>_<tool>` convention
+ *  - Uses Claude Code's `mcp__<server>__<tool>` convention. The double
+ *    underscore matters: Anthropic's subscription-lane classifier treats
+ *    `mcp_x_y` (single underscore) tool names as non-Claude-Code traffic and
+ *    rejects the request into the metered extra-usage lane (400 "out of
+ *    extra usage" / 429). Verified via scripts/probe-overage.ts (2026-07-03).
  *  - Is at most 64 characters
  *  - Is unique within `usedNames` (hash suffix added on collision)
  *
@@ -55,7 +59,7 @@ function clampToolName(name: string, seed: string): string {
  */
 export function allocateProviderSafeToolName(serverName: string, mcpToolName: string, usedNames: Set<string>): string {
   const source = `${serverName}:${mcpToolName}`;
-  const normalizedBase = `mcp_${sanitizeToolNamePart(serverName).toLowerCase()}_${sanitizeToolNamePart(mcpToolName).toLowerCase()}`;
+  const normalizedBase = `mcp__${sanitizeToolNamePart(serverName).toLowerCase()}__${sanitizeToolNamePart(mcpToolName).toLowerCase()}`;
 
   const preferred = clampToolName(normalizedBase, source);
   if (!usedNames.has(preferred)) {

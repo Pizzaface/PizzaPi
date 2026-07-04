@@ -205,7 +205,7 @@ Pi's internal tool names are mapped to display names for matching:
 | `find` | `Find` |
 | `ls` | `Ls` |
 
-MCP tool names are passed as-is (e.g., `mcp_tavily_tavily_search`). Matching is **case-insensitive** — both the internal name and display name are checked.
+MCP tool names are passed as-is (e.g., `mcp__tavily__tavily_search`). Matching is **case-insensitive** — both the internal name and display name are checked.
 
 <Aside type="tip">
   Regex groups inside parentheses are preserved during alternation splitting. The pattern `mcp__(github|filesystem)__.*` is treated as a single regex, not split on the `|` inside the group.
