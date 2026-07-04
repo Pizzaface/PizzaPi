@@ -1,6 +1,6 @@
 import * as React from "react";
 import { cn } from "@/lib/utils";
-import { MessageCircleQuestion, PenLine, Send, Check, ArrowLeft, ArrowRight, GripVertical, ArrowUp, ArrowDown } from "lucide-react";
+import { MessageCircleQuestion, PenLine, Send, Check, ArrowLeft, ArrowRight, GripVertical, ArrowUp, ArrowDown, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { QuestionType } from "@/lib/ask-user-questions";
 
@@ -18,6 +18,8 @@ export interface MultipleChoiceQuestionsProps {
   /** Stable identity for this prompt (e.g. toolCallId). Used to reset selections on new prompt. */
   promptKey?: string;
   onSubmit: (answers: MultipleChoiceAnswers) => void | Promise<boolean | void>;
+  /** Cancel the prompt and abort the current turn (mobile has no Esc key). */
+  onCancel?: () => void;
   className?: string;
 }
 
@@ -40,6 +42,7 @@ export function MultipleChoiceQuestions({
   questions,
   promptKey,
   onSubmit,
+  onCancel,
   className,
 }: MultipleChoiceQuestionsProps) {
   // ── Radio state: selected option index per question ────────────────────────
@@ -536,6 +539,18 @@ export function MultipleChoiceQuestions({
           <MessageCircleQuestion className="size-3.5 text-violet-400" />
         </div>
         <span className="text-xs font-medium text-violet-300">Question {questions.length > 0 ? safeCurrentStep + 1 : 0} of {questions.length}</span>
+        {onCancel && (
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={isSubmitting}
+            aria-label="Cancel question"
+            className="ml-auto flex items-center gap-1 rounded-md px-2 py-1 text-xs text-violet-300/70 transition-colors hover:bg-violet-500/15 hover:text-violet-200"
+          >
+            <X className="size-3.5" />
+            Cancel
+          </button>
+        )}
       </div>
 
       <div className="shrink-0 px-3 pt-2.5">
