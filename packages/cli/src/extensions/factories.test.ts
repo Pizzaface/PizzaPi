@@ -26,6 +26,7 @@ import { toolSearchExtension } from "./tool-search.js";
 import { ollamaWebToolsExtension } from "./ollama-web-tools.js";
 import { sessionAnalysisExtension } from "./session-analysis.js";
 import { providerRequestLogExtension } from "./provider-request-log.js";
+import { discordExtension } from "./discord.js";
 
 const CORE_EXTENSIONS: ExtensionFactory[] = [
     providerRequestLogExtension,
@@ -45,6 +46,7 @@ const CORE_EXTENSIONS: ExtensionFactory[] = [
     sandboxEventsExtension,
     pizzapiTitleExtension,
     pizzapiHeaderExtension,
+    discordExtension,
     providerExtension,  // Always registered
     sessionAnalysisExtension,  // Always registered
 ];

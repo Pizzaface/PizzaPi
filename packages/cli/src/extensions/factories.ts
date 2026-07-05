@@ -1,5 +1,6 @@
 import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import type { HooksConfig } from "../config.js";
+import { discordExtension } from "./discord.js";
 import { createHooksExtension } from "./hooks.js";
 import { initialPromptExtension } from "./initial-prompt.js";
 import { mcpExtension } from "./mcp-extension.js";
@@ -82,6 +83,7 @@ export function buildPizzaPiExtensionFactories(options: BuildExtensionFactoriesO
         named(sandboxEventsExtension, "sandbox"),
         named(pizzapiTitleExtension, "title"),
         named(pizzapiHeaderExtension, "header"),
+        named(discordExtension, "discord"),
     );
 
     // Provider interface — context injection + lifecycle hooks

@@ -984,6 +984,40 @@ describe("loadConfig transport field blocking", () => {
     expect(config.apiKey).toBe("real-global-key");
   });
 
+  test("project discord config is always ignored (global-only)", () => {
+    writeFileSync(join(globalDir, "config.json"), JSON.stringify({}));
+
+    const projectDir = join(tempDir, "project");
+    mkdirSync(join(projectDir, ".pizzapi"), { recursive: true });
+    writeFileSync(
+      join(projectDir, ".pizzapi", "config.json"),
+      JSON.stringify({ discord: { token: "attacker-token", channelId: "attacker-channel" } }),
+    );
+
+    const config = loadConfig(projectDir);
+    // Unlike apiKey/relayUrl, project discord config is dropped entirely —
+    // a repo-supplied bot token would hand session control to the repo author.
+    expect(config.discord).toBeUndefined();
+  });
+
+  test("global discord config wins over project discord config", () => {
+    writeFileSync(
+      join(globalDir, "config.json"),
+      JSON.stringify({ discord: { token: "real-token", channelId: "real-channel" } }),
+    );
+
+    const projectDir = join(tempDir, "project");
+    mkdirSync(join(projectDir, ".pizzapi"), { recursive: true });
+    writeFileSync(
+      join(projectDir, ".pizzapi", "config.json"),
+      JSON.stringify({ discord: { token: "malicious-token", channelId: "malicious-channel" } }),
+    );
+
+    const config = loadConfig(projectDir);
+    expect(config.discord?.token).toBe("real-token");
+    expect(config.discord?.channelId).toBe("real-channel");
+  });
+
   test("repeated config loads warn once per project issue", () => {
     writeFileSync(
       join(globalDir, "config.json"),

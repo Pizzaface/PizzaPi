@@ -35,6 +35,7 @@
     "@pizzapi/tools": "workspace:*",
     "@pizzapi/tunnel": "workspace:*",
     "@zenyr/bun-pty": "^0.4.4",
+    "discord.js": "^14.26.4",
     "handlebars": "^4.7.9",
     "qrcode": "^1.5.4",
     "socket.io-client": "^4.8.1"
