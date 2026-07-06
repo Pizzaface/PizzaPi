@@ -36,6 +36,7 @@ import { requireSession, validateApiKey } from "../middleware.js";
 import {
     getSharedSession,
     getLocalTuiSocket,
+    waitForLocalTuiSocket,
     broadcastToSessionViewers,
     emitToRelaySessionVerified,
     getLocalRunnerSocket,
@@ -186,18 +187,15 @@ function inferUnsubscribeTarget(target: string, subscriptionIdParam?: string): {
     return { triggerType: target, mode: "triggerType" };
 }
 
-/** Poll for a session socket to appear after spawn (same pattern as webhooks). */
+/**
+ * Wait for a session socket to appear after spawn. Event-driven: resolves as
+ * soon as the TUI socket registers instead of polling.
+ * Only the TUI socket counts as ready — the Redis session record
+ * (getSharedSession) is created before the socket connects, so checking it
+ * would cause premature return and dropped triggers.
+ */
 async function waitForSessionSocket(sessionId: string, timeoutMs: number): Promise<boolean> {
-    const start = Date.now();
-    while (Date.now() - start < timeoutMs) {
-        // Only consider the session ready when its TUI socket is actually connected.
-        // The Redis session record (getSharedSession) is created before the socket
-        // connects, so checking it would cause premature return and dropped triggers.
-        const local = getLocalTuiSocket(sessionId);
-        if (local?.connected) return true;
-        await new Promise((r) => setTimeout(r, 200));
-    }
-    return false;
+    return waitForLocalTuiSocket(sessionId, timeoutMs);
 }
 
 /** Shape of the POST /api/sessions/:id/trigger request body. */

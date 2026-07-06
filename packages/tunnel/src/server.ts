@@ -48,7 +48,7 @@ export interface PendingProxyRequest {
   id: string;
   runnerId: string;
   port: number;
-  onResponseStart: (statusCode: number, statusMessage: string, headers: Record<string, string>) => void;
+  onResponseStart: (statusCode: number, statusMessage: string, headers: Record<string, string | string[]>) => void;
   onResponseData: (data: Buffer) => void;
   onResponseEnd: () => void;
   onError: (error: string) => void;
@@ -131,7 +131,7 @@ export class TunnelRelay {
       headers: Record<string, string>;
     },
     callbacks: {
-      onResponseStart: (statusCode: number, statusMessage: string, headers: Record<string, string>) => void;
+      onResponseStart: (statusCode: number, statusMessage: string, headers: Record<string, string | string[]>) => void;
       onResponseData: (data: Buffer) => void;
       onResponseEnd: () => void;
       onError: (error: string) => void;

@@ -494,7 +494,13 @@ function proxyTunnelRequestViaRelay(
                     responseHeaders = new Headers();
                     for (const [key, value] of Object.entries(headers)) {
                         try {
-                            responseHeaders.set(key, value);
+                            if (Array.isArray(value)) {
+                                // Multi-value headers (Set-Cookie) must be appended
+                                // individually — joining them corrupts cookie values.
+                                for (const v of value) responseHeaders.append(key, v);
+                            } else {
+                                responseHeaders.set(key, value);
+                            }
                         } catch {
                             // Skip invalid header values rejected by the Headers API.
                         }

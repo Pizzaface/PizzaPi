@@ -407,6 +407,7 @@ export async function registerTuiSession(
 
     // Store local socket reference
     localTuiSockets.set(sessionId, socket);
+    notifyTuiSocketConnected(sessionId);
 
     // Join relay session room
     await socket.join(relaySessionRoom(sessionId));
@@ -457,6 +458,46 @@ export async function registerTuiSession(
  */
 export function getLocalTuiSocket(sessionId: string): Socket | undefined {
     return localTuiSockets.get(sessionId);
+}
+
+// ── TUI-socket connect waiters ───────────────────────────────────────────────
+// Event-driven replacement for 200ms polling loops that wait for a freshly
+// spawned session's TUI socket to register.
+
+const tuiSocketWaiters = new Map<string, Set<() => void>>();
+
+/** Resolve any waiters for a session whose TUI socket just registered. */
+export function notifyTuiSocketConnected(sessionId: string): void {
+    const waiters = tuiSocketWaiters.get(sessionId);
+    if (!waiters) return;
+    tuiSocketWaiters.delete(sessionId);
+    for (const resolve of waiters) resolve();
+}
+
+/**
+ * Resolve true as soon as the session's local TUI socket is connected,
+ * or false after timeoutMs. Only observes sockets on this server node.
+ */
+export function waitForLocalTuiSocket(sessionId: string, timeoutMs: number): Promise<boolean> {
+    if (localTuiSockets.get(sessionId)?.connected) return Promise.resolve(true);
+    return new Promise((resolve) => {
+        let waiters = tuiSocketWaiters.get(sessionId);
+        if (!waiters) {
+            waiters = new Set();
+            tuiSocketWaiters.set(sessionId, waiters);
+        }
+        const onConnect = (): void => {
+            clearTimeout(timer);
+            resolve(true);
+        };
+        const timer = setTimeout(() => {
+            const set = tuiSocketWaiters.get(sessionId);
+            set?.delete(onConnect);
+            if (set && set.size === 0) tuiSocketWaiters.delete(sessionId);
+            resolve(false);
+        }, timeoutMs);
+        waiters.add(onConnect);
+    });
 }
 
 /**
