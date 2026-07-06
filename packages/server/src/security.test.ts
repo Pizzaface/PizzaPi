@@ -66,6 +66,23 @@ describe("RateLimiter", () => {
         limiter.destroy();
     });
 
+    test("cleanup prunes knownKeys for expired entries", async () => {
+        const limiter = new RateLimiter(1, 50);
+        limiter.check("a");
+        limiter.check("b");
+
+        const knownKeys = (limiter as unknown as { knownKeys: Set<string> }).knownKeys;
+        expect(knownKeys.has("a")).toBe(true);
+        expect(knownKeys.has("b")).toBe(true);
+
+        await new Promise(resolve => setTimeout(resolve, 100));
+        (limiter as unknown as { cleanup: () => void }).cleanup();
+
+        expect(knownKeys.has("a")).toBe(false);
+        expect(knownKeys.has("b")).toBe(false);
+        limiter.destroy();
+    });
+
     test("getRetryAfter returns seconds until window reset", () => {
         const limiter = new RateLimiter(1, 60_000); // 60s window
         const key = "retry-test-key";

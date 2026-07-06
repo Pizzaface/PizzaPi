@@ -200,47 +200,64 @@ export async function getCachedRelayEventsAfterSeq(
     if (!redis) return [];
 
     try {
-        const rows = await redis.lRange(eventsKey(sessionId), 0, -1);
-        type SequencedRecord = CachedRelayEventRecord & { seq: number };
-        const events: SequencedRecord[] = [];
-        let sawLegacyRow = false;
+        const key = eventsKey(sessionId);
+        const length = await redis.lLen(key);
+        if (!Number.isFinite(length) || length <= 0) return [];
 
-        for (const row of rows) {
-            const parsed = parseCachedRelayEventRow(row);
-            if (!parsed) continue;
-            if (!isSequencedCachedRelayEvent(parsed)) {
-                sawLegacyRow = true;
-                continue;
+        type SequencedRecord = CachedRelayEventRecord & { seq: number };
+        const collected: SequencedRecord[] = [];
+        let sawLegacyRow = false;
+        const chunkSize = snapshotScanChunkSize();
+
+        // Events are rPush'd: newest at the tail. Scan backwards in chunks
+        // until we reach a sequenced event with seq <= afterSeq; everything
+        // older than that is irrelevant.
+        let stopped = false;
+        for (let end = length - 1; end >= 0; end -= chunkSize) {
+            const start = Math.max(0, end - chunkSize + 1);
+            const rows = await redis.lRange(key, start, end);
+            for (let i = rows.length - 1; i >= 0; i--) {
+                const parsed = parseCachedRelayEventRow(rows[i]);
+                if (!parsed) continue;
+                if (!isSequencedCachedRelayEvent(parsed)) {
+                    sawLegacyRow = true;
+                    continue;
+                }
+                if (parsed.seq <= afterSeq) {
+                    stopped = true;
+                    break;
+                }
+                collected.push(parsed);
             }
-            if (parsed.seq > afterSeq) {
-                events.push(parsed);
-            }
+            if (stopped) break;
         }
 
         if (afterSeq > 0 && sawLegacyRow) {
             return [];
         }
 
+        collected.reverse();
+
         // Verify contiguity: the first event must be afterSeq+1 and all
         // subsequent seqs must be consecutive.  If the cache was trimmed
         // (lTrim), earlier events may be missing — return empty so the
         // caller falls back to a full snapshot/resync instead of silently
         // skipping events.
-        if (events.length > 0) {
-            const first = events[0];
+        if (collected.length > 0) {
+            const first = collected[0];
             if (!first || first.seq !== afterSeq + 1) {
                 return [];
             }
-            for (let i = 1; i < events.length; i++) {
-                const curr = events[i];
-                const prev = events[i - 1];
+            for (let i = 1; i < collected.length; i++) {
+                const curr = collected[i];
+                const prev = collected[i - 1];
                 if (!curr || !prev || curr.seq !== prev.seq + 1) {
                     return [];
                 }
             }
         }
 
-        return events;
+        return collected;
     } catch (error) {
         logUnavailableOnce("Failed to read relay event cache from Redis", error);
         return [];

@@ -85,14 +85,18 @@ export class RateLimiter {
     }
 
     private async syncFromRedis(): Promise<void> {
-        for (const key of this.knownKeys) {
-            const window = await getRateLimitWindow(key);
+        const keys = [...this.knownKeys];
+        const windows = await Promise.all(
+            keys.map(async (key) => ({ key, window: await getRateLimitWindow(key) })),
+        );
+        const now = Date.now();
+        for (const { key, window } of windows) {
             if (!window) continue;
             const record = this.hits.get(key);
             // Adopt the Redis window when it has a higher count or when our
             // local window has expired. This prevents long-running nodes from
             // falling behind the cluster-wide counter.
-            if (!record || Date.now() > record.resetTime || window.count > record.count) {
+            if (!record || now > record.resetTime || window.count > record.count) {
                 this.hits.set(key, window);
             }
         }
@@ -129,6 +133,7 @@ export class RateLimiter {
         for (const [key, record] of this.hits.entries()) {
             if (now > record.resetTime) {
                 this.hits.delete(key);
+                this.knownKeys.delete(key);
             }
         }
     }
