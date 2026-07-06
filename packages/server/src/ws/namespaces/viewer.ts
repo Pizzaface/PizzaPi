@@ -733,7 +733,7 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
             // If targetSessionId is explicitly provided, route to that child.
             // Validate ownership: the target session must belong to the same user.
             if (targetSessionId) {
-                const targetSession = await getSharedSession(targetSessionId);
+                const targetSession = await getSharedSessionSummary(targetSessionId);
                 if (!targetSession) {
                     // Target session no longer exists (child exited) — don't ack so the
                     // UI keeps retry controls visible, and emit trigger_error for feedback.
@@ -897,7 +897,7 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
 
         // ── Optional initial session bootstrap (backward compatibility) ─────
         if (initialSessionId) {
-            const initialSession = await getSharedSession(initialSessionId);
+            const initialSession = await getSharedSessionSummary(initialSessionId);
             if (!initialSession) {
                 // Session not live — try to replay a persisted snapshot for older
                 // clients that still bind the session in the handshake.

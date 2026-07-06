@@ -9,6 +9,7 @@ import {
     touchSessionActivity,
     updateSessionHeartbeat,
     getSharedSession,
+    getSharedSessionSummary,
     broadcastSessionEventToViewers,
     publishSessionEvent,
     consumePendingRecovery,
@@ -234,8 +235,15 @@ export function registerEventHandler(socket: RelaySocket): void {
         // consumers (state storage, Redis cache, viewer broadcast) see
         // already-stripped payloads. The _imagesStripped flag causes
         // storeAndReplaceImages / storeAndReplaceImagesInEvent to skip.
-        const session = await getSharedSession(sessionId);
-        const userId = session?.userId ?? "unknown";
+        // Only fetch the lightweight session summary for event types that
+        // actually carry images; all others skip the Redis round-trip.
+        const needsImageStrip =
+            event.type === "session_active" ||
+            event.type === "agent_end" ||
+            event.type === "session_messages_chunk";
+        const userId = needsImageStrip
+            ? (await getSharedSessionSummary(sessionId))?.userId ?? "unknown"
+            : "unknown";
         try {
             const stripped = await stripImagesFromPipelineEvent(event, sessionId, userId);
             if (stripped !== event) {

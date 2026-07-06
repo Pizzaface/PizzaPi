@@ -12,6 +12,7 @@ const mockRecordTriggerResponse = mock(async (_sessionId: string, _triggerId: st
 
 mock.module("../../sio-registry.js", () => ({
     getSharedSession: mockGetSharedSession,
+    getSharedSessionSummary: mockGetSharedSession,
     getLocalTuiSocket: mockGetLocalTuiSocket,
     emitToRelaySessionVerified: mockEmitToRelaySessionVerified,
     broadcastToSessionViewers: mockBroadcastToSessionViewers,

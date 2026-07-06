@@ -3,6 +3,7 @@
 
 import {
     getSharedSession,
+    getSharedSessionSummary,
     getLocalTuiSocket,
     emitToRelaySessionVerified,
     broadcastToSessionViewers,
@@ -31,8 +32,10 @@ export function registerMessagingHandlers(socket: RelaySocket): void {
             return;
         }
 
-        const senderSession = await getSharedSession(sessionId);
-        const targetSession = await getSharedSession(targetSessionId);
+        const [senderSession, targetSession] = await Promise.all([
+            getSharedSessionSummary(sessionId),
+            getSharedSessionSummary(targetSessionId),
+        ]);
         if (!targetSession) {
             socket.emit("session_message_error", {
                 targetSessionId,
@@ -147,7 +150,10 @@ export function registerMessagingHandlers(socket: RelaySocket): void {
         const targetSessionId = trigger.targetSessionId;
 
         // Find the target session's relay socket and validate ownership
-        const targetSession = await getSharedSession(targetSessionId);
+        const [senderSession, targetSession] = await Promise.all([
+            getSharedSessionSummary(sessionId),
+            getSharedSessionSummary(targetSessionId),
+        ]);
         if (!targetSession) {
             const error = `Target session ${targetSessionId} is not connected`;
             socket.emit("session_message_error", {
@@ -160,7 +166,6 @@ export function registerMessagingHandlers(socket: RelaySocket): void {
         }
 
         // Validate that the target session belongs to the same user
-        const senderSession = await getSharedSession(sessionId);
         if (!senderSession?.userId || senderSession.userId !== targetSession.userId) {
             socket.emit("error", { message: "Target session belongs to a different user" });
             ack?.({ ok: false, error: "Target session belongs to a different user" });
@@ -284,8 +289,10 @@ export function registerMessagingHandlers(socket: RelaySocket): void {
         }
 
         // Validate that the target session belongs to the same user
-        const senderSession = await getSharedSession(socket.data.sessionId);
-        const targetSession = await getSharedSession(targetSessionId);
+        const [senderSession, targetSession] = await Promise.all([
+            getSharedSessionSummary(socket.data.sessionId),
+            getSharedSessionSummary(targetSessionId),
+        ]);
 
         // If the target session no longer exists (e.g. runner/server restarted
         // and the old child session was already cleaned up), treat the
