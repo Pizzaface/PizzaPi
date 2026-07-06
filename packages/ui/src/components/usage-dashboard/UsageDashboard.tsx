@@ -43,12 +43,17 @@ export function UsageDashboard({ runnerId, onInspectSession }: UsageDashboardPro
         if (!active) return;
 
         if (!response.ok) {
-          const errorData = await response.json();
-          throw new Error(errorData.error || "Failed to fetch usage data");
+          // Proxy errors (e.g. 502) may return non-JSON bodies.
+          const errorData = await response.json().catch(() => null);
+          throw new Error(errorData?.error || `Failed to fetch usage data (HTTP ${response.status})`);
         }
 
         const usageData = await response.json();
-        if (active) setData(usageData);
+        // Guard against unexpected payload shapes so we render the
+        // "No usage data" zero-state instead of crashing downstream.
+        const valid = usageData && typeof usageData === "object" &&
+          usageData.summary && Array.isArray(usageData.daily);
+        if (active) setData(valid ? usageData : null);
       } catch (err) {
         if (!active || controller.signal.aborted) return;
         setError(

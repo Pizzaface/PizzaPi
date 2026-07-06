@@ -237,8 +237,8 @@ function SkillEditorDialog({ runnerId, open, skill, onClose, onSaved }: SkillEdi
                     {!isEditing && (
                         <div className="flex flex-col gap-1.5">
                             <Label htmlFor="skill-name" className="text-sm">
-                                Skill name
-                                <span className="ml-1 text-muted-foreground font-normal">(lowercase, hyphens)</span>
+                                Skill name{" "}
+                                <span className="text-muted-foreground font-normal">(lowercase, hyphens)</span>
                             </Label>
                             <Input
                                 id="skill-name"

@@ -44,7 +44,8 @@ function StatCard({ title, value, subtitle, tooltip }: {
 }
 
 export function SummaryCards({ summary, daily }: SummaryCardsProps) {
-  const avgDailyCost = daily.length > 0 ? daily.reduce((sum, d) => sum + d.cost, 0) / daily.length : 0;
+  const days = daily ?? [];
+  const avgDailyCost = days.length > 0 ? days.reduce((sum, d) => sum + d.cost, 0) / days.length : 0;
 
   return (
     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
@@ -68,7 +69,7 @@ export function SummaryCards({ summary, daily }: SummaryCardsProps) {
       <StatCard
         title="Avg Cost / Active Day"
         value={summary.sessionsWithCost === 0 ? "—" : formatCurrency(avgDailyCost)}
-        subtitle={`across ${daily.length} active day${daily.length === 1 ? "" : "s"}`}
+        subtitle={`across ${days.length} active day${days.length === 1 ? "" : "s"}`}
         tooltip="Average cost per day that had at least one session. Days with no activity are excluded, so this will be higher than a calendar-day average."
       />
     </div>

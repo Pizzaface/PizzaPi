@@ -37,7 +37,7 @@ export function RevealedSecretBanner({
               size="icon"
               className="h-7 w-7 flex-shrink-0"
               onClick={handleCopy}
-              aria-label="Copy"
+              aria-label={copied ? "Copied to clipboard" : "Copy"}
             >
               {copied ? (
                 <Check className="h-3.5 w-3.5 text-green-600" />
@@ -47,7 +47,7 @@ export function RevealedSecretBanner({
             </Button>
           </TooltipTrigger>
           <TooltipContent>
-            <p>Copy</p>
+            <p>{copied ? "Copied!" : "Copy"}</p>
           </TooltipContent>
         </Tooltip>
       </TooltipProvider>

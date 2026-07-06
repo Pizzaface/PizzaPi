@@ -245,8 +245,8 @@ function AgentEditorDialog({ runnerId, open, agent, onClose, onSaved }: AgentEdi
                     {!isEditing && (
                         <div className="flex flex-col gap-1.5">
                             <Label htmlFor="agent-name" className="text-sm">
-                                Agent name
-                                <span className="ml-1 text-muted-foreground font-normal">(lowercase, hyphens)</span>
+                                Agent name{" "}
+                                <span className="text-muted-foreground font-normal">(lowercase, hyphens)</span>
                             </Label>
                             <Input
                                 id="agent-name"
