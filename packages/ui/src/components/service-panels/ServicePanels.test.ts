@@ -22,7 +22,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { resolveNewPanelPosition, resolveActiveTabIdFromIds } from "../../utils/servicePanelUtils";
+import { resolveNewPanelPosition, resolveActiveTabIdFromIds, resolvePanelToggleAction } from "../../utils/servicePanelUtils";
 
 // ── Adding bug: new panel should join the current active group ────────────────
 
@@ -241,5 +241,23 @@ describe("resolveActiveTabIdFromIds — moving bug", () => {
         expect(
             resolveActiveTabIdFromIds(bottomGroupAfterMove, "godmother"),
         ).toBe("godmother");
+    });
+});
+
+// ── Toggle bug: icon click should focus a buried panel, not close it ──────────
+
+describe("resolvePanelToggleAction — toggle bug", () => {
+    test("closes when the panel is the shown tab in its zone", () => {
+        expect(resolvePanelToggleAction(["tunnel", "godmother"], "godmother", "godmother")).toBe("close");
+    });
+
+    test("focuses when another tab in the same zone is on top", () => {
+        expect(resolvePanelToggleAction(["tunnel", "godmother"], "tunnel", "godmother")).toBe("focus");
+    });
+
+    test("closes when the panel is shown via first-tab fallback (active tab in another zone)", () => {
+        // combinedActiveTab is "terminal" (a different zone) → zone shows tabs[0].
+        expect(resolvePanelToggleAction(["godmother", "tunnel"], "terminal", "godmother")).toBe("close");
+        expect(resolvePanelToggleAction(["tunnel", "godmother"], "terminal", "godmother")).toBe("focus");
     });
 });

@@ -40,3 +40,17 @@ export function resolveActiveTabIdFromIds(tabIds: string[], combinedActiveTab: s
     if (tabIds.length === 0) return combinedActiveTab;
     return tabIds.includes(combinedActiveTab) ? combinedActiveTab : tabIds[0]!;
 }
+
+/**
+ * Decide what clicking an open panel's header icon should do.
+ *
+ * - Panel is the tab currently shown in its dock zone → "close" (toggle off).
+ * - Another tab is on top of the same zone → "focus" (bring the panel forward).
+ */
+export function resolvePanelToggleAction(
+    zoneTabIds: string[],
+    combinedActiveTab: string,
+    serviceId: string,
+): "close" | "focus" {
+    return resolveActiveTabIdFromIds(zoneTabIds, combinedActiveTab) === serviceId ? "close" : "focus";
+}
