@@ -78,7 +78,7 @@ function isMatcherType(type: HookType): type is MatcherHookType {
 }
 
 function cloneHooks(hooks: Record<string, any>): Record<string, any> {
-    return JSON.parse(JSON.stringify(hooks ?? {}));
+    return structuredClone(hooks ?? {});
 }
 
 // ── Component ─────────────────────────────────────────────────────────────────

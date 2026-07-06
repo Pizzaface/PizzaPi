@@ -116,11 +116,10 @@ export interface LinkedSessionGroup {
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
-function formatRelativeTime(isoTs: string): string {
-  const now = Date.now();
+function formatRelativeTime(isoTs: string, nowMs: number): string {
   const then = new Date(isoTs).getTime();
   if (isNaN(then)) return isoTs;
-  const diffMs = now - then;
+  const diffMs = nowMs - then;
   const diffSec = Math.floor(diffMs / 1000);
   if (diffSec < 5) return "just now";
   if (diffSec < 60) return `${diffSec}s ago`;
@@ -130,6 +129,18 @@ function formatRelativeTime(isoTs: string): string {
   if (diffHr < 24) return `${diffHr}h ago`;
   const diffDay = Math.floor(diffHr / 24);
   return `${diffDay}d ago`;
+}
+
+/** Renders a relative timestamp that ticks internally every 5s. */
+function RelativeTime({ isoTs }: { isoTs: string }) {
+  const [now, setNow] = React.useState(Date.now);
+
+  React.useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 5_000);
+    return () => clearInterval(timer);
+  }, []);
+
+  return <>{formatRelativeTime(isoTs, now)}</>;
 }
 
 /** Returns a lucide icon for the trigger source */
@@ -589,7 +600,7 @@ function EventRow({ entry }: { entry: TriggerHistoryEntry }) {
         )}
 
         <span className="text-[10px] text-muted-foreground/50 ml-auto shrink-0">
-          {formatRelativeTime(entry.ts)}
+          <RelativeTime isoTs={entry.ts} />
         </span>
 
         {entry.response && (
@@ -621,11 +632,9 @@ function EventRow({ entry }: { entry: TriggerHistoryEntry }) {
 interface LinkedSessionCardProps {
   group: LinkedSessionGroup;
   statusUpdates: Map<string, TriggerStatusUpdate>;
-  /** Force relative times to re-render */
-  tick: number;
 }
 
-function LinkedSessionCard({ group, statusUpdates, tick: _tick }: LinkedSessionCardProps) {
+function LinkedSessionCard({ group, statusUpdates }: LinkedSessionCardProps) {
   const [expanded, setExpanded] = React.useState(false);
   const status = deriveSessionStatus(group);
   const isPending = !!group.pendingTrigger;
@@ -733,7 +742,7 @@ function LinkedSessionCard({ group, statusUpdates, tick: _tick }: LinkedSessionC
                 {!["ask_user_question", "plan_review", "session_complete", "escalate"].includes(group.pendingTrigger!.type) && `Awaiting response to ${group.pendingTrigger!.type}`}
               </span>
               <span className="text-[10px] text-muted-foreground/60 ml-2">
-                {formatRelativeTime(group.pendingTrigger!.ts)}
+                <RelativeTime isoTs={group.pendingTrigger!.ts} />
               </span>
             </div>
           )}
@@ -755,7 +764,7 @@ function LinkedSessionCard({ group, statusUpdates, tick: _tick }: LinkedSessionC
                 Last: <span className="text-muted-foreground/80">{group.lastType}</span>
               </span>
               <span className="text-[10px] text-muted-foreground/40">
-                {formatRelativeTime(group.lastTs)}
+                <RelativeTime isoTs={group.lastTs} />
               </span>
             </div>
           )}
@@ -1729,7 +1738,7 @@ function OtherTriggerRow({ entry }: { entry: TriggerHistoryEntry }) {
             )}
           </div>
           <div className="flex items-center gap-2 mt-0.5">
-            <span className="text-[10px] text-muted-foreground/70">{formatRelativeTime(entry.ts)}</span>
+            <span className="text-[10px] text-muted-foreground/70"><RelativeTime isoTs={entry.ts} /></span>
             {entry.response && (
               <span className="text-[10px] text-emerald-500">
                 ✓ {entry.response.action ?? "responded"}
@@ -1803,10 +1812,9 @@ function OtherSourceGroup({ group }: OtherSourceGroupProps) {
 interface SourceAccordionProps {
   group: SourceGroup;
   statusUpdates: Map<string, TriggerStatusUpdate>;
-  tick: number;
 }
 
-function SourceAccordion({ group, statusUpdates, tick: _tick }: SourceAccordionProps) {
+function SourceAccordion({ group, statusUpdates }: SourceAccordionProps) {
   const [expanded, setExpanded] = React.useState(false);
   const isPending = !!group.pendingTrigger;
 
@@ -1881,7 +1889,7 @@ function SourceAccordion({ group, statusUpdates, tick: _tick }: SourceAccordionP
                 {!["ask_user_question", "plan_review", "session_complete", "escalate"].includes(group.pendingTrigger!.type) && `Awaiting response to ${group.pendingTrigger!.type}`}
               </span>
               <span className="text-[10px] text-muted-foreground/60 ml-2">
-                {formatRelativeTime(group.pendingTrigger!.ts)}
+                <RelativeTime isoTs={group.pendingTrigger!.ts} />
               </span>
             </div>
           )}
@@ -1903,7 +1911,7 @@ function SourceAccordion({ group, statusUpdates, tick: _tick }: SourceAccordionP
                 Last: <span className="text-muted-foreground/80">{group.events[0]?.type}</span>
               </span>
               <span className="text-[10px] text-muted-foreground/40">
-                {formatRelativeTime(group.lastTs)}
+                <RelativeTime isoTs={group.lastTs} />
               </span>
             </div>
           )}
@@ -1960,9 +1968,6 @@ export function TriggersPanel({ sessionId, triggerDefs = [], viewerSocket }: Tri
   // Ephemeral status updates keyed by triggerId
   const [statusUpdates, setStatusUpdates] = React.useState<Map<string, TriggerStatusUpdate>>(new Map());
 
-  // Tick counter for re-rendering relative times
-  const [tick, setTick] = React.useState(0);
-
   const fetchSubscriptions = React.useCallback(async () => {
     try {
       const res = await fetch(
@@ -2014,12 +2019,6 @@ export function TriggersPanel({ sessionId, triggerDefs = [], viewerSocket }: Tri
     const timer = setInterval(() => { void fetchTriggers(true); }, 10_000);
     return () => clearInterval(timer);
   }, [fetchTriggers]);
-
-  // Tick timer for relative time updates (every 5s)
-  React.useEffect(() => {
-    const timer = setInterval(() => { setTick((t) => t + 1); }, 5_000);
-    return () => clearInterval(timer);
-  }, []);
 
   // Instant refresh on trigger_delivered event
   React.useEffect(() => {
@@ -2179,7 +2178,6 @@ export function TriggersPanel({ sessionId, triggerDefs = [], viewerSocket }: Tri
                     key={group.source}
                     group={group}
                     statusUpdates={statusUpdates}
-                    tick={tick}
                   />
                 ))}
               </div>
