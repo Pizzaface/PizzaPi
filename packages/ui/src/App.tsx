@@ -90,7 +90,7 @@ import { PizzaPiNavProvider, type PizzaPiNavActions } from "@/components/sigils/
 import { ServicePanelButtons, useServicePanelState } from "@/components/service-panels/ServicePanels";
 import { SERVICE_PANELS } from "@/components/service-panels/registry";
 import { DynamicLucideIcon } from "@/components/service-panels/lucide-icon";
-import { resolveNewPanelPosition, resolveActiveTabIdFromIds } from "@/utils/servicePanelUtils";
+import { resolveNewPanelPosition, resolveActiveTabIdFromIds, resolvePanelToggleAction } from "@/utils/servicePanelUtils";
 import { IframeServicePanel } from "@/components/service-panels/IframeServicePanel";
 import {
   ModelSelector,
@@ -4301,12 +4301,25 @@ export function App() {
     return () => { viewerSocket.off("service_message", handler); };
   }, [viewerSocket, activeServicePanels, toggleServicePanel]);
 
+  // Always-current ref to the computed panel groups (defined below) so the
+  // toggle handler can check zone contents without a dependency cycle.
+  const panelGroupsRef = React.useRef<Record<PanelPosition, CombinedPanelTab[]> | null>(null);
+
   const handleToggleServicePanel = React.useCallback((serviceId: string, query?: string, fragment?: string) => {
     // When called with nav params on an already-open panel, update params
     // and re-navigate rather than closing.
     const hasNavParams = !!(query || fragment);
     if (activeServicePanels.has(serviceId) && !hasNavParams) {
-      closeServicePanelById(serviceId);
+      // Only close when the panel is the tab actually shown in its dock zone.
+      // If another tab is on top of the same zone, bring this panel forward
+      // instead of closing it.
+      const zoneTabs = panelGroupsRef.current?.[getServicePanelPosition(serviceId)] ?? [];
+      const action = resolvePanelToggleAction(zoneTabs.map(t => t.id), combinedActiveTab, serviceId);
+      if (action === "close") {
+        closeServicePanelById(serviceId);
+      } else {
+        handleCombinedTabChange(serviceId);
+      }
     } else {
       if (!activeServicePanels.has(serviceId)) {
         // Resolve the correct position for the new panel using the shared pure
@@ -4481,6 +4494,7 @@ export function App() {
     for (const tab of servicePanelTabs) groups[getServicePanelPosition(tab.id)].push(tab);
     return groups;
   }, [terminalPanelTab, terminalPosition, filesPanelTab, filesPosition, gitPanelTab, gitPosition, triggersPanelTab, triggersPosition, analyzerPanelTab, analyzerPosition, servicePanelTabs, getServicePanelPosition]);
+  panelGroupsRef.current = panelGroups;
 
   // ── Derived column zone arrays ─────────────────────────────────────────────
   // Each side column orders its zones top→middle→bottom. Middle zone fills the
