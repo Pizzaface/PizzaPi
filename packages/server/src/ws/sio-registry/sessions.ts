@@ -516,7 +516,7 @@ export interface UpdateSessionStateOpts {
 
 /** Update session state (lastState + sessionName detection). */
 export async function updateSessionState(sessionId: string, state: unknown, opts?: UpdateSessionStateOpts): Promise<void> {
-    const session = await getSession(sessionId);
+    const session = await getSessionSummary(sessionId);
     if (!session) return;
 
     // Extract inline base64 images from messages before storing in Redis.
@@ -697,7 +697,7 @@ export async function broadcastSessionEventToViewers(sessionId: string, event: u
  */
 export async function publishSessionEvent(sessionId: string, event: unknown): Promise<number> {
     const io = getIo();
-    const session = await getSession(sessionId);
+    const session = await getSessionSummary(sessionId);
 
     if (session?.isEphemeral) {
         await updateSessionFields(sessionId, { expiresAt: nextEphemeralExpiry() });
@@ -762,7 +762,7 @@ export async function updateSessionHeartbeat(
     sessionId: string,
     heartbeat: Record<string, unknown>,
 ): Promise<void> {
-    const session = await getSession(sessionId);
+    const session = await getSessionSummary(sessionId);
     if (!session) return;
 
     const prevHeartbeat = session.lastHeartbeat ? safeJsonParse(session.lastHeartbeat) : null;
