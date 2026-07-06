@@ -394,7 +394,7 @@ export function NewSessionWizardDialog({
                                 </Button>
                             </div>
                             <p className="text-xs text-muted-foreground">
-                                This is the path on the runner machine.
+                                This is the path on the runner machine. Leave blank to use the runner's default directory.
                             </p>
                         </div>
 

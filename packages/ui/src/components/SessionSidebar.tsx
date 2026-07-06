@@ -1435,7 +1435,8 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                                     }
                                                                   }}
                                                                   className="flex-shrink-0 text-sidebar-foreground/50 hover:text-sidebar-foreground/70 transition-colors cursor-pointer"
-                                                                  aria-label={isExpanded ? "Collapse" : "Expand"}
+                                                                  aria-expanded={isExpanded}
+                                                                  aria-label={isExpanded ? "Collapse linked sessions" : "Expand linked sessions"}
                                                                 >
                                                                   {isExpanded ? (
                                                                     <ChevronDown className="h-4 w-4" />

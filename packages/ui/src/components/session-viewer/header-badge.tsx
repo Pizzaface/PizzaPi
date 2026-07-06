@@ -116,7 +116,7 @@ export function ComposerAttachmentMeta({
 // ── ComposerAttachmentButton ─────────────────────────────────────────────────
 
 /** Paperclip button that opens the file-attachment dialog. */
-export function ComposerAttachmentButton() {
+export function ComposerAttachmentButton({ disabled }: { disabled?: boolean }) {
   const attachments = usePromptInputAttachments();
 
   return (
@@ -125,6 +125,7 @@ export function ComposerAttachmentButton() {
       variant="ghost"
       size="icon"
       className="size-8 shrink-0 text-muted-foreground"
+      disabled={disabled}
       onClick={() => attachments.openFileDialog()}
       title="Add attachments"
       aria-label="Add attachments"

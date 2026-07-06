@@ -78,6 +78,8 @@ export function AuthPage({ onAuthenticated }: AuthPageProps) {
         if (next === "signup" && signupEnabled === false) return;
         setTab(next);
         setError(null);
+        // Don't carry a typed password across sign-in ↔ sign-up.
+        setPassword("");
     }
 
     function handleKeyDown(e: React.KeyboardEvent) {
@@ -185,8 +187,9 @@ export function AuthPage({ onAuthenticated }: AuthPageProps) {
                                 type="email"
                                 placeholder="you@example.com"
                                 value={email}
-                                onChange={(e) => setEmail(e.target.value)}
+                                onChange={(e) => { setEmail(e.target.value); if (error) setError(null); }}
                                 required
+                                aria-invalid={error ? true : undefined}
                                 autoComplete="email"
                                 autoFocus
                             />
@@ -198,8 +201,9 @@ export function AuthPage({ onAuthenticated }: AuthPageProps) {
                                 type="password"
                                 placeholder="••••••••"
                                 value={password}
-                                onChange={(e) => setPassword(e.target.value)}
+                                onChange={(e) => { setPassword(e.target.value); if (error) setError(null); }}
                                 required
+                                aria-invalid={error ? true : undefined}
                                 autoComplete={tab === "signin" ? "current-password" : "new-password"}
                             />
                             {passwordCheck && (
@@ -213,7 +217,7 @@ export function AuthPage({ onAuthenticated }: AuthPageProps) {
                                 </ul>
                             )}
                         </div>
-                        {error && <p className="text-sm text-destructive">{error}</p>}
+                        {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
                     </CardContent>
                     <CardFooter>
                         <Button

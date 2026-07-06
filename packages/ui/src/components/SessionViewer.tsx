@@ -124,6 +124,7 @@ export function SessionViewer({
   onSendInput,
   onExec,
   onShowModelSelector,
+  onNewSession,
   agentActive,
   isCompacting,
   effortLevel,
@@ -746,11 +747,21 @@ export function SessionViewer({
           {/* ── Conversation area ─────────────────────────────────────────── */}
           <div className="relative flex flex-col flex-1 min-h-0">
             {!sessionId ? (
-              <ConversationEmptyState
-                icon={<MessageSquare className="size-8 opacity-40" />}
-                title="No session selected"
-                description="Open the sidebar and pick a session to get started."
-              />
+              <ConversationEmptyState>
+                <MessageSquare className="size-8 opacity-40 text-muted-foreground" aria-hidden="true" />
+                <div className="space-y-1">
+                  <h3 className="font-medium text-sm">No session selected</h3>
+                  <p className="text-muted-foreground text-sm">
+                    Pick a session from the sidebar or start a new one.
+                  </p>
+                </div>
+                {onNewSession && (
+                  <Button size="sm" onClick={onNewSession}>
+                    <Plus className="size-4" />
+                    New session
+                  </Button>
+                )}
+              </ConversationEmptyState>
             ) : shouldShowSessionTranscript(sessionId, viewerStatus, visibleMessages.length > 0) ? (
               <Conversation key={sessionId} className="overflow-x-hidden">
                 <ConversationContent className="w-full gap-0 p-0 py-2">
@@ -1574,7 +1585,7 @@ export function SessionViewer({
                       onExec({ type: "exec", id: `${Date.now()}-${Math.random().toString(16).slice(2)}`, command: "compact" });
                     } : undefined}
                   />
-                  <ComposerAttachmentButton />
+                  <ComposerAttachmentButton disabled={!composerReady} />
                   <ComposerSubmitButton sessionId={sessionId} input={input} agentActive={agentActive} onExec={onExec} isTouchDevice={isTouchDevice} />
                 </div>
               </PromptInputFooter>

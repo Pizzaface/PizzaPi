@@ -4945,6 +4945,7 @@ export function App() {
                         onSendInput={sendSessionInput}
                         onExec={sendRemoteExec}
                         onShowModelSelector={() => setModelSelectorOpen(true)}
+                        onNewSession={handleNewSession}
                         agentActive={agentActive}
                         isCompacting={isCompacting}
                         effortLevel={effortLevel}
