@@ -393,6 +393,12 @@ async function main(): Promise<void> {
     });
     bootTimer.end("[boot] create-session");
 
+    // Deliver ALL queued follow-up messages at once when a turn ends, instead
+    // of pi's default one-at-a-time (which strands later follow-ups until the
+    // next turn ends). Set on the agent directly (not setFollowUpMode) so the
+    // user's global settings.json is left untouched.
+    session.agent.followUpMode = "all";
+
     // ── Inject context tracking entries ───────────────────────────────────
     // Emit non-context custom entries for each identifiable piece of context
     // (global rules, project rules, system prompt, user append prompt) so
@@ -563,6 +569,8 @@ async function main(): Promise<void> {
 
             reload: async () => {
                 await session.reload();
+                // reload() re-syncs queue modes from settings — re-apply.
+                session.agent.followUpMode = "all";
             },
         },
         shutdownHandler: () => {

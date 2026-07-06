@@ -230,7 +230,7 @@ export function SessionViewer({
       new Set([
         "new", "resume", "mcp", "plugins", "skills", "agents", "model",
         "cycle_model", "effort", "cycle_effort", "compact", "name", "copy",
-        "stop", "restart", "remote", "plan", "sandbox",
+        "stop", "restart", "remote", "plan", "sandbox", "goal",
       ]),
     [],
   );

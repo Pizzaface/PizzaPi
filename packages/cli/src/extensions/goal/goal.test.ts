@@ -765,11 +765,12 @@ describe("goalExtension event wiring", () => {
 
         expect(getGoal("session-1")?.status).toBe("active");
         expect(getPendingGuidance("session-1")).toContain("pass");
-        // The goal loop keeps working: a not_met verdict triggers a follow-up turn.
+        // The goal loop keeps working: a not_met verdict triggers another turn,
+        // delivered as a steering message so it isn't stuck behind the queue.
         expect(userMessages.length).toBe(1);
         expect(userMessages[0]!.content).toContain("Goal not met");
         expect(userMessages[0]!.content).toContain("tests pass");
-        expect(userMessages[0]!.options?.deliverAs).toBe("followUp");
+        expect(userMessages[0]!.options?.deliverAs).toBe("steer");
     });
 
     test("turn_end goal met does not auto-continue", async () => {

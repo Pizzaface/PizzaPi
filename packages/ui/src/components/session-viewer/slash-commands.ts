@@ -134,7 +134,7 @@ export function useSlashCommands(
       new Set([
         "new", "resume", "mcp", "plugins", "skills", "agents", "model",
         "cycle_model", "effort", "cycle_effort", "compact", "name", "copy",
-        "stop", "restart", "remote", "plan", "sandbox",
+        "stop", "restart", "remote", "plan", "sandbox", "goal",
       ]),
     [],
   );
@@ -168,6 +168,14 @@ export function useSlashCommands(
       { name: "restart", description: "Restart the CLI process" },
       { name: "plan", description: "Toggle plan mode (read-only exploration)" },
       { name: "sandbox", description: "Show sandbox status" },
+      {
+        name: "goal",
+        description: "Set a goal — /goal \"<condition>\" [--max-turns N] [--max-tokens N] [--max-cost N]",
+        subCommands: [
+          { name: "status", description: "Show the active goal and budget" },
+          { name: "clear", description: "Clear the active goal" },
+        ],
+      },
     ],
     [],
   );
@@ -587,6 +595,17 @@ export function useSlashCommands(
             }
           }
         }
+        setInput("");
+        setCommandOpen(false);
+        setCommandQuery("");
+        return true;
+      }
+
+      // /goal is executed by the runner's goal extension — forward the raw
+      // text as input so sub-command clicks (status/clear) actually dispatch.
+      if (rawCommand === "goal") {
+        if (!onSendInput) return false;
+        void onSendInput({ text: trimmed, files: [] });
         setInput("");
         setCommandOpen(false);
         setCommandQuery("");
