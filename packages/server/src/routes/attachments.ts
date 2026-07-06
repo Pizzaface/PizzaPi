@@ -12,6 +12,52 @@ import {
 import type { RouteHandler } from "./types.js";
 
 /**
+ * MIME types safe to serve inline — rendered by the browser without any
+ * possibility of script execution.  Everything else (notably text/html,
+ * image/svg+xml, application/javascript, …) is served as
+ * application/octet-stream with attachment disposition.
+ *
+ * Attachment MIME types are attacker-influenced: uploads take the client's
+ * file.type verbatim, and extracted images take the MIME type embedded in
+ * agent tool output.  Serving those as the Content-Type verbatim is a stored
+ * XSS vector on the API origin.
+ */
+const SAFE_INLINE_MIME = new Set([
+    "image/png",
+    "image/jpeg",
+    "image/gif",
+    "image/webp",
+    "image/avif",
+    "image/bmp",
+    "image/x-icon",
+    "image/vnd.microsoft.icon",
+    "image/tiff",
+    "application/pdf",
+    "text/plain",
+    "video/mp4",
+    "video/webm",
+    "audio/mpeg",
+    "audio/ogg",
+    "audio/wav",
+]);
+
+/**
+ * Resolve the Content-Type and disposition to serve for a stored attachment.
+ * Unsafe or unknown MIME types are downgraded to a non-renderable type and
+ * forced to download.
+ */
+export function resolveServedContentType(storedMimeType: string): {
+    contentType: string;
+    disposition: "inline" | "attachment";
+} {
+    const base = storedMimeType.split(";")[0]?.trim().toLowerCase() ?? "";
+    if (SAFE_INLINE_MIME.has(base)) {
+        return { contentType: base, disposition: "inline" };
+    }
+    return { contentType: "application/octet-stream", disposition: "attachment" };
+}
+
+/**
  * Strip ASCII control characters (0x00–0x1F and 0x7F) from a string.
  *
  * HTTP header values must not contain raw control characters — Bun throws
@@ -163,17 +209,17 @@ export const handleAttachmentsRoute: RouteHandler = async (req, url) => {
             return Response.json({ error: "Forbidden" }, { status: 403 });
         }
 
-        // SVGs can carry embedded scripts and execute them when rendered inline by
-        // the browser (e.g. inside an <img> or directly navigated to).  Force the
-        // browser to download SVG files rather than render them by overriding the
-        // MIME type to a non-renderable type and using attachment disposition.
-        const isSvg = attachment.mimeType === "image/svg+xml";
-        const servedMimeType = isSvg ? "application/octet-stream" : attachment.mimeType;
-        const dispositionMode = isSvg ? "attachment" : "inline";
+        // Only a fixed allowlist of non-scriptable MIME types is served inline.
+        // Everything else (SVG with embedded scripts, text/html, …) is forced
+        // to download as application/octet-stream — the stored MIME type is
+        // attacker-influenced and serving it verbatim is a stored XSS vector.
+        const { contentType: servedMimeType, disposition: dispositionMode } =
+            resolveServedContentType(attachment.mimeType);
 
         return new Response(Bun.file(attachment.filePath), {
             headers: {
                 "content-type": servedMimeType,
+                "x-content-type-options": "nosniff",
                 "content-length": String(attachment.size),
                 "content-disposition": buildContentDisposition(attachment.filename, dispositionMode),
                 "x-attachment-id": attachment.attachmentId,

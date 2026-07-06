@@ -1,5 +1,36 @@
 import { describe, test, expect } from "bun:test";
-import { buildContentDisposition, encodeHeaderFilename, rfc5987Encode, sanitizeControlChars } from "./attachments";
+import { buildContentDisposition, encodeHeaderFilename, resolveServedContentType, rfc5987Encode, sanitizeControlChars } from "./attachments";
+
+describe("resolveServedContentType", () => {
+    test("serves safe image types inline", () => {
+        expect(resolveServedContentType("image/png")).toEqual({ contentType: "image/png", disposition: "inline" });
+        expect(resolveServedContentType("image/jpeg")).toEqual({ contentType: "image/jpeg", disposition: "inline" });
+    });
+
+    test("normalizes case and parameters", () => {
+        expect(resolveServedContentType("IMAGE/PNG")).toEqual({ contentType: "image/png", disposition: "inline" });
+        expect(resolveServedContentType("image/png; charset=utf-8")).toEqual({
+            contentType: "image/png",
+            disposition: "inline",
+        });
+    });
+
+    test("forces SVG to download (embedded script risk)", () => {
+        expect(resolveServedContentType("image/svg+xml")).toEqual({
+            contentType: "application/octet-stream",
+            disposition: "attachment",
+        });
+    });
+
+    test("forces scriptable/unknown types to download (Content-Type injection)", () => {
+        for (const evil of ["text/html", "text/html; charset=utf-8", "application/javascript", "application/xhtml+xml", "text/xml", "", "garbage"]) {
+            expect(resolveServedContentType(evil)).toEqual({
+                contentType: "application/octet-stream",
+                disposition: "attachment",
+            });
+        }
+    });
+});
 
 describe("sanitizeControlChars", () => {
     test("strips null byte", () => {
