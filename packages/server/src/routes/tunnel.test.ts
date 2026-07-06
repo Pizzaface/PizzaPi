@@ -12,6 +12,20 @@ import {
     rewriteTunnelCss,
     proxyTunnelRequestViaRelay,
 } from "./tunnel";
+import { safeDecodePathComponent } from "./tunnel";
+
+describe("safeDecodePathComponent", () => {
+    test("decodes valid percent-encoding", () => {
+        expect(safeDecodePathComponent("session%20id")).toBe("session id");
+        expect(safeDecodePathComponent("plain")).toBe("plain");
+    });
+
+    test("returns empty string on malformed percent-encoding instead of throwing", () => {
+        expect(safeDecodePathComponent("%E0%A4%A")).toBe("");
+        expect(safeDecodePathComponent("%")).toBe("");
+        expect(safeDecodePathComponent("%ZZ")).toBe("");
+    });
+});
 
 describe("tunnel route URL rewriting", () => {
     test("getTunnelBasePath builds the session-scoped proxy prefix", () => {
