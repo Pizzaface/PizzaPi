@@ -126,13 +126,23 @@ function formatTime(iso: string): string {
 function SessionsList({
     sessions,
     onOpenSession,
+    onNewSession,
 }: {
     sessions: LiveSession[];
     onOpenSession?: (sessionId: string) => void;
+    onNewSession?: () => void;
 }) {
     if (sessions.length === 0) {
         return (
-            <p className="text-center text-xs text-muted-foreground py-8">No sessions</p>
+            <div className="flex flex-col items-center gap-3 py-8">
+                <p className="text-center text-xs text-muted-foreground">No sessions on this runner yet</p>
+                {onNewSession && (
+                    <Button variant="outline" size="sm" onClick={onNewSession}>
+                        <Plus className="h-3.5 w-3.5 mr-1" />
+                        Start a session
+                    </Button>
+                )}
+            </div>
         );
     }
 
@@ -370,7 +380,7 @@ export function RunnerDetailPanel({
     let tabContent: React.ReactNode;
     switch (activeTab) {
         case "sessions":
-            tabContent = <SessionsList sessions={sessions} onOpenSession={onOpenSession} />;
+            tabContent = <SessionsList sessions={sessions} onOpenSession={onOpenSession} onNewSession={onNewSession} />;
             break;
         case "skills":
             tabContent = (

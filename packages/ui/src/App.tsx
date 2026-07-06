@@ -4701,7 +4701,7 @@ export function App() {
             <ModelSelectorEmpty>
               {availableModels.length > 0 && visibleModels.length === 0
                 ? "All models are hidden. Manage visibility in settings."
-                : "No configured models available."}
+                : "No models configured. Add provider credentials on the runner (API keys or provider login) to see models here."}
             </ModelSelectorEmpty>
             {Array.from(modelGroups.entries()).map(([provider, models]) => (
               <ModelSelectorGroup key={provider} heading={provider}>

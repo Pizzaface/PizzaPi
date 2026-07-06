@@ -1380,6 +1380,13 @@ export function SessionViewer({
                           }
                           return;
                         }
+                        // Nothing selectable (empty or error state) — swallow Enter
+                        // so the raw "@query" isn't sent, and close the picker so
+                        // the next Enter submits normally.
+                        event.preventDefault();
+                        event.stopPropagation();
+                        handleAtMentionClose();
+                        return;
                       }
 
                       if (commandOpen) {

@@ -103,7 +103,7 @@ export function HooksManager({ runnerId, bare }: HooksManagerProps) {
         setLoading(true);
         setError(null);
         try {
-            const res = await fetch(`/api/runners/${encodeURIComponent(runnerId)}/settings`);
+            const res = await fetch(`/api/runners/${encodeURIComponent(runnerId)}/settings`, { signal: AbortSignal.timeout(15_000) });
             if (!res.ok) {
                 const body = await res.json().catch(() => ({}));
                 throw new Error(body.error ?? `HTTP ${res.status}`);
