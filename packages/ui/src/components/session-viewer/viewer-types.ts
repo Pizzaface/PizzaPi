@@ -10,7 +10,15 @@ import type { MetaGoalStatus } from "@pizzapi/protocol";
 export type { RelayMessage, TodoItem, TokenUsage, QueuedMessage, ResumeSessionOption };
 
 /** A command entry (from availableCommands prop or derived lists). */
-export type CmdEntry = { name: string; description?: string; source?: string };
+export type CmdEntry = {
+  name: string;
+  description?: string;
+  source?: string;
+  /** TUI-style argument hint, e.g. "[pr-number]" (from plugin frontmatter). */
+  argumentHint?: string;
+  /** Snapshot of the command's argument completions (TUI autocomplete parity). */
+  completions?: Array<{ value: string; label?: string; description?: string }>;
+};
 
 export interface SessionViewerProps {
   sessionId: string | null;

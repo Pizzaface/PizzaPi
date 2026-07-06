@@ -1122,13 +1122,16 @@ export function SessionViewer({
                               <CommandItem key={cmd.name} value={cmd.name} onSelect={() => {
                                 setInput(`/${cmd.name} `);
                                 setCommandQuery("");
-                                setCommandOpen(false);
+                                setCommandOpen(keepPopoverOpenNames.has(cmd.name.toLowerCase()));
                                 requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>("[data-pp-prompt]")?.focus());
                               }}>
                                 <div className="flex w-full items-center justify-between gap-2">
                                   <div className="flex items-center gap-1.5 min-w-0">
                                     <Puzzle className="size-3.5 shrink-0 text-primary/60" />
                                     <span className="font-mono text-sm truncate">/{cmd.name}</span>
+                                    {cmd.argumentHint && (
+                                      <span className="font-mono text-xs text-muted-foreground/70 truncate">{cmd.argumentHint}</span>
+                                    )}
                                   </div>
                                   {cmd.description && <span className="text-xs text-muted-foreground truncate max-w-[50%]">{cmd.description}</span>}
                                 </div>

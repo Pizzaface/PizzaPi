@@ -127,6 +127,12 @@ function registerPluginCommand(
 
     pi.registerCommand(cmd.name, {
         description: cmd.frontmatter.description ?? `[${plugin.name}] ${cmd.name}`,
+        // Not part of pi's RegisteredCommand type, but preserved by
+        // getRegisteredCommands() spread — surfaces the plugin's
+        // `argument-hint` frontmatter in the web UI command popover.
+        ...(cmd.frontmatter["argument-hint"]
+            ? { argumentHint: cmd.frontmatter["argument-hint"] }
+            : {}),
         handler: async (args, ctx) => {
             let prompt = expandArguments(templateContent, args);
 

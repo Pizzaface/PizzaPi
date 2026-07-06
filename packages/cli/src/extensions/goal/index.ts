@@ -296,6 +296,15 @@ async function runGoalStopCheck(
 export const goalExtension: ExtensionFactory = (pi) => {
     pi.registerCommand("goal", {
         description: "Set a success condition and optional budget for the session",
+        getArgumentCompletions: (prefix: string) => {
+            const options = [
+                { value: "status", label: "status", description: "Show the active goal and budget" },
+                { value: "clear", label: "clear", description: "Clear the active goal" },
+            ];
+            const p = prefix.trim().toLowerCase();
+            const filtered = p ? options.filter((o) => o.value.startsWith(p)) : options;
+            return filtered.length ? filtered : null;
+        },
         handler: async (args, ctx) => {
             const result = handleGoalCommand(args, ctx, pi);
             pi.sendMessage({

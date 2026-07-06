@@ -46,6 +46,16 @@ export const sandboxEventsExtension: ExtensionFactory = (pi) => {
     // ── /sandbox slash command ─────────────────────────────────────────────
     pi.registerCommand?.("sandbox", {
         description: "Show sandbox status, violations, and config. Subcommands: status (default), violations, config",
+        getArgumentCompletions: (prefix: string) => {
+            const options = [
+                { value: "status", label: "status", description: "Show sandbox status (default)" },
+                { value: "violations", label: "violations", description: "List sandbox violations" },
+                { value: "config", label: "config", description: "Show sandbox configuration" },
+            ];
+            const p = prefix.trim().toLowerCase();
+            const filtered = p ? options.filter((o) => o.value.startsWith(p)) : options;
+            return filtered.length ? filtered : null;
+        },
         handler: async (_args: string, ctx: any) => {
             const subcommand = (_args ?? "").trim().split(/\s+/)[0] || "status";
 
