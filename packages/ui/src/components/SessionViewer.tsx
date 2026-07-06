@@ -929,6 +929,10 @@ export function SessionViewer({
                 questions={pendingQuestion.questions}
                 promptKey={pendingQuestion.toolCallId}
                 className="mb-2"
+                onCancel={onExec ? () => {
+                  onExec({ type: "exec", id: `${Date.now()}-${Math.random().toString(16).slice(2)}`, command: "abort" });
+                  onQuestionDismiss?.();
+                } : undefined}
                 onSubmit={(answers) => {
                   if (!onSendInput) return Promise.resolve(false);
                   setComposerError(null);
