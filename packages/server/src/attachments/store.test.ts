@@ -1,5 +1,21 @@
 import { describe, expect, test } from "bun:test";
-import { sanitizeFilename, sanitizeStoredFilename, attachmentMaxFileSizeBytes } from "./store";
+import { normalizeExtractedImageMimeType, sanitizeFilename, sanitizeStoredFilename, attachmentMaxFileSizeBytes } from "./store";
+
+describe("normalizeExtractedImageMimeType", () => {
+    test("passes through plain image types", () => {
+        expect(normalizeExtractedImageMimeType("image/png")).toBe("image/png");
+        expect(normalizeExtractedImageMimeType("image/svg+xml")).toBe("image/svg+xml");
+        expect(normalizeExtractedImageMimeType("image/jpeg; charset=binary")).toBe("image/jpeg; charset=binary");
+    });
+
+    test("rejects non-image and malformed types", () => {
+        expect(normalizeExtractedImageMimeType("text/html")).toBe("application/octet-stream");
+        expect(normalizeExtractedImageMimeType("text/html; charset=utf-8")).toBe("application/octet-stream");
+        expect(normalizeExtractedImageMimeType("application/javascript")).toBe("application/octet-stream");
+        expect(normalizeExtractedImageMimeType("image/")).toBe("application/octet-stream");
+        expect(normalizeExtractedImageMimeType("")).toBe("application/octet-stream");
+    });
+});
 
 describe("sanitizeFilename", () => {
     test("preserves safe characters", () => {
