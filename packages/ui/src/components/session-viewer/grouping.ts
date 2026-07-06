@@ -628,6 +628,8 @@ export function groupToolExecutionMessages(messages: RelayMessage[]): RelayMessa
   const pendingToolCalls: PendingToolCall[] = [];
 
   const grouped: RelayMessage[] = [];
+  const emittedKeys = new Set<string>();
+  const emittedAssistantBases = new Set<string>();
 
   for (const message of deduped) {
     if (message.role === "assistant" && Array.isArray(message.content)) {
@@ -655,11 +657,14 @@ export function groupToolExecutionMessages(messages: RelayMessage[]): RelayMessa
           }
         }
 
+        const partKey = `${message.key}:assistant:${assistantPartIndex++}`;
         grouped.push({
           ...message,
-          key: `${message.key}:assistant:${assistantPartIndex++}`,
+          key: partKey,
           content: buffer,
         });
+        emittedKeys.add(partKey);
+        emittedAssistantBases.add(message.key);
         buffer = [];
         pendingThinking = null;
       };
@@ -735,6 +740,7 @@ export function groupToolExecutionMessages(messages: RelayMessage[]): RelayMessa
               thinking: pendingText,
               thinkingDuration: pendingDuration,
             });
+            emittedKeys.add(itemKey);
           }
 
           pendingThinking = null; // Consumed
@@ -751,9 +757,10 @@ export function groupToolExecutionMessages(messages: RelayMessage[]): RelayMessa
       // no visible content blocks, make sure it still appears in the output so the
       // error banner renders.
       if (message.stopReason === "error" && message.errorMessage) {
-        const alreadyEmitted = grouped.some((g) => g.key === message.key || g.key.startsWith(`${message.key}:assistant:`));
+        const alreadyEmitted = emittedKeys.has(message.key) || emittedAssistantBases.has(message.key);
         if (!alreadyEmitted) {
           grouped.push(message);
+          emittedKeys.add(message.key);
         }
       }
       continue;
@@ -837,10 +844,12 @@ export function groupToolExecutionMessages(messages: RelayMessage[]): RelayMessa
         toolInput: resolvedArgs,
         toolCallId: resolvedToolCallId,
       });
+      emittedKeys.add(message.key);
       continue;
     }
 
     grouped.push(message);
+    emittedKeys.add(message.key);
   }
 
   // Deduplicate by key — snapshots may contain both a streaming partial and the

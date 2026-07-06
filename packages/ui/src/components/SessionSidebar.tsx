@@ -806,14 +806,21 @@ export const SessionSidebar = React.memo(function SessionSidebar({
             runnerMap.get(key)!.sessions.push(s);
         }
 
+        // Pre-parse timestamps once so comparators don't re-parse on every
+        // comparison (O(log n) per sort) and every heartbeat memo recomputation.
+        const tsBySession = new Map<string, number>();
+        for (const s of liveSessions) {
+            tsBySession.set(s.sessionId, Date.parse(s.lastHeartbeatAt ?? s.startedAt));
+        }
+
         // Step 2: sort sessions within each runner — pinned first, then by most recently active/started.
         for (const entry of runnerMap.values()) {
             entry.sessions.sort((a, b) => {
                 const aPinned = pinnedSessionIds.has(a.sessionId) ? 1 : 0;
                 const bPinned = pinnedSessionIds.has(b.sessionId) ? 1 : 0;
                 if (bPinned !== aPinned) return bPinned - aPinned;
-                const aT = Date.parse(a.lastHeartbeatAt ?? a.startedAt);
-                const bT = Date.parse(b.lastHeartbeatAt ?? b.startedAt);
+                const aT = tsBySession.get(a.sessionId) ?? 0;
+                const bT = tsBySession.get(b.sessionId) ?? 0;
                 return (Number.isFinite(bT) ? bT : 0) - (Number.isFinite(aT) ? aT : 0);
             });
         }
@@ -852,7 +859,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                 if (pinDiff !== 0) return pinDiff;
                 const latestTs = (grp: ProjectGroup) =>
                     Math.max(0, ...grp.sessions
-                        .map((s) => Date.parse(s.lastHeartbeatAt ?? s.startedAt))
+                        .map((s) => tsBySession.get(s.sessionId) ?? 0)
                         .filter(Number.isFinite));
                 return latestTs(b) - latestTs(a);
             });
