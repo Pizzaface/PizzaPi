@@ -16,6 +16,7 @@ import { getCurrentTodoList } from "../update-todo.js";
 import { isDisabled, toWebSocketBaseUrl } from "./connection.js";
 import type { RelayContext, RelayModelInfo, TriggerResponse } from "../remote-types.js";
 import { getActiveGoalFromEntries, toMetaGoalStatus } from "../goal/state.js";
+import { getCommandIntrospection } from "../command-introspection.js";
 import type { RemoteExecResponse } from "../remote-commands.js";
 import type { ConversationTrigger } from "../triggers/types.js";
 import { isCancelTriggerAction } from "../remote-trigger-response.js";
@@ -160,13 +161,27 @@ export function createRelayContext(
             return buildHeartbeat(rctx);
         },
 
-        getAvailableCommands(): Array<{ name: string; description?: string; source?: string }> {
+        getAvailableCommands(): Array<{
+            name: string;
+            description?: string;
+            source?: string;
+            argumentHint?: string;
+            completions?: Array<{ value: string; label?: string; description?: string }>;
+        }> {
             if (!rctx.latestCtx) return [];
-            return ((pi as any).getCommands?.() ?? []).map((c: any) => ({
-                name: c.name,
-                description: c.description,
-                source: c.source,
-            }));
+            // Argument hints + completions come from the resolved command registry
+            // (worker-provided) so the web UI popover matches TUI autocomplete.
+            const introspection = getCommandIntrospection();
+            return ((pi as any).getCommands?.() ?? []).map((c: any) => {
+                const extra = introspection.get(c.name);
+                return {
+                    name: c.name,
+                    description: c.description,
+                    source: c.source,
+                    ...(extra?.argumentHint ? { argumentHint: extra.argumentHint } : {}),
+                    ...(extra?.completions?.length ? { completions: extra.completions } : {}),
+                };
+            });
         },
 
         buildCapabilitiesState() {

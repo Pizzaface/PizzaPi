@@ -134,7 +134,7 @@ export function useSlashCommands(
       new Set([
         "new", "resume", "mcp", "plugins", "skills", "agents", "model",
         "cycle_model", "effort", "cycle_effort", "compact", "name", "copy",
-        "stop", "restart", "remote", "plan", "sandbox",
+        "stop", "restart", "remote", "plan", "sandbox", "goal",
       ]),
     [],
   );
@@ -167,7 +167,23 @@ export function useSlashCommands(
       { name: "stop", description: "Abort current generation" },
       { name: "restart", description: "Restart the CLI process" },
       { name: "plan", description: "Toggle plan mode (read-only exploration)" },
-      { name: "sandbox", description: "Show sandbox status" },
+      {
+        name: "sandbox",
+        description: "Show sandbox status",
+        subCommands: [
+          { name: "status", description: "Show sandbox status (default)" },
+          { name: "violations", description: "List sandbox violations" },
+          { name: "config", description: "Show sandbox configuration" },
+        ],
+      },
+      {
+        name: "goal",
+        description: "Set a goal — /goal \"<condition>\" [--max-turns N] [--max-tokens N] [--max-cost N]",
+        subCommands: [
+          { name: "status", description: "Show the active goal and budget" },
+          { name: "clear", description: "Clear the active goal" },
+        ],
+      },
     ],
     [],
   );
@@ -181,13 +197,32 @@ export function useSlashCommands(
     return names;
   }, [supportedWebCommands, extensionCommands, skillCommands, promptCommands]);
 
-  const keepPopoverOpenNames = React.useMemo(() => {
-    const names = new Set(["resume", "agents"]);
+  // Sub-command lists per command: static web entries plus runner-provided
+  // argument completions on extension/plugin commands (TUI autocomplete parity).
+  const subCommandsByName = React.useMemo(() => {
+    const map = new Map<string, SupportedSubCommand[]>();
     for (const c of supportedWebCommands) {
-      if (c.subCommands && c.subCommands.length > 0) names.add(c.name.toLowerCase());
+      if (c.subCommands && c.subCommands.length > 0) map.set(c.name.toLowerCase(), c.subCommands);
     }
+    for (const c of extensionCommands) {
+      const key = c.name.toLowerCase();
+      if (!c.completions?.length || map.has(key)) continue;
+      map.set(
+        key,
+        c.completions.map((i) => ({
+          name: i.value,
+          description:
+            i.description ?? (i.label && i.label !== i.value ? i.label : ""),
+        })),
+      );
+    }
+    return map;
+  }, [supportedWebCommands, extensionCommands]);
+
+  const keepPopoverOpenNames = React.useMemo(() => {
+    const names = new Set(["resume", "agents", ...subCommandsByName.keys()]);
     return names;
-  }, [supportedWebCommands]);
+  }, [subCommandsByName]);
 
   // Reset all command picker state when the active session changes
   React.useEffect(() => {
@@ -270,22 +305,20 @@ export function useSlashCommands(
       return { active: false, parentCommand: "", subCommands: [], query: "", filtered: [] };
     const cmdName = match[1]!.toLowerCase();
     const argText = (match[2] ?? "").trim().toLowerCase();
-    const cmd = supportedWebCommands.find(
-      (c) => c.name.toLowerCase() === cmdName && c.subCommands && c.subCommands.length > 0,
-    );
-    if (!cmd?.subCommands)
+    const subCommands = subCommandsByName.get(cmdName);
+    if (!subCommands)
       return { active: false, parentCommand: "", subCommands: [], query: "", filtered: [] };
     const filtered = argText
-      ? cmd.subCommands.filter((sc) => sc.name.toLowerCase().includes(argText))
-      : cmd.subCommands;
+      ? subCommands.filter((sc) => sc.name.toLowerCase().includes(argText))
+      : subCommands;
     return {
       active: true,
-      parentCommand: cmd.name,
-      subCommands: cmd.subCommands,
+      parentCommand: match[1]!,
+      subCommands,
       query: argText,
       filtered,
     };
-  }, [trimmedInput, isResumeMode, isAgentMode, supportedWebCommands]);
+  }, [trimmedInput, isResumeMode, isAgentMode, subCommandsByName]);
 
   // Request resume sessions list when entering resume mode
   React.useEffect(() => {
@@ -480,7 +513,16 @@ export function useSlashCommands(
       }
 
       if (rawCommand === "sandbox") {
-        if (args.trim()) return false;
+        if (args.trim()) {
+          // Sub-commands (violations/config) are handled by the runner's
+          // sandbox extension — forward as raw input.
+          if (!onSendInput) return false;
+          void onSendInput({ text: trimmed, files: [] });
+          setInput("");
+          setCommandOpen(false);
+          setCommandQuery("");
+          return true;
+        }
         if (!runnerId) {
           setInput("");
           setCommandOpen(false);
@@ -587,6 +629,34 @@ export function useSlashCommands(
             }
           }
         }
+        setInput("");
+        setCommandOpen(false);
+        setCommandQuery("");
+        return true;
+      }
+
+      // /remote manages the runner's relay connection — running it from the
+      // web UI (which is connected *through* that relay) would sever the
+      // session, so it is intentionally blocked here.
+      if (rawCommand === "remote") {
+        setInput("");
+        setCommandOpen(false);
+        setCommandQuery("");
+        onAppendSystemMessage?.(
+          "**/remote** manages the runner's relay connection and isn't available from the web UI.",
+        );
+        return true;
+      }
+
+      // Commands executed by runner extensions (/goal, /tool-search, plugin
+      // commands, …) — forward the raw text as input so sub-command clicks
+      // actually dispatch instead of being silently dropped.
+      const isExtensionCommand = extensionCommands.some(
+        (c) => c.name.toLowerCase() === rawCommand,
+      );
+      if (rawCommand === "goal" || isExtensionCommand) {
+        if (!onSendInput) return false;
+        void onSendInput({ text: trimmed, files: [] });
         setInput("");
         setCommandOpen(false);
         setCommandQuery("");
@@ -718,6 +788,7 @@ export function useSlashCommands(
       runnerId,
       onAppendSystemMessage,
       skillCommands,
+      extensionCommands,
       sessionCwd,
       onShowModelSelector,
       isCompacting,

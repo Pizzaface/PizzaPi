@@ -282,10 +282,11 @@ async function runGoalStopCheck(
         // Goal loop: a "not met" verdict starts another turn instead of
         // returning control to the user (parity with Claude Code /goal).
         // "uncertain" verdicts do NOT auto-continue, so a broken evaluator
-        // can't spin the session forever.
+        // can't spin the session forever. Delivered as "steer" so the goal
+        // notification is never stuck behind the follow-up queue.
         pi.sendUserMessage(
             `[Goal not met] ${lastEval.reason}\nContinue working toward the goal: ${state.condition.description}`,
-            { deliverAs: "followUp" },
+            { deliverAs: "steer" },
         );
     } else {
         clearPendingGuidance(sessionId);
@@ -295,6 +296,15 @@ async function runGoalStopCheck(
 export const goalExtension: ExtensionFactory = (pi) => {
     pi.registerCommand("goal", {
         description: "Set a success condition and optional budget for the session",
+        getArgumentCompletions: (prefix: string) => {
+            const options = [
+                { value: "status", label: "status", description: "Show the active goal and budget" },
+                { value: "clear", label: "clear", description: "Clear the active goal" },
+            ];
+            const p = prefix.trim().toLowerCase();
+            const filtered = p ? options.filter((o) => o.value.startsWith(p)) : options;
+            return filtered.length ? filtered : null;
+        },
         handler: async (args, ctx) => {
             const result = handleGoalCommand(args, ctx, pi);
             pi.sendMessage({
@@ -308,7 +318,7 @@ export const goalExtension: ExtensionFactory = (pi) => {
                 // itself as the directive (parity with Claude Code /goal).
                 pi.sendUserMessage(
                     `Work toward this goal until it is met: ${result.state.condition.description}`,
-                    { deliverAs: "followUp" },
+                    { deliverAs: "steer" },
                 );
             }
         },

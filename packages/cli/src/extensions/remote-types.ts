@@ -229,7 +229,13 @@ export interface RelayContext {
     buildHeartbeat(): any;
     buildCapabilitiesState(): any;
     getConfiguredModels(): RelayModelInfo[];
-    getAvailableCommands(): Array<{ name: string; description?: string; source?: string }>;
+    getAvailableCommands(): Array<{
+        name: string;
+        description?: string;
+        source?: string;
+        argumentHint?: string;
+        completions?: Array<{ value: string; label?: string; description?: string }>;
+    }>;
     getCurrentSessionName(): string | null;
     getCurrentThinkingLevel(): string | null;
 

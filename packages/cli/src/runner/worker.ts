@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { maybeBuildSystemPrompt, defaultAgentDir, expandHome, loadConfig, resolveSandboxConfig, validateSandboxOverride, applyProviderSettingsEnv } from "../config.js";
 import { buildSkillPaths, buildPromptTemplatePaths, createAgentsFilesOverride } from "../skills.js";
 import { getPluginSkillPaths } from "../extensions/claude-plugins.js";
+import { setRegisteredCommandsProvider } from "../extensions/command-introspection.js";
 import { initSandbox, cleanupSandbox, isSandboxActive } from "@pizzapi/tools";
 import { createBootTimer } from "./boot-timing.js";
 import { setLogComponent, setLogSessionId, logInfo, logWarn, logError, logAuth } from "./logger.js";
@@ -393,6 +394,18 @@ async function main(): Promise<void> {
     });
     bootTimer.end("[boot] create-session");
 
+    // Deliver ALL queued follow-up messages at once when a turn ends, instead
+    // of pi's default one-at-a-time (which strands later follow-ups until the
+    // next turn ends). Set on the agent directly (not setFollowUpMode) so the
+    // user's global settings.json is left untouched.
+    session.agent.followUpMode = "all";
+
+    // Expose resolved commands (argument hints + completions) so the remote
+    // extension can forward them to the web UI command popover (TUI parity).
+    setRegisteredCommandsProvider(
+        () => (session.extensionRunner as any)?.getRegisteredCommands?.() ?? [],
+    );
+
     // ── Inject context tracking entries ───────────────────────────────────
     // Emit non-context custom entries for each identifiable piece of context
     // (global rules, project rules, system prompt, user append prompt) so
@@ -563,6 +576,8 @@ async function main(): Promise<void> {
 
             reload: async () => {
                 await session.reload();
+                // reload() re-syncs queue modes from settings — re-apply.
+                session.agent.followUpMode = "all";
             },
         },
         shutdownHandler: () => {
