@@ -959,64 +959,69 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
             ts,
         };
 
-        let delivered = 0;
-        for (const targetSessionId of subscriberIds) {
-            const targetSession = await getSharedSession(targetSessionId);
-            // Only deliver to sessions belonging to the same user (ownership check)
-            // and sessions that are actually connected.
-            if (!targetSession || targetSession.userId !== identity.userId) continue;
+        // Process all subscribers concurrently. Each subscriber's filtering,
+        // ownership check, and delivery are independent; the only shared result
+        // is the delivered count, which is summed from per-subscriber booleans.
+        const deliveredResults = await Promise.all(
+            subscriberIds.map(async (targetSessionId) => {
+                const targetSession = await getSharedSession(targetSessionId);
+                // Only deliver to sessions belonging to the same user (ownership check)
+                // and sessions that are actually connected.
+                if (!targetSession || targetSession.userId !== identity.userId) return false;
 
-            // Filter by subscription filters (based on output schema fields).
-            // New subscriptions always have a filterData result (even with filters=[]).
-            // Legacy subscriptions return undefined and fall back to param matching.
-            const filterData = normalizeFilterRecords(await getSubscriptionFilters(targetSessionId, body.type));
-            if (filterData) {
-                const matchedAny = filterData.length === 0 || filterData.some((record) => filterRecordMatchesPayload(body.payload, record));
-                if (!matchedAny) continue;
-            } else {
-                const subParams = await getSubscriptionParams(targetSessionId, body.type);
-                if (subParams) {
-                    const legacyFilters = legacyParamsToFilters(subParams);
-                    if (!payloadMatchesFilters(body.payload, legacyFilters, "and")) continue;
+                // Filter by subscription filters (based on output schema fields).
+                // New subscriptions always have a filterData result (even with filters=[]).
+                // Legacy subscriptions return undefined and fall back to param matching.
+                const filterData = normalizeFilterRecords(await getSubscriptionFilters(targetSessionId, body.type));
+                if (filterData) {
+                    const matchedAny = filterData.length === 0 || filterData.some((record) => filterRecordMatchesPayload(body.payload, record));
+                    if (!matchedAny) return false;
+                } else {
+                    const subParams = await getSubscriptionParams(targetSessionId, body.type);
+                    if (subParams) {
+                        const legacyFilters = legacyParamsToFilters(subParams);
+                        if (!payloadMatchesFilters(body.payload, legacyFilters, "and")) return false;
+                    }
                 }
-            }
 
-            const historyEntry = {
-                triggerId: `${triggerId}_${targetSessionId.slice(0, 8)}`,
-                type: body.type,
-                // Prefix with "external:" so deriveLinkedSessions() in the UI
-                // doesn't misclassify service sources as child sessions.
-                source: `external:${body.source ?? "service"}`,
-                summary: body.summary,
-                payload: body.payload,
-                deliverAs,
-                ts,
-                direction: "inbound" as const,
-            };
+                const historyEntry = {
+                    triggerId: `${triggerId}_${targetSessionId.slice(0, 8)}`,
+                    type: body.type,
+                    // Prefix with "external:" so deriveLinkedSessions() in the UI
+                    // doesn't misclassify service sources as child sessions.
+                    source: `external:${body.source ?? "service"}`,
+                    summary: body.summary,
+                    payload: body.payload,
+                    deliverAs,
+                    ts,
+                    direction: "inbound" as const,
+                };
 
-            // Write history only after confirmed delivery so the log reflects
-            // what the session actually received (not optimistically before delivery).
-            const localSocket = getLocalTuiSocket(targetSessionId);
-            if (localSocket?.connected) {
-                try {
-                    localSocket.emit("session_trigger", { trigger: { ...trigger, targetSessionId } });
+                // Write history only after confirmed delivery so the log reflects
+                // what the session actually received (not optimistically before delivery).
+                const localSocket = getLocalTuiSocket(targetSessionId);
+                if (localSocket?.connected) {
+                    try {
+                        localSocket.emit("session_trigger", { trigger: { ...trigger, targetSessionId } });
+                        void Promise.resolve(pushTriggerHistory(targetSessionId, historyEntry)).catch(() => {});
+                        broadcastToSessionViewers(targetSessionId, "trigger_delivered", { triggerId: historyEntry.triggerId });
+                        return true;
+                    } catch {
+                        // fall through to cross-node
+                    }
+                }
+                const crossNode = await emitToRelaySessionVerified(
+                    targetSessionId, "session_trigger", { trigger: { ...trigger, targetSessionId } },
+                );
+                if (crossNode) {
                     void Promise.resolve(pushTriggerHistory(targetSessionId, historyEntry)).catch(() => {});
                     broadcastToSessionViewers(targetSessionId, "trigger_delivered", { triggerId: historyEntry.triggerId });
-                    delivered++;
-                    continue;
-                } catch {
-                    // fall through to cross-node
+                    return true;
                 }
-            }
-            const crossNode = await emitToRelaySessionVerified(
-                targetSessionId, "session_trigger", { trigger: { ...trigger, targetSessionId } },
-            );
-            if (crossNode) {
-                void Promise.resolve(pushTriggerHistory(targetSessionId, historyEntry)).catch(() => {});
-                broadcastToSessionViewers(targetSessionId, "trigger_delivered", { triggerId: historyEntry.triggerId });
-                delivered++;
-            }
-        }
+                return false;
+            }),
+        );
+        const delivered = deliveredResults.reduce((sum, didDeliver) => sum + (didDeliver ? 1 : 0), 0);
 
         // ── Runner-level auto-spawn listeners ──────────────────────────
         let spawned = 0;

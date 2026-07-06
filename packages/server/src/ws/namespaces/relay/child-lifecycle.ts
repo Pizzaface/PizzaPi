@@ -216,9 +216,21 @@ export function registerChildLifecycleHandlers(socket: RelaySocket, io: SocketIO
             // (this handles the case where a stale child reconnected and got a
             // fresh startedAt timestamp).
             if (epoch && childIds.length > 0) {
+                // Fetch all session hashes concurrently, then check delink markers
+                // only for the subset that started after the epoch.
+                const sessions = await Promise.all(childIds.map((childId) => getSession(childId)));
+                const markerCandidates = childIds.filter((_, i) => {
+                    const childSession = sessions[i];
+                    if (!childSession?.startedAt) return false;
+                    return new Date(childSession.startedAt).getTime() > epoch;
+                });
+                const markerResults = await Promise.all(markerCandidates.map((childId) => isChildDelinked(childId)));
+                const markerMap = new Map(markerCandidates.map((childId, i) => [childId, markerResults[i]]));
+
                 const filtered: string[] = [];
-                for (const childId of childIds) {
-                    const childSession = await getSession(childId);
+                for (let i = 0; i < childIds.length; i++) {
+                    const childId = childIds[i];
+                    const childSession = sessions[i];
                     if (!childSession?.startedAt) {
                         // No session data — conservative: include it
                         filtered.push(childId);
@@ -231,7 +243,7 @@ export function registerChildLifecycleHandlers(socket: RelaySocket, io: SocketIO
                         // Child started after epoch, but check if it already has a delink marker.
                         // If it does, it's a stale child that reconnected and should be delinked
                         // regardless of its fresh startedAt timestamp.
-                        const hasDelinkMarker = await isChildDelinked(childId);
+                        const hasDelinkMarker = markerMap.get(childId)!;
                         if (hasDelinkMarker) {
                             filtered.push(childId);
                             log.info(`delink_children: including child ${childId} (startedAt > epoch but has delink marker)`);
@@ -249,12 +261,14 @@ export function registerChildLifecycleHandlers(socket: RelaySocket, io: SocketIO
             // already find the marker and refuse to re-link. If we cleared
             // first and wrote markers second, a reconnecting child could slip
             // through before its marker exists.
-            for (const childId of childIds) {
-                // Store the parent session ID in the marker so that
-                // addChildSession can scrub the child from this parent's
-                // pending-delink retry set when the child is re-linked elsewhere.
-                await markChildAsDelinked(childId, sessionId);
-            }
+            await Promise.all(
+                childIds.map((childId) => {
+                    // Store the parent session ID in the marker so that
+                    // addChildSession can scrub the child from this parent's
+                    // pending-delink retry set when the child is re-linked elsewhere.
+                    return markChildAsDelinked(childId, sessionId);
+                }),
+            );
             await addPendingParentDelinkChildren(sessionId, childIds);
 
             // Remove only the snapshotted children from the membership set.
@@ -279,16 +293,18 @@ export function registerChildLifecycleHandlers(socket: RelaySocket, io: SocketIO
             // event causes rctx.parentSessionId = null so reconnects won't re-link.
             // For offline children (who never received parent_delinked), the marker
             // we just wrote above prevents re-link.
-            for (const childId of childIds) {
-                const payload = { parentSessionId: sessionId };
-                const delivery = await emitToRelaySessionAwaitingAck(childId, "parent_delinked", payload);
-                if (delivery.hadListeners && !delivery.acked) {
-                    throw new Error(`parent_delinked delivery was not confirmed for child ${childId}`);
-                }
-                // Offline children are safe to clear from the retry set too:
-                // their delink marker will prevent re-linking on reconnect.
-                await removePendingParentDelinkChild(sessionId, childId);
-            }
+            await Promise.all(
+                childIds.map(async (childId) => {
+                    const payload = { parentSessionId: sessionId };
+                    const delivery = await emitToRelaySessionAwaitingAck(childId, "parent_delinked", payload);
+                    if (delivery.hadListeners && !delivery.acked) {
+                        throw new Error(`parent_delinked delivery was not confirmed for child ${childId}`);
+                    }
+                    // Offline children are safe to clear from the retry set too:
+                    // their delink marker will prevent re-linking on reconnect.
+                    await removePendingParentDelinkChild(sessionId, childId);
+                }),
+            );
 
             // Acknowledge that the delink completed only after every
             // connected child has confirmed parent_delinked delivery. The
