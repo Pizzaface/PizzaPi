@@ -1591,9 +1591,20 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                 handle={(_, ref) => (
                     <div
                         ref={ref as any}
-                        className="hidden md:block absolute top-0 right-0 h-full w-1.5 cursor-col-resize hover:bg-sidebar-border/60"
+                        className="hidden md:block absolute top-0 right-0 h-full w-1.5 cursor-col-resize hover:bg-sidebar-border/60 focus-visible:bg-sidebar-border focus-visible:outline-none"
                         aria-label="Resize sidebar"
                         role="separator"
+                        aria-orientation="vertical"
+                        aria-valuenow={sidebarWidth}
+                        aria-valuemin={220}
+                        aria-valuemax={520}
+                        tabIndex={0}
+                        onKeyDown={(e) => {
+                            if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+                            e.preventDefault();
+                            const delta = e.key === "ArrowRight" ? 16 : -16;
+                            setSidebarWidth((w) => Math.min(520, Math.max(220, w + delta)));
+                        }}
                     />
                 )}
             >

@@ -287,6 +287,13 @@ export const HistoryCommandPalette = React.memo(function HistoryCommandPalette({
                 <div className="flex flex-col items-center gap-2 py-8 text-muted-foreground">
                     <Clock className="h-8 w-8 opacity-30" />
                     <span className="text-sm">No matching sessions</span>
+                    <button
+                        type="button"
+                        onClick={() => setSearch("")}
+                        className="text-xs text-foreground underline underline-offset-2 hover:no-underline"
+                    >
+                        Clear search
+                    </button>
                 </div>
             ) : (
                 <div

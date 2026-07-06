@@ -11,8 +11,8 @@ import * as React from "react";
 import { PizzaLogo } from "@/components/PizzaLogo";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { UsageIndicator, type ProviderUsageMap } from "@/components/UsageIndicator";
-import { NotificationToggle } from "@/components/NotificationToggle";
-import { HapticsToggle } from "@/components/HapticsToggle";
+import { NotificationToggle, MobileNotificationMenuItem } from "@/components/NotificationToggle";
+import { HapticsToggle, MobileHapticsMenuItem } from "@/components/HapticsToggle";
 import { Button } from "@/components/ui/button";
 import { TooltipProvider, Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 import { Separator } from "@/components/ui/separator";
@@ -478,6 +478,8 @@ export const MobileHeader = React.memo(function MobileHeader({
             )}
             <DropdownMenuSeparator />
             <ThemeMenuItems />
+            <MobileNotificationMenuItem />
+            <MobileHapticsMenuItem />
             <DropdownMenuItem onSelect={onShowPreferences}>
               <Settings className="h-4 w-4" />
               Preferences
