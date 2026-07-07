@@ -8,6 +8,16 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { RevealedSecretBanner } from "@/components/ui/revealed-secret";
 import { Spinner } from "@/components/ui/spinner";
 import {
+    AlertDialog,
+    AlertDialogAction,
+    AlertDialogCancel,
+    AlertDialogContent,
+    AlertDialogDescription,
+    AlertDialogFooter,
+    AlertDialogHeader,
+    AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import {
     Tooltip,
     TooltipContent,
     TooltipProvider,
@@ -122,17 +132,13 @@ async function deleteWebhookApi(id: string): Promise<void> {
 function DeleteButton({
     onDelete,
     isDeleting,
+    webhookName,
 }: {
     onDelete: () => void;
     isDeleting: boolean;
+    webhookName?: string;
 }) {
-    const [confirming, setConfirming] = useState(false);
-
-    useEffect(() => {
-        if (!confirming) return;
-        const timer = setTimeout(() => setConfirming(false), 5000);
-        return () => clearTimeout(timer);
-    }, [confirming]);
+    const [open, setOpen] = useState(false);
 
     if (isDeleting) {
         return (
@@ -142,43 +148,37 @@ function DeleteButton({
         );
     }
 
-    if (confirming) {
-        return (
-            <Button
-                variant="destructive"
-                size="sm"
-                className="h-7 px-2 text-xs animate-in fade-in zoom-in duration-200"
-                onClick={(e) => {
-                    e.stopPropagation();
-                    onDelete();
-                    setConfirming(false);
-                }}
-            >
-                Sure?
-            </Button>
-        );
-    }
-
     return (
-        <TooltipProvider>
-            <Tooltip>
-                <TooltipTrigger asChild>
-                    <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-7 w-7 shrink-0 text-muted-foreground hover:text-destructive transition-colors"
-                        onClick={(e) => {
-                            e.stopPropagation();
-                            setConfirming(true);
-                        }}
-                        aria-label="Delete webhook"
-                    >
-                        <Trash2 className="h-3.5 w-3.5" />
-                    </Button>
-                </TooltipTrigger>
-                <TooltipContent>Delete webhook</TooltipContent>
-            </Tooltip>
-        </TooltipProvider>
+        <AlertDialog open={open} onOpenChange={setOpen}>
+            <TooltipProvider>
+                <Tooltip>
+                    <TooltipTrigger asChild>
+                        <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-7 w-7 shrink-0 text-muted-foreground hover:text-destructive transition-colors"
+                            onClick={(e) => { e.stopPropagation(); setOpen(true); }}
+                            aria-label="Delete webhook"
+                        >
+                            <Trash2 className="h-3.5 w-3.5" />
+                        </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>Delete webhook</TooltipContent>
+                </Tooltip>
+            </TooltipProvider>
+            <AlertDialogContent onClick={(e) => e.stopPropagation()}>
+                <AlertDialogHeader>
+                    <AlertDialogTitle>Delete webhook{webhookName ? ` “${webhookName}”` : ""}?</AlertDialogTitle>
+                    <AlertDialogDescription>
+                        Its fire URL will stop working immediately and any automation using it will break. This can't be undone.
+                    </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                    <AlertDialogCancel>Cancel</AlertDialogCancel>
+                    <AlertDialogAction onClick={() => { onDelete(); setOpen(false); }}>Delete webhook</AlertDialogAction>
+                </AlertDialogFooter>
+            </AlertDialogContent>
+        </AlertDialog>
     );
 }
 
@@ -330,7 +330,7 @@ function WebhookRow({
                 </Button>
 
                 {/* Delete */}
-                <DeleteButton onDelete={onDelete} isDeleting={isDeleting} />
+                <DeleteButton onDelete={onDelete} isDeleting={isDeleting} webhookName={webhook.name} />
             </div>
 
             {/* Expanded detail */}
@@ -860,6 +860,7 @@ export function WebhooksManager({ bare, runnerId }: { bare?: boolean; runnerId?:
                 <RevealedSecretBanner
                     value={newSecret}
                     onDismiss={() => setNewSecret(null)}
+                    label="HMAC secret — used to sign webhook requests (also shown in the webhook's details)"
                 />
             )}
 
