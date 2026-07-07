@@ -849,12 +849,8 @@ export function WebhooksManager({ bare, runnerId }: { bare?: boolean; runnerId?:
         }
     };
 
-    // Auto-dismiss errors
-    useEffect(() => {
-        if (!error) return;
-        const timer = setTimeout(() => setError(null), 5000);
-        return () => clearTimeout(timer);
-    }, [error]);
+    // Errors stay until the user dismisses them — auto-hiding after 5s meant a
+    // user who looked away lost the message with no way to recall it.
 
     const content = (
         <div className="flex flex-col gap-4">
@@ -871,7 +867,19 @@ export function WebhooksManager({ bare, runnerId }: { bare?: boolean; runnerId?:
             <CreateWebhookForm runnerId={runnerId} onCreated={handleCreated} />
 
             {/* Error */}
-            {error && <p className="text-sm text-destructive">{error}</p>}
+            {error && (
+                <div role="alert" className="flex items-start justify-between gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                    <span>{error}</span>
+                    <button
+                        type="button"
+                        onClick={() => setError(null)}
+                        aria-label="Dismiss error"
+                        className="shrink-0 font-medium underline underline-offset-2 hover:no-underline"
+                    >
+                        Dismiss
+                    </button>
+                </div>
+            )}
 
             {/* List */}
             {loading ? (
