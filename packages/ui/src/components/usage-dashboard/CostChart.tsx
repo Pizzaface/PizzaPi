@@ -86,6 +86,7 @@ export function CostChart({ daily }: CostChartProps) {
               className="text-xs"
               tick={{ fontSize: 12, fill: "var(--muted-foreground)" }}
               tickFormatter={formatCurrency}
+              label={{ value: "Cost (USD)", angle: -90, position: "insideLeft", style: { fontSize: 11, fill: "var(--muted-foreground)", textAnchor: "middle" } }}
             />
             <Tooltip
               content={<CustomTooltip />}

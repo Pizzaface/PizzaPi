@@ -116,6 +116,7 @@ export function TokenChart({ daily }: TokenChartProps) {
               className="text-xs"
               tick={{ fontSize: 12, fill: "var(--muted-foreground)" }}
               tickFormatter={formatTokens}
+              label={{ value: "Tokens", angle: -90, position: "insideLeft", style: { fontSize: 11, fill: "var(--muted-foreground)", textAnchor: "middle" } }}
             />
             <Tooltip
               content={<CustomTooltip />}

@@ -8,6 +8,7 @@ import { ModelBreakdown } from "./ModelBreakdown";
 import { ProjectBreakdown } from "./ProjectBreakdown";
 import { SessionTable } from "./SessionTable";
 import { AlertCircle, Loader2 } from "lucide-react";
+import { Skeleton } from "../ui/skeleton";
 import type { UsageData, UsageRange } from "./types";
 
 interface UsageDashboardProps {
@@ -89,11 +90,23 @@ export function UsageDashboard({ runnerId, onInspectSession }: UsageDashboardPro
     );
   }
 
+  // Keep the period selector visible while (re)loading so changing the range
+  // doesn't blank the whole view and lose context; show skeletons in place of
+  // the cards/charts instead of a centered full-view spinner.
   if (loading) {
     return (
-      <div className="flex items-center justify-center p-8">
-        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-        <span className="ml-2 text-muted-foreground">Loading usage data...</span>
+      <div className="space-y-6">
+        <div className="flex items-center gap-2">
+          <PeriodSelector value={range} onChange={setRange} />
+          <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" aria-label="Loading usage data" />
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          {Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} className="h-24 w-full rounded-xl" />)}
+        </div>
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          <Skeleton className="h-96 w-full rounded-xl" />
+          <Skeleton className="h-96 w-full rounded-xl" />
+        </div>
       </div>
     );
   }
