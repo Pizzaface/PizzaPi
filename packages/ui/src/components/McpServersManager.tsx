@@ -114,7 +114,7 @@ export function McpServersManager({ runnerId, bare }: McpServersManagerProps) {
             const res = await fetch(`/api/runners/${encodeURIComponent(runnerId)}/settings`, { signal: AbortSignal.timeout(15_000) });
             if (!res.ok) {
                 const body = await res.json().catch(() => ({}));
-                throw new Error(body.error ?? `HTTP ${res.status}`);
+                throw new Error(body.error ?? `Couldn't load MCP servers from the runner (HTTP ${res.status}). The settings endpoint may be unreachable.`);
             }
             const result = await res.json();
             const cfg = result.config ?? {};
