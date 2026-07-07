@@ -194,8 +194,10 @@ function defaultGitStatus(): MockGitStatus {
     return {
         branch: "feat/test-harness",
         changes: [
-            { status: "M", path: "src/index.ts" },
-            { status: "M", path: "package.json" },
+            // Porcelain v1 XY codes — the UI partitions staged/unstaged on the
+            // 2-char status, so single-char codes render an empty Changes tab.
+            { status: " M", path: "src/index.ts" },
+            { status: "??", path: "notes.md" },
         ],
         ahead: 1,
         behind: 0,
@@ -925,6 +927,57 @@ export async function createMockRunner(
                     ? `diff --git a/${filePath} b/${filePath}\nindex abc1234..def5678 100644\n--- a/${filePath}\n+++ b/${filePath}\n@@ -1,3 +1,3 @@\n-old line\n+new line`
                     : "";
                 emitGit("git_diff_result", { ok: true, diff });
+                break;
+            }
+            case "git_log": {
+                emitGit("git_log_result", {
+                    ok: true,
+                    entries: [
+                        {
+                            hash: "abc1234567890abcdef1234567890abcdef123456",
+                            shortHash: "abc1234",
+                            author: "Mock Author",
+                            authorDate: "2026-07-05T10:00:00Z",
+                            commitDate: "2026-07-05T10:00:00Z",
+                            subject: "Add harness scaffolding",
+                            body: "",
+                            refs: ["HEAD", gitStatus.branch],
+                        },
+                        {
+                            hash: "def4567890abcdef1234567890abcdef123456789",
+                            shortHash: "def4567",
+                            author: "Mock Author",
+                            authorDate: "2026-07-04T10:00:00Z",
+                            commitDate: "2026-07-04T10:00:00Z",
+                            subject: "Initial commit",
+                            body: "",
+                            refs: ["main"],
+                        },
+                    ],
+                });
+                break;
+            }
+            case "git_stash_list": {
+                emitGit("git_stash_list_result", { ok: true, stashes: [] });
+                break;
+            }
+            case "git_worktrees": {
+                emitGit("git_worktrees_result", {
+                    ok: true,
+                    worktrees: [
+                        {
+                            path: (payload.cwd as string) ?? "/mock",
+                            displayPath: ".",
+                            branch: gitStatus.branch,
+                            shortHash: "abc1234",
+                            isDetached: false,
+                            isMain: true,
+                            changeCount: gitStatus.changes.length,
+                            ahead: gitStatus.ahead,
+                            behind: gitStatus.behind,
+                        },
+                    ],
+                });
                 break;
             }
             case "git_branches": {

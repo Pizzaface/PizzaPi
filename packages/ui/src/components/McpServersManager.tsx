@@ -19,6 +19,7 @@ import {
     RefreshCw,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { PanelLoading } from "@/components/ui/panel-loading";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
@@ -111,10 +112,10 @@ export function McpServersManager({ runnerId, bare }: McpServersManagerProps) {
         setLoading(true);
         setError(null);
         try {
-            const res = await fetch(`/api/runners/${encodeURIComponent(runnerId)}/settings`);
+            const res = await fetch(`/api/runners/${encodeURIComponent(runnerId)}/settings`, { signal: AbortSignal.timeout(15_000) });
             if (!res.ok) {
                 const body = await res.json().catch(() => ({}));
-                throw new Error(body.error ?? `HTTP ${res.status}`);
+                throw new Error(body.error ?? `Couldn't load MCP servers from the runner (HTTP ${res.status}). The settings endpoint may be unreachable.`);
             }
             const result = await res.json();
             const cfg = result.config ?? {};
@@ -239,12 +240,7 @@ export function McpServersManager({ runnerId, bare }: McpServersManagerProps) {
     // ── Loading / error ───────────────────────────────────────────────────────
 
     if (loading) {
-        return (
-            <div className="flex items-center justify-center p-8">
-                <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
-                <span className="ml-2 text-sm text-muted-foreground">Loading MCP servers…</span>
-            </div>
-        );
+        return <PanelLoading label="Loading MCP servers…" />;
     }
 
     if (error && Object.keys(servers).length === 0 && Object.keys(savedServers).length === 0) {
@@ -348,6 +344,11 @@ export function McpServersManager({ runnerId, bare }: McpServersManagerProps) {
                             Streamable HTTP
                         </Button>
                     </div>
+                    <p className="text-xs text-muted-foreground">
+                        {newType === "stdio"
+                            ? "stdio: the runner launches the server as a local subprocess and talks to it over standard input/output."
+                            : "Streamable HTTP: connect to a server already running at a URL over HTTP."}
+                    </p>
 
                     {newType === "stdio" ? (
                         <>
@@ -515,7 +516,7 @@ export function McpServersManager({ runnerId, bare }: McpServersManagerProps) {
                                             </SelectContent>
                                         </Select>
                                         <p className="text-xs text-muted-foreground">
-                                            Overrides Tool Search for this server only.
+                                            When deferred, this server's tools load only when the agent searches for them (saves context). Overrides the global Tool Search setting for this server only.
                                         </p>
                                     </div>
 

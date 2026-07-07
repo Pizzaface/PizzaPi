@@ -6,9 +6,32 @@ import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 
 function Dialog({
+  open,
   ...props
 }: React.ComponentProps<typeof DialogPrimitive.Root>) {
-  return <DialogPrimitive.Root data-slot="dialog" {...props} />
+  // State-controlled dialogs (opened via `open`/`onOpenChange` without a
+  // <DialogTrigger>) give Radix no trigger element to restore focus to on
+  // close, so focus falls to <body> — a WCAG 2.4.3 failure. Remember the
+  // element focused just before open and restore it when the dialog closes.
+  const returnFocusRef = React.useRef<HTMLElement | null>(null)
+  const prevOpenRef = React.useRef<boolean | undefined>(open)
+  React.useEffect(() => {
+    const was = prevOpenRef.current
+    prevOpenRef.current = open
+    if (open && !was) {
+      returnFocusRef.current = document.activeElement as HTMLElement | null
+    } else if (was && !open) {
+      const el = returnFocusRef.current
+      returnFocusRef.current = null
+      // Defer so Radix's own focus teardown runs first, then we restore.
+      if (el && typeof el.focus === "function" && el.isConnected) {
+        requestAnimationFrame(() => {
+          if (el.isConnected) el.focus()
+        })
+      }
+    }
+  }, [open])
+  return <DialogPrimitive.Root data-slot="dialog" open={open} {...props} />
 }
 
 function DialogTrigger({

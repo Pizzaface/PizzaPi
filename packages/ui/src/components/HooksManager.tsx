@@ -7,6 +7,7 @@
  */
 import * as React from "react";
 import { useState, useEffect, useCallback } from "react";
+import { PanelLoading } from "@/components/ui/panel-loading";
 import {
     Plus,
     Save,
@@ -103,10 +104,10 @@ export function HooksManager({ runnerId, bare }: HooksManagerProps) {
         setLoading(true);
         setError(null);
         try {
-            const res = await fetch(`/api/runners/${encodeURIComponent(runnerId)}/settings`);
+            const res = await fetch(`/api/runners/${encodeURIComponent(runnerId)}/settings`, { signal: AbortSignal.timeout(15_000) });
             if (!res.ok) {
                 const body = await res.json().catch(() => ({}));
-                throw new Error(body.error ?? `HTTP ${res.status}`);
+                throw new Error(body.error ?? `Couldn't load hooks from the runner (HTTP ${res.status}). The settings endpoint may be unreachable.`);
             }
             const result = await res.json();
             const cfg = result.config ?? {};
@@ -337,12 +338,7 @@ export function HooksManager({ runnerId, bare }: HooksManagerProps) {
     // ── Loading / error states ────────────────────────────────────────────────
 
     if (loading && !config) {
-        return (
-            <div className="flex items-center justify-center p-8">
-                <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
-                <span className="ml-2 text-sm text-muted-foreground">Loading hooks…</span>
-            </div>
-        );
+        return <PanelLoading label="Loading hooks…" />;
     }
 
     if (error && !config) {
@@ -500,6 +496,7 @@ export function HooksManager({ runnerId, bare }: HooksManagerProps) {
                                 className="shrink-0 text-destructive hover:text-destructive"
                                 onClick={() => removeMatcherGroup(type, groupIdx)}
                                 title="Remove matcher group"
+                                aria-label="Remove matcher group"
                             >
                                 <Trash2 className="size-4" />
                             </Button>
@@ -542,6 +539,7 @@ export function HooksManager({ runnerId, bare }: HooksManagerProps) {
                                     className="shrink-0 text-muted-foreground hover:text-destructive"
                                     onClick={() => removeMatcherHookEntry(type, groupIdx, hookIdx)}
                                     title="Remove hook"
+                                    aria-label="Remove hook"
                                 >
                                     <Trash2 className="size-4" />
                                 </Button>
@@ -618,6 +616,7 @@ export function HooksManager({ runnerId, bare }: HooksManagerProps) {
                             className="shrink-0 text-muted-foreground hover:text-destructive"
                             onClick={() => removeSimpleHook(type, idx)}
                             title="Remove hook"
+                            aria-label="Remove hook"
                         >
                             <Trash2 className="size-4" />
                         </Button>

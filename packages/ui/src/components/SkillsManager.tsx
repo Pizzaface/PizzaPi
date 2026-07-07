@@ -25,6 +25,7 @@ import { ErrorAlert } from "@/components/ui/error-alert";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
 import { createLogger } from "@pizzapi/tools";
+import { showToast } from "@/lib/frontend-log";
 
 const log = createLogger("skills-ui");
 
@@ -212,6 +213,7 @@ function SkillEditorDialog({ runnerId, open, skill, onClose, onSaved }: SkillEdi
             }
 
             onSaved(Array.isArray(data?.skills) ? data.skills : []);
+            showToast(isEditing ? `Skill “${trimmedName}” saved` : `Skill “${trimmedName}” created`, "info");
             onClose();
         } catch (err) {
             setError(err instanceof Error ? err.message : String(err));
@@ -237,14 +239,14 @@ function SkillEditorDialog({ runnerId, open, skill, onClose, onSaved }: SkillEdi
                     {!isEditing && (
                         <div className="flex flex-col gap-1.5">
                             <Label htmlFor="skill-name" className="text-sm">
-                                Skill name
-                                <span className="ml-1 text-muted-foreground font-normal">(lowercase, hyphens)</span>
+                                Skill name{" "}
+                                <span className="text-muted-foreground font-normal">(lowercase, hyphens)</span>
                             </Label>
                             <Input
                                 id="skill-name"
                                 placeholder="my-skill"
                                 value={name}
-                                onChange={(e) => setName(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ""))}
+                                onChange={(e) => { setName(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, "")); if (error) setError(null); }}
                                 className="font-mono text-sm"
                                 disabled={saving}
                             />
@@ -301,7 +303,7 @@ function SkillEditorDialog({ runnerId, open, skill, onClose, onSaved }: SkillEdi
                     <Button variant="ghost" onClick={onClose} disabled={saving}>
                         Cancel
                     </Button>
-                    <Button onClick={handleSave} disabled={saving || loadingContent}>
+                    <Button onClick={handleSave} disabled={saving || loadingContent || (!isEditing && !name.trim())}>
                         {saving ? (
                             <>
                                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -349,6 +351,7 @@ function DeleteSkillDialog({ runnerId, skill, onClose, onDeleted }: DeleteSkillD
                 return;
             }
             onDeleted(Array.isArray(data?.skills) ? data.skills : []);
+            showToast(`Skill “${skill.name}” deleted`, "info");
             onClose();
         } catch (err) {
             setError(err instanceof Error ? err.message : String(err));

@@ -24,6 +24,7 @@ import {
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
 import { createLogger } from "@pizzapi/tools";
+import { showToast } from "@/lib/frontend-log";
 
 const log = createLogger("plugins-ui");
 
@@ -64,7 +65,7 @@ export interface PluginsManagerProps {
 function PluginCapBadge({ icon: Icon, label, count }: { icon: React.ElementType; label: string; count: number }) {
     if (count === 0) return null;
     return (
-        <span className="inline-flex items-center gap-0.5 text-[10px] text-muted-foreground">
+        <span className="inline-flex items-center gap-0.5 text-[10px] text-muted-foreground" title={`${count} ${label}`}>
             <Icon className="h-2.5 w-2.5" />
             {count} {label}
         </span>
@@ -108,7 +109,7 @@ function PluginRow({ plugin, onClick }: PluginRowProps) {
                         <p className="text-[11px] text-muted-foreground mt-0.5 line-clamp-2">{plugin.description}</p>
                     )}
                     <div className="flex items-center gap-2 mt-1 flex-wrap">
-                        <PluginCapBadge icon={Terminal} label={plugin.commands.length === 1 ? "cmd" : "cmds"} count={plugin.commands.length} />
+                        <PluginCapBadge icon={Terminal} label={plugin.commands.length === 1 ? "command" : "commands"} count={plugin.commands.length} />
                         <PluginCapBadge icon={Zap} label={plugin.hookEvents.length === 1 ? "hook" : "hooks"} count={plugin.hookEvents.length} />
                         <PluginCapBadge icon={BookOpen} label={plugin.skills.length === 1 ? "skill" : "skills"} count={plugin.skills.length} />
                         <PluginCapBadge icon={FileText} label={(plugin.rules?.length ?? 0) === 1 ? "rule" : "rules"} count={plugin.rules?.length ?? 0} />
@@ -371,9 +372,14 @@ export function PluginsManager({ runnerId, plugins: initialPlugins, onPluginsCha
                     setPlugins(updated);
                     onPluginsChange?.(updated);
                 }
+                showToast("Plugins rescanned", "info");
+            } else {
+                // Was silent before — surface the failure so Rescan isn't a no-op.
+                showToast(`Couldn't rescan plugins (HTTP ${res.status})`, "error");
             }
         } catch (err) {
             log.error("Failed to refresh plugins:", err);
+            showToast("Couldn't rescan plugins — the runner may be unreachable", "error");
         } finally {
             setRefreshing(false);
         }

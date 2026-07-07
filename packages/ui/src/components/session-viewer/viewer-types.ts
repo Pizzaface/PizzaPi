@@ -41,6 +41,8 @@ export interface SessionViewerProps {
   onSendInput?: (message: PromptInputMessage & { deliverAs?: "steer" | "followUp" } | string) => boolean | void | Promise<boolean | void>;
   onExec?: (payload: unknown) => boolean | void;
   onShowModelSelector?: () => void;
+  /** Opens the new-session wizard (renders a CTA in the empty state). */
+  onNewSession?: () => void;
   /** Whether the agent is currently processing a turn */
   agentActive?: boolean;
   /** Whether the session is currently being compacted */

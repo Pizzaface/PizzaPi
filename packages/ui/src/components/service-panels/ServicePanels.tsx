@@ -47,7 +47,7 @@ export function ServicePanelButtons({
                 <Tooltip key={panel.serviceId}>
                     <TooltipTrigger asChild>
                         <Button
-                            className={`h-7 w-7 ${
+                            className={`h-9 w-9 sm:h-7 sm:w-7 ${
                                 activePanelIds.has(panel.serviceId) ? "bg-accent text-accent-foreground" : ""
                             }`}
                             onClick={() => onTogglePanel(panel.serviceId)}
@@ -66,7 +66,7 @@ export function ServicePanelButtons({
                 <Tooltip key={panel.serviceId}>
                     <TooltipTrigger asChild>
                         <Button
-                            className={`h-7 w-7 ${
+                            className={`h-9 w-9 sm:h-7 sm:w-7 ${
                                 activePanelIds.has(panel.serviceId) ? "bg-accent text-accent-foreground" : ""
                             }`}
                             onClick={() => onTogglePanel(panel.serviceId)}

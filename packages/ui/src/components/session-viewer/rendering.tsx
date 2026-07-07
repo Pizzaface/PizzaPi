@@ -264,9 +264,18 @@ export function renderContent(
               ? "input-available"
               : "output-available";
 
+            // Collapsed cards used to show only the tool name — surface the most
+            // identifying argument (path/command/pattern) so users can tell
+            // collapsed tools apart without expanding each one.
+            const argHint = [args.path, args.file_path, args.command, args.pattern, args.query, args.url]
+              .find((v): v is string => typeof v === "string" && v.length > 0);
+            const headerTitle = argHint
+              ? `${toolName} · ${argHint.length > 48 ? `…${argHint.slice(-47)}` : argHint}`
+              : undefined;
+
             return (
               <Tool key={i} defaultOpen={false}>
-                <ToolHeader type="dynamic-tool" toolName={toolName} state={state} />
+                <ToolHeader type="dynamic-tool" toolName={toolName} state={state} title={headerTitle} />
                 <ToolContent>
                   {isEdit ? (
                     <DiffView
