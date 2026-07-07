@@ -10,6 +10,7 @@ import { FileExplorerService } from "./services/file-explorer-service.js";
 import { GitService } from "./services/git-service.js";
 // Resolves @VARIABLE@ tokens used in service panel requires
 import { resolvePizzaPiVar } from "../config/io.js";
+import { mergeModelLists, readSessionModelsCache } from "../session-models-cache.js";
 import { TunnelService } from "./services/tunnel-service.js";
 import { TimeService, TIME_TRIGGER_DEFS, TIME_SIGIL_DEFS } from "./services/time-service.js";
 import { discoverServices } from "./service-loader.js";
@@ -446,7 +447,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             const agentDir = resolveConfiguredAgentDir(cwd);
             const authStorage = AuthStorage.create(join(agentDir, "auth.json"));
             const modelRegistry = ModelRegistry.create(authStorage, join(agentDir, "models.json"));
-            return modelRegistry
+            const diskModels = modelRegistry
                 .getAvailable()
                 .map((model: any) => ({
                     provider: model.provider,
@@ -454,11 +455,11 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                     name: model.name,
                     reasoning: model.reasoning,
                     contextWindow: model.contextWindow,
-                }))
-                .sort((a: any, b: any) => {
-                    if (a.provider !== b.provider) return a.provider.localeCompare(b.provider);
-                    return a.id.localeCompare(b.id);
-                });
+                }));
+            // Extension-registered providers (pi packages calling registerProvider)
+            // only exist inside live sessions — merge the latest session snapshot so
+            // Web UI model selectors (Runner Settings, Fast Model) show them too.
+            return mergeModelLists(diskModels, readSessionModelsCache() ?? []);
         };
         const getContextWindowsForAnalysis = (cwd = process.cwd()): Map<string, number> => {
             const windows = new Map<string, number>();
