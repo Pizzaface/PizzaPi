@@ -88,6 +88,10 @@ export function TokenChart({ daily }: TokenChartProps) {
         <CardTitle>Token Usage Over Time</CardTitle>
       </CardHeader>
       <CardContent>
+        {/* Recharts is pure SVG with no text alternative (and emits noisy
+            "[object Object] legend icon" alts); expose one labeled image role
+            and hide the internals from assistive tech. */}
+        <div role="img" aria-label="Token usage over time, by token type">
         <ResponsiveContainer width="100%" height={400}>
           <AreaChart
             data={daily}
@@ -154,6 +158,7 @@ export function TokenChart({ daily }: TokenChartProps) {
             ))}
           </AreaChart>
         </ResponsiveContainer>
+        </div>
       </CardContent>
     </Card>
   );

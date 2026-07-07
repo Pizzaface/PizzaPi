@@ -25,7 +25,13 @@ function StatCard({ title, value, subtitle, tooltip }: {
             <TooltipProvider delayDuration={200}>
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <Info className="h-3.5 w-3.5 text-muted-foreground/60 cursor-help" />
+                  <button
+                    type="button"
+                    aria-label={`${title}: more info`}
+                    className="inline-flex rounded-sm text-muted-foreground/60 hover:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  >
+                    <Info className="h-3.5 w-3.5" />
+                  </button>
                 </TooltipTrigger>
                 <TooltipContent side="top" className="max-w-xs text-xs">
                   {tooltip}

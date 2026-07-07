@@ -25,6 +25,7 @@ import { ErrorAlert } from "@/components/ui/error-alert";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
 import { createLogger } from "@pizzapi/tools";
+import { showToast } from "@/lib/frontend-log";
 
 const log = createLogger("agents-ui");
 
@@ -220,6 +221,7 @@ function AgentEditorDialog({ runnerId, open, agent, onClose, onSaved }: AgentEdi
             }
 
             onSaved(Array.isArray(data?.agents) ? data.agents : []);
+            showToast(isEditing ? `Agent “${trimmedName}” saved` : `Agent “${trimmedName}” created`, "info");
             onClose();
         } catch (err) {
             setError(err instanceof Error ? err.message : String(err));
@@ -357,6 +359,7 @@ function DeleteAgentDialog({ runnerId, agent, onClose, onDeleted }: DeleteAgentD
                 return;
             }
             onDeleted(Array.isArray(data?.agents) ? data.agents : []);
+            showToast(`Agent “${agent.name}” deleted`, "info");
             onClose();
         } catch (err) {
             setError(err instanceof Error ? err.message : String(err));

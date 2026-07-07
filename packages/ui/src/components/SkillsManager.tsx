@@ -25,6 +25,7 @@ import { ErrorAlert } from "@/components/ui/error-alert";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
 import { createLogger } from "@pizzapi/tools";
+import { showToast } from "@/lib/frontend-log";
 
 const log = createLogger("skills-ui");
 
@@ -212,6 +213,7 @@ function SkillEditorDialog({ runnerId, open, skill, onClose, onSaved }: SkillEdi
             }
 
             onSaved(Array.isArray(data?.skills) ? data.skills : []);
+            showToast(isEditing ? `Skill “${trimmedName}” saved` : `Skill “${trimmedName}” created`, "info");
             onClose();
         } catch (err) {
             setError(err instanceof Error ? err.message : String(err));
@@ -349,6 +351,7 @@ function DeleteSkillDialog({ runnerId, skill, onClose, onDeleted }: DeleteSkillD
                 return;
             }
             onDeleted(Array.isArray(data?.skills) ? data.skills : []);
+            showToast(`Skill “${skill.name}” deleted`, "info");
             onClose();
         } catch (err) {
             setError(err instanceof Error ? err.message : String(err));

@@ -267,6 +267,7 @@ export const HistoryCommandPalette = React.memo(function HistoryCommandPalette({
             shouldFilter={false}
         >
             <CommandInput
+                aria-label="Search sessions"
                 placeholder="Search sessions…"
                 value={search}
                 onValueChange={setSearch}

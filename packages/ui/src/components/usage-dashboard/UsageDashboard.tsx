@@ -100,8 +100,13 @@ export function UsageDashboard({ runnerId, onInspectSession }: UsageDashboardPro
 
   if (!data) {
     return (
-      <div className="flex items-center justify-center p-8">
-        <p className="text-muted-foreground">No usage data available</p>
+      <div className="flex flex-col items-center justify-center gap-2 p-8 text-center">
+        <p className="font-medium text-sm">No usage data yet</p>
+        <p className="max-w-sm text-xs text-muted-foreground">
+          Cost and token usage are recorded as sessions run on this runner.
+          Start a session and send a few messages, then check back here.
+        </p>
+        <div className="pt-1"><PeriodSelector value={range} onChange={setRange} /></div>
       </div>
     );
   }
