@@ -104,7 +104,7 @@ export function ChangePasswordDialog({ open, onOpenChange }: ChangePasswordDialo
                     <form onSubmit={handleSubmit}>
                         <div className="flex flex-col gap-4 py-2">
                             <div className="flex flex-col gap-1.5">
-                                <Label htmlFor="cp-current">Current password</Label>
+                                <Label htmlFor="cp-current">Current password <span className="text-destructive" aria-hidden="true">*</span></Label>
                                 <Input
                                     id="cp-current"
                                     type={pwType}
@@ -117,7 +117,7 @@ export function ChangePasswordDialog({ open, onOpenChange }: ChangePasswordDialo
                             </div>
 
                             <div className="flex flex-col gap-1.5">
-                                <Label htmlFor="cp-new">New password</Label>
+                                <Label htmlFor="cp-new">New password <span className="text-destructive" aria-hidden="true">*</span></Label>
                                 <Input
                                     id="cp-new"
                                     type={pwType}
@@ -142,7 +142,7 @@ export function ChangePasswordDialog({ open, onOpenChange }: ChangePasswordDialo
                             </div>
 
                             <div className="flex flex-col gap-1.5">
-                                <Label htmlFor="cp-confirm">Confirm new password</Label>
+                                <Label htmlFor="cp-confirm">Confirm new password <span className="text-destructive" aria-hidden="true">*</span></Label>
                                 <Input
                                     id="cp-confirm"
                                     type={pwType}
@@ -152,7 +152,7 @@ export function ChangePasswordDialog({ open, onOpenChange }: ChangePasswordDialo
                                     autoComplete="new-password"
                                 />
                                 {confirmPassword.length > 0 && !passwordsMatch && (
-                                    <p className="text-xs text-destructive mt-0.5">Passwords do not match</p>
+                                    <p role="alert" className="text-xs text-destructive mt-0.5">Passwords do not match</p>
                                 )}
                             </div>
 
