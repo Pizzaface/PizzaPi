@@ -319,10 +319,10 @@ export function AppearanceSettings() {
             <button
               onClick={() => setAccentHex("")}
               className="h-7 px-2 text-[10px] text-muted-foreground hover:text-foreground flex items-center gap-1 rounded border border-border hover:bg-muted transition-colors"
-              title="Reset to default"
+              title="Reset custom color to default"
             >
               <RotateCcw className="h-3 w-3" />
-              Reset
+              Reset color
             </button>
           )}
         </div>

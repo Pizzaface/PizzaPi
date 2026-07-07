@@ -58,7 +58,7 @@ export function HeartbeatStaleBadge({
   if (!stale) return null;
   return (
     <span
-      className="text-[0.65rem] text-amber-400/80"
+      className="text-[0.65rem] text-amber-400/80 whitespace-nowrap flex-shrink-0"
       title="No heartbeat received in the last 35 seconds — CLI may be disconnected"
     >
       ⚠ stale

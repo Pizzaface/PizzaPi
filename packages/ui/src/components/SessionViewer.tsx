@@ -180,6 +180,9 @@ export function SessionViewer({
 }) {
   // ── Misc local state ──────────────────────────────────────────────────────
   const [composerError, setComposerError] = React.useState<string | null>(null);
+  // True when the session has been stuck hydrating ("Connecting…"/"Loading
+  // session…") long enough that the disabled composer needs an explanation.
+  const [hydrationStuck, setHydrationStuck] = React.useState(false);
 
   const sendActionSigilResponse = React.useCallback(
     async (text: string): Promise<boolean> => {
@@ -441,6 +444,15 @@ export function SessionViewer({
   });
 
   const composerReady = canSubmitSessionInput(sessionId, viewerStatus, !!isCompacting);
+
+  React.useEffect(() => {
+    if (!sessionId || !isSessionHydrating(viewerStatus)) {
+      setHydrationStuck(false);
+      return;
+    }
+    const timer = setTimeout(() => setHydrationStuck(true), 10_000);
+    return () => clearTimeout(timer);
+  }, [sessionId, viewerStatus]);
 
   // ── handleSubmit ──────────────────────────────────────────────────────────
   const handleSubmit = React.useCallback(
@@ -704,7 +716,7 @@ export function SessionViewer({
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <Button
-                      className="h-7 w-7"
+                      className="h-9 w-9 sm:h-7 sm:w-7"
                       disabled={!onExec}
                       onClick={() => {
                         if (!onExec || !sessionId) return;
@@ -727,7 +739,7 @@ export function SessionViewer({
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <Button
-                      className="h-7 w-7"
+                      className="h-9 w-9 sm:h-7 sm:w-7"
                       disabled={!onExec}
                       onClick={() => { void requestNewSession(); }}
                       size="icon"
@@ -1242,8 +1254,21 @@ export function SessionViewer({
             )}
 
             {composerError && (
-              <div className="mb-2 rounded-md border border-destructive/40 bg-destructive/10 px-2.5 py-2 text-xs text-destructive">
-                {composerError}
+              <div role="alert" className="mb-2 flex items-start justify-between gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-2.5 py-2 text-xs text-destructive">
+                <span>{composerError} Your draft is preserved.</span>
+                <button
+                  type="button"
+                  onClick={() => setComposerError(null)}
+                  className="shrink-0 font-medium underline underline-offset-2 hover:no-underline"
+                >
+                  Dismiss
+                </button>
+              </div>
+            )}
+
+            {!composerReady && hydrationStuck && (
+              <div className="mb-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-2.5 py-2 text-xs text-amber-600 dark:text-amber-400">
+                Still connecting to this session — the runner may be offline. Your draft is preserved.
               </div>
             )}
 
