@@ -7,6 +7,7 @@
  */
 import * as React from "react";
 import { useState, useEffect, useCallback } from "react";
+import { PanelLoading } from "@/components/ui/panel-loading";
 import {
     Plus,
     Save,
@@ -337,12 +338,7 @@ export function HooksManager({ runnerId, bare }: HooksManagerProps) {
     // ── Loading / error states ────────────────────────────────────────────────
 
     if (loading && !config) {
-        return (
-            <div className="flex items-center justify-center p-8">
-                <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
-                <span className="ml-2 text-sm text-muted-foreground">Loading hooks…</span>
-            </div>
-        );
+        return <PanelLoading label="Loading hooks…" />;
     }
 
     if (error && !config) {

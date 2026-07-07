@@ -19,6 +19,7 @@ import {
     RefreshCw,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { PanelLoading } from "@/components/ui/panel-loading";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
@@ -239,12 +240,7 @@ export function McpServersManager({ runnerId, bare }: McpServersManagerProps) {
     // ── Loading / error ───────────────────────────────────────────────────────
 
     if (loading) {
-        return (
-            <div className="flex items-center justify-center p-8">
-                <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
-                <span className="ml-2 text-sm text-muted-foreground">Loading MCP servers…</span>
-            </div>
-        );
+        return <PanelLoading label="Loading MCP servers…" />;
     }
 
     if (error && Object.keys(servers).length === 0 && Object.keys(savedServers).length === 0) {

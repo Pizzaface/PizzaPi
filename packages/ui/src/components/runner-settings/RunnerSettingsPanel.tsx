@@ -3,6 +3,7 @@ import { useState, useEffect, useCallback } from "react";
 import { Loader2, RotateCcw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ErrorAlert } from "@/components/ui/error-alert";
+import { PanelLoading } from "@/components/ui/panel-loading";
 import { cn } from "@/lib/utils";
 
 // Sub-tab components — lazy loaded
@@ -121,12 +122,7 @@ export function RunnerSettingsPanel({ runnerId }: RunnerSettingsPanelProps) {
 
     // ── Loading state ──────────────────────────────────────────────────
     if (loading && !data) {
-        return (
-            <div className="flex items-center justify-center p-8">
-                <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
-                <span className="ml-2 text-sm text-muted-foreground">Loading settings…</span>
-            </div>
-        );
+        return <PanelLoading label="Loading settings…" />;
     }
 
     // ── Error state ────────────────────────────────────────────────────
