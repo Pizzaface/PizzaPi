@@ -361,9 +361,12 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
         }
     });
 
-    sock.on("connected", () => {
+    sock.on("connected", (data?: { recoveryNonce?: unknown }) => {
         rctx.forwardEvent(rctx.buildCapabilitiesState());
-        emitSessionActive(rctx);
+        // Echo the server's recovery nonce so the relay can tell this
+        // recovery snapshot apart from real agent updates racing in.
+        const recoveryNonce = typeof data?.recoveryNonce === "string" ? data.recoveryNonce : undefined;
+        emitSessionActive(rctx, recoveryNonce);
     });
 
     sock.on("input", (data) => {

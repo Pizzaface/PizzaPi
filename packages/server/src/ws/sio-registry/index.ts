@@ -11,6 +11,7 @@ export type { RegisterTuiSessionOpts, UpdateSessionStateOpts } from "./sessions.
 export {
     registerTuiSession,
     getLocalTuiSocket,
+    waitForLocalTuiSocket,
     removeLocalTuiSocket,
     getSessions,
     getSharedSession,

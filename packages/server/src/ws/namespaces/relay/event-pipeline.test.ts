@@ -217,7 +217,8 @@ describe("chunked snapshot assembly", () => {
             sessionName: "Updated",
             availableCommands: [{ name: "search_tools" }],
         });
-        markPendingRecovery("sess-chunked-recovery");
+        const nonce = markPendingRecovery("sess-chunked-recovery");
+        pending.recoveryNonce = nonce;
 
         const fullState = await finalizeChunkedSnapshot("sess-chunked-recovery", pending, {
             consumePendingRecovery,
@@ -238,7 +239,7 @@ describe("chunked snapshot assembly", () => {
             { isRecovery: true },
         );
         expect(hasPendingRecovery("sess-chunked-recovery")).toBe(false);
-        expect(consumePendingRecovery("sess-chunked-recovery")).toBe(false);
+        expect(consumePendingRecovery("sess-chunked-recovery", nonce)).toBe(false);
         expect(appendRelayEventToCache).toHaveBeenCalledTimes(1);
     });
 });

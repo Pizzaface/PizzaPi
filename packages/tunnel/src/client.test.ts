@@ -246,6 +246,43 @@ describe("TunnelClient", () => {
     }
   });
 
+  test("preserves multiple Set-Cookie headers as an array instead of joining them", async () => {
+    const { server, port } = await startHttpServer((_req, res) => {
+      res.setHeader("set-cookie", [
+        "a=1; Path=/; Expires=Wed, 21 Oct 2026 07:28:00 GMT",
+        "b=2; Path=/; HttpOnly",
+      ]);
+      res.writeHead(200);
+      res.end("ok");
+    });
+
+    try {
+      const client = new TunnelClient({
+        runnerId: "r1",
+        apiKey: "key1",
+        relayUrl: "ws://localhost:9999/_tunnel",
+        autoReconnect: false,
+      });
+      client.exposePort(port);
+      const sent = attachMockRelay(client);
+
+      (client as any).handleMessage(
+        JSON.stringify({ type: "request-start", id: "req-cookie", port, method: "GET", url: "/", headers: {} }),
+      );
+      (client as any).handleMessage(JSON.stringify({ type: "request-data-end", id: "req-cookie" }));
+
+      await waitUntil(() => decodeSent(sent).some((message) => message.type === "response-data-end"));
+
+      const start = decodeSent(sent).find((message) => message.type === "response-start");
+      expect(start.headers["set-cookie"]).toEqual([
+        "a=1; Path=/; Expires=Wed, 21 Oct 2026 07:28:00 GMT",
+        "b=2; Path=/; HttpOnly",
+      ]);
+    } finally {
+      await stopHttpServer(server);
+    }
+  });
+
   test("request-start plus request-data chunks proxy POST bodies to the local service", async () => {
     let receivedBody = "";
 

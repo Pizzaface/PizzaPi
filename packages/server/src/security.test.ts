@@ -816,3 +816,61 @@ describe("getClientIp", () => {
         _resetTrustedProxyCidrCacheForTests();
     });
 });
+
+// ── verifyCsrfOrigin ─────────────────────────────────────────────────────────
+
+import { verifyCsrfOrigin } from "./security.js";
+
+describe("verifyCsrfOrigin", () => {
+    const TRUSTED = ["https://pizza.example.com", "http://localhost:3000"];
+
+    function makeReq(method: string, headers: Record<string, string> = {}): Request {
+        return new Request("https://pizza.example.com/api/runners/spawn", { method, headers });
+    }
+
+    test("allows safe methods regardless of origin", () => {
+        expect(verifyCsrfOrigin(makeReq("GET", { cookie: "s=1", origin: "https://evil.example" }), TRUSTED)).toBeNull();
+        expect(verifyCsrfOrigin(makeReq("HEAD", { cookie: "s=1", origin: "https://evil.example" }), TRUSTED)).toBeNull();
+        expect(verifyCsrfOrigin(makeReq("OPTIONS", { cookie: "s=1", origin: "https://evil.example" }), TRUSTED)).toBeNull();
+    });
+
+    test("allows requests without cookies (nothing to ride)", () => {
+        expect(verifyCsrfOrigin(makeReq("POST", { origin: "https://evil.example" }), TRUSTED)).toBeNull();
+    });
+
+    test("allows API-key requests even with cookies and foreign origin", () => {
+        expect(verifyCsrfOrigin(
+            makeReq("POST", { cookie: "s=1", "x-api-key": "key", origin: "https://evil.example" }),
+            TRUSTED,
+        )).toBeNull();
+    });
+
+    test("rejects cookie-authed POST from untrusted origin", () => {
+        const res = verifyCsrfOrigin(makeReq("POST", { cookie: "s=1", origin: "https://evil.example" }), TRUSTED);
+        expect(res).not.toBeNull();
+        expect(res!.status).toBe(403);
+    });
+
+    test("rejects Origin: null", () => {
+        const res = verifyCsrfOrigin(makeReq("POST", { cookie: "s=1", origin: "null" }), TRUSTED);
+        expect(res!.status).toBe(403);
+    });
+
+    test("allows cookie-authed POST from trusted origin", () => {
+        expect(verifyCsrfOrigin(makeReq("POST", { cookie: "s=1", origin: "https://pizza.example.com" }), TRUSTED)).toBeNull();
+        expect(verifyCsrfOrigin(makeReq("DELETE", { cookie: "s=1", origin: "http://localhost:3000" }), TRUSTED)).toBeNull();
+    });
+
+    test("rejects cross-site Sec-Fetch-Site when Origin is absent", () => {
+        const res = verifyCsrfOrigin(makeReq("POST", { cookie: "s=1", "sec-fetch-site": "cross-site" }), TRUSTED);
+        expect(res!.status).toBe(403);
+    });
+
+    test("allows same-origin Sec-Fetch-Site when Origin is absent", () => {
+        expect(verifyCsrfOrigin(makeReq("POST", { cookie: "s=1", "sec-fetch-site": "same-origin" }), TRUSTED)).toBeNull();
+    });
+
+    test("allows requests with neither Origin nor Sec-Fetch-Site (non-browser clients)", () => {
+        expect(verifyCsrfOrigin(makeReq("PUT", { cookie: "s=1" }), TRUSTED)).toBeNull();
+    });
+});

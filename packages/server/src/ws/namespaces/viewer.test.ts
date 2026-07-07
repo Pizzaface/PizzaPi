@@ -186,6 +186,7 @@ describe("viewer connected signal gating", () => {
         forwardRecoveryConnectedSignal("sess-connected", {
             markPendingRecovery: mock((sessionId: string) => {
                 calls.push(`mark:${sessionId}`);
+                return "nonce-1";
             }),
             emitToRelaySession: mock((sessionId: string, event: string) => {
                 calls.push(`emit:${event}:${sessionId}`);
@@ -224,6 +225,7 @@ describe("viewer connected signal gating", () => {
         forwardRecoveryConnectedSignal("sess-pending", {
             markPendingRecovery: mock((sessionId: string) => {
                 calls.push(`mark:${sessionId}`);
+                return "nonce-1";
             }),
             emitToRelaySession: mock((sessionId: string, event: string) => {
                 calls.push(`emit:${event}:${sessionId}`);

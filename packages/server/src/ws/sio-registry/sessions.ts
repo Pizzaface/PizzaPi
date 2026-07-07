@@ -104,6 +104,7 @@ import { clearSessionSubscriptions } from "../../sessions/trigger-subscription-s
 import { pushTriggerHistory } from "../../sessions/trigger-store.js";
 
 export { markPendingRecovery, consumePendingRecovery, hasPendingRecovery, _resetPendingRecoveriesForTesting } from "./viewer-recovery.js";
+import { waitForTuiSocket, notifyTuiSocketConnected } from "./tui-socket-waiters.js";
 
 const log = createLogger("sio-registry");
 const lastRelaySessionStateWriteTimes = new Map<string, number>();
@@ -407,6 +408,7 @@ export async function registerTuiSession(
 
     // Store local socket reference
     localTuiSockets.set(sessionId, socket);
+    notifyTuiSocketConnected(sessionId);
 
     // Join relay session room
     await socket.join(relaySessionRoom(sessionId));
@@ -457,6 +459,15 @@ export async function registerTuiSession(
  */
 export function getLocalTuiSocket(sessionId: string): Socket | undefined {
     return localTuiSockets.get(sessionId);
+}
+
+/**
+ * Resolve true as soon as the session's local TUI socket is connected,
+ * or false after timeoutMs. Only observes sockets on this server node.
+ * Event-driven replacement for 200ms polling loops.
+ */
+export function waitForLocalTuiSocket(sessionId: string, timeoutMs: number): Promise<boolean> {
+    return waitForTuiSocket(sessionId, timeoutMs, (id) => localTuiSockets.get(id));
 }
 
 /**

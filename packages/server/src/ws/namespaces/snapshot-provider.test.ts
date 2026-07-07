@@ -185,7 +185,7 @@ describe("tryCacheSnapshot", () => {
     test("returns SnapshotResult when Redis has a snapshot event", async () => {
         const snapshotEvent = { type: "session_active", state: { messages: [] } };
         const deps = createDeps({
-            getLatestCachedSnapshotEvent: mock(async () => snapshotEvent),
+            getLatestCachedSnapshotEvent: mock(async () => ({ event: snapshotEvent, eventsAfter: [] })),
         });
 
         const result = await tryCacheSnapshot("sess-10", deps);
@@ -197,7 +197,7 @@ describe("tryCacheSnapshot", () => {
     test("send() emits the snapshot event with replay flag", async () => {
         const snapshotEvent = { type: "agent_end", messages: [{ role: "user" }] };
         const deps = createDeps({
-            getLatestCachedSnapshotEvent: mock(async () => snapshotEvent),
+            getLatestCachedSnapshotEvent: mock(async () => ({ event: snapshotEvent, eventsAfter: [] })),
         });
 
         const result = await tryCacheSnapshot("sess-11", deps);
@@ -210,6 +210,38 @@ describe("tryCacheSnapshot", () => {
             event: snapshotEvent,
             replay: true,
             generation: 3,
+        });
+    });
+
+    test("send() replays events cached after the snapshot so the viewer catches up to freshSeq", async () => {
+        const snapshotEvent = { type: "session_active", state: { messages: [] } };
+        const deps = createDeps({
+            getLatestCachedSnapshotEvent: mock(async () => ({
+                event: snapshotEvent,
+                eventsAfter: [
+                    { seq: 21, event: { type: "message_start" } },
+                    { event: { type: "seqless_noise" } }, // no seq — skipped
+                    { seq: 22, event: { type: "message_end" } },
+                ],
+            })),
+        });
+
+        const result = await tryCacheSnapshot("sess-13", deps);
+        const socket = createMockSocket();
+        result!.send(socket, 4);
+
+        expect(socket.calls.length).toBe(3);
+        expect(socket.calls[0].payload).toMatchObject({ event: snapshotEvent, replay: true });
+        expect(socket.calls[1].payload).toMatchObject({
+            event: { type: "message_start" },
+            seq: 21,
+            deltaReplay: true,
+            generation: 4,
+        });
+        expect(socket.calls[2].payload).toMatchObject({
+            event: { type: "message_end" },
+            seq: 22,
+            deltaReplay: true,
         });
     });
 
@@ -343,9 +375,9 @@ describe("getBestSnapshot — priority ordering", () => {
                 { seq: 11, event: { type: "message_start" } },
             ]),
             getLatestCachedSnapshotEvent: mock(async () => ({
-                type: "session_active",
-                state: { messages: [] },
-            })),
+                event: { type: "session_active", state: { messages: [] } },
+                eventsAfter: [],
+                })),
             getPersistedRelaySessionSnapshot: mock(async () => ({
                 state: { messages: [] },
             })),
@@ -364,9 +396,9 @@ describe("getBestSnapshot — priority ordering", () => {
         const deps = createDeps({
             getCachedRelayEventsAfterSeq: mock(async () => []),
             getLatestCachedSnapshotEvent: mock(async () => ({
-                type: "session_active",
-                state: { messages: [] },
-            })),
+                event: { type: "session_active", state: { messages: [] } },
+                eventsAfter: [],
+                })),
             getPersistedRelaySessionSnapshot: mock(async () => ({
                 state: { messages: [] },
             })),
@@ -384,7 +416,7 @@ describe("getBestSnapshot — priority ordering", () => {
     test("priority 2: returns cache snapshot when no lastSeq", async () => {
         const snapshotEvent = { type: "session_active", state: { messages: [] } };
         const deps = createDeps({
-            getLatestCachedSnapshotEvent: mock(async () => snapshotEvent),
+            getLatestCachedSnapshotEvent: mock(async () => ({ event: snapshotEvent, eventsAfter: [] })),
             getPersistedRelaySessionSnapshot: mock(async () => ({
                 state: { messages: ["persisted"] },
             })),
@@ -559,7 +591,7 @@ describe("getBestSnapshot — chunkedPending sessions", () => {
     test("still uses cache snapshot even when chunkedPending", async () => {
         const snapshotEvent = { type: "session_active", state: { messages: [] } };
         const deps = createDeps({
-            getLatestCachedSnapshotEvent: mock(async () => snapshotEvent),
+            getLatestCachedSnapshotEvent: mock(async () => ({ event: snapshotEvent, eventsAfter: [] })),
         });
 
         const result = await getBestSnapshot("sess-51", {

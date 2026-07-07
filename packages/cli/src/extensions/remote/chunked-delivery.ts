@@ -365,7 +365,7 @@ export function messagesChangedSinceLastEmit(rctx: RelayContext): boolean {
  * Emit session_active — either as a single event (small sessions) or as
  * metadata-only + chunked messages (large sessions).
  */
-export function emitSessionActive(rctx: RelayContext): void {
+export function emitSessionActive(rctx: RelayContext, recoveryNonce?: string): void {
     if (!rctx.latestCtx) return;
 
     const { messages, model } = buildSessionContext(
@@ -401,6 +401,7 @@ export function emitSessionActive(rctx: RelayContext): void {
         activeChunkedSnapshotId = snapshotId;
         rctx.forwardEvent({
             type: "session_active",
+            ...(recoveryNonce !== undefined ? { recoveryNonce } : {}),
             state: {
                 ...metadata,
                 messages: [], // placeholder — real messages follow as chunks
@@ -418,6 +419,7 @@ export function emitSessionActive(rctx: RelayContext): void {
         activeChunkedSnapshotId = null;
         rctx.forwardEvent({
             type: "session_active",
+            ...(recoveryNonce !== undefined ? { recoveryNonce } : {}),
             state: {
                 ...metadata,
                 messages: capOversizedMessages(messages, messageSizes),
