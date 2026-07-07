@@ -12,6 +12,7 @@ import { c } from "./cli-colors.js";
 import { defaultAgentDir, expandHome, loadConfig } from "./config.js";
 import { createLogger } from "@pizzapi/tools";
 import { fetchOllamaCloudModels, type OllamaCloudModel } from "./ollama-cloud-models.js";
+import { mergeModelLists, readSessionModelsCache } from "./session-models-cache.js";
 
 const log = createLogger("models");
 
@@ -54,15 +55,12 @@ export async function runModelsCommand(args: string[], cwd: string): Promise<num
         }
     }
 
-    // Deduplicate: static registry wins for any provider+id conflict.
-    const seen = new Set(staticEntries.map((m) => `${m.provider}:${m.id}`));
-    const allEntries = [
-        ...staticEntries,
-        ...ollamaEntries.filter((m) => !seen.has(`${m.provider}:${m.id}`)),
-    ].sort((a, b) => {
-        if (a.provider !== b.provider) return a.provider.localeCompare(b.provider);
-        return a.id.localeCompare(b.id);
-    });
+    // Deduplicate: static registry wins, then live Ollama, then the last live
+    // session's snapshot (extension-registered providers like claude-subscription).
+    const allEntries = mergeModelLists(
+        mergeModelLists(staticEntries, ollamaEntries),
+        readSessionModelsCache() ?? [],
+    );
 
     if (showJson) {
         log.info(JSON.stringify({ models: allEntries }, null, 2));
