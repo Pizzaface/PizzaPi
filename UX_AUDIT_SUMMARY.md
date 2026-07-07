@@ -1,10 +1,24 @@
 # UX Audit & Improvement Sweep — Summary
 
-Branch: `ux-audit-fixes` (18 commits). Method: Kimi (`kimi-k2.7-code`)
-researcher sessions driving the sandbox harness
+Delivered on `main` (~30 commits, +764/−229 across 48 files). Method: Kimi
+(`kimi-k2.7-code`) researcher sessions driving the sandbox harness
 (`packages/server/tests/harness/sandbox.ts`) via `playwright-cli`, findings
 verified against source and re-verified live before each commit. Raw reports:
 `/tmp/ux-findings-*.md`, verification reports `/tmp/ux-verify-*.md`.
+Certified: `tsc` clean, `vite build` passes, 992 UI tests pass (11 pre-existing
+`@/`-alias isolated-run failures unrelated), independent 12/12 end-to-end pass.
+
+## Later rounds (beyond the initial sweep)
+
+- New-session wizard: single-runner auto-advance + hide orphaned Back, focus ring, "Configure session on" copy, folder-browser disable-on-error
+- Plugin/Hooks/MCP/Trusted-Paths error states: Retry + friendly copy + aria-labels; plugin Rescan toast; MCP transport/deferred-loading helper text
+- Webhooks: HMAC-secret label, stable named delete dialog, collapsed-row Copy fire URL, dismissible (not auto-hidden) errors, Source helper
+- Services: open-in-new-tab disabled when service off
+- Triggers: empty-state guidance + error Retry
+- Usage dashboard: rich empty state, chart `role=img` + axis units, focusable info tooltips, session-table model title, loading skeletons
+- Session analyzer: metric explanation tooltips
+- Sidebar: Escape-exits-select-mode, concise row aria-label, arrow-key row navigation, enlarged expand-chevron tap target
+- Global a11y: `prefers-reduced-motion` for sidebar animations, toast live region (WCAG 4.1.3), settings-panel "taking longer" hint, Appearance "Reset all"
 
 ## Coverage (17 researcher sessions, A–Q + verification)
 
