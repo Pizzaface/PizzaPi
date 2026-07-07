@@ -5,7 +5,7 @@ import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader } from "@/components/ui/card";
 import { PizzaLogo } from "@/components/PizzaLogo";
 import { signIn, signUp } from "@/lib/auth-client";
-import { Loader2, Check, X } from "lucide-react";
+import { Loader2, Check, X, Eye, EyeOff } from "lucide-react";
 import { validatePassword, type PasswordCheck } from "@pizzapi/protocol";
 
 interface AuthPageProps {
@@ -22,6 +22,7 @@ export function AuthPage({ onAuthenticated }: AuthPageProps) {
     const [error, setError] = React.useState<string | null>(null);
     const [loading, setLoading] = React.useState(false);
     const [signupEnabled, setSignupEnabled] = React.useState<boolean | null>(null);
+    const [showPassword, setShowPassword] = React.useState(false);
 
     // Live password validation for signup
     const passwordCheck: PasswordCheck | null =
@@ -196,16 +197,28 @@ export function AuthPage({ onAuthenticated }: AuthPageProps) {
                         </div>
                         <div className="flex flex-col gap-1.5">
                             <Label htmlFor="auth-password">Password</Label>
-                            <Input
-                                id="auth-password"
-                                type="password"
-                                placeholder="••••••••"
-                                value={password}
-                                onChange={(e) => { setPassword(e.target.value); if (error) setError(null); }}
-                                required
-                                aria-invalid={error ? true : undefined}
-                                autoComplete={tab === "signin" ? "current-password" : "new-password"}
-                            />
+                            <div className="relative">
+                                <Input
+                                    id="auth-password"
+                                    type={showPassword ? "text" : "password"}
+                                    placeholder="••••••••"
+                                    value={password}
+                                    onChange={(e) => { setPassword(e.target.value); if (error) setError(null); }}
+                                    required
+                                    aria-invalid={error ? true : undefined}
+                                    autoComplete={tab === "signin" ? "current-password" : "new-password"}
+                                    className="pr-10"
+                                />
+                                <button
+                                    type="button"
+                                    onClick={() => setShowPassword((v) => !v)}
+                                    aria-label={showPassword ? "Hide password" : "Show password"}
+                                    aria-pressed={showPassword}
+                                    className="absolute inset-y-0 right-0 flex items-center px-3 text-muted-foreground hover:text-foreground rounded-r-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                                >
+                                    {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                                </button>
+                            </div>
                             {passwordCheck && (
                                 <ul className="flex flex-col gap-0.5 mt-1">
                                     {passwordCheck.checks.map((c) => (
