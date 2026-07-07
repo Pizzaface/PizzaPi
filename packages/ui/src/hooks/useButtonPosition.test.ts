@@ -36,7 +36,7 @@ describe("useButtonPosition", () => {
 
   test("defaults every button to the top slot", () => {
     const { result } = renderHook(() => useButtonPosition());
-    expect(result.current.slots.top).toHaveLength(10);
+    expect(result.current.slots.top).toHaveLength(11);
     for (const slot of ALL_SLOTS) {
       if (slot !== "top") {
         expect(result.current.slots[slot]).toHaveLength(0);
@@ -47,7 +47,7 @@ describe("useButtonPosition", () => {
   test("slots record contains all 9 keys", () => {
     const { result } = renderHook(() => useButtonPosition());
     expect(Object.keys(result.current.slots)).toHaveLength(9);
-    expect(result.current.slots.top).toHaveLength(10);
+    expect(result.current.slots.top).toHaveLength(11);
     for (const slot of ALL_SLOTS) {
       if (slot === "top") continue;
       expect(result.current.slots[slot]).toEqual([]);
@@ -135,7 +135,7 @@ describe("useButtonPosition", () => {
     expect(result.current.positions.tokens).toBe("right-middle");
     expect(result.current.slots["left-middle"]).toContain("plan");
     expect(result.current.slots["right-middle"]).toContain("tokens");
-    expect(result.current.slots.top).toHaveLength(4);
+    expect(result.current.slots.top).toHaveLength(5);
     expect(result.current.slots["left-middle"]).toHaveLength(3);
     expect(result.current.slots["right-middle"]).toHaveLength(3);
   });

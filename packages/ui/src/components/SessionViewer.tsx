@@ -679,15 +679,17 @@ export function SessionViewer({
                   </Tooltip>
                   </DraggableToolbarButton>
                 )}
-                {showAnalyzerButton && onToggleAnalyzer && (
+                {(showAnalyzerButton && onToggleAnalyzer && inHeader("analyzer")) && (
+                  <DraggableToolbarButton buttonId="analyzer" onDragStart={onButtonDragStart}>
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <Button className="hidden md:inline-flex h-7 w-7" onClick={onToggleAnalyzer} size="icon" type="button" variant="outline" aria-label="Toggle context analysis">
                         <BarChart3 className="size-3.5" />
                       </Button>
                     </TooltipTrigger>
-                    <TooltipContent>Context &amp; Cache Analysis</TooltipContent>
+                    <TooltipContent>Context &amp; Cache Analysis · click-and-hold to reposition</TooltipContent>
                   </Tooltip>
+                  </DraggableToolbarButton>
                 )}
                 {extraHeaderButtons}
                 {inHeader("export") && (

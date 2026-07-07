@@ -9,6 +9,7 @@ import {
   FolderTree,
   GitBranch,
   Zap,
+  BarChart3,
   Download,
   Copy,
   OctagonX,
@@ -30,6 +31,7 @@ export interface CommonButtonProps {
   onToggleFileExplorer?: () => void;
   onToggleGit?: () => void;
   onToggleTriggers?: () => void;
+  onToggleAnalyzer?: () => void;
   onDuplicateSession?: () => void;
   onExport?: () => void;
   onExec?: (payload: unknown) => boolean | void;
@@ -49,6 +51,7 @@ const ICONS: Record<string, React.ReactNode> = {
   files: <FolderTree className="size-4" />,
   git: <GitBranch className="size-4" />,
   triggers: <Zap className="size-4" />,
+  analyzer: <BarChart3 className="size-4" />,
   export: <Download className="size-4" />,
   duplicate: <Copy className="size-4" />,
   delete: <OctagonX className="size-4" />,
@@ -62,6 +65,7 @@ const LABELS: Record<string, string> = {
   files: "Files",
   git: "Git",
   triggers: "Triggers",
+  analyzer: "Context & Cache Analysis",
   export: "Export",
   duplicate: "Duplicate",
   delete: "End",
@@ -81,6 +85,7 @@ function ToolbarButton({
   onToggleFileExplorer,
   onToggleGit,
   onToggleTriggers,
+  onToggleAnalyzer,
   onDuplicateSession,
   onExport,
   onExec,
@@ -178,6 +183,7 @@ function ToolbarButton({
                 case "files": onToggleFileExplorer?.(); break;
                 case "git": onToggleGit?.(); break;
                 case "triggers": onToggleTriggers?.(); break;
+                case "analyzer": onToggleAnalyzer?.(); break;
                 case "duplicate": onDuplicateSession?.(); break;
                 case "export": onExport?.(); break;
                 case "delete":
@@ -269,7 +275,7 @@ export function ButtonStrip({
   return (
     <div
       className={cn(
-        "flex flex-row items-center justify-center gap-1 px-1 py-2",
+        "flex flex-row items-center justify-start gap-1 px-1 py-2",
         "bg-muted/30 border-border",
         position === "center-top" ? "border-b" : "border-t",
       )}

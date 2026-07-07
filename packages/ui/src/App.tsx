@@ -578,11 +578,29 @@ export function App() {
 
   const openPanelFromDockedButton = React.useCallback(
     (buttonId: ToolbarButtonId, isOpen: boolean, setOpen: (updater: (v: boolean) => boolean) => void, setPosition: (pos: PanelPosition) => void) => {
+      if (isOpen) {
+        // Already open: close only if this panel is the tab shown on top of its
+        // zone. If another tab is on top, bring this one forward instead of
+        // closing it (mirrors the service-panel toggle behavior).
+        const groups = panelGroupsRef.current;
+        const zone = groups && (Object.keys(groups) as PanelPosition[]).find(
+          (pos) => groups[pos].some((t) => t.id === buttonId),
+        );
+        const zoneTabIds = zone ? groups![zone].map((t) => t.id) : [buttonId];
+        if (resolvePanelToggleAction(zoneTabIds, combinedActiveTab, buttonId) === "focus") {
+          handleCombinedTabChange(buttonId);
+          return;
+        }
+        setOpen(() => false);
+        return;
+      }
+      // Opening: dock near the button if it lives in a rail/strip, then focus it.
       const slot = buttonPositions.positions[buttonId];
-      if (!isOpen && slot !== "top") setPosition(slot);
-      setOpen((v) => !v);
+      if (slot !== "top") setPosition(slot);
+      setOpen(() => true);
+      handleCombinedTabChange(buttonId);
     },
-    [buttonPositions.positions],
+    [buttonPositions.positions, combinedActiveTab, handleCombinedTabChange],
   );
 
   // Document-level listeners for button drag (can't use pointer capture from timer)
@@ -5074,6 +5092,7 @@ export function App() {
                   onToggleFileExplorer={() => openPanelFromDockedButton("files", showFileExplorer, setShowFileExplorer, handleFilesPositionChange)}
                   onToggleGit={() => openPanelFromDockedButton("git", showGit, setShowGit, handleGitPositionChange)}
                   onToggleTriggers={() => openPanelFromDockedButton("triggers", showTriggers, setShowTriggers, handleTriggersPositionChange)}
+                  onToggleAnalyzer={() => openPanelFromDockedButton("analyzer", showAnalyzer, setShowAnalyzer, handleAnalyzerPositionChange)}
                   onDuplicateSession={activeSessionInfo?.runnerId ? () => handleDuplicateSession(activeSessionInfo.runnerId!, activeSessionInfo.cwd || "") : undefined}
                   onExport={handleExport}
                   onExec={sendRemoteExec}
@@ -5093,6 +5112,7 @@ export function App() {
                     onToggleFileExplorer={() => openPanelFromDockedButton("files", showFileExplorer, setShowFileExplorer, handleFilesPositionChange)}
                     onToggleGit={() => openPanelFromDockedButton("git", showGit, setShowGit, handleGitPositionChange)}
                     onToggleTriggers={() => openPanelFromDockedButton("triggers", showTriggers, setShowTriggers, handleTriggersPositionChange)}
+                    onToggleAnalyzer={() => openPanelFromDockedButton("analyzer", showAnalyzer, setShowAnalyzer, handleAnalyzerPositionChange)}
                     onDuplicateSession={activeSessionInfo?.runnerId ? () => handleDuplicateSession(activeSessionInfo.runnerId!, activeSessionInfo.cwd || "") : undefined}
                     onExport={handleExport}
                     onExec={sendRemoteExec}
@@ -5247,6 +5267,7 @@ export function App() {
                   onToggleFileExplorer={() => openPanelFromDockedButton("files", showFileExplorer, setShowFileExplorer, handleFilesPositionChange)}
                   onToggleGit={() => openPanelFromDockedButton("git", showGit, setShowGit, handleGitPositionChange)}
                   onToggleTriggers={() => openPanelFromDockedButton("triggers", showTriggers, setShowTriggers, handleTriggersPositionChange)}
+                  onToggleAnalyzer={() => openPanelFromDockedButton("analyzer", showAnalyzer, setShowAnalyzer, handleAnalyzerPositionChange)}
                   onDuplicateSession={activeSessionInfo?.runnerId ? () => handleDuplicateSession(activeSessionInfo.runnerId!, activeSessionInfo.cwd || "") : undefined}
                   onExport={handleExport}
                   onExec={sendRemoteExec}
@@ -5266,6 +5287,7 @@ export function App() {
                 onToggleFileExplorer={() => openPanelFromDockedButton("files", showFileExplorer, setShowFileExplorer, handleFilesPositionChange)}
                 onToggleGit={() => openPanelFromDockedButton("git", showGit, setShowGit, handleGitPositionChange)}
                 onToggleTriggers={() => openPanelFromDockedButton("triggers", showTriggers, setShowTriggers, handleTriggersPositionChange)}
+                onToggleAnalyzer={() => openPanelFromDockedButton("analyzer", showAnalyzer, setShowAnalyzer, handleAnalyzerPositionChange)}
                 onDuplicateSession={activeSessionInfo?.runnerId ? () => handleDuplicateSession(activeSessionInfo.runnerId!, activeSessionInfo.cwd || "") : undefined}
                 onExport={handleExport}
                 onExec={sendRemoteExec}
