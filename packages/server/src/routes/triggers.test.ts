@@ -23,6 +23,7 @@ const mockLinkSessionToRunner = mock((_runnerId: string, _sessionId: string) => 
 mock.module("../ws/sio-registry.js", () => ({
     getSharedSession: mockGetSharedSession,
     getLocalTuiSocket: mockGetLocalTuiSocket,
+    waitForLocalTuiSocket: mock(async (id: string) => !!mockGetLocalTuiSocket(id)?.connected),
     emitToRelaySessionVerified: mockEmitToRelaySessionVerified,
     broadcastToSessionViewers: mockBroadcastToSessionViewers,
     recordRunnerSession: mockRecordRunnerSession,

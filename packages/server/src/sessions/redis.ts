@@ -264,7 +264,19 @@ export async function getCachedRelayEventsAfterSeq(
     }
 }
 
-export async function getLatestCachedSnapshotEvent(sessionId: string): Promise<Record<string, unknown> | null> {
+export interface LatestCachedSnapshot {
+    event: Record<string, unknown>;
+    /**
+     * Cached events appended after the snapshot, in chronological order.
+     * Replaying these after the snapshot brings a viewer up to the current
+     * seq — without them, deltas published between the snapshot and "now"
+     * would be silently skipped (the viewer cursor is advanced to freshSeq
+     * before hydration).
+     */
+    eventsAfter: CachedRelayEventRecord[];
+}
+
+export async function getLatestCachedSnapshotEvent(sessionId: string): Promise<LatestCachedSnapshot | null> {
     if (isRedisDisabled()) return null;
 
     const redis = await getClient();
@@ -275,6 +287,9 @@ export async function getLatestCachedSnapshotEvent(sessionId: string): Promise<R
         const length = await redis.lLen(key);
         if (!Number.isFinite(length) || length <= 0) return null;
 
+        // Events encountered while scanning backward toward the snapshot —
+        // i.e. events appended after it — in reverse-chronological order.
+        const trailingReversed: CachedRelayEventRecord[] = [];
         const chunkSize = snapshotScanChunkSize();
         for (let end = length - 1; end >= 0; end -= chunkSize) {
             const start = Math.max(0, end - chunkSize + 1);
@@ -282,9 +297,14 @@ export async function getLatestCachedSnapshotEvent(sessionId: string): Promise<R
             for (let i = rows.length - 1; i >= 0; i--) {
                 const row = rows[i];
                 const parsed = parseCachedRelayEventRow(row);
-                if (parsed && isSnapshotEvent(parsed.event)) {
-                    return parsed.event;
+                if (!parsed) continue;
+                if (isSnapshotEvent(parsed.event)) {
+                    return {
+                        event: parsed.event as Record<string, unknown>,
+                        eventsAfter: trailingReversed.reverse(),
+                    };
                 }
+                trailingReversed.push(parsed);
             }
         }
 

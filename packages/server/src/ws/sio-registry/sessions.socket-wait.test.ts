@@ -1,35 +1,39 @@
 // ============================================================================
-// sessions.socket-wait.test.ts — waitForLocalTuiSocket event-driven readiness
+// sessions.socket-wait.test.ts — waitForTuiSocket event-driven readiness
+//
+// Imports directly from tui-socket-waiters.ts — a tiny zero-dependency module.
+// No mocking needed: the functions are pure Map operations with no I/O.
 // ============================================================================
 
-import { afterEach, describe, expect, test } from "bun:test";
-import type { Socket } from "socket.io";
-import { waitForLocalTuiSocket, notifyTuiSocketConnected } from "./sessions.js";
-import { localTuiSockets } from "./context.js";
+import { beforeEach, describe, expect, test } from "bun:test";
+import {
+    waitForTuiSocket,
+    notifyTuiSocketConnected,
+    _resetTuiSocketWaitersForTesting,
+} from "./tui-socket-waiters.js";
 
-function fakeSocket(connected = true): Socket {
-    return { connected, data: {} } as unknown as Socket;
+function lookup(sockets: Record<string, { connected: boolean }>) {
+    return (sessionId: string) => sockets[sessionId];
 }
 
-describe("waitForLocalTuiSocket", () => {
-    afterEach(() => {
-        localTuiSockets.clear();
+describe("waitForTuiSocket", () => {
+    beforeEach(() => {
+        _resetTuiSocketWaitersForTesting();
     });
 
     test("resolves true immediately when the socket is already connected", async () => {
-        localTuiSockets.set("s1", fakeSocket());
-        expect(await waitForLocalTuiSocket("s1", 1000)).toBe(true);
+        const get = lookup({ s1: { connected: true } });
+        expect(await waitForTuiSocket("s1", 1000, get)).toBe(true);
     });
 
     test("resolves false after timeout when no socket registers", async () => {
         const start = Date.now();
-        expect(await waitForLocalTuiSocket("missing", 30)).toBe(false);
+        expect(await waitForTuiSocket("missing", 30, lookup({}))).toBe(false);
         expect(Date.now() - start).toBeGreaterThanOrEqual(25);
     });
 
     test("resolves true as soon as the socket registers", async () => {
-        const promise = waitForLocalTuiSocket("s2", 5000);
-        localTuiSockets.set("s2", fakeSocket());
+        const promise = waitForTuiSocket("s2", 5000, lookup({}));
         notifyTuiSocketConnected("s2");
         const start = Date.now();
         expect(await promise).toBe(true);
@@ -38,15 +42,14 @@ describe("waitForLocalTuiSocket", () => {
     });
 
     test("multiple waiters for the same session all resolve", async () => {
-        const a = waitForLocalTuiSocket("s3", 5000);
-        const b = waitForLocalTuiSocket("s3", 5000);
-        localTuiSockets.set("s3", fakeSocket());
+        const a = waitForTuiSocket("s3", 5000, lookup({}));
+        const b = waitForTuiSocket("s3", 5000, lookup({}));
         notifyTuiSocketConnected("s3");
         expect(await Promise.all([a, b])).toEqual([true, true]);
     });
 
     test("does not treat a disconnected socket as ready", async () => {
-        localTuiSockets.set("s4", fakeSocket(false));
-        expect(await waitForLocalTuiSocket("s4", 30)).toBe(false);
+        const get = lookup({ s4: { connected: false } });
+        expect(await waitForTuiSocket("s4", 30, get)).toBe(false);
     });
 });
