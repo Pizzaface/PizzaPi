@@ -339,6 +339,20 @@
   }
 }
 
+/* Respect prefers-reduced-motion globally for the perpetual sidebar status
+   animations (WCAG 2.3.3). The active/compacting/awaiting state is still
+   conveyed by the static glowing border segment + provider-icon glow, so
+   freezing the motion doesn't remove the status cue. */
+@media (prefers-reduced-motion: reduce) {
+  .animate-working-chase::before,
+  .animate-selected-active-chase::before,
+  .animate-compacting-chase::before,
+  .animate-awaiting-pulse,
+  .animate-completed-pulse {
+    animation: none !important;
+  }
+}
+
 [data-contrast="high"] *:focus-visible {
   outline: 3px solid var(--ring);
   outline-offset: 2px;
