@@ -98,7 +98,7 @@ test("benchmark touchRelaySession", async () => {
         isEphemeral: true,
     }));
 
-    const iterations = 1000;
+    const iterations = 100;
     const start = performance.now();
     for (let i = 0; i < iterations; i++) {
         await withAuth(() => touchRelaySession(sessionId));
@@ -106,4 +106,5 @@ test("benchmark touchRelaySession", async () => {
     const end = performance.now();
     console.log(`Time for ${iterations} touchRelaySession calls: ${(end - start).toFixed(2)}ms`);
     console.log(`Average time per call: ${((end - start) / iterations).toFixed(4)}ms`);
-});
+// ponytail: no-assertion benchmark; explicit timeout so slow machines don't fail CI. Delete if it stops earning its keep.
+}, 30000);
