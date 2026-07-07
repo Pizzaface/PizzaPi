@@ -1467,7 +1467,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                                       });
                                                                     }
                                                                   }}
-                                                                  className="flex-shrink-0 text-sidebar-foreground/50 hover:text-sidebar-foreground/70 transition-colors cursor-pointer"
+                                                                  className="flex-shrink-0 -m-1.5 p-1.5 rounded flex items-center justify-center text-sidebar-foreground/50 hover:text-sidebar-foreground/70 hover:bg-sidebar-accent/50 transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                                                                   aria-expanded={isExpanded}
                                                                   aria-label={isExpanded ? "Collapse linked sessions" : "Expand linked sessions"}
                                                                 >
