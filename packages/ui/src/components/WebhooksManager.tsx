@@ -307,6 +307,9 @@ function WebhookRow({
                     </div>
                 </div>
 
+                {/* Quick copy of the fire URL without expanding the row */}
+                <CopyButton text={fireUrl} label="Copy fire URL" />
+
                 {/* Toggle */}
                 <Switch
                     checked={webhook.enabled}
