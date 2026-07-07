@@ -243,6 +243,19 @@ export const SessionSidebar = React.memo(function SessionSidebar({
         setRevealedSessionId(null);
     }, [selectMode]);
 
+    // Escape exits multi-select mode (keyboard parity with the Cancel button),
+    // unless a dialog (e.g. the bulk-end confirm) is open and owns Escape first.
+    React.useEffect(() => {
+        if (!selectMode) return;
+        const onKey = (e: KeyboardEvent) => {
+            if (e.key !== "Escape") return;
+            if (document.querySelector('[role="dialog"],[role="alertdialog"]')) return;
+            exitSelectMode();
+        };
+        document.addEventListener("keydown", onKey);
+        return () => document.removeEventListener("keydown", onKey);
+    }, [selectMode, exitSelectMode]);
+
     const swipeRef = React.useRef<{
         sessionId: string;
         pointerId: number;
@@ -1363,6 +1376,12 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                         title={selectMode
                                                             ? `Toggle selection for ${s.sessionName?.trim() || s.sessionId.slice(0, 8)}`
                                                             : `View session ${s.sessionId} (press P to ${isPinned ? "unpin" : "pin"})`}
+                                                        aria-label={(() => {
+                                                            const nm = s.sessionName?.trim() || `Session ${s.sessionId.slice(0, 8)}`;
+                                                            if (selectMode) return `${isChecked ? "Deselect" : "Select"} ${nm}`;
+                                                            const st = s.isActive ? "active" : "idle";
+                                                            return `${nm}, ${st}${isPinned ? ", pinned" : ""}`;
+                                                        })()}
                                                         onKeyDown={(e) => {
                                                             if (selectMode) return;
                                                             if (e.key.toLowerCase() !== "p") return;
