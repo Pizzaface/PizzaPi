@@ -440,6 +440,9 @@ export function App() {
   );
   // Tracks whether the in-flight list_resume_sessions request is a "load more" (append) vs fresh load
   const resumeSessionsAppendRef = React.useRef(false);
+  // Fallback timer: if the runner never answers list_resume_sessions (stale or
+  // dead CLI), fall back to server-persisted sessions instead of spinning forever.
+  const resumeSessionsFallbackTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   // ────────────────────────────────────────────────────────────────────────────
   // Ref kept in sync with `messages` via useLayoutEffect so we can read the
   // latest committed value in event handlers without needing functional updaters.
@@ -2047,6 +2050,10 @@ export function App() {
       }
 
       if (command === "list_resume_sessions") {
+        if (resumeSessionsFallbackTimerRef.current) {
+          clearTimeout(resumeSessionsFallbackTimerRef.current);
+          resumeSessionsFallbackTimerRef.current = null;
+        }
         const list: unknown[] = Array.isArray(result?.sessions) ? (result.sessions as unknown[]) : [];
         const normalized: ResumeSessionOption[] = [];
 
@@ -3747,7 +3754,16 @@ export function App() {
     if (!ok) {
       setResumeSessionsLoading(false);
       resumeSessionsAppendRef.current = false;
+      return ok;
     }
+    // Runner didn't answer within 5s (stale/dead CLI) — fall back to the
+    // server's persisted session list so history isn't stuck on a spinner.
+    if (resumeSessionsFallbackTimerRef.current) clearTimeout(resumeSessionsFallbackTimerRef.current);
+    resumeSessionsFallbackTimerRef.current = setTimeout(() => {
+      resumeSessionsFallbackTimerRef.current = null;
+      resumeSessionsAppendRef.current = false;
+      void requestPersistedSessions(cursor);
+    }, 5000);
     return ok;
   }, [sendRemoteExec, requestPersistedSessions]);
 

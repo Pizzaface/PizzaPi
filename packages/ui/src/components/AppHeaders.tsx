@@ -445,18 +445,16 @@ export const MobileHeader = React.memo(function MobileHeader({
           </div>
         )}
         <DropdownMenu>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <DropdownMenuTrigger asChild>
-                <Button variant="ghost" size="icon" className="h-9 w-9" aria-label="User menu">
-                  <span className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-muted text-[11px] font-semibold">
-                    {initials(userLabel)}
-                  </span>
-                </Button>
-              </DropdownMenuTrigger>
-            </TooltipTrigger>
-            <TooltipContent>User menu</TooltipContent>
-          </Tooltip>
+          {/* No tooltip here: nesting Tooltip around DropdownMenuTrigger left the
+              "User menu" tooltip floating over the opened menu. The avatar +
+              aria-label are sufficient. */}
+          <DropdownMenuTrigger asChild>
+            <Button variant="ghost" size="icon" className="h-9 w-9" aria-label="User menu">
+              <span className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-muted text-[11px] font-semibold">
+                {initials(userLabel)}
+              </span>
+            </Button>
+          </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-64">
             <DropdownMenuLabel className="flex items-center gap-2">
               <User className="h-4 w-4 text-muted-foreground" />
