@@ -7,6 +7,7 @@ import { getPluginSkillPaths } from "../extensions/claude-plugins.js";
 import { setRegisteredCommandsProvider } from "../extensions/command-introspection.js";
 import { initSandbox, cleanupSandbox, isSandboxActive } from "@pizzapi/tools";
 import { createBootTimer } from "./boot-timing.js";
+import { applySettingsDefaultModel } from "./apply-default-model.js";
 import { setLogComponent, setLogSessionId, logInfo, logWarn, logError, logAuth } from "./logger.js";
 
 /**
@@ -393,6 +394,18 @@ async function main(): Promise<void> {
         resourceLoader: loader,
     });
     bootTimer.end("[boot] create-session");
+
+    // Re-resolve the settings default model now that extension-registered
+    // providers (e.g. minimalcc-pi's claude-subscription) are in the registry.
+    // Without this, a default pointing at such a provider silently falls back
+    // to a built-in provider default (openai/gpt-5.5). See apply-default-model.ts.
+    try {
+        if (await applySettingsDefaultModel(session as any)) {
+            logInfo(`applied settings default model ${session.model?.provider}/${session.model?.id} (provider registered by extension after initial resolution)`);
+        }
+    } catch (e) {
+        logWarn(`failed to apply settings default model: ${e instanceof Error ? e.message : String(e)}`);
+    }
 
     // Deliver ALL queued follow-up messages at once when a turn ends, instead
     // of pi's default one-at-a-time (which strands later follow-ups until the
