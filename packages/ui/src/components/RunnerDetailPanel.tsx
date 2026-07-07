@@ -276,7 +276,11 @@ function TabBar({
     runner: RunnerInfo;
 }) {
     return (
-        <div className="overflow-x-auto -mx-4 sm:-mx-6 px-4 sm:px-6">
+        <div className="relative -mx-4 sm:-mx-6">
+            {/* Right-edge fade hints that the tab bar scrolls horizontally when
+                the tabs overflow (common on narrow/mobile viewports). */}
+            <div className="pointer-events-none absolute right-0 top-0 bottom-0 w-6 bg-gradient-to-l from-background to-transparent sm:hidden" aria-hidden="true" />
+            <div className="overflow-x-auto px-4 sm:px-6">
             <div className="flex gap-1 border-b border-border/40 min-w-max">
                 {TABS.map((tab) => {
                     const isActive = activeTab === tab.key;
@@ -303,6 +307,7 @@ function TabBar({
                         </button>
                     );
                 })}
+            </div>
             </div>
         </div>
     );

@@ -317,8 +317,10 @@ export function RunnerServicesPanel({ runnerId }: RunnerServicesPanelProps) {
                 {hasPanel && (
                   <button
                     onClick={() => handleOpen(svc.panel!)}
-                    className="text-muted-foreground hover:text-foreground transition-colors"
-                    title="Open in new tab"
+                    disabled={!svc.enabled}
+                    className="text-muted-foreground hover:text-foreground transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:text-muted-foreground"
+                    title={svc.enabled ? "Open in new tab" : "Enable this service to open its panel"}
+                    aria-label={svc.enabled ? `Open ${svc.panel!.label} in new tab` : `${svc.panel!.label} is disabled`}
                   >
                     <ExternalLink className="size-3" />
                   </button>

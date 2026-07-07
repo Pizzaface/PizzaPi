@@ -24,6 +24,7 @@ import {
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
 import { createLogger } from "@pizzapi/tools";
+import { showToast } from "@/lib/frontend-log";
 
 const log = createLogger("plugins-ui");
 
@@ -371,9 +372,14 @@ export function PluginsManager({ runnerId, plugins: initialPlugins, onPluginsCha
                     setPlugins(updated);
                     onPluginsChange?.(updated);
                 }
+                showToast("Plugins rescanned", "info");
+            } else {
+                // Was silent before — surface the failure so Rescan isn't a no-op.
+                showToast(`Couldn't rescan plugins (HTTP ${res.status})`, "error");
             }
         } catch (err) {
             log.error("Failed to refresh plugins:", err);
+            showToast("Couldn't rescan plugins — the runner may be unreachable", "error");
         } finally {
             setRefreshing(false);
         }

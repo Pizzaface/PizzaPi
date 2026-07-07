@@ -576,9 +576,12 @@ function CreateWebhookForm({
                     <Input
                         value={source}
                         onChange={(e) => setSource(e.target.value)}
-                        placeholder="custom"
+                        placeholder="e.g. github, deploy"
                         className="h-8 text-xs"
                     />
+                    <p className="text-[10px] text-muted-foreground/70">
+                        A label recorded on each fire, used to identify/filter this webhook's events.
+                    </p>
                 </div>
             </div>
 
