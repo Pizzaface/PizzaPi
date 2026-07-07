@@ -1111,8 +1111,8 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                     <button
                         onClick={onShowSessions}
                         className={cn(
-                            "flex items-center justify-center gap-1.5 px-3 pb-2 text-xs font-medium transition-colors relative",
-                            "focus-visible:outline-none",
+                            "flex items-center justify-center gap-1.5 px-3 pb-2 text-xs font-medium transition-colors relative rounded-sm",
+                            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                             !showRunners
                                 ? "text-sidebar-foreground"
                                 : "text-sidebar-foreground/40 hover:text-sidebar-foreground/70"
@@ -1125,8 +1125,8 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                     <button
                         onClick={onShowRunners}
                         className={cn(
-                            "flex items-center justify-center gap-1.5 px-3 pb-2 text-xs font-medium transition-colors relative",
-                            "focus-visible:outline-none",
+                            "flex items-center justify-center gap-1.5 px-3 pb-2 text-xs font-medium transition-colors relative rounded-sm",
+                            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                             showRunners
                                 ? "text-sidebar-foreground"
                                 : "text-sidebar-foreground/40 hover:text-sidebar-foreground/70"
@@ -1201,7 +1201,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                 <div className="flex items-center gap-1.5 px-1.5 py-1 min-w-0">
                                     <HardDrive className="h-3 w-3 text-sidebar-foreground/35 flex-shrink-0" />
                                     <span
-                                        className="text-[0.65rem] font-medium text-sidebar-foreground/45 truncate flex-1"
+                                        className="text-[0.65rem] font-medium text-sidebar-foreground/60 truncate flex-1"
                                         title={runnerGroup.label}
                                     >
                                         {runnerGroup.label}
@@ -1495,7 +1495,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                                     )}
                                                                     {s.sessionName?.trim() || `Session ${s.sessionId.slice(0, 8)}…`}
                                                                 </span>
-                                                                <span className="text-[0.65rem] text-sidebar-foreground/45 flex-shrink-0">
+                                                                <span className="text-[0.65rem] text-sidebar-foreground/60 flex-shrink-0">
                                                                     {timeLabel}
                                                                 </span>
                                                             </div>
@@ -1518,7 +1518,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                             {(s.userName || (showCwd && s.cwd)) && (
                                                                 <div className="flex items-center gap-1 mt-0.5 min-w-0">
                                                                     {s.userName && (
-                                                                        <span className="text-[0.65rem] text-sidebar-foreground/45 truncate">
+                                                                        <span className="text-[0.65rem] text-sidebar-foreground/60 truncate">
                                                                             {s.userName}
                                                                         </span>
                                                                     )}

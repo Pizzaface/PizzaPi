@@ -459,6 +459,15 @@ export function App() {
   });
   const [showPreferences, setShowPreferences] = React.useState(false);
   const [showApiKeys, setShowApiKeys] = React.useState(false);
+  // The API-keys sheet is a hand-rolled overlay (not a Radix Dialog), so wire
+  // Escape-to-close at the document level while it's open — a container-scoped
+  // handler misses key events when focus is still on the trigger.
+  React.useEffect(() => {
+    if (!showApiKeys) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setShowApiKeys(false); };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [showApiKeys]);
   const [apiKeyVersion, setApiKeyVersion] = React.useState(0);
   const [setupClaimOpen, setSetupClaimOpen] = React.useState(false);
   const [setupClaimToken, setSetupClaimToken] = React.useState<string | null>(null);
@@ -4937,7 +4946,7 @@ export function App() {
                 />
               )}
 
-              <div id="main-content" tabIndex={-1} className="flex flex-col flex-1 min-w-0 min-h-0 overflow-hidden">
+              <div id="main-content" role="main" tabIndex={-1} className="flex flex-col flex-1 min-w-0 min-h-0 overflow-hidden">
                   {showRunners ? (
                     <ErrorBoundary level="section" resetKeys={[activeSessionId]}>
                       <RunnerManager
@@ -5298,7 +5307,12 @@ export function App() {
         )}
 
         {showApiKeys && (
-          <div className="absolute inset-y-0 right-0 z-40 flex w-full max-w-md flex-col shadow-xl border-l bg-background">
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label="API Keys"
+            className="absolute inset-y-0 right-0 z-40 flex w-full max-w-md flex-col shadow-xl border-l bg-background"
+          >
             <div className="flex items-center justify-between px-4 py-3 border-b">
               <span className="font-semibold text-sm">API Keys</span>
               <Tooltip>

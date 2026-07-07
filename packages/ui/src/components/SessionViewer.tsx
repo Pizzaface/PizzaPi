@@ -1286,6 +1286,7 @@ export function SessionViewer({
                 <div className="flex w-full items-end">
                   <PromptInputTextarea
                     data-pp-prompt=""
+                    aria-label="Message"
                     value={input}
                     onChange={(event) => {
                       const next = event.currentTarget.value;

@@ -485,6 +485,7 @@ export function GitPanel({ cwd, className }: GitPanelProps) {
                         type="button"
                         onClick={() => setToast(null)}
                         className="text-current opacity-60 hover:opacity-100"
+                        aria-label="Dismiss"
                     >
                         ×
                     </button>

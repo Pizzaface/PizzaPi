@@ -752,8 +752,9 @@ function NewTerminalDialog({
                         });
                         onRemoveFolder(folder);
                       }}
-                      className="px-1 py-0.5 opacity-0 group-hover:opacity-100 hover:text-destructive transition-opacity"
+                      className="px-1 py-0.5 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 hover:text-destructive transition-opacity"
                       title="Remove from recent"
+                      aria-label="Remove from recent"
                     >
                       ×
                     </button>
