@@ -2755,7 +2755,15 @@ export function App() {
     activeModel,
   ]);
 
+  // Only connect once auth is confirmed — a pre-login handshake is rejected by
+  // the server middleware and socket.io never retries middleware denials, which
+  // left the hub socket permanently dead until a full page reload (stuck
+  // sidebar skeletons + "Connecting…"). Keyed on the user id so logout→login
+  // recreates the socket. Mirrors useRunnersFeed's `enabled` gating.
+  const hubAuthUserId = !isPending && session?.user?.id ? String(session.user.id) : null;
+
   React.useEffect(() => {
+    if (!hubAuthUserId) return;
     const socket = io(socketUrl("/hub"), {
       withCredentials: true,
       auth: buildSocketAuth({
@@ -2904,7 +2912,7 @@ export function App() {
       hubSocketRef.current = null;
       setHubSocket(null);
     };
-  }, [applyMetaStateSnapshot, applyMetaPatch, applyMcpReport, checkVersionCompatibility]);
+  }, [hubAuthUserId, applyMetaStateSnapshot, applyMetaPatch, applyMcpReport, checkVersionCompatibility]);
 
   React.useEffect(() => {
     const hubSock = hubSocketRef.current;
