@@ -164,7 +164,7 @@ export const SessionMessageItem = React.memo(
               {message.isError && <span className="text-destructive">• Error</span>}
               <MessageCopyButton
                 text={exportToMarkdown([message])}
-                className="ml-auto opacity-0 group-hover/msg:opacity-100 transition-opacity"
+                className="ml-auto opacity-0 group-hover/msg:opacity-100 focus-visible:opacity-100 transition-opacity"
               />
             </div>
             {isCustomMessage && message.display !== true ? (
