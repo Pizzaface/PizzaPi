@@ -401,7 +401,8 @@ export function FileExplorer({ runnerId, cwd, className, onClose, position = "le
           </div>
         ) : error ? (
           <div className="p-4">
-            <p className="text-sm text-red-400 mb-3">{error}</p>
+            <p className="text-sm font-medium mb-1">Can't open this folder</p>
+            <p className="text-xs text-muted-foreground mb-3">{error}</p>
             <Button variant="outline" size="sm" onClick={() => void fetchFiles()}>
               <RefreshCw className="size-3 mr-1.5" /> Retry
             </Button>

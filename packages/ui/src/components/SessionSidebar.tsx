@@ -243,6 +243,19 @@ export const SessionSidebar = React.memo(function SessionSidebar({
         setRevealedSessionId(null);
     }, [selectMode]);
 
+    // Escape exits multi-select mode (keyboard parity with the Cancel button),
+    // unless a dialog (e.g. the bulk-end confirm) is open and owns Escape first.
+    React.useEffect(() => {
+        if (!selectMode) return;
+        const onKey = (e: KeyboardEvent) => {
+            if (e.key !== "Escape") return;
+            if (document.querySelector('[role="dialog"],[role="alertdialog"]')) return;
+            exitSelectMode();
+        };
+        document.addEventListener("keydown", onKey);
+        return () => document.removeEventListener("keydown", onKey);
+    }, [selectMode, exitSelectMode]);
+
     const swipeRef = React.useRef<{
         sessionId: string;
         pointerId: number;
@@ -1000,7 +1013,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                         <Button
                             variant="ghost"
                             size="icon"
-                            className="h-8 w-8 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent"
+                            className="h-9 w-9 md:h-8 md:w-8 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent"
                             onClick={onClose}
                             aria-label="Close sidebar"
                             title="Close sidebar"
@@ -1083,7 +1096,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                             <Button
                                 variant="ghost"
                                 size="icon"
-                                className="h-8 w-8 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent"
+                                className="h-9 w-9 md:h-8 md:w-8 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent"
                                 onClick={() => setSelectMode(true)}
                                 aria-label="Select sessions"
                                 title="Select sessions"
@@ -1094,7 +1107,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                         <Button
                             variant="ghost"
                             size="icon"
-                            className="h-8 w-8 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent"
+                            className="h-9 w-9 md:h-8 md:w-8 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent"
                             onClick={onNewSession}
                             aria-label="New session"
                             title="New session"
@@ -1111,8 +1124,8 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                     <button
                         onClick={onShowSessions}
                         className={cn(
-                            "flex items-center justify-center gap-1.5 px-3 pb-2 text-xs font-medium transition-colors relative",
-                            "focus-visible:outline-none",
+                            "flex items-center justify-center gap-1.5 px-3 pb-2 text-xs font-medium transition-colors relative rounded-sm",
+                            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                             !showRunners
                                 ? "text-sidebar-foreground"
                                 : "text-sidebar-foreground/40 hover:text-sidebar-foreground/70"
@@ -1125,8 +1138,8 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                     <button
                         onClick={onShowRunners}
                         className={cn(
-                            "flex items-center justify-center gap-1.5 px-3 pb-2 text-xs font-medium transition-colors relative",
-                            "focus-visible:outline-none",
+                            "flex items-center justify-center gap-1.5 px-3 pb-2 text-xs font-medium transition-colors relative rounded-sm",
+                            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                             showRunners
                                 ? "text-sidebar-foreground"
                                 : "text-sidebar-foreground/40 hover:text-sidebar-foreground/70"
@@ -1201,7 +1214,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                 <div className="flex items-center gap-1.5 px-1.5 py-1 min-w-0">
                                     <HardDrive className="h-3 w-3 text-sidebar-foreground/35 flex-shrink-0" />
                                     <span
-                                        className="text-[0.65rem] font-medium text-sidebar-foreground/45 truncate flex-1"
+                                        className="text-[0.65rem] font-medium text-sidebar-foreground/60 truncate flex-1"
                                         title={runnerGroup.label}
                                     >
                                         {runnerGroup.label}
@@ -1363,7 +1376,27 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                         title={selectMode
                                                             ? `Toggle selection for ${s.sessionName?.trim() || s.sessionId.slice(0, 8)}`
                                                             : `View session ${s.sessionId} (press P to ${isPinned ? "unpin" : "pin"})`}
+                                                        aria-label={(() => {
+                                                            const nm = s.sessionName?.trim() || `Session ${s.sessionId.slice(0, 8)}`;
+                                                            if (selectMode) return `${isChecked ? "Deselect" : "Select"} ${nm}`;
+                                                            const st = s.isActive ? "active" : "idle";
+                                                            return `${nm}, ${st}${isPinned ? ", pinned" : ""}`;
+                                                        })()}
+                                                        data-session-row=""
                                                         onKeyDown={(e) => {
+                                                            // Arrow keys move focus between session rows (roving
+                                                            // navigation without a full listbox refactor).
+                                                            if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+                                                                e.preventDefault();
+                                                                const rows = Array.from(
+                                                                    document.querySelectorAll<HTMLElement>("[data-session-row]"),
+                                                                );
+                                                                const idx = rows.indexOf(e.currentTarget as HTMLElement);
+                                                                if (idx === -1) return;
+                                                                const next = e.key === "ArrowDown" ? idx + 1 : idx - 1;
+                                                                rows[Math.max(0, Math.min(rows.length - 1, next))]?.focus();
+                                                                return;
+                                                            }
                                                             if (selectMode) return;
                                                             if (e.key.toLowerCase() !== "p") return;
                                                             e.preventDefault();
@@ -1434,8 +1467,9 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                                       });
                                                                     }
                                                                   }}
-                                                                  className="flex-shrink-0 text-sidebar-foreground/50 hover:text-sidebar-foreground/70 transition-colors cursor-pointer"
-                                                                  aria-label={isExpanded ? "Collapse" : "Expand"}
+                                                                  className="flex-shrink-0 -m-1.5 p-1.5 rounded flex items-center justify-center text-sidebar-foreground/50 hover:text-sidebar-foreground/70 hover:bg-sidebar-accent/50 transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                                                                  aria-expanded={isExpanded}
+                                                                  aria-label={isExpanded ? "Collapse linked sessions" : "Expand linked sessions"}
                                                                 >
                                                                   {isExpanded ? (
                                                                     <ChevronDown className="h-4 w-4" />
@@ -1494,7 +1528,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                                     )}
                                                                     {s.sessionName?.trim() || `Session ${s.sessionId.slice(0, 8)}…`}
                                                                 </span>
-                                                                <span className="text-[0.65rem] text-sidebar-foreground/45 flex-shrink-0">
+                                                                <span className="text-[0.65rem] text-sidebar-foreground/60 flex-shrink-0">
                                                                     {timeLabel}
                                                                 </span>
                                                             </div>
@@ -1517,7 +1551,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                             {(s.userName || (showCwd && s.cwd)) && (
                                                                 <div className="flex items-center gap-1 mt-0.5 min-w-0">
                                                                     {s.userName && (
-                                                                        <span className="text-[0.65rem] text-sidebar-foreground/45 truncate">
+                                                                        <span className="text-[0.65rem] text-sidebar-foreground/60 truncate">
                                                                             {s.userName}
                                                                         </span>
                                                                     )}
@@ -1556,7 +1590,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                     <Button
                         variant="ghost"
                         size="icon"
-                        className="h-8 w-8 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent"
+                        className="h-9 w-9 md:h-8 md:w-8 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent"
                         onClick={() => setCollapsed(false)}
                         aria-label="Expand sidebar"
                     >
@@ -1590,9 +1624,20 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                 handle={(_, ref) => (
                     <div
                         ref={ref as any}
-                        className="hidden md:block absolute top-0 right-0 h-full w-1.5 cursor-col-resize hover:bg-sidebar-border/60"
+                        className="hidden md:block absolute top-0 right-0 h-full w-1.5 cursor-col-resize hover:bg-sidebar-border/60 focus-visible:bg-sidebar-border focus-visible:outline-none"
                         aria-label="Resize sidebar"
                         role="separator"
+                        aria-orientation="vertical"
+                        aria-valuenow={sidebarWidth}
+                        aria-valuemin={220}
+                        aria-valuemax={520}
+                        tabIndex={0}
+                        onKeyDown={(e) => {
+                            if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+                            e.preventDefault();
+                            const delta = e.key === "ArrowRight" ? 16 : -16;
+                            setSidebarWidth((w) => Math.min(520, Math.max(220, w + delta)));
+                        }}
                     />
                 )}
             >

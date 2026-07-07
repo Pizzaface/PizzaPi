@@ -56,7 +56,8 @@ export interface TunnelResponseStartMessage {
   id: string;
   statusCode: number;
   statusMessage: string;
-  headers: Record<string, string>;
+  /** Array values preserve multi-value headers (e.g. multiple Set-Cookie). */
+  headers: Record<string, string | string[]>;
 }
 
 export interface TunnelResponseDataMessage {

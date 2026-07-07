@@ -341,12 +341,14 @@ export class TunnelClient extends EventEmitter {
         signal: controller.signal,
       },
       (response) => {
-        const responseHeaders: Record<string, string> = {};
+        const responseHeaders: Record<string, string | string[]> = {};
         for (const [key, value] of Object.entries(response.headers)) {
           if (value === undefined) continue;
           const lowerKey = key.toLowerCase();
           if (HOP_BY_HOP.has(lowerKey)) continue;
-          responseHeaders[key] = Array.isArray(value) ? value.join(", ") : value;
+          // Preserve arrays — joining multi-value headers with ", " breaks
+          // Set-Cookie (cookie values legally contain commas in Expires).
+          responseHeaders[key] = value;
         }
 
         this.send({

@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import QRCode from "qrcode";
 import { Card, CardContent, CardTitle, CardHeader, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { CheckCircle2, KeyRound, RefreshCw, ShieldCheck, Smartphone } from "lucide-react";
+import { CheckCircle2, KeyRound, RefreshCw, ShieldCheck, Smartphone, Copy, Check } from "lucide-react";
 
 interface MobileLinkStatus {
     id: string;
@@ -29,7 +29,7 @@ function resolveRelayUrl(): string {
 
 type State =
     | { kind: "loading" }
-    | { kind: "ready"; claim: MobileLinkStatus; qrDataUrl: string }
+    | { kind: "ready"; claim: MobileLinkStatus; qrDataUrl: string; linkUrl: string }
     | { kind: "error"; message: string };
 
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
@@ -50,6 +50,7 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
 export function MobileSetupQR() {
     const relayUrl = resolveRelayUrl();
     const [state, setState] = useState<State>({ kind: "loading" });
+    const [copied, setCopied] = useState(false);
 
     const createClaim = React.useCallback(async () => {
         setState({ kind: "loading" });
@@ -66,7 +67,7 @@ export function MobileSetupQR() {
                 width: 280,
                 color: { dark: "#1c1917", light: "#ffffff" },
             });
-            setState({ kind: "ready", claim: data, qrDataUrl });
+            setState({ kind: "ready", claim: data, qrDataUrl, linkUrl });
         } catch (err) {
             setState({ kind: "error", message: err instanceof Error ? err.message : "Could not create mobile link QR" });
         }
@@ -160,9 +161,27 @@ export function MobileSetupQR() {
                         <div className="text-sm text-destructive">This QR expired. Generate a new one.</div>
                     )}
 
-                    <Button variant="outline" size="sm" onClick={createClaim} disabled={state.kind === "loading"} className="gap-2">
-                        <RefreshCw className="h-4 w-4" />New QR
-                    </Button>
+                    <div className="flex items-center gap-2">
+                        {ready && claim?.status === "pending" && (
+                            <Button
+                                variant="outline"
+                                size="sm"
+                                className="gap-2"
+                                onClick={async () => {
+                                    await navigator.clipboard.writeText(ready.linkUrl);
+                                    setCopied(true);
+                                    setTimeout(() => setCopied(false), 2000);
+                                }}
+                                aria-label="Copy setup link"
+                            >
+                                {copied ? <Check className="h-4 w-4 text-green-600" /> : <Copy className="h-4 w-4" />}
+                                {copied ? "Copied" : "Copy setup link"}
+                            </Button>
+                        )}
+                        <Button variant="outline" size="sm" onClick={createClaim} disabled={state.kind === "loading"} className="gap-2">
+                            <RefreshCw className="h-4 w-4" />New QR
+                        </Button>
+                    </div>
                 </div>
             </CardContent>
         </Card>

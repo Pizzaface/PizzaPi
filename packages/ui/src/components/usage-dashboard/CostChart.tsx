@@ -68,6 +68,8 @@ export function CostChart({ daily }: CostChartProps) {
         <CardTitle>Cost Over Time</CardTitle>
       </CardHeader>
       <CardContent>
+        {/* Pure-SVG chart: expose a single labeled image role for AT. */}
+        <div role="img" aria-label="Cost over time, in US dollars per day">
         <ResponsiveContainer width="100%" height={400}>
           <BarChart
             data={daily}
@@ -84,6 +86,7 @@ export function CostChart({ daily }: CostChartProps) {
               className="text-xs"
               tick={{ fontSize: 12, fill: "var(--muted-foreground)" }}
               tickFormatter={formatCurrency}
+              label={{ value: "Cost (USD)", angle: -90, position: "insideLeft", style: { fontSize: 11, fill: "var(--muted-foreground)", textAnchor: "middle" } }}
             />
             <Tooltip
               content={<CustomTooltip />}
@@ -124,6 +127,7 @@ export function CostChart({ daily }: CostChartProps) {
             />
           </BarChart>
         </ResponsiveContainer>
+        </div>
       </CardContent>
     </Card>
   );

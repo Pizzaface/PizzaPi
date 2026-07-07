@@ -1,21 +1,38 @@
 import { describe, expect, test } from "bun:test";
-import { getLucideIcon } from "./lucide-icon";
-import { BookOpen, Activity, Square } from "lucide-react";
+import { resolveIconName } from "./lucide-icon";
 
-describe("getLucideIcon", () => {
-    test("resolves kebab-case icon names to lucide components", () => {
-        expect(getLucideIcon("book-open")).toBe(BookOpen);
-        expect(getLucideIcon("activity")).toBe(Activity);
+describe("resolveIconName", () => {
+    test("passes through valid canonical kebab-case names", () => {
+        expect(resolveIconName("book-open")).toBe("book-open");
+        expect(resolveIconName("activity")).toBe("activity");
     });
 
-    test("falls back to Square for unknown icon names", () => {
-        expect(getLucideIcon("nonexistent-icon-xyz")).toBe(Square);
+    test("returns undefined for unknown icon names", () => {
+        expect(resolveIconName("nonexistent-icon-xyz")).toBeUndefined();
     });
 
-    test("handles forwardRef components (typeof object)", () => {
-        // lucide-react ≥0.300 exports icons as React.forwardRef objects
-        expect(typeof BookOpen).toBe("object");
-        // getLucideIcon must still resolve them correctly
-        expect(getLucideIcon("book-open")).toBe(BookOpen);
+    test("resolves any lucide icon, not just the old whitelist", () => {
+        // arbitrary icons that were never in the old curated map
+        for (const name of ["axe", "binoculars", "cassette-tape", "drum", "orbit"]) {
+            expect(resolveIconName(name)).toBe(name);
+        }
+    });
+
+    test("resolves legacy renamed lucide names via aliases", () => {
+        const legacy = [
+            "alert-circle", "alert-triangle", "bar-chart", "check-circle",
+            "circle-help", "file-json", "filter", "fingerprint", "help-circle",
+            "home", "kanban-square", "line-chart", "pie-chart", "stop-circle",
+            "terminal-square", "train", "unlock", "x-circle",
+        ];
+        for (const name of legacy) {
+            expect(resolveIconName(name)).toBeDefined();
+        }
+    });
+
+    test("handles numeric suffixes in kebab names", () => {
+        for (const name of ["gamepad-2", "building-2", "trash-2", "volume-2", "folder-git-2"]) {
+            expect(resolveIconName(name)).toBe(name);
+        }
     });
 });

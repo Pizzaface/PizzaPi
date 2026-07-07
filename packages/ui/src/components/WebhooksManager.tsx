@@ -8,6 +8,16 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { RevealedSecretBanner } from "@/components/ui/revealed-secret";
 import { Spinner } from "@/components/ui/spinner";
 import {
+    AlertDialog,
+    AlertDialogAction,
+    AlertDialogCancel,
+    AlertDialogContent,
+    AlertDialogDescription,
+    AlertDialogFooter,
+    AlertDialogHeader,
+    AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import {
     Tooltip,
     TooltipContent,
     TooltipProvider,
@@ -122,17 +132,13 @@ async function deleteWebhookApi(id: string): Promise<void> {
 function DeleteButton({
     onDelete,
     isDeleting,
+    webhookName,
 }: {
     onDelete: () => void;
     isDeleting: boolean;
+    webhookName?: string;
 }) {
-    const [confirming, setConfirming] = useState(false);
-
-    useEffect(() => {
-        if (!confirming) return;
-        const timer = setTimeout(() => setConfirming(false), 3000);
-        return () => clearTimeout(timer);
-    }, [confirming]);
+    const [open, setOpen] = useState(false);
 
     if (isDeleting) {
         return (
@@ -142,43 +148,37 @@ function DeleteButton({
         );
     }
 
-    if (confirming) {
-        return (
-            <Button
-                variant="destructive"
-                size="sm"
-                className="h-7 px-2 text-xs animate-in fade-in zoom-in duration-200"
-                onClick={(e) => {
-                    e.stopPropagation();
-                    onDelete();
-                    setConfirming(false);
-                }}
-            >
-                Sure?
-            </Button>
-        );
-    }
-
     return (
-        <TooltipProvider>
-            <Tooltip>
-                <TooltipTrigger asChild>
-                    <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-7 w-7 shrink-0 text-muted-foreground hover:text-destructive transition-colors"
-                        onClick={(e) => {
-                            e.stopPropagation();
-                            setConfirming(true);
-                        }}
-                        aria-label="Delete webhook"
-                    >
-                        <Trash2 className="h-3.5 w-3.5" />
-                    </Button>
-                </TooltipTrigger>
-                <TooltipContent>Delete webhook</TooltipContent>
-            </Tooltip>
-        </TooltipProvider>
+        <AlertDialog open={open} onOpenChange={setOpen}>
+            <TooltipProvider>
+                <Tooltip>
+                    <TooltipTrigger asChild>
+                        <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-7 w-7 shrink-0 text-muted-foreground hover:text-destructive transition-colors"
+                            onClick={(e) => { e.stopPropagation(); setOpen(true); }}
+                            aria-label="Delete webhook"
+                        >
+                            <Trash2 className="h-3.5 w-3.5" />
+                        </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>Delete webhook</TooltipContent>
+                </Tooltip>
+            </TooltipProvider>
+            <AlertDialogContent onClick={(e) => e.stopPropagation()}>
+                <AlertDialogHeader>
+                    <AlertDialogTitle>Delete webhook{webhookName ? ` “${webhookName}”` : ""}?</AlertDialogTitle>
+                    <AlertDialogDescription>
+                        Its fire URL will stop working immediately and any automation using it will break. This can't be undone.
+                    </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                    <AlertDialogCancel>Cancel</AlertDialogCancel>
+                    <AlertDialogAction onClick={() => { onDelete(); setOpen(false); }}>Delete webhook</AlertDialogAction>
+                </AlertDialogFooter>
+            </AlertDialogContent>
+        </AlertDialog>
     );
 }
 
@@ -307,6 +307,9 @@ function WebhookRow({
                     </div>
                 </div>
 
+                {/* Quick copy of the fire URL without expanding the row */}
+                <CopyButton text={fireUrl} label="Copy fire URL" />
+
                 {/* Toggle */}
                 <Switch
                     checked={webhook.enabled}
@@ -330,7 +333,7 @@ function WebhookRow({
                 </Button>
 
                 {/* Delete */}
-                <DeleteButton onDelete={onDelete} isDeleting={isDeleting} />
+                <DeleteButton onDelete={onDelete} isDeleting={isDeleting} webhookName={webhook.name} />
             </div>
 
             {/* Expanded detail */}
@@ -576,9 +579,12 @@ function CreateWebhookForm({
                     <Input
                         value={source}
                         onChange={(e) => setSource(e.target.value)}
-                        placeholder="custom"
+                        placeholder="e.g. github, deploy"
                         className="h-8 text-xs"
                     />
+                    <p className="text-[10px] text-muted-foreground/70">
+                        A label recorded on each fire, used to identify/filter this webhook's events.
+                    </p>
                 </div>
             </div>
 
@@ -843,12 +849,8 @@ export function WebhooksManager({ bare, runnerId }: { bare?: boolean; runnerId?:
         }
     };
 
-    // Auto-dismiss errors
-    useEffect(() => {
-        if (!error) return;
-        const timer = setTimeout(() => setError(null), 5000);
-        return () => clearTimeout(timer);
-    }, [error]);
+    // Errors stay until the user dismisses them — auto-hiding after 5s meant a
+    // user who looked away lost the message with no way to recall it.
 
     const content = (
         <div className="flex flex-col gap-4">
@@ -857,6 +859,7 @@ export function WebhooksManager({ bare, runnerId }: { bare?: boolean; runnerId?:
                 <RevealedSecretBanner
                     value={newSecret}
                     onDismiss={() => setNewSecret(null)}
+                    label="HMAC secret — used to sign webhook requests (also shown in the webhook's details)"
                 />
             )}
 
@@ -864,7 +867,19 @@ export function WebhooksManager({ bare, runnerId }: { bare?: boolean; runnerId?:
             <CreateWebhookForm runnerId={runnerId} onCreated={handleCreated} />
 
             {/* Error */}
-            {error && <p className="text-sm text-destructive">{error}</p>}
+            {error && (
+                <div role="alert" className="flex items-start justify-between gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                    <span>{error}</span>
+                    <button
+                        type="button"
+                        onClick={() => setError(null)}
+                        aria-label="Dismiss error"
+                        className="shrink-0 font-medium underline underline-offset-2 hover:no-underline"
+                    >
+                        Dismiss
+                    </button>
+                </div>
+            )}
 
             {/* List */}
             {loading ? (

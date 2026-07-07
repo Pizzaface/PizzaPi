@@ -319,10 +319,10 @@ export function AppearanceSettings() {
             <button
               onClick={() => setAccentHex("")}
               className="h-7 px-2 text-[10px] text-muted-foreground hover:text-foreground flex items-center gap-1 rounded border border-border hover:bg-muted transition-colors"
-              title="Reset to default"
+              title="Reset custom color to default"
             >
               <RotateCcw className="h-3 w-3" />
-              Reset
+              Reset color
             </button>
           )}
         </div>
@@ -382,6 +382,31 @@ export function AppearanceSettings() {
           value={codeFont}
           onChange={setCodeFont}
         />
+      </div>
+
+      <div className="border-t pt-6">
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <span className="text-sm font-medium">Reset appearance</span>
+            <p className="text-xs text-muted-foreground">Restore theme, accent color, font size, density, radius, and code font to their defaults.</p>
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              setMode("auto");
+              setHighContrast(false);
+              setAccentHex("");
+              setFontSize("default");
+              setDensity("default");
+              setRadius("0.625rem");
+              setCodeFont("ui-monospace, monospace");
+            }}
+            className="shrink-0 h-8 px-3 text-xs flex items-center gap-1.5 rounded border border-border hover:bg-muted transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            <RotateCcw className="h-3.5 w-3.5" />
+            Reset all
+          </button>
+        </div>
       </div>
     </div>
   );

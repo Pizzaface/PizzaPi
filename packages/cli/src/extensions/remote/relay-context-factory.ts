@@ -24,6 +24,7 @@ import type { TriggerWaitManager } from "../trigger-wait-manager.js";
 import { emitSessionActive } from "./chunked-delivery.js";
 import { emitSessionTriggerWithAck } from "./session-complete-delivery.js";
 import { fetchOllamaCloudModels, getCachedOllamaCloudModels } from "../../ollama-cloud-models.js";
+import { writeSessionModelsCache } from "../../session-models-cache.js";
 
 const RELAY_DEFAULT = "ws://localhost:7492";
 const RELAY_STATUS_KEY = "relay";
@@ -231,10 +232,15 @@ export function createRelayContext(
                 ...staticModels,
                 ...liveOllama.filter((m) => !seen.has(`${m.provider}:${m.id}`)),
             ];
-            return all.sort((a, b) => {
+            const sorted = all.sort((a, b) => {
                 if (a.provider !== b.provider) return a.provider.localeCompare(b.provider);
                 return a.id.localeCompare(b.id);
             });
+            // Snapshot the live model list (includes extension-registered providers,
+            // e.g. pi packages calling registerProvider) so the daemon's model
+            // listing — which only sees disk state — can surface them too.
+            writeSessionModelsCache(sorted);
+            return sorted;
         },
 
         getCurrentSessionName(): string | null {

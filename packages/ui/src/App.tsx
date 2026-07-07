@@ -443,6 +443,9 @@ export function App() {
   );
   // Tracks whether the in-flight list_resume_sessions request is a "load more" (append) vs fresh load
   const resumeSessionsAppendRef = React.useRef(false);
+  // Fallback timer: if the runner never answers list_resume_sessions (stale or
+  // dead CLI), fall back to server-persisted sessions instead of spinning forever.
+  const resumeSessionsFallbackTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   // ────────────────────────────────────────────────────────────────────────────
   // Ref kept in sync with `messages` via useLayoutEffect so we can read the
   // latest committed value in event handlers without needing functional updaters.
@@ -459,6 +462,15 @@ export function App() {
   });
   const [showPreferences, setShowPreferences] = React.useState(false);
   const [showApiKeys, setShowApiKeys] = React.useState(false);
+  // The API-keys sheet is a hand-rolled overlay (not a Radix Dialog), so wire
+  // Escape-to-close at the document level while it's open — a container-scoped
+  // handler misses key events when focus is still on the trigger.
+  React.useEffect(() => {
+    if (!showApiKeys) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setShowApiKeys(false); };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [showApiKeys]);
   const [apiKeyVersion, setApiKeyVersion] = React.useState(0);
   const [setupClaimOpen, setSetupClaimOpen] = React.useState(false);
   const [setupClaimToken, setSetupClaimToken] = React.useState<string | null>(null);
@@ -2119,6 +2131,10 @@ export function App() {
       }
 
       if (command === "list_resume_sessions") {
+        if (resumeSessionsFallbackTimerRef.current) {
+          clearTimeout(resumeSessionsFallbackTimerRef.current);
+          resumeSessionsFallbackTimerRef.current = null;
+        }
         const list: unknown[] = Array.isArray(result?.sessions) ? (result.sessions as unknown[]) : [];
         const normalized: ResumeSessionOption[] = [];
 
@@ -2827,7 +2843,15 @@ export function App() {
     activeModel,
   ]);
 
+  // Only connect once auth is confirmed — a pre-login handshake is rejected by
+  // the server middleware and socket.io never retries middleware denials, which
+  // left the hub socket permanently dead until a full page reload (stuck
+  // sidebar skeletons + "Connecting…"). Keyed on the user id so logout→login
+  // recreates the socket. Mirrors useRunnersFeed's `enabled` gating.
+  const hubAuthUserId = !isPending && session?.user?.id ? String(session.user.id) : null;
+
   React.useEffect(() => {
+    if (!hubAuthUserId) return;
     const socket = io(socketUrl("/hub"), {
       withCredentials: true,
       auth: buildSocketAuth({
@@ -2976,7 +3000,7 @@ export function App() {
       hubSocketRef.current = null;
       setHubSocket(null);
     };
-  }, [applyMetaStateSnapshot, applyMetaPatch, applyMcpReport, checkVersionCompatibility]);
+  }, [hubAuthUserId, applyMetaStateSnapshot, applyMetaPatch, applyMcpReport, checkVersionCompatibility]);
 
   React.useEffect(() => {
     const hubSock = hubSocketRef.current;
@@ -3811,7 +3835,16 @@ export function App() {
     if (!ok) {
       setResumeSessionsLoading(false);
       resumeSessionsAppendRef.current = false;
+      return ok;
     }
+    // Runner didn't answer within 5s (stale/dead CLI) — fall back to the
+    // server's persisted session list so history isn't stuck on a spinner.
+    if (resumeSessionsFallbackTimerRef.current) clearTimeout(resumeSessionsFallbackTimerRef.current);
+    resumeSessionsFallbackTimerRef.current = setTimeout(() => {
+      resumeSessionsFallbackTimerRef.current = null;
+      resumeSessionsAppendRef.current = false;
+      void requestPersistedSessions(cursor);
+    }, 5000);
     return ok;
   }, [sendRemoteExec, requestPersistedSessions]);
 
@@ -4682,6 +4715,21 @@ export function App() {
   const handleShowShortcuts = React.useCallback(() => setShowShortcutsHelp(true), []);
   const handleChangePassword = React.useCallback(() => setChangePasswordOpen(true), []);
   const handleToggleSidebar = React.useCallback(() => setSidebarOpen((prev) => !prev), []);
+
+  // Escape closes the mobile sidebar drawer (keyboard/a11y parity with the
+  // backdrop tap). Only active while the drawer is open; a dialog open on top
+  // owns Escape first, so skip when one is present.
+  React.useEffect(() => {
+    if (!sidebarOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      if (document.querySelector('[role="dialog"],[role="alertdialog"]')) return;
+      setSidebarOpen(false);
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [sidebarOpen, setSidebarOpen]);
+
   // Mobile-specific variants that also close the sidebar
   const handleMobileShowPreferences = React.useCallback(() => { setShowPreferences(true); setSidebarOpen(false); }, []);
   const handleMobileShowApiKeys = React.useCallback(() => { setShowApiKeys(true); setShowRunners(false); setSidebarOpen(false); }, []);
@@ -4731,6 +4779,8 @@ export function App() {
       >
         Skip to content
       </a>
+      {/* Single page-level heading for screen-reader landmarks/outline. */}
+      <h1 className="sr-only">PizzaPi</h1>
       {/* ── Desktop header (memoized — skips re-render on same-runner session switch) ── */}
       <DesktopHeader
         relayStatus={relayStatus}
@@ -4800,7 +4850,7 @@ export function App() {
             <ModelSelectorEmpty>
               {availableModels.length > 0 && visibleModels.length === 0
                 ? "All models are hidden. Manage visibility in settings."
-                : "No configured models available."}
+                : "No models configured. Add provider credentials on the runner (API keys or provider login) to see models here."}
             </ModelSelectorEmpty>
             {Array.from(modelGroups.entries()).map(([provider, models]) => (
               <ModelSelectorGroup key={provider} heading={provider}>
@@ -4939,7 +4989,8 @@ export function App() {
             {/* ── LEFT COLUMN ─────────────────────────────────────────────── */}
             {leftColZones.length > 0 && (
               <>
-                <div className="hidden md:flex flex-col shrink-0 min-h-0" style={{ width: leftColumnWidth }}>
+                {/* ponytail: 40vw cap keeps the chat visible when both columns are wide on small screens; smarter viewport-aware clamping if users complain */}
+                <div className="hidden md:flex flex-col shrink-0 min-h-0" style={{ width: leftColumnWidth, maxWidth: "40vw" }}>
                   {leftColZones.map((zone, i) => {
                     const nextZone = leftColZones[i + 1];
                     const handleZonePos = nextZone
@@ -5050,7 +5101,7 @@ export function App() {
                   planModeEnabled={planModeEnabled}
                   tokenUsage={tokenUsage}
                   />
-                  <div id="main-content" tabIndex={-1} className="flex flex-col flex-1 min-w-0 min-h-0 overflow-hidden">
+                  <div id="main-content" role="main" tabIndex={-1} className="flex flex-col flex-1 min-w-0 min-h-0 overflow-hidden">
                   {showRunners ? (
                     <ErrorBoundary level="section" resetKeys={[activeSessionId]}>
                       <RunnerManager
@@ -5083,6 +5134,7 @@ export function App() {
                         onSendInput={sendSessionInput}
                         onExec={sendRemoteExec}
                         onShowModelSelector={() => setModelSelectorOpen(true)}
+                        onNewSession={handleNewSession}
                         agentActive={agentActive}
                         isCompacting={isCompacting}
                         effortLevel={effortLevel}
@@ -5251,7 +5303,7 @@ export function App() {
                 >
                   <div className="bg-zinc-800 group-hover:bg-blue-500/60 group-active:bg-blue-500 transition-colors h-full w-px" />
                 </div>
-                <div className="hidden md:flex flex-col shrink-0 min-h-0" style={{ width: rightColumnWidth }}>
+                <div className="hidden md:flex flex-col shrink-0 min-h-0" style={{ width: rightColumnWidth, maxWidth: "40vw" }}>
                   {rightColZones.map((zone, i) => {
                     const nextZone = rightColZones[i + 1];
                     const handleZonePos = nextZone
@@ -5489,7 +5541,12 @@ export function App() {
         )}
 
         {showApiKeys && (
-          <div className="absolute inset-y-0 right-0 z-40 flex w-full max-w-md flex-col shadow-xl border-l bg-background">
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label="API Keys"
+            className="absolute inset-y-0 right-0 z-40 flex w-full max-w-md flex-col shadow-xl border-l bg-background"
+          >
             <div className="flex items-center justify-between px-4 py-3 border-b">
               <span className="font-semibold text-sm">API Keys</span>
               <Tooltip>
@@ -5530,10 +5587,18 @@ export function App() {
         </Dialog>
 
         {/* PATCH(pizzapi): Toast notifications for ctx.ui.notify() */}
-        <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2 pointer-events-none">
+        {/* Live region so screen readers announce toasts (WCAG 4.1.3). The
+            container is always mounted so dynamically-added toasts are read;
+            error toasts use role=alert (assertive), others role=status. */}
+        <div
+          className="fixed bottom-4 right-4 z-50 flex flex-col gap-2 pointer-events-none"
+          aria-live="polite"
+          aria-atomic="false"
+        >
           {toasts.map((toast) => (
             <div
               key={toast.id}
+              role={toast.type === "error" ? "alert" : "status"}
               className={cn(
                 "pointer-events-auto max-w-sm rounded-lg border p-4 shadow-lg backdrop-blur-sm animate-in slide-in-from-bottom-2 fade-in duration-200",
                 toast.type === "error"

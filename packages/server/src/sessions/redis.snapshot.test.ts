@@ -108,6 +108,22 @@ describe("getLatestCachedSnapshotEvent", () => {
         await initializeRelayRedisCache();
     });
 
+    test("returns events cached after the snapshot in chronological order", async () => {
+        const sessionId = "s-after";
+        const key = keyForSession(sessionId);
+        rowsByKey.set(key, [
+            rowForEvent(noiseEvent(0)),
+            rowForEvent({ type: "session_active", state: { messages: [] } }),
+            JSON.stringify({ seq: 7, event: { type: "message_start" } }),
+            JSON.stringify({ seq: 8, event: { type: "message_end" } }),
+        ]);
+
+        const snapshot = await getLatestCachedSnapshotEvent(sessionId);
+
+        expect(snapshot?.event.type).toBe("session_active");
+        expect(snapshot?.eventsAfter.map((e) => e.seq)).toEqual([7, 8]);
+    });
+
     test("returns latest snapshot and only scans the newest chunk when snapshot is near tail", async () => {
         const sessionId = "s-tail";
         const key = keyForSession(sessionId);
@@ -118,7 +134,7 @@ describe("getLatestCachedSnapshotEvent", () => {
         const snapshot = await getLatestCachedSnapshotEvent(sessionId);
 
         expect(snapshot).not.toBeNull();
-        expect(snapshot?.type).toBe("session_active");
+        expect(snapshot?.event.type).toBe("session_active");
         expect(lRangeCalls).toHaveLength(1);
         expect(lRangeCalls[0]).toEqual({ key, start: 7, end: 10 });
     });
@@ -135,7 +151,7 @@ describe("getLatestCachedSnapshotEvent", () => {
         const snapshot = await getLatestCachedSnapshotEvent(sessionId);
 
         expect(snapshot).not.toBeNull();
-        expect(snapshot?.type).toBe("agent_end");
+        expect(snapshot?.event.type).toBe("agent_end");
         expect(lRangeCalls).toEqual([
             { key, start: 6, end: 9 },
             { key, start: 2, end: 5 },

@@ -1,8 +1,8 @@
-import { getAuth, isSignupAllowed, runWithAuthContext, type AuthContext } from "./auth.js";
+import { getAuth, getTrustedOrigins, isSignupAllowed, runWithAuthContext, type AuthContext } from "./auth.js";
 import { isValidPassword, PASSWORD_REQUIREMENTS_SUMMARY } from "@pizzapi/protocol";
 import { handleApi } from "./routes/index.js";
 import { serveStaticFile } from "./static.js";
-import { getClientIp } from "./security.js";
+import { getClientIp, verifyCsrfOrigin } from "./security.js";
 import { createLogger } from "@pizzapi/tools";
 
 const authLog = createLogger("auth");
@@ -280,6 +280,15 @@ async function _handleFetch(req: Request): Promise<Response> {
             authLog.error("handler threw:", e);
             return Response.json({ error: "Auth error" }, { status: 500 });
         }
+    }
+
+    // ── CSRF origin gate ──────────────────────────────────────────────────
+    // Cookie-authenticated state-changing API requests must come from a
+    // trusted origin. /api/auth/* is exempt (better-auth handles its own
+    // origin checking above); API-key requests are exempt inside the gate.
+    if (url.pathname.startsWith("/api/")) {
+        const csrfRejection = verifyCsrfOrigin(req, getTrustedOrigins());
+        if (csrfRejection) return csrfRejection;
     }
 
     // ── REST endpoints ─────────────────────────────────────────────────────

@@ -111,6 +111,7 @@ export function TerminalManager({
   const [selectedRunnerId, setSelectedRunnerId] = React.useState<string>("");
   const [cwd, setCwd] = React.useState("");
   const [spawning, setSpawning] = React.useState(false);
+  const [spawnError, setSpawnError] = React.useState<string | null>(null);
   const [recentFolders, setRecentFolders] = React.useState<string[]>([]);
 
   // Tabs visible for the active session (others stay mounted for their WS connections)
@@ -154,6 +155,7 @@ export function TerminalManager({
    */
   const spawnDirect = React.useCallback(async (runnerIdToUse: string, cwdToUse?: string) => {
     setSpawning(true);
+    setSpawnError(null);
     try {
       const res = await fetch("/api/runners/terminal", {
         method: "POST",
@@ -168,12 +170,12 @@ export function TerminalManager({
       });
       if (!res.ok) {
         const body = await res.json().catch(() => null);
-        alert((body as any)?.error || `Failed to create terminal (HTTP ${res.status})`);
+        setSpawnError((body as any)?.error || `Failed to create terminal (HTTP ${res.status})`);
         return;
       }
       const data = await res.json() as { ok: boolean; terminalId: string; runnerId: string };
       if (!data.ok || !data.terminalId) {
-        alert("Failed to create terminal");
+        setSpawnError("Failed to create terminal");
         return;
       }
 
@@ -202,6 +204,7 @@ export function TerminalManager({
   const spawnFromDialog = React.useCallback(async () => {
     if (!selectedRunnerId) return;
     setSpawning(true);
+    setSpawnError(null);
     try {
       const res = await fetch("/api/runners/terminal", {
         method: "POST",
@@ -216,12 +219,12 @@ export function TerminalManager({
       });
       if (!res.ok) {
         const body = await res.json().catch(() => null);
-        alert((body as any)?.error || `Failed to create terminal (HTTP ${res.status})`);
+        setSpawnError((body as any)?.error || `Failed to create terminal (HTTP ${res.status})`);
         return;
       }
       const data = await res.json() as { ok: boolean; terminalId: string; runnerId: string };
       if (!data.ok || !data.terminalId) {
-        alert("Failed to create terminal");
+        setSpawnError("Failed to create terminal");
         return;
       }
 
@@ -436,6 +439,9 @@ export function TerminalManager({
                   <Plus className="size-3.5" />
                   {spawning ? "Opening…" : runnerId ? "Open Terminal Here" : "Open Terminal"}
                 </Button>
+                {spawnError && (
+                  <p role="alert" className="max-w-sm px-4 text-center text-xs text-destructive">{spawnError}</p>
+                )}
               </>
             ) : (
               <>
@@ -450,6 +456,9 @@ export function TerminalManager({
                   <Plus className="size-3.5" />
                   {spawning ? "Opening…" : "Open Terminal"}
                 </Button>
+                {spawnError && (
+                  <p role="alert" className="max-w-sm px-4 text-center text-xs text-destructive">{spawnError}</p>
+                )}
               </>
             )}
           </div>
@@ -470,6 +479,7 @@ export function TerminalManager({
         onRemoveFolder={(folder) => setRecentFolders((prev) => prev.filter((f) => f !== folder))}
         spawning={spawning}
         onSpawn={spawnFromDialog}
+        spawnError={spawnError}
       />
     </div>
   );
@@ -650,6 +660,7 @@ interface NewTerminalDialogProps {
   onRemoveFolder: (folder: string) => void;
   spawning: boolean;
   onSpawn: () => void;
+  spawnError?: string | null;
 }
 
 function NewTerminalDialog({
@@ -665,6 +676,7 @@ function NewTerminalDialog({
   onRemoveFolder,
   spawning,
   onSpawn,
+  spawnError,
 }: NewTerminalDialogProps) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -740,8 +752,9 @@ function NewTerminalDialog({
                         });
                         onRemoveFolder(folder);
                       }}
-                      className="px-1 py-0.5 opacity-0 group-hover:opacity-100 hover:text-destructive transition-opacity"
+                      className="px-1 py-0.5 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 hover:text-destructive transition-opacity"
                       title="Remove from recent"
+                      aria-label="Remove from recent"
                     >
                       ×
                     </button>
@@ -752,6 +765,9 @@ function NewTerminalDialog({
           </div>
         </div>
 
+        {spawnError && (
+          <p role="alert" className="text-xs text-destructive">{spawnError}</p>
+        )}
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             Cancel

@@ -21,6 +21,7 @@ import {
   Zap,
   FolderOpen,
   Pencil,
+  RotateCcw,
 } from "lucide-react";
 import { useRunnerModels, type RunnerModel } from "@/hooks/useRunnerModels";
 import { formatPathTail } from "@/lib/path";
@@ -991,8 +992,12 @@ export function RunnerTriggersPanel({ runnerId, triggerDefs: propDefs }: RunnerT
 
   if (error) {
     return (
-      <div className="flex items-center justify-center p-6">
+      <div className="flex flex-col items-center justify-center gap-3 p-6">
         <p className="text-sm text-destructive">{error}</p>
+        <Button size="sm" variant="outline" onClick={() => void fetchData()}>
+          <RotateCcw className="h-3.5 w-3.5 mr-1" />
+          Retry
+        </Button>
       </div>
     );
   }
@@ -1003,8 +1008,10 @@ export function RunnerTriggersPanel({ runnerId, triggerDefs: propDefs }: RunnerT
         <BookOpen className="size-10 text-muted-foreground/30" />
         <div>
           <p className="text-sm text-muted-foreground">No trigger types available</p>
-          <p className="text-xs text-muted-foreground/60 mt-1">
-            Runner services can declare triggers that agents subscribe to.
+          <p className="text-xs text-muted-foreground/60 mt-1 max-w-xs">
+            Runner services declare triggers that agents subscribe to. Add a
+            service that exposes triggers to populate this list — see the
+            “creating-runner-services” guide.
           </p>
         </div>
       </div>

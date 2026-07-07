@@ -8,6 +8,7 @@ import { ModelBreakdown } from "./ModelBreakdown";
 import { ProjectBreakdown } from "./ProjectBreakdown";
 import { SessionTable } from "./SessionTable";
 import { AlertCircle, Loader2 } from "lucide-react";
+import { Skeleton } from "../ui/skeleton";
 import type { UsageData, UsageRange } from "./types";
 
 interface UsageDashboardProps {
@@ -43,12 +44,17 @@ export function UsageDashboard({ runnerId, onInspectSession }: UsageDashboardPro
         if (!active) return;
 
         if (!response.ok) {
-          const errorData = await response.json();
-          throw new Error(errorData.error || "Failed to fetch usage data");
+          // Proxy errors (e.g. 502) may return non-JSON bodies.
+          const errorData = await response.json().catch(() => null);
+          throw new Error(errorData?.error || `Failed to fetch usage data (HTTP ${response.status})`);
         }
 
         const usageData = await response.json();
-        if (active) setData(usageData);
+        // Guard against unexpected payload shapes so we render the
+        // "No usage data" zero-state instead of crashing downstream.
+        const valid = usageData && typeof usageData === "object" &&
+          usageData.summary && Array.isArray(usageData.daily);
+        if (active) setData(valid ? usageData : null);
       } catch (err) {
         if (!active || controller.signal.aborted) return;
         setError(
@@ -84,19 +90,36 @@ export function UsageDashboard({ runnerId, onInspectSession }: UsageDashboardPro
     );
   }
 
+  // Keep the period selector visible while (re)loading so changing the range
+  // doesn't blank the whole view and lose context; show skeletons in place of
+  // the cards/charts instead of a centered full-view spinner.
   if (loading) {
     return (
-      <div className="flex items-center justify-center p-8">
-        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-        <span className="ml-2 text-muted-foreground">Loading usage data...</span>
+      <div className="space-y-6">
+        <div className="flex items-center gap-2">
+          <PeriodSelector value={range} onChange={setRange} />
+          <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" aria-label="Loading usage data" />
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          {Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} className="h-24 w-full rounded-xl" />)}
+        </div>
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          <Skeleton className="h-96 w-full rounded-xl" />
+          <Skeleton className="h-96 w-full rounded-xl" />
+        </div>
       </div>
     );
   }
 
   if (!data) {
     return (
-      <div className="flex items-center justify-center p-8">
-        <p className="text-muted-foreground">No usage data available</p>
+      <div className="flex flex-col items-center justify-center gap-2 p-8 text-center">
+        <p className="font-medium text-sm">No usage data yet</p>
+        <p className="max-w-sm text-xs text-muted-foreground">
+          Cost and token usage are recorded as sessions run on this runner.
+          Start a session and send a few messages, then check back here.
+        </p>
+        <div className="pt-1"><PeriodSelector value={range} onChange={setRange} /></div>
       </div>
     );
   }

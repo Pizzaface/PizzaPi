@@ -9,7 +9,7 @@
 // Priority: delta replay > cache snapshot > in-memory state > persisted (SQLite)
 // ============================================================================
 
-import { getCachedRelayEventsAfterSeq, getLatestCachedSnapshotEvent } from "../../sessions/redis.js";
+import { getCachedRelayEventsAfterSeq, getLatestCachedSnapshotEvent, type LatestCachedSnapshot } from "../../sessions/redis.js";
 import { getPersistedRelaySessionSnapshot } from "../../sessions/store.js";
 import type { CachedRelayEvent } from "./viewer-cache.js";
 import { sendCachedDeltaReplayEvents } from "./viewer-cache.js";
@@ -68,7 +68,7 @@ function maybeTruncateSnapshotState(state: unknown): unknown {
 
 export interface SnapshotProviderDeps {
     getCachedRelayEventsAfterSeq: (sessionId: string, afterSeq: number) => Promise<CachedRelayEvent[]>;
-    getLatestCachedSnapshotEvent: (sessionId: string) => Promise<Record<string, unknown> | null>;
+    getLatestCachedSnapshotEvent: (sessionId: string) => Promise<LatestCachedSnapshot | null>;
     getPersistedRelaySessionSnapshot: (
         sessionId: string,
         userId: string,
@@ -116,8 +116,9 @@ export async function tryCacheSnapshot(
     sessionId: string,
     deps: SnapshotProviderDeps = defaultDeps,
 ): Promise<SnapshotResult | null> {
-    const snapshotEvent = await deps.getLatestCachedSnapshotEvent(sessionId);
-    if (!snapshotEvent) return null;
+    const cached = await deps.getLatestCachedSnapshotEvent(sessionId);
+    if (!cached) return null;
+    const snapshotEvent = cached.event;
 
     return {
         snapshot: { type: "cache-snapshot", source: "Redis cached snapshot event" },
@@ -132,6 +133,12 @@ export async function tryCacheSnapshot(
                 eventToSend = maybeTruncateSnapshotState(snapshotEvent) as Record<string, unknown>;
             }
             socket.emit("event", { event: eventToSend, replay: true, generation });
+            // Replay deltas cached after the snapshot. The viewer's cursor was
+            // already advanced to the current seq via "connected", so without
+            // this replay any events between the snapshot and that seq would
+            // never reach the viewer — a permanently stale transcript until
+            // the next full snapshot.
+            sendCachedDeltaReplayEvents(socket, cached.eventsAfter, generation);
         },
     };
 }

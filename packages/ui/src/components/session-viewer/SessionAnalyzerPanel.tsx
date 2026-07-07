@@ -1,7 +1,8 @@
 /** Live context & cache analysis panel inside SessionViewer. */
 import * as React from "react";
-import { BarChart3 } from "lucide-react";
+import { BarChart3, Info } from "lucide-react";
 import { CombinedPanel } from "@/components/CombinedPanel";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Treemap } from "../session-inspector/Treemap";
 import type { ContextBlock, SessionAnalysis } from "../session-inspector/types";
 import { formatTokens, formatCurrency, formatPct } from "../session-inspector/formatters";
@@ -23,15 +24,29 @@ function MetricCard({
   label,
   value,
   detail,
+  hint,
 }: {
   label: string;
   value: string;
   detail?: string | null;
+  hint?: string;
 }) {
   return (
     <div className="rounded-xl border border-border/60 bg-background/30 px-3 py-2.5 shadow-sm">
-      <div className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground/80">
-        {label}
+      <div className="flex items-center gap-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/80">
+        <span>{label}</span>
+        {hint && (
+          <TooltipProvider delayDuration={200}>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button type="button" aria-label={`${label}: more info`} className="inline-flex rounded-sm text-muted-foreground/50 hover:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                  <Info className="h-3 w-3" />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="top" className="max-w-xs text-xs">{hint}</TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+        )}
       </div>
       <div className="mt-1 text-sm font-semibold tabular-nums text-foreground">
         {value}
@@ -235,21 +250,25 @@ export function SessionAnalyzerBody({ analysis, runnerId, sessionId }: SessionAn
               label="Cache hit"
               value={formatPct(cacheHitRate)}
               detail={estSavings != null && estSavings > 0 ? `Est. saved ${formatCurrency(estSavings)}` : null}
+              hint="Share of prompt tokens served from the provider's cache instead of being re-sent. Higher means cheaper, faster turns."
             />
             <MetricCard
               label="Peak context"
               value={formatTokens(peakTokens)}
               detail={contextWindow ? `of ${formatTokens(contextWindow)}` : null}
+              hint="The largest the conversation context grew during this session, relative to the model's context window."
             />
             <MetricCard
               label="Compactions"
               value={String(compactionCount)}
               detail={tokensFreedByCompaction != null ? `Freed ${formatTokens(tokensFreedByCompaction)}` : null}
+              hint="How many times the context was automatically summarized to free space, and total tokens reclaimed."
             />
             <MetricCard
               label="Context use"
               value={formatPct(effectiveContextUtilization)}
               detail={totalTokens != null ? `Total ${formatTokens(totalTokens)}` : null}
+              hint="Current context tokens as a percentage of the model's context window. Nearing 100% risks a compaction."
             />
           </div>
 

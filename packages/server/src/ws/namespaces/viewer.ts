@@ -211,8 +211,10 @@ export function forwardRecoveryConnectedSignal(
     sessionId: string,
     deps: RecoveryConnectedSignalDeps = defaultRecoveryConnectedSignalDeps,
 ): void {
-    deps.markPendingRecovery(sessionId);
-    deps.emitToRelaySession(sessionId, "connected" as string, {});
+    const recoveryNonce = deps.markPendingRecovery(sessionId);
+    // The runner echoes recoveryNonce on its recovery session_active so the
+    // event pipeline can distinguish it from real agent updates racing in.
+    deps.emitToRelaySession(sessionId, "connected" as string, { recoveryNonce });
 }
 
 /**
@@ -860,7 +862,7 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
             }
 
             if (!fullState) {
-                const snapshotEvent = await getLatestCachedSnapshotEvent(currentSessionId);
+                const snapshotEvent = (await getLatestCachedSnapshotEvent(currentSessionId))?.event ?? null;
                 if (snapshotEvent?.type === "session_active") {
                     const snapshotState = snapshotEvent.state;
                     if (snapshotState && typeof snapshotState === "object" && !Array.isArray(snapshotState)) {
