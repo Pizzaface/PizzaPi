@@ -348,6 +348,11 @@ export function McpServersManager({ runnerId, bare }: McpServersManagerProps) {
                             Streamable HTTP
                         </Button>
                     </div>
+                    <p className="text-xs text-muted-foreground">
+                        {newType === "stdio"
+                            ? "stdio: the runner launches the server as a local subprocess and talks to it over standard input/output."
+                            : "Streamable HTTP: connect to a server already running at a URL over HTTP."}
+                    </p>
 
                     {newType === "stdio" ? (
                         <>
@@ -515,7 +520,7 @@ export function McpServersManager({ runnerId, bare }: McpServersManagerProps) {
                                             </SelectContent>
                                         </Select>
                                         <p className="text-xs text-muted-foreground">
-                                            Overrides Tool Search for this server only.
+                                            When deferred, this server's tools load only when the agent searches for them (saves context). Overrides the global Tool Search setting for this server only.
                                         </p>
                                     </div>
 
