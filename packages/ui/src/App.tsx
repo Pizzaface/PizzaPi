@@ -4840,7 +4840,8 @@ export function App() {
             {/* ── LEFT COLUMN ─────────────────────────────────────────────── */}
             {leftColZones.length > 0 && (
               <>
-                <div className="hidden md:flex flex-col shrink-0 min-h-0" style={{ width: leftColumnWidth }}>
+                {/* ponytail: 40vw cap keeps the chat visible when both columns are wide on small screens; smarter viewport-aware clamping if users complain */}
+                <div className="hidden md:flex flex-col shrink-0 min-h-0" style={{ width: leftColumnWidth, maxWidth: "40vw" }}>
                   {leftColZones.map((zone, i) => {
                     const nextZone = leftColZones[i + 1];
                     const handleZonePos = nextZone
@@ -5072,7 +5073,7 @@ export function App() {
                 >
                   <div className="bg-zinc-800 group-hover:bg-blue-500/60 group-active:bg-blue-500 transition-colors h-full w-px" />
                 </div>
-                <div className="hidden md:flex flex-col shrink-0 min-h-0" style={{ width: rightColumnWidth }}>
+                <div className="hidden md:flex flex-col shrink-0 min-h-0" style={{ width: rightColumnWidth, maxWidth: "40vw" }}>
                   {rightColZones.map((zone, i) => {
                     const nextZone = rightColZones[i + 1];
                     const handleZonePos = nextZone

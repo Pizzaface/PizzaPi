@@ -1000,7 +1000,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                         <Button
                             variant="ghost"
                             size="icon"
-                            className="h-8 w-8 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent"
+                            className="h-9 w-9 md:h-8 md:w-8 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent"
                             onClick={onClose}
                             aria-label="Close sidebar"
                             title="Close sidebar"
@@ -1083,7 +1083,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                             <Button
                                 variant="ghost"
                                 size="icon"
-                                className="h-8 w-8 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent"
+                                className="h-9 w-9 md:h-8 md:w-8 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent"
                                 onClick={() => setSelectMode(true)}
                                 aria-label="Select sessions"
                                 title="Select sessions"
@@ -1094,7 +1094,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                         <Button
                             variant="ghost"
                             size="icon"
-                            className="h-8 w-8 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent"
+                            className="h-9 w-9 md:h-8 md:w-8 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent"
                             onClick={onNewSession}
                             aria-label="New session"
                             title="New session"
@@ -1557,7 +1557,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                     <Button
                         variant="ghost"
                         size="icon"
-                        className="h-8 w-8 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent"
+                        className="h-9 w-9 md:h-8 md:w-8 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent"
                         onClick={() => setCollapsed(false)}
                         aria-label="Expand sidebar"
                     >
