@@ -185,6 +185,8 @@ export interface HeaderOverflowMenuProps {
   onDuplicateSession?: () => void;
   messages: RelayMessage[];
   sessionId: string | null;
+  /** Extra menu items (e.g. service panel toggles) shown on mobile. */
+  extraItems?: React.ReactNode;
 }
 
 /**
@@ -211,6 +213,7 @@ export function HeaderOverflowMenu({
   onDuplicateSession,
   messages,
   sessionId,
+  extraItems,
 }: HeaderOverflowMenuProps) {
   const [copyState, setCopyState] = React.useState<"idle" | "copied">("idle");
   const timerRef = React.useRef<ReturnType<typeof setTimeout>>(undefined);
@@ -301,11 +304,13 @@ export function HeaderOverflowMenu({
             {isAnalyzerOpen && <Check className="size-3 ml-auto text-primary" />}
           </DropdownMenuItem>
         )}
+        {extraItems}
         {(showTerminalButton ||
           showFileExplorerButton ||
           showGitButton ||
           showTriggersButton ||
-          showAnalyzerButton) && <DropdownMenuSeparator />}
+          showAnalyzerButton ||
+          extraItems) && <DropdownMenuSeparator />}
         <DropdownMenuItem onSelect={handleCopyExport}>
           <Copy className="size-3.5 mr-2 shrink-0" />
           {copyState === "copied" ? "Copied!" : "Copy as Markdown"}

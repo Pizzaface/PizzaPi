@@ -100,6 +100,8 @@ export interface SessionViewerProps {
   triggerCount?: TriggerCounts;
   /** Extra buttons to render in the header bar (e.g. service panel toggles) */
   extraHeaderButtons?: React.ReactNode;
+  /** Extra items for the mobile "⋯" overflow menu (e.g. service panel toggles) */
+  extraOverflowItems?: React.ReactNode;
   /** Current agent todo list */
   todoList?: TodoItem[];
   /** Active /goal state for the session header indicator */
@@ -134,4 +136,8 @@ export interface SessionViewerProps {
   onMcpServerDisable?: (serverName: string) => void;
   /** Live session context & cache analysis data */
   analysis?: SessionAnalysis | null;
+  /** Called when the user click-and-holds a toolbar button to reposition it. */
+  onButtonDragStart?: (buttonId: import("@/hooks/useButtonPosition").ToolbarButtonId) => void;
+  /** Current slot of each toolbar button; header renders only buttons in the "top" slot. */
+  toolbarPositions?: Partial<Record<import("@/hooks/useButtonPosition").ToolbarButtonId, import("@/hooks/useButtonPosition").ButtonSlot>>;
 }

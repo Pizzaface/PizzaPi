@@ -87,7 +87,7 @@ import { useRunnerServices, attachServiceAnnounceListener, seedServiceCache, set
 import { useRunnerData } from "@/hooks/useRunnerData";
 import { SigilProvider } from "@/components/sigils/SigilContext";
 import { PizzaPiNavProvider, type PizzaPiNavActions } from "@/components/sigils/PizzaPiNavContext";
-import { ServicePanelButtons, useServicePanelState } from "@/components/service-panels/ServicePanels";
+import { ServicePanelButtons, ServicePanelOverflowItems, useServicePanelState, useVisibleServicePanels } from "@/components/service-panels/ServicePanels";
 import { SERVICE_PANELS } from "@/components/service-panels/registry";
 import { DynamicLucideIcon } from "@/components/service-panels/lucide-icon";
 import { resolveNewPanelPosition, resolveActiveTabIdFromIds, resolvePanelToggleAction } from "@/utils/servicePanelUtils";
@@ -110,6 +110,7 @@ import { DegradedBanner } from "@/components/DegradedBanner";
 import { RunnerWarningBanner } from "@/components/RunnerWarningBanner";
 import { VersionBanner } from "@/components/VersionBanner";
 import { ShortcutsDialog } from "@/components/ShortcutsDialog";
+import { ButtonRail, ButtonStrip } from "@/components/session-viewer/ButtonSidebar";
 import {
   beginInputAttempt,
   completeInputAttempt,
@@ -124,6 +125,8 @@ import { metaEventToStatePatch, type MetaStatePatch } from "@/lib/meta-state-app
 import { deriveSessionMetadataUpdatePatch } from "@/lib/session-metadata-update";
 import { usePanelLayout } from "@/hooks/usePanelLayout";
 import { useTriggerCount } from "@/hooks/useTriggerCount";
+import { useButtonPosition, type ToolbarButtonId, type ButtonSlot } from "@/hooks/useButtonPosition";
+import { exportToMarkdown } from "@/lib/export-markdown";
 // Attention store: AttentionProvider is mounted in main.ts around <App/>
 import { useAttentionIngestion } from "@/hooks/useAttentionIngestion";
 import { useMobileSidebar } from "@/hooks/useMobileSidebar";
@@ -557,6 +560,93 @@ export function App() {
   const handleAnalyzerPositionChange = React.useCallback((pos: PanelPosition) => {
     setAnalyzerPosition(pos);
   }, []);
+
+  const buttonPositions = useButtonPosition();
+
+  // ── Button drag state ───────────────────────────────────────────────────
+  const [draggingButton, setDraggingButton] = React.useState<ToolbarButtonId | null>(null);
+  const [buttonDragZone, setButtonDragZone] = React.useState<ButtonSlot | null>(null);
+  const draggingButtonRef = React.useRef<ToolbarButtonId | null>(null);
+  const buttonDragZoneRef = React.useRef<ButtonSlot | null>(null);
+
+  const handleButtonDragStart = React.useCallback((buttonId: ToolbarButtonId) => {
+    draggingButtonRef.current = buttonId;
+    buttonDragZoneRef.current = null;
+    setDraggingButton(buttonId);
+    setButtonDragZone(null);
+  }, []);
+
+  const openPanelFromDockedButton = React.useCallback(
+    (buttonId: ToolbarButtonId, isOpen: boolean, setOpen: (updater: (v: boolean) => boolean) => void, setPosition: (pos: PanelPosition) => void) => {
+      if (isOpen) {
+        // Already open: close only if this panel is the tab shown on top of its
+        // zone. If another tab is on top, bring this one forward instead of
+        // closing it (mirrors the service-panel toggle behavior).
+        const groups = panelGroupsRef.current;
+        const zone = groups && (Object.keys(groups) as PanelPosition[]).find(
+          (pos) => groups[pos].some((t) => t.id === buttonId),
+        );
+        const zoneTabIds = zone ? groups![zone].map((t) => t.id) : [buttonId];
+        if (resolvePanelToggleAction(zoneTabIds, combinedActiveTab, buttonId) === "focus") {
+          handleCombinedTabChange(buttonId);
+          return;
+        }
+        setOpen(() => false);
+        return;
+      }
+      // Opening: dock near the button if it lives in a rail/strip, then focus it.
+      const slot = buttonPositions.positions[buttonId];
+      if (slot !== "top") setPosition(slot);
+      setOpen(() => true);
+      handleCombinedTabChange(buttonId);
+    },
+    [buttonPositions.positions, combinedActiveTab, handleCombinedTabChange],
+  );
+
+  // Document-level listeners for button drag (can't use pointer capture from timer)
+  React.useEffect(() => {
+    if (!draggingButton) return;
+
+    const onMove = (e: PointerEvent) => {
+      if (!terminalColumnRef.current) return;
+      const rect = terminalColumnRef.current.getBoundingClientRect();
+      const pctX = (e.clientX - rect.left) / rect.width;
+      const pctY = (e.clientY - rect.top) / rect.height;
+      const col = pctX < 1 / 3 ? "left" : pctX > 2 / 3 ? "right" : "center";
+      const row = pctY < 1 / 3 ? "top" : pctY > 2 / 3 ? "bottom" : "middle";
+      let zone: ButtonSlot;
+      if (col === "left" && row === "top") zone = "left-top";
+      else if (col === "center" && row === "top") zone = "center-top";
+      else if (col === "right" && row === "top") zone = "right-top";
+      else if (col === "left" && row === "middle") zone = "left-middle";
+      else if (col === "center" && row === "middle") zone = "top";
+      else if (col === "right" && row === "middle") zone = "right-middle";
+      else if (col === "left" && row === "bottom") zone = "left-bottom";
+      else if (col === "center" && row === "bottom") zone = "center-bottom";
+      else zone = "right-bottom";
+      buttonDragZoneRef.current = zone;
+      setButtonDragZone(zone);
+    };
+
+    const onUp = () => {
+      const btn = draggingButtonRef.current;
+      const zone = buttonDragZoneRef.current;
+      if (btn && zone) {
+        buttonPositions.setButtonPosition(btn, zone);
+      }
+      draggingButtonRef.current = null;
+      buttonDragZoneRef.current = null;
+      setDraggingButton(null);
+      setButtonDragZone(null);
+    };
+
+    document.addEventListener("pointermove", onMove);
+    document.addEventListener("pointerup", onUp);
+    return () => {
+      document.removeEventListener("pointermove", onMove);
+      document.removeEventListener("pointerup", onUp);
+    };
+  }, [draggingButton, buttonPositions, terminalColumnRef]);
 
   const [newSessionOpen, setNewSessionOpen] = React.useState(false);
   const [spawnRunnerId, setSpawnRunnerId] = React.useState<string | undefined>(undefined);
@@ -3940,6 +4030,17 @@ export function App() {
     setNewSessionOpen(true);
   }, []);
 
+  const handleExport = React.useCallback(() => {
+    if (!messages.length) return;
+    const blob = new Blob([exportToMarkdown(messages)], { type: "text/markdown" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `session-${activeSessionId || "export"}.md`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }, [messages, activeSessionId]);
+
   // ── Session live waiter — resolves via /hub feed, no polling ──────────────
   const sessionWaitersRef = React.useRef<Map<string, {
     resolve: (found: boolean) => void;
@@ -4338,7 +4439,7 @@ export function App() {
   // toggle handler can check zone contents without a dependency cycle.
   const panelGroupsRef = React.useRef<Record<PanelPosition, CombinedPanelTab[]> | null>(null);
 
-  const handleToggleServicePanel = React.useCallback((serviceId: string, query?: string, fragment?: string) => {
+  const handleToggleServicePanel = React.useCallback((serviceId: string, query?: string, fragment?: string, positionOverride?: PanelPosition) => {
     // When called with nav params on an already-open panel, update params
     // and re-navigate rather than closing.
     const hasNavParams = !!(query || fragment);
@@ -4354,7 +4455,11 @@ export function App() {
         handleCombinedTabChange(serviceId);
       }
     } else {
-      if (!activeServicePanels.has(serviceId)) {
+      if (!activeServicePanels.has(serviceId) && positionOverride) {
+        // Opened from a docked button — the button's dock zone wins over
+        // auto-placement so the panel opens on the side the icon is on.
+        setServicePanelPosition(serviceId, positionOverride);
+      } else if (!activeServicePanels.has(serviceId)) {
         // Resolve the correct position for the new panel using the shared pure
         // helper (also tested in ServicePanels.test.ts).  When the currently-
         // active tab is a service panel, the new panel inherits that panel's
@@ -4379,7 +4484,19 @@ export function App() {
       toggleServicePanel(serviceId, query, fragment);
       handleCombinedTabChange(serviceId);
     }
-  }, [activeServicePanels, closeServicePanelById, toggleServicePanel, handleCombinedTabChange, combinedActiveTab, setEphemeralServicePanelPosition, getServicePanelPosition]);
+  }, [activeServicePanels, closeServicePanelById, toggleServicePanel, handleCombinedTabChange, combinedActiveTab, setEphemeralServicePanelPosition, getServicePanelPosition, setServicePanelPosition]);
+
+  // ── Service panel buttons in rails/strips ────────────────────────────
+  const visibleServicePanels = useVisibleServicePanels(availableServices, dynamicPanels);
+  const railServicePanels = React.useMemo(
+    () => visibleServicePanels.map((p) => ({ ...p, active: activeServicePanels.has(p.serviceId) })),
+    [visibleServicePanels, activeServicePanels],
+  );
+  const handleToggleServicePanelFromDock = React.useCallback((serviceId: string) => {
+    const slot = buttonPositions.positions[`service:${serviceId}`];
+    const override = !activeServicePanels.has(serviceId) && slot && slot !== "top" ? slot : undefined;
+    handleToggleServicePanel(serviceId, undefined, undefined, override);
+  }, [buttonPositions.positions, activeServicePanels, handleToggleServicePanel]);
 
   const pizzaPiNavActions = React.useMemo<PizzaPiNavActions>(() => ({
     toggleServicePanel: handleToggleServicePanel,
@@ -4963,7 +5080,48 @@ export function App() {
                 />
               )}
 
-              <div id="main-content" role="main" tabIndex={-1} className="flex flex-col flex-1 min-w-0 min-h-0 overflow-hidden">
+              {/* ── Center content with button rails/strips ──────────────── */}
+              <div className="flex flex-1 min-w-0 min-h-0">
+                <ButtonRail
+                  side="left"
+                  groups={{ top: buttonPositions.slots["left-top"], middle: buttonPositions.slots["left-middle"], bottom: buttonPositions.slots["left-bottom"] }}
+                  onDragStart={handleButtonDragStart}
+                  servicePanels={railServicePanels}
+                  onToggleServicePanel={handleToggleServicePanelFromDock}
+                  onToggleTerminal={() => openPanelFromDockedButton("terminal", showTerminal, setShowTerminal, handleTerminalPositionChange)}
+                  onToggleFileExplorer={() => openPanelFromDockedButton("files", showFileExplorer, setShowFileExplorer, handleFilesPositionChange)}
+                  onToggleGit={() => openPanelFromDockedButton("git", showGit, setShowGit, handleGitPositionChange)}
+                  onToggleTriggers={() => openPanelFromDockedButton("triggers", showTriggers, setShowTriggers, handleTriggersPositionChange)}
+                  onToggleAnalyzer={() => openPanelFromDockedButton("analyzer", showAnalyzer, setShowAnalyzer, handleAnalyzerPositionChange)}
+                  onDuplicateSession={activeSessionInfo?.runnerId ? () => handleDuplicateSession(activeSessionInfo.runnerId!, activeSessionInfo.cwd || "") : undefined}
+                  onExport={handleExport}
+                  onExec={sendRemoteExec}
+                  sessionId={activeSessionId}
+                  effortLevel={effortLevel}
+                  planModeEnabled={planModeEnabled}
+                  tokenUsage={tokenUsage}
+                />
+                <div className="flex flex-col flex-1 min-w-0 min-h-0">
+                  <ButtonStrip
+                    position="center-top"
+                    buttonIds={buttonPositions.slots["center-top"]}
+                    onDragStart={handleButtonDragStart}
+                    servicePanels={railServicePanels}
+                    onToggleServicePanel={handleToggleServicePanelFromDock}
+                    onToggleTerminal={() => openPanelFromDockedButton("terminal", showTerminal, setShowTerminal, handleTerminalPositionChange)}
+                    onToggleFileExplorer={() => openPanelFromDockedButton("files", showFileExplorer, setShowFileExplorer, handleFilesPositionChange)}
+                    onToggleGit={() => openPanelFromDockedButton("git", showGit, setShowGit, handleGitPositionChange)}
+                    onToggleTriggers={() => openPanelFromDockedButton("triggers", showTriggers, setShowTriggers, handleTriggersPositionChange)}
+                    onToggleAnalyzer={() => openPanelFromDockedButton("analyzer", showAnalyzer, setShowAnalyzer, handleAnalyzerPositionChange)}
+                    onDuplicateSession={activeSessionInfo?.runnerId ? () => handleDuplicateSession(activeSessionInfo.runnerId!, activeSessionInfo.cwd || "") : undefined}
+                    onExport={handleExport}
+                    onExec={sendRemoteExec}
+                  sessionId={activeSessionId}
+                  effortLevel={effortLevel}
+                  planModeEnabled={planModeEnabled}
+                  tokenUsage={tokenUsage}
+                  />
+                  <div id="main-content" role="main" tabIndex={-1} className="flex flex-col flex-1 min-w-0 min-h-0 overflow-hidden">
                   {showRunners ? (
                     <ErrorBoundary level="section" resetKeys={[activeSessionId]}>
                       <RunnerManager
@@ -5033,6 +5191,16 @@ export function App() {
                             dynamicPanels={dynamicPanels}
                             activePanelIds={activeServicePanels}
                             onTogglePanel={handleToggleServicePanel}
+                            onButtonDragStart={handleButtonDragStart}
+                            toolbarPositions={buttonPositions.positions}
+                          />
+                        }
+                        extraOverflowItems={
+                          <ServicePanelOverflowItems
+                            availableServices={availableServices}
+                            dynamicPanels={dynamicPanels}
+                            activePanelIds={activeServicePanels}
+                            onTogglePanel={handleToggleServicePanel}
                           />
                         }
                         todoList={todoList}
@@ -5089,12 +5257,54 @@ export function App() {
                             });
                           }
                         }}
+                        onButtonDragStart={handleButtonDragStart}
+                        toolbarPositions={buttonPositions.positions}
                       />
                       </PizzaPiNavProvider>
                       </SigilProvider>
                     </ErrorBoundary>
                   )}
                 </div>
+                <ButtonStrip
+                  position="center-bottom"
+                  buttonIds={buttonPositions.slots["center-bottom"]}
+                  onDragStart={handleButtonDragStart}
+                  servicePanels={railServicePanels}
+                  onToggleServicePanel={handleToggleServicePanelFromDock}
+                  onToggleTerminal={() => openPanelFromDockedButton("terminal", showTerminal, setShowTerminal, handleTerminalPositionChange)}
+                  onToggleFileExplorer={() => openPanelFromDockedButton("files", showFileExplorer, setShowFileExplorer, handleFilesPositionChange)}
+                  onToggleGit={() => openPanelFromDockedButton("git", showGit, setShowGit, handleGitPositionChange)}
+                  onToggleTriggers={() => openPanelFromDockedButton("triggers", showTriggers, setShowTriggers, handleTriggersPositionChange)}
+                  onToggleAnalyzer={() => openPanelFromDockedButton("analyzer", showAnalyzer, setShowAnalyzer, handleAnalyzerPositionChange)}
+                  onDuplicateSession={activeSessionInfo?.runnerId ? () => handleDuplicateSession(activeSessionInfo.runnerId!, activeSessionInfo.cwd || "") : undefined}
+                  onExport={handleExport}
+                  onExec={sendRemoteExec}
+                  sessionId={activeSessionId}
+                  effortLevel={effortLevel}
+                  planModeEnabled={planModeEnabled}
+                  tokenUsage={tokenUsage}
+                />
+              </div>
+              <ButtonRail
+                side="right"
+                groups={{ top: buttonPositions.slots["right-top"], middle: buttonPositions.slots["right-middle"], bottom: buttonPositions.slots["right-bottom"] }}
+                onDragStart={handleButtonDragStart}
+                servicePanels={railServicePanels}
+                onToggleServicePanel={handleToggleServicePanelFromDock}
+                onToggleTerminal={() => openPanelFromDockedButton("terminal", showTerminal, setShowTerminal, handleTerminalPositionChange)}
+                onToggleFileExplorer={() => openPanelFromDockedButton("files", showFileExplorer, setShowFileExplorer, handleFilesPositionChange)}
+                onToggleGit={() => openPanelFromDockedButton("git", showGit, setShowGit, handleGitPositionChange)}
+                onToggleTriggers={() => openPanelFromDockedButton("triggers", showTriggers, setShowTriggers, handleTriggersPositionChange)}
+                onToggleAnalyzer={() => openPanelFromDockedButton("analyzer", showAnalyzer, setShowAnalyzer, handleAnalyzerPositionChange)}
+                onDuplicateSession={activeSessionInfo?.runnerId ? () => handleDuplicateSession(activeSessionInfo.runnerId!, activeSessionInfo.cwd || "") : undefined}
+                onExport={handleExport}
+                onExec={sendRemoteExec}
+                sessionId={activeSessionId}
+                effortLevel={effortLevel}
+                planModeEnabled={planModeEnabled}
+                tokenUsage={tokenUsage}
+              />
+              </div>{/* end center-with-sidebars flex row */}
 
               {/* center-bottom zone */}
               {!centerBottomFullWidth && centerBottomTabs.length > 0 && (
@@ -5202,6 +5412,43 @@ export function App() {
                 className="h-full"
                 tabs={mobilePanelTabs}
               />
+            </div>
+          )}
+
+          {/* ── BUTTON DRAG OVERLAY (3×3) ──────────────────────── */}
+          {draggingButton && (
+            <div className="absolute inset-0 z-50 pointer-events-none grid grid-cols-3 grid-rows-3">
+              {([
+                { pos: "left-top",      label: "Left\ntop"    },
+                { pos: "center-top",    label: "Top"          },
+                { pos: "right-top",     label: "Right\ntop"   },
+                { pos: "left-middle",   label: "Left"         },
+                { pos: "top",           label: "Header"       },
+                { pos: "right-middle",  label: "Right"        },
+                { pos: "left-bottom",   label: "Left\nbottom" },
+                { pos: "center-bottom", label: "Bottom"       },
+                { pos: "right-bottom",  label: "Right\nbottom"},
+              ] as const).map((zone) => {
+                const isActive = buttonDragZone === zone.pos;
+                return (
+                  <div
+                    key={zone.pos}
+                    className={cn(
+                      "flex items-center justify-center border transition-colors duration-100",
+                      isActive
+                        ? "bg-blue-500/20 border-blue-500"
+                        : "bg-zinc-900/40 border-zinc-700/30",
+                    )}
+                  >
+                    <span className={cn(
+                      "text-[10px] font-medium text-center transition-colors whitespace-pre-line leading-tight",
+                      isActive ? "text-blue-300" : "text-zinc-600",
+                    )}>
+                      {zone.label}
+                    </span>
+                  </div>
+                );
+              })}
             </div>
           )}
 

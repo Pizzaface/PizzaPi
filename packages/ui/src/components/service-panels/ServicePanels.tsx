@@ -7,13 +7,44 @@
 import React, { useState, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
-import { X } from "lucide-react";
+import { X, Check } from "lucide-react";
+import { DropdownMenuItem } from "@/components/ui/dropdown-menu";
 import { SERVICE_PANELS, type ServicePanelDef } from "./registry";
 import { DynamicLucideIcon } from "./lucide-icon";
 import { IframeServicePanel } from "./IframeServicePanel";
 import type { ServicePanelInfo } from "@pizzapi/protocol";
 import { useHiddenServicePanels } from "@/components/RunnerServicesPanel";
 import type { PanelPosition } from "@/hooks/usePanelLayout";
+import { DraggableToolbarButton } from "@/components/session-viewer/DraggableToolbarButton";
+import type { ToolbarButtonId, ButtonSlot, ServiceButtonId } from "@/hooks/useButtonPosition";
+
+/** A service panel visible to the current runner (static registry or dynamic announce). */
+export interface VisibleServicePanel {
+    serviceId: string;
+    label: string;
+    icon: React.ReactNode;
+}
+
+/**
+ * Merged, hidden-filtered list of service panels for the current runner.
+ * Static registry panels win over dynamic panels with the same serviceId.
+ */
+export function useVisibleServicePanels(
+    availableServices: Set<string>,
+    dynamicPanels: ServicePanelInfo[] = [],
+): VisibleServicePanel[] {
+    const hiddenPanels = useHiddenServicePanels();
+    return React.useMemo(() => {
+        const staticIds = new Set(SERVICE_PANELS.map(p => p.serviceId));
+        const statics = SERVICE_PANELS
+            .filter(p => availableServices.has(p.serviceId) && !hiddenPanels.has(p.serviceId))
+            .map(p => ({ serviceId: p.serviceId, label: p.label, icon: p.icon }));
+        const dynamics = dynamicPanels
+            .filter(p => !staticIds.has(p.serviceId) && !hiddenPanels.has(p.serviceId))
+            .map(p => ({ serviceId: p.serviceId, label: p.label, icon: <DynamicLucideIcon name={p.icon} /> }));
+        return [...statics, ...dynamics];
+    }, [availableServices, dynamicPanels, hiddenPanels]);
+}
 
 // ── Buttons for the header bar ────────────────────────────────────────────────
 
@@ -23,6 +54,10 @@ interface ServicePanelButtonsProps {
     dynamicPanels?: ServicePanelInfo[];
     activePanelIds: Set<string>;
     onTogglePanel: (serviceId: string) => void;
+    /** Click-and-hold to reposition (drag into a dock zone). */
+    onButtonDragStart?: (buttonId: ToolbarButtonId) => void;
+    /** Current slot of each toolbar button; header renders only "top" buttons. */
+    toolbarPositions?: Partial<Record<ToolbarButtonId, ButtonSlot>>;
 }
 
 export function ServicePanelButtons({
@@ -30,56 +65,68 @@ export function ServicePanelButtons({
     dynamicPanels = [],
     activePanelIds,
     onTogglePanel,
+    onButtonDragStart,
+    toolbarPositions,
 }: ServicePanelButtonsProps) {
-    // Reactively track user's hidden-panel preference
-    const hiddenPanels = useHiddenServicePanels();
-    // Static panels from the compiled registry
-    const visibleStaticPanels = SERVICE_PANELS.filter(p => availableServices.has(p.serviceId) && !hiddenPanels.has(p.serviceId));
-    // Dynamic panels — exclude any that have a static panel (static wins) or are hidden
-    const staticIds = new Set(SERVICE_PANELS.map(p => p.serviceId));
-    const visibleDynamicPanels = dynamicPanels.filter(p => !staticIds.has(p.serviceId) && !hiddenPanels.has(p.serviceId));
+    const visiblePanels = useVisibleServicePanels(availableServices, dynamicPanels);
+    const inHeader = (serviceId: string) =>
+        (toolbarPositions?.[`service:${serviceId}` as ServiceButtonId] ?? "top") === "top";
 
-    if (visibleStaticPanels.length === 0 && visibleDynamicPanels.length === 0) return null;
+    const headerPanels = visiblePanels.filter(p => inHeader(p.serviceId));
+    if (headerPanels.length === 0) return null;
 
     return (
         <>
-            {visibleStaticPanels.map(panel => (
-                <Tooltip key={panel.serviceId}>
-                    <TooltipTrigger asChild>
-                        <Button
-                            className={`h-9 w-9 sm:h-7 sm:w-7 ${
-                                activePanelIds.has(panel.serviceId) ? "bg-accent text-accent-foreground" : ""
-                            }`}
-                            onClick={() => onTogglePanel(panel.serviceId)}
-                            size="icon"
-                            type="button"
-                            variant="outline"
-                            aria-label={`Toggle ${panel.label}`}
-                        >
-                            {panel.icon}
-                        </Button>
-                    </TooltipTrigger>
-                    <TooltipContent>{panel.label}</TooltipContent>
-                </Tooltip>
+            {headerPanels.map(panel => (
+                <DraggableToolbarButton
+                    key={panel.serviceId}
+                    buttonId={`service:${panel.serviceId}`}
+                    onDragStart={onButtonDragStart}
+                    className="hidden md:block"
+                >
+                    <Tooltip>
+                        <TooltipTrigger asChild>
+                            <Button
+                                className={`h-9 w-9 sm:h-7 sm:w-7 ${
+                                    activePanelIds.has(panel.serviceId) ? "bg-accent text-accent-foreground" : ""
+                                }`}
+                                onClick={() => onTogglePanel(panel.serviceId)}
+                                size="icon"
+                                type="button"
+                                variant="outline"
+                                aria-label={`Toggle ${panel.label}`}
+                            >
+                                {panel.icon}
+                            </Button>
+                        </TooltipTrigger>
+                        <TooltipContent>{panel.label}{onButtonDragStart ? " · click-and-hold to reposition" : ""}</TooltipContent>
+                    </Tooltip>
+                </DraggableToolbarButton>
             ))}
-            {visibleDynamicPanels.map(panel => (
-                <Tooltip key={panel.serviceId}>
-                    <TooltipTrigger asChild>
-                        <Button
-                            className={`h-9 w-9 sm:h-7 sm:w-7 ${
-                                activePanelIds.has(panel.serviceId) ? "bg-accent text-accent-foreground" : ""
-                            }`}
-                            onClick={() => onTogglePanel(panel.serviceId)}
-                            size="icon"
-                            type="button"
-                            variant="outline"
-                            aria-label={`Toggle ${panel.label}`}
-                        >
-                            <DynamicLucideIcon name={panel.icon} />
-                        </Button>
-                    </TooltipTrigger>
-                    <TooltipContent>{panel.label}</TooltipContent>
-                </Tooltip>
+        </>
+    );
+}
+
+/**
+ * Mobile-only "⋯" menu items for service panels. The header service buttons are
+ * hidden below md, so surface the same toggles inside HeaderOverflowMenu.
+ */
+export function ServicePanelOverflowItems({
+    availableServices,
+    dynamicPanels = [],
+    activePanelIds,
+    onTogglePanel,
+}: Pick<ServicePanelButtonsProps, "availableServices" | "dynamicPanels" | "activePanelIds" | "onTogglePanel">) {
+    const visiblePanels = useVisibleServicePanels(availableServices, dynamicPanels);
+    if (visiblePanels.length === 0) return null;
+    return (
+        <>
+            {visiblePanels.map(panel => (
+                <DropdownMenuItem key={panel.serviceId} onSelect={() => onTogglePanel(panel.serviceId)}>
+                    <span className="size-3.5 mr-2 shrink-0 inline-flex items-center justify-center">{panel.icon}</span>
+                    {panel.label}
+                    {activePanelIds.has(panel.serviceId) && <Check className="size-3 ml-auto text-primary" />}
+                </DropdownMenuItem>
             ))}
         </>
     );
