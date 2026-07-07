@@ -1382,7 +1382,21 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                             const st = s.isActive ? "active" : "idle";
                                                             return `${nm}, ${st}${isPinned ? ", pinned" : ""}`;
                                                         })()}
+                                                        data-session-row=""
                                                         onKeyDown={(e) => {
+                                                            // Arrow keys move focus between session rows (roving
+                                                            // navigation without a full listbox refactor).
+                                                            if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+                                                                e.preventDefault();
+                                                                const rows = Array.from(
+                                                                    document.querySelectorAll<HTMLElement>("[data-session-row]"),
+                                                                );
+                                                                const idx = rows.indexOf(e.currentTarget as HTMLElement);
+                                                                if (idx === -1) return;
+                                                                const next = e.key === "ArrowDown" ? idx + 1 : idx - 1;
+                                                                rows[Math.max(0, Math.min(rows.length - 1, next))]?.focus();
+                                                                return;
+                                                            }
                                                             if (selectMode) return;
                                                             if (e.key.toLowerCase() !== "p") return;
                                                             e.preventDefault();
