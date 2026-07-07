@@ -168,6 +168,7 @@ export function SessionViewer({
   onDuplicateSession,
   runnerInfo,
   extraHeaderButtons,
+  extraOverflowItems,
   mcpOAuthPastes,
   onMcpOAuthPaste,
   onMcpOAuthPasteDismiss,
@@ -740,6 +741,7 @@ export function SessionViewer({
                   onDuplicateSession={onDuplicateSession}
                   messages={sortedMessages}
                   sessionId={sessionId}
+                  extraItems={extraOverflowItems}
                 />
                 {inHeader("delete") && (
                 <DraggableToolbarButton buttonId="delete" onDragStart={onButtonDragStart}>

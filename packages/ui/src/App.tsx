@@ -87,7 +87,7 @@ import { useRunnerServices, attachServiceAnnounceListener, seedServiceCache, set
 import { useRunnerData } from "@/hooks/useRunnerData";
 import { SigilProvider } from "@/components/sigils/SigilContext";
 import { PizzaPiNavProvider, type PizzaPiNavActions } from "@/components/sigils/PizzaPiNavContext";
-import { ServicePanelButtons, useServicePanelState, useVisibleServicePanels } from "@/components/service-panels/ServicePanels";
+import { ServicePanelButtons, ServicePanelOverflowItems, useServicePanelState, useVisibleServicePanels } from "@/components/service-panels/ServicePanels";
 import { SERVICE_PANELS } from "@/components/service-panels/registry";
 import { DynamicLucideIcon } from "@/components/service-panels/lucide-icon";
 import { resolveNewPanelPosition, resolveActiveTabIdFromIds, resolvePanelToggleAction } from "@/utils/servicePanelUtils";
@@ -5193,6 +5193,14 @@ export function App() {
                             onTogglePanel={handleToggleServicePanel}
                             onButtonDragStart={handleButtonDragStart}
                             toolbarPositions={buttonPositions.positions}
+                          />
+                        }
+                        extraOverflowItems={
+                          <ServicePanelOverflowItems
+                            availableServices={availableServices}
+                            dynamicPanels={dynamicPanels}
+                            activePanelIds={activeServicePanels}
+                            onTogglePanel={handleToggleServicePanel}
                           />
                         }
                         todoList={todoList}

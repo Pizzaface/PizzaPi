@@ -7,7 +7,8 @@
 import React, { useState, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
-import { X } from "lucide-react";
+import { X, Check } from "lucide-react";
+import { DropdownMenuItem } from "@/components/ui/dropdown-menu";
 import { SERVICE_PANELS, type ServicePanelDef } from "./registry";
 import { DynamicLucideIcon } from "./lucide-icon";
 import { IframeServicePanel } from "./IframeServicePanel";
@@ -81,6 +82,7 @@ export function ServicePanelButtons({
                     key={panel.serviceId}
                     buttonId={`service:${panel.serviceId}`}
                     onDragStart={onButtonDragStart}
+                    className="hidden md:block"
                 >
                     <Tooltip>
                         <TooltipTrigger asChild>
@@ -100,6 +102,31 @@ export function ServicePanelButtons({
                         <TooltipContent>{panel.label}{onButtonDragStart ? " · click-and-hold to reposition" : ""}</TooltipContent>
                     </Tooltip>
                 </DraggableToolbarButton>
+            ))}
+        </>
+    );
+}
+
+/**
+ * Mobile-only "⋯" menu items for service panels. The header service buttons are
+ * hidden below md, so surface the same toggles inside HeaderOverflowMenu.
+ */
+export function ServicePanelOverflowItems({
+    availableServices,
+    dynamicPanels = [],
+    activePanelIds,
+    onTogglePanel,
+}: Pick<ServicePanelButtonsProps, "availableServices" | "dynamicPanels" | "activePanelIds" | "onTogglePanel">) {
+    const visiblePanels = useVisibleServicePanels(availableServices, dynamicPanels);
+    if (visiblePanels.length === 0) return null;
+    return (
+        <>
+            {visiblePanels.map(panel => (
+                <DropdownMenuItem key={panel.serviceId} onSelect={() => onTogglePanel(panel.serviceId)}>
+                    <span className="size-3.5 mr-2 shrink-0 inline-flex items-center justify-center">{panel.icon}</span>
+                    {panel.label}
+                    {activePanelIds.has(panel.serviceId) && <Check className="size-3 ml-auto text-primary" />}
+                </DropdownMenuItem>
             ))}
         </>
     );

@@ -100,6 +100,8 @@ export interface SessionViewerProps {
   triggerCount?: TriggerCounts;
   /** Extra buttons to render in the header bar (e.g. service panel toggles) */
   extraHeaderButtons?: React.ReactNode;
+  /** Extra items for the mobile "⋯" overflow menu (e.g. service panel toggles) */
+  extraOverflowItems?: React.ReactNode;
   /** Current agent todo list */
   todoList?: TodoItem[];
   /** Active /goal state for the session header indicator */
