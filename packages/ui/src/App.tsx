@@ -4616,6 +4616,21 @@ export function App() {
   const handleShowShortcuts = React.useCallback(() => setShowShortcutsHelp(true), []);
   const handleChangePassword = React.useCallback(() => setChangePasswordOpen(true), []);
   const handleToggleSidebar = React.useCallback(() => setSidebarOpen((prev) => !prev), []);
+
+  // Escape closes the mobile sidebar drawer (keyboard/a11y parity with the
+  // backdrop tap). Only active while the drawer is open; a dialog open on top
+  // owns Escape first, so skip when one is present.
+  React.useEffect(() => {
+    if (!sidebarOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      if (document.querySelector('[role="dialog"],[role="alertdialog"]')) return;
+      setSidebarOpen(false);
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [sidebarOpen, setSidebarOpen]);
+
   // Mobile-specific variants that also close the sidebar
   const handleMobileShowPreferences = React.useCallback(() => { setShowPreferences(true); setSidebarOpen(false); }, []);
   const handleMobileShowApiKeys = React.useCallback(() => { setShowApiKeys(true); setShowRunners(false); setSidebarOpen(false); }, []);
