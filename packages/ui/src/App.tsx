@@ -5370,10 +5370,18 @@ export function App() {
         </Dialog>
 
         {/* PATCH(pizzapi): Toast notifications for ctx.ui.notify() */}
-        <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2 pointer-events-none">
+        {/* Live region so screen readers announce toasts (WCAG 4.1.3). The
+            container is always mounted so dynamically-added toasts are read;
+            error toasts use role=alert (assertive), others role=status. */}
+        <div
+          className="fixed bottom-4 right-4 z-50 flex flex-col gap-2 pointer-events-none"
+          aria-live="polite"
+          aria-atomic="false"
+        >
           {toasts.map((toast) => (
             <div
               key={toast.id}
+              role={toast.type === "error" ? "alert" : "status"}
               className={cn(
                 "pointer-events-auto max-w-sm rounded-lg border p-4 shadow-lg backdrop-blur-sm animate-in slide-in-from-bottom-2 fade-in duration-200",
                 toast.type === "error"
