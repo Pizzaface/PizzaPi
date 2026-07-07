@@ -244,7 +244,7 @@ function SkillEditorDialog({ runnerId, open, skill, onClose, onSaved }: SkillEdi
                                 id="skill-name"
                                 placeholder="my-skill"
                                 value={name}
-                                onChange={(e) => setName(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ""))}
+                                onChange={(e) => { setName(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, "")); if (error) setError(null); }}
                                 className="font-mono text-sm"
                                 disabled={saving}
                             />
@@ -301,7 +301,7 @@ function SkillEditorDialog({ runnerId, open, skill, onClose, onSaved }: SkillEdi
                     <Button variant="ghost" onClick={onClose} disabled={saving}>
                         Cancel
                     </Button>
-                    <Button onClick={handleSave} disabled={saving || loadingContent}>
+                    <Button onClick={handleSave} disabled={saving || loadingContent || (!isEditing && !name.trim())}>
                         {saving ? (
                             <>
                                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />

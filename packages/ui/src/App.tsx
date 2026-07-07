@@ -4665,6 +4665,8 @@ export function App() {
       >
         Skip to content
       </a>
+      {/* Single page-level heading for screen-reader landmarks/outline. */}
+      <h1 className="sr-only">PizzaPi</h1>
       {/* ── Desktop header (memoized — skips re-render on same-runner session switch) ── */}
       <DesktopHeader
         relayStatus={relayStatus}

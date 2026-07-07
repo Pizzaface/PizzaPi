@@ -252,7 +252,7 @@ function AgentEditorDialog({ runnerId, open, agent, onClose, onSaved }: AgentEdi
                                 id="agent-name"
                                 placeholder="my-agent"
                                 value={name}
-                                onChange={(e) => setName(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ""))}
+                                onChange={(e) => { setName(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, "")); if (error) setError(null); }}
                                 className="font-mono text-sm"
                                 disabled={saving}
                             />
@@ -309,7 +309,7 @@ function AgentEditorDialog({ runnerId, open, agent, onClose, onSaved }: AgentEdi
                     <Button variant="ghost" onClick={onClose} disabled={saving}>
                         Cancel
                     </Button>
-                    <Button onClick={handleSave} disabled={saving || loadingContent}>
+                    <Button onClick={handleSave} disabled={saving || loadingContent || (!isEditing && !name.trim())}>
                         {saving ? (
                             <>
                                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />

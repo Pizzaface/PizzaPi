@@ -2,7 +2,7 @@ import * as React from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardDescription, CardFooter, CardHeader } from "@/components/ui/card";
 import { PizzaLogo } from "@/components/PizzaLogo";
 import { signIn, signUp } from "@/lib/auth-client";
 import { Loader2, Check, X } from "lucide-react";
@@ -118,7 +118,7 @@ export function AuthPage({ onAuthenticated }: AuthPageProps) {
                     <div className="flex justify-center">
                         <PizzaLogo />
                     </div>
-                    <CardTitle className="text-xl text-center">PizzaPi</CardTitle>
+                    <h1 className="text-xl text-center font-semibold leading-none tracking-tight">PizzaPi</h1>
                     <CardDescription>
                         {tab === "signin" ? "Sign in to your account." : "Create a new account."}
                     </CardDescription>
