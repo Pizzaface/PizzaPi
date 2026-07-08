@@ -322,9 +322,13 @@ describe("/goal multi-turn integration", () => {
 
         goalExtension(pi);
 
-        // User sets a goal that uses the default LLM evaluator.
+        // User sets a goal that uses the default LLM evaluator. --every 1
+        // opts out of the default evaluator throttle (see goal.test.ts for
+        // dedicated throttling coverage) so this test can exercise the
+        // per-turn evaluate -> guidance -> re-evaluate flow across exactly
+        // the two turns below.
         const goalHandler = commands.get("goal")!;
-        await goalHandler('"services are green" --max-turns 5', ctx as ExtensionCommandContext);
+        await goalHandler('"services are green" --max-turns 5 --every 1', ctx as ExtensionCommandContext);
 
         expect(getGoal("goal-integration-session")?.condition.evaluator).toBe("llm");
         expect(messages.some((m) => m.content.includes("Goal set"))).toBe(true);

@@ -538,6 +538,12 @@ export interface PizzaPiConfig {
         evaluatorModel?: string;
         /** Maximum output tokens for the evaluator LLM call. Default: 512. */
         evaluatorMaxTokens?: number;
+        /**
+         * Default cadence (in turns) for the LLM evaluator across all goals
+         * that don't set `/goal --every`. 1 = every turn. Default: 3.
+         * Ignored by the keyword evaluator (free/local, always runs).
+         */
+        evaluateEveryNTurns?: number;
     };
 
     /** Extension provider configurations, keyed by provider ID. */

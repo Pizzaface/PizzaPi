@@ -35,6 +35,14 @@ export interface GoalCondition {
      * assistant message or in tool results from the just-completed turn.
      */
     successKeywords?: string[];
+
+    /**
+     * How often (in turns) to invoke the LLM evaluator while the goal is
+     * active. 1 = every turn. Ignored by the keyword evaluator, which is
+     * free/local and always runs. Falls back to
+     * `config.goal.evaluateEveryNTurns`, then `DEFAULT_EVALUATE_EVERY_N_TURNS`.
+     */
+    evaluateEveryNTurns?: number;
 }
 
 /**
