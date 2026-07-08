@@ -142,6 +142,48 @@ describe("goal state", () => {
         expect(updated?.costSpend).toBe(0.001);
     });
 
+    test("recordEvaluation appends a goal_evaluator_usage entry when the LLM evaluator spends tokens/cost", () => {
+        resetSession("session-1");
+        makeGoal();
+        const entries: Array<{ customType: string; data: unknown }> = [];
+        const appendEntry = (customType: string, data: unknown) => entries.push({ customType, data });
+
+        recordEvaluation("session-1", {
+            turnIndex: 0,
+            verdict: "not_met",
+            reason: "still working",
+            tokensUsed: 42,
+            cost: 0.0007,
+            model: { provider: "anthropic", id: "claude-haiku" },
+            timestamp: Date.now(),
+        }, { appendEntry });
+
+        const usageEntries = entries.filter((e) => e.customType === "goal_evaluator_usage");
+        expect(usageEntries.length).toBe(1);
+        expect(usageEntries[0].data).toMatchObject({
+            provider: "anthropic",
+            model: "claude-haiku",
+            tokens: 42,
+            cost: 0.0007,
+        });
+    });
+
+    test("recordEvaluation skips the usage entry for the keyword evaluator (no cost/tokens)", () => {
+        resetSession("session-1");
+        makeGoal();
+        const entries: Array<{ customType: string; data: unknown }> = [];
+        const appendEntry = (customType: string, data: unknown) => entries.push({ customType, data });
+
+        recordEvaluation("session-1", {
+            turnIndex: 0,
+            verdict: "not_met",
+            reason: "no keyword match",
+            timestamp: Date.now(),
+        }, { appendEntry });
+
+        expect(entries.some((e) => e.customType === "goal_evaluator_usage")).toBe(false);
+    });
+
     test("keyword evaluator marks goal met", async () => {
         resetSession("session-1");
         makeGoal();

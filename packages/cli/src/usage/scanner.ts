@@ -6,6 +6,7 @@ import { homedir } from "node:os";
 import { createLogger } from "@pizzapi/tools";
 import type { SessionHeader, UsageMessage } from "./types.js";
 import { getSessionsDir } from "./schema.js";
+import { GOAL_EVALUATOR_USAGE_CUSTOM_TYPE } from "../extensions/goal/state.js";
 
 const log = createLogger("usage");
 
@@ -201,6 +202,32 @@ export function processFile(
 
         // Mark this line as successfully processed
         lastCompleteLineOffset += Buffer.byteLength(line, "utf-8") + 1; // +1 for newline
+      } else if (obj.type === "custom" && obj.customType === GOAL_EVALUATOR_USAGE_CUSTOM_TYPE) {
+        // /goal LLM evaluator calls are separate API requests outside the
+        // normal turn — surface their spend here so it isn't invisible to
+        // the Usage dashboard. Written as a per-call delta (see state.ts),
+        // so it's safe to add directly without cumulative double-counting.
+        const data = obj.data as { provider?: string; model?: string; tokens?: number; cost?: number; timestamp?: number };
+        const timestamp = data.timestamp ?? new Date(obj.timestamp).getTime();
+
+        modelUsage.set(data.model || "unknown", (modelUsage.get(data.model || "unknown") || 0) + 1);
+
+        events.push({
+          timestamp,
+          provider: data.provider || "unknown",
+          model: data.model || "unknown",
+          input_tokens: 0,
+          output_tokens: data.tokens || 0,
+          cache_read_tokens: 0,
+          cache_write_tokens: 0,
+          cost_usd: data.cost ?? null,
+          cost_input: null,
+          cost_output: data.cost ?? null,
+          cost_cache_read: null,
+          cost_cache_write: null,
+        });
+
+        lastCompleteLineOffset += Buffer.byteLength(line, "utf-8") + 1; // +1 for newline
       } else {
         // For other valid JSON types (like message without usage), still mark as processed
         lastCompleteLineOffset += Buffer.byteLength(line, "utf-8") + 1; // +1 for newline
@@ -241,8 +268,10 @@ export function processFile(
     }
   }
 
-  // For incremental scans, merge with existing data
-  if (existingSession && messageCount > 0) {
+  // For incremental scans, merge with existing data. Guard on events.length
+  // (not messageCount) — goal_evaluator_usage entries add events without
+  // being an assistant message, and would otherwise be dropped from history.
+  if (existingSession && events.length > 0) {
     totalInput += existingSession.total_input || 0;
     totalOutput += existingSession.total_output || 0;
     totalCacheRead += existingSession.total_cache_read || 0;
