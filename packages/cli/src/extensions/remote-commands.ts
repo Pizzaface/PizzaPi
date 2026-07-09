@@ -24,6 +24,7 @@ export type RemoteExecRequest =
     | { type: "exec"; id: string; command: "plugin_trust_response"; promptId: string; trusted: boolean }
     | { type: "exec"; id: string; command: "mcp_toggle_server"; serverName: string; disabled: boolean }
     | { type: "exec"; id: string; command: "set_plan_mode"; enabled?: boolean }
+    | { type: "exec"; id: string; command: "set_queued_messages"; messages: string[] }
     | { type: "exec"; id: string; command: "sandbox_get_status" }
     | { type: "exec"; id: string; command: "sandbox_update_config"; config: any };
 

@@ -123,6 +123,7 @@ import type { TodoItem, TokenUsage, ConfiguredModelInfo, ResumeSessionOption, Fo
 import type { MetaGoalStatus } from "@pizzapi/protocol";
 import { metaEventToStatePatch, type MetaStatePatch } from "@/lib/meta-state-apply";
 import { deriveSessionMetadataUpdatePatch } from "@/lib/session-metadata-update";
+import { reconcileMessageQueue } from "@/lib/message-queue";
 import { usePanelLayout } from "@/hooks/usePanelLayout";
 import { useTriggerCount } from "@/hooks/useTriggerCount";
 import { useButtonPosition, type ToolbarButtonId, type ButtonSlot } from "@/hooks/useButtonPosition";
@@ -742,6 +743,8 @@ export function App() {
   const staleCheckTimerRef = React.useRef<ReturnType<typeof setInterval> | null>(null);
   const STALE_THRESHOLD_MS = 45_000; // ~4.5 × 10s heartbeat interval
   const STALE_CHECK_INTERVAL_MS = 15_000;
+  // How long to ignore runner queue syncs after a local queue mutation.
+  const QUEUE_SYNC_SUPPRESS_MS = 5_000;
 
   // Snapshot guard: when connecting to a session, ignore streaming deltas
   // until the initial snapshot (session_active / agent_end / heartbeat) arrives.
@@ -965,6 +968,7 @@ export function App() {
       providerUsage: prev?.providerUsage ?? null,
       lastHeartbeatAt: prev?.lastHeartbeatAt ?? null,
       todoList: prev?.todoList ?? [],
+      messageQueue: prev?.messageQueue ?? [],
       analysis: prev?.analysis ?? null,
       pendingQuestion: prev?.pendingQuestion ?? null,
       pendingPlan: prev?.pendingPlan ?? null,
@@ -1296,14 +1300,35 @@ export function App() {
     if (!text) return;
 
     const trimmed = text.trim();
+    let nextQueue: QueuedMessage[] | null = null;
     setMessageQueue((prev) => {
       if (prev.length === 0) return prev;
       // Find the first queued message whose text matches and remove it
       const idx = prev.findIndex((qm) => qm.text.trim() === trimmed);
       if (idx === -1) return prev;
-      return [...prev.slice(0, idx), ...prev.slice(idx + 1)];
+      nextQueue = [...prev.slice(0, idx), ...prev.slice(idx + 1)];
+      return nextQueue;
     });
-  }, []);
+    if (nextQueue) patchSessionCache({ messageQueue: nextQueue });
+  }, [patchSessionCache]);
+
+  // Ignore runner queue syncs briefly after a local mutation / optimistic add
+  // so a stale in-flight heartbeat can't clobber state the runner hasn't
+  // applied yet. The next heartbeat after the window restores authority.
+  const queueSyncSuppressUntilRef = React.useRef(0);
+
+  /** Apply the authoritative pending follow-up queue reported by the runner. */
+  const applyQueuedMessagesSync = React.useCallback((texts: string[]) => {
+    if (Date.now() < queueSyncSuppressUntilRef.current) return;
+    let changed = false;
+    let nextQueue: QueuedMessage[] = [];
+    setMessageQueue((prev) => {
+      nextQueue = reconcileMessageQueue(prev, texts);
+      changed = nextQueue !== prev;
+      return nextQueue;
+    });
+    if (changed) patchSessionCache({ messageQueue: nextQueue });
+  }, [patchSessionCache]);
 
   const applyMcpReport = React.useCallback((mcpReport: {
     slow?: boolean;
@@ -1723,6 +1748,14 @@ export function App() {
         cachePatch.lastHeartbeatAt = hb.ts;
       }
 
+      // Sync the pending follow-up queue from the runner (authoritative).
+      // Skip liveness-only heartbeats — those replay the runner's last stored
+      // heartbeat on viewer switch and may carry stale queue state.
+      const hbQueue = (evt as { queuedMessages?: unknown }).queuedMessages;
+      if (!livenessOnly && Array.isArray(hbQueue)) {
+        applyQueuedMessagesSync(hbQueue.filter((m): m is string => typeof m === "string"));
+      }
+
       if (!livenessOnly && !metaSourceHubRef.current) {
         if (Object.prototype.hasOwnProperty.call(hb, "sessionName")) {
           const nextName = normalizeSessionName(hb.sessionName);
@@ -1814,6 +1847,10 @@ export function App() {
         const nextGoal = derived.goal ?? null;
         setGoal(nextGoal);
         cachePatch.goal = nextGoal;
+      }
+
+      if (Object.prototype.hasOwnProperty.call(derived, "queuedMessages")) {
+        applyQueuedMessagesSync(derived.queuedMessages ?? []);
       }
 
       if (Object.prototype.hasOwnProperty.call(meta, "analysis")) {
@@ -1945,9 +1982,16 @@ export function App() {
         pendingMcpReportRef.current = null;
       }
 
-      // Clear queued messages — the snapshot contains the full conversation
-      // including any follow-ups that were consumed by the agent.
-      setMessageQueue([]);
+      // Sync queued follow-ups from the snapshot — the runner reports its
+      // pending queue so messages queued before a session switch survive.
+      // Old runners don't send the field: clear, as before (consumed
+      // follow-ups are part of the conversation snapshot).
+      if (Array.isArray(state?.queuedMessages)) {
+        applyQueuedMessagesSync((state.queuedMessages as unknown[]).filter((m): m is string => typeof m === "string"));
+      } else {
+        setMessageQueue([]);
+        patchSessionCache({ messageQueue: [] });
+      }
 
       if (!metaViaHub) {
         // Extract thinkingLevel from session snapshot too
@@ -2108,8 +2152,10 @@ export function App() {
       setPendingPlan(null);
       setRetryState(null);
       setActiveToolCalls(new Map());
-      // Clear message queue — the agent processed any queued steer/followUp messages
+      // Clear message queue — the agent processed any queued steer/followUp
+      // messages. If any survived (e.g. abort), the next heartbeat re-syncs.
       setMessageQueue([]);
+      patchSessionCache({ messageQueue: [] });
       return;
     }
 
@@ -2460,6 +2506,7 @@ export function App() {
           messages: [],
           sessionName: null,
           agentActive: false,
+          messageQueue: [],
         });
         // Clear trigger history so the Triggers panel starts fresh
         const sid = activeSessionRef.current;
@@ -2908,6 +2955,7 @@ export function App() {
     getFallbackPromptKey,
     patchSessionCache,
     removeQueuedMessageByContent,
+    applyQueuedMessagesSync,
     activeModel,
   ]);
 
@@ -3202,6 +3250,10 @@ export function App() {
     setTokenUsage(cached?.tokenUsage ?? null);
     setLastHeartbeatAt(cached?.lastHeartbeatAt ?? null);
     setTodoList(cached?.todoList ?? []);
+    // Reset the queue-sync suppress window — it guards a mutation in the
+    // previous session and must not block this session's snapshot sync.
+    queueSyncSuppressUntilRef.current = 0;
+    setMessageQueue(cached?.messageQueue ?? []);
     setAnalysis(cached?.analysis ?? null);
     setGoal(cached?.goal ?? null);
 
@@ -3689,15 +3741,23 @@ export function App() {
           patchSessionCache({ messages: next });
           setViewerStatus("Steering message sent");
         } else {
-          setMessageQueue((prev) => [
-            ...prev,
-            {
-              id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
-              text: trimmed,
-              deliverAs,
-              timestamp: Date.now(),
-            },
-          ]);
+          // Suppress runner queue syncs briefly — a heartbeat built before
+          // the runner received this input would wipe the optimistic entry.
+          queueSyncSuppressUntilRef.current = Date.now() + QUEUE_SYNC_SUPPRESS_MS;
+          let nextQueue: QueuedMessage[] = [];
+          setMessageQueue((prev) => {
+            nextQueue = [
+              ...prev,
+              {
+                id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+                text: trimmed,
+                deliverAs,
+                timestamp: Date.now(),
+              },
+            ];
+            return nextQueue;
+          });
+          patchSessionCache({ messageQueue: nextQueue });
           setViewerStatus("Follow-up queued");
         }
       } else {
@@ -3942,17 +4002,35 @@ export function App() {
     return ok;
   }, [sendRemoteExec, usageRefreshing]);
 
+  /**
+   * Apply a local queue mutation and push the full replacement list to the
+   * runner (set_queued_messages) so pi's pending queue actually changes —
+   * without this, edits/removals were cosmetic and the runner still
+   * delivered the original messages.
+   */
+  const syncQueueToRunner = React.useCallback((next: QueuedMessage[]) => {
+    queueSyncSuppressUntilRef.current = Date.now() + QUEUE_SYNC_SUPPRESS_MS;
+    setMessageQueue(next);
+    patchSessionCache({ messageQueue: next });
+    sendRemoteExec({
+      type: "exec",
+      id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      command: "set_queued_messages",
+      messages: next.map((m) => m.text),
+    });
+  }, [patchSessionCache, sendRemoteExec]);
+
   const removeQueuedMessage = React.useCallback((id: string) => {
-    setMessageQueue((prev) => prev.filter((m) => m.id !== id));
-  }, []);
+    syncQueueToRunner(messageQueue.filter((m) => m.id !== id));
+  }, [messageQueue, syncQueueToRunner]);
 
   const editQueuedMessage = React.useCallback((id: string, newText: string) => {
-    setMessageQueue((prev) => prev.map((m) => m.id === id ? { ...m, text: newText } : m));
-  }, []);
+    syncQueueToRunner(messageQueue.map((m) => (m.id === id ? { ...m, text: newText } : m)));
+  }, [messageQueue, syncQueueToRunner]);
 
   const clearMessageQueue = React.useCallback(() => {
-    setMessageQueue([]);
-  }, []);
+    syncQueueToRunner([]);
+  }, [syncQueueToRunner]);
 
   const selectModel = React.useCallback((model: ConfiguredModelInfo) => {
     const socket = viewerWsRef.current;

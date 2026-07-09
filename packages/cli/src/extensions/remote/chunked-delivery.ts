@@ -26,6 +26,19 @@ import type { SessionAnalysis } from "../../session-analysis/types.js";
 
 const log = createLogger("remote");
 
+/**
+ * Read the pending follow-up queue from pi (authoritative source).
+ * Returns [] when the patched API is unavailable or the extension ctx is stale.
+ */
+export function readQueuedFollowUps(rctx: RelayContext): string[] {
+    try {
+        const queued = rctx.pi?.getQueuedMessages?.();
+        return Array.isArray(queued?.followUp) ? [...queued.followUp] : [];
+    } catch {
+        return [];
+    }
+}
+
 /** Estimated payload size (bytes) above which we chunk messages. */
 const CHUNK_THRESHOLD = 5 * 1024 * 1024; // 5 MB — safely below 10 MB server limit
 
@@ -388,6 +401,7 @@ export function emitSessionActive(rctx: RelayContext, recoveryNonce?: string): v
         todoList: getCurrentTodoList(),
         analysis: buildLiveSessionAnalysis(rctx),
         goal: resolveGoalMetadata(rctx),
+        queuedMessages: readQueuedFollowUps(rctx),
     };
 
     const messageSizes = computeMessageSizes(messages);
@@ -473,6 +487,7 @@ export function emitSessionMetadataUpdate(rctx: RelayContext): void {
             todoList: getCurrentTodoList(),
             analysis: buildLiveSessionAnalysis(rctx),
             goal: resolveGoalMetadata(rctx),
+            queuedMessages: readQueuedFollowUps(rctx),
         },
     });
 }

@@ -219,6 +219,25 @@ export async function handleExecFromWeb(
             return;
         }
 
+        if (req.command === "set_queued_messages") {
+            // Replace the pending follow-up queue (web UI queue edit/remove/clear).
+            if (!Array.isArray(req.messages)) {
+                replyErr("Missing messages");
+                return;
+            }
+            const messages = req.messages.filter((m): m is string => typeof m === "string" && m.trim().length > 0);
+            try {
+                rctx.pi.replaceQueuedMessages(messages);
+            } catch (err) {
+                replyErr(`Failed to update queued messages: ${err instanceof Error ? err.message : String(err)}`);
+                return;
+            }
+            replyOk({ queuedMessages: messages });
+            // Broadcast the new queue state so all viewers converge immediately.
+            rctx.forwardEvent(rctx.buildHeartbeat());
+            return;
+        }
+
         if (req.command === "set_plan_mode") {
             const explicitEnabled = (req as any).enabled;
             if (typeof explicitEnabled === "boolean") {
