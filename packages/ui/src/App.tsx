@@ -5124,8 +5124,9 @@ export function App() {
           onPointerCancel={hasPanels ? handleOuterPointerUp : undefined}
         >
           {/* center-top spans full width when no left/right top panels exist */}
+          {/* ponytail: no explicit height here — DockedPanelGroup already sizes its panel via inline style and appends a 5px resize handle; a fixed wrapper height clipped that handle under the session header */}
           {centerTopFullWidth && (
-            <div className="hidden md:flex flex-col shrink-0" style={{ height: centerTopCollapsed ? TAB_BAR_HEIGHT : centerTopHeight }}>
+            <div className="hidden md:flex flex-col shrink-0">
               <DockedPanelGroup
                 position="center-top"
                 size={centerTopHeight}
@@ -5143,6 +5144,28 @@ export function App() {
           )}
 
           <div className="flex flex-1 min-w-0 h-full overflow-hidden">
+            {/* ── LEFT ICON RAIL ──────────────────────────────────────────── */}
+            {/* ponytail: rail lives outside the panel column so it stays pinned next to the session list; the panel slides out between it and the chat */}
+            <ButtonRail
+              side="left"
+              groups={{ top: buttonPositions.slots["left-top"], middle: buttonPositions.slots["left-middle"], bottom: buttonPositions.slots["left-bottom"] }}
+              onDragStart={handleButtonDragStart}
+              servicePanels={railServicePanels}
+              onToggleServicePanel={handleToggleServicePanelFromDock}
+              onToggleTerminal={() => openPanelFromDockedButton("terminal", showTerminal, setShowTerminal, handleTerminalPositionChange)}
+              onToggleFileExplorer={() => openPanelFromDockedButton("files", showFileExplorer, setShowFileExplorer, handleFilesPositionChange)}
+              onToggleGit={() => openPanelFromDockedButton("git", showGit, setShowGit, handleGitPositionChange)}
+              onToggleTriggers={() => openPanelFromDockedButton("triggers", showTriggers, setShowTriggers, handleTriggersPositionChange)}
+              onToggleAnalyzer={() => openPanelFromDockedButton("analyzer", showAnalyzer, setShowAnalyzer, handleAnalyzerPositionChange)}
+              onDuplicateSession={activeSessionInfo?.runnerId ? () => handleDuplicateSession(activeSessionInfo.runnerId!, activeSessionInfo.cwd || "") : undefined}
+              onExport={handleExport}
+              onExec={sendRemoteExec}
+              sessionId={activeSessionId}
+              effortLevel={effortLevel}
+              planModeEnabled={planModeEnabled}
+              tokenUsage={tokenUsage}
+            />
+
             {/* ── LEFT COLUMN ─────────────────────────────────────────────── */}
             {leftColZones.length > 0 && (
               <>
@@ -5202,6 +5225,28 @@ export function App() {
 
             {/* ── CENTER COLUMN ───────────────────────────────────────────── */}
             <div className="flex flex-col flex-1 min-w-0 min-h-0">
+              {/* ── TOP ICON STRIP ───────────────────────────────────────── */}
+              {/* ponytail: strip lives outside the docked panel so it stays pinned to the top edge; the panel slides out beneath it */}
+              <ButtonStrip
+                position="center-top"
+                buttonIds={buttonPositions.slots["center-top"]}
+                onDragStart={handleButtonDragStart}
+                servicePanels={railServicePanels}
+                onToggleServicePanel={handleToggleServicePanelFromDock}
+                onToggleTerminal={() => openPanelFromDockedButton("terminal", showTerminal, setShowTerminal, handleTerminalPositionChange)}
+                onToggleFileExplorer={() => openPanelFromDockedButton("files", showFileExplorer, setShowFileExplorer, handleFilesPositionChange)}
+                onToggleGit={() => openPanelFromDockedButton("git", showGit, setShowGit, handleGitPositionChange)}
+                onToggleTriggers={() => openPanelFromDockedButton("triggers", showTriggers, setShowTriggers, handleTriggersPositionChange)}
+                onToggleAnalyzer={() => openPanelFromDockedButton("analyzer", showAnalyzer, setShowAnalyzer, handleAnalyzerPositionChange)}
+                onDuplicateSession={activeSessionInfo?.runnerId ? () => handleDuplicateSession(activeSessionInfo.runnerId!, activeSessionInfo.cwd || "") : undefined}
+                onExport={handleExport}
+                onExec={sendRemoteExec}
+                sessionId={activeSessionId}
+                effortLevel={effortLevel}
+                planModeEnabled={planModeEnabled}
+                tokenUsage={tokenUsage}
+              />
+
               {/* center-top zone */}
               {!centerTopFullWidth && centerTopTabs.length > 0 && (
                 <DockedPanelGroup
@@ -5219,48 +5264,8 @@ export function App() {
                 />
               )}
 
-              {/* ── Center content with button rails/strips ──────────────── */}
-              <div className="flex flex-1 min-w-0 min-h-0">
-                <ButtonRail
-                  side="left"
-                  groups={{ top: buttonPositions.slots["left-top"], middle: buttonPositions.slots["left-middle"], bottom: buttonPositions.slots["left-bottom"] }}
-                  onDragStart={handleButtonDragStart}
-                  servicePanels={railServicePanels}
-                  onToggleServicePanel={handleToggleServicePanelFromDock}
-                  onToggleTerminal={() => openPanelFromDockedButton("terminal", showTerminal, setShowTerminal, handleTerminalPositionChange)}
-                  onToggleFileExplorer={() => openPanelFromDockedButton("files", showFileExplorer, setShowFileExplorer, handleFilesPositionChange)}
-                  onToggleGit={() => openPanelFromDockedButton("git", showGit, setShowGit, handleGitPositionChange)}
-                  onToggleTriggers={() => openPanelFromDockedButton("triggers", showTriggers, setShowTriggers, handleTriggersPositionChange)}
-                  onToggleAnalyzer={() => openPanelFromDockedButton("analyzer", showAnalyzer, setShowAnalyzer, handleAnalyzerPositionChange)}
-                  onDuplicateSession={activeSessionInfo?.runnerId ? () => handleDuplicateSession(activeSessionInfo.runnerId!, activeSessionInfo.cwd || "") : undefined}
-                  onExport={handleExport}
-                  onExec={sendRemoteExec}
-                  sessionId={activeSessionId}
-                  effortLevel={effortLevel}
-                  planModeEnabled={planModeEnabled}
-                  tokenUsage={tokenUsage}
-                />
-                <div className="flex flex-col flex-1 min-w-0 min-h-0">
-                  <ButtonStrip
-                    position="center-top"
-                    buttonIds={buttonPositions.slots["center-top"]}
-                    onDragStart={handleButtonDragStart}
-                    servicePanels={railServicePanels}
-                    onToggleServicePanel={handleToggleServicePanelFromDock}
-                    onToggleTerminal={() => openPanelFromDockedButton("terminal", showTerminal, setShowTerminal, handleTerminalPositionChange)}
-                    onToggleFileExplorer={() => openPanelFromDockedButton("files", showFileExplorer, setShowFileExplorer, handleFilesPositionChange)}
-                    onToggleGit={() => openPanelFromDockedButton("git", showGit, setShowGit, handleGitPositionChange)}
-                    onToggleTriggers={() => openPanelFromDockedButton("triggers", showTriggers, setShowTriggers, handleTriggersPositionChange)}
-                    onToggleAnalyzer={() => openPanelFromDockedButton("analyzer", showAnalyzer, setShowAnalyzer, handleAnalyzerPositionChange)}
-                    onDuplicateSession={activeSessionInfo?.runnerId ? () => handleDuplicateSession(activeSessionInfo.runnerId!, activeSessionInfo.cwd || "") : undefined}
-                    onExport={handleExport}
-                    onExec={sendRemoteExec}
-                  sessionId={activeSessionId}
-                  effortLevel={effortLevel}
-                  planModeEnabled={planModeEnabled}
-                  tokenUsage={tokenUsage}
-                  />
-                  <div id="main-content" role="main" tabIndex={-1} className="flex flex-col flex-1 min-w-0 min-h-0 overflow-hidden">
+              {/* ── Center content ───────────────────────────────────────── */}
+              <div id="main-content" role="main" tabIndex={-1} className="flex flex-col flex-1 min-w-0 min-h-0 overflow-hidden">
                   {showRunners ? (
                     <ErrorBoundary level="section" resetKeys={[activeSessionId]}>
                       <RunnerManager
@@ -5407,46 +5412,6 @@ export function App() {
                     </ErrorBoundary>
                   )}
                 </div>
-                <ButtonStrip
-                  position="center-bottom"
-                  buttonIds={buttonPositions.slots["center-bottom"]}
-                  onDragStart={handleButtonDragStart}
-                  servicePanels={railServicePanels}
-                  onToggleServicePanel={handleToggleServicePanelFromDock}
-                  onToggleTerminal={() => openPanelFromDockedButton("terminal", showTerminal, setShowTerminal, handleTerminalPositionChange)}
-                  onToggleFileExplorer={() => openPanelFromDockedButton("files", showFileExplorer, setShowFileExplorer, handleFilesPositionChange)}
-                  onToggleGit={() => openPanelFromDockedButton("git", showGit, setShowGit, handleGitPositionChange)}
-                  onToggleTriggers={() => openPanelFromDockedButton("triggers", showTriggers, setShowTriggers, handleTriggersPositionChange)}
-                  onToggleAnalyzer={() => openPanelFromDockedButton("analyzer", showAnalyzer, setShowAnalyzer, handleAnalyzerPositionChange)}
-                  onDuplicateSession={activeSessionInfo?.runnerId ? () => handleDuplicateSession(activeSessionInfo.runnerId!, activeSessionInfo.cwd || "") : undefined}
-                  onExport={handleExport}
-                  onExec={sendRemoteExec}
-                  sessionId={activeSessionId}
-                  effortLevel={effortLevel}
-                  planModeEnabled={planModeEnabled}
-                  tokenUsage={tokenUsage}
-                />
-              </div>
-              <ButtonRail
-                side="right"
-                groups={{ top: buttonPositions.slots["right-top"], middle: buttonPositions.slots["right-middle"], bottom: buttonPositions.slots["right-bottom"] }}
-                onDragStart={handleButtonDragStart}
-                servicePanels={railServicePanels}
-                onToggleServicePanel={handleToggleServicePanelFromDock}
-                onToggleTerminal={() => openPanelFromDockedButton("terminal", showTerminal, setShowTerminal, handleTerminalPositionChange)}
-                onToggleFileExplorer={() => openPanelFromDockedButton("files", showFileExplorer, setShowFileExplorer, handleFilesPositionChange)}
-                onToggleGit={() => openPanelFromDockedButton("git", showGit, setShowGit, handleGitPositionChange)}
-                onToggleTriggers={() => openPanelFromDockedButton("triggers", showTriggers, setShowTriggers, handleTriggersPositionChange)}
-                onToggleAnalyzer={() => openPanelFromDockedButton("analyzer", showAnalyzer, setShowAnalyzer, handleAnalyzerPositionChange)}
-                onDuplicateSession={activeSessionInfo?.runnerId ? () => handleDuplicateSession(activeSessionInfo.runnerId!, activeSessionInfo.cwd || "") : undefined}
-                onExport={handleExport}
-                onExec={sendRemoteExec}
-                sessionId={activeSessionId}
-                effortLevel={effortLevel}
-                planModeEnabled={planModeEnabled}
-                tokenUsage={tokenUsage}
-              />
-              </div>{/* end center-with-sidebars flex row */}
 
               {/* center-bottom zone */}
               {!centerBottomFullWidth && centerBottomTabs.length > 0 && (
@@ -5464,6 +5429,28 @@ export function App() {
                   className="w-full"
                 />
               )}
+
+              {/* ── BOTTOM ICON STRIP ────────────────────────────────────── */}
+              {/* ponytail: strip lives outside the docked panel so it stays pinned to the bottom edge; the panel slides out above it */}
+              <ButtonStrip
+                position="center-bottom"
+                buttonIds={buttonPositions.slots["center-bottom"]}
+                onDragStart={handleButtonDragStart}
+                servicePanels={railServicePanels}
+                onToggleServicePanel={handleToggleServicePanelFromDock}
+                onToggleTerminal={() => openPanelFromDockedButton("terminal", showTerminal, setShowTerminal, handleTerminalPositionChange)}
+                onToggleFileExplorer={() => openPanelFromDockedButton("files", showFileExplorer, setShowFileExplorer, handleFilesPositionChange)}
+                onToggleGit={() => openPanelFromDockedButton("git", showGit, setShowGit, handleGitPositionChange)}
+                onToggleTriggers={() => openPanelFromDockedButton("triggers", showTriggers, setShowTriggers, handleTriggersPositionChange)}
+                onToggleAnalyzer={() => openPanelFromDockedButton("analyzer", showAnalyzer, setShowAnalyzer, handleAnalyzerPositionChange)}
+                onDuplicateSession={activeSessionInfo?.runnerId ? () => handleDuplicateSession(activeSessionInfo.runnerId!, activeSessionInfo.cwd || "") : undefined}
+                onExport={handleExport}
+                onExec={sendRemoteExec}
+                sessionId={activeSessionId}
+                effortLevel={effortLevel}
+                planModeEnabled={planModeEnabled}
+                tokenUsage={tokenUsage}
+              />
             </div>{/* end center column */}
 
             {/* ── RIGHT COLUMN ────────────────────────────────────────────── */}
@@ -5521,10 +5508,33 @@ export function App() {
                 </div>
               </>
             )}
+
+            {/* ── RIGHT ICON RAIL ─────────────────────────────────────────── */}
+            {/* ponytail: rail lives outside the panel column so it stays pinned to the right edge; the panel slides out between the chat and it */}
+            <ButtonRail
+              side="right"
+              groups={{ top: buttonPositions.slots["right-top"], middle: buttonPositions.slots["right-middle"], bottom: buttonPositions.slots["right-bottom"] }}
+              onDragStart={handleButtonDragStart}
+              servicePanels={railServicePanels}
+              onToggleServicePanel={handleToggleServicePanelFromDock}
+              onToggleTerminal={() => openPanelFromDockedButton("terminal", showTerminal, setShowTerminal, handleTerminalPositionChange)}
+              onToggleFileExplorer={() => openPanelFromDockedButton("files", showFileExplorer, setShowFileExplorer, handleFilesPositionChange)}
+              onToggleGit={() => openPanelFromDockedButton("git", showGit, setShowGit, handleGitPositionChange)}
+              onToggleTriggers={() => openPanelFromDockedButton("triggers", showTriggers, setShowTriggers, handleTriggersPositionChange)}
+              onToggleAnalyzer={() => openPanelFromDockedButton("analyzer", showAnalyzer, setShowAnalyzer, handleAnalyzerPositionChange)}
+              onDuplicateSession={activeSessionInfo?.runnerId ? () => handleDuplicateSession(activeSessionInfo.runnerId!, activeSessionInfo.cwd || "") : undefined}
+              onExport={handleExport}
+              onExec={sendRemoteExec}
+              sessionId={activeSessionId}
+              effortLevel={effortLevel}
+              planModeEnabled={planModeEnabled}
+              tokenUsage={tokenUsage}
+            />
           </div>
 
+          {/* ponytail: same fix as center-top — let the panel + handle define the wrapper's height */}
           {centerBottomFullWidth && (
-            <div className="hidden md:flex flex-col shrink-0" style={{ height: centerBottomCollapsed ? TAB_BAR_HEIGHT : centerBottomHeight }}>
+            <div className="hidden md:flex flex-col shrink-0">
               <DockedPanelGroup
                 position="center-bottom"
                 size={centerBottomHeight}
