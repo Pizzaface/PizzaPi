@@ -12,9 +12,9 @@
         "@capacitor/push-notifications": "^8.1.1",
         "@capawesome/capacitor-badge": "^8.0.2",
         "@capgo/capacitor-updater": "^8",
-        "@earendil-works/pi-agent-core": "^0.80.3",
-        "@earendil-works/pi-ai": "^0.80.3",
-        "@earendil-works/pi-tui": "^0.80.3",
+        "@earendil-works/pi-agent-core": "^0.80.5",
+        "@earendil-works/pi-ai": "^0.80.5",
+        "@earendil-works/pi-tui": "^0.80.5",
         "motion": "^12.34.2",
         "pizzapi": ".",
       },
@@ -46,7 +46,7 @@
         "pizzapi": "src/index.ts",
       },
       "dependencies": {
-        "@earendil-works/pi-coding-agent": "^0.80.3",
+        "@earendil-works/pi-coding-agent": "^0.80.5",
         "@modelcontextprotocol/sdk": "^1.27.1",
         "@pizzapi/protocol": "workspace:*",
         "@pizzapi/tools": "workspace:*",
@@ -83,8 +83,8 @@
       "version": "0.1.32",
       "dependencies": {
         "@aws-sdk/client-s3": "^3.995.0",
-        "@earendil-works/pi-agent-core": "^0.80.3",
-        "@earendil-works/pi-ai": "^0.80.3",
+        "@earendil-works/pi-agent-core": "^0.80.5",
+        "@earendil-works/pi-ai": "^0.80.5",
         "@pizzapi/protocol": "workspace:*",
         "@pizzapi/tools": "workspace:*",
         "@pizzapi/tunnel": "workspace:*",
@@ -112,8 +112,8 @@
       "version": "0.1.32",
       "dependencies": {
         "@anthropic-ai/sandbox-runtime": "0.0.41",
-        "@earendil-works/pi-agent-core": "^0.80.3",
-        "@earendil-works/pi-ai": "^0.80.3",
+        "@earendil-works/pi-agent-core": "^0.80.5",
+        "@earendil-works/pi-ai": "^0.80.5",
       },
       "devDependencies": {
         "typescript": "^5.7.0",
@@ -200,10 +200,10 @@
     },
   },
   "patchedDependencies": {
-    "@earendil-works/pi-coding-agent@0.80.3": "patches/@earendil-works%2Fpi-coding-agent@0.80.3.patch",
-    "@earendil-works/pi-agent-core@0.80.3": "patches/@earendil-works%2Fpi-agent-core@0.80.3.patch",
-    "@earendil-works/pi-ai@0.80.3": "patches/@earendil-works%2Fpi-ai@0.80.3.patch",
-    "@earendil-works/pi-tui@0.80.3": "patches/@earendil-works%2Fpi-tui@0.80.3.patch",
+    "@earendil-works/pi-coding-agent@0.80.5": "patches/@earendil-works%2Fpi-coding-agent@0.80.5.patch",
+    "@earendil-works/pi-agent-core@0.80.5": "patches/@earendil-works%2Fpi-agent-core@0.80.5.patch",
+    "@earendil-works/pi-ai@0.80.5": "patches/@earendil-works%2Fpi-ai@0.80.5.patch",
+    "@earendil-works/pi-tui@0.80.5": "patches/@earendil-works%2Fpi-tui@0.80.5.patch",
   },
   "packages": {
     "@ai-sdk/gateway": ["@ai-sdk/gateway@3.0.53", "", { "dependencies": { "@ai-sdk/provider": "3.0.8", "@ai-sdk/provider-utils": "4.0.15", "@vercel/oidc": "3.1.0" }, "peerDependencies": { "zod": "^3.25.76 || ^4.1.8" } }, "sha512-QT3FEoNARMRlk8JJVR7L98exiK9C8AGfrEJVbRxBT1yIXKs/N19o/+PsjTRVsARgDJNcy9JbJp1FspKucEat0Q=="],
@@ -584,13 +584,13 @@
 
     "@dotenvx/dotenvx": ["@dotenvx/dotenvx@1.52.0", "", { "dependencies": { "commander": "^11.1.0", "dotenv": "^17.2.1", "eciesjs": "^0.4.10", "execa": "^5.1.1", "fdir": "^6.2.0", "ignore": "^5.3.0", "object-treeify": "1.1.33", "picomatch": "^4.0.2", "which": "^4.0.0" }, "bin": { "dotenvx": "src/cli/dotenvx.js" } }, "sha512-CaQcc8JvtzQhUSm9877b6V4Tb7HCotkcyud9X2YwdqtQKwgljkMRwU96fVYKnzN3V0Hj74oP7Es+vZ0mS+Aa1w=="],
 
-    "@earendil-works/pi-agent-core": ["@earendil-works/pi-agent-core@0.80.3", "", { "dependencies": { "@earendil-works/pi-ai": "^0.80.3", "ignore": "7.0.5", "typebox": "1.1.38", "yaml": "2.9.0" } }, "sha512-3qw0/GeRQBU/nlGjDe5Yb7ePKTmoxefx2YxyKMFAviFUMXpFexBG/hS7mBtwFahFvzrrTPPoRT6sFIDjwoDWPQ=="],
+    "@earendil-works/pi-agent-core": ["@earendil-works/pi-agent-core@0.80.5", "", { "dependencies": { "@earendil-works/pi-ai": "^0.80.5", "ignore": "7.0.5", "typebox": "1.1.38", "yaml": "2.9.0" } }, "sha512-413NZ5BEwSdL+BAtoBlk7hcA3UGvltcdAPtFoMZ1uqLZRNIoFU0WhNXGwv5Sp1SPBmMR6MAc3neoA+MdOlWJ2w=="],
 
-    "@earendil-works/pi-ai": ["@earendil-works/pi-ai@0.80.3", "", { "dependencies": { "@anthropic-ai/sdk": "0.91.1", "@aws-sdk/client-bedrock-runtime": "3.1048.0", "@google/genai": "1.52.0", "@mistralai/mistralai": "2.2.6", "@opentelemetry/api": "1.9.0", "@smithy/node-http-handler": "4.7.3", "http-proxy-agent": "7.0.2", "https-proxy-agent": "7.0.6", "openai": "6.26.0", "partial-json": "0.1.7", "typebox": "1.1.38" }, "bin": { "pi-ai": "dist/cli.js" } }, "sha512-jPZLMeGL5kkMSEAwAklfXTMHqZvfhsJtCCpKGIr5Duk7mc0n4skjB1dugk7y0z3z8ZHIUCmPAWHdyDqgUz5vdA=="],
+    "@earendil-works/pi-ai": ["@earendil-works/pi-ai@0.80.5", "", { "dependencies": { "@anthropic-ai/sdk": "0.91.1", "@aws-sdk/client-bedrock-runtime": "3.1048.0", "@google/genai": "1.52.0", "@mistralai/mistralai": "2.2.6", "@opentelemetry/api": "1.9.0", "@smithy/node-http-handler": "4.7.3", "http-proxy-agent": "7.0.2", "https-proxy-agent": "7.0.6", "openai": "6.26.0", "partial-json": "0.1.7", "typebox": "1.1.38" }, "bin": { "pi-ai": "dist/cli.js" } }, "sha512-+7UODYKu4o/X8sxTHG8HEV3+O+dOYKg5MeO3MJIFQ+wu65pIWDhjZGc759uWsRr79AhV7MSJEe4GWnFn4l68gw=="],
 
-    "@earendil-works/pi-coding-agent": ["@earendil-works/pi-coding-agent@0.80.3", "", { "dependencies": { "@earendil-works/pi-agent-core": "^0.80.3", "@earendil-works/pi-ai": "^0.80.3", "@earendil-works/pi-tui": "^0.80.3", "@silvia-odwyer/photon-node": "0.3.4", "chalk": "5.6.2", "cross-spawn": "7.0.6", "diff": "8.0.4", "glob": "13.0.6", "highlight.js": "10.7.3", "hosted-git-info": "9.0.3", "ignore": "7.0.5", "jiti": "2.7.0", "minimatch": "10.2.5", "proper-lockfile": "4.1.2", "semver": "7.8.0", "typebox": "1.1.38", "undici": "8.5.0", "yaml": "2.9.0" }, "optionalDependencies": { "@mariozechner/clipboard": "0.3.9" }, "bin": { "pi": "dist/cli.js" } }, "sha512-TIggw9gCXpA+Ph7OjdTA7ka2NPwTVuPmy39KDSyUzaKq8VvHfMGR7vtRz4JB7Um/RMRblmzhu4p9tUCk6MTgGA=="],
+    "@earendil-works/pi-coding-agent": ["@earendil-works/pi-coding-agent@0.80.5", "", { "dependencies": { "@earendil-works/pi-agent-core": "^0.80.5", "@earendil-works/pi-ai": "^0.80.5", "@earendil-works/pi-tui": "^0.80.5", "@silvia-odwyer/photon-node": "0.3.4", "chalk": "5.6.2", "cross-spawn": "7.0.6", "diff": "8.0.4", "glob": "13.0.6", "highlight.js": "10.7.3", "hosted-git-info": "9.0.3", "ignore": "7.0.5", "jiti": "2.7.0", "minimatch": "10.2.5", "proper-lockfile": "4.1.2", "semver": "7.8.0", "typebox": "1.1.38", "undici": "8.5.0", "yaml": "2.9.0" }, "optionalDependencies": { "@mariozechner/clipboard": "0.3.9" }, "bin": { "pi": "dist/cli.js" } }, "sha512-GPYFuHw1BN+3m5Gzw1HGH41WdFDzbplLauS0zYSf1ZOkgKFd6wtEAcjchB/vmz9YtTGbQOwECbsVj6GxZxungA=="],
 
-    "@earendil-works/pi-tui": ["@earendil-works/pi-tui@0.80.3", "", { "dependencies": { "get-east-asian-width": "1.6.0", "marked": "18.0.5" } }, "sha512-2BJI6qwRQfnM0Q7seL1+SbacU/jRRjBnN7Hu3n9BjAn7/s5FaBNnvdD1qBQYRsFTHfjqMaDsjYqanPyqwXj99w=="],
+    "@earendil-works/pi-tui": ["@earendil-works/pi-tui@0.80.5", "", { "dependencies": { "get-east-asian-width": "1.6.0", "marked": "18.0.5" } }, "sha512-raxEUD2CvCDNJuOWEAI+xD7vmxCrGH0NYb31+GQDdL1q9WXn5+uNLgP1vkJfOsTvf9k5zU5sNFA06oBIcWSYtQ=="],
 
     "@ecies/ciphers": ["@ecies/ciphers@0.2.5", "", { "peerDependencies": { "@noble/ciphers": "^1.0.0" } }, "sha512-GalEZH4JgOMHYYcYmVqnFirFsjZHeoGMDt9IxEnM9F7GRUUyUksJ7Ou53L83WHJq3RWKD3AcBpo0iQh0oMpf8A=="],
 
