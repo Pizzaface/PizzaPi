@@ -11,7 +11,7 @@ The **Web Terminal** is a full terminal emulator embedded in the PizzaPi browser
 
 Toggle the terminal panel with the keyboard shortcut:
 
-- **<kbd>Ctrl</kbd> + <kbd>`</kbd>** (backtick) — works on both macOS and Linux. PizzaPi intentionally uses Ctrl (not Cmd) on macOS to avoid conflicting with the system's <kbd>Cmd</kbd> + <kbd>`</kbd> window-switching shortcut.
+- **<kbd>Ctrl</kbd> + <kbd>`</kbd>** (backtick) — works on macOS, Linux, and Windows. PizzaPi intentionally uses Ctrl (not Cmd) on macOS to avoid conflicting with the system's <kbd>Cmd</kbd> + <kbd>`</kbd> window-switching shortcut.
 
 You can also open it from the panel toggle controls in the session view. Once open, the terminal panel can be docked to the **bottom**, **left**, or **right** of the session view using the position picker in the panel toolbar, or dragged into position with the grip handle.
 
@@ -31,10 +31,10 @@ The Web Terminal connects a browser-side [xterm.js](https://xtermjs.org/) termin
 Browser (xterm.js) ↔ WebSocket ↔ PizzaPi relay server ↔ WebSocket ↔ Runner daemon ↔ PTY subprocess
 ```
 
-1. When you open a terminal, the UI sends a `POST /api/runners/terminal` request to the relay server, which registers the terminal and forwards a `new_terminal` command to the runner.
+1. When you open a terminal, the UI sends a `POST /api/runners/terminal` request to the relay server, which registers the terminal and returns its ID. The `new_terminal` command is forwarded to the runner on the browser's first `terminal_resize`, so the PTY is spawned with the correct initial dimensions (deferred spawn).
 2. The runner daemon spawns an **isolated worker process** that owns the PTY. Each terminal gets its own worker — if a PTY crashes, it only affects that one terminal, not the daemon or any agent sessions.
 3. Terminal I/O (keystrokes and output) is base64-encoded and relayed over Socket.IO between the browser and the runner. Resize events are forwarded so the remote shell always knows the correct terminal dimensions.
-4. The runner auto-detects your default shell (`$SHELL`, or falls back to `/bin/zsh` on macOS, `/bin/bash` on Linux).
+4. The runner auto-detects your default shell (`$SHELL`, or falls back to `/bin/bash` on macOS/Linux and PowerShell on Windows).
 
 <Aside type="tip">
 The terminal supports 10,000 lines of scrollback, clickable URLs, and both dark and light themes that follow your PizzaPi theme setting automatically.
@@ -76,5 +76,5 @@ Keep these points in mind:
 
 - **Requires a running runner daemon.** The terminal needs a connected runner to spawn the PTY process. If no runners are online, you can't open a terminal.
 - **Latency depends on the relay.** Every keystroke round-trips through the relay server. On a local network this is imperceptible; over the internet you may notice slight input lag.
-- **One PTY per tab.** Each tab is a single shell. When the shell exits (e.g., you type `exit`), the tab shows a "Process exited" message and disconnects. Open a new tab to get a fresh shell.
+- **One PTY per tab.** Each tab is a single shell. When the shell exits (e.g., you type `exit`), the tab shows `[Process exited with code N]` and disconnects. Open a new tab to get a fresh shell.
 - **No persistent sessions.** Terminal state is not saved across page reloads or runner restarts. If you refresh the browser, running terminals are lost. For long-running processes, use `tmux` or `screen` inside the Web Terminal.
