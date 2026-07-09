@@ -11,7 +11,7 @@ The File Explorer lets you browse the runner's filesystem directly from the Pizz
 
 ## Opening the File Explorer
 
-Toggle the File Explorer with the keyboard shortcut **⌘⇧E** (macOS) or **Ctrl+Shift+E** (Windows/Linux). You can also click the folder icon button in the session viewer header bar.
+Toggle the File Explorer with the keyboard shortcut **⌘⇧E** (macOS) or **Ctrl+Shift+E** (Windows/Linux). You can also click the folder icon button in the session viewer header bar (desktop only; on mobile use the keyboard shortcut).
 
 The button only appears when the active session has a connected runner with a known working directory (`cwd`). If no runner is connected, the button is hidden.
 
@@ -33,7 +33,7 @@ The explorer displays the agent's working directory as a collapsible tree. Each 
 - **Files** — click to open a read-only preview. Files display a type-specific emoji icon (e.g. 🟦 for `.ts`, 🐍 for `.py`, 🎨 for `.css`) and their size in human-readable format.
 - **Symlinks** — indicated with a `→` suffix on the file name.
 
-The breadcrumb bar at the top shows the current root path (`cwd`). Use the **refresh** button (↻) to re-fetch the directory listing if the filesystem has changed.
+The breadcrumb bar at the top shows the current root path (`cwd`). Use the **refresh** button (↻) to re-fetch the directory listing if the filesystem has changed. Next to it, the **Expand all** and **Collapse all** buttons expand every folder up to three levels deep or collapse the whole tree.
 
 <Aside type="note">
   The tree root is always the agent's working directory. You cannot navigate above it — the server enforces workspace root boundaries (see [Security](#workspace-root-enforcement) below).
@@ -47,9 +47,15 @@ Click any file to open it in the built-in viewer. Press **Escape** to return to 
 
 ### Text Files
 
+### Text files
+
 Text files open in a read-only monospaced preview with syntax-appropriate formatting. If the file exceeds **512 KB**, it is truncated and a warning banner appears:
 
 > File truncated (showing first 512 KB of _total size_)
+
+### Markdown files
+
+Markdown (`.md` and `.mdx`) files open in a dedicated Markdown viewer with a **Preview / Raw** toggle. Preview renders the file with LazyStreamdown formatting; Raw shows the plain source text. Like other text files, large Markdown files are read-only and truncated at 512 KB.
 
 ### Images
 
@@ -57,20 +63,20 @@ Image files (`.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, `.svg`, `.bmp`, `.ico`, `
 
 - **Zoom controls** — zoom in, zoom out, and reset buttons with a percentage indicator
 - **Fit modes** — toggle between "fit to view" (contain) and "actual size"
-- **Transparency checkerboard** — images with alpha channels display over a checkerboard background
+- **Transparency checkerboard** — a checkerboard is always shown behind rendered images, which conveniently handles images with alpha channels
 - **Dimensions** — natural width × height shown in the header
 
 Images are fetched as base64-encoded data with a **10 MB** size limit.
 
 <Aside type="tip">
-  The file explorer is **read-only**. You cannot edit, rename, or delete files through it — it's designed for browsing and inspecting the agent's workspace. Use the agent itself (or a terminal) to make changes.
+  The file explorer is **read-only** — you cannot edit, rename, or delete files through it. However, the Markdown and text file viewers do offer a **Blame** toggle (when the runner has git available). Use the agent itself (or a terminal) to make changes.
 </Aside>
 
 ---
 
 ## File Search (@ Mentions)
 
-The file search API powers the **@-mention** autocomplete in the message composer. When you type `@` followed by a filename fragment, PizzaPi searches the runner's workspace and presents matching files as suggestions. This uses the same `search-files` endpoint described below.
+The file search API powers the **@-mention** autocomplete in the message composer. When you type `@` followed by a filename fragment, PizzaPi searches git-tracked files (plus untracked files that are not ignored) under the working directory and presents matching files as suggestions. If the workspace is not a git repository, the search returns an empty list with no error. This uses the same `search-files` endpoint described below.
 
 ---
 
@@ -114,7 +120,7 @@ POST /api/runners/:runnerId/files
 }
 ```
 
-Each entry in `files` includes `name`, `path`, `isDirectory`, an optional `isSymlink` flag, and `size` in bytes (for files).
+Each entry in `files` includes `name`, `path`, `isDirectory`, `isSymlink`, `relativePath`, and `size` in bytes (reported for both files and directories, though directory sizes are usually not meaningful).
 
 ### Read file
 
@@ -175,7 +181,7 @@ POST /api/runners/:runnerId/search-files
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `cwd` | `string` | _(required)_ | Directory to search within |
-| `query` | `string` | _(required)_ | Filename search string (fuzzy match) |
+| `query` | `string` | _(required)_ | Filename search string (case-insensitive substring match) |
 | `limit` | `number` | `100` | Maximum number of results to return |
 
 **Response:**
