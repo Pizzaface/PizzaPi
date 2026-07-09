@@ -309,7 +309,7 @@ await fetch(`${relayUrl}/api/runners/${runnerId}/trigger-broadcast`, {
         type: "my-service:file_changed",
         payload: { path: "/src/app.ts", changeType: "modified" },
         source: "my-service",
-        deliverAs: "steer",
+        deliverAs: "followUp",
         summary: "File changed: /src/app.ts",
     }),
 });
@@ -320,7 +320,7 @@ await fetch(`${relayUrl}/api/runners/${runnerId}/trigger-broadcast`, {
 | `type` | Yes | Must match a type declared in the manifest `triggers[]` array |
 | `payload` | Yes | Arbitrary JSON object delivered to subscribers |
 | `source` | No | Identifier shown in trigger history (typically the service name) |
-| `deliverAs` | No | `"steer"` interrupts the current turn; `"followUp"` queues after the turn ends. Default: `"steer"`. |
+| `deliverAs` | No | `"steer"` interrupts the current turn; `"followUp"` queues after the turn ends. Default: `"followUp"`. |
 | `summary` | No | Human-readable one-liner for trigger history |
 | `expectsResponse` | No | Whether the delivered trigger expects a response from the agent/viewer |
 

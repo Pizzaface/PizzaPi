@@ -119,7 +119,7 @@ Respond with an `action`:
 
 #### `session_error`
 
-Fired alongside `session_complete` (on the wire it is emitted after completion) when a child hits a **usage-limit / quota** error. This lets the parent react — retry with a different model, skip the task, or escalate to the user. Non-quota provider errors do not fire a separate `session_error`; they surface only as `exitReason: "error"` on `session_complete`. Check the `exitReason` field to distinguish error exits from successful completions.
+Fired just before `session_complete` (on the wire it is emitted first, as an early signal) when a child hits a **usage-limit / quota** error. This lets the parent react — retry with a different model, skip the task, or escalate to the user. Non-quota provider errors do not fire a separate `session_error`; they surface only as `exitReason: "error"` on `session_complete`. Check the `exitReason` field to distinguish error exits from successful completions.
 
 ### Trigger lifecycle
 
@@ -345,7 +345,7 @@ escalate_trigger("err-t1", "Child hit rate limit — need human to decide next s
 
 ## Push notification behavior
 
-Child session push notifications are **suppressed per subscription** via the `suppressChildNotifications` setting. By default, child sessions can still send push notifications. The native ntfy delivery path is not currently suppressed for child sessions, even when `suppressChildNotifications` is enabled. Top-level sessions always notify normally.
+Linked child session push notifications are **suppressed by default** — only top-level sessions send push notifications. This applies to both Web Push and the native ntfy delivery path. The legacy per-subscription `suppressChildNotifications` setting is now redundant (child pushes are suppressed unconditionally regardless of it).
 
 ---
 
