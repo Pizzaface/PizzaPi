@@ -31,3 +31,6 @@ packages/cli/src/config/claude-code-provider.precompiled.ts
 01-landing.png
 .playwright-cli/
 .superpowers/
+
+# Published self-hosted mobile OTA bundles (generated)
+mobile-ota/
