@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { AuthStorage } from "@earendil-works/pi-coding-agent";
 import { loadConfig, defaultAgentDir, expandHome } from "../config.js";
-import { getOAuthAccessToken, parseGeminiQuotaCredential } from "./usage-auth.js";
+import { getOAuthAccessToken, getAnthropicKeychainToken, parseGeminiQuotaCredential } from "./usage-auth.js";
 import { logInfo, logWarn } from "./logger.js";
 
 // ── Runner-wide usage cache (shared with worker processes via file) ───────────
@@ -90,6 +90,9 @@ async function fetchAnthropicUsageData(): Promise<ProviderUsageData | null> {
             token = getOAuthAccessToken(raw);
             if (token) break;
         }
+        // No anthropic entry in auth.json (never ran /login inside pizzapi) —
+        // fall back to Claude Code's own stored OAuth token, read-only.
+        if (!token) token = getAnthropicKeychainToken();
     } catch (err: any) {
         logWarn(`failed to get Anthropic credentials: ${err?.message ?? String(err)}`);
         return null;

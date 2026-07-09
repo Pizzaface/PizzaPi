@@ -1,3 +1,5 @@
+import { readBestExternalCredential } from "./keychain-auth.js";
+
 export type RunnerAuthRecord = Record<string, unknown>;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -18,6 +20,22 @@ export function getOAuthAccessToken(raw: unknown): string | null {
     const access = raw.access;
     if (typeof access === "string" && access.trim().length > 0) return access;
     return null;
+}
+
+/**
+ * Fallback Anthropic usage-check token: reads Claude Code's own OAuth token
+ * straight from the macOS Keychain / `~/.claude/.credentials.json` (same
+ * read-only lookup `readBestExternalCredential` already does) for users who
+ * only ever logged into Claude Code directly and have no `anthropic` entry
+ * in auth.json.
+ *
+ * Never refreshes or persists anything — an expired token is simply treated
+ * as absent so we can't accidentally rotate Claude Code's own credentials.
+ */
+export function getAnthropicKeychainToken(now = Date.now()): string | null {
+    const oauth = readBestExternalCredential()?.credentials.claudeAiOauth;
+    if (!oauth || oauth.expiresAt <= now) return null;
+    return oauth.accessToken;
 }
 
 /**

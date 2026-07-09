@@ -12,7 +12,7 @@ import {
 import { join } from "path";
 import { maybeBuildSystemPrompt, defaultAgentDir, expandHome, loadConfig, resolveSandboxConfig, validateSandboxOverride, applyProviderSettingsEnv } from "./config.js";
 import { isPackageCommand, runPackageCommand } from "./package-commands.js";
-import { getOAuthAccessToken } from "./runner/usage-auth.js";
+import { getOAuthAccessToken, getAnthropicKeychainToken } from "./runner/usage-auth.js";
 import { c, usageBar, colorPct, colorRemaining } from "./cli-colors.js";
 import { buildSkillPaths, buildPromptTemplatePaths, createAgentsFilesOverride } from "./skills.js";
 import { getPluginSkillPaths } from "./extensions/claude-plugins.js";
@@ -98,7 +98,10 @@ async function main() {
 
         // ── Anthropic ──────────────────────────────────────────────────────────
         if (showAnthropic) {
-            const accessToken = getOAuthAccessToken(authStorage.get("anthropic"));
+            // auth.json first, then fall back to Claude Code's own OAuth token
+            // (Keychain / ~/.claude/.credentials.json) for users who never ran
+            // /login inside pizzapi — read-only, never refreshed.
+            const accessToken = getOAuthAccessToken(authStorage.get("anthropic")) ?? getAnthropicKeychainToken();
             if (!accessToken) {
                 if (providerArg === "anthropic") {
                     log.error("No Anthropic credentials found. Log in with /login inside pizzapi.");

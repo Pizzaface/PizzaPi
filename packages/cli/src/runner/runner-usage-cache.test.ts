@@ -59,6 +59,7 @@ describe("runner-usage-cache child", () => {
                 if (!raw || raw.type !== "oauth") return null;
                 return "token:" + raw.access;
             },
+            getAnthropicKeychainToken: () => null,
             parseGeminiQuotaCredential: () => null,
         }));
 
