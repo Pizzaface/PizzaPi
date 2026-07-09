@@ -73,15 +73,22 @@ export function GitPanel({ cwd, className }: GitPanelProps) {
     const [activeTab, setActiveTab] = useState<GitTab>("changes");
     const [pathFilter, setPathFilter] = useState("");
 
+    // Current branch info is used by the header hash chip and the commit
+    // message tooltip. Compute it early so the log fetch effect below can
+    // re-fire whenever HEAD moves (shortHash changes after commit/pull/etc).
+    const currentBranchInfo = git.branches.find((b) => b.isCurrent);
+
     // Fetch the last commit subject for the status row. Falls back to the
     // branch list's date text if log hasn't resolved yet.
     const branchNameForLog = git.status?.branch;
+    const currentShortHash = currentBranchInfo?.shortHash;
     useEffect(() => {
         if (!branchNameForLog) return;
-        // ponytail: one-entry log fetch, fire-and-forget; hook discards stale cwd results
+        // ponytail: one-entry log fetch; re-fire when HEAD shortHash changes
+        // so the tooltip shows the new commit message after a commit.
         git.fetchLog(undefined, 1).catch(() => {});
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [branchNameForLog]);
+    }, [branchNameForLog, currentShortHash]);
 
     // Toast-style feedback for operations
     const [toast, setToast] = useState<GitOperationFeedback | null>(null);
@@ -252,16 +259,19 @@ export function GitPanel({ cwd, className }: GitPanelProps) {
     const showPush = git.status.ahead > 0 || !git.status.hasUpstream;
     const showPull = git.status.behind > 0 && git.status.hasUpstream;
 
-    const currentBranchInfo = git.branches.find((b) => b.isCurrent);
-    const lastCommitSubject = git.log[0]?.subject;
-    const lastCommitShortHash = lastCommitSubject
-        ? currentBranchInfo?.shortHash ?? git.log[0]?.shortHash
-        : currentBranchInfo?.shortHash;
-    const lastCommitTooltip = lastCommitSubject
-        ? `${currentBranchInfo?.shortHash ?? git.log[0]?.shortHash} ${lastCommitSubject}`
+    const headLogEntry = git.log[0];
+    // Only trust the log entry's subject while its shortHash matches the
+    // current branch head; otherwise show the hash + relative date fallback
+    // until the new log entry arrives.
+    const logMatchesHead = !!headLogEntry && currentBranchInfo?.shortHash === headLogEntry.shortHash;
+    const lastCommitShortHash = currentBranchInfo?.shortHash ?? headLogEntry?.shortHash;
+    const lastCommitTooltip = logMatchesHead
+        ? `${headLogEntry.shortHash} ${headLogEntry.subject}`
         : currentBranchInfo
-            ? `${currentBranchInfo.shortHash} ${currentBranchInfo.lastCommit}`
-            : undefined;
+            ? `${currentBranchInfo.shortHash} · ${currentBranchInfo.lastCommit}`
+            : headLogEntry
+                ? `${headLogEntry.shortHash} ${headLogEntry.subject}`
+                : undefined;
 
     return (
         <div className={cn("flex flex-col h-full overflow-hidden", className)}>
@@ -312,7 +322,7 @@ export function GitPanel({ cwd, className }: GitPanelProps) {
                             <Tooltip>
                                 <TooltipTrigger asChild>
                                     <span
-                                        className="hidden sm:inline-flex items-center gap-1 min-w-0 text-xs text-muted-foreground cursor-help"
+                                        className="inline-flex items-center gap-1 min-w-0 text-xs text-muted-foreground cursor-help"
                                     >
                                         <GitCommit className="size-3 shrink-0" />
                                         <span className="truncate">{lastCommitShortHash}</span>
