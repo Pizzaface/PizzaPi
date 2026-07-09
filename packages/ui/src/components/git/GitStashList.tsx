@@ -145,7 +145,7 @@ export function GitStashList({ cwd, className }: GitStashListProps) {
                         {stashes.map((stash) => (
                             <div
                                 key={stash.index}
-                                className="flex flex-col @sm:flex-row @sm:items-center gap-2 px-3 py-2"
+                                className="flex flex-wrap items-center gap-2 px-3 py-2"
                             >
                                 <div className="flex items-center gap-2 min-w-0 flex-1">
                                     <span className="font-mono text-xs text-muted-foreground shrink-0">
@@ -153,17 +153,17 @@ export function GitStashList({ cwd, className }: GitStashListProps) {
                                     </span>
                                     <span className="truncate text-sm font-medium">{stash.message}</span>
                                 </div>
-                                <div className="flex items-center gap-3 text-xs text-muted-foreground shrink-0 min-w-0">
+                                <div className="flex items-center gap-3 text-xs text-muted-foreground shrink-0">
                                     <span className="font-mono shrink-0">{stash.shortHash}</span>
                                     <span className="truncate">{stash.date}</span>
                                 </div>
-                                <div className="flex flex-col @sm:flex-row gap-2 w-full @sm:w-auto">
+                                <div className="flex flex-wrap items-center gap-2 max-w-full">
                                     <Button
                                         variant="outline"
                                         size="sm"
                                         disabled={isBusy}
                                         onClick={() => handlePop(stash.index)}
-                                        className="w-full @sm:w-auto h-9"
+                                        className="h-9"
                                     >
                                         <RotateCcw className="size-3.5" />
                                         <span className="ml-1.5">Pop</span>
@@ -173,7 +173,7 @@ export function GitStashList({ cwd, className }: GitStashListProps) {
                                         size="sm"
                                         disabled={isBusy}
                                         onClick={() => handleApply(stash.index)}
-                                        className="w-full @sm:w-auto h-9"
+                                        className="h-9"
                                     >
                                         <CornerDownLeft className="size-3.5" />
                                         <span className="ml-1.5">Apply</span>
@@ -183,7 +183,7 @@ export function GitStashList({ cwd, className }: GitStashListProps) {
                                         size="sm"
                                         disabled={isBusy}
                                         onClick={() => handleDrop(stash.index)}
-                                        className="w-full @sm:w-auto h-9"
+                                        className="h-9"
                                     >
                                         <Trash2 className="size-3.5" />
                                         <span className="ml-1.5">Drop</span>

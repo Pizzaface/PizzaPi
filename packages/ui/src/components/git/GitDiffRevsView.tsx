@@ -88,7 +88,7 @@ export function GitDiffRevsView({ cwd, path, className }: GitDiffRevsViewProps) 
 
     return (
         <div className={cn("flex flex-col h-full overflow-hidden", className)}>
-            <div className="flex flex-col @sm:flex-row items-start @sm:items-center gap-2 p-2 border-b border-border bg-muted/30 shrink-0">
+            <div className="flex flex-wrap items-center gap-2 p-2 border-b border-border bg-muted/30 shrink-0">
                 <RevPicker
                     label="Base"
                     value={base}
@@ -108,7 +108,7 @@ export function GitDiffRevsView({ cwd, path, className }: GitDiffRevsViewProps) 
                     size="sm"
                     disabled={!base || !head || base === head || loading}
                     onClick={handleDiff}
-                    className="w-full @sm:w-auto h-9"
+                    className="h-9"
                 >
                     <Diff className="size-3.5" />
                     <span className="ml-1.5">Diff</span>
@@ -153,7 +153,7 @@ function RevPicker({
     }, [options]);
 
     return (
-        <div className="flex items-center gap-2 w-full @sm:flex-1 min-w-0">
+        <div className="flex items-center gap-2 grow shrink basis-40 min-w-0">
             <span className="text-xs text-muted-foreground shrink-0 w-10">{label}</span>
             <Select value={value} onValueChange={onChange}>
                 <SelectTrigger className="w-full h-9 min-w-0">
