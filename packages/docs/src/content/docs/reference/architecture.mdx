@@ -63,14 +63,14 @@ The monorepo is organized into focused packages:
 | `packages/server` | Bun HTTP + WebSocket relay server (auth, sessions, push notifications) |
 | `packages/ui` | React 19 PWA web interface (Vite, TailwindCSS v4, Radix UI) |
 | `packages/cli` | CLI wrapper — launches `pi` with PizzaPi extensions, the runner daemon, and the Claude Code plugin adapter |
-| `packages/control-plane` | Multi-tenant provisioner — org management, JWT auth, Caddy config, and database migrations for hosted deployments |
 | `packages/docs` | This documentation site (Astro Starlight) |
 | `packages/npm` | npm distribution tooling — builds and publishes the `npx pizzapi` packages |
+| `mobile` | Capacitor Android/iOS wrapper around the bundled PWA |
 
 **Build order**: `protocol` → `tunnel` → `tools` → `server` → `ui` → `cli`
 
 <Aside type="note">
-  `docs` and `npm` are built independently and are not part of the main build chain. The `control-plane` package is only needed for multi-tenant hosted deployments.
+  `docs` and `npm` are built independently and are not part of the main build chain. `mobile` builds the PWA and syncs native projects separately.
 </Aside>
 
 ---
@@ -139,9 +139,9 @@ Runner                     Relay                     Browser
 - Response chunks stream via `ReadableStream` as they arrive — no full-body buffering
 - No size cap — video, large downloads, and SSE all work
 - Dedicated WebSocket channel (not muxed on the SIO control connection)
-- Native `ws` library handles framing (replaced hand-rolled RFC 6455 parser)
+- Native `ws` library handles WebSocket framing
 
-When a browser requests `/api/tunnel/{sessionId}/{port}/{path}`, the relay forwards the request through the tunnel to the runner's local HTTP service on that port, and streams the response back.
+When a browser requests `/api/tunnel/runner/{runnerId}/{port}/{path}` (preferred) or the legacy `/api/tunnel/{sessionId}/{port}/{path}`, the relay forwards the request through the tunnel to the runner's local HTTP service on that port, and streams the response back. The runner-based URL is stable across session restarts.
 
 ---
 
@@ -153,7 +153,7 @@ The server uses **better-auth** for account management:
 - Session cookies for the web UI
 - **API keys** for the CLI and runner — issued at registration, stored in `~/.pizzapi/config.json`
 
-All WebSocket connections from the CLI require a valid API key in the connection headers.
+All WebSocket connections from the CLI require a valid API key: the Socket.IO control connection sends it in the handshake `auth` payload (`apiKey`), and the `/_tunnel` channel sends it in a `register` message after the socket opens.
 
 ---
 
@@ -171,7 +171,7 @@ See the [Runner Daemon guide](/PizzaPi/running/runner-daemon/) for the full proc
 
 The runner includes a **usage analytics dashboard** that tracks token consumption and costs across sessions.
 
-- **Data pipeline**: A scanner processes session JSONL files from `~/.pizzapi/agent/sessions/` into a local SQLite database with daily rollups, model breakdowns, and project breakdowns
+- **Data pipeline**: A scanner processes session JSONL files from `~/.pizzapi/agent/sessions/` and `~/.pi/agent/sessions/` into a local SQLite database with daily rollups, model breakdowns, and project breakdowns
 - **Server endpoint**: `GET /api/runners/:id/usage?range=7d|30d|90d|all` serves aggregated data to the UI
 - **Web UI**: Interactive charts showing token usage over time, cost breakdown, model distribution, and sessions by project — lazy-loaded via `React.lazy` to keep `recharts` out of the main bundle
 
@@ -185,7 +185,7 @@ The CLI includes a **plugin adapter** that discovers Claude Code plugins and map
 - **Hooks** (`hooks/hooks.json`) → pi lifecycle events (`tool_call`, `tool_result`, `input`, etc.)
 - **Skills** (`skills/*/SKILL.md`) → pi skills (loaded via the Agent Skills standard)
 
-The adapter scans global dirs (`~/.pizzapi/plugins/`, `~/.agents/plugins/`, `~/.claude/plugins/`) automatically. Project-local plugins require explicit trust — managed via `pizza plugins trust` or interactive confirmation at session start.
+The adapter scans global dirs (`~/.pizzapi/plugins/` and `~/.agents/plugins/`) and reads Claude Code's `~/.claude/plugins/installed_plugins.json` manifest. Project-local plugins require explicit trust — managed via `pizza plugins trust` or interactive confirmation at session start.
 
 See the [Claude Code Plugins guide](/PizzaPi/customization/claude-plugins/) for full details.
 
@@ -208,9 +208,9 @@ Parent agent session
     │
     ▼  subagent tool call
     │
-    ├──► Discover agents from ~/.pizzapi/agents/ and .pizzapi/agents/
+    ├──► Discover agents from ~/.pizzapi/agents/, ~/.claude/agents/, .pizzapi/agents/, and .claude/agents/
     │
-    ├──► Spawn `pi --mode json --no-session` child process
+    ├──► Create an in-process AgentSession (createAgentSession + session.prompt)
     │        ├── Isolated context window (own token budget)
     │        ├── Scoped tools (e.g., read-only for research agents)
     │        └── Optional model override (e.g., Haiku for cheap tasks)

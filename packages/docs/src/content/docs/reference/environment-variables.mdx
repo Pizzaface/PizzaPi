@@ -7,7 +7,7 @@ sidebar:
 
 import { Aside } from "@astrojs/starlight/components";
 
-PizzaPi is configured primarily through environment variables. This reference lists every variable recognized by the CLI runner and the server.
+PizzaPi is configured primarily through environment variables. This reference lists the common operator-facing variables recognized by the CLI runner and the server. Internal worker-session variables set automatically by the daemon are excluded unless they are useful for advanced configuration.
 
 <Aside type="tip">
   Variables without a default are **required** (or the feature they control is disabled when unset).
@@ -103,7 +103,7 @@ These variables control which subsystems are loaded by runner-spawned worker ses
 | Variable | Description | Default |
 |---|---|---|
 | `PORT` | HTTP / WebSocket listen port. | `7492` |
-| `PIZZAPI_REDIS_URL` | Redis connection URL. | `redis://127.0.0.1:6379` |
+| `PIZZAPI_REDIS_URL` | Redis connection URL. | `redis://localhost:6379` |
 | `PIZZAPI_BASE_URL` | Public base URL of the PizzaPi server (used for share links, CORS origins, etc.). | `http://localhost:5173` |
 | `PIZZAPI_EXTRA_ORIGINS` | Comma-separated list of additional trusted origins for CORS and WebSocket auth. Use this to allow access from custom hostnames such as a Tailscale URL without hardcoding them. e.g. `https://myhost.ts.net,http://myhost.ts.net:5173`. These are also used to populate Vite's `allowedHosts` in development. | — |
 | `PIZZAPI_UI_DIR` | Absolute path to the directory containing the built UI static assets. When unset the server does not serve a UI. | — |
@@ -114,7 +114,8 @@ These variables control which subsystems are loaded by runner-spawned worker ses
 |---|---|---|
 | `AUTH_DB_PATH` | Path to the SQLite database used by better-auth. | `auth.db` |
 | `BETTER_AUTH_SECRET` | Secret key used by better-auth for session signing. **Must be set in production.** | — |
-| `BETTER_AUTH_BASE_URL` | Base URL that better-auth uses for its own endpoints. | `http://localhost:<PORT>` |
+| `BETTER_AUTH_BASE_URL` | Base URL that better-auth uses for its own endpoints. Expands to `http://localhost:7492` when `PORT` is unset. | `http://localhost:<PORT>` |
+| `PIZZAPI_DISABLE_SIGNUP_AFTER_FIRST_USER` | Set to `false` to allow sign-ups after the first user is registered. | `true` |
 
 ### Rate Limiting & Security
 
@@ -126,13 +127,14 @@ These variables control which subsystems are loaded by runner-spawned worker ses
 | `PIZZAPI_TRUSTED_PROXY_CIDRS` | Comma-separated list of CIDR ranges (IPv4 or IPv6) whose peers are trusted to set `X-Forwarded-For`. Required for cloud load balancers (public peer IPs) and any deployment that shares its private network with untrusted hosts (multi-tenant VPC, shared LAN, multi-app Docker bridge). Bare IPs default to `/32` (IPv4) or `/128` (IPv6). Loopback is always trusted in addition to the allowlist. Example: `203.0.113.0/24, 10.0.0.0/8`. See [Self-Hosting](/PizzaPi/guides/self-hosting/#reverse-proxy-configuration). | `unset` |
 | `PIZZAPI_TRUST_PROXY` | Convenience opt-in for trusting `X-Forwarded-For` from any loopback or RFC1918/ULA private peer. Suitable for **single-tenant Docker Compose** where every container on the bridge is trusted. Do **not** use on shared LANs/VPCs — use `PIZZAPI_TRUSTED_PROXY_CIDRS` instead. `false` disables proxy trust entirely (kill switch, overrides everything). `PIZZAPI_TRUSTED_PROXY_CIDRS` takes precedence over `true`. See [Self-Hosting](/PizzaPi/guides/self-hosting/#reverse-proxy-configuration). | `unset` (auto-detect loopback only) |
 | `PIZZAPI_PROXY_DEPTH` | Number of intermediate proxy hops between the server and the original client, for `X-Forwarded-For` parsing. `0` (default) = single proxy — use the right-most XFF entry. `1` = two proxies (e.g. CDN + local reverse proxy) — use the second-from-right entry. `N` = N+1 total proxies — use the entry N positions from the right. Only meaningful when proxy trust is enabled. See [Self-Hosting](/PizzaPi/guides/self-hosting/#multi-proxy-chains). | `0` |
+| `PIZZAPI_TRUST_MOBILE_ORIGINS` | Set to `false` to disable the default trust of Capacitor mobile origins (`capacitor://localhost`, `https://localhost`). | `true` |
 
 ### Attachments
 
 | Variable | Description | Default |
 |---|---|---|
 | `PIZZAPI_ATTACHMENT_DIR` | Directory where uploaded attachments are stored. | `.pizzapi/uploads` (relative to cwd) |
-| `PIZZAPI_ATTACHMENT_MAX_FILE_SIZE_BYTES` | Maximum allowed upload file size in bytes. | `20971520` (20 MB) |
+| `PIZZAPI_ATTACHMENT_MAX_FILE_SIZE_BYTES` | Maximum allowed upload file size in bytes. | `31457280` (30 MB) |
 | `PIZZAPI_ATTACHMENT_TTL_MS` | Time-to-live for stored attachments in milliseconds. Expired files are cleaned up automatically. | `900000` (15 min) |
 
 ### Relay / Events
@@ -141,6 +143,7 @@ These variables control which subsystems are loaded by runner-spawned worker ses
 |---|---|---|
 | `PIZZAPI_RELAY_EVENT_BUFFER_SIZE` | Maximum number of events kept in the per-session Redis ring buffer. | `1000` |
 | `PIZZAPI_RELAY_EVENT_TTL_MS` | TTL for relay events stored in Redis, in milliseconds. | `86400000` (24 h) |
+| `PIZZAPI_RELAY_SNAPSHOT_SCAN_CHUNK_SIZE` | Redis SCAN chunk size for relay snapshot iteration tuning. | `1000` |
 | `PIZZAPI_EPHEMERAL_TTL_MS` | TTL for ephemeral in-memory session data in milliseconds. | `600000` (10 min) |
 | `PIZZAPI_EPHEMERAL_SWEEP_MS` | Interval between ephemeral data sweep/cleanup runs in milliseconds. | `60000` (1 min) |
 
