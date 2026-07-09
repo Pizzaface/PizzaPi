@@ -76,7 +76,7 @@ On success, returns the session ID, runner ID, working directory, status (`Pendi
 
 ## Trigger system
 
-When a linked child session hits certain lifecycle events, it fires a **trigger** to the parent. Triggers arrive in the parent's conversation prefixed with `<!-- trigger:ID -->` metadata.
+When a linked child session hits certain lifecycle events, it fires a **trigger** to the parent. Triggers arrive in the parent's conversation prefixed with `<!-- trigger:ID source:SID -->` metadata. For `ask_user_question` triggers, the prefix also carries a base64 `questions64:` payload that the web UI uses for rich rendering.
 
 ### Trigger types
 
@@ -85,12 +85,12 @@ When a linked child session hits certain lifecycle events, it fires a **trigger*
 Fired when a child session calls `AskUserQuestion`. The trigger payload includes the question text, options, and the full structured `questions` array. The parent can answer on behalf of the user with `respond_to_trigger`.
 
 ```
-<!-- trigger:abc123 -->
-Child session "auth-refactor" is asking:
-  "Should I use RS256 or HS256 for JWT signing?"
-  Options: RS256, HS256
+<!-- trigger:abc123 source:child-session-id questions64:<base64> -->
+🔗 Child "auth-refactor" asks:
+> "Should I use RS256 or HS256 for JWT signing?"
+Options: 1. RS256  2. HS256
 
-Use respond_to_trigger(triggerId, response) to answer.
+Respond with `respond_to_trigger` using trigger ID `abc123`.
 ```
 
 #### `plan_review`
@@ -106,7 +106,8 @@ Respond with an `action`:
 
 Fired when the child session finishes. The payload includes the child's final output and an `exitReason`:
 - `exitReason: "completed"` — Normal completion.
-- `exitReason: "error"` — The child hit a usage limit or provider failure.
+- `exitReason: "error"` — The child hit a usage-limit / quota error.
+- `exitReason: "killed"` — The child was aborted.
 
 Respond with an `action`:
 - **`ack`** — Acknowledge and **terminate the child process**. This sends `SIGTERM` to the child and tears down its relay session. Only use when the child is truly finished.
@@ -118,7 +119,7 @@ Respond with an `action`:
 
 #### `session_error`
 
-Fired **before** `session_complete` when a child hits a usage limit or provider error. This gives the parent an early signal to react — retry with a different model, skip the task, or escalate to the user. Check the `exitReason` field on the subsequent `session_complete` to distinguish error exits from successful completions.
+Fired alongside `session_complete` (on the wire it is emitted after completion) when a child hits a **usage-limit / quota** error. This lets the parent react — retry with a different model, skip the task, or escalate to the user. Non-quota provider errors do not fire a separate `session_error`; they surface only as `exitReason: "error"` on `session_complete`. Check the `exitReason` field to distinguish error exits from successful completions.
 
 ### Trigger lifecycle
 
@@ -131,7 +132,9 @@ Fired **before** `session_complete` when a child hits a usage limit or provider 
 6. Response is routed back to the child, which unblocks and continues
 </Steps>
 
-Triggers have a **10-minute TTL**. If the parent doesn't respond within that window, the trigger expires and the child times out (5-minute default for `ask_user_question` and `plan_review`).
+Two separate timers govern triggers:
+- **Child wait timeout** — `ask_user_question` and `plan_review` wait up to **5 minutes** for the parent to respond. If the parent misses this window, the child unblocks and treats the trigger as timed out.
+- **Parent-side TTL** — The parent extension tracks pending triggers for **10 minutes**. `respond_to_trigger` rejects a trigger that has passed this parent-side TTL, usually because the child already gave up at 5 minutes.
 
 ---
 
@@ -342,7 +345,7 @@ escalate_trigger("err-t1", "Child hit rate limit — need human to decide next s
 
 ## Push notification behavior
 
-Linked child sessions **do not trigger push notifications**. Only top-level sessions — those started by a user or the runner daemon directly — send push notifications. This prevents notification spam when orchestrating multiple child sessions.
+Child session push notifications are **suppressed per subscription** via the `suppressChildNotifications` setting. By default, child sessions can still send push notifications. The native ntfy delivery path is not currently suppressed for child sessions, even when `suppressChildNotifications` is enabled. Top-level sessions always notify normally.
 
 ---
 

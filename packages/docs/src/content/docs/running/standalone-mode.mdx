@@ -67,13 +67,7 @@ To disable the relay for all future sessions, set `relayUrl` to `"off"` in your 
 }
 ```
 
-Or pass it as an environment variable:
-
-```bash
-PIZZAPI_RELAY_URL=off pizzapi
-```
-
-With either method:
+With this method:
 
 - No setup wizard appears on first run
 - No relay connection is attempted
@@ -84,15 +78,19 @@ With either method:
   The relay-disabled check is case-insensitive — `"off"`, `"OFF"`, and `"Off"` all work.
 </Aside>
 
-### Method 3: Use an Environment Variable for One Session
+### Method 3: Disable the Relay for One Session
+
+For a single invocation, either use the `--no-relay` flag or set the env var inline:
 
 ```bash
-# Relay disabled for this invocation only
+pizzapi --no-relay
+# or
+PIZZAPI_NO_RELAY=1 pizzapi
+# or
 PIZZAPI_RELAY_URL=off pizzapi
-
-# — or start with a specific relay for this invocation:
-PIZZAPI_RELAY_URL=wss://relay.example.com pizzapi
 ```
+
+`--safe-mode` also disables the relay (along with MCP, plugins, and hooks). These overrides last for the current process only; future invocations use the configured `relayUrl`.
 
 ---
 
@@ -127,9 +125,8 @@ This re-runs the full setup wizard: prompts for the relay URL, email, and passwo
 If you previously set `"relayUrl": "off"` in your config, remove it first:
 
 ```bash
-# Edit ~/.pizzapi/config.json and delete the "relayUrl" line
-# — or — run setup which will overwrite the relevant keys:
-pizzapi setup
+# Edit ~/.pizzapi/config.json and delete the "relayUrl" line.
+# `pizzapi setup` does NOT overwrite or remove relayUrl — it only saves the API key.
 ```
 
 <Aside type="tip">
@@ -157,4 +154,4 @@ pizzapi setup
 }
 ```
 
-Project-level config overrides the global one, so this disables the relay only for sessions started in that directory.
+A project-level `relayUrl` is only honored when there is **no** global `relayUrl`. If your global config has `relayUrl` set, it wins and the project value is ignored. To disable the relay for a single project when a global relay is configured, use `PIZZAPI_RELAY_URL=off pizzapi` or `pizzapi --no-relay` from that directory.
