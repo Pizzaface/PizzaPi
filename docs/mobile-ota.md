@@ -23,11 +23,17 @@ app launch ──► fetch manifest ──► buildTimestamp newer? ──► Ca
 - **Integrity:** the native updater verifies the SHA-256 from the manifest
   before applying, and auto-rolls-back if the new bundle never calls
   `notifyAppReady()` (we call it on boot in `main.ts`).
+- **Plugin access:** the client reaches the updater through Capacitor's
+  `registerPlugin("CapacitorUpdater")` bridge (by name, like `PizzapiNtfy`) — it
+  does **not** import the `@capgo` JS wrapper, so the web build never resolves
+  the package and there's no bare-specifier `import()` for the WebView to fail
+  on. On native the proxy routes to the plugin `cap sync` installs.
 
 ## One-time native setup (run on a machine with the Android/iOS toolchain)
 
-The web build and unit tests do **not** need this — the plugin is imported
-dynamically and guarded to the native shell.
+The web build and unit tests do **not** need this — the client accesses the
+plugin via `registerPlugin` (by name) and guards every call to the native shell,
+so nothing imports the `@capgo` package until you add it here.
 
 ```bash
 bun add @capgo/capacitor-updater@^8    # matches @capacitor/core ^8

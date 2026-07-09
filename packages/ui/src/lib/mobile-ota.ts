@@ -14,13 +14,16 @@
  * `>` is a correct "strictly newer" test.
  *
  * Everything is a no-op outside the native Capacitor shell. The native plugin
- * is imported dynamically via a variable specifier so the web build never has
- * to resolve it (it's only installed for the mobile build + `cap sync`).
+ * is reached through Capacitor's `registerPlugin` bridge (by name — no bundled
+ * import of the @capgo JS wrapper), exactly like the PizzapiNtfy plugin. That
+ * means the web build never has to resolve the package, and on native the proxy
+ * routes to the plugin that `bun add @capgo/capacitor-updater` + `cap sync`
+ * install into the native project (see docs/mobile-ota.md).
  *
  * ponytail: no retry/scheduler/progress UI — one check on launch. Add a
  * progress bar + periodic re-check only if bundles get large or updates frequent.
  */
-import { Capacitor } from "@capacitor/core";
+import { Capacitor, registerPlugin } from "@capacitor/core";
 import { getMobileRuntimeConfig } from "./mobile-runtime.js";
 
 /** Build timestamp baked into THIS bundle (the currently-installed version). */
@@ -71,19 +74,27 @@ interface CapgoUpdater {
     reload(): Promise<unknown>;
 }
 
-/**
- * Load the native updater. Dynamic + variable specifier so the web build/tsc
- * never needs the package resolved; returns null if unavailable.
- */
-async function loadUpdater(): Promise<CapgoUpdater | null> {
-    try {
-        const spec = "@capgo/capacitor-updater";
-        const mod = (await import(/* @vite-ignore */ spec)) as { CapacitorUpdater?: CapgoUpdater };
-        return mod.CapacitorUpdater ?? null;
-    } catch {
-        return null;
+// Web no-op so the proxy never rejects on the PWA build (calls are guarded to
+// native anyway). On native, registerPlugin routes to the "CapacitorUpdater"
+// plugin that `cap sync` installs — no JS import of the @capgo wrapper needed.
+class CapacitorUpdaterWeb implements CapgoUpdater {
+    async notifyAppReady(): Promise<unknown> {
+        return {};
+    }
+    async download(): Promise<{ id: string }> {
+        return { id: "" };
+    }
+    async set(): Promise<unknown> {
+        return {};
+    }
+    async reload(): Promise<unknown> {
+        return {};
     }
 }
+
+const CapacitorUpdater = registerPlugin<CapgoUpdater>("CapacitorUpdater", {
+    web: async () => new CapacitorUpdaterWeb(),
+});
 
 /**
  * Tell the updater this bundle booted successfully, cancelling the automatic
@@ -92,9 +103,8 @@ async function loadUpdater(): Promise<CapgoUpdater | null> {
  */
 export async function notifyOtaReady(): Promise<void> {
     if (!nativeEnabled()) return;
-    const updater = await loadUpdater();
     try {
-        await updater?.notifyAppReady();
+        await CapacitorUpdater.notifyAppReady();
     } catch (err) {
         console.error("mobile-ota: notifyAppReady failed:", err);
     }
@@ -125,16 +135,14 @@ export async function checkAndApplyOtaUpdate(
     if (!shouldApplyOta(manifest, installedBuildTimestamp)) return false;
     const m = manifest as OtaManifest;
 
-    const updater = await loadUpdater();
-    if (!updater) return false;
     try {
-        const bundle = await updater.download({
+        const bundle = await CapacitorUpdater.download({
             url: m.url.startsWith("http") ? m.url : `${base}${m.url}`,
             version: m.version,
             checksum: m.checksum,
         });
-        await updater.set(bundle);
-        await updater.reload();
+        await CapacitorUpdater.set(bundle);
+        await CapacitorUpdater.reload();
         return true;
     } catch (err) {
         console.error("mobile-ota: update failed:", err);
