@@ -2,11 +2,19 @@
 /**
  * Publish the built mobile UI as a self-hosted OTA bundle.
  *
- * Zips `mobile/app/` (with index.html at the archive root, as Capgo requires),
- * computes its SHA-256, and writes `<out>/manifest.json` + `<out>/pizzapi-*.zip`
- * where `<out>` is PIZZAPI_MOBILE_OTA_DIR (default: repo `mobile-ota/`). Start
- * the relay server with the same PIZZAPI_MOBILE_OTA_DIR and it serves these at
- * /api/mobile/ota/* for the mobile client to fetch, verify, and apply.
+ * Zips the Capacitor web root (`webDir: "mobile"`) so the OTA bundle mirrors
+ * exactly what the APK ships: `index.html` (the bootstrap/reconfiguration shell
+ * that redirects to `./app/index.html`) + `app/` (the built UI) + `vendor/`
+ * (jsqr for the QR scanner). Zipping only `app/` would drop the bootstrap shell,
+ * so after an OTA the app would boot straight into the UI and lose the
+ * server-setup / sign-out / re-pair flow. Dev files (package.json, tests,
+ * node_modules) are excluded. index.html sits at the archive root, as Capgo
+ * requires. buildTimestamp still comes from `app/build-info.json`.
+ *
+ * Writes `<out>/manifest.json` + `<out>/pizzapi-*.zip` where `<out>` is
+ * PIZZAPI_MOBILE_OTA_DIR (default: repo `mobile-ota/`). Start the relay server
+ * with the same PIZZAPI_MOBILE_OTA_DIR and it serves these at /api/mobile/ota/*
+ * for the mobile client to fetch, verify, and apply.
  *
  * Prereq: `bun run build:mobile` (produces mobile/app/). Requires the system
  * `zip` tool.
@@ -20,7 +28,8 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { join, resolve } from "node:path";
 
 const root = join(import.meta.dir, "..");
-const appDir = join(root, "mobile", "app");
+const webDir = join(root, "mobile");
+const appDir = join(webDir, "app");
 // Resolve to absolute: the zip step runs after `cd ${appDir}`, so a relative
 // outDir would otherwise be written under mobile/app and then not found.
 const outDir = resolve(process.env.PIZZAPI_MOBILE_OTA_DIR || join(root, "mobile-ota"));
@@ -46,9 +55,12 @@ mkdirSync(outDir, { recursive: true });
 const zipPath = join(outDir, zipName);
 rmSync(zipPath, { force: true });
 
-// Run from inside appDir so paths are relative → index.html sits at the zip
-// root. -X drops platform extras for a reproducible archive.
-await $`cd ${appDir} && zip -r -q -X ${zipPath} .`;
+// Zip the served webDir structure (index.html at root + app/ + vendor/) so the
+// bootstrap shell survives OTA. Explicit entries exclude dev files/node_modules.
+// -X drops platform extras for a reproducible archive.
+const entries = ["index.html", "app"];
+if (existsSync(join(webDir, "vendor"))) entries.push("vendor");
+await $`cd ${webDir} && zip -r -q -X ${zipPath} ${entries}`;
 
 const buf = readFileSync(zipPath);
 const checksum = createHash("sha256").update(buf).digest("hex");

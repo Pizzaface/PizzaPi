@@ -7,8 +7,13 @@ no "install unknown apps" prompt (the signing key is never touched).
 
 ## How it works
 
+The OTA zip mirrors the Capacitor web root (`webDir: mobile`): the bootstrap
+shell `index.html` at the archive root, plus `app/` (built UI) and `vendor/`.
+Bundling only `app/` would drop the bootstrap/sign-out/re-pair flow after an
+update. `buildTimestamp` still comes from `app/build-info.json`.
+
 ```
-build:mobile ──► mobile/app/ ──► publish:mobile:ota ──► mobile-ota/{manifest.json, pizzapi-<ts>.zip}
+build:mobile ──► mobile/{index.html,app/,vendor/} ──► publish:mobile:ota ──► mobile-ota/{manifest.json, pizzapi-<ts>.zip}
                                                               │
 relay server (PIZZAPI_MOBILE_OTA_DIR) serves /api/mobile/ota/*
                                                               │
