@@ -2140,6 +2140,13 @@ export function App() {
         if (command === "get_fork_messages") {
           setForkMessagesLoading(false);
         }
+        if (command === "fork") {
+          // A failed rewind leaves the transcript untouched — surface the error
+          // in the transcript itself, not just the easily-missed status line
+          // (e.g. "fork is not available in this pi version" from a runner
+          // that predates the rewind feature and needs a restart).
+          appendLocalSystemMessage(`**/rewind** failed: ${error}`);
+        }
         if (command === "refresh_usage") {
           setUsageRefreshing(false);
         }
