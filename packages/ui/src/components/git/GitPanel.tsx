@@ -276,8 +276,8 @@ export function GitPanel({ cwd, className }: GitPanelProps) {
     return (
         <div className={cn("flex flex-col h-full overflow-hidden", className)}>
             {/* Status / branch header */}
-            <div className="flex flex-col sm:flex-row sm:items-center gap-2 px-2 py-1.5 border-b border-border bg-muted/50 min-h-[40px] overflow-hidden">
-                <div className="flex items-center gap-1.5 min-w-0 w-full sm:w-auto sm:flex-1 overflow-hidden">
+            <div className="flex flex-col @sm:flex-row @sm:items-center gap-2 px-2 py-1.5 border-b border-border bg-muted/50 min-h-[40px] overflow-hidden">
+                <div className="flex items-center gap-1.5 min-w-0 w-full @sm:w-auto @sm:flex-1 overflow-hidden">
                     <GitBranchSelector
                         currentBranch={git.status.branch}
                         branches={git.branches}
@@ -298,7 +298,7 @@ export function GitPanel({ cwd, className }: GitPanelProps) {
                     )}
                 </div>
 
-                <div className="flex flex-wrap items-center justify-end gap-1.5 min-w-0 w-full sm:w-auto sm:shrink-0 sm:ml-auto">
+                <div className="flex flex-wrap items-center justify-end gap-1.5 min-w-0 w-full @sm:w-auto @sm:shrink-0 @sm:ml-auto">
                     {/* Ahead/behind badges */}
                     {git.status.ahead > 0 && (
                         <span
@@ -513,7 +513,7 @@ export function GitPanel({ cwd, className }: GitPanelProps) {
                 const isStashConflict = git.lastConflictType === "git_stash_result";
                 const isMergeConflict = git.lastConflictType === "git_merge_result";
                 return (
-                    <div className="flex flex-col sm:flex-row items-start sm:items-center gap-2 px-3 py-2 text-xs border-b bg-amber-500/10 border-amber-500/20 text-amber-600 dark:text-amber-400"
+                    <div className="flex flex-col @sm:flex-row items-start @sm:items-center gap-2 px-3 py-2 text-xs border-b bg-amber-500/10 border-amber-500/20 text-amber-600 dark:text-amber-400"
                     >
                         <div className="flex items-center gap-2 min-w-0 w-full">
                             <AlertCircle className="size-3 shrink-0" />
@@ -528,18 +528,18 @@ export function GitPanel({ cwd, className }: GitPanelProps) {
                                 type="button"
                                 onClick={() => git.mergeAbort()}
                                 disabled={git.operationInProgress !== null}
-                                className="inline-flex items-center justify-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-red-500/20 text-red-500 dark:text-red-400 hover:bg-red-500/30 disabled:opacity-50 w-full sm:w-auto"
+                                className="inline-flex items-center justify-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-red-500/20 text-red-500 dark:text-red-400 hover:bg-red-500/30 disabled:opacity-50 w-full @sm:w-auto"
                                 title="Abort the merge"
                             >
                                 <StopCircle className="size-3" /> Abort Merge
                             </button>
                         ) : isStashConflict ? null : (
-                            <div className="flex items-center gap-2 w-full sm:w-auto">
+                            <div className="flex items-center gap-2 w-full @sm:w-auto">
                                 <button
                                     type="button"
                                     onClick={() => git.rebaseContinue()}
                                     disabled={git.operationInProgress !== null}
-                                    className="inline-flex items-center justify-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-green-600/20 text-green-600 dark:text-green-400 hover:bg-green-600/30 disabled:opacity-50 flex-1 sm:flex-initial"
+                                    className="inline-flex items-center justify-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-green-600/20 text-green-600 dark:text-green-400 hover:bg-green-600/30 disabled:opacity-50 flex-1 @sm:flex-initial"
                                     title="Continue rebase after resolving conflicts"
                                 >
                                     <Play className="size-3" /> Continue
@@ -548,7 +548,7 @@ export function GitPanel({ cwd, className }: GitPanelProps) {
                                     type="button"
                                     onClick={() => git.rebaseAbort()}
                                     disabled={git.operationInProgress !== null}
-                                    className="inline-flex items-center justify-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-red-500/20 text-red-500 dark:text-red-400 hover:bg-red-500/30 disabled:opacity-50 flex-1 sm:flex-initial"
+                                    className="inline-flex items-center justify-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-red-500/20 text-red-500 dark:text-red-400 hover:bg-red-500/30 disabled:opacity-50 flex-1 @sm:flex-initial"
                                     title="Abort the rebase"
                                 >
                                     <StopCircle className="size-3" /> Abort
@@ -567,7 +567,7 @@ export function GitPanel({ cwd, className }: GitPanelProps) {
                         type="button"
                         onClick={() => setActiveTab(t.id)}
                         className={cn(
-                            "px-2 py-1 text-[0.65rem] sm:px-2.5 sm:py-1.5 sm:text-xs font-medium whitespace-nowrap border-b-2 -mb-px transition-colors shrink-0",
+                            "px-2 py-1 text-[0.65rem] @sm:px-2.5 @sm:py-1.5 @sm:text-xs font-medium whitespace-nowrap border-b-2 -mb-px transition-colors shrink-0",
                             activeTab === t.id
                                 ? "border-primary text-foreground"
                                 : "border-transparent text-muted-foreground hover:text-foreground",

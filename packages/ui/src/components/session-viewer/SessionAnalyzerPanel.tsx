@@ -245,7 +245,7 @@ export function SessionAnalyzerBody({ analysis, runnerId, sessionId }: SessionAn
         <p className="text-xs text-muted-foreground py-1">Waiting for first response…</p>
       ) : (
         <>
-          <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+          <div className="grid gap-2 @sm:grid-cols-2 @xl:grid-cols-4">
             <MetricCard
               label="Cache hit"
               value={formatPct(cacheHitRate)}
