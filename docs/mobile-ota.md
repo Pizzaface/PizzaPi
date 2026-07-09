@@ -29,15 +29,16 @@ app launch ──► fetch manifest ──► buildTimestamp newer? ──► Ca
   the package and there's no bare-specifier `import()` for the WebView to fail
   on. On native the proxy routes to the plugin `cap sync` installs.
 
-## One-time native setup (run on a machine with the Android/iOS toolchain)
+## Native setup (run on a machine with the Android/iOS toolchain)
 
-The web build and unit tests do **not** need this — the client accesses the
-plugin via `registerPlugin` (by name) and guards every call to the native shell,
-so nothing imports the `@capgo` package until you add it here.
+`@capgo/capacitor-updater` is already a committed dependency, but the client
+never imports it — it reaches the plugin via `registerPlugin("CapacitorUpdater")`
+and guards every call to the native shell, so the web build/unit tests don't
+pull it in. To package the native side, run a mobile build (which runs
+`cap sync`, picking the plugin up from `package.json`):
 
 ```bash
-bun add @capgo/capacitor-updater@^8    # matches @capacitor/core ^8
-bun run build:mobile                   # builds UI + copies to mobile/app + cap sync
+bun run build:mobile   # builds UI + copies to mobile/app + cap sync (installs the native plugin)
 ```
 
 `capacitor.config.ts` already sets `CapacitorUpdater: { autoUpdate: false }`.
@@ -62,8 +63,13 @@ When `PIZZAPI_MOBILE_OTA_DIR` is unset the feature is off (every OTA path 404s).
 
 ## Notes / limits
 
+- **HTTPS-only.** OTA ships executable JS, so the client only applies a bundle
+  when the relay server URL is `https://` (`isSecureOtaOrigin`). The app allows
+  `http://` for LAN/loopback servers and `CapacitorHttp` bypasses mixed-content
+  blocking, so plain-http OTA would be MITM-exploitable — those servers update
+  via a new APK instead.
 - The bundle is public (it's the same UI the server already serves) — no auth on
-  the endpoints; integrity comes from the checksum, not access control.
+  the endpoints; integrity comes from the checksum + TLS, not access control.
 - `publish:mobile:ota` uses the system `zip`. If a device ever rejects the
   archive, swap that step for `@capgo/cli bundle zip` (their exact format).
 - Rollback/staged rollout/kill-switch are not implemented — add a

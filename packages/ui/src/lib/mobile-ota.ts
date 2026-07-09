@@ -66,6 +66,18 @@ function nativeEnabled(): boolean {
     return getMobileRuntimeConfig().isMobileBundled && Capacitor.isNativePlatform();
 }
 
+/**
+ * OTA delivers executable JS, so it may only be pulled over an authenticated
+ * channel (TLS). The app allows `http://` for loopback/LAN servers, and
+ * `CapacitorHttp` routes fetch through native HTTP that bypasses mixed-content
+ * blocking — so over plain http a LAN attacker could swap the manifest + bundle
+ * + checksum and get arbitrary code applied. HTTPS-only closes that; http
+ * servers simply don't receive OTA (they can still update via a new APK).
+ */
+export function isSecureOtaOrigin(serverUrl: string): boolean {
+    return /^https:\/\//i.test(serverUrl.trim());
+}
+
 /** Minimal shape of the bits of @capgo/capacitor-updater we call. */
 interface CapgoUpdater {
     notifyAppReady(): Promise<unknown>;
@@ -122,6 +134,8 @@ export async function checkAndApplyOtaUpdate(
     const { serverUrl } = getMobileRuntimeConfig();
     if (!serverUrl) return false;
     const base = serverUrl.replace(/\/+$/, "");
+    // Never apply code fetched over an unauthenticated (http) channel.
+    if (!isSecureOtaOrigin(base)) return false;
 
     let manifest: unknown;
     try {

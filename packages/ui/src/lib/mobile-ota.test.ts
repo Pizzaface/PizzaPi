@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { shouldApplyOta } from "./mobile-ota";
+import { isSecureOtaOrigin, shouldApplyOta } from "./mobile-ota";
 
 const installed = "2026-07-09T10:00:00.000Z";
 const valid = {
@@ -34,5 +34,24 @@ describe("shouldApplyOta", () => {
 
     test("applies against an empty installed timestamp (fresh install / dev)", () => {
         expect(shouldApplyOta(valid, "")).toBe(true);
+    });
+});
+
+describe("isSecureOtaOrigin", () => {
+    test("allows https origins", () => {
+        expect(isSecureOtaOrigin("https://relay.example.com")).toBe(true);
+        expect(isSecureOtaOrigin("HTTPS://relay.example.com/")).toBe(true);
+        expect(isSecureOtaOrigin("  https://relay.example.com  ")).toBe(true);
+    });
+
+    test("rejects http (incl. LAN/loopback) and other schemes", () => {
+        expect(isSecureOtaOrigin("http://192.168.1.5:8080")).toBe(false);
+        expect(isSecureOtaOrigin("http://localhost:3000")).toBe(false);
+        expect(isSecureOtaOrigin("http://relay.local")).toBe(false);
+        expect(isSecureOtaOrigin("ftp://x")).toBe(false);
+        expect(isSecureOtaOrigin("")).toBe(false);
+        // Guard against sneaky prefixes that merely contain "https".
+        expect(isSecureOtaOrigin("httpshh://x")).toBe(false);
+        expect(isSecureOtaOrigin("http://x?https://y")).toBe(false);
     });
 });

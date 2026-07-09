@@ -11,6 +11,7 @@
         "@capacitor/local-notifications": "^8.2.0",
         "@capacitor/push-notifications": "^8.1.1",
         "@capawesome/capacitor-badge": "^8.0.2",
+        "@capgo/capacitor-updater": "^8",
         "@earendil-works/pi-agent-core": "^0.80.3",
         "@earendil-works/pi-ai": "^0.80.3",
         "@earendil-works/pi-tui": "^0.80.3",
@@ -39,7 +40,7 @@
     },
     "packages/cli": {
       "name": "@pizzapi/cli",
-      "version": "0.5.4-dev.3",
+      "version": "0.5.4",
       "bin": {
         "pizza": "src/index.ts",
         "pizzapi": "src/index.ts",
@@ -560,6 +561,8 @@
     "@capacitor/push-notifications": ["@capacitor/push-notifications@8.1.1", "", { "peerDependencies": { "@capacitor/core": ">=8.0.0" } }, "sha512-WqzjPKIbYbARMN+GC0XMAJcxJpUUzqgzS/Ny8RODLrro38pQhm3GXYwX2Mwd+LZlLY39rGImkCkrKyQSNfuikA=="],
 
     "@capawesome/capacitor-badge": ["@capawesome/capacitor-badge@8.0.2", "", { "peerDependencies": { "@capacitor/core": ">=8.0.0" } }, "sha512-4ZnRyFvViaokupdrOi3OkoBurH+23hnxni+PYq5C1ObNLYbhty/WK8BzMtndCv0S47XjGBLjQ9DJsYj3JDVxGQ=="],
+
+    "@capgo/capacitor-updater": ["@capgo/capacitor-updater@8.50.2", "", { "peerDependencies": { "@capacitor/core": "^8.0.0" } }, "sha512-bMsZFp17jg39hBqCioLrJfRyH4VDUS3vcvTJ55MlcdBAxEfj2rqkJZtBPVerO3Y8oJuoGM4x89ISdXJkPzmTfA=="],
 
     "@capsizecss/unpack": ["@capsizecss/unpack@4.0.0", "", { "dependencies": { "fontkitten": "^1.0.0" } }, "sha512-VERIM64vtTP1C4mxQ5thVT9fK0apjPFobqybMtA1UdUujWka24ERHbRHFGmpbbhp73MhV+KSsHQH9C6uOTdEQA=="],
 
