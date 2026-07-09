@@ -936,6 +936,45 @@ describe("POST /api/runners/:runnerId/trigger-broadcast", () => {
         expect(emitMock).toHaveBeenCalledTimes(2);
     });
 
+    test("defaults deliverAs to followUp when omitted", async () => {
+        mockGetSubscribersForTrigger.mockReturnValue(Promise.resolve(["sess-1"]));
+        mockGetSharedSession.mockImplementation((id: string) =>
+            Promise.resolve({ userId: "user-1", sessionId: id } as any),
+        );
+        const emitMock = mock(() => {});
+        mockGetLocalTuiSocket.mockReturnValue({ connected: true, emit: emitMock });
+
+        const [req, url] = makeReq(
+            "POST", "/api/runners/runner-A/trigger-broadcast",
+            { type: "svc:event", payload: { x: 1 } },
+            { "x-api-key": "test-key" },
+        );
+        const res = await handleTriggersRoute(req, url);
+        expect(res?.status).toBe(200);
+        expect(emitMock).toHaveBeenCalledTimes(1);
+        const args = emitMock.mock.calls[0] as any[];
+        expect(args[1].trigger.deliverAs).toBe("followUp");
+    });
+
+    test("preserves an explicit deliverAs: steer", async () => {
+        mockGetSubscribersForTrigger.mockReturnValue(Promise.resolve(["sess-1"]));
+        mockGetSharedSession.mockImplementation((id: string) =>
+            Promise.resolve({ userId: "user-1", sessionId: id } as any),
+        );
+        const emitMock = mock(() => {});
+        mockGetLocalTuiSocket.mockReturnValue({ connected: true, emit: emitMock });
+
+        const [req, url] = makeReq(
+            "POST", "/api/runners/runner-A/trigger-broadcast",
+            { type: "svc:event", payload: { x: 1 }, deliverAs: "steer" },
+            { "x-api-key": "test-key" },
+        );
+        const res = await handleTriggersRoute(req, url);
+        expect(res?.status).toBe(200);
+        const args = emitMock.mock.calls[0] as any[];
+        expect(args[1].trigger.deliverAs).toBe("steer");
+    });
+
     test("skips sessions belonging to a different user", async () => {
         mockGetSubscribersForTrigger.mockReturnValue(
             Promise.resolve(["sess-other", "sess-mine"]),

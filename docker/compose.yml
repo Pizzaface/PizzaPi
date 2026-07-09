@@ -44,10 +44,28 @@ services:
       target: runtime-no-ui
     ports:
       - "7492:7492"
+    # BETTER_AUTH_SECRET signs session cookies/API tokens. If left unset, the
+    # startup script below auto-generates a random 32-byte secret on first run
+    # and persists it to the pizzapi-data volume (survives restarts, so
+    # sessions stay valid). Set BETTER_AUTH_SECRET explicitly below to pin a
+    # specific value instead (e.g. `openssl rand -hex 32`) — required if you
+    # run multiple server replicas that must share sessions.
+    command: >
+      /bin/sh -c '
+        if [ -z "$$BETTER_AUTH_SECRET" ]; then
+          SECRET_FILE=/app/data/better-auth-secret;
+          if [ ! -f "$$SECRET_FILE" ]; then
+            head -c 32 /dev/urandom | od -An -tx1 | tr -d " \n" > "$$SECRET_FILE";
+          fi;
+          export BETTER_AUTH_SECRET=$$(cat "$$SECRET_FILE");
+        fi;
+        exec bun run packages/server/dist/index.js
+      '
     environment:
       - PORT=7492
       - PIZZAPI_REDIS_URL=redis://redis:6379
       - AUTH_DB_PATH=/app/data/auth.db
+      # - BETTER_AUTH_SECRET=<32+ char secret — see comment above>
       # ── ntfy (self-hosted push). Internal publish URL is fixed; the public
       # URL + publish token must be provided by the operator. If unset, the
       # ntfy push branch is a silent no-op and only Web Push runs.

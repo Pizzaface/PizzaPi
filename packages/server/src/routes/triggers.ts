@@ -29,6 +29,7 @@
  *   Broadcast a trigger by type to all sessions subscribed to that type on
  *   this runner. API key auth only (called by runner services).
  *   Body: { type, payload, deliverAs?, source?, summary? }
+ *   deliverAs defaults to "followUp" (queued, non-interruptive) when omitted.
  *   Returns: { ok, delivered: number, triggerId }
  */
 
@@ -936,7 +937,11 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
             return Response.json({ error: "Missing or invalid 'payload' field — must be an object" }, { status: 400 });
         }
 
-        const deliverAs = body.deliverAs ?? "steer";
+        // Default to "followUp" (non-interruptive) when omitted — matches the
+        // documented default and the runner-services example template. A
+        // service that wants to interrupt the current turn must opt in
+        // explicitly with deliverAs: "steer".
+        const deliverAs = body.deliverAs ?? "followUp";
         if (deliverAs !== "steer" && deliverAs !== "followUp") {
             return Response.json({ error: "Invalid 'deliverAs' — must be 'steer' or 'followUp'" }, { status: 400 });
         }
