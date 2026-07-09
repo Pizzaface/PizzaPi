@@ -74,7 +74,10 @@ PizzaPi goes beyond basic terminal access to give you a full remote development 
 
 <CardGrid>
   <Card title="📱 Installable PWA" icon="document">
-    Install PizzaPi as a Progressive Web App on your phone or tablet. Get a native app experience with offline support and home screen access.
+    Install PizzaPi as a Progressive Web App on your phone or tablet. Get a native app experience with a cached app shell and home screen access.
+  </Card>
+  <Card title="📱 Native Android & iOS apps" icon="setting">
+    Build native mobile apps from the same codebase with Capacitor. Android background push is available via ntfy; iOS keeps in-app notifications.
   </Card>
   <Card title="🔔 Push Notifications" icon="approve-check">
     Get notified when sessions complete, agents need input, or errors occur — even when the browser tab is closed.
@@ -98,7 +101,7 @@ PizzaPi goes beyond basic terminal access to give you a full remote development 
 
 2. **Connect to a relay server**
 
-   On first run, the setup wizard asks for your relay URL and credentials. The CLI opens a persistent WebSocket connection and streams all session events.
+   On first run, the setup wizard asks for your relay URL and credentials (or scans a QR code). The CLI opens a persistent WebSocket connection and streams all session events.
 
 3. **Open the web UI in any browser**
 
@@ -119,7 +122,7 @@ pizzapi
 ```
 
 <Aside type="tip" title="First run?">
-  The first time you run `pizzapi`, a setup wizard walks you through connecting to a relay server and signing in. It takes about 30 seconds — see the [Getting Started](/PizzaPi/start-here/getting-started/) guide for details.
+  The first time you run `pizzapi` (or `pizza` — the two names are aliases for the same binary), a setup wizard walks you through connecting to a relay server and signing in. It takes about 30 seconds — see the [Getting Started](/PizzaPi/start-here/getting-started/) guide for details.
 </Aside>
 
 <div style="margin-top: 2rem; display: flex; gap: 1rem; flex-wrap: wrap;">
