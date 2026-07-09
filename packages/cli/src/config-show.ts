@@ -15,6 +15,23 @@ export function maskApiKey(key: string | undefined): string {
     return `${key.slice(0, 4)}…${key.slice(-4)}`;
 }
 
+/** Strip embedded userinfo (user:pass@) from a URL so credentials aren't printed. Non-URL strings pass through unchanged. */
+export function maskUrlUserinfo(url: string | undefined): string | undefined {
+    if (!url) return url;
+    try {
+        const u = new URL(url);
+        if (u.username || u.password) {
+            u.username = "";
+            u.password = "";
+            return u.toString();
+        }
+        return url;
+    } catch {
+        // Not a parseable URL (e.g. "off") — return as-is.
+        return url;
+    }
+}
+
 export function runConfigShowCommand(cwd: string = process.cwd()): number {
     const config = loadConfig(cwd);
     const agentDir = config.agentDir ? expandHome(config.agentDir) : defaultAgentDir();
@@ -28,11 +45,11 @@ export function runConfigShowCommand(cwd: string = process.cwd()): number {
     console.log(c.label("Effective PizzaPi config") + c.dim(`  (${cwd})`));
     console.log("");
     console.log(`  ${c.dim("apiKey")}      ${maskApiKey(effectiveApiKey)}${envApiKey ? c.dim("  (from PIZZAPI_API_KEY)") : ""}`);
-    console.log(`  ${c.dim("relayUrl")}    ${effectiveRelayUrl}${envRelayUrl ? c.dim("  (from PIZZAPI_RELAY_URL)") : ""}`);
+    console.log(`  ${c.dim("relayUrl")}    ${maskUrlUserinfo(effectiveRelayUrl)}${envRelayUrl ? c.dim("  (from PIZZAPI_RELAY_URL)") : ""}`);
     console.log(`  ${c.dim("agentDir")}    ${agentDir}`);
     console.log("");
 
-    const redacted = { ...config, apiKey: maskApiKey(config.apiKey) };
+    const redacted = { ...config, apiKey: maskApiKey(config.apiKey), relayUrl: maskUrlUserinfo(config.relayUrl) };
     console.log(c.dim("Resolved config.json (secrets redacted):"));
     console.log(JSON.stringify(redacted, null, 2));
     console.log("");

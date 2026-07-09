@@ -2,8 +2,21 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
-import { maskApiKey, runConfigShowCommand } from "./config-show.js";
+import { maskApiKey, maskUrlUserinfo, runConfigShowCommand } from "./config-show.js";
 import { _setGlobalConfigDir } from "./config.js";
+
+describe("maskUrlUserinfo", () => {
+    test("strips embedded user:pass credentials", () => {
+        expect(maskUrlUserinfo("ws://user:pass@relay.example.com:7492")).toBe("ws://relay.example.com:7492/");
+    });
+    test("leaves credential-free URLs unchanged", () => {
+        expect(maskUrlUserinfo("ws://localhost:7492")).toBe("ws://localhost:7492");
+    });
+    test("passes through non-URL and undefined values", () => {
+        expect(maskUrlUserinfo("off")).toBe("off");
+        expect(maskUrlUserinfo(undefined)).toBeUndefined();
+    });
+});
 
 describe("maskApiKey", () => {
     test("unset when no key", () => {
