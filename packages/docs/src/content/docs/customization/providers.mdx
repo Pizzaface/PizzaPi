@@ -11,8 +11,8 @@ A provider can:
 
 - **Inject context** into every agent turn — add notes, rules, or references to the system prompt
 - **Hook into session lifecycle** — react to session start, turn end, shutdown, and close events
-- **Add UI panels and widgets** — register sidebar widgets or metadata cards in the web interface
-- **Contribute session metadata** — provide structured data about the session
+- **Add UI panels and widgets** — *capability is validated but not yet wired to the UI*
+- **Contribute session metadata** — *capability is validated but not yet consumed by the UI*
 
 Providers live in `~/.pizzapi/providers/<name>/index.ts` and are discovered automatically on session start.
 
@@ -101,7 +101,7 @@ interface ExtensionProvider {
 
 ### Module Formats
 
-The loader accepts three export patterns:
+The loader tries a `new` constructor first for any function export, and falls back to awaiting it as a factory if that throws. In practice this means three common patterns work:
 
 **Object literal** (recommended):
 ```typescript
@@ -140,18 +140,18 @@ export default async function createProvider() {
 
 ### `init()` and `dispose()`
 
-`init()` receives a `ProviderInitContext` with:
+`init()` receives a `ProviderInitContext`:
 
 ```typescript
 interface ProviderInitContext {
-  config: Record<string, unknown>;     // Provider-specific config from config.json
-  fireTrigger(sessionId, type, payload): Promise<void>;
-  socket: unknown;                     // Socket.IO connection (if available)
-  publishMetadata(sessionId, metadata): void;
+  config: Record<string, unknown>;     // Provider-specific config from config.json (includes `enabled`)
+  fireTrigger(sessionId, type, payload): Promise<void>;  // ⚠️ currently a no-op stub
+  socket: unknown;                     // ⚠️ always `null` today
+  publishMetadata(sessionId, metadata): void;  // ⚠️ currently a no-op stub
 }
 ```
 
-The `config` object contains the provider's entry from `~/.pizzapi/config.json`:
+The `config` object contains the provider's full entry from `~/.pizzapi/config.json`, including the `enabled` field:
 
 ```json title="~/.pizzapi/config.json"
 {
@@ -205,7 +205,7 @@ interface ContextContribution {
 
 **Sorting:** Contributions are sorted by `order` (ascending), then by provider ID alphabetically. Prepend items are grouped by order — higher-order groups are placed closer to the top of the prompt while preserving order within each group.
 
-**Deduplication:** When two contributions share the same `dedupeKey` within a single user prompt, the second is silently skipped. This prevents duplicate context when a provider fires `onBeforeAgentStart` multiple times per prompt (e.g., on retries). The dedupe state resets at the start of each new user prompt.
+**Deduplication:** When a provider emits a contribution with a `dedupeKey` it has already used within the same user prompt, the second is silently skipped. Dedupe is **per-provider** — two different providers using the same key are both emitted. This prevents duplicate context when a provider fires `onBeforeAgentStart` multiple times per prompt (e.g., on retries). The dedupe state resets at the start of each new user prompt.
 
 ### `"lifecycle"` — Session Lifecycle Hooks
 
@@ -231,6 +231,7 @@ Session Start → [Turn 1: BeforeAgentStart → Turn 1: TurnEnd → Turn 2: ...]
 interface SessionStartEvent {
   reason: "startup" | "reload" | "new" | "resume" | "fork";
   previousSessionFile?: string;     // Set when resuming/forking a previous session
+  model?: { provider: string; id: string; name: string };  // The active model at session start
 }
 ```
 
@@ -348,12 +349,12 @@ The ProviderBridge orchestrates all active providers. Understanding its behavior
 
 ### Error Isolation
 
-If a provider throws in `onBeforeAgentStart`, `onTurnEnd`, or `onSessionClose`:
+If a provider throws in `onBeforeAgentStart`, `onTurnEnd`, `onSessionStart`, or `onSessionClose`:
 
 1. The error is caught and logged
 2. Other providers **still run** — one failing provider doesn't block others
 3. After **3 consecutive errors**, the provider is **auto-disabled** and won't be called again
-4. A successful call resets the error counter
+4. A successful call resets the counter for `onBeforeAgentStart` and `onTurnEnd` only; `onSessionStart` and `onSessionClose` do not reset it
 
 This means a buggy provider won't take down the entire session.
 
@@ -524,7 +525,7 @@ Invalid modules are reported as errors but don't prevent other providers from lo
 - If using `dedupeKey`, ensure it's unique within the prompt — the same key is only emitted once
 
 **Provider disabled after errors:**
-- Check for `[ProviderBridge] Disabling provider` warnings in the runner logs
+- Check for `[ProviderBridge] Disabling provider` errors in the runner logs
 - Fix the errors and restart the session
 - The 3-error threshold is reset by a single successful call
 
@@ -538,4 +539,4 @@ Invalid modules are reported as errors but don't prevent other providers from lo
 
 - [Hooks](/PizzaPi/customization/hooks/) — shell-script lifecycle hooks (alternative to Extension Providers)
 - [Runner Services](/PizzaPi/customization/runner-services/) — background processes with UI panels and custom triggers
-- [ProviderBridge API](/PizzaPi/reference/architecture/) — how providers are orchestrated
+- [ProviderBridge source](https://github.com/pizzaface/PizzaPi/blob/main/packages/cli/src/providers/bridge.ts) — how providers are orchestrated

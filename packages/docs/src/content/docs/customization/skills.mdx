@@ -15,8 +15,13 @@ PizzaPi searches for skills in these locations (all merged):
 
 | Path | Scope |
 |------|-------|
+| *(built-in CLI skills)* | Shipped with PizzaPi |
 | `~/.pizzapi/skills/` | Global — available in all projects |
 | `<cwd>/.pizzapi/skills/` | Project-local — scoped to this repo |
+| `~/.pizzapi/agents/` | Global agents treated as skills |
+| `<cwd>/.pizzapi/agents/` | Project-local agents treated as skills |
+| `<cwd>/.agents/skills/` | Claude Code compatible project skills |
+| `<cwd>/.agents/agents/` | Claude Code compatible project agents |
 | Paths in the `skills` config array | Custom locations |
 
 ---
@@ -53,11 +58,15 @@ Instructions for the agent...
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `name` | string | Identifier for the skill (used with `/skill:name` invocation) |
-| `description` | string | Tells the agent when to apply this skill — matched against the user's task |
-| `tools` | string | Comma-separated list of tools this skill needs (informational) |
+| `name` | string | Identifier for the skill (used with `/skill:name` invocation). **Required** by the Agent Skills standard. |
+| `description` | string | Tells the agent when to apply this skill. **Required** — skills without a description are discovered but not loaded. |
+| `allowed-tools` | string | Space-delimited list of tools this skill needs (Agent Skills standard) |
+| `license` | string | License identifier |
+| `compatibility` | string | Compatibility statement |
+| `metadata` | object | Arbitrary metadata |
+| `disable-model-invocation` | boolean | Disable model invocation when this skill is active |
 
-All frontmatter fields are optional. If no frontmatter is provided, the skill is still loaded — the agent uses the file content to decide relevance.
+A skill can also be a bare `.md` file directly in a skills directory (name = basename without `.md`), or a subdirectory containing `SKILL.md`.
 
 ### Skill Content Structure
 
@@ -94,7 +103,7 @@ Include examples to help the agent understand expected behavior.
 
 The agent decides which skills to load based on two mechanisms:
 
-**Automatic matching** — The agent compares the user's task against each skill's `description` field (or content) and loads relevant skills automatically.
+**Automatic matching** — The agent compares the user's task against each skill's `description` field and loads relevant skills automatically.
 
 **Manual invocation** — Users can explicitly load a skill with the `/skill:name` syntax:
 
@@ -111,7 +120,7 @@ This bypasses automatic matching and loads the specified skill directly.
 Skills can reference other files in their directory:
 
 - **Relative paths** are resolved against the skill directory (the parent of `SKILL.md`)
-- **Plugin skills** can use `${CLAUDE_PLUGIN_ROOT}` to reference files relative to the plugin root
+- **Plugin skills** use the same relative-path rules as any other skill: paths are resolved from the `SKILL.md` directory. There is no special `${CLAUDE_PLUGIN_ROOT}` substitution for skill content.
 
 For example, if your skill is at `~/.pizzapi/skills/deploy/SKILL.md`, a reference to `./templates/k8s.yaml` resolves to `~/.pizzapi/skills/deploy/templates/k8s.yaml`.
 
@@ -119,7 +128,7 @@ For example, if your skill is at `~/.pizzapi/skills/deploy/SKILL.md`, a referenc
 
 ## Built-in PizzaPi Extensions
 
-PizzaPi ships with several built-in extensions that are always active:
+PizzaPi ships with several built-in extensions that are active by default (some can be skipped with `--safe-mode` or `PIZZAPI_NO_*` flags):
 
 | Extension | What it does |
 |-----------|-------------|
@@ -129,7 +138,9 @@ PizzaPi ships with several built-in extensions that are always active:
 | **set-session-name** | Gives the agent the `set_session_name` tool to title sessions in the UI |
 | **update-todo** | Gives the agent the `update_todo` tool to maintain a live task list in the UI |
 | **spawn-session** | Gives the agent the `spawn_session` tool to launch linked child sessions via the runner |
-| **claude-plugins** | Discovers Claude Code plugins and loads their commands, hooks, and skills into the runtime |
+| **claude-plugins** | Discovers Claude Code plugins and loads their commands, hooks, skills, and rules into the runtime |
+
+Many other extensions (triggers, subagents, hooks, tool-search, goal, providers, etc.) are also active by default. Use `pizza --safe-mode` to skip the optional ones entirely.
 
 ---
 
@@ -166,7 +177,7 @@ This skill will automatically be available to every `pizzapi` session started fr
 
 PizzaPi can also load skills from **Claude Code plugins**. Both Claude Code and pi use the [Agent Skills standard](https://agentskills.io/specification), so plugin skills work natively.
 
-Skills from global plugins (`~/.pizzapi/plugins/`, `~/.agents/plugins/`, `~/.claude/plugins/`) are automatically discovered alongside your regular skills. See the [Claude Code Plugins guide](/PizzaPi/customization/claude-plugins/) for details.
+Skills from global plugins (`~/.pizzapi/plugins/`, `~/.agents/plugins/`) are automatically discovered alongside your regular skills. Plugins under `~/.claude/plugins/` are loaded only through Claude Code's `installed_plugins.json` marketplace manifest, not by scanning the directory. See the [Claude Code Plugins guide](/PizzaPi/customization/claude-plugins/) for details.
 
 ---
 
@@ -228,10 +239,10 @@ In the PizzaPi web interface, navigate to a runner's detail page and open the **
 
 ### Relationship to File-Based Discovery
 
-The API writes directly to the same directories used by file-based discovery (`~/.pizzapi/skills/`, etc.). A skill created via the API is a regular `SKILL.md` file on disk — there's no separate "API-only" storage. Similarly, skills added to the filesystem can be picked up by hitting the **Refresh** button or calling the `/refresh` endpoint.
+The API writes directly to `~/.pizzapi/skills/` only. Project-local, plugin, config, and built-in skills are not visible or editable through the API or the web UI Skills tab.
 
 <Aside type="note">
-  Skill names are validated to prevent path traversal — only alphanumeric characters, hyphens, and underscores are allowed.
+  Skill names must be lowercase letters, numbers, and hyphens (1–64 characters). The runner rejects underscores, dots, and uppercase letters. The web UI may allow broader names, but a name that doesn't pass the runner validator will fail when saved.
 </Aside>
 
 ---

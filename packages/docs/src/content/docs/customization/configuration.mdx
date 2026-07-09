@@ -62,6 +62,11 @@ You can also override any setting with **environment variables**.
   // Must be in the GLOBAL config (project configs cannot self-authorize).
   "allowProjectHooks": false,
 
+  // Trust gate: suppress the security warning for project-local MCP servers.
+  // Project MCP servers are loaded by default (with a warning); set this to true to silence.
+  // Must be in the GLOBAL config.
+  "allowProjectMcp": false,
+
   // Project-local Claude Code plugins that have been explicitly trusted.
   // Each entry is the absolute path to the plugin root directory.
   // Managed via `pizza plugins trust <path>` / `pizza plugins untrust <path>`.
@@ -100,10 +105,20 @@ You can also override any setting with **environment variables**.
 
   // `/goal` evaluator configuration. The LLM evaluator sends the conversation
   // transcript and active goal to a small, fast model after each turn.
-  // Defaults to the cheapest available Anthropic Haiku or OpenAI mini model.
+  // Defaults to the cheapest available authenticated text model.
   "goal": {
     "evaluatorModel": "anthropic:claude-3-5-haiku-20241022",
-    "evaluatorMaxTokens": 512
+    "evaluatorMaxTokens": 512,
+    "evaluateEveryNTurns": 3
+  },
+
+  // Dynamic MCP tool discovery — defers MCP tools when their descriptions
+  // exceed a character threshold, letting agents load them on demand.
+  "toolSearch": {
+    "enabled": false,
+    "tokenThreshold": 10000,
+    "maxResults": 5,
+    "keepLoadedTools": true
   }
 }
 ```
@@ -122,10 +137,18 @@ You can also override any setting with **environment variables**.
 | `sendAgentsMd` | `boolean` | `true` | Set to `false` to omit AGENTS.md files from automatic prompt context. The agent can still read them explicitly with tools. |
 | `agentDir` | `string` | `~/.pizzapi` | Agent config directory (skills, extensions, etc.) |
 | `skills` | `string[]` | `[]` | Additional skill directories. Supports `~` expansion. |
+| `hooks` | `object` | — | Lifecycle hook scripts. See [Hooks](/PizzaPi/customization/hooks/). |
+| `envOverrides` | `Record<string, string>` | — | Environment variables to inject into runner worker sessions. |
 | `allowProjectHooks` | `boolean` | `false` | Trust gate: allow project-local hooks to run. **Global config only.** |
+| `allowProjectMcp` | `boolean` | `false` | Silences the warning for project-local MCP server definitions. **Global config only.** |
 | `trustedPlugins` | `string[]` | `[]` | Trusted Claude Code plugin paths. **Global config only.** Managed via `pizza plugins trust`. |
+| `disabledMcpServers` | `string[]` | `[]` | MCP server names to skip during initialization. Both global and project lists are merged (union). |
 | `oauthClientName` | `string` | `"PizzaPi"` | Global default `client_name` for MCP OAuth registration. Can also be set per-server in `mcpServers` entries. Per-server values take precedence. See [Client Name Override](/PizzaPi/customization/mcp-servers/#client-name-override). |
-| `mcpTimeout` | `number` | `30000` | Timeout (ms) for each MCP server's `tools/list` call during startup. Set to `0` to disable. See [Safe Mode](/PizzaPi/security/sandbox/). |
+| `oauthClientId` | `string` | — | Global default pre-registered OAuth `client_id` for MCP servers. Per-server values take precedence. |
+| `oauthClientSecret` | `string` | — | Global default pre-registered OAuth `client_secret` for MCP servers. Per-server values take precedence. |
+| `oauthCallbackPort` | `number` | `0` | Global default local callback port for MCP OAuth redirect URI. `0` means OS-assigned ephemeral port. Per-server values take precedence. |
+| `mcpTimeout` | `number` | `30000` | Timeout (ms) for each MCP server's `tools/list` call during startup. Set to `0` to disable. |
+| `toolSearch` | `object` | — | Dynamic MCP tool discovery config. See [Tool Search](/PizzaPi/customization/tool-search/). |
 | `sandbox` | `object` | *(see below)* | OS-level sandbox config. See [Agent Sandbox](/PizzaPi/security/sandbox/). |
 | `sandbox.mode` | `string` | `"basic"` | Preset: `"none"`, `"basic"`, or `"full"`. |
 | `sandbox.network.allowedDomains` | `string[]` | `[]` (full) / unset (basic) | Domains the agent may reach. Required for outbound access in `full` mode. |
@@ -133,12 +156,15 @@ You can also override any setting with **environment variables**.
 | `sandbox.filesystem.denyRead` | `string[]` | *merged with preset* | Additional paths blocked from reading. |
 | `sandbox.filesystem.allowWrite` | `string[]` | `[".", "/tmp"]` | Paths allowed for writing (replaces preset when set). |
 | `sandbox.filesystem.denyWrite` | `string[]` | *merged with preset* | Additional paths blocked from writing. |
-| `slowStartupWarning` | `boolean` | `true` | Show warnings when startup takes longer than expected (slow MCP servers, etc.). See [Safe Mode](/PizzaPi/security/sandbox/). |
+| `slowStartupWarning` | `boolean` | `true` | Show warnings when startup takes longer than expected (slow MCP servers, etc.). |
 | `disabledRunnerServices` | `string[]` | `[]` | Runner service IDs to skip. Built-in services: `"terminal"`, `"file-explorer"`, `"git"`, `"tunnel"`, `"time"`. Plugin services use the id declared in their manifest. |
 | `subagent.maxParallelTasks` | `number` | `8` | Max tasks in a single parallel subagent call. **Global config only.** |
 | `subagent.maxConcurrency` | `number` | `4` | Max concurrent agent sessions running simultaneously. **Global config only.** |
-| `goal.evaluatorModel` | `string` | cheapest available Haiku/mini | Model (`provider:modelId` or `modelId`) used by the `/goal` LLM evaluator. |
+| `goal.evaluatorModel` | `string` | cheapest available authenticated text model | Model (`provider:modelId` or `modelId`) used by the `/goal` LLM evaluator. |
 | `goal.evaluatorMaxTokens` | `number` | `512` | Maximum output tokens for each `/goal` evaluator call. |
+| `goal.evaluateEveryNTurns` | `number` | `3` | Default cadence for the LLM evaluator. `1` = every turn. Ignored by the keyword evaluator. |
+| `allowProjectProviders` | `boolean` | `false` | Allow loading extension providers from project-local `.pizzapi/providers/` directories. **Global config only.** |
+| `providers` | `object` | — | Extension provider configurations keyed by provider ID. See [Extension Providers](/PizzaPi/customization/providers/). |
 | `providerSettings` | `object` | — | Provider-specific settings. See [Web Search](#web-search) and [Per-Provider Overrides](#per-provider-overrides) below. |
 
 ---
@@ -246,7 +272,7 @@ other config.
 
 ### Environment Variables
 
-You can also enable web search via environment variables (these take precedence if the config values are not already set):
+You can also enable web search via environment variables (environment variables take precedence over config values when set; otherwise the config value is used):
 
 | Variable | Description |
 |----------|-------------|
@@ -271,12 +297,14 @@ You can also enable web search via environment variables (these take precedence 
 
 ## Environment Variables
 
-Every config option can also be set as an environment variable. Environment variables take effect for the current process only and do **not** override saved config values in JSON files — the JSON is loaded first, then env vars for the relay connection are applied on top.
+Every config option can also be set as an environment variable. Environment variables take effect for the current process only and do **not** rewrite the JSON file, but they do take precedence at runtime.
 
 | Variable | Equivalent config key | Notes |
 |----------|-----------------------|-------|
 | `PIZZAPI_API_KEY` | `apiKey` | |
 | `PIZZAPI_RELAY_URL` | `relayUrl` | Set to `off` to disable relay for this invocation |
+| `PIZZAPI_ALLOW_PROJECT_HOOKS` | — | Set to `1` to enable project-local hooks |
+| `PIZZAPI_ALLOW_PROJECT_MCP` | — | Set to `1` to silence the project-local MCP warning |
 | `PIZZAPI_NO_MCP` | — | Set to `1` to skip MCP servers ([Safe Mode](/PizzaPi/security/sandbox/)) |
 | `PIZZAPI_NO_PLUGINS` | — | Set to `1` to skip plugin loading ([Safe Mode](/PizzaPi/security/sandbox/)) |
 | `PIZZAPI_NO_HOOKS` | — | Set to `1` to skip hook execution ([Safe Mode](/PizzaPi/security/sandbox/)) |
@@ -332,8 +360,8 @@ In addition to PizzaPi's own config, the underlying **pi agent** has its own set
 
 | File | Scope |
 |------|-------|
-| `~/.pi/agent/settings.json` | Global pi settings |
-| `.pi/settings.json` | Project-local pi settings (overrides global) |
+| `~/.pizzapi/settings.json` | Global pi settings |
+| `.pizzapi/settings.json` | Project-local pi settings (overrides global) |
 
 Edit directly or use the `/settings` command inside a session.
 
@@ -362,7 +390,7 @@ Edit directly or use the `/settings` command inside a session.
 See [Providers & Models](/PizzaPi/features/providers-and-models/) for model configuration and [Sessions & Context](/PizzaPi/features/sessions/) for compaction and session settings.
 
 <Aside type="note">
-  PizzaPi config (`~/.pizzapi/config.json`) controls the relay, MCP servers, hooks, and sandbox. Pi settings (`~/.pi/agent/settings.json`) control model defaults, compaction, retry, and session behavior. They are independent — don't mix them up.
+  PizzaPi config (`~/.pizzapi/config.json`) controls the relay, MCP servers, hooks, sandbox, and PizzaPi extensions. Pi settings (`~/.pizzapi/settings.json`) control model defaults, compaction, retry, and session behavior. They are independent — don't mix them up.
 </Aside>
 
 ---
@@ -376,15 +404,24 @@ When PizzaPi starts, config is resolved in this order (later entries win):
 3. `<cwd>/.pizzapi/config.json` (project-local)
 4. Environment variables (`PIZZAPI_API_KEY`, `PIZZAPI_RELAY_URL`)
 
+:::note
+`apiKey` and `relayUrl` are exceptions: when both global and project configs set them, the **global** value wins. Project values are kept only when global is unset.
+:::
+
 ---
 
 ## Skills Search Paths
 
 PizzaPi automatically looks for skills in these locations (all merged):
 
-1. `~/.pizzapi/skills/` — your global personal skills
-2. `<cwd>/.pizzapi/skills/` — project-local skills
-3. Any paths listed in the `skills` config array
+1. Built-in CLI skills
+2. `~/.pizzapi/skills/` — your global personal skills
+3. `<cwd>/.pizzapi/skills/` — project-local skills
+4. `~/.pizzapi/agents/` — global agents treated as skills
+5. `<cwd>/.pizzapi/agents/` — project-local agents treated as skills
+6. `<cwd>/.agents/skills/` — Claude Code compatible project skills
+7. `<cwd>/.agents/agents/` — Claude Code compatible project agents
+8. Any paths listed in the `skills` config array
 
 See the [Skills & Extensions guide](/PizzaPi/customization/skills/) for how to write and use skills.
 

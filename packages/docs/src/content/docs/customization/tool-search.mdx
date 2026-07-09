@@ -15,7 +15,7 @@ When you connect many MCP servers, the agent's context window fills up with tool
 
 1. **On session start**, PizzaPi measures the total character count of all MCP tool definitions (name + description + JSON schema).
 
-2. **If the total exceeds `tokenThreshold`**, all MCP tools are removed from the agent's active tool set. Built-in tools (`read`, `bash`, `edit`, `write`, etc.) are never deferred.
+2. **If the total exceeds `tokenThreshold`**, MCP tools are removed from the agent's active tool set (except servers marked `deferLoading: false`). Built-in tools (`read`, `bash`, `edit`, `write`, etc.) are never deferred.
 
 3. **The agent receives `search_tools`** — a lightweight tool that stays in context. When the agent needs a capability it doesn't have, it calls `search_tools("create github issue")` with a descriptive keyword query.
 
@@ -95,7 +95,7 @@ The decision logic for each tool:
 
 ## The `search_tools` tool
 
-When Tool Search is active, agents see a single `search_tools` tool with this interface:
+When Tool Search is enabled, agents see a single `search_tools` tool with this interface. The tool is registered unconditionally, so it may appear even when Tool Search is disabled or no tools are deferred; calling it in that case reports that tool search is inactive.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -105,7 +105,7 @@ When Tool Search is active, agents see a single `search_tools` tool with this in
 
 - **Matches found**: a list of matching tool names, descriptions, and parameter names. Matched tools are immediately loaded into the active tool set.
 - **No matches**: a fallback list of all deferred tools so the agent can refine its search.
-- **Not active**: if all tools are already loaded, it reports that tool search is inactive.
+- **Not active**: if Tool Search is disabled or no tools are deferred, it reports that tool search is inactive.
 
 ### How scoring works
 
@@ -123,8 +123,8 @@ The top results (up to `maxResults`) are returned and activated.
 
 You can check Tool Search status interactively:
 
-- **`/tool-search status`** — shows how many tools are deferred, which are loaded on-demand, and which servers they belong to.
-- **`/tool-search reset`** — re-evaluates all tools against the threshold and resets the deferred/loaded state.
+- **`/tool-search status`** — shows how many tools are deferred (with their server names), which are loaded on-demand, and whether Tool Search is active.
+- **`/tool-search reset`** — re-evaluates deferral against the threshold. Previously loaded on-demand tools remain loaded.
 
 ## Difference from `--no-mcp`
 
