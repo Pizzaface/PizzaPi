@@ -104,7 +104,7 @@ export function GitStashList({ cwd, className }: GitStashListProps) {
 
             <form
                 onSubmit={handlePush}
-                className="flex flex-col sm:flex-row items-start sm:items-center gap-2 p-2 border-b border-border bg-muted/30"
+                className="flex flex-col @sm:flex-row items-start @sm:items-center gap-2 p-2 border-b border-border bg-muted/30"
             >
                 <Input
                     placeholder="Stash message (optional)"
@@ -127,7 +127,7 @@ export function GitStashList({ cwd, className }: GitStashListProps) {
                     type="submit"
                     disabled={isBusy}
                     size="sm"
-                    className="w-full sm:w-auto h-9"
+                    className="w-full @sm:w-auto h-9"
                 >
                     {isBusy ? <Spinner className="size-4" /> : <Archive className="size-4" />}
                     <span className="ml-1.5">Push</span>
@@ -145,7 +145,7 @@ export function GitStashList({ cwd, className }: GitStashListProps) {
                         {stashes.map((stash) => (
                             <div
                                 key={stash.index}
-                                className="flex flex-col sm:flex-row sm:items-center gap-2 px-3 py-2"
+                                className="flex flex-col @sm:flex-row @sm:items-center gap-2 px-3 py-2"
                             >
                                 <div className="flex items-center gap-2 min-w-0 flex-1">
                                     <span className="font-mono text-xs text-muted-foreground shrink-0">
@@ -157,13 +157,13 @@ export function GitStashList({ cwd, className }: GitStashListProps) {
                                     <span className="font-mono shrink-0">{stash.shortHash}</span>
                                     <span className="truncate">{stash.date}</span>
                                 </div>
-                                <div className="flex flex-col sm:flex-row gap-2 w-full sm:w-auto">
+                                <div className="flex flex-col @sm:flex-row gap-2 w-full @sm:w-auto">
                                     <Button
                                         variant="outline"
                                         size="sm"
                                         disabled={isBusy}
                                         onClick={() => handlePop(stash.index)}
-                                        className="w-full sm:w-auto h-9"
+                                        className="w-full @sm:w-auto h-9"
                                     >
                                         <RotateCcw className="size-3.5" />
                                         <span className="ml-1.5">Pop</span>
@@ -173,7 +173,7 @@ export function GitStashList({ cwd, className }: GitStashListProps) {
                                         size="sm"
                                         disabled={isBusy}
                                         onClick={() => handleApply(stash.index)}
-                                        className="w-full sm:w-auto h-9"
+                                        className="w-full @sm:w-auto h-9"
                                     >
                                         <CornerDownLeft className="size-3.5" />
                                         <span className="ml-1.5">Apply</span>
@@ -183,7 +183,7 @@ export function GitStashList({ cwd, className }: GitStashListProps) {
                                         size="sm"
                                         disabled={isBusy}
                                         onClick={() => handleDrop(stash.index)}
-                                        className="w-full sm:w-auto h-9"
+                                        className="w-full @sm:w-auto h-9"
                                     >
                                         <Trash2 className="size-3.5" />
                                         <span className="ml-1.5">Drop</span>

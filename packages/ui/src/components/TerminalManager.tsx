@@ -262,13 +262,13 @@ export function TerminalManager({
   return (
     <div className={cn("flex flex-col bg-background", className)}>
       {/* ── Persistent topbar ─────────────────────────────────────────────── */}
-      <div className="flex items-center border-b border-border bg-muted/50 shrink-0 min-h-[36px] md:min-h-[32px] overflow-hidden">
+      <div className="flex items-center border-b border-border bg-muted/50 shrink-0 min-h-[36px] @md:min-h-[32px] overflow-hidden">
         {/* Mobile: back button */}
         {onClose && (
           <Button
             variant="ghost"
             size="icon"
-            className="size-9 shrink-0 text-muted-foreground hover:text-foreground hover:bg-accent md:hidden rounded-none"
+            className="size-9 shrink-0 text-muted-foreground hover:text-foreground hover:bg-accent @md:hidden rounded-none"
             onClick={onClose}
             aria-label="Close terminal"
           >
@@ -323,7 +323,7 @@ export function TerminalManager({
         </div>
 
         {/* ── Right-side controls (desktop) ── */}
-        <div className="hidden md:flex items-center gap-px shrink-0 pr-1">
+        <div className="hidden @md:flex items-center gap-px shrink-0 pr-1">
           {/* Drag-to-reposition grip — hidden when embedded */}
           {!embedded && onDragStart && (
             <Tooltip>
@@ -392,7 +392,7 @@ export function TerminalManager({
         <Button
           variant="ghost"
           size="icon"
-          className="md:hidden size-9 shrink-0 text-muted-foreground hover:text-foreground hover:bg-accent rounded-none"
+          className="@md:hidden size-9 shrink-0 text-muted-foreground hover:text-foreground hover:bg-accent rounded-none"
           onClick={handleAddTerminal}
           disabled={spawning}
           aria-label="New terminal"

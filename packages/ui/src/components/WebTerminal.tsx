@@ -353,7 +353,7 @@ export function WebTerminal({ terminalId, onClose, className }: WebTerminalProps
       )}
     >
       {/* Header bar — compact status + controls */}
-      <div className="flex items-center justify-between border-border border-b px-3 py-1 bg-muted/50 min-h-[36px] md:min-h-0">
+      <div className="flex items-center justify-between border-border border-b px-3 py-1 bg-muted/50 min-h-[36px] @md:min-h-0">
         <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
           <span className={cn("text-[10px]", statusColor)}>●</span>
           <span className={statusColor}>{statusLabel}</span>
@@ -364,7 +364,7 @@ export function WebTerminal({ terminalId, onClose, className }: WebTerminalProps
               <Button
                 variant="ghost"
                 size="icon"
-                className="size-8 md:size-5 text-muted-foreground hover:text-foreground hover:bg-accent"
+                className="size-8 @md:size-5 text-muted-foreground hover:text-foreground hover:bg-accent"
                 onClick={() => setIsMaximized((v) => !v)}
                 aria-label={isMaximized ? "Restore terminal size" : "Maximize terminal"}
               >
@@ -380,7 +380,7 @@ export function WebTerminal({ terminalId, onClose, className }: WebTerminalProps
               <Button
                 variant="ghost"
                 size="icon"
-                className="size-8 md:size-5 text-muted-foreground hover:text-red-500 hover:bg-accent"
+                className="size-8 @md:size-5 text-muted-foreground hover:text-red-500 hover:bg-accent"
                 onClick={handleClose}
                 aria-label="Close terminal"
               >
@@ -401,7 +401,7 @@ export function WebTerminal({ terminalId, onClose, className }: WebTerminalProps
         style={{ minHeight: isMaximized ? undefined : "min(300px, calc(100dvh - 120px))" }}
       />
       {/* Mobile keyboard shortcut bar */}
-      <div className="md:hidden flex items-center gap-1.5 border-t border-border bg-muted/70 px-2 py-2 overflow-x-auto [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
+      <div className="@md:hidden flex items-center gap-1.5 border-t border-border bg-muted/70 px-2 py-2 overflow-x-auto [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
         {MOBILE_SHORTCUTS.map(({ label, data }) => (
           <button
             key={label}

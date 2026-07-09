@@ -170,7 +170,7 @@ function WorktreeRow({ worktree: wt, onRemove, isBusy }: { worktree: GitWorktree
     return (
         <div
             className={cn(
-                "grid grid-cols-1 md:grid-cols-[1fr_auto_auto] gap-2 px-3 py-2 md:py-1 mx-1 rounded text-xs",
+                "grid grid-cols-1 @md:grid-cols-[1fr_auto_auto] gap-2 px-3 py-2 @md:py-1 mx-1 rounded text-xs",
                 "hover:bg-muted/60 transition-colors group",
             )}
             title={wt.path}
@@ -199,7 +199,7 @@ function WorktreeRow({ worktree: wt, onRemove, isBusy }: { worktree: GitWorktree
             </div>
 
             {/* Badges: changes, ahead, behind */}
-            <div className="flex items-center gap-1.5 min-w-0 md:justify-end">
+            <div className="flex items-center gap-1.5 min-w-0 @md:justify-end">
                 {wt.changeCount > 0 && (
                     <span
                         className="inline-flex items-center gap-0.5 text-[0.6rem] text-amber-500 dark:text-amber-400"
@@ -234,7 +234,7 @@ function WorktreeRow({ worktree: wt, onRemove, isBusy }: { worktree: GitWorktree
 
             {/* Actions: remove */}
             {showActions && !wt.isMain && onRemove && (
-                <div className="flex items-center gap-1 min-w-0 md:justify-end opacity-100 transition-opacity md:opacity-0 md:group-hover:opacity-100">
+                <div className="flex items-center gap-1 min-w-0 @md:justify-end opacity-100 transition-opacity @md:opacity-0 @md:group-hover:opacity-100">
                     <button
                         type="button"
                         onClick={handleRemove}
