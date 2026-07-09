@@ -798,6 +798,28 @@ describe("broadcastTrigger", () => {
         expect(captured[0].method).toBe("POST");
     });
 
+    test("defaults deliverAs to 'followUp' when omitted (non-interruptive broadcast)", async () => {
+        const captured: Array<{ body: any }> = [];
+        const deps = subsDeps(async (_url, init) => {
+            captured.push({ body: JSON.parse(init?.body as string ?? "{}") });
+            return { ok: true, status: 200, json: async () => ({ ok: true, delivered: 0 }) } as Response;
+        });
+
+        await broadcastTrigger("runner-A", { type: "svc:event", payload: {} }, deps);
+        expect(captured[0].body.deliverAs).toBe("followUp");
+    });
+
+    test("passes through an explicit deliverAs: 'steer'", async () => {
+        const captured: Array<{ body: any }> = [];
+        const deps = subsDeps(async (_url, init) => {
+            captured.push({ body: JSON.parse(init?.body as string ?? "{}") });
+            return { ok: true, status: 200, json: async () => ({ ok: true, delivered: 0 }) } as Response;
+        });
+
+        await broadcastTrigger("runner-A", { type: "svc:event", payload: {}, deliverAs: "steer" }, deps);
+        expect(captured[0].body.deliverAs).toBe("steer");
+    });
+
     test("returns error when no base URL configured", async () => {
         const deps: TriggerClientDeps = {
             getRelaySocket: () => null,

@@ -51,13 +51,20 @@ services:
     # specific value instead (e.g. `openssl rand -hex 32`) — required if you
     # run multiple server replicas that must share sessions.
     command: >
-      /bin/sh -c '
-        if [ -z "$$BETTER_AUTH_SECRET" ]; then
+      /bin/sh -euc '
+        if [ -z "$${BETTER_AUTH_SECRET:-}" ]; then
           SECRET_FILE=/app/data/better-auth-secret;
           if [ ! -f "$$SECRET_FILE" ]; then
-            head -c 32 /dev/urandom | od -An -tx1 | tr -d " \n" > "$$SECRET_FILE";
+            TMP="$$SECRET_FILE.tmp.$$$$";
+            head -c 32 /dev/urandom | od -An -tx1 | tr -d " \n" > "$$TMP";
+            mv "$$TMP" "$$SECRET_FILE";
           fi;
-          export BETTER_AUTH_SECRET=$$(cat "$$SECRET_FILE");
+          BETTER_AUTH_SECRET=$$(cat "$$SECRET_FILE");
+          export BETTER_AUTH_SECRET;
+        fi;
+        if [ "$${#BETTER_AUTH_SECRET}" -lt 32 ]; then
+          echo "FATAL: BETTER_AUTH_SECRET missing or too short (<32 chars); refusing to start with an insecure session secret." >&2;
+          exit 1;
         fi;
         exec bun run packages/server/dist/index.js
       '
