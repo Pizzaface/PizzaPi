@@ -208,6 +208,19 @@ export function loadConfig(cwd: string = process.cwd()): PizzaPiConfig {
         delete config.relayUrl;
     }
 
+    // Footgun guard: an apiKey with no relay to send it to means the user thinks
+    // they've "configured a relay" (they have an API key!) but sessions will
+    // never appear in the web UI because relayUrl is explicitly disabled.
+    if (config.apiKey && typeof config.relayUrl === "string" && config.relayUrl.trim().toLowerCase() === "off") {
+        warnLoadConfigOnce(
+            projectPath,
+            "relay-off-with-apikey",
+            'Relay is disabled ("relayUrl": "off") even though an apiKey is configured — ' +
+                "sessions will not appear in the web UI. Update relayUrl in ~/.pizzapi/config.json " +
+                "(or re-run `pizzapi setup`) to re-enable the relay.",
+        );
+    }
+
     // Merge sandbox config securely — project cannot weaken global sandbox.
     // mergeSandboxConfig ensures: deny lists union, allow lists intersect,
     // mode/enabled cannot be relaxed by a project config.

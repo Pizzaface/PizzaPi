@@ -121,6 +121,10 @@ function printSelfUpdateNote(): void {
     console.log();
 }
 
+function printSelfUpdateDisabled(): void {
+    console.error(`self-update disabled — use ${c.cmd("npm install -g @pizzapi/pizza")} to update the PizzaPi wrapper itself.`);
+}
+
 /**
  * Parse update args to determine if self-update would be attempted.
  * Returns { includeSelf, argsForUpstream } where argsForUpstream is the
@@ -191,8 +195,8 @@ export async function runPackageCommand(args: string[], cwd: string, agentDir: s
         if (args[0] === "update") {
             const { includeSelf, argsForUpstream } = rewriteUpdateArgs(args);
             if (includeSelf) {
-                printSelfUpdateNote();
-                return 0;
+                printSelfUpdateDisabled();
+                return 1;
             }
             const wasRewritten = argsForUpstream !== args;
             try {

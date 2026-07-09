@@ -153,7 +153,7 @@ export async function runQrSetup(relayUrl: string, pollIntervalMs = 2000): Promi
             continue;
         }
         if (result.status === "approved" && result.apiKey) {
-            saveGlobalConfig({ apiKey: result.apiKey });
+            saveGlobalConfig({ apiKey: result.apiKey, relayUrl: wsRelayUrl });
             process.env.PIZZAPI_API_KEY = result.apiKey;
             process.env.PIZZAPI_RELAY_URL = wsRelayUrl;
 
@@ -266,8 +266,10 @@ export async function runSetup(opts: { force?: boolean; scan?: boolean } = {}): 
         // Derive ws:// URL for the relay config
         const wsRelayUrl = relayUrl.replace(/^http/, "ws");
 
-        // Save the server-issued API key
-        saveGlobalConfig({ apiKey: result.key });
+        // Save the server-issued API key alongside the relay it was issued for —
+        // otherwise a later run would fall back to the default relay while auth
+        // silently points at a different server.
+        saveGlobalConfig({ apiKey: result.key, relayUrl: wsRelayUrl });
         process.env.PIZZAPI_API_KEY = result.key;
         process.env.PIZZAPI_RELAY_URL = wsRelayUrl;
 

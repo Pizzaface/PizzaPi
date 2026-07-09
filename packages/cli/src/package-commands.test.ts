@@ -62,18 +62,32 @@ describe("runPackageCommand", () => {
         expect(process.env.PI_CODING_AGENT_DIR).toBe(agentDir);
     });
 
-    test("update --self prints a note instead of invoking upstream self-update", async () => {
+    test("update --self is disabled: non-zero exit, no upstream self-update invoked", async () => {
         const agentDir = join(tmpDir, "agent");
         const cwd = join(tmpDir, "project");
-        const code = await runPackageCommand(["update", "--self"], cwd, agentDir);
-        expect(code).toBe(0);
+        const originalError = console.error;
+        const errors: unknown[][] = [];
+        console.error = ((...a: unknown[]) => { errors.push(a); }) as typeof console.error;
+        try {
+            const code = await runPackageCommand(["update", "--self"], cwd, agentDir);
+            expect(code).not.toBe(0);
+            expect(errors.join(" ")).toContain("self-update disabled");
+        } finally {
+            console.error = originalError;
+        }
     });
 
-    test("update pi is treated as a self-update request", async () => {
+    test("update pi is treated as a self-update request and is disabled", async () => {
         const agentDir = join(tmpDir, "agent");
         const cwd = join(tmpDir, "project");
-        const code = await runPackageCommand(["update", "pi"], cwd, agentDir);
-        expect(code).toBe(0);
+        const originalError = console.error;
+        console.error = (() => {}) as typeof console.error;
+        try {
+            const code = await runPackageCommand(["update", "pi"], cwd, agentDir);
+            expect(code).not.toBe(0);
+        } finally {
+            console.error = originalError;
+        }
     });
 
     test("update with no flags defaults to extensions-only (no self-update)", async () => {
