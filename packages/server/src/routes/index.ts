@@ -15,6 +15,7 @@ import { requireSession } from "../middleware.js";
 import { handleAuthRoute } from "./auth.js";
 import { handleSetupClaimsRoute } from "./setup-claims.js";
 import { handleMobileLinksRoute } from "./mobile-links.js";
+import { handleMobileOtaRoute } from "./mobile-ota.js";
 import { handleRunnersRoute } from "./runners.js";
 import { handleSessionsRoute } from "./sessions.js";
 import { handleAttachmentsRoute } from "./attachments.js";
@@ -37,6 +38,7 @@ const routers: RouteHandler[] = [
     handleAuthRoute,
     handleSetupClaimsRoute, // QR-code setup claim lifecycle
     handleMobileLinksRoute, // Android app pairing lifecycle
+    handleMobileOtaRoute,   // Self-hosted OTA bundle for the mobile app (unauthenticated)
     handleTunnelRoute,     // Before runners — /api/tunnel/* is session-scoped, not runner-scoped
     handleRunnersRoute,
     handleRunnerSettingsRoute,

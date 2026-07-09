@@ -5,6 +5,7 @@ import { ErrorBoundary } from "./components/ui/error-boundary.js";
 import { AttentionProvider } from "./attention/index.js";
 import { installMobileFetchPatch } from "./lib/mobile-fetch.js";
 import { initMobileRuntime } from "./lib/mobile-runtime.js";
+import { notifyOtaReady, checkAndApplyOtaUpdate } from "./lib/mobile-ota.js";
 import "./style.css";
 
 // Apply dark mode before first render to avoid flash
@@ -35,6 +36,11 @@ async function boot(): Promise<void> {
             createElement(AttentionProvider, null, createElement(App)),
         }),
     );
+
+    // Mobile OTA (no-op on web): confirm this bundle booted (cancels Capgo's
+    // auto-rollback), then check the relay for a newer bundle in the background.
+    void notifyOtaReady();
+    void checkAndApplyOtaUpdate();
 }
 
 // A silent boot failure used to leave a black screen (dark theme bg + no

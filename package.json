@@ -25,6 +25,7 @@
     "build:mobile:android": "bun run build:protocol && bun run build:tools && VITE_MOBILE=1 VITE_BASE_URL=./ bun run build:ui && bun scripts/copy-mobile-ui.ts && bunx cap sync android && bun scripts/strip-synced-node-modules.ts && cd android && ./gradlew assembleDebug",
     "build:mobile:android:release": "bun run build:protocol && bun run build:tools && VITE_MOBILE=1 VITE_BASE_URL=./ bun run build:ui && bun scripts/copy-mobile-ui.ts && bunx cap sync android && bun scripts/strip-synced-node-modules.ts && cd android && ./gradlew assembleRelease bundleRelease && cd .. && bun scripts/verify-apk-signed.ts",
     "build:mobile:ios": "bun run build:protocol && bun run build:tools && VITE_MOBILE=1 VITE_BASE_URL=./ bun run build:ui && bun scripts/copy-mobile-ui.ts && bunx cap sync ios && bun scripts/strip-synced-node-modules.ts",
+    "publish:mobile:ota": "bun scripts/publish-mobile-ota.ts",
     "icons:generate": "bun run scripts/generate-mobile-icons.ts",
     "build:binaries": "cd packages/cli && bun run build:binaries",
     "build:npm": "bun packages/npm/build-npm.ts",
