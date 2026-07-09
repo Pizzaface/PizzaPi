@@ -5124,8 +5124,9 @@ export function App() {
           onPointerCancel={hasPanels ? handleOuterPointerUp : undefined}
         >
           {/* center-top spans full width when no left/right top panels exist */}
+          {/* ponytail: no explicit height here — DockedPanelGroup already sizes its panel via inline style and appends a 5px resize handle; a fixed wrapper height clipped that handle under the session header */}
           {centerTopFullWidth && (
-            <div className="hidden md:flex flex-col shrink-0" style={{ height: centerTopCollapsed ? TAB_BAR_HEIGHT : centerTopHeight }}>
+            <div className="hidden md:flex flex-col shrink-0">
               <DockedPanelGroup
                 position="center-top"
                 size={centerTopHeight}
@@ -5531,8 +5532,9 @@ export function App() {
             />
           </div>
 
+          {/* ponytail: same fix as center-top — let the panel + handle define the wrapper's height */}
           {centerBottomFullWidth && (
-            <div className="hidden md:flex flex-col shrink-0" style={{ height: centerBottomCollapsed ? TAB_BAR_HEIGHT : centerBottomHeight }}>
+            <div className="hidden md:flex flex-col shrink-0">
               <DockedPanelGroup
                 position="center-bottom"
                 size={centerBottomHeight}
