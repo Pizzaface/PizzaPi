@@ -9,6 +9,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { AuthStorage } from "@earendil-works/pi-coding-agent";
 import { loadConfig, defaultAgentDir, expandHome } from "../config.js";
+import { getAnthropicKeychainToken } from "../runner/usage-auth.js";
 import type { UsageWindow, ProviderUsageData } from "./remote-types.js";
 
 const DEFAULT_USAGE_CACHE_TTL = 5 * 60 * 1000; // 5 min
@@ -77,7 +78,10 @@ async function refreshFromRunnerCache(): Promise<void> {
 
 async function refreshAnthropicUsage(opts: { force?: boolean } = {}): Promise<void> {
     if (isCached("anthropic", opts)) return;
-    const token = getOAuthToken("anthropic");
+    // auth.json first, then Claude Code's own OAuth token (Keychain /
+    // ~/.claude/.credentials.json) for users who never ran /login inside
+    // pizzapi — read-only, never refreshed.
+    const token = getOAuthToken("anthropic") ?? getAnthropicKeychainToken();
     if (!token) return;
     try {
         const res = await fetch("https://api.anthropic.com/api/oauth/usage", {
