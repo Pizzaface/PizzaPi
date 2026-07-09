@@ -13,6 +13,8 @@ export type RemoteExecCommand =
   | { command: "compact"; customInstructions?: string }
   | { command: "set_session_name"; name: string }
   | { command: "get_last_assistant_text" }
+  | { command: "get_fork_messages" }
+  | { command: "fork"; entryId: string }
   | { command: "list_resume_sessions"; limit?: number; cursor?: string }
   | { command: "resume_session"; query?: string; sessionPath?: string }
   | { command: "new_session" }

@@ -39,8 +39,8 @@ below).
 |------|--------|
 | `dist/config.js` | Hardcodes `".pizzapi"`, flattens `getAgentDir()`, and honors `PIZZAPI_CHANGELOG_PATH` |
 | `dist/core/agent-session.js` | Extension `sendUserMessage` path accepts an `expandPromptTemplates` opt-in (default `false`) so web UI input can opt into slash-command/template expansion |
-| `dist/core/extensions/loader.js` / `dist/core/extensions/runner.js` | Exposes `newSession()` and `switchSession()` on the general extension API for remote exec handlers |
-| `dist/core/extensions/types.d.ts` | Types `newSession`/`switchSession` on `ExtensionAPI`, `expandPromptTemplates` on `sendUserMessage`/`SendUserMessageHandler`, and `newSession`/`switchSession` on `ExtensionActions` |
+| `dist/core/extensions/loader.js` / `dist/core/extensions/runner.js` | Exposes `newSession()`, `switchSession()`, and `fork()` on the general extension API for remote exec handlers |
+| `dist/core/extensions/types.d.ts` | Types `newSession`/`switchSession`/`fork` on `ExtensionAPI`, `expandPromptTemplates` on `sendUserMessage`/`SendUserMessageHandler`, and `newSession`/`switchSession`/`fork` on `ExtensionActions` |
 | `dist/core/model-resolver.js` | Adds built-in default model selection for `ollama-cloud` (`glm-5.1`) |
 | `dist/core/provider-display-names.js` | Exposes `Ollama Cloud` as a built-in provider display name |
 | `dist/modes/interactive/interactive-mode.js` | Removes upstream version-notification UI (import, `run()` call, and `showNewVersionNotification()` method) |

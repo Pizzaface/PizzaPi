@@ -7,6 +7,7 @@ import { getPluginSkillPaths } from "../extensions/claude-plugins.js";
 import { setRegisteredCommandsProvider } from "../extensions/command-introspection.js";
 import { initSandbox, cleanupSandbox, isSandboxActive } from "@pizzapi/tools";
 import { createBootTimer } from "./boot-timing.js";
+import { headlessFork } from "./worker-fork.js";
 import { applySettingsDefaultModel } from "./apply-default-model.js";
 import { setLogComponent, setLogSessionId, logInfo, logWarn, logError, logAuth } from "./logger.js";
 
@@ -583,8 +584,17 @@ async function main(): Promise<void> {
                 return { cancelled: false };
             },
 
-            // Fork and tree navigation are not supported in headless mode
-            fork: async () => ({ cancelled: true }),
+            fork: async (entryId: string, options?: { position?: "before" | "at" }) => {
+                const result = await headlessFork(session, entryId, options, () => {
+                    publishSessionMetadata(session);
+                });
+                if (!result.cancelled) {
+                    logInfo(`forked session at entry ${entryId} → ${session.sessionManager.getSessionFile()}`);
+                }
+                return result;
+            },
+
+            // Tree navigation is not supported in headless mode
             navigateTree: async () => ({ cancelled: true }),
 
             reload: async () => {

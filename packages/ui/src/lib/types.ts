@@ -50,6 +50,12 @@ export interface ResumeSessionOption {
   serverSourced?: boolean;
 }
 
+/** A prior user message the conversation can be rewound (forked) to. */
+export interface ForkMessageOption {
+  entryId: string;
+  text: string;
+}
+
 export interface QueuedMessage {
   id: string;
   text: string;

@@ -1,5 +1,5 @@
 import type { RelayMessage } from "@/components/session-viewer/types";
-import type { TodoItem, TokenUsage, QueuedMessage, ResumeSessionOption } from "@/lib/types";
+import type { TodoItem, TokenUsage, QueuedMessage, ResumeSessionOption, ForkMessageOption } from "@/lib/types";
 import type { SessionAnalysis } from "@/components/session-inspector/types";
 import type { TriggerCounts } from "@/hooks/useTriggerCount";
 import type { QuestionDisplayMode } from "@/lib/ask-user-questions";
@@ -7,7 +7,7 @@ import type { CommandResultData } from "@/components/session-viewer/rendering";
 import type { PromptInputMessage } from "@/components/ai-elements/prompt-input";
 import type { MetaGoalStatus } from "@pizzapi/protocol";
 
-export type { RelayMessage, TodoItem, TokenUsage, QueuedMessage, ResumeSessionOption };
+export type { RelayMessage, TodoItem, TokenUsage, QueuedMessage, ResumeSessionOption, ForkMessageOption };
 
 /** A command entry (from availableCommands prop or derived lists). */
 export type CmdEntry = {
@@ -38,6 +38,10 @@ export interface SessionViewerProps {
   resumeSessions?: ResumeSessionOption[];
   resumeSessionsLoading?: boolean;
   onRequestResumeSessions?: () => boolean | void;
+  /** Prior user messages the conversation can be rewound (forked) to. */
+  forkMessages?: ForkMessageOption[];
+  forkMessagesLoading?: boolean;
+  onRequestForkMessages?: () => boolean | void;
   onSendInput?: (message: PromptInputMessage & { deliverAs?: "steer" | "followUp" } | string) => boolean | void | Promise<boolean | void>;
   onExec?: (payload: unknown) => boolean | void;
   onShowModelSelector?: () => void;

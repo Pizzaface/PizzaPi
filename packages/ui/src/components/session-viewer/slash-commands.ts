@@ -2,7 +2,7 @@ import * as React from "react";
 import type { CmdEntry } from "./viewer-types";
 import type { CommandResultData } from "./rendering";
 import type { SandboxViolationEntry } from "./cards/CommandResultCard";
-import type { ResumeSessionOption } from "@/lib/types";
+import type { ResumeSessionOption, ForkMessageOption } from "@/lib/types";
 import type { PromptInputMessage } from "@/components/ai-elements/prompt-input";
 import {
   type IncompleteTriggerItem,
@@ -40,6 +40,8 @@ export interface SlashCommandDeps {
   ) => boolean | void | Promise<boolean | void>;
   resumeSessions?: ResumeSessionOption[];
   onRequestResumeSessions?: () => boolean | void;
+  forkMessages?: ForkMessageOption[];
+  onRequestForkMessages?: () => boolean | void;
   runnerId?: string;
   sessionCwd?: string;
   onAppendSystemMessage?: (content: string | CommandResultData) => void;
@@ -79,8 +81,12 @@ export interface SlashCommandState {
   promptSuggestions: CmdEntry[];
   isResumeMode: boolean;
   isAgentMode: boolean;
+  isRewindMode: boolean;
   resumeQuery: string;
   resumeCandidates: ResumeSessionOption[];
+  rewindCandidates: ForkMessageOption[];
+  /** Fork the session at the given user message and pre-fill the composer with its text. */
+  rewindToMessage: (message: ForkMessageOption) => void;
   /** Check for incomplete triggers, then run action (or invoke onIncompleteTriggers). */
   checkTriggersAndRun: (action: () => void) => Promise<void>;
   requestNewSession: () => void;
@@ -110,6 +116,8 @@ export function useSlashCommands(
     onSendInput,
     resumeSessions,
     onRequestResumeSessions,
+    forkMessages,
+    onRequestForkMessages,
     runnerId,
     sessionCwd,
     onAppendSystemMessage,
@@ -132,7 +140,7 @@ export function useSlashCommands(
   const webHandledCommands = React.useMemo(
     () =>
       new Set([
-        "new", "resume", "mcp", "plugins", "skills", "agents", "model",
+        "new", "resume", "rewind", "fork", "mcp", "plugins", "skills", "agents", "model",
         "cycle_model", "effort", "cycle_effort", "compact", "name", "copy",
         "stop", "restart", "remote", "plan", "sandbox", "goal",
       ]),
@@ -144,6 +152,7 @@ export function useSlashCommands(
     () => [
       { name: "new", description: "Start a new conversation" },
       { name: "resume", description: "Resume the previous session" },
+      { name: "rewind", description: "Rewind the conversation to a previous message" },
       {
         name: "mcp",
         description: "MCP server management",
@@ -220,7 +229,7 @@ export function useSlashCommands(
   }, [supportedWebCommands, extensionCommands]);
 
   const keepPopoverOpenNames = React.useMemo(() => {
-    const names = new Set(["resume", "agents", ...subCommandsByName.keys()]);
+    const names = new Set(["resume", "agents", "rewind", "fork", ...subCommandsByName.keys()]);
     return names;
   }, [subCommandsByName]);
 
@@ -275,6 +284,8 @@ export function useSlashCommands(
   const trimmedInput = input.trimStart();
   const isResumeMode = /^\/resume(?:\s|$)/i.test(trimmedInput);
   const isAgentMode = /^\/agents(?:\s|$)/i.test(trimmedInput);
+  // /fork is the TUI name for the same rewind flow (Esc-Esc selector)
+  const isRewindMode = /^\/(?:rewind|fork)(?:\s|$)/i.test(trimmedInput);
   const resumeQuery = isResumeMode
     ? trimmedInput.replace(/^\/resume\s*/i, "").trim().toLowerCase()
     : "";
@@ -296,9 +307,46 @@ export function useSlashCommands(
     });
   }, [resumeSessions, resumeQuery]);
 
+  const rewindQuery = isRewindMode
+    ? trimmedInput.replace(/^\/(?:rewind|fork)\s*/i, "").trim().toLowerCase()
+    : "";
+
+  // Newest first — rewinding to a recent message is the common case (TUI
+  // pre-selects the last user message for the same reason).
+  const rewindCandidates = React.useMemo(() => {
+    const list = [...(forkMessages ?? [])].reverse();
+    if (!rewindQuery) return list;
+    return list.filter((m) => m.text.toLowerCase().includes(rewindQuery));
+  }, [forkMessages, rewindQuery]);
+
+  const rewindToMessage = React.useCallback(
+    (message: ForkMessageOption) => {
+      setCommandOpen(false);
+      setCommandQuery("");
+      if (!onExec) {
+        setInput("");
+        return;
+      }
+      const dispatched = onExec({
+        type: "exec",
+        id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+        command: "fork",
+        entryId: message.entryId,
+      });
+      // Pre-fill the composer with the rewound message so it can be edited
+      // and resent — mirrors the TUI fork flow.
+      setInput(dispatched === false ? "" : message.text);
+      requestAnimationFrame(() => {
+        const ta = document.querySelector<HTMLTextAreaElement>("[data-pp-prompt]");
+        if (ta) { const len = ta.value.length; ta.setSelectionRange(len, len); ta.focus(); }
+      });
+    },
+    [onExec, setInput],
+  );
+
   // Sub-command mode (e.g. "/mcp " shows mcp sub-commands)
   const subCommandMode = React.useMemo<SubCommandMode>(() => {
-    if (isResumeMode || isAgentMode)
+    if (isResumeMode || isAgentMode || isRewindMode)
       return { active: false, parentCommand: "", subCommands: [], query: "", filtered: [] };
     const match = trimmedInput.match(/^\/(\S+)(?:\s(.*))?$/i);
     if (!match)
@@ -318,7 +366,7 @@ export function useSlashCommands(
       query: argText,
       filtered,
     };
-  }, [trimmedInput, isResumeMode, isAgentMode, subCommandsByName]);
+  }, [trimmedInput, isResumeMode, isAgentMode, isRewindMode, subCommandsByName]);
 
   // Request resume sessions list when entering resume mode
   React.useEffect(() => {
@@ -336,6 +384,19 @@ export function useSlashCommands(
   React.useEffect(() => {
     if (!commandOpen || !isResumeMode) resumeRequestedRef.current = null;
   }, [commandOpen, isResumeMode]);
+
+  // Request rewindable messages when entering rewind mode
+  const rewindRequestedRef = React.useRef<string | null>(null);
+  React.useEffect(() => {
+    if (!sessionId || !commandOpen || !isRewindMode || !onRequestForkMessages) return;
+    if (rewindRequestedRef.current === sessionId) return;
+    rewindRequestedRef.current = sessionId;
+    onRequestForkMessages();
+  }, [sessionId, commandOpen, isRewindMode, onRequestForkMessages]);
+
+  React.useEffect(() => {
+    if (!commandOpen || !isRewindMode) rewindRequestedRef.current = null;
+  }, [commandOpen, isRewindMode]);
 
   /** Check for incomplete triggers, then run the action or invoke onIncompleteTriggers. */
   const checkTriggersAndRun = React.useCallback(
@@ -701,6 +762,22 @@ export function useSlashCommands(
         return true;
       }
 
+      if (rawCommand === "rewind" || rawCommand === "fork") {
+        // Rewinding requires an explicit selection from the picker — an exact
+        // query match is the only safe way to dispatch from raw text.
+        const query = args.trim().toLowerCase();
+        const match = query
+          ? [...(forkMessages ?? [])].reverse().find((m) => m.text.toLowerCase().includes(query))
+          : undefined;
+        if (match) {
+          rewindToMessage(match);
+        } else {
+          // Keep the picker open so the user can choose a message.
+          setCommandOpen(true);
+        }
+        return true;
+      }
+
       if (rawCommand === "model" || rawCommand === "cycle_model") {
         if (onShowModelSelector) {
           onShowModelSelector();
@@ -785,6 +862,8 @@ export function useSlashCommands(
       onExec,
       onSendInput,
       resumeSessions,
+      forkMessages,
+      rewindToMessage,
       runnerId,
       onAppendSystemMessage,
       skillCommands,
@@ -820,8 +899,11 @@ export function useSlashCommands(
     promptSuggestions,
     isResumeMode,
     isAgentMode,
+    isRewindMode,
     resumeQuery,
     resumeCandidates,
+    rewindCandidates,
+    rewindToMessage,
     checkTriggersAndRun,
     requestNewSession,
     resumeRequestedRef,
