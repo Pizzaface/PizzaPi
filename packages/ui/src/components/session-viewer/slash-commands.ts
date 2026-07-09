@@ -187,7 +187,7 @@ export function useSlashCommands(
       },
       {
         name: "goal",
-        description: "Set a goal — /goal \"<condition>\" [--max-turns N] [--max-tokens N] [--max-cost N]",
+        description: "Set a goal — /goal \"<condition>\" [--max-turns N] [--max-tokens N] [--max-cost N] [--every N]",
         subCommands: [
           { name: "status", description: "Show the active goal and budget" },
           { name: "clear", description: "Clear the active goal" },

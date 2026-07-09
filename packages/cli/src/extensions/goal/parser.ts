@@ -15,6 +15,7 @@ const KNOWN_FLAGS = new Set([
     "--max-cost",
     "--evaluator",
     "--keyword",
+    "--every",
 ]);
 
 function isFlag(token: string): boolean {
@@ -25,6 +26,14 @@ function parseNumber(value: string, label: string): number {
     const parsed = Number(value);
     if (!Number.isFinite(parsed) || parsed < 0) {
         throw new Error(`${label} must be a non-negative number, got "${value}"`);
+    }
+    return parsed;
+}
+
+function parsePositiveInt(value: string, label: string): number {
+    const parsed = Number(value);
+    if (!Number.isInteger(parsed) || parsed < 1) {
+        throw new Error(`${label} must be a positive integer, got "${value}"`);
     }
     return parsed;
 }
@@ -76,6 +85,7 @@ export function parseGoalArgs(input: string): GoalCommandArgs {
     const budget: GoalBudget = {};
     const successKeywords: string[] = [];
     let evaluator: GoalEvaluatorKind = "llm";
+    let evaluateEveryNTurns: number | undefined;
     let conditionParts: string[] = [];
 
     let i = 0;
@@ -115,6 +125,12 @@ export function parseGoalArgs(input: string): GoalCommandArgs {
                 case "--keyword":
                     successKeywords.push(next);
                     break;
+                case "--every":
+                    // How often (in turns) to invoke the LLM evaluator. It's a
+                    // billed API call; --every N throttles it to cut cost.
+                    // No effect on the free/local keyword evaluator.
+                    evaluateEveryNTurns = parsePositiveInt(next, "--every");
+                    break;
             }
         } else {
             conditionParts.push(token);
@@ -138,6 +154,7 @@ export function parseGoalArgs(input: string): GoalCommandArgs {
         description: rawCondition,
         evaluator,
         successKeywords: successKeywords.length > 0 ? successKeywords : undefined,
+        evaluateEveryNTurns,
     };
 
     return { rawCondition, condition, budget, clear: false, statusOnly: false };

@@ -105,6 +105,21 @@ describe("parseGoalArgs", () => {
     test("rejects keyword evaluator without keywords", () => {
         expect(() => parseGoalArgs("build passes --evaluator keyword")).toThrow("requires at least one --keyword");
     });
+
+    test("parses --every as the LLM evaluator cadence", () => {
+        const parsed = parseGoalArgs('"the tests pass" --every 5');
+        expect(parsed.condition.evaluateEveryNTurns).toBe(5);
+    });
+
+    test("rejects --every with a non-positive-integer value", () => {
+        expect(() => parseGoalArgs("the tests pass --every 0")).toThrow("positive integer");
+        expect(() => parseGoalArgs("the tests pass --every 1.5")).toThrow("positive integer");
+    });
+
+    test("leaves evaluateEveryNTurns undefined when --every is omitted", () => {
+        const parsed = parseGoalArgs("the tests pass");
+        expect(parsed.condition.evaluateEveryNTurns).toBeUndefined();
+    });
 });
 
 describe("goal state", () => {
@@ -140,6 +155,48 @@ describe("goal state", () => {
         expect(updated?.turnCount).toBe(1);
         expect(updated?.tokenSpend).toBe(123);
         expect(updated?.costSpend).toBe(0.001);
+    });
+
+    test("recordEvaluation appends a goal_evaluator_usage entry when the LLM evaluator spends tokens/cost", () => {
+        resetSession("session-1");
+        makeGoal();
+        const entries: Array<{ customType: string; data: unknown }> = [];
+        const appendEntry = (customType: string, data: unknown) => entries.push({ customType, data });
+
+        recordEvaluation("session-1", {
+            turnIndex: 0,
+            verdict: "not_met",
+            reason: "still working",
+            tokensUsed: 42,
+            cost: 0.0007,
+            model: { provider: "anthropic", id: "claude-haiku" },
+            timestamp: Date.now(),
+        }, { appendEntry });
+
+        const usageEntries = entries.filter((e) => e.customType === "goal_evaluator_usage");
+        expect(usageEntries.length).toBe(1);
+        expect(usageEntries[0].data).toMatchObject({
+            provider: "anthropic",
+            model: "claude-haiku",
+            tokens: 42,
+            cost: 0.0007,
+        });
+    });
+
+    test("recordEvaluation skips the usage entry for the keyword evaluator (no cost/tokens)", () => {
+        resetSession("session-1");
+        makeGoal();
+        const entries: Array<{ customType: string; data: unknown }> = [];
+        const appendEntry = (customType: string, data: unknown) => entries.push({ customType, data });
+
+        recordEvaluation("session-1", {
+            turnIndex: 0,
+            verdict: "not_met",
+            reason: "no keyword match",
+            timestamp: Date.now(),
+        }, { appendEntry });
+
+        expect(entries.some((e) => e.customType === "goal_evaluator_usage")).toBe(false);
     });
 
     test("keyword evaluator marks goal met", async () => {
@@ -844,6 +901,86 @@ describe("goalExtension event wiring", () => {
 
         expect(getPendingGuidance("session-1")).toContain("pass");
         expect(getPendingGuidance("session-1")).not.toContain("previous guidance");
+    });
+
+    test("throttles the LLM evaluator to every N turns while still looping and enforcing budgets", async () => {
+        resetSession("session-1");
+        const { pi, handlers, userMessages } = createFakePi();
+        const ctx = createFakeCtx();
+
+        goalExtension(pi);
+        setGoal(
+            "session-1",
+            { description: "the deploy succeeds", evaluator: "llm", evaluateEveryNTurns: 3 },
+            {},
+            pi,
+        );
+
+        const turnHandlers = handlers.get("turn_end") ?? [];
+        async function runTurn(text: string) {
+            for (const handler of turnHandlers) {
+                await handler({
+                    type: "turn_end",
+                    turnIndex: 1,
+                    message: makeAssistantMessage(text),
+                    toolResults: [],
+                } as TurnEndEvent, ctx);
+            }
+        }
+
+        // No configured evaluator model in the fake ctx, so every evaluation
+        // that does run resolves to "uncertain" (not "not_met") — this test
+        // only cares how many turns actually invoke the evaluator.
+        await runTurn("working on it"); // turn 1: always evaluated
+        expect(getGoal("session-1")?.evaluations.length).toBe(1);
+
+        await runTurn("still working"); // turn 2: throttled, skips evaluation
+        expect(getGoal("session-1")?.evaluations.length).toBe(1);
+        // The loop still continues even though the evaluator didn't run.
+        expect(userMessages.length).toBe(1);
+
+        await runTurn("still working"); // turn 3: 3 % 3 === 0, evaluates again
+        expect(getGoal("session-1")?.evaluations.length).toBe(2);
+
+        expect(getGoal("session-1")?.turnCount).toBe(3);
+        expect(getGoal("session-1")?.status).toBe("active");
+    });
+
+    test("throttled turns still stop the goal when a budget is exhausted", async () => {
+        resetSession("session-1");
+        const { pi, handlers, messages } = createFakePi();
+        const ctx = createFakeCtx();
+
+        goalExtension(pi);
+        setGoal(
+            "session-1",
+            { description: "the deploy succeeds", evaluator: "llm", evaluateEveryNTurns: 5 },
+            { maxTurns: 2 },
+            pi,
+        );
+
+        const turnHandlers = handlers.get("turn_end") ?? [];
+        for (const handler of turnHandlers) {
+            await handler({
+                type: "turn_end",
+                turnIndex: 1,
+                message: makeAssistantMessage("turn 1"),
+                toolResults: [],
+            } as TurnEndEvent, ctx);
+        }
+        // Turn 2 is throttled (rate 5) but still hits the maxTurns: 2 budget.
+        for (const handler of turnHandlers) {
+            await handler({
+                type: "turn_end",
+                turnIndex: 1,
+                message: makeAssistantMessage("turn 2"),
+                toolResults: [],
+            } as TurnEndEvent, ctx);
+        }
+
+        expect(getGoal("session-1")?.status).toBe("failed");
+        expect(getGoal("session-1")?.stopReason).toBe("max_turns");
+        expect(messages.some((m) => m.content.includes("budget reached"))).toBe(true);
     });
 
     test("before_agent_start injects pending guidance into system prompt without clearing it", async () => {

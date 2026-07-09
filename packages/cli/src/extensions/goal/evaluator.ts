@@ -24,6 +24,15 @@ import type {
 
 export const DEFAULT_EVALUATOR_MAX_TOKENS = 512;
 
+/**
+ * Default cadence (in turns) for the LLM evaluator when neither `/goal
+ * --every` nor `config.goal.evaluateEveryNTurns` is set. The judge call is a
+ * billed API request, so evaluating every turn is wasteful for multi-turn
+ * goals; every 3rd turn cuts that spend ~3x while still catching completion
+ * quickly (the first turn is always evaluated regardless of this rate).
+ */
+export const DEFAULT_EVALUATE_EVERY_N_TURNS = 3;
+
 function buildEvaluatorPrompt(state: GoalState, context: GoalEvaluationContext): string {
     const budgetParts: string[] = [];
     if (state.budget.maxTurns !== undefined) budgetParts.push(`turns ≤ ${state.budget.maxTurns}`);
