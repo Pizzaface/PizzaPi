@@ -935,6 +935,7 @@ export function App() {
         uiVersion: UI_VERSION,
         clientSocketProtocol: SOCKET_PROTOCOL_VERSION,
         uiBuildTimestamp: BUILD_TIMESTAMP,
+        isMobileBundled,
       });
       setVersionBanner({
         message: negotiation.message,
@@ -943,7 +944,7 @@ export function App() {
     } catch {
       // Best effort only — do not surface transient fetch errors as hard failures.
     }
-  }, []);
+  }, [isMobileBundled]);
 
   // Cache last-known UI state per relay session so switching sessions feels instant.
   const sessionUiCacheRef = React.useRef<Map<string, SessionUiCacheEntry>>(new Map());
