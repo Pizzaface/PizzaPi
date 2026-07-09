@@ -13,6 +13,7 @@
  * (PIZZAPI_WORKER_INITIAL_MODEL_*) and resumed sessions set their own model
  * later during bindExtensions session_start, so they still win over this.
  */
+import { findCachedOllamaCloudModel } from "../ollama-cloud-models.js";
 
 interface ModelRef {
     provider: string;
@@ -42,7 +43,12 @@ export async function applySettingsDefaultModel(session: DefaultModelSession): P
     if (!provider || !modelId) return false;
     const current = session.model;
     if (current?.provider === provider && current?.id === modelId) return false;
-    const resolved = session.modelRegistry.find(provider, modelId);
+    // Ollama Cloud models are discovered dynamically and aren't in the static
+    // registry — fall back to the cached catalog so a settings default pointing
+    // at e.g. ollama-cloud/glm-5.2 still gets applied.
+    const resolved =
+        session.modelRegistry.find(provider, modelId) ??
+        findCachedOllamaCloudModel(provider, modelId);
     if (!resolved || !session.modelRegistry.hasConfiguredAuth(resolved)) return false;
     await session.setModel(resolved);
     return true;
