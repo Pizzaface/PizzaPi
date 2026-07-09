@@ -262,7 +262,7 @@ describe("tryCacheSnapshot", () => {
         const socket = createMockSocket();
         result!.send(socket, 1);
 
-        expect((socket.calls[0].payload.event as any).state.queuedMessages).toEqual(["follow up 1", "follow up 2"]);
+        expect((socket.calls[0].payload as any).event.state.queuedMessages).toEqual(["follow up 1", "follow up 2"]);
         // Original cached event is left untouched.
         expect(snapshotEvent.state.queuedMessages).toEqual([]);
     });
