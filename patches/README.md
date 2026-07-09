@@ -4,7 +4,7 @@ Patches in this directory are applied automatically by Bun via the
 `patchedDependencies` field in the root `package.json`. They are reapplied on
 every `bun install` — no postinstall script is needed.
 
-## @earendil-works/pi-agent-core@0.80.3
+## @earendil-works/pi-agent-core@0.80.5
 
 Adds one PizzaPi-specific runtime fix:
 
@@ -24,7 +24,7 @@ Adds one PizzaPi-specific runtime fix:
 
 **Tests:** `packages/cli/src/patches.test.ts` verifies the regression behavior with a live `Agent` instance.
 
-## @earendil-works/pi-coding-agent@0.80.3
+## @earendil-works/pi-coding-agent@0.80.5
 
 PizzaPi integration changes ported forward to the 0.80.x upstream layout.
 Upstream provides session-control actions for command contexts; PizzaPi also
@@ -46,7 +46,7 @@ below).
 | `dist/modes/interactive/interactive-mode.js` | Removes upstream version-notification UI (import, `run()` call, and `showNewVersionNotification()` method) |
 | `dist/index.js` / `dist/index.d.ts` | Re-exports `handlePackageCommand` and `handleConfigCommand` so the `pizza` CLI can inherit `install`/`remove`/`update`/`list`/`config` without a subpath import |
 
-## @earendil-works/pi-ai@0.80.3
+## @earendil-works/pi-ai@0.80.5
 
 Same Anthropic web-search and Claude Code credential fallback changes as 0.79.3,
 ported to the 0.80.x upstream layout (the Anthropic streaming implementation
@@ -103,7 +103,7 @@ Notable upstream changes in 0.66.1:
 | `dist/modes/interactive/interactive-mode.js` — section headers | Box-drawing themed headers, compact extension table |
 | `dist/modes/interactive/interactive-mode.js` — diagnostics | Uses themed section headers for skill/prompt/extension/theme issues |
 
-## @earendil-works/pi-tui@0.80.3
+## @earendil-works/pi-tui@0.80.5
 
 Adds Windows console output lifecycle management so Unicode glyphs render
 reliably on Windows terminals.
@@ -302,6 +302,16 @@ syntactic validity. Run with `bun test packages/cli/src/patches.test.ts`.
 this patch can be deleted.
 
 ## Previously patched (no longer needed)
+
+### @earendil-works/*@0.80.3 (replaced by 0.80.5 patches)
+
+The 0.80.3 patch files are retained in this directory for history but are no
+longer referenced by `patchedDependencies`. The 0.80.5 patches port the same
+intent forward; no patch hunk needed adjustment — the upstream changes between
+0.80.3 and 0.80.5 (truncated-tool-call handling in `agent-loop.js`, a new
+`cache-stats` module, config-selector refactor) do not overlap with any PizzaPi
+patch site. The stale `.bun-tag` marker files that `bun patch` had injected into
+the 0.80.3 `pi-coding-agent` patch were dropped in the 0.80.5 regeneration.
 
 ### @earendil-works/*@0.79.3 (replaced by 0.80.3 patches)
 
