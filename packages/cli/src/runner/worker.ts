@@ -9,6 +9,7 @@ import { initSandbox, cleanupSandbox, isSandboxActive } from "@pizzapi/tools";
 import { createBootTimer } from "./boot-timing.js";
 import { headlessFork } from "./worker-fork.js";
 import { applySettingsDefaultModel } from "./apply-default-model.js";
+import { findCachedOllamaCloudModel } from "../ollama-cloud-models.js";
 import { setLogComponent, setLogSessionId, logInfo, logWarn, logError, logAuth } from "./logger.js";
 
 /**
@@ -561,11 +562,19 @@ async function main(): Promise<void> {
                     if (modelRegistry) {
                         try {
                             const available = await modelRegistry.getAvailable();
-                            const match = available.find(
-                                (m: any) =>
-                                    m.provider === sessionContext.model!.provider &&
-                                    m.id === sessionContext.model!.modelId,
-                            );
+                            // Ollama Cloud models are discovered dynamically and
+                            // aren't in getAvailable() — fall back to the cached
+                            // catalog so a resumed ollama-cloud model is restored.
+                            const match =
+                                available.find(
+                                    (m: any) =>
+                                        m.provider === sessionContext.model!.provider &&
+                                        m.id === sessionContext.model!.modelId,
+                                ) ??
+                                findCachedOllamaCloudModel(
+                                    sessionContext.model!.provider,
+                                    sessionContext.model!.modelId,
+                                );
                             if (match) {
                                 await session.setModel(match);
                             }
