@@ -311,6 +311,11 @@ async function main() {
         process.exit(code);
     }
 
+    if (args[0] === "config" && args[1] === "show") {
+        const { runConfigShowCommand } = await import("./config-show.js");
+        process.exit(runConfigShowCommand(cwd));
+    }
+
     if (isPackageCommand(args[0])) {
         const config = loadConfig(cwd);
         const agentDir = config.agentDir ? expandHome(config.agentDir) : defaultAgentDir();
@@ -344,6 +349,7 @@ async function main() {
         log.info(`  ${c.cmd("pizza update")} ${c.dim("[source|self]")}   Update installed pi packages`);
         log.info(`  ${c.cmd("pizza list")}                    List installed pi packages`);
         log.info(`  ${c.cmd("pizza config")}                  Enable/disable package resources`);
+        log.info(`  ${c.cmd("pizza config show")}             Print resolved effective config (secrets redacted)`);
         log.info("");
         log.info(c.label("Flags"));
         log.info(`  ${c.flag("--cwd")} ${c.dim("<path>")}         Set working directory`);

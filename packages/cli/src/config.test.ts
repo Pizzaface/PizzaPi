@@ -1062,6 +1062,50 @@ describe("loadConfig transport field blocking", () => {
     // Project apiKey loads with a warning (not stripped) when global has no apiKey
     expect(config.apiKey).toBe("project-key");
   });
+
+  test("warns when apiKey is configured but relayUrl is 'off'", () => {
+    writeFileSync(
+      join(globalDir, "config.json"),
+      JSON.stringify({ apiKey: "real-key", relayUrl: "off" }),
+    );
+
+    const projectDir = join(tempDir, "project");
+    mkdirSync(join(projectDir, ".pizzapi"), { recursive: true });
+    writeFileSync(join(projectDir, ".pizzapi", "config.json"), JSON.stringify({}));
+
+    const originalWarn = console.warn;
+    const warn = mock((..._args: unknown[]) => undefined);
+    console.warn = warn as unknown as typeof console.warn;
+    try {
+      const config = loadConfig(projectDir);
+      expect(config.relayUrl).toBe("off");
+      expect(config.apiKey).toBe("real-key");
+      const messages = warn.mock.calls.map((call) => String(call[2]));
+      expect(messages.some((m) => m.includes('"off"') && m.includes("apiKey is configured"))).toBe(true);
+    } finally {
+      console.warn = originalWarn;
+    }
+  });
+
+  test("does not warn about disabled relay when no apiKey is configured", () => {
+    writeFileSync(join(globalDir, "config.json"), JSON.stringify({ relayUrl: "off" }));
+
+    const projectDir = join(tempDir, "project");
+    mkdirSync(join(projectDir, ".pizzapi"), { recursive: true });
+    writeFileSync(join(projectDir, ".pizzapi", "config.json"), JSON.stringify({}));
+
+    const originalWarn = console.warn;
+    const warn = mock((..._args: unknown[]) => undefined);
+    console.warn = warn as unknown as typeof console.warn;
+    try {
+      const config = loadConfig(projectDir);
+      expect(config.relayUrl).toBe("off");
+      const messages = warn.mock.calls.map((call) => String(call[2]));
+      expect(messages.some((m) => m.includes("apiKey is configured"))).toBe(false);
+    } finally {
+      console.warn = originalWarn;
+    }
+  });
 });
 
 describe("expandVars", () => {

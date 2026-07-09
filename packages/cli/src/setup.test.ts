@@ -70,6 +70,7 @@ describe("QR setup", () => {
 
             const config = JSON.parse(readFileSync(join(tmpDir, ".pizzapi", "config.json"), "utf-8"));
             expect(config.apiKey).toBe(apiKey);
+            expect(config.relayUrl).toBe("ws://localhost:7999");
             expect(process.env.PIZZAPI_API_KEY).toBe(apiKey);
             expect(process.env.PIZZAPI_RELAY_URL).toBe("ws://localhost:7999");
         } finally {
@@ -101,6 +102,21 @@ describe("QR setup", () => {
             expect(ok).toBe(false);
         } finally {
             globalThis.fetch = originalFetch;
+        }
+    });
+
+    // ponytail: runSetup()'s interactive wizard prompts via readline + raw-mode
+    // stdin, which isn't worth mocking end-to-end here. The QR-setup test above
+    // already exercises the identical saveGlobalConfig({ apiKey, relayUrl })
+    // save behavior; this is a cheap regression guard against reintroducing the
+    // exact audited bug (a save call that drops relayUrl) at either call site.
+    test("both saveGlobalConfig call sites in setup.ts persist relayUrl alongside apiKey", () => {
+        const source = readFileSync(join(import.meta.dir, "setup.ts"), "utf-8");
+        const calls = source.match(/saveGlobalConfig\(\{[^}]*\}\)/g) ?? [];
+        expect(calls.length).toBe(2);
+        for (const call of calls) {
+            expect(call).toContain("apiKey");
+            expect(call).toContain("relayUrl");
         }
     });
 });
