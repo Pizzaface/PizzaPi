@@ -15,6 +15,7 @@ import {
 import type { AgentConfig } from "../subagent-agents.js";
 import type { Model } from "@earendil-works/pi-ai";
 import { defaultAgentDir } from "../../config.js";
+import { findCachedOllamaCloudModel } from "../../ollama-cloud-models.js";
 import type { SingleResult, SubagentDetails, OnUpdateCallback } from "./types.js";
 import { getFinalOutput, summarizeResultForStreaming } from "./types.js";
 
@@ -261,8 +262,12 @@ export async function runSingleAgent(
         let resolvedModel: Model<any> | undefined;
         const modelSpec = modelOverride ?? (agent.model ? parseModelString(agent.model) : undefined);
         if (modelSpec && modelRegistry) {
-            // Explicit model specified — look it up
-            resolvedModel = modelRegistry.find(modelSpec.provider, modelSpec.id);
+            // Explicit model specified — look it up. Ollama Cloud models are
+            // discovered dynamically and aren't in the static registry, so fall
+            // back to the cached catalog before giving up.
+            resolvedModel =
+                modelRegistry.find(modelSpec.provider, modelSpec.id) ??
+                findCachedOllamaCloudModel(modelSpec.provider, modelSpec.id);
             if (!resolvedModel) {
                 currentResult.exitCode = 1;
                 currentResult.stderr = `Model not found: ${modelSpec.provider}/${modelSpec.id}. Use the \`models\` command to see available models.`;

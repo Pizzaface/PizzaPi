@@ -131,6 +131,22 @@ export function getCachedOllamaCloudModels(): OllamaCloudModel[] | null {
     return null;
 }
 
+/**
+ * Resolve a provider/id pair against the cached Ollama Cloud model list.
+ * Returns a ready-to-use runtime model, or undefined when the provider isn't
+ * ollama-cloud or the id isn't in the cache. Ollama Cloud models are discovered
+ * dynamically, so they never appear in the static ModelRegistry — callers use
+ * this as a fallback after registry.find() misses.
+ */
+export function findCachedOllamaCloudModel(
+    provider: string,
+    modelId: string,
+): Model<"openai-completions"> | undefined {
+    if (provider !== "ollama-cloud") return undefined;
+    const model = getCachedOllamaCloudModels()?.find((m) => m.id === modelId);
+    return model ? toOllamaCloudRuntimeModel(model) : undefined;
+}
+
 export function toOllamaCloudRuntimeModel(model: OllamaCloudModel): Model<"openai-completions"> {
     return {
         ...model,

@@ -7,6 +7,7 @@ import {
     extractContextLength,
     capabilitiesInclude,
     getCachedOllamaCloudModels,
+    findCachedOllamaCloudModel,
 } from "../ollama-cloud-models.js";
 
 const originalHome = process.env.HOME;
@@ -74,6 +75,36 @@ describe("ollama-cloud dynamic model discovery", () => {
 
         const result = await fetchOllamaCloudModels();
         expect(result).toEqual(expected);
+    });
+
+    test("findCachedOllamaCloudModel resolves a cached id, ignores other providers", () => {
+        const dir = join(tempHome, ".pizzapi");
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(
+            join(dir, "ollama-cloud-models-cache.json"),
+            JSON.stringify({
+                models: [
+                    {
+                        id: "glm-5.2",
+                        name: "glm-5.2",
+                        provider: "ollama-cloud",
+                        api: "openai-completions",
+                        baseUrl: "https://ollama.com/v1",
+                        reasoning: true,
+                        input: ["text"],
+                        contextWindow: 1000000,
+                        maxTokens: 32768,
+                    },
+                ],
+                fetchedAt: Date.now(),
+            }),
+        );
+
+        const model = findCachedOllamaCloudModel("ollama-cloud", "glm-5.2");
+        expect(model?.id).toBe("glm-5.2");
+        expect(model?.api).toBe("openai-completions");
+        expect(findCachedOllamaCloudModel("ollama-cloud", "nope")).toBeUndefined();
+        expect(findCachedOllamaCloudModel("anthropic", "glm-5.2")).toBeUndefined();
     });
 
     test("force refetches even when cache is fresh", async () => {
