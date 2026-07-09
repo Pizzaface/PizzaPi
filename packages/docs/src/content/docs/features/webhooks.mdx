@@ -105,8 +105,8 @@ POST /api/webhooks/:id/fire
 |--------|----------|-------------|
 | `Content-Type` | Yes | Must be `application/json` |
 | `X-Webhook-Signature` | Yes | HMAC-SHA256 hex digest of `${timestamp}.${nonce}.${rawBody}` |
-| `X-Webhook-Timestamp` | Yes | ISO 8601 / RFC 3339 timestamp (e.g. `2025-01-15T10:30:00Z`). Must be within ±5 minutes of server time. |
-| `X-Webhook-Nonce` | Yes | Unique string per delivery (e.g. random hex). Prevents replay within the 5-minute window (per server process; multi-node deployments need shared storage). |
+| `X-Webhook-Timestamp` | Yes | ISO 8601 / RFC 3339 timestamp (e.g. `2025-01-15T10:30:00Z`). Must be no more than **30 seconds in the future** or **5 minutes in the past** of server time. |
+| `X-Webhook-Nonce` | Yes | Unique string per delivery (e.g. random hex). Redis-backed replay protection (in-memory fallback if Redis is unavailable); multi-node deployments sharing Redis are covered automatically. |
 
 **Legacy mode (backward compatible — no replay protection):**
 
@@ -136,7 +136,7 @@ Any valid JSON object. If you're using event filters, include a `type` field:
 
 **Success (session spawned and trigger delivered):**
 ```json
-{ "ok": true, "triggerId": "wh_a1b2c3d4e5f6g7h8", "sessionId": "uuid" }
+{ "ok": true, "triggerId": "wh_a1b2c3d4e5f6a7b8", "sessionId": "uuid" }
 ```
 
 **Filtered (event type didn't match the filter — no session spawned):**
@@ -153,7 +153,7 @@ Any valid JSON object. If you're using event filters, include a `type` field:
 | `400` | Invalid JSON body |
 | `404` | Webhook not found or disabled |
 | `500` | Webhook has no runner assigned |
-| `502` | Runner rejected the spawn request or is unreachable |
+| `502` | Runner rejected the spawn request or the spawn emit failed |
 | `503` | Runner is offline or not connected to the server |
 | `504` | Session was spawned but didn't connect within the timeout (~15s) |
 
@@ -348,7 +348,7 @@ curl -X PUT "https://pizza.example.com/api/webhooks/WEBHOOK_ID" \
 
 ### Deleting
 
-Click the trash icon on a webhook row. You'll see a **"Sure?"** confirmation button (auto-dismisses after 3 seconds). Deletion is permanent — the webhook ID and secret are gone forever.
+Click the trash icon to open a confirmation dialog, then click **Delete webhook** to confirm. Deletion is permanent — the webhook ID and secret are gone forever.
 
 ---
 
@@ -441,9 +441,8 @@ A webhook **must have a runner assigned** (`runnerId`) to fire successfully. If 
 
 | Symptom | Likely cause |
 |---------|-------------|
-| `401 Invalid signature` | Secret mismatch, or the body was modified between signing and sending (e.g., re-serialized by a proxy). Sign the **exact** bytes you send. In enhanced mode the signed string is `${timestamp}.${nonce}.${rawBody}`. |
-| `401 Missing X-Webhook-Timestamp` | Using enhanced mode but forgot the timestamp header. Either add it (recommended) or omit both `X-Webhook-Timestamp` and `X-Webhook-Nonce` entirely to use legacy mode. |
-| `401 Webhook timestamp is too old` | The timestamp in `X-Webhook-Timestamp` is more than 5 minutes from server time. Check system clock synchronization. |
+| `401 Missing/invalid X-Webhook-Signature` | Secret mismatch, or the body was modified between signing and sending (e.g., re-serialized by a proxy). Sign the **exact** bytes you send. In enhanced mode the signed string is `${timestamp}.${nonce}.${rawBody}`. |
+| `401 Timestamp too old or future` | The timestamp in `X-Webhook-Timestamp` is more than 30s in the future or more than 5 minutes in the past. Check system clock synchronization. |
 | `409 Webhook nonce has already been used` | A replay was detected — the same nonce was used for a successful delivery within the last 5 minutes. Generate a fresh nonce per request. |
 | `404 Webhook not found` | Webhook ID is wrong, webhook was deleted, or webhook is disabled. |
 | `500 Webhook has no runner assigned` | The webhook's `runnerId` is `null`. Update it via the API or recreate from the runner detail view. |

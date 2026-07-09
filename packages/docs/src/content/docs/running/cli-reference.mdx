@@ -16,9 +16,9 @@ When called without a command, `pizzapi` starts an **interactive coding session*
 Run `pizzapi --help` for a quick summary of all commands:
 
 ```
-pizzapi v0.2.2 — PizzaPi coding agent
+🍕 PizzaPi v0.5.4
 
-Usage:
+Commands:
   pizza                       Start an interactive agent session
   pizza web [flags]           Manage the PizzaPi web hub (Docker)
   pizza runner [args]         Manage the background runner daemon
@@ -34,16 +34,17 @@ Usage:
   pizza config                Enable/disable package resources
 
 Flags:
-  --cwd <path>    Set working directory
-  --safe-mode     Skip MCP, plugins, hooks, and relay (fast startup)
-  --no-mcp        Skip MCP server connections
-  --no-plugins    Skip Claude Code plugin loading
-  --no-hooks      Skip hook execution
-  --no-relay      Skip relay server connection
-  -v, --version   Show version
-  -h, --help      Show this help
+  --cwd <path>         Set working directory
+  --sandbox <mode>     Set sandbox mode: enforce, audit, or off
+  --safe-mode          Skip MCP, plugins, hooks, and relay
+  --no-mcp             Skip MCP server connections
+  --no-plugins         Skip Claude Code plugin loading
+  --no-hooks           Skip hook execution
+  --no-relay           Skip relay server connection
+  -v, --version        Show version
+  -h, --help           Show this help
 
-Run `pizza <command> --help` for command-specific help.
+Run pizza <command> --help for command-specific help.
 ```
 
 ---
@@ -71,6 +72,8 @@ pizzapi --no-mcp               # Skip only MCP servers
 | `--no-relay` | Skip relay server connection |
 | `--sandbox <mode>` | Set sandbox mode: `enforce`, `audit`, or `off`. See [Agent Sandbox](/PizzaPi/security/sandbox/). |
 
+Each `--no-*` flag also has a `PIZZAPI_NO_*=1` environment-variable equivalent (`PIZZAPI_NO_MCP`, `PIZZAPI_NO_PLUGINS`, `PIZZAPI_NO_HOOKS`, `PIZZAPI_NO_RELAY`, and `PIZZAPI_NO_SANDBOX` for `--sandbox=off`).
+
 The session ID is derived from the runner configuration and displayed on startup. Open the relay server's web UI to watch the session live.
 
 If no API key is configured and the relay is not disabled, the CLI will automatically launch the setup wizard before starting the session.
@@ -89,7 +92,7 @@ When startup takes longer than 5 seconds, a warning is displayed in both the TUI
 
 ### `pizzapi setup`
 
-Run (or re-run) the first-time setup wizard. Prompts for the relay server URL, email, and password, then saves the API key to `~/.pizzapi/config.json`.
+Run (or re-run) the first-time setup wizard. Prompts for the relay server URL, your name (optional), email, and password, then saves the API key to `~/.pizzapi/config.json`.
 
 ```bash
 pizzapi setup
@@ -149,7 +152,7 @@ Run `pizzapi web --help` for the full usage:
 ```
 pizza web — Manage the PizzaPi web hub (server + UI via Docker Compose)
 
-Usage:
+Commands:
   pizza web [flags]               Start the web hub
   pizza web stop                  Stop the web hub
   pizza web logs                  Tail container logs
@@ -160,24 +163,29 @@ Usage:
 Flags:
   --port <port>       Set the host port (persisted to config.json)
   --origins <list>    Set extra allowed CORS origins (comma-separated, persisted)
-  --tag <tag>         UI image tag from GHCR (default: latest)
+  --tag <tag>         UI image tag from GHCR (default: CLI version, or latest)
   --build             Build UI locally (fallback mode)
-  --dev-ui            Run the local dev UI stack (repo checkout only)
+  --dev-ui            Use the local dev UI (local repo only)
   -f, --foreground    Run in the foreground (don't detach)
   --no-cache          Rebuild Docker image without layer cache
   -h, --help          Show this help
-
-Local dev UI stack (`--dev-ui` on a repo checkout):
-  Runs the server and `dev:ui` together in Docker; the UI stays hot-reloaded on port 5173.
-
-Docker build args (fallback mode):
-  PREBUILT_UI (auto)    Set by pizza web based on the host prebuild result
 
 Configuration (~/.pizzapi/web/config.json):
   port            Host port (default: 7492)
   vapidSubject    VAPID subject for push notifications
   extraOrigins    Extra CORS origins, comma-separated
+
+Examples:
+  pizza web                           Start on default port 7492
+  pizza web --tag main                 Pull ghcr.io/pizzaface/pizzapi-ui:main
+  pizza web --build                    Build UI locally (fallback mode)
+  pizza web --dev-ui                   Use local dev UI (local repo only)
+  pizza web --port 8080               Start on port 8080 (remembered for next time)
+  pizza web config set port 9000      Change port without starting
+  pizza web config set extraOrigins "https://example.com"
 ```
+
+`--dev-ui` runs the local dev UI stack from a repo checkout (the server plus `dev:ui` on port 5173). `--build` uses the local-build fallback mode. `PREBUILT_UI` is a Docker build arg that `pizza web` sets automatically based on the host prebuild state.
 
 ```bash
 # Start on the default port (7492)
@@ -228,7 +236,7 @@ pizzapi web status
 |------|-------------|
 | `--port <number>` | HTTP port to expose (default: `7492`). Persisted to `config.json`. |
 | `--origins <list>` | Extra CORS origins, comma-separated. Persisted to `config.json`. |
-| `--tag <tag>` | UI image tag to pull from `ghcr.io/pizzaface/pizzapi-ui` (default: `latest`). |
+| `--tag <tag>` | UI image tag to pull from `ghcr.io/pizzaface/pizzapi-ui` (default: CLI version, or `latest`). |
 | `--build` | Build UI locally instead of pulling GHCR image (fallback mode). |
 | `--dev-ui` | Run the local dev UI stack from a repo checkout. |
 | `--foreground`, `-f` | Run in the foreground instead of detaching |
@@ -269,12 +277,13 @@ All settings and persistent data are stored in `~/.pizzapi/web/`:
 |------|---------|
 | `config.json` | All web hub settings (port, VAPID keys, origins, etc.) |
 | `compose.yml` | Auto-generated Docker Compose config (regenerated each run) |
-| `data/` | Persistent auth database |
+| `host-build.json` | Host UI pre-build cache state |
+| `compose.override.yml` | Optional Docker Compose override (PizzaPi includes it automatically if present) |
 
 VAPID keys for push notifications are generated on first run and stored in `config.json`. They persist across restarts and config changes — push notification subscriptions won't break.
 
 <Aside type="note">
-  **Custom Docker overrides:** The `compose.yml` is regenerated on each run from the template + config. For additional Docker customizations (extra volumes, networks, etc.), create a `compose.override.yml` in the same directory — Docker Compose picks it up automatically.
+  **Custom Docker overrides:** The `compose.yml` is regenerated on each run from the template + config. For additional Docker customizations (extra volumes, networks, etc.), create a `compose.override.yml` in the same directory — PizzaPi automatically includes it if present.
 </Aside>
 
 ---
@@ -307,6 +316,7 @@ Claude usage (OAuth subscription)
   7-day (OAuth apps)        4.2%  (resets 3/1/2026, 9:00:00 AM)
   7-day (Opus)              2.0%  (resets 3/1/2026, 9:00:00 AM)
   7-day (Sonnet)            6.5%  (resets 3/1/2026, 9:00:00 AM)
+  7-day (co-work)           3.0%  (resets 3/1/2026, 9:00:00 AM)
 
   Extra usage enabled
     Monthly limit:   $100
@@ -347,12 +357,15 @@ pizzapi models --json
 Example output:
 
 ```
-provider   model                    notes
----------  -----------------------  -----
-anthropic  claude-opus-4-5          reasoning • 200,000 ctx • Claude Opus 4.5
-anthropic  claude-sonnet-4-20250514            200,000 ctx • Claude Sonnet 4
-google     gemini-2.5-pro           reasoning • 1,000,000 ctx • Gemini 2.5 Pro
-ollama-cloud  glm-5.1               reasoning • 202,752 ctx • GLM 5.1
+anthropic
+  claude-opus-4-5            reasoning • 200,000 ctx • Claude Opus 4.5
+  claude-sonnet-4-20250514            200,000 ctx • Claude Sonnet 4
+
+google
+  gemini-2.5-pro             reasoning • 1,000,000 ctx • Gemini 2.5 Pro
+
+ollama-cloud
+  glm-5.1                    reasoning • 202,752 ctx • GLM 5.1
 ```
 
 ---
@@ -393,14 +406,14 @@ pizzapi plugins --help
 
 **Trust model:**
 
-- **Global plugins** in `~/.pizzapi/plugins/`, `~/.agents/plugins/`, or `~/.claude/plugins/` are **always auto-trusted** — same as global skills or extensions.
+- **Global plugins** in `~/.pizzapi/plugins/` and `~/.agents/plugins/` are **always auto-trusted** — same as global skills or extensions. Claude Code marketplace plugins installed via `~/.claude/plugins/installed_plugins.json` are discovered through that manifest, not by scanning `~/.claude/plugins/` directly.
 - **Project-local plugins** in `.pizzapi/plugins/`, `.agents/plugins/`, or `.claude/plugins/` under your project directory can execute shell commands via hooks. They require explicit trust before loading.
 
 There are three ways to trust a local plugin:
 
 1. **CLI**: `pizza plugins trust` (pre-approve before starting a session)
 2. **TUI**: Interactive confirmation dialog at session start
-3. **Web UI**: Amber trust banner with Trust / Skip buttons
+3. **Web UI**: Amber trust banner with **Trust & Load** / **Skip** buttons
 
 Once approved by any method, the trust is persisted to `~/.pizzapi/config.json` so future sessions auto-load without re-prompting.
 
@@ -445,17 +458,15 @@ pizzapi config
 | `install <source> [-l]` | Install a package and add it to settings |
 | `remove <source> [-l]` | Remove a package from settings |
 | `uninstall <source> [-l]` | Alias for `remove` |
-| `update [source\|self\|pi]` | Update installed packages and/or the upstream `pi` package |
+| `update [source\|self\|pi]` | Update installed packages (self forms print a note and exit; use `npm install -g @pizzapi/pizza` to update the wrapper) |
 | `update --extensions` | Update installed packages only |
-| `update --self` | Update the upstream `pi` package only (use `npm install -g @pizzapi/pizza` to update PizzaPi) |
+| `update --self` | Print a note and exit; self-update is disabled |
 | `list` | List installed packages |
 | `config` | Interactively enable or disable package resources |
 
-These commands accept `--cwd <path>` to target a different project directory and honor `agentDir` from `~/.pizzapi/config.json`.
+All package commands accept `-a/--approve`, `-na/--no-approve`, and `--cwd <path>`. `update` additionally accepts `--force` and `--extension <source>`.
 
-<Aside type="note">
-  `pizzapi update --self` updates the upstream `pi-coding-agent` package, not the PizzaPi wrapper. To update the wrapper itself, run `npm install -g @pizzapi/pizza`.
-</Aside>
+These commands accept `--cwd <path>` to target a different project directory and honor `agentDir` from `~/.pizzapi/config.json`.
 
 ---
 
@@ -488,10 +499,10 @@ Delegate tasks to specialized subagent processes. Each subagent runs in its own 
 
 **Modes:**
 - **Single**: `{ agent: "name", task: "..." }` — invoke one agent
-- **Parallel**: `{ tasks: [...] }` — run multiple agents concurrently (up to 4)
+- **Parallel**: `{ tasks: [...] }` — run up to 8 agents concurrently, with at most 4 at once
 - **Chain**: `{ chain: [...] }` — sequential execution with `{previous}` output substitution
 
-Agent definitions are loaded from `~/.pizzapi/agents/*.md` (user scope) and `.pizzapi/agents/*.md` (project scope).
+Agent definitions are loaded from `~/.pizzapi/agents/*.md` (user scope), `~/.claude/agents/*.md` (user backward-compat), `.pizzapi/agents/*.md` (project scope), and `.claude/agents/*.md` (project backward-compat). Use `agentScope: "both"` (or `"project"`) to include project-local definitions.
 
 See the [Subagents guide](/PizzaPi/customization/subagents/) for full documentation.
 

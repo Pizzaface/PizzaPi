@@ -12,7 +12,7 @@ import { Aside, Steps, Tabs, TabItem } from "@astrojs/starlight/components";
   AI model backends (API keys, custom models, authentication) only.
 </Aside>
 
-PizzaPi is built on the **pi** coding agent, which supports 20+ AI providers out of the box. You can authenticate with a paid subscription via OAuth, set API keys, or add custom providers like Ollama or LM Studio for local models.
+PizzaPi is built on the **pi** coding agent, which supports **30+ AI providers** out of the box. You can authenticate with a paid subscription via OAuth, set API keys, or add custom providers like Ollama or LM Studio for local models.
 
 ---
 
@@ -27,16 +27,10 @@ These providers use OAuth — authenticate with `/login` inside a session:
 | Anthropic | Claude Pro / Max |
 | OpenAI | ChatGPT Plus / Pro (Codex) |
 | GitHub Copilot | Copilot subscription |
-| Google Gemini CLI | Free with Google account |
-| Google Antigravity | Free with Google account |
-
-<Aside type="tip">
-  Google Gemini CLI and Antigravity are free with any Google account, subject to rate limits. For paid usage, set the `GOOGLE_CLOUD_PROJECT` environment variable.
-</Aside>
 
 ### API Key Providers
 
-Set an environment variable or store the key in the auth file:
+These are the most commonly used API-key providers. Many other built-in providers (DeepSeek, Fireworks, Together, Moonshot AI, Ollama Cloud, Cloudflare, OpenCode, and more) are also available — run `pizza models` to see the providers configured on your system and their required env vars.
 
 | Provider | Environment Variable |
 |----------|---------------------|
@@ -44,7 +38,7 @@ Set an environment variable or store the key in the auth file:
 | OpenAI | `OPENAI_API_KEY` |
 | Google Gemini | `GEMINI_API_KEY` |
 | Azure OpenAI | `AZURE_OPENAI_API_KEY` |
-| Google Vertex AI | Uses Application Default Credentials |
+| Google Vertex AI | `GOOGLE_CLOUD_API_KEY` |
 | Amazon Bedrock | `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` |
 | Mistral | `MISTRAL_API_KEY` |
 | Groq | `GROQ_API_KEY` |
@@ -62,7 +56,7 @@ Set an environment variable or store the key in the auth file:
 
 ### Using `/login` (Subscriptions)
 
-Inside a PizzaPi session, type `/login` in the chat input. You'll be prompted to select a provider and complete the OAuth flow in your browser. Tokens are stored in `~/.pi/agent/auth.json` and auto-refresh when they expire.
+Inside a PizzaPi session, type `/login` in the chat input. You'll be prompted to select a provider and complete the OAuth flow in your browser. Tokens are stored in `~/.pizzapi/auth.json` and auto-refresh when they expire.
 
 Use `/logout` to clear stored credentials.
 
@@ -74,7 +68,7 @@ Set the provider's environment variable before starting PizzaPi:
 export ANTHROPIC_API_KEY=sk-ant-...
 ```
 
-Or store it in the **auth file** at `~/.pi/agent/auth.json`:
+Or store it in the **auth file** at `~/.pizzapi/auth.json`:
 
 ```json
 {
@@ -92,7 +86,7 @@ The `key` field in `auth.json` supports three formats:
 | Format | Example | Description |
 |--------|---------|-------------|
 | Shell command | `"!security find-generic-password -ws 'anthropic'"` | Executes command, uses stdout |
-| Environment variable | `"MY_ANTHROPIC_KEY"` | Reads the named env var |
+| Environment variable | `"$MY_ANTHROPIC_KEY"` or `"${MY_ANTHROPIC_KEY}"` | Reads the named env var. A `$` prefix (or `${...}`) is required for interpolation; a bare name is treated as a literal value. |
 | Literal value | `"sk-ant-..."` | Used directly |
 
 Shell commands are useful for pulling keys from password managers:
@@ -109,8 +103,8 @@ When multiple sources provide credentials for the same provider:
 
 1. CLI `--api-key` flag (highest priority)
 2. `auth.json` entry (API key or OAuth token)
-3. Environment variable
-4. Custom provider keys from `models.json`
+3. Custom provider keys from `models.json`
+4. Environment variable (final fallback)
 
 ---
 
@@ -120,11 +114,11 @@ When multiple sources provide credentials for the same provider:
 
 Use the `/model` command in the chat input to open the model selector. This shows all available models across your authenticated providers.
 
-You can also cycle through a subset of models using the `/cycle_model` command, or change reasoning effort with `/effort`.
+In the PizzaPi web UI you can also use `/cycle_model` (alias of `/model`) to cycle through a subset of models, and `/effort` (or `/cycle_effort`) to change reasoning effort.
 
 ### Setting Defaults
 
-Set your preferred default model in `~/.pi/agent/settings.json`:
+Set your preferred default model in `~/.pizzapi/settings.json`:
 
 ```json
 {
@@ -148,7 +142,7 @@ Limit which models appear when cycling:
 
 ## Custom Models
 
-Add local or custom models (Ollama, vLLM, LM Studio, proxies) via `~/.pi/agent/models.json`. The file reloads each time you open `/model` — edit it mid-session without restarting.
+Add local or custom models (Ollama, vLLM, LM Studio, proxies) via `~/.pizzapi/models.json`. The file reloads each time you open `/model` — edit it mid-session without restarting.
 
 ### Minimal Example (Ollama)
 
@@ -158,7 +152,6 @@ Add local or custom models (Ollama, vLLM, LM Studio, proxies) via `~/.pi/agent/m
     "ollama": {
       "baseUrl": "http://localhost:11434/v1",
       "api": "openai-completions",
-      "apiKey": "ollama",
       "models": [
         { "id": "llama3.1:8b" },
         { "id": "qwen2.5-coder:7b" }
@@ -169,7 +162,7 @@ Add local or custom models (Ollama, vLLM, LM Studio, proxies) via `~/.pi/agent/m
 ```
 
 <Aside>
-  The `apiKey` is required by the schema but Ollama ignores it — any value works.
+  `apiKey` is optional. For password-less local servers like Ollama you can omit it entirely.
 </Aside>
 
 ### Full Model Configuration
@@ -203,8 +196,13 @@ Add local or custom models (Ollama, vLLM, LM Studio, proxies) via `~/.pi/agent/m
 |-----|---------|
 | `openai-completions` | Most compatible — Ollama, vLLM, LM Studio, OpenRouter |
 | `openai-responses` | OpenAI Responses API |
+| `openai-codex-responses` | OpenAI Codex CLI agent API |
 | `anthropic-messages` | Anthropic Messages API |
+| `azure-openai-responses` | Azure OpenAI Responses API |
 | `google-generative-ai` | Google Generative AI |
+| `google-vertex` | Google Vertex AI |
+| `mistral-conversations` | Mistral chat completions |
+| `bedrock-converse-stream` | Amazon Bedrock Converse |
 
 ### Provider Configuration Fields
 
@@ -226,10 +224,14 @@ Add local or custom models (Ollama, vLLM, LM Studio, proxies) via `~/.pi/agent/m
 | `name` | No | `id` | Human-readable label |
 | `api` | No | provider's | Override API type for this model |
 | `reasoning` | No | `false` | Supports extended thinking |
+| `thinkingLevelMap` | No | — | Map of thinking levels to API parameter values |
 | `input` | No | `["text"]` | Input types: `["text"]` or `["text", "image"]` |
 | `contextWindow` | No | `128000` | Context window (tokens) |
 | `maxTokens` | No | `16384` | Max output tokens |
 | `cost` | No | all zeros | Per-million-token costs |
+| `headers` | No | — | Per-model custom headers |
+| `compat` | No | — | OpenAI compatibility overrides |
+| `baseUrl` | No | provider's | Override endpoint for this model |
 
 ### OpenAI Compatibility
 
@@ -261,9 +263,13 @@ This commonly applies to Ollama, vLLM, SGLang, and similar servers that don't un
 
 ```bash
 export AZURE_OPENAI_API_KEY=...
+# Use either the full base URL...
 export AZURE_OPENAI_BASE_URL=https://your-resource.openai.azure.com
-# Optional
-export AZURE_OPENAI_API_VERSION=2024-02-01
+# ...or just the resource name as a shorthand
+export AZURE_OPENAI_RESOURCE_NAME=your-resource
+
+# Optional (defaults to v1)
+export AZURE_OPENAI_API_VERSION=v1
 export AZURE_OPENAI_DEPLOYMENT_NAME_MAP=gpt-4=my-gpt4,gpt-4o=my-gpt4o
 ```
 
@@ -284,9 +290,13 @@ export AWS_REGION=us-west-2
 ### Google Vertex AI
 
 ```bash
+# Option 1: Application Default Credentials
 gcloud auth application-default login
 export GOOGLE_CLOUD_PROJECT=your-project
 export GOOGLE_CLOUD_LOCATION=us-central1
+
+# Option 2: API key
+export GOOGLE_CLOUD_API_KEY=...
 ```
 
 ---

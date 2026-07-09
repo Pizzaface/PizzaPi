@@ -1,11 +1,11 @@
 ---
 title: Slash Commands
-description: Complete reference for all / commands available in the PizzaPi web UI chat input.
+description: Reference for the / commands handled by the PizzaPi web UI chat input.
 ---
 
 import { Aside } from "@astrojs/starlight/components";
 
-Slash commands let you control your PizzaPi session directly from the chat input. Type `/` to open the command picker, then select or type a command.
+Slash commands let you control your PizzaPi session directly from the web UI chat input. Type `/` to open the command picker, then select or type a command. Anything that looks like a `/` command but is not listed here is forwarded to the model as a normal user message.
 
 ## Using the command picker
 
@@ -14,11 +14,11 @@ Slash commands let you control your PizzaPi session directly from the chat input
 Type `/` at the beginning of the chat input. A popover appears listing all available commands, grouped into sections:
 
 - **Commands** — built-in session and UI commands
-- **Extensions** — commands registered by Claude Code plugins
-- **Prompts** — prompt template shortcuts
+- **Plugin Commands** — commands registered by Claude Code plugins
+- **Prompt Templates** — prompt template shortcuts
 - **Skills** — skill-based commands from your configuration
 
-The list filters as you type. For example, typing `/mo` narrows the list to `/model`.
+The list filters as you type. For example, typing `/res` narrows the list to `/resume`.
 
 ### Keyboard navigation
 
@@ -32,11 +32,9 @@ On touch devices, tap a command to select it.
 
 ### Sub-command mode
 
-Some commands (like `/mcp`) have sub-commands. When you select one of these, the picker stays open and shows the available sub-options. For example, selecting `/mcp` then shows `status`, `reload`, `disable`, and `enable`.
+Some commands have sub-commands. When you select one of these, the picker stays open and shows the available sub-options. For example, selecting `/mcp` then shows `status`, `reload`, `disable`, and `enable`.
 
 If a sub-command requires an argument (like `/mcp disable`), selecting it fills the input with the command prefix and positions your cursor to type the argument.
-
----
 
 ## Built-in commands
 
@@ -45,20 +43,20 @@ If a sub-command requires an argument (like `/mcp disable`), selecting it fills 
 | Command | Description |
 |---------|-------------|
 | `/new` | Start a new conversation. If linked child sessions are still active, a confirmation dialog appears first. |
-| `/resume [query]` | Resume a previous session. Opens a session picker showing recent sessions with name, date, and path. Type to fuzzy-search by session name, ID, path, or first message. |
+| `/resume` | Resume a previous session. Opens a session picker showing recent sessions. |
+| `/rewind` | Rewind the conversation to a previous user message (forks the session). `/fork` is an alias. |
 | `/stop` | Abort the current generation. |
 | `/restart` | Restart the underlying CLI process. |
-| `/session` | Show session info — file path, token usage, and cost. |
 
 ### Session history
 
 | Command | Description |
 |---------|-------------|
-| `/tree` | Open tree-based session navigator. Browse all branches, jump to any point in the conversation, and optionally summarize the branch you're leaving. See [Sessions & Context](/PizzaPi/features/sessions/) for details. |
-| `/fork` | Fork the current session into a new session file. Opens a selector to choose a point — history is copied up to that point into a new, independent session. |
+| `/compact [instructions]` | Compact the conversation context. Optionally pass custom instructions to guide summarization, e.g. `/compact focus on the auth module`. See [Sessions & Context](/PizzaPi/features/sessions/#compaction) for how compaction works. |
+| `/name <name>` | Set a display name for the current session, e.g. `/name auth-refactor`. |
 
 <Aside type="tip">
-  `/resume` keeps the picker open so you can browse and filter sessions interactively. Select a session with <kbd>Enter</kbd> or click/tap it.
+  The tree navigator and `/tree` are not available in the web UI composer — use the **Tree** view in the session UI instead.
 </Aside>
 
 ### Model and reasoning
@@ -74,9 +72,7 @@ If a sub-command requires an argument (like `/mcp disable`), selecting it fills 
 
 | Command | Description |
 |---------|-------------|
-| `/compact [instructions]` | Compact the conversation context. Optionally pass custom instructions to guide summarization, e.g. `/compact focus on the auth module`. See [Sessions & Context](/PizzaPi/features/sessions/#compaction) for how compaction works. |
 | `/plan` | Toggle plan mode. In plan mode, the agent explores and plans without making changes (read-only). |
-| `/reload` | Reload keybindings, extensions, skills, prompt templates, and context files without restarting. |
 
 ### Session display
 
@@ -84,18 +80,9 @@ If a sub-command requires an argument (like `/mcp disable`), selecting it fills 
 |---------|-------------|
 | `/name <name>` | Set a display name for the current session, e.g. `/name auth-refactor`. |
 | `/goal` | Show the active goal and current counters. |
-| `/goal "{condition}" [flags]` | Set a success condition and optional budget for the session. Flags: `--max-turns`, `--max-tokens`, `--max-cost`, `--evaluator keyword|llm`, `--keyword {word}`. |
+| `/goal "{condition}" [flags]` | Set a success condition and optional budget for the session. Flags: `--max-turns`, `--max-tokens`, `--max-cost`, `--every N`. |
 | `/goal clear` | Clear the active goal. Aliases: `stop`, `off`, `cancel`, `reset`, `none`. |
 | `/copy` | Copy the last assistant message to your clipboard. |
-| `/export [file]` | Export the current session to an HTML file. |
-| `/share` | Upload as a private GitHub gist with a shareable HTML link. |
-
-### Authentication
-
-| Command | Description |
-|---------|-------------|
-| `/login` | Authenticate with a subscription provider (Claude Pro/Max, ChatGPT Plus/Pro, GitHub Copilot, Google Gemini). Opens an OAuth flow in your browser. See [Providers & Models](/PizzaPi/features/providers-and-models/) for details. |
-| `/logout` | Clear stored credentials for a provider. |
 
 ### Introspection
 
@@ -103,7 +90,7 @@ If a sub-command requires an argument (like `/mcp disable`), selecting it fills 
 |---------|-------------|
 | `/plugins` | List all loaded Claude Code plugins, including their commands, hooks, skills, agents, and MCP servers. |
 | `/skills` | List all available skills from your configuration and plugins. |
-| `/sandbox` | Show the current sandbox status — mode (none/basic/full), platform, and recent violations. |
+| `/sandbox` | Show the current sandbox status. Sub-commands: `status` (default), `violations`, `config`. |
 
 ### MCP server management
 
@@ -128,8 +115,6 @@ The `/mcp` command manages Model Context Protocol servers. Type `/mcp ` (with a 
 
 The agent picker shows each agent's name and description. Select one to start a new session with that agent's system prompt.
 
----
-
 ## Dynamic commands
 
 In addition to the built-in commands above, three types of commands appear dynamically based on your configuration:
@@ -138,34 +123,27 @@ In addition to the built-in commands above, three types of commands appear dynam
 
 Skills defined in your `~/.pizzapi/skills/` directory (or registered by plugins) appear in the **Skills** group. They are prefixed with `skill:` internally but shown by their short name in the picker. Running a skill command sends its content to the agent.
 
-### Extension (plugin) commands
+### Plugin commands
 
-Claude Code plugins can register custom commands. These appear in the **Extensions** group. Each shows the command name and description provided by the plugin.
+Claude Code plugins can register custom commands. These appear in the **Plugin Commands** group. Each shows the command name and description provided by the plugin.
 
 ### Prompt template commands
 
-Prompt templates from your configuration appear in the **Prompts** group. Selecting one inserts the template content into the conversation.
-
----
+Prompt templates from your configuration appear in the **Prompt Templates** group. Selecting one inserts the template content into the conversation.
 
 ## Examples
 
 ```
 /new                          # Start a fresh session
-/resume auth                  # Find and resume a session matching "auth"
-/tree                         # Browse session history tree
-/fork                         # Fork session into new file
+/resume                       # Resume a previous session
+/rewind                       # Rewind to a message and fork
 /compact focus on API routes  # Compact context with custom instructions
 /name deploy-fix              # Name the current session
-/login                        # Authenticate with a subscription provider
 /model                        # Switch to a different model
 /effort                       # Cycle to the next reasoning effort level
 /plan                         # Toggle read-only plan mode
-/export report.html           # Export session as HTML
-/share                        # Upload as private gist
 /copy                         # Copy last response to clipboard
 /mcp status                   # Check MCP server health
 /mcp disable filesystem       # Disable the "filesystem" MCP server
 /agents reviewer              # Start a session as the "reviewer" agent
-/reload                       # Reload extensions, skills, prompts
 ```
