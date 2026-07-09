@@ -9,9 +9,9 @@ Slash commands give you quick access to session control, model switching, MCP ma
 
 ## Triggering the picker
 
-Type **`/`** in the chat input to open the slash command picker popover. The picker shows a scrollable list of available commands, grouped by type.
+Type **`/`** in the chat input to open the slash command picker popover. The picker shows a scrollable list of available commands grouped into four headings: **Commands**, **Plugin Commands**, **Prompt Templates**, and **Skills**.
 
-- **Filter in real time** — keep typing after the `/` to narrow the list. For example, `/re` filters to `/resume`.
+- **Filter in real time** — keep typing after the `/` to narrow the list. For example, `/res` filters to `/resume`.
 - **Keyboard navigation** — press <kbd>↑</kbd> / <kbd>↓</kbd> to move through suggestions, then <kbd>Enter</kbd> to execute the highlighted command.
 - **Mouse** — click any command in the list to execute it.
 - **Dismiss** — press <kbd>Escape</kbd> or click outside the picker to close it without running anything.
@@ -31,15 +31,19 @@ The following commands are always available in the chat input:
 | `/compact [instructions]` | Compact the context window. Optionally provides custom instructions for what to preserve. Shows a spinner while compacting. |
 | `/name <name>` | Set the session display name shown in the sidebar. |
 | `/goal` | Show the active goal and current counters. |
-| `/goal "{condition}" [flags]` | Set a success condition and optional budget (`--max-turns`, `--max-tokens`, `--max-cost`). |
+| `/goal status` | Show the active goal and current counters (same as bare `/goal`). |
+| `/goal "{condition}" [flags]` | Set a success condition and optional budget (`--max-turns`, `--max-tokens`, `--max-cost`, `--every`, `--evaluator {keyword|llm}`, `--keyword {word}`). |
 | `/goal clear` | Clear the active goal. Aliases: `stop`, `off`, `cancel`, `reset`, `none`. |
 | `/copy` | Copy the last assistant message to clipboard. |
 | `/stop` | Abort the currently running agent generation. |
 | `/restart` | Restart the underlying CLI process — useful if the agent is stuck or needs a fresh start. |
 | `/sandbox` | Show current sandbox status (mode, platform, recent violations) if a runner is connected. |
+| `/sandbox status` | Show current sandbox status (default). |
+| `/sandbox violations` | List recent sandbox violations. |
+| `/sandbox config` | Show sandbox configuration. |
 | `/skills` | Display available skills loaded on the runner. |
 | `/plugins` | List all loaded plugins with their commands, hooks, skills, agents, rules, and MCP integrations. |
-| `/agents [name]` | Spawn a new session as a named agent. Without a name, opens a picker showing available agents from the runner. With a name, dispatches immediately. |
+| `/agents [name]` | Spawn a new session as a named agent. Select `/agents` from the picker to open the agent list; with a name, it dispatches immediately. |
 | `/mcp [status\|reload\|disable <name>\|enable <name>]` | MCP server management. See [MCP sub-commands](#mcp-sub-commands) below. |
 
 <Aside type="tip">
@@ -59,11 +63,11 @@ The `/mcp` command supports four sub-commands:
 
 ## Sub-command mode
 
-For commands that accept sub-commands (like `/mcp`), typing the command name followed by a space enters **sub-command mode**. The picker filters to show only the sub-commands for that parent command.
+The `/mcp`, `/sandbox`, and `/goal` commands accept sub-commands. Typing the command name followed by a space enters **sub-command mode**. The picker filters to show only the sub-commands for that parent command.
 
 For example, typing `/mcp ` (note the space) narrows the picker to `status`, `reload`, `disable <server-name>`, and `enable <server-name>`.
 
-This also applies to plugin-provided extension commands and skill commands — any command that defines its own sub-command structure.
+This also applies to plugin-provided extension commands that define their own sub-command structure.
 
 ## Pickers that stay open
 
@@ -102,3 +106,4 @@ All dynamic commands appear in the picker alongside core commands and support th
 - **Runner required for full functionality** — commands like `/plugins`, `/skills`, `/sandbox`, and `/agents` require a connected runner. If no runner is available, they show an appropriate message indicating the runner is disconnected.
 - **Dynamic commands depend on runner state** — skill, plugin, and prompt template commands are loaded from the runner at session start. Changes to your configuration (adding a new skill, enabling a plugin) won't appear until the session reconnects or the runner refreshes.
 - **`/stop` vs `/restart`** — `/stop` aborts the current generation but keeps the CLI process alive. `/restart` kills and restarts the CLI process entirely. Use `/stop` for a stuck generation; use `/restart` only when the process itself is unresponsive.
+- **`/remote` is intentionally blocked** in the web UI — it manages the runner's relay connection and would sever the connection that powers the web UI. Use `/remote` from the terminal/TUI instead.
