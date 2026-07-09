@@ -414,14 +414,11 @@ export function registerLifecycleHandlers(deps: LifecycleHandlersDeps): void {
             // Keep it alive for steering instead. session_shutdown still reports
             // "killed" when the session is actually ending (end_session sets
             // shuttingDown before shutdown()).
-            const manualAbort = isManualAbort(rctx);
-            if (rctx.isChildSession && manualAbort) {
-                log.info("pizzapi: turn aborted manually — keeping child session alive");
-            } else {
-                void followUpGrace.fireSessionComplete(summary, fullOutputPath, exitReason);
-            }
-
-            // Fire session_error for terminal usage-limit errors (one-shot, only at agent_end).
+            // Fire session_error BEFORE session_complete so the parent sees the
+            // error as an early signal. maybeFireSessionError emits synchronously
+            // (direct socket.emit); fireSessionComplete's ack-wrapped emit also
+            // fires synchronously on invocation, so ordering these two calls
+            // determines wire order. Must run first.
             if (
                 maybeFireSessionError({
                     sessionErrorFired,
@@ -437,6 +434,13 @@ export function registerLifecycleHandlers(deps: LifecycleHandlersDeps): void {
                 })
             ) {
                 sessionErrorFired = true;
+            }
+
+            const manualAbort = isManualAbort(rctx);
+            if (rctx.isChildSession && manualAbort) {
+                log.info("pizzapi: turn aborted manually — keeping child session alive");
+            } else {
+                void followUpGrace.fireSessionComplete(summary, fullOutputPath, exitReason);
             }
 
             if (rctx.isChildSession) {

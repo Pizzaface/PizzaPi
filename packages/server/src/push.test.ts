@@ -498,3 +498,115 @@ describe("native push registration", () => {
         expect(rows).toHaveLength(0);
     });
 });
+
+// ── Child-session push suppression (isChildSession) ────────────────────────────
+//
+// Docs: "Linked child sessions do not trigger push notifications. Only
+// top-level sessions ... send push notifications." Verified indirectly (no
+// mocking of webpush.sendNotification / real network calls): a subscription
+// row with malformed `keys` JSON is only pruned if the send path actually
+// attempted delivery (JSON.parse throws before any network call). If the
+// isChildSession guard returns early, the row is left untouched.
+
+describe("sendPushToUser — child-session suppression", () => {
+    authIt("web-push: suppresses by default for a child session (malformed-keys subscription untouched)", async () => {
+        await insertSub("sub-child-1", "user-child-1", "https://example.com/push/child-1");
+        await getKysely()
+            .updateTable("push_subscription" as any)
+            .set({ keys: "not-json" })
+            .where("id", "=", "sub-child-1")
+            .execute();
+
+        await sendPushToUser("user-child-1", {
+            type: "agent_finished",
+            title: "Agent finished",
+            body: "done",
+            sessionId: "sess-child-1",
+        }, true);
+
+        // Not attempted (guard returned before JSON.parse) — subscription survives.
+        const subs = await getSubscriptionsForUser("user-child-1");
+        expect(subs).toHaveLength(1);
+    });
+
+    authIt("web-push: delivers (attempts) for a non-child session", async () => {
+        await insertSub("sub-child-2", "user-child-2", "https://example.com/push/child-2");
+        await getKysely()
+            .updateTable("push_subscription" as any)
+            .set({ keys: "not-json" })
+            .where("id", "=", "sub-child-2")
+            .execute();
+
+        await sendPushToUser("user-child-2", {
+            type: "agent_finished",
+            title: "Agent finished",
+            body: "done",
+            sessionId: "sess-child-2",
+        }, false);
+
+        // Attempted — malformed JSON caused it to be pruned as stale.
+        const subs = await getSubscriptionsForUser("user-child-2");
+        expect(subs).toHaveLength(0);
+    });
+
+    authIt("web-push: suppresses a child session even when suppressChildNotifications is false (no per-subscription opt-out exists)", async () => {
+        await insertSub("sub-child-3", "user-child-3", "https://example.com/push/child-3", false);
+        await getKysely()
+            .updateTable("push_subscription" as any)
+            .set({ keys: "not-json" })
+            .where("id", "=", "sub-child-3")
+            .execute();
+
+        await sendPushToUser("user-child-3", {
+            type: "agent_finished",
+            title: "Agent finished",
+            body: "done",
+            sessionId: "sess-child-3",
+        }, true);
+
+        const subs = await getSubscriptionsForUser("user-child-3");
+        expect(subs).toHaveLength(1); // still untouched — suppressed regardless of the flag
+    });
+
+    authIt("ntfy: suppresses by default for a child session (no fetch attempted)", async () => {
+        await registerNativePush({ userId: "user-child-ntfy-1", platform: "android" });
+        process.env.PIZZAPI_NTFY_URL = "http://ntfy-test";
+
+        let fetchCalled = false;
+        const origFetch = globalThis.fetch;
+        (globalThis as any).fetch = () => { fetchCalled = true; return Promise.resolve(new Response("ok")); };
+        try {
+            await sendPushToUser("user-child-ntfy-1", {
+                type: "agent_finished",
+                title: "Agent finished",
+                body: "done",
+                sessionId: "sess-child-ntfy-1",
+            }, true);
+        } finally {
+            (globalThis as any).fetch = origFetch;
+            delete process.env.PIZZAPI_NTFY_URL;
+        }
+        expect(fetchCalled).toBe(false);
+    });
+
+    authIt("ntfy: still publishes for a non-child session", async () => {
+        await registerNativePush({ userId: "user-child-ntfy-2", platform: "android" });
+        process.env.PIZZAPI_NTFY_URL = "http://ntfy-test";
+
+        let fetchCalled = false;
+        const origFetch = globalThis.fetch;
+        (globalThis as any).fetch = () => { fetchCalled = true; return Promise.resolve(new Response("ok")); };
+        try {
+            await sendPushToUser("user-child-ntfy-2", {
+                type: "agent_finished",
+                title: "Agent finished",
+                body: "done",
+                sessionId: "sess-child-ntfy-2",
+            }, false);
+        } finally {
+            (globalThis as any).fetch = origFetch;
+            delete process.env.PIZZAPI_NTFY_URL;
+        }
+        expect(fetchCalled).toBe(true);
+    });
+});

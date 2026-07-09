@@ -218,8 +218,11 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
         triggerBatchTimer = null;
         if (pendingTriggerBatch.length === 0) return;
         const batch = pendingTriggerBatch.splice(0);
-        // Prefer "followUp" delivery if any trigger requested it; otherwise "steer".
-        const deliverAs = batch.some((b) => b.deliverAs === "followUp") ? "followUp" as const : "steer" as const;
+        // If ANY trigger in the batch explicitly requested "steer", the batch
+        // interrupts: an explicit interrupt intent (e.g. a usage-limit
+        // session_error) must not be silently downgraded just because it was
+        // debounced alongside a "followUp" trigger like session_complete.
+        const deliverAs = batch.some((b) => b.deliverAs === "steer") ? "steer" as const : "followUp" as const;
         const rendered = renderTriggerBatch(batch.map((b) => b.trigger));
         void (async () => {
             try {
