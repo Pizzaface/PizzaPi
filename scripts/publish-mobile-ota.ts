@@ -17,11 +17,13 @@
 import { $ } from "bun";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 const root = join(import.meta.dir, "..");
 const appDir = join(root, "mobile", "app");
-const outDir = process.env.PIZZAPI_MOBILE_OTA_DIR || join(root, "mobile-ota");
+// Resolve to absolute: the zip step runs after `cd ${appDir}`, so a relative
+// outDir would otherwise be written under mobile/app and then not found.
+const outDir = resolve(process.env.PIZZAPI_MOBILE_OTA_DIR || join(root, "mobile-ota"));
 
 if (!existsSync(join(appDir, "index.html"))) {
     console.error(`No built mobile UI at ${appDir}.\nRun: bun run build:mobile`);
