@@ -7,7 +7,7 @@
 import type { RelayContext } from "../remote-types.js";
 import { getAuthSource } from "../remote-auth-source.js";
 import { emitSessionActive } from "./chunked-delivery.js";
-import { getCachedOllamaCloudModels, toOllamaCloudRuntimeModel } from "../../ollama-cloud-models.js";
+import { findCachedOllamaCloudModel } from "../../ollama-cloud-models.js";
 
 /**
  * Handle a web-initiated model change request.
@@ -70,9 +70,3 @@ export async function setModelFromWeb(
     }
 }
 
-function findCachedOllamaCloudModel(provider: string, modelId: string) {
-    if (provider !== "ollama-cloud") return undefined;
-    const cached = getCachedOllamaCloudModels();
-    const model = cached?.find((m) => m.id === modelId);
-    return model ? toOllamaCloudRuntimeModel(model) : undefined;
-}
