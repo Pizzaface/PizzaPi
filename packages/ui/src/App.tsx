@@ -119,7 +119,7 @@ import {
   type InputDedupeState,
 } from "@/lib/input-dedupe";
 import { parsePendingQuestionDisplayMode, parsePendingQuestions, type QuestionDisplayMode, type QuestionType } from "@/lib/ask-user-questions";
-import type { TodoItem, TokenUsage, ConfiguredModelInfo, ResumeSessionOption, QueuedMessage, SessionUiCacheEntry } from "@/lib/types";
+import type { TodoItem, TokenUsage, ConfiguredModelInfo, ResumeSessionOption, ForkMessageOption, QueuedMessage, SessionUiCacheEntry } from "@/lib/types";
 import type { MetaGoalStatus } from "@pizzapi/protocol";
 import { metaEventToStatePatch, type MetaStatePatch } from "@/lib/meta-state-apply";
 import { deriveSessionMetadataUpdatePatch } from "@/lib/session-metadata-update";
@@ -204,6 +204,8 @@ interface SessionState {
   resumeSessions: ResumeSessionOption[];
   resumeSessionsLoading: boolean;
   resumeSessionsNextCursor: string | null;
+  forkMessages: ForkMessageOption[];
+  forkMessagesLoading: boolean;
   goal: MetaGoalStatus | null;
 }
 
@@ -236,6 +238,8 @@ function createInitialSessionState(): SessionState {
     resumeSessions: [],
     resumeSessionsLoading: false,
     resumeSessionsNextCursor: null,
+    forkMessages: [],
+    forkMessagesLoading: false,
     goal: null,
   };
 }
@@ -291,6 +295,7 @@ export function App() {
     modelSelectorOpen, isChangingModel, agentActive, effortLevel, authSource,
     tokenUsage, providerUsage, usageRefreshing, lastHeartbeatAt,
     availableCommands, resumeSessions, resumeSessionsLoading, resumeSessionsNextCursor,
+    forkMessages, forkMessagesLoading,
     goal,
   } = sessionState;
 
@@ -439,6 +444,16 @@ export function App() {
   const setGoal = React.useCallback(
     (v: React.SetStateAction<MetaGoalStatus | null>) =>
       setSessionState((p: SessionState) => ({ ...p, goal: typeof v === "function" ? v(p.goal) : v })),
+    []
+  );
+  const setForkMessages = React.useCallback(
+    (v: React.SetStateAction<ForkMessageOption[]>) =>
+      setSessionState((p: SessionState) => ({ ...p, forkMessages: typeof v === "function" ? v(p.forkMessages) : v })),
+    []
+  );
+  const setForkMessagesLoading = React.useCallback(
+    (v: React.SetStateAction<boolean>) =>
+      setSessionState((p: SessionState) => ({ ...p, forkMessagesLoading: typeof v === "function" ? v(p.forkMessagesLoading) : v })),
     []
   );
   // Tracks whether the in-flight list_resume_sessions request is a "load more" (append) vs fresh load
@@ -2122,6 +2137,16 @@ export function App() {
         if (command === "list_resume_sessions") {
           setResumeSessionsLoading(false);
         }
+        if (command === "get_fork_messages") {
+          setForkMessagesLoading(false);
+        }
+        if (command === "fork") {
+          // A failed rewind leaves the transcript untouched — surface the error
+          // in the transcript itself, not just the easily-missed status line
+          // (e.g. "fork is not available in this pi version" from a runner
+          // that predates the rewind feature and needs a restart).
+          appendLocalSystemMessage(`**/rewind** failed: ${error}`);
+        }
         if (command === "refresh_usage") {
           setUsageRefreshing(false);
         }
@@ -2191,6 +2216,31 @@ export function App() {
         if (!isAppend && normalized.length === 0) {
           setViewerStatus("No resumable sessions");
         }
+        return;
+      }
+
+      if (command === "get_fork_messages") {
+        const list: unknown[] = Array.isArray(result?.messages) ? (result.messages as unknown[]) : [];
+        const normalized: ForkMessageOption[] = [];
+        for (const item of list) {
+          if (!item || typeof item !== "object") continue;
+          const entry = item as Record<string, unknown>;
+          if (typeof entry.entryId !== "string" || typeof entry.text !== "string") continue;
+          normalized.push({ entryId: entry.entryId, text: entry.text });
+        }
+        setForkMessages(normalized);
+        setForkMessagesLoading(false);
+        if (normalized.length === 0) {
+          setViewerStatus("No messages to rewind to");
+        }
+        return;
+      }
+
+      if (command === "fork") {
+        // The runner emits a fresh session_active with the rewound transcript;
+        // stale fork candidates from the pre-fork session are cleared here.
+        setForkMessages([]);
+        setViewerStatus("Conversation rewound");
         return;
       }
 
@@ -3866,6 +3916,17 @@ export function App() {
     return ok;
   }, [sendRemoteExec, requestPersistedSessions]);
 
+  const requestForkMessages = React.useCallback(() => {
+    setForkMessagesLoading(true);
+    const ok = sendRemoteExec({
+      type: "exec",
+      id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      command: "get_fork_messages",
+    });
+    if (!ok) setForkMessagesLoading(false);
+    return ok;
+  }, [sendRemoteExec, setForkMessagesLoading]);
+
   const refreshUsage = React.useCallback(() => {
     if (usageRefreshing) return false;
     setUsageRefreshing(true);
@@ -5151,6 +5212,9 @@ export function App() {
                         resumeSessions={resumeSessions}
                         resumeSessionsLoading={resumeSessionsLoading}
                         onRequestResumeSessions={requestResumeSessions}
+                        forkMessages={forkMessages}
+                        forkMessagesLoading={forkMessagesLoading}
+                        onRequestForkMessages={requestForkMessages}
                         onSendInput={sendSessionInput}
                         onExec={sendRemoteExec}
                         onShowModelSelector={() => setModelSelectorOpen(true)}

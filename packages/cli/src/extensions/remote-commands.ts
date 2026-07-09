@@ -13,6 +13,8 @@ export type RemoteExecRequest =
     | { type: "exec"; id: string; command: "compact"; customInstructions?: string }
     | { type: "exec"; id: string; command: "set_session_name"; name: string }
     | { type: "exec"; id: string; command: "get_last_assistant_text" }
+    | { type: "exec"; id: string; command: "get_fork_messages" }
+    | { type: "exec"; id: string; command: "fork"; entryId: string }
     | { type: "exec"; id: string; command: "list_resume_sessions"; limit?: number; cursor?: string }
     | { type: "exec"; id: string; command: "resume_session"; query?: string; sessionPath?: string }
     | { type: "exec"; id: string; command: "export_html"; outputPath?: string }

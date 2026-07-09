@@ -24,6 +24,7 @@ The following commands are always available in the chat input:
 |---------|-------------|
 | `/new` | Start a new conversation. If there are active linked child sessions, a confirmation dialog appears first. |
 | `/resume [query]` | Resume a previous session. Without a query, resumes the most recent session. With a query, opens a fuzzy-search picker matching against session names, IDs, paths, and first messages. |
+| `/rewind [query]` | Rewind the conversation to an earlier user message (same as the terminal UI's <kbd>Esc</kbd> <kbd>Esc</kbd> fork flow). Opens a picker of prior user messages; selecting one forks the session at that point and pre-fills the composer with the message so it can be edited and resent. `/fork` is an alias. |
 | `/plan` | Toggle plan mode on/off. In plan mode, the agent can only read files and run safe commands — useful for exploring the codebase before making changes. |
 | `/model` or `/cycle_model` | Open the model selector to switch to a different AI model mid-session. |
 | `/effort` or `/cycle_effort` | Cycle through reasoning effort levels (extended thinking). |
@@ -69,6 +70,7 @@ This also applies to plugin-provided extension commands and skill commands — a
 Some commands keep the picker open after you execute them because they're inherently interactive:
 
 - **`/resume`** — the session picker stays open so you can browse and select a session.
+- **`/rewind`** — the message picker stays open so you can choose where to rewind to.
 - **`/agents`** — the agent picker stays open for selection.
 - **Any command with sub-commands** — the picker stays open in sub-command mode.
 

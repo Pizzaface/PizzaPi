@@ -123,6 +123,9 @@ export function SessionViewer({
   resumeSessions,
   resumeSessionsLoading,
   onRequestResumeSessions,
+  forkMessages,
+  forkMessagesLoading,
+  onRequestForkMessages,
   onSendInput,
   onExec,
   onShowModelSelector,
@@ -283,6 +286,8 @@ export function SessionViewer({
     onSendInput,
     resumeSessions,
     onRequestResumeSessions,
+    forkMessages,
+    onRequestForkMessages,
     runnerId,
     sessionCwd,
     onAppendSystemMessage,
@@ -313,7 +318,10 @@ export function SessionViewer({
     promptSuggestions,
     isResumeMode,
     isAgentMode,
+    isRewindMode,
     resumeCandidates,
+    rewindCandidates,
+    rewindToMessage,
     checkTriggersAndRun,
     requestNewSession,
     subCommandMode,
@@ -398,6 +406,7 @@ export function SessionViewer({
   const commandHighlightedValue = React.useMemo(() => {
     if (!commandOpen) return "";
     if (isResumeMode) return resumeCandidates[commandHighlightedIndex]?.path ?? "";
+    if (isRewindMode) return rewindCandidates[commandHighlightedIndex]?.entryId ?? "";
     if (isAgentMode) return agentCandidates[commandHighlightedIndex]?.name ?? "";
     if (subCommandMode.active)
       return subCommandMode.filtered[commandHighlightedIndex]?.name ?? "";
@@ -411,9 +420,11 @@ export function SessionViewer({
   }, [
     commandOpen,
     isResumeMode,
+    isRewindMode,
     isAgentMode,
     subCommandMode,
     resumeCandidates,
+    rewindCandidates,
     agentCandidates,
     commandSuggestions,
     extensionSuggestions,
@@ -425,6 +436,7 @@ export function SessionViewer({
   const commandOptionCount = React.useMemo(() => {
     if (!commandOpen) return 0;
     if (isResumeMode) return resumeCandidates.length;
+    if (isRewindMode) return rewindCandidates.length;
     if (isAgentMode) return agentCandidates.length;
     if (subCommandMode.active) return subCommandMode.filtered.length;
     return commandSuggestions.length + extensionSuggestions.length + promptSuggestions.length + skillSuggestions.length;
@@ -432,6 +444,8 @@ export function SessionViewer({
     commandOpen,
     isResumeMode,
     resumeCandidates.length,
+    isRewindMode,
+    rewindCandidates.length,
     isAgentMode,
     agentCandidates.length,
     subCommandMode,
@@ -1052,6 +1066,9 @@ export function SessionViewer({
                     if (isResumeMode) {
                       const idx = resumeCandidates.findIndex((s) => s.path.toLowerCase() === v.toLowerCase());
                       if (idx !== -1) setCommandHighlightedIndex(idx);
+                    } else if (isRewindMode) {
+                      const idx = rewindCandidates.findIndex((m) => m.entryId.toLowerCase() === v.toLowerCase());
+                      if (idx !== -1) setCommandHighlightedIndex(idx);
                     } else if (isAgentMode) {
                       const idx = agentCandidates.findIndex((a) => a.name.toLowerCase() === v.toLowerCase());
                       if (idx !== -1) setCommandHighlightedIndex(idx);
@@ -1067,7 +1084,7 @@ export function SessionViewer({
                 >
                   <div className="flex items-center justify-between px-3 py-1.5 border-b border-border/50">
                     <span className="text-xs text-muted-foreground font-medium">
-                      {isResumeMode ? "Resume session" : isAgentMode ? "Start as agent" : subCommandMode.active ? `/${subCommandMode.parentCommand}` : "Commands"}
+                      {isResumeMode ? "Resume session" : isRewindMode ? "Rewind conversation" : isAgentMode ? "Start as agent" : subCommandMode.active ? `/${subCommandMode.parentCommand}` : "Commands"}
                     </span>
                     <button type="button" onClick={() => { setCommandOpen(false); setCommandQuery(""); }} className="inline-flex items-center justify-center rounded-sm p-0.5 text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-colors" aria-label="Close command menu">
                       <X className="size-3.5" />
@@ -1096,6 +1113,22 @@ export function SessionViewer({
                                   <span className="text-[11px] text-muted-foreground shrink-0">{new Date(session.modified).toLocaleDateString()}</span>
                                 </div>
                                 <span className="text-[11px] text-muted-foreground truncate" title={session.path}>{formatPathTail(session.path, 2)}</span>
+                              </div>
+                            </CommandItem>
+                          ))}
+                        </CommandGroup>
+                      </>
+                    ) : isRewindMode ? (
+                      <>
+                        <CommandEmpty>{forkMessagesLoading ? "Loading messages…" : "No messages to rewind to"}</CommandEmpty>
+                        <CommandGroup heading="Rewind to message (forks the session)">
+                          {rewindCandidates.map((message, idx) => (
+                            <CommandItem key={message.entryId} value={message.entryId} onSelect={() => {
+                              rewindToMessage(message);
+                            }}>
+                              <div className="flex min-w-0 items-start gap-2">
+                                <span className="text-[11px] text-muted-foreground shrink-0 tabular-nums pt-0.5">#{rewindCandidates.length - idx}</span>
+                                <span className="text-sm line-clamp-2 break-words">{message.text}</span>
                               </div>
                             </CommandItem>
                           ))}
@@ -1463,11 +1496,13 @@ export function SessionViewer({
                           event.preventDefault();
                           const totalItems = isResumeMode
                             ? resumeCandidates.length
-                            : isAgentMode
-                              ? agentCandidates.length
-                              : subCommandMode.active
-                                ? subCommandMode.filtered.length
-                                : commandSuggestions.length + extensionSuggestions.length + promptSuggestions.length + skillSuggestions.length;
+                            : isRewindMode
+                              ? rewindCandidates.length
+                              : isAgentMode
+                                ? agentCandidates.length
+                                : subCommandMode.active
+                                  ? subCommandMode.filtered.length
+                                  : commandSuggestions.length + extensionSuggestions.length + promptSuggestions.length + skillSuggestions.length;
                           if (totalItems === 0) return;
                           setCommandHighlightedIndex((prev) => {
                             if (event.key === "ArrowDown") return prev < totalItems - 1 ? prev + 1 : 0;
@@ -1509,6 +1544,14 @@ export function SessionViewer({
                               setInput("");
                               setCommandQuery("");
                               setCommandOpen(false);
+                              setCommandHighlightedIndex(0);
+                              return;
+                            }
+                          } else if (isRewindMode) {
+                            const highlighted = rewindCandidates[commandHighlightedIndex];
+                            if (highlighted) {
+                              event.preventDefault();
+                              rewindToMessage(highlighted);
                               setCommandHighlightedIndex(0);
                               return;
                             }

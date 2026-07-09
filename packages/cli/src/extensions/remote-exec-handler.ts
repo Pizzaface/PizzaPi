@@ -15,6 +15,7 @@ import type { RemoteExecRequest, RemoteExecResponse } from "./remote-commands.js
 import type { RelayContext, RelayModelInfo } from "./remote-types.js";
 import { emitThinkingLevelChanged, emitCompactStarted, emitCompactEnded, emitRetryStateChanged, emitPluginTrustResolved } from "./remote-meta-events.js";
 import { listSessionsCached } from "../runner/session-list-cache.js";
+import { extractUserMessageText } from "../runner/worker-fork.js";
 
 export interface ExecHandlerCallbacks {
     setModelFromWeb(provider: string, modelId: string): Promise<void>;
@@ -325,6 +326,54 @@ export async function handleExecFromWeb(
                             .join("")
                       : null;
             replyOk({ text });
+            return;
+        }
+
+        if (req.command === "get_fork_messages") {
+            if (!rctx.latestCtx) {
+                replyErr("No active session");
+                return;
+            }
+            // Mirrors pi's AgentSession.getUserMessagesForForking(): every user
+            // message in the session (including abandoned branches), append order.
+            const messages: Array<{ entryId: string; text: string }> = [];
+            for (const entry of rctx.latestCtx.sessionManager.getEntries()) {
+                if (entry.type !== "message") continue;
+                if ((entry as any).message?.role !== "user") continue;
+                const text = extractUserMessageText((entry as any).message.content);
+                if (text) messages.push({ entryId: entry.id, text });
+            }
+            replyOk({ messages });
+            return;
+        }
+
+        if (req.command === "fork") {
+            if (!rctx.latestCtx) {
+                replyErr("No active session");
+                return;
+            }
+            if (typeof (rctx.pi as any).fork !== "function") {
+                replyErr("fork is not available in this pi version");
+                return;
+            }
+            const entryId = typeof req.entryId === "string" ? req.entryId.trim() : "";
+            if (!entryId) {
+                replyErr("Missing entryId");
+                return;
+            }
+            try {
+                const result = await (rctx.pi as any).fork(entryId);
+                if (result?.cancelled) {
+                    replyErr("Fork was cancelled");
+                    return;
+                }
+                replyOk({ text: typeof result?.selectedText === "string" ? result.selectedText : null });
+            } catch (e) {
+                replyErr(e instanceof Error ? e.message : String(e));
+                return;
+            }
+            rctx.emitSessionActive();
+            rctx.forwardEvent(rctx.buildHeartbeat());
             return;
         }
 
