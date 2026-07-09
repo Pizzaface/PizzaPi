@@ -2,7 +2,7 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
-import { maskApiKey, maskUrlUserinfo, runConfigShowCommand } from "./config-show.js";
+import { deepRedactConfig, maskApiKey, maskUrlUserinfo, runConfigShowCommand } from "./config-show.js";
 import { _setGlobalConfigDir } from "./config.js";
 
 describe("maskUrlUserinfo", () => {
@@ -32,6 +32,44 @@ describe("maskApiKey", () => {
         const masked = maskApiKey(key);
         expect(masked).toBe("pk_l…wxyz");
         expect(masked).not.toContain(key.slice(8, -4));
+    });
+
+    test("does not throw on malformed non-string input", () => {
+        expect(maskApiKey(true)).toBe("set");
+        expect(maskApiKey({})).toBe("set");
+        expect(maskApiKey(12345678901234)).toBe("set");
+        expect(maskApiKey(null)).toBe("unset");
+    });
+});
+
+describe("deepRedactConfig", () => {
+    test("redacts nested secrets, env/header maps, and URL userinfo — not the harmless fields", () => {
+        const redacted = deepRedactConfig({
+            apiKey: "sk_live_abcdefghijklmnop",
+            relayUrl: "ws://user:pass@relay.example.com:7492",
+            oauthClientId: "public-client-id",
+            oauthClientSecret: "super-secret-value",
+            envOverrides: { OPENAI_API_KEY: "sk-leak-me", FOO: "bar" },
+            mcpServers: {
+                gh: { url: "https://tok:zzz@mcp.example.com", headers: { Authorization: "Bearer leak" }, command: "bunx" },
+            },
+        }) as Record<string, any>;
+
+        expect(redacted.apiKey).toBe("sk_l…mnop");
+        expect(redacted.relayUrl).toBe("ws://relay.example.com:7492/");
+        expect(redacted.oauthClientId).toBe("public-client-id");
+        expect(redacted.oauthClientSecret).toBe("«redacted»");
+        expect(redacted.envOverrides.OPENAI_API_KEY).toBe("«redacted»");
+        expect(redacted.envOverrides.FOO).toBe("«redacted»");
+        expect(redacted.mcpServers.gh.headers.Authorization).toBe("«redacted»");
+        expect(redacted.mcpServers.gh.url).toBe("https://mcp.example.com/");
+        expect(redacted.mcpServers.gh.command).toBe("bunx");
+
+        // the full serialized output leaks nothing sensitive
+        const dump = JSON.stringify(redacted);
+        for (const secret of ["super-secret-value", "sk-leak-me", "Bearer leak", "tok:zzz", "user:pass"]) {
+            expect(dump).not.toContain(secret);
+        }
     });
 });
 
