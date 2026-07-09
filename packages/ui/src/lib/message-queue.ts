@@ -27,3 +27,24 @@ export function reconcileMessageQueue(prev: QueuedMessage[], followUpTexts: stri
     };
   });
 }
+
+/**
+ * Pick the queued-message id to recall when the user presses Up/Down to browse
+ * the queue (shell-history style).
+ *
+ * - `currentId === null` means focus is in the composer: Up recalls the newest
+ *   queued message, Down does nothing.
+ * - From a queued message: Up steps to the previous (older) one, Down to the
+ *   next (newer). Past the newest, Down returns `null` (exit back to composer);
+ *   at the oldest, Up returns `null` (stay put).
+ */
+export function queueRecallTarget(
+  queue: QueuedMessage[],
+  currentId: string | null,
+  dir: "up" | "down",
+): string | null {
+  if (queue.length === 0) return null;
+  const idx = currentId === null ? queue.length : queue.findIndex((m) => m.id === currentId);
+  const target = dir === "up" ? idx - 1 : idx + 1;
+  return target >= 0 && target < queue.length ? queue[target].id : null;
+}

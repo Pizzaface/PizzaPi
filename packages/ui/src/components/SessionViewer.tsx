@@ -86,6 +86,7 @@ import type { SessionViewerProps as BaseSessionViewerProps, CmdEntry } from "@/c
 import { formatTokenCount } from "@/components/session-viewer/formatters";
 import { useMessageProcessor } from "@/components/session-viewer/message-processor";
 import { useDraftManagement } from "@/components/session-viewer/draft-management";
+import { queueRecallTarget } from "@/lib/message-queue";
 import { useSessionActionsSetup } from "@/components/session-viewer/session-actions";
 import { useAtMentionHandlers } from "@/components/session-viewer/at-mention-handlers";
 import { useSlashCommands } from "@/components/session-viewer/slash-commands";
@@ -214,6 +215,33 @@ export function SessionViewer({
   const sessionIdRef = React.useRef<string | null>(sessionId);
   const [editingQueuedId, setEditingQueuedId] = React.useState<string | null>(null);
   const [editingQueuedText, setEditingQueuedText] = React.useState("");
+
+  // Recall/browse queued follow-ups with Up/Down (shell-history style). Returns
+  // true when it handled the key so the caller can preventDefault.
+  const recallQueuedMessage = React.useCallback(
+    (currentId: string | null, dir: "up" | "down"): boolean => {
+      if (!messageQueue || messageQueue.length === 0) return false;
+      const targetId = queueRecallTarget(messageQueue, currentId, dir);
+      if (targetId === null) {
+        // Down past the newest hands focus back to the composer.
+        if (dir === "down" && currentId !== null) {
+          setEditingQueuedId(null);
+          setEditingQueuedText("");
+          requestAnimationFrame(() => {
+            document.querySelector<HTMLTextAreaElement>("[data-pp-prompt]")?.focus();
+          });
+          return true;
+        }
+        return false;
+      }
+      const target = messageQueue.find((m) => m.id === targetId);
+      if (!target) return false;
+      setEditingQueuedId(target.id);
+      setEditingQueuedText(target.text);
+      return true;
+    },
+    [messageQueue],
+  );
 
   // Keep sessionIdRef current for async callbacks
   React.useEffect(() => { sessionIdRef.current = sessionId; }, [sessionId]);
@@ -919,6 +947,11 @@ export function SessionViewer({
                                 } else if (e.key === "Escape") {
                                   setEditingQueuedId(null);
                                   setEditingQueuedText("");
+                                } else if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+                                  // ponytail: arrows browse the queue rather than
+                                  // move within the box; queued follow-ups are
+                                  // short. Enter saves, Escape cancels.
+                                  if (recallQueuedMessage(qm.id, e.key === "ArrowUp" ? "up" : "down")) e.preventDefault();
                                 }
                               }}
                               autoFocus
@@ -1436,6 +1469,20 @@ export function SessionViewer({
                       if (event.key === "Enter" && event.altKey && agentActive) {
                         event.preventDefault();
                         setDeliveryMode((m) => m === "steer" ? "followUp" : "steer");
+                        return;
+                      }
+
+                      // Empty composer + ArrowUp recalls the last queued message
+                      // for editing (further Up/Down browse the queue). Gated on
+                      // an empty draft so text nav and popovers aren't hijacked.
+                      if (
+                        event.key === "ArrowUp" &&
+                        input === "" &&
+                        !commandOpen && !atMentionOpen && editingQueuedId === null &&
+                        !event.shiftKey && !event.altKey && !event.metaKey && !event.ctrlKey &&
+                        recallQueuedMessage(null, "up")
+                      ) {
+                        event.preventDefault();
                         return;
                       }
 

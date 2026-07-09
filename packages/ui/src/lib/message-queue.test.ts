@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { reconcileMessageQueue } from "./message-queue";
+import { queueRecallTarget, reconcileMessageQueue } from "./message-queue";
 import type { QueuedMessage } from "./types";
 
 const qm = (id: string, text: string): QueuedMessage => ({ id, text, deliverAs: "followUp", timestamp: 1 });
@@ -33,5 +33,38 @@ describe("reconcileMessageQueue", () => {
     const prev = [qm("a", "same"), qm("b", "same")];
     const next = reconcileMessageQueue(prev, ["same", "same"]);
     expect(next.map((m) => m.id)).toEqual(["a", "b"]);
+  });
+});
+
+describe("queueRecallTarget", () => {
+  const queue = [qm("a", "one"), qm("b", "two"), qm("c", "three")];
+
+  test("Up from composer recalls the newest message", () => {
+    expect(queueRecallTarget(queue, null, "up")).toBe("c");
+  });
+
+  test("Down from composer does nothing", () => {
+    expect(queueRecallTarget(queue, null, "down")).toBeNull();
+  });
+
+  test("Up steps to the previous (older) message", () => {
+    expect(queueRecallTarget(queue, "c", "up")).toBe("b");
+    expect(queueRecallTarget(queue, "b", "up")).toBe("a");
+  });
+
+  test("Up at the oldest message stays put", () => {
+    expect(queueRecallTarget(queue, "a", "up")).toBeNull();
+  });
+
+  test("Down steps to the next (newer) message", () => {
+    expect(queueRecallTarget(queue, "a", "down")).toBe("b");
+  });
+
+  test("Down past the newest exits to the composer", () => {
+    expect(queueRecallTarget(queue, "c", "down")).toBeNull();
+  });
+
+  test("empty queue has no target", () => {
+    expect(queueRecallTarget([], null, "up")).toBeNull();
   });
 });
