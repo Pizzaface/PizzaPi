@@ -41,7 +41,9 @@ pull it in. To package the native side, run a mobile build (which runs
 bun run build:mobile   # builds UI + copies to mobile/app + cap sync (installs the native plugin)
 ```
 
-`capacitor.config.ts` already sets `CapacitorUpdater: { autoUpdate: false }`.
+`capacitor.config.ts` already sets `CapacitorUpdater: { autoUpdate: false }`
+(manual mode) and `statsUrl: ""` (no telemetry to Capgo — self-hosted installs
+never phone home on `notifyAppReady()`/update events).
 
 ## Publishing an update
 

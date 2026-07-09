@@ -1,5 +1,5 @@
 import { createRoot } from "react-dom/client";
-import { createElement } from "react";
+import { createElement, useEffect } from "react";
 import { App } from "./App.js";
 import { ErrorBoundary } from "./components/ui/error-boundary.js";
 import { AttentionProvider } from "./attention/index.js";
@@ -19,6 +19,22 @@ if (savedTheme === "dark" || (!savedTheme && window.matchMedia("(prefers-color-s
 // fragment) before installing the fetch patch / rendering. No-op on web.
 // Wrapped in an async boot function (not top-level await) so the build target
 // stays compatible with older browsers.
+// Fires the mobile OTA hooks, but only from a mount effect — i.e. AFTER React
+// has successfully committed. Rendered as a sibling of <App> inside the root
+// ErrorBoundary: if App throws during initial render, the boundary replaces the
+// whole subtree and this effect never runs, so we never tell Capgo the bundle
+// is healthy and it can auto-roll-back a broken OTA. All no-ops on web.
+function OtaReadyGate(): null {
+    useEffect(() => {
+        void (async () => {
+            // Mark this bundle healthy first, then look for a newer one.
+            await notifyOtaReady();
+            await checkAndApplyOtaUpdate();
+        })();
+    }, []);
+    return null;
+}
+
 async function boot(): Promise<void> {
     await initMobileRuntime();
 
@@ -33,14 +49,14 @@ async function boot(): Promise<void> {
     // inside App's own render method.
     createRoot(root).render(
         createElement(ErrorBoundary, { level: "root", children:
-            createElement(AttentionProvider, null, createElement(App)),
+            createElement(
+                AttentionProvider,
+                null,
+                createElement(App),
+                createElement(OtaReadyGate),
+            ),
         }),
     );
-
-    // Mobile OTA (no-op on web): confirm this bundle booted (cancels Capgo's
-    // auto-rollback), then check the relay for a newer bundle in the background.
-    void notifyOtaReady();
-    void checkAndApplyOtaUpdate();
 }
 
 // A silent boot failure used to leave a black screen (dark theme bg + no
