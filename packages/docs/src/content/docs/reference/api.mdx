@@ -1,13 +1,13 @@
 ---
 title: Server API Reference
-description: HTTP and WebSocket API endpoints exposed by the PizzaPi relay server.
+description: HTTP API endpoints exposed by the PizzaPi relay server.
 sidebar:
   order: 3
 ---
 
 import { Aside } from "@astrojs/starlight/components";
 
-The relay server exposes a REST-like HTTP API used by both the web UI and the CLI. Most endpoints require authentication via an **API key** (CLI) or **session cookie** (browser).
+The relay server exposes a REST-like HTTP API used by both the web UI and the CLI. Most endpoints require authentication via an **API key** (CLI) or **session cookie** (browser). The real-time event channel is Socket.IO; this page covers the HTTP surface only.
 
 <Aside type="note">
   This is an internal API — it's used by the official clients. It may change between versions.
@@ -19,10 +19,10 @@ The relay server exposes a REST-like HTTP API used by both the web UI and the CL
 
 ### API Key (CLI)
 
-Pass your API key in the `Authorization` header:
+Pass your API key in the `x-api-key` header:
 
 ```http
-Authorization: Bearer pk_live_abc123...
+x-api-key: <64-character hex key>
 ```
 
 ### Session Cookie (Browser)
@@ -44,8 +44,22 @@ GET /health
 **Response:**
 
 ```json
-{ "status": "ok" }
+{
+  "status": "ok",
+  "redis": true,
+  "socketio": true,
+  "uptime": 1234,
+  "version": {
+    "server": "0.80.3",
+    "socketProtocol": 1,
+    "buildTimestamp": "2026-07-09T00:00:00.000Z"
+  }
+}
 ```
+
+<Aside type="note">
+  `GET /status` and `GET /api/status` are aliases of `/health`. If Redis or Socket.IO is unavailable, `status` becomes `"degraded"`.
+</Aside>
 
 ---
 
@@ -72,8 +86,10 @@ Register a new account or log in to an existing one and issue a CLI API key. Use
 **Response:**
 
 ```json
-{ "ok": true, "key": "pk_live_abc123..." }
+{ "ok": true, "key": "a1b2c3d4e5f6..." }
 ```
+
+Keys are 64-character hex strings generated with `crypto.randomBytes(32)`.
 
 ---
 
@@ -88,14 +104,25 @@ List all registered runner daemons.
 **Response:**
 
 ```json
-[
-  {
-    "id": "runner_a1b2c3",
-    "name": "my-macbook",
-    "connected": true,
-    "sessions": ["session_x1y2z3"]
-  }
-]
+{
+  "runners": [
+    {
+      "runnerId": "runner_a1b2c3",
+      "name": "my-macbook",
+      "roots": ["/Users/jordan/Projects"],
+      "sessionCount": 1,
+      "skills": [],
+      "agents": [],
+      "version": "0.80.3",
+      "platform": "darwin",
+      "serviceIds": ["git", "godmother"],
+      "panels": [],
+      "triggerDefs": [],
+      "sigilDefs": [],
+      "warnings": []
+    }
+  ]
+}
 ```
 
 ---
@@ -113,7 +140,16 @@ Spawn a new agent session on a runner.
   "runnerId": "runner_a1b2c3",
   "prompt": "Fix all TypeScript errors",
   "cwd": "/path/to/project",
-  "model": "claude-opus-4-5"
+  "model": { "provider": "anthropic", "id": "claude-opus-4-5" },
+  "agent": {
+    "name": "reviewer",
+    "systemPrompt": "Optional override",
+    "tools": "read,bash",
+    "disallowedTools": "write-file"
+  },
+  "parentSessionId": "session_parent",
+  "resumePath": "/path/to/state.jsonl",
+  "resumeId": "session_to_resume"
 }
 ```
 
@@ -121,16 +157,20 @@ Spawn a new agent session on a runner.
 
 ```json
 {
+  "ok": true,
+  "runnerId": "runner_a1b2c3",
   "sessionId": "session_x1y2z3",
-  "shareUrl": "https://relay.example.com/sessions/session_x1y2z3"
+  "pending": false
 }
 ```
+
+If the runner's spawn acknowledgement times out, `pending` is `true`.
 
 ---
 
 ### `POST /api/runners/restart`
 
-Restart an agent session on a runner. Sends a restart signal to the runner daemon.
+Restart the runner daemon (and all sessions running on it).
 
 **Auth:** Session cookie.
 
@@ -263,7 +303,10 @@ List registered services and UI panels for a runner.
 ```json
 {
   "serviceIds": ["git", "godmother"],
-  "panels": [{ "id": "panel-1", "title": "Service Panel" }]
+  "disabledServiceIds": [],
+  "panels": [{ "id": "panel-1", "title": "Service Panel" }],
+  "triggerDefs": [],
+  "sigilDefs": []
 }
 ```
 
@@ -445,7 +488,7 @@ Read the contents of a file on the runner. Supports UTF-8 text and base64-encode
 
 ### Git Operations
 
-Git operations (status, diff, branches, checkout, stage, unstage, commit, push) are handled entirely through the WebSocket `service_message` channel with `serviceId="git"`, not via REST endpoints. See the WebSocket section below.
+Git operations (status, diff, branches, checkout, stage, unstage, commit, push) are handled entirely through the Socket.IO `service_message` channel with `serviceId="git"`, not via REST endpoints. See the [Protocol reference](/PizzaPi/reference/protocol/) for the namespace layout.
 
 ---
 
@@ -491,11 +534,7 @@ Update the sandbox configuration for a runner.
 }
 ```
 
-**Response:**
-
-```json
-{ "ok": true }
-```
+**Response:** The runner's acknowledgement object. The server forwards the runner command result verbatim, so the body may include additional fields beyond `ok`.
 
 ---
 
@@ -574,7 +613,8 @@ Add a trigger listener that auto-spawns sessions when a trigger fires.
   "prompt": "Review the changes",     // optional
   "cwd": "/path/to/project",          // optional
   "model": { "provider": "anthropic", "id": "claude-sonnet-4-20250514" },  // optional
-  "params": { "branch": "main" }      // optional filter params
+  "params": { "branch": "main" },     // optional filter params
+  "autoClose": true                   // optional
 }
 ```
 
@@ -829,7 +869,7 @@ Upload file attachments to a session (e.g. for the agent to process). Accepts on
 
 **Form fields:** `file` or `files` (one or more `File` entries).
 
-**Max file size:** Configured by the server (default: 10 MB).
+**Max file size:** Configured by the server (default: 30 MB, via `PIZZAPI_ATTACHMENT_MAX_FILE_SIZE_BYTES`). The HTTP body limit for upload paths is 50 MB.
 
 **Response:**
 
@@ -1184,15 +1224,23 @@ Delete a webhook.
 
 Fire a webhook — spawns a new session and delivers the payload as a trigger. **No session cookie required** — authenticated via HMAC signature.
 
-**Auth:** HMAC-SHA256 signature of the raw request body using the webhook's `secret`, sent in the `X-Webhook-Signature` header.
+**Auth:** HMAC-SHA256 signature of the request body using the webhook's `secret`. Two modes are supported and auto-detected by header presence:
 
-**Request body:** Any JSON object. If the body contains a `type` field, it's checked against the webhook's `eventFilter`.
+- **Legacy mode** (default): sign the raw request body and send only `X-Webhook-Signature`.
+- **Enhanced mode** (replay-protected): sign `${timestamp}.${nonce}.${rawBody}` and include `X-Webhook-Timestamp` (ISO string or RFC3339) and `X-Webhook-Nonce` headers. The timestamp must be within a 5-minute window and the nonce must be unique per delivery.
 
 **Headers:**
 
 ```http
 X-Webhook-Signature: <hex-encoded HMAC-SHA256>
 Content-Type: application/json
+```
+
+For enhanced mode, also include:
+
+```http
+X-Webhook-Timestamp: 2025-01-15T12:00:00.000Z
+X-Webhook-Nonce: <unique nonce>
 ```
 
 **Response:**
@@ -1206,6 +1254,8 @@ If the event type is filtered out:
 ```json
 { "ok": true, "filtered": true }
 ```
+
+A reused nonce in enhanced mode returns `409` with `{ "error": "Webhook nonce has already been used" }`.
 
 ---
 
@@ -1415,7 +1465,7 @@ Session-based tunnel proxy. All HTTP methods are supported (GET, POST, PUT, DELE
 
 **Auth:** Session cookie (must be the session owner).
 
-The request is forwarded to `127.0.0.1:{port}` on the runner. HTML, JS, and CSS responses are rewritten to route absolute paths through the tunnel prefix. Auth headers (`Cookie`, `Authorization`, `x-api-key`) are stripped before forwarding.
+The request is forwarded to `127.0.0.1:{port}` on the runner. HTML, JS, and CSS responses are rewritten to route absolute paths through the tunnel prefix. Auth headers (`Cookie`, `Authorization`, `x-api-key`, `Referer`) and hop-by-hop headers (`Host`, `Accept-Encoding`, etc.) are stripped before forwarding. `apiKey` and `tunnelToken` query parameters are removed from the forwarded URL.
 
 ---
 
@@ -1424,3 +1474,5 @@ The request is forwarded to `127.0.0.1:{port}` on the runner. HTML, JS, and CSS 
 Runner-based tunnel proxy (preferred). Same as above but addressed by runner ID instead of session ID, making the URL stable across session restarts.
 
 **Auth:** Session cookie (must own the runner).
+
+The request is forwarded to `127.0.0.1:{port}` on the runner. HTML, JS, and CSS responses are rewritten to route absolute paths through the tunnel prefix. Auth headers (`Cookie`, `Authorization`, `x-api-key`, `Referer`) and hop-by-hop headers (`Host`, `Accept-Encoding`, etc.) are stripped before forwarding. `apiKey` and `tunnelToken` query parameters are removed from the forwarded URL.

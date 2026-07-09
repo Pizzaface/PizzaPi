@@ -49,11 +49,12 @@ A LaunchDaemon runs outside your login session, so the keychain is locked and in
    which bun
    # /Users/yourname/.bun/bin/bun
 
-   which pizza
-   # /Users/yourname/.bun/bin/pizza
+   which pizzapi
+   # /Users/yourname/.bun/bin/pizzapi   # if installed with Bun globally
+   # /usr/local/bin/pizzapi             # if installed with npm globally
    ```
 
-   Note these paths — you'll need them for the plist file.
+   Paste the real paths from your machine into the plist below. The exact location depends on whether you installed via `npm` or `bun`.
 
 3. ### Create the LaunchAgent plist
 
@@ -75,16 +76,12 @@ A LaunchDaemon runs outside your login session, so the keychain is locked and in
        <key>ProgramArguments</key>
        <array>
            <string>/Users/yourname/.bun/bin/bun</string>
-           <string>/Users/yourname/.bun/bin/pizza</string>
+           <string>/Users/yourname/.bun/bin/pizzapi</string>
            <string>runner</string>
        </array>
 
        <key>EnvironmentVariables</key>
        <dict>
-           <key>PIZZAPI_API_KEY</key>
-           <string>your-api-key-here</string>
-           <key>PIZZAPI_RELAY_URL</key>
-           <string>https://your-relay-server.example.com/</string>
            <key>PATH</key>
            <string>/Users/yourname/.bun/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
        </dict>
@@ -96,7 +93,12 @@ A LaunchDaemon runs outside your login session, so the keychain is locked and in
        <true/>
 
        <key>KeepAlive</key>
-       <true/>
+       <dict>
+           <key>SuccessfulExit</key>
+           <false/>
+           <key>Crashed</key>
+           <true/>
+       </dict>
 
        <key>StandardOutPath</key>
        <string>/Users/yourname/.pizzapi/logs/runner.log</string>
@@ -108,7 +110,7 @@ A LaunchDaemon runs outside your login session, so the keychain is locked and in
    ```
 
    <Aside type="tip">
-     Your API key is in `~/.pizzapi/config.json` (the `apiKey` field). Your relay URL is in the same file.
+     Your API key and relay URL are read from `~/.pizzapi/config.json` (written by `pizzapi setup`). You do not need to duplicate them in the plist — only `PATH` is required because `launchd` does not inherit your shell's `PATH`.
    </Aside>
 
 4. ### Create the log directory
@@ -143,16 +145,30 @@ A LaunchDaemon runs outside your login session, so the keychain is locked and in
 
 ### Stop the runner
 
+The preferred way to stop is the graceful CLI command:
+
+```bash
+pizzapi runner stop
+```
+
+This SIGTERMs the supervisor, which forwards the signal to the daemon so it releases its lock and disconnects cleanly.
+
+Reserve `launchctl unload` for when you need to edit the plist itself — it disconnects all active sessions:
+
 ```bash
 launchctl unload ~/Library/LaunchAgents/com.pizzapi.runner.plist
 ```
 
 ### Restart the runner
 
+Inside a running session you can use `/restart`, which triggers the supervisor to respawn the daemon. To restart the whole service from the shell:
+
 ```bash
-launchctl unload ~/Library/LaunchAgents/com.pizzapi.runner.plist
+pizzapi runner stop
 launchctl load ~/Library/LaunchAgents/com.pizzapi.runner.plist
 ```
+
+Or, if you only changed environment variables that the daemon reads from `~/.pizzapi/config.json`, a `/restart` is enough — no `launchctl` needed.
 
 ### View logs
 
@@ -180,7 +196,7 @@ The output columns are: **PID**, **exit code**, **label**. A `-` for PID means t
 |-----|----------|-------------|
 | `Label` | ✅ | Unique identifier for the service |
 | `ProgramArguments` | ✅ | Command to run — must be full paths (no `~` expansion) |
-| `EnvironmentVariables` | ✅ | Must include `PIZZAPI_API_KEY`, `PIZZAPI_RELAY_URL`, and `PATH` |
+| `EnvironmentVariables` | ✅ | Must include `PATH` (launchd does not inherit your shell path). `PIZZAPI_API_KEY` and `PIZZAPI_RELAY_URL` are optional — the daemon falls back to `~/.pizzapi/config.json` when they are absent. |
 | `WorkingDirectory` | — | Default working directory for spawned sessions |
 | `RunAtLoad` | — | Start automatically when the agent is loaded (including on login) |
 | `KeepAlive` | — | Restart automatically if the process exits |
@@ -231,11 +247,10 @@ If you previously set up PizzaPi as a LaunchDaemon (in `/Library/LaunchDaemons/`
 
 ### Verifying keychain access
 
-You can test whether the runner process has keychain access:
+You can test whether the runner process has keychain access with the `security` command. The exact service name depends on your `gh` version and how the token was stored; for example:
 
 ```bash
-# Should return the token (not an error)
-security find-generic-password -s "gh:github.com" -w
+security find-generic-password -s 'gh:github.com' -w
 ```
 
 If this returns `errSecInteractionNotAllowed`, the keychain is locked — you're likely running as a LaunchDaemon.

@@ -36,24 +36,6 @@ import { Tabs, TabItem, Aside } from "@astrojs/starlight/components";
   npx @pizzapi/pizza
   ```
   </TabItem>
-  <TabItem label="Pre-built binary">
-  Download a binary for your platform from the [GitHub Releases page](https://github.com/Pizzaface/PizzaPi/releases) and put it on your `PATH`.
-
-  | Platform | Architectures |
-  |----------|--------------|
-  | Linux | x64, arm64 |
-  | macOS | x64, arm64 (Apple Silicon) |
-  | Windows | x64 |
-
-  ```bash
-  # Linux / macOS example
-  curl -L https://github.com/Pizzaface/PizzaPi/releases/latest/download/pizzapi-linux-x64 \
-    -o pizzapi
-  chmod +x pizzapi
-  sudo mv pizzapi /usr/local/bin/
-  pizzapi --version
-  ```
-  </TabItem>
 </Tabs>
 
 ---
@@ -134,9 +116,9 @@ PizzaPi stores all its data under `~/.pizzapi/`. Here's what each file is for:
 | `~/.pizzapi/config.json` | `pizzapi setup` / manual | CLI config: API key, relay URL, skills, hooks |
 | `~/.pizzapi/auth.json` | `/login` inside a session | AI provider credentials (OAuth tokens, API keys) |
 | `~/.pizzapi/models.json` | manual / custom setup | Optional custom model + provider config (for local Ollama, proxies, vLLM, etc.). Built-in providers still work without this file. |
-| `~/.pizzapi/runner.json` | `pizzapi runner` (first start) | Runner identity, name, and PID tracking (auto-generated) |
+| `~/.pizzapi/runner.json` | `pizzapi runner` (first start) | Runner identity, lock/PID tracking, and runner secret (auto-generated) |
 | `~/.pizzapi/usage-cache.json` | `pizzapi runner` | Shared provider quota cache (written by daemon, read by workers) |
-| `~/.pizzapi/logs/` | macOS LaunchAgent setup | Log files for runner stdout/stderr |
+| `~/.pizzapi/logs/` | manual ([LaunchAgent plist](/PizzaPi/deployment/mac-setup/)) | Log files for runner stdout/stderr |
 | `~/.pizzapi/web/config.json` | `pizzapi web` | Web hub settings (port, VAPID keys, origins) |
 | `~/.pizzapi/web/compose.yml` | `pizzapi web` | Auto-generated Docker Compose file (regenerated each run) |
 | `~/.pizzapi/web/data/` | `pizzapi web` | Persistent SQLite database for user accounts |
@@ -155,7 +137,7 @@ If you previously used the raw [`pi` coding agent](https://pi.dev/), PizzaPi aut
 
 The migration runs in two phases:
 
-1. **Phase 1 — `~/.pi/agent/` → `~/.pizzapi/`**: Copies sessions, auth, and other data from a legacy `pi` install into the PizzaPi config directory.
+1. **Phase 1 — `~/.pi/agent/` → `~/.pizzapi/`**: Moves (merges) sessions, auth, and other data from a legacy `pi` install into the PizzaPi config directory. Individual files are moved out of `~/.pi/agent/`, so the legacy directory is left empty.
 2. **Phase 2 — `~/.pizzapi/agent/` → `~/.pizzapi/`**: Flattens an older PizzaPi layout where data was nested under `~/.pizzapi/agent/` (caused by an earlier upstream `getAgentDir()` path). Files are merged into the flat `~/.pizzapi/` structure.
 
 Both phases are **idempotent** — they skip files that already exist at the destination and write a `.migrated` marker so they don't re-scan on subsequent startups. It's safe to re-run (e.g., if you reinstall).
@@ -176,7 +158,7 @@ To switch to a different relay server or update your credentials at any time:
 pizzapi setup
 ```
 
-This overwrites the `apiKey` in `~/.pizzapi/config.json` and prints the WebSocket URL to add to your config. After setup, manually add the relay URL if it's not the default:
+This overwrites the `apiKey` in `~/.pizzapi/config.json` and prints the WebSocket URL. **Note:** `pizzapi setup` only persists the API key; it does not write `relayUrl`. After setup, manually add the relay URL if it's not the default:
 
 ```jsonc
 // ~/.pizzapi/config.json
@@ -281,13 +263,6 @@ pizzapi web stop
   bun remove -g @pizzapi/pizza
   ```
   </TabItem>
-  <TabItem label="Pre-built binary">
-  ```bash
-  # Remove the binary from wherever you placed it
-  which pizzapi   # find it
-  sudo rm $(which pizzapi)
-  ```
-  </TabItem>
 </Tabs>
 
 ### 3. Remove all PizzaPi data
@@ -307,18 +282,8 @@ rm -rf ~/.pizzapi/web/         # web hub only
 
 ### 4. Remove macOS LaunchAgent (if installed)
 
-If you set up the runner as a macOS LaunchAgent:
-
-```bash
-launchctl unload ~/Library/LaunchAgents/com.pizzapi.runner.plist
-rm ~/Library/LaunchAgents/com.pizzapi.runner.plist
-```
+If you set up the runner as a macOS LaunchAgent, see the uninstall steps in the [Runner Daemon guide](/PizzaPi/running/runner-daemon/) and [macOS Setup guide](/PizzaPi/deployment/mac-setup/).
 
 ### 5. Remove systemd service (Linux, if installed)
 
-```bash
-sudo systemctl stop pizzapi-runner
-sudo systemctl disable pizzapi-runner
-sudo rm /etc/systemd/system/pizzapi-runner.service
-sudo systemctl daemon-reload
-```
+If you created a systemd unit for the runner, see the [Runner Daemon guide](/PizzaPi/running/runner-daemon/) for the stop/disable commands.

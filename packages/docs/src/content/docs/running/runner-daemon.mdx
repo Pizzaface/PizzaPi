@@ -66,17 +66,24 @@ pizzapi runner stop
 
 ## Runner Identity
 
-On first start, the runner generates a stable ID and saves it to `~/.pizzapi/runner.json`. This ID is used to register the runner with the relay server.
+On first start, the runner acquires a persistent identity and process lock and saves them to `~/.pizzapi/runner.json`. Treat this file as a credential — it contains the long-lived `runnerSecret` used to re-authenticate the runner with the relay.
 
 ```json
 // ~/.pizzapi/runner.json  (auto-generated, do not edit)
 {
-  "id": "runner_a1b2c3d4e5f6",
-  "name": "my-macbook"
+  "pid": 12345,
+  "supervisorPid": 12344,
+  "startedAt": "2025-01-15T10:30:00.000Z",
+  "runnerId": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+  "runnerSecret": "64-char-hex-secret"
 }
 ```
 
-The runner appears in the web UI under its ID and can be targeted by `spawn_session` calls.
+- `runnerId` — stable UUID that identifies this runner to the relay.
+- `runnerSecret` — 32-byte hex secret used to re-authenticate. Do not commit or share this file.
+- `pid` / `supervisorPid` / `startedAt` — process lock fields that detect and prevent duplicate runners.
+
+The runner appears in the web UI under its display name (from `PIZZAPI_RUNNER_NAME` or the hostname) and is targeted by `spawn_session` calls using `runnerId`.
 
 ---
 
@@ -89,7 +96,8 @@ Agents can spawn sub-sessions using the built-in `spawn_session` tool:
 const { sessionId, shareUrl } = await spawn_session({
   prompt: "Fix all TypeScript errors in packages/server/src/",
   cwd: "/path/to/project",
-  runnerId: "runner_a1b2c3d4e5f6",   // optional — defaults to current runner
+  runnerId: "a1b2c3d4-e5f6-7890-abcd-ef1234567890",   // optional — defaults to current runner
+  model: { provider: "anthropic", id: "claude-sonnet-4-20250514" }, // optional
 });
 ```
 
@@ -129,8 +137,9 @@ User=youruser
 ExecStart=/usr/local/bin/pizzapi runner
 Restart=on-failure
 RestartSec=5
-Environment=PIZZAPI_API_KEY=pk_live_abc123...
+Environment=PIZZAPI_API_KEY=your-64-char-hex-api-key...
 Environment=PIZZAPI_RELAY_URL=wss://relay.example.com
+Environment=PIZZAPI_RUNNER_NAME=my-macbook
 
 [Install]
 WantedBy=multi-user.target
@@ -144,19 +153,11 @@ sudo systemctl status pizzapi-runner
 
 ### macOS (launchd)
 
-See the dedicated [macOS Setup](/PizzaPi/deployment/mac-setup/) guide for a full walkthrough. The key points:
+See the dedicated [macOS Setup](/PizzaPi/deployment/mac-setup/) guide for a full walkthrough, including the LaunchAgent plist and load/unload commands. The key points:
 
 - Use a **LaunchAgent** (`~/Library/LaunchAgents/`), not a LaunchDaemon
 - LaunchAgents run inside your login session with **keychain access**
 - LaunchDaemons cannot access the keychain (`gh`, SSH keys, etc. will fail)
-
-```bash
-# Load / start
-launchctl load ~/Library/LaunchAgents/com.pizzapi.runner.plist
-
-# Unload / stop
-launchctl unload ~/Library/LaunchAgents/com.pizzapi.runner.plist
-```
 
 ### pm2
 
@@ -174,38 +175,10 @@ pm2 startup   # generate startup script
 pizzapi runner stop
 ```
 
-This sends a graceful shutdown signal. Active session workers are allowed to finish before the daemon exits.
+This sends SIGTERM to the supervisor and polls for up to 10 seconds, then force-kills with SIGKILL if it has not exited. The daemon disconnects from the relay and releases its lock immediately; workers are independent processes that may continue running or be reaped by the system.
 
 ---
 
 ## Session Linking & Triggers
 
-When sessions are spawned via `spawn_session`, the runner daemon automatically **links them as parent-child**. This enables the conversation trigger system:
-
-### How It Works
-
-1. The `spawn_session` tool includes the current session's ID as `parentSessionId` in the spawn request
-2. The server stores the parent-child relationship in Redis
-3. The runner daemon passes `PIZZAPI_WORKER_PARENT_SESSION_ID` to the child worker process
-4. The child's trigger system detects it's a child session and routes events to the parent
-
-### Automatic Triggers
-
-Child sessions fire triggers through the relay server when they need input:
-
-| Event | Trigger Type | Behavior |
-|---|---|---|
-| `AskUserQuestion` called | `ask_user_question` | Question and options sent to parent; parent responds with `respond_to_trigger` |
-| `plan_mode` called | `plan_review` | Plan sent to parent for approval; parent approves, rejects, or suggests edits |
-| Session exits | `session_complete` | Completion summary sent to parent |
-| Error occurs | `session_error` | Error details sent to parent |
-
-### Parent Tools
-
-The parent session has three tools for interacting with child triggers:
-
-- **`respond_to_trigger(triggerId, response)`** — Respond to a pending trigger
-- **`escalate_trigger(triggerId)`** — Pass a trigger to the human viewer
-- **`tell_child(sessionId, message)`** — Proactively send a message to a child
-
-All trigger routing goes through the relay server via Socket.IO events (`session_trigger` and `trigger_response`).
+When sessions are spawned via `spawn_session`, the runner daemon automatically **links them as parent-child**. This enables the conversation trigger system. See the [Multi-Agent Sessions](/PizzaPi/features/multi-agent/) guide for the full list of trigger types, response actions, and delivery semantics.

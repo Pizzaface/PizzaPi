@@ -269,6 +269,7 @@ Add a `triggers` array to `manifest.json`. Each entry describes a trigger type:
 | `label` | Yes | Human-readable label for the UI and agent tools |
 | `description` | No | When/why this trigger fires |
 | `schema` | No | JSON Schema describing the trigger payload |
+| `params` | No | Array of subscription params the service accepts. Each: `name`, `label`, `type` (`string`/`number`/`boolean`/`json`), `description`, `required`, `default`, `enum`, `multiselect` |
 
 ```json
 "triggers": [
@@ -319,8 +320,9 @@ await fetch(`${relayUrl}/api/runners/${runnerId}/trigger-broadcast`, {
 | `type` | Yes | Must match a type declared in the manifest `triggers[]` array |
 | `payload` | Yes | Arbitrary JSON object delivered to subscribers |
 | `source` | No | Identifier shown in trigger history (typically the service name) |
-| `deliverAs` | No | `"steer"` interrupts the current turn; `"followUp"` (default) queues after the turn ends |
+| `deliverAs` | No | `"steer"` interrupts the current turn; `"followUp"` queues after the turn ends. Default: `"followUp"`. |
 | `summary` | No | Human-readable one-liner for trigger history |
+| `expectsResponse` | No | Whether the delivered trigger expects a response from the agent/viewer |
 
 The relay fans out the trigger to every session subscribed to that type on this runner.
 
@@ -559,6 +561,7 @@ Each entry describes a sigil type using the `ServiceSigilDef` schema:
 | `resolve` | No | API endpoint path to resolve a sigil ID to display data (e.g. PR number → title/status) |
 | `schema` | No | JSON Schema for sigil params (`[[type:id key=val]]`) |
 | `aliases` | No | Alternative type names that resolve to this sigil (e.g. `["pull-request", "mr"]`) |
+| `icon` | No | Lucide icon name rendered with the sigil |
 
 ### Example: GitHub Service Sigils
 
@@ -654,7 +657,7 @@ function getApiKey(): string | null {
 async function broadcastTrigger(
     type: string,
     payload: Record<string, unknown>,
-    opts?: { deliverAs?: "steer" | "followUp"; summary?: string },
+    opts?: { deliverAs?: "steer" | "followUp"; summary?: string; expectsResponse?: boolean },
 ): Promise<void> {
     const runnerId = readRunnerId();
     const apiKey = getApiKey();
@@ -667,7 +670,7 @@ async function broadcastTrigger(
             type,
             payload,
             source: "my-service",
-            deliverAs: opts?.deliverAs ?? "followUp",
+            deliverAs: opts?.deliverAs ?? "steer",
             summary: opts?.summary,
         }),
     }).catch(err => console.error("[my-service] trigger broadcast failed:", err));
@@ -680,7 +683,7 @@ class MyService {
 
     #server: Server | null = null;
 
-    init(_socket: any, { announcePanel }: any) {
+    init(_socket: any, { announcePanel, announceSigilServer }: any) {
         const panelDir = join(dirname(fileURLToPath(import.meta.url)), "panel");
         const indexHtml = readFileSync(join(panelDir, "index.html"), "utf-8");
 
@@ -716,6 +719,9 @@ class MyService {
         if (announcePanel) {
             announcePanel(this.#server.port);
         }
+        if (announceSigilServer) {
+            announceSigilServer(this.#server.port);
+        }
     }
 
     dispose() {
@@ -730,18 +736,18 @@ export default MyService;
 ```
 
 **Lifecycle:**
-- **`init(socket, context)`** — called when the runner starts. Start your HTTP server, call `announcePanel(port)` to register the panel, and set up any trigger-firing logic.
+- **`init(socket, context)`** — called when the runner starts. Start your HTTP server, call `announcePanel(port)` to register a panel or `announceSigilServer(port)` to register a sigil-resolve server, and set up any trigger-firing logic.
 - **`dispose()`** — called on shutdown. Must clean up the HTTP server to avoid port leaks.
 
 <Aside type="caution">
-  Always call `announcePanel(port)` after starting your server — without it, the panel won't appear in the UI. If your service has no panel, skip this call.
+  Always call `announcePanel(port)` after starting your server — without it, the panel won't appear in the UI. If your service declares sigils but no panel, call `announceSigilServer(port)` so the tunnel can route resolve requests. If your service has neither, skip both calls.
 </Aside>
 
 ---
 
 ## Panel Guidelines
 
-Panels render inside a **280px-tall iframe** in the PizzaPi web interface. Key constraints:
+Panels render inside an iframe in the PizzaPi web interface. The bottom dock is **280px tall**; the side dock is **320px wide**. Key constraints:
 
 - **Self-contained** — all CSS and JS must be inline (no build step required)
 - **Dark theme** — match PizzaPi's dark UI:
@@ -751,14 +757,14 @@ Panels render inside a **280px-tall iframe** in the PizzaPi web interface. Key c
   ```
 - **Relative API URLs** — use `./api/data` (the tunnel proxy preserves the path)
 - **Polling for live data** — use `setInterval` + `fetch` (typically 3–5s intervals)
-- **No external CDN scripts** — the iframe is sandboxed; external scripts may be blocked
+- **Keep panels self-contained** — external resources may fail depending on CSP/network
 - **CORS headers** — API responses need `Access-Control-Allow-Origin: *`
 
 ---
 
 ## How It Works
 
-1. The runner daemon discovers service folders in `~/.pizzapi/services/` (and plugin `services/` dirs)
+1. The runner daemon discovers service folders in `~/.pizzapi/services/`, project-local `.pizzapi/services/`, and plugin service declarations
 2. It reads `manifest.json` for panel metadata and trigger definitions
 3. It loads the service module and calls `init(socket, { announcePanel })`
 4. The service starts `Bun.serve()` on port 0 and calls `announcePanel(port)`
@@ -780,6 +786,7 @@ Panels render inside a **280px-tall iframe** in the PizzaPi web interface. Key c
 | Expose an API | Add route checks in the `fetch` handler |
 | Get a random port | `Bun.serve({ port: 0 })` then read `.port` |
 | Announce the panel | Call `announcePanel(server.port)` in `init()` |
+| Announce a sigil server | Call `announceSigilServer(server.port)` in `init()` |
 | Match PizzaPi theme | `#0a0a0b` bg, `#e4e4e7` text, `#27272a` borders |
 | Choose an icon | Browse [lucide.dev/icons](https://lucide.dev/icons), use kebab-case |
 
@@ -794,6 +801,6 @@ Panels render inside a **280px-tall iframe** in the PizzaPi web interface. Key c
 | Panel doesn't appear in UI | Check that `announcePanel()` is called after the server starts |
 | Blank panel iframe | Tunnel proxy can't reach local server — check the service is still running |
 | API calls fail in panel | Add `Access-Control-Allow-Origin: *` header to API responses |
-| Large panel doesn't fit | Panel container is 280px tall — design accordingly |
+| Large panel doesn't fit | Bottom dock is 280px tall; side dock is 320px wide — design accordingly |
 | Absolute API URLs break | Use relative URLs (`./api/...`) — the tunnel proxy rewrites paths |
 | Port leak after restart | Ensure `dispose()` calls `server.stop(true)` |

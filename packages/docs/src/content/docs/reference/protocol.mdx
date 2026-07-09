@@ -61,13 +61,15 @@ The primary control channel between a running `pi` agent session (TUI) and the r
 | `delink_children` | Sever all child links (e.g. on `/new`) |
 | `delink_own_parent` | Child severs its own parent link |
 | `exec_result` | Return the result of a remote exec command |
+| `get_linked_child_count` | Query the current number of linked child sessions (ack returns `{ ok, count?, error? }`) |
 
 **Key server→client events:**
 
 | Event | Purpose |
 |---|---|
-| `registered` | Confirm registration — returns `sessionId`, `token`, `shareUrl` |
+| `registered` | Confirm registration — returns `sessionId`, `token`, `shareUrl`, `isEphemeral`, `collabMode`, `parentSessionId`, `serverTime`, `supportsSessionTriggerAck`, `wasDelinked` |
 | `event_ack` | Acknowledge receipt of a sequenced event |
+| `connected` | Notify TUI that a viewer connected |
 | `input` | Deliver viewer input to the agent (with optional attachments) |
 | `model_set` | Instruct agent to switch model |
 | `exec` | Remote command execution request |
@@ -75,6 +77,9 @@ The primary control channel between a running `pi` agent session (TUI) and the r
 | `trigger_response` | Deliver a trigger response back to source child |
 | `parent_delinked` | Notify child that its parent ran `/new` |
 | `session_expired` | Notify that a session has expired |
+| `session_message` | Deliver an inter-session message |
+| `session_message_error` | Report failure delivering an inter-session message |
+| `error` | Generic error |
 
 ### `/viewer` — Browser ↔ Server
 
@@ -86,8 +91,10 @@ Connects the web UI to a specific session. Viewers receive replayed event histor
 
 | Event | Purpose |
 |---|---|
+| `connected` | Viewer greeting that triggers TUI capabilities push |
 | `switch_session` | Logically switch the socket to a different session (with generation counter) |
 | `resync` | Request a fresh snapshot replay |
+| `load_messages` | Request older messages for pagination (paired with `session_messages_page`) |
 | `input` | Send user input (collab mode) |
 | `model_set` | Switch model (collab mode) |
 | `exec` | Remote exec command |
@@ -102,9 +109,13 @@ Connects the web UI to a specific session. Viewers receive replayed event histor
 | `connected` | Confirm viewer attachment — includes `lastSeq`, `replayOnly`, `isActive` |
 | `event` | Forward an agent event (with optional `replay` flag and `generation`) |
 | `disconnected` | Agent disconnected (with reason code) |
+| `exec_result` | Forward an exec result back to the viewer |
 | `service_message` | Service message from runner |
 | `service_announce` | Available services on the connected runner |
+| `service_announce_delta` | Incremental delta update for service announcements |
+| `error` | Generic error |
 | `trigger_error` | Error delivering a trigger response (carries `triggerId` for UI matching) |
+| `session_messages_page` | Response to `load_messages` — a page of older messages |
 
 <Aside type="tip">
   The `generation` field on viewer events prevents stale events from a previous session leaking into the current view after a `switch_session` call. The viewer discards any event whose generation doesn't match the latest requested switch.
@@ -127,10 +138,12 @@ The largest namespace — handles runner lifecycle, session spawning, terminal m
 | `skill_result` / `agent_result` / `file_result` | Respond to CRUD operations |
 | `models_list` | Return available models |
 | `usage_data` / `usage_error` | Usage dashboard data |
+| `analyze_session_data` / `analyze_session_error` | On-demand session analysis responses |
 | `service_message` / `service_announce` | Service communication and discovery |
 | `runner_warning` / `runner_warning_clear` | Report/clear runner warnings |
 | `terminal_ready` / `terminal_data` / `terminal_exit` / `terminal_error` | Terminal PTY output |
 | `disconnect_session` | Request relay to disconnect an adopted session |
+| `trigger_subscriptions_applied` | Ack a trigger subscription snapshot or delta |
 
 **Key server→client events:**
 
@@ -139,14 +152,20 @@ The largest namespace — handles runner lifecycle, session spawning, terminal m
 | `runner_registered` | Confirm registration — includes `existingSessions` for re-adoption |
 | `new_session` | Spawn a session (with cwd, prompt, model, skills, agent config, hiddenModels) |
 | `kill_session` / `session_ended` | Session lifecycle commands |
+| `list_sessions` / `list_terminals` | List active sessions or terminals |
 | `list_skills` / `create_skill` / `update_skill` / `delete_skill` / `get_skill` | Skill CRUD |
 | `list_agents` / `create_agent` / `update_agent` / `delete_agent` / `get_agent` | Agent CRUD |
 | `list_plugins` | Plugin discovery |
 | `list_files` / `search_files` / `read_file` | File operations |
 | `list_models` / `get_usage` | Model and usage queries |
+| `analyze_session` | On-demand session context analysis |
+| `settings_get_config` / `settings_update_section` | Read/write runner settings |
+| `packages_list` / `packages_install` / `packages_remove` / `packages_update` | Package management |
 | `new_terminal` / `terminal_input` / `terminal_resize` / `kill_terminal` | Terminal PTY control |
 | `service_message` | Forward a service message from a viewer |
 | `sandbox_get_status` / `sandbox_update_config` | Sandbox configuration |
+| `trigger_subscriptions_snapshot` / `trigger_subscription_delta` | Trigger subscription reconciliation |
+| `reconfigure_services` | Update disabled service list |
 | `restart` / `shutdown` / `ping` | Runner lifecycle |
 
 ### `/hub` — Session List Feed
@@ -241,8 +260,10 @@ interface RunnerInfo {
   version: string | null;
   platform?: string | null;
   serviceIds?: string[];
+  disabledServiceIds?: string[];
   panels?: ServicePanelInfo[];
   triggerDefs?: ServiceTriggerDef[];
+  sigilDefs?: ServiceSigilDef[];
   warnings?: string[];
 }
 ```
@@ -280,6 +301,7 @@ interface ServicePanelInfo {
   port: number;       // Local port, proxied via tunnel
   label: string;      // Button label in UI
   icon: string;       // Lucide icon name
+  panelParams?: Record<string, string>;
 }
 
 interface ServiceTriggerDef {
@@ -301,6 +323,10 @@ interface TunnelInfo {
   pinned?: boolean;  // Auto-registered by daemon — hidden from UI tunnel list
 }
 ```
+
+### Service Sigils & Trigger Subscriptions
+
+Services can also declare **sigil types** (`ServiceSigilDef`) for inline references rendered in the UI, and **trigger filters** (`TriggerFilter` / `TriggerFilterMode`) so subscribers can restrict which events they receive. Trigger subscriptions are reconciled between server and runner via `TriggerSubscriptionsSnapshot`, `TriggerSubscriptionDelta`, and the `trigger_subscriptions_applied` ack in the `/runner` namespace.
 
 ## Session Meta-State
 
@@ -324,14 +350,17 @@ The authoritative shape stored in Redis. Key fields:
 | `mcpStartupReport` | `MetaMcpReport \| null` | MCP server startup timing/errors |
 | `tokenUsage` | `MetaTokenUsage \| null` | Input/output/cache token counts + cost |
 | `providerUsage` | `MetaProviderUsage \| null` | Per-provider usage breakdown |
+| `thinkingLevel` | `string \| null` | Current thinking level (e.g. "basic", "deep") |
+| `authSource` | `string \| null` | Source of the current auth context |
 | `model` | `MetaModelInfo \| null` | Current model |
+| `goal` | `MetaGoalStatus \| null` | Active session goal (id, description, status, turn/token/cost budgets) |
 | `version` | `number` | Monotonic counter for change ordering |
 
 ### `MetaRelayEvent`
 
 A discriminated union of 17 event types. The CLI emits these as regular relay events; the server intercepts them (via `isMetaRelayEvent()`), applies them to Redis state (via `metaEventToPatch()`), and broadcasts to hub subscribers.
 
-Event types: `todo_updated`, `question_pending`, `question_cleared`, `plan_pending`, `plan_cleared`, `plan_mode_toggled`, `compact_started`, `compact_ended`, `retry_state_changed`, `plugin_trust_required`, `plugin_trust_resolved`, `mcp_startup_report`, `token_usage_updated`, `thinking_level_changed`, `auth_source_changed`, `model_changed`.
+Event types: `todo_updated`, `question_pending`, `question_cleared`, `plan_pending`, `plan_cleared`, `plan_mode_toggled`, `compact_started`, `compact_ended`, `retry_state_changed`, `plugin_trust_required`, `plugin_trust_resolved`, `mcp_startup_report`, `token_usage_updated`, `thinking_level_changed`, `auth_source_changed`, `model_changed`, `goal_updated`.
 
 ## Password Validation
 
@@ -406,12 +435,12 @@ When adding new events or types:
 
 | Protocol file | Server handler | CLI extension |
 |---|---|---|
-| `relay.ts` | `packages/server/src/socket/relay.ts` | Remote extension (`packages/cli/src/extensions/remote/`) |
-| `runner.ts` | `packages/server/src/socket/runner.ts` | Runner daemon (`packages/cli/src/runner/`) |
-| `viewer.ts` | `packages/server/src/socket/viewer.ts` | — (consumed by `packages/ui/`) |
-| `hub.ts` | `packages/server/src/socket/hub.ts` | — (consumed by `packages/ui/`) |
-| `runners.ts` | `packages/server/src/socket/runners.ts` | — (consumed by `packages/ui/`) |
-| `terminal.ts` | `packages/server/src/socket/terminal.ts` | Runner daemon terminal handler |
-| `meta.ts` | `packages/server/src/socket/relay.ts` (meta interception) | Remote extension (meta event emission) |
+| `relay.ts` | `packages/server/src/ws/namespaces/relay/index.ts` | Remote extension (`packages/cli/src/extensions/remote/`) |
+| `runner.ts` | `packages/server/src/ws/namespaces/runner.ts` | Runner daemon (`packages/cli/src/runner/`) |
+| `viewer.ts` | `packages/server/src/ws/namespaces/viewer.ts` | — (consumed by `packages/ui/`) |
+| `hub.ts` | `packages/server/src/ws/namespaces/hub.ts` | — (consumed by `packages/ui/`) |
+| `runners.ts` | `packages/server/src/ws/namespaces/runners.ts` | — (consumed by `packages/ui/`) |
+| `terminal.ts` | `packages/server/src/ws/namespaces/terminal.ts` | Runner daemon terminal handler |
+| `meta.ts` | `packages/server/src/ws/namespaces/relay/event-pipeline.ts` (meta interception) | Remote extension (meta event emission) |
 | `password.ts` | Auth routes | CLI auth commands, UI signup/password forms |
 | `version.ts` | Socket handshake middleware | CLI/runner connect handshake |

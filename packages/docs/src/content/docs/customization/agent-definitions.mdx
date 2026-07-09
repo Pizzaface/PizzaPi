@@ -18,7 +18,7 @@ Each agent definition is a markdown file with YAML frontmatter:
 name: researcher
 description: Read-only codebase research and analysis
 tools: read,grep,find,ls
-model: claude-sonnet-4-20250514
+model: sonnet
 ---
 
 You are a research agent. Read files, trace dependencies,
@@ -31,9 +31,12 @@ and summarize findings without modifying anything.
 |-------|------|----------|-------------|
 | `name` | string | ✅ | Identifier used to invoke the agent |
 | `description` | string | ✅ | Tells the parent agent when to use this agent; also used for skill matching |
-| `tools` | string | — | Comma-separated list of allowed tool names. Omit for all tools. |
-| `model` | string | — | Model ID override (e.g. `claude-sonnet-4-20250514`) |
-| `provider` | string | — | Provider override (e.g. `anthropic`, `google`) |
+| `tools` | string | — | Comma-separated list of allowed tool names. Omit to inherit the default coding toolset. |
+| `disallowedTools` | string | — | Comma-separated tools to remove from the inherited or specified toolset. |
+| `model` | string | — | Model override. Accepts a bare ID (`claude-haiku-4-5`), provider/id form (`anthropic/claude-haiku-4-5`), or aliases `haiku`, `sonnet`, `opus`. `inherit` or omit to auto-select the cheapest available model. |
+| `maxTurns` | number | — | Maximum agentic turns before the subagent stops. |
+| `permissionMode` | string | — | Permission mode: `default`, `acceptEdits`, `dontAsk`, `bypassPermissions`, `plan`. `plan` restricts to read-only tools. |
+| `background` | boolean | — | Hint that this agent should run as a background task. |
 
 The body text (everything after the frontmatter) becomes the agent's **system prompt**.
 
@@ -46,9 +49,11 @@ PizzaPi searches for agent definitions in these directories:
 | Path | Scope |
 |------|-------|
 | `~/.pizzapi/agents/` | Global — available in all projects |
-| `<cwd>/.pizzapi/agents/` | Project-local — scoped to this repo |
-| `~/.claude/agents/` | Claude Code compatibility |
-| `<cwd>/.claude/agents/` | Project-local Claude Code compat |
+| `~/.claude/agents/` | Global — Claude Code compatibility |
+| `<cwd>/.pizzapi/agents/` | Project-local — scoped to this repo (walk-up search from cwd) |
+| `<cwd>/.claude/agents/` | Project-local — Claude Code compatibility (walk-up search from cwd) |
+
+Within each scope, `.pizzapi/agents/` takes precedence over `.claude/agents/`. Project agents override user agents of the same name, and built-in agents are lowest priority.
 
 <FileTree>
 - ~/.pizzapi/
@@ -72,6 +77,8 @@ The `agentScope` parameter in the `subagent` tool controls which directories are
 - **`"project"`** — only project-local dirs (`.pizzapi/agents/`, `.claude/agents/`)
 - **`"both"`** — all directories
 
+When `agentScope` is `"project"` or `"both"`, project agents require confirmation. If no UI is available (headless/runner contexts), the call fails closed with a refusal. Set `confirmProjectAgents: false` in the `subagent` tool parameters to allow project agents in headless mode.
+
 ---
 
 ## Tool Restrictions
@@ -79,8 +86,8 @@ The `agentScope` parameter in the `subagent` tool controls which directories are
 The `tools:` frontmatter limits what tools the agent can access:
 
 - Comma-separated tool names: `read,grep,find,ls`
-- **Omitting `tools:`** gives the agent access to ALL tools
-- MCP tools are referenced by their prefixed name (e.g. `mcp__tavily__tavily_search`)
+- **Omitting `tools:`** gives the agent the default coding toolset: `bash`, `read`, `write`, `edit`, `grep`, `find`, `ls`
+- MCP/extension tools are **not** selectable for subagents
 - Built-in tool names: `bash`, `read`, `write`, `edit`, `grep`, `find`, `ls`
 
 <Aside type="tip" title="Restrict tools for safety">
@@ -91,13 +98,9 @@ The `tools:` frontmatter limits what tools the agent can access:
 
 ---
 
-## Using Agents
+## Using Agent Definitions
 
-There are two ways to invoke agent definitions:
-
-### subagent tool (inline, blocking)
-
-The recommended approach. Runs inline, blocks until complete, and returns output directly:
+Agent definitions are invoked through the `subagent` tool:
 
 ```json
 {
@@ -108,9 +111,9 @@ The recommended approach. Runs inline, blocks until complete, and returns output
 
 See [Subagents](/PizzaPi/customization/subagents/) for full documentation.
 
-### spawn_session (background, async)
+### spawn_session
 
-For long-running work. Runs as a separate session with triggers:
+`spawn_session` is a separate tool for launching independent linked child sessions. It takes an inline prompt and does **not** load agent definition files:
 
 ```json
 {
@@ -146,7 +149,7 @@ A read-only research agent that can explore but never modify.
 name: researcher
 description: Read-only codebase research and analysis — traces dependencies, summarizes architecture, and answers questions about the code.
 tools: read,grep,find,ls
-model: claude-sonnet-4-20250514
+model: sonnet
 ---
 
 You are a research agent. Your job is to read files, trace dependencies,
@@ -238,5 +241,5 @@ In the PizzaPi web interface, navigate to a runner's detail page and open the **
 The API writes directly to the same directories used by file-based discovery (`~/.pizzapi/agents/`, `~/.claude/agents/`, etc.). An agent created via the API is a regular `.md` file on disk — there's no separate "API-only" storage. Similarly, agents added to the filesystem can be picked up by hitting the **Refresh** button or calling the `/refresh` endpoint.
 
 <Aside type="note">
-  Agent names are validated to prevent path traversal — only alphanumeric characters, hyphens, and underscores are allowed.
+  Agent names are validated to prevent path traversal — alphanumeric characters, hyphens, underscores, and dot-separated segments; maximum 64 characters.
 </Aside>

@@ -16,9 +16,9 @@ import { Aside, Steps } from "@astrojs/starlight/components";
 The runner starts, connects to the relay, registers successfully, then crashes:
 
 ```
-pizzapi runner: connecting to relay at https://example.com/runner…
-pizzapi runner: connected. Registering as 9c0174ad-…
-pizzapi runner: registered as 9c0174ad-…
+2026-07-09T14:00:00.000Z [daemon] connecting to relay at https://example.com/runner…
+2026-07-09T14:00:00.000Z [daemon] connected. Registering as 9c0174ad-…
+2026-07-09T14:00:00.000Z [daemon] registered as 9c0174ad-…
 
 panic(thread 41472): Segmentation fault at address 0x3C
 oh no: Bun has crashed. This indicates a bug in Bun, not your code.
@@ -51,16 +51,16 @@ The runner daemon hits multiple known triggers:
 - **Long-lived process** — runs continuously
 - **`child_process.spawn()`** — spawns worker subprocesses for each session
 - **WebSocket threads** — Socket.IO background I/O
-- **`fetch()` calls** — usage cache refresh on background threads
+- **`fetch()` calls** — usage cache refresh on a recurring timer (main-thread async I/O)
 - **Compiled standalone binary** — `bun build --compile` binaries are more affected than `bun run`
 
 ---
 
 ## Affected Versions
 
-Every tested Bun version on Windows crashes: **v1.2.18, v1.2.21, v1.3.0, v1.3.5, v1.3.6, v1.3.8, v1.3.9-canary, and v1.3.10**.
+Every tested Bun version on Windows crashes through at least **v1.3.10**. The list below was last verified in early 2026:
 
-Bun v1.3.10 (the latest release as of February 2026) shipped several GC safety fixes that reduced crash frequency, but **did not fully resolve the issue** — crashes are still reported on v1.3.10.
+**v1.2.18, v1.2.21, v1.3.0, v1.3.5, v1.3.6, v1.3.8, v1.3.9-canary, and v1.3.10**.
 
 ---
 
@@ -92,7 +92,7 @@ Compiled standalone executables crash more frequently than `bun run`. If you hav
 powershell -c "irm bun.sh/install.ps1 | iex"
 
 # Clone and run from source
-git clone https://github.com/badlogic/PizzaPi.git
+git clone https://github.com/Pizzaface/PizzaPi.git
 cd PizzaPi
 bun install
 bun run build
@@ -111,7 +111,7 @@ The supervisor process automatically restarts the daemon on crash, so the runner
 
 ### 4. Remove `.env` Files
 
-One confirmed trigger is standalone executables crashing when a `.env` file exists in the working directory. The dotenv loader mutates environment state across threads. Try removing or renaming any `.env` file in the directory where you run the runner.
+If a `.env` file exists in the runner's working directory, try removing or renaming it as a test. Bun loads `.env` files automatically and, anecdotally, some standalone executables have crashed when one is present.
 
 ### 5. Use a Linux or macOS Machine
 
@@ -151,6 +151,6 @@ This is tracked across multiple GitHub issues:
 
 ## When Will This Be Fixed?
 
-The Bun team is aware of the issue and has been shipping incremental fixes. The v1.3.10 release addressed several crash variants but the underlying JSC GC use-after-free on Windows is not fully resolved. We will update the bundled Bun version when a complete fix ships.
+The Bun team is aware of the issue and has been shipping incremental fixes. The v1.3.10 release addressed several crash variants but the underlying JSC GC use-after-free on Windows is not fully resolved. We will ship a new compiled binary built with a fixed Bun version when a complete fix ships.
 
 In the meantime, **WSL2 is the recommended way to run PizzaPi on a Windows machine**.

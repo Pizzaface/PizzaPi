@@ -40,8 +40,8 @@ Two config formats are supported:
     }
     ```
   </TabItem>
-  <TabItem label="mcp.servers (array)">
-    The `mcp.servers` format uses an array of server objects, each with an explicit `name` field.
+  <TabItem label="mcp.servers (preferred)">
+    The `mcp.servers` format uses an array of server objects, each with an explicit `name` field. PizzaPi treats this as the preferred format internally.
 
     ```jsonc
     // ~/.pizzapi/config.json
@@ -102,8 +102,8 @@ For remote MCP servers, use URL-based configuration instead of spawning a local 
 {
   "mcpServers": {
     "remote-tools": {
-      "url": "https://mcp.example.com/sse",
-      "transport": "sse"
+      "url": "https://mcp.example.com/v1/mcp",
+      "transport": "http"
     }
   }
 }
@@ -112,7 +112,7 @@ For remote MCP servers, use URL-based configuration instead of spawning a local 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `url` | `string` | ✅ | Full URL of the MCP server endpoint. |
-| `transport` | `"sse"` \| `"streamable"` | — | Transport mode. `"sse"` uses Server-Sent Events; `"streamable"` uses the newer Streamable HTTP protocol. If omitted, PizzaPi infers the transport from the URL path. |
+| `transport` | `"http"` \| `"streamable"` | — | Transport mode. `"streamable"` uses the Streamable HTTP protocol (`text/event-stream`). If omitted, plain HTTP (JSON POST) is used. |
 | `headers` | `Record<string, string>` | — | Custom HTTP headers sent with every request (e.g. API keys, auth tokens). |
 | `type` | `"http"` | — | Setting `type` to `"http"` selects Streamable HTTP transport. This matches the Claude Code / VS Code format. |
 
