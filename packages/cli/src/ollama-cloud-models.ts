@@ -147,10 +147,16 @@ export function toOllamaCloudRuntimeModel(model: OllamaCloudModel): Model<"opena
     };
 }
 
-export async function fetchOllamaCloudModels({ signal }: { signal?: AbortSignal } = {}): Promise<OllamaCloudModel[]> {
-    const cached = readCache();
-    if (cached && Date.now() - cached.fetchedAt < CACHE_TTL_MS) {
-        return cached.models;
+export async function fetchOllamaCloudModels(
+    { signal, force }: { signal?: AbortSignal; force?: boolean } = {},
+): Promise<OllamaCloudModel[]> {
+    // force skips the freshness short-circuit so the runner's 12h refresh loop
+    // always re-fetches and rewrites the cache.
+    if (!force) {
+        const cached = readCache();
+        if (cached && Date.now() - cached.fetchedAt < CACHE_TTL_MS) {
+            return cached.models;
+        }
     }
 
     const list = await fetchJson(OLLAMA_CLOUD_MODELS_URL, { signal });

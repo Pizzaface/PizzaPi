@@ -10,7 +10,8 @@ import { FileExplorerService } from "./services/file-explorer-service.js";
 import { GitService } from "./services/git-service.js";
 // Resolves @VARIABLE@ tokens used in service panel requires
 import { resolvePizzaPiVar } from "../config/io.js";
-import { mergeModelLists, readSessionModelsCache } from "../session-models-cache.js";
+import { mergeModelLists, readSessionModelsCache, type SessionModelEntry } from "../session-models-cache.js";
+import { getCachedOllamaCloudModels } from "../ollama-cloud-models.js";
 import { TunnelService } from "./services/tunnel-service.js";
 import { TimeService, TIME_TRIGGER_DEFS, TIME_SIGIL_DEFS } from "./services/time-service.js";
 import { discoverServices } from "./service-loader.js";
@@ -34,6 +35,7 @@ import { extractHookSummary } from "./hook-summary.js";
 import { sanitizeConfigForUI, restoreMaskedServerEntry, findRenamedServerMatch, MASK_SENTINEL, validateProviderOverridesSection, mergeProviderOverridesSection } from "./daemon-config-sanitize.js";
 import { defaultStatePath, acquireStateAndIdentity, releaseStateLock } from "./runner-state.js";
 import { startUsageRefreshLoop, stopUsageRefreshLoop } from "./runner-usage-cache.js";
+import { startOllamaModelsRefreshLoop, stopOllamaModelsRefreshLoop } from "./runner-ollama-models-cache.js";
 import { getWorkspaceRoots, isCwdAllowed } from "./workspace.js";
 import { type RunnerSession, spawnSession } from "./session-spawner.js";
 import { pruneSessionCloseMetadata, type SessionCloseMetadata } from "./session-close-metadata.js";
@@ -310,6 +312,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
     // Start fetching provider usage immediately so workers have cached data from
     // the moment they are spawned.  One daemon refresh covers all sessions on this node.
     startUsageRefreshLoop();
+    startOllamaModelsRefreshLoop();
 
     // Load global config so relayUrl and apiKey can be read from
     // ~/.pizzapi/config.json (important for LaunchAgent contexts where
@@ -456,10 +459,28 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                     reasoning: model.reasoning,
                     contextWindow: model.contextWindow,
                 }));
+            // Ollama Cloud models are discovered dynamically and are NOT in the
+            // static disk registry. Surface the cached list directly so newer
+            // models (e.g. glm-5.2) appear even when no live session has warmed
+            // the session snapshot yet. Gated on Ollama credentials so we don't
+            // advertise models the runner can't actually use.
+            let ollamaModels: SessionModelEntry[] = [];
+            if (authStorage.hasAuth("ollama-cloud") || process.env.OLLAMA_API_KEY) {
+                ollamaModels = (getCachedOllamaCloudModels() ?? []).map((model) => ({
+                    provider: model.provider,
+                    id: model.id,
+                    name: model.name,
+                    reasoning: model.reasoning,
+                    contextWindow: model.contextWindow,
+                }));
+            }
             // Extension-registered providers (pi packages calling registerProvider)
             // only exist inside live sessions — merge the latest session snapshot so
             // Web UI model selectors (Runner Settings, Fast Model) show them too.
-            return mergeModelLists(diskModels, readSessionModelsCache() ?? []);
+            return mergeModelLists(
+                mergeModelLists(diskModels, ollamaModels),
+                readSessionModelsCache() ?? [],
+            );
         };
         const getContextWindowsForAnalysis = (cwd = process.cwd()): Map<string, number> => {
             const windows = new Map<string, number>();
@@ -761,6 +782,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             void tunnelClient?.dispose();
             registry.disposeAll();
             stopUsageRefreshLoop();
+            stopOllamaModelsRefreshLoop();
             await closeUsage().catch((err) =>
                 logError("closeUsage failed during shutdown: " + (err instanceof Error ? err.message : String(err))),
             );
