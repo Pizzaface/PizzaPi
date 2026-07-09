@@ -250,6 +250,22 @@ describe("tryCacheSnapshot", () => {
         const result = await tryCacheSnapshot("sess-12", deps);
         expect(result).toBeNull();
     });
+
+    test("overlays fresh queuedMessages from lastState onto a stale cached snapshot", async () => {
+        const snapshotEvent = { type: "session_active", state: { messages: [], queuedMessages: [] } };
+        const deps = createDeps({
+            getLatestCachedSnapshotEvent: mock(async () => ({ event: snapshotEvent, eventsAfter: [] })),
+        });
+
+        const lastState = JSON.stringify({ messages: [], queuedMessages: ["follow up 1", "follow up 2"] });
+        const result = await tryCacheSnapshot("sess-14", deps, lastState);
+        const socket = createMockSocket();
+        result!.send(socket, 1);
+
+        expect((socket.calls[0].payload.event as any).state.queuedMessages).toEqual(["follow up 1", "follow up 2"]);
+        // Original cached event is left untouched.
+        expect(snapshotEvent.state.queuedMessages).toEqual([]);
+    });
 });
 
 // ── tryMemoryState ───────────────────────────────────────────────────────────

@@ -64,6 +64,17 @@ function maybeTruncateSnapshotState(state: unknown): unknown {
     return truncateSnapshotMessages(state as Record<string, unknown>);
 }
 
+/** Pull the fresh pending follow-up queue out of the durable lastState blob. */
+function extractLastStateQueue(lastState: string | null | undefined): string[] | null {
+    if (!lastState) return null;
+    try {
+        const parsed = JSON.parse(lastState);
+        const queue = parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>).queuedMessages : null;
+        if (Array.isArray(queue)) return queue.filter((m): m is string => typeof m === "string");
+    } catch { /* stale/corrupt lastState — leave the cached queue as-is */ }
+    return null;
+}
+
 // ── Dependency injection for testability ─────────────────────────────────────
 
 export interface SnapshotProviderDeps {
@@ -115,20 +126,27 @@ export async function tryDeltaReplay(
 export async function tryCacheSnapshot(
     sessionId: string,
     deps: SnapshotProviderDeps = defaultDeps,
+    lastState?: string | null,
 ): Promise<SnapshotResult | null> {
     const cached = await deps.getLatestCachedSnapshotEvent(sessionId);
     if (!cached) return null;
     const snapshotEvent = cached.event;
+    // The cached session_active predates later queue changes (session_metadata_update
+    // carries them but is intentionally not cached). lastState always holds the freshest
+    // reported queue, so overlay it — otherwise a stale empty queue clobbers the viewer's
+    // restored follow-ups on switch.
+    const freshQueue = extractLastStateQueue(lastState);
 
     return {
         snapshot: { type: "cache-snapshot", source: "Redis cached snapshot event" },
         send(socket, generation) {
             let eventToSend: Record<string, unknown> = snapshotEvent;
             if (snapshotEvent.type === "session_active") {
-                eventToSend = {
-                    ...snapshotEvent,
-                    state: maybeTruncateSnapshotState(snapshotEvent.state),
-                };
+                let state = maybeTruncateSnapshotState(snapshotEvent.state);
+                if (freshQueue && state && typeof state === "object" && !Array.isArray(state)) {
+                    state = { ...(state as Record<string, unknown>), queuedMessages: freshQueue };
+                }
+                eventToSend = { ...snapshotEvent, state };
             } else if (Array.isArray(snapshotEvent.messages)) {
                 eventToSend = maybeTruncateSnapshotState(snapshotEvent) as Record<string, unknown>;
             }
@@ -244,7 +262,7 @@ export async function getBestSnapshot(
 
     // ── Priority 2: Cache snapshot ───────────────────────────────────────
     try {
-        const cached = await tryCacheSnapshot(sessionId, deps);
+        const cached = await tryCacheSnapshot(sessionId, deps, lastState);
         if (cached) return cached;
     } catch {
         // Fall through
