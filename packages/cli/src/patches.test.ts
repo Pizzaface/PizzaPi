@@ -73,6 +73,30 @@ describe("pi-coding-agent patch application", () => {
         expect(source).toContain("options?.expandPromptTemplates ?? false");
     });
 
+    test("agent-session.js: pending queues are exposed to extensions (getQueuedMessages/replaceQueuedMessages)", async () => {
+        const source = await Bun.file(
+            piCodingAgentPath("dist/core/agent-session.js"),
+        ).text();
+
+        expect(source).toContain("PATCH(pizzapi): expose the pending queues");
+        expect(source).toContain("getQueuedMessages: () => ({ steering: [...this._steeringMessages], followUp: [...this._followUpMessages] })");
+        expect(source).toContain("replaceQueuedMessages: (followUp) => {");
+    });
+
+    test("loader.js + runner.js: queue read/replace wired through ExtensionAPI", async () => {
+        const loader = await Bun.file(
+            piCodingAgentPath("dist/core/extensions/loader.js"),
+        ).text();
+        const runner = await Bun.file(
+            piCodingAgentPath("dist/core/extensions/runner.js"),
+        ).text();
+
+        expect(loader).toContain("getQueuedMessages()");
+        expect(loader).toContain("replaceQueuedMessages(followUp)");
+        expect(runner).toContain("this.runtime.getQueuedMessages = actions.getQueuedMessages");
+        expect(runner).toContain("this.runtime.replaceQueuedMessages = actions.replaceQueuedMessages");
+    });
+
     test("interactive-mode.js: version check call is removed from run()", async () => {
         const source = await Bun.file(
             piCodingAgentPath("dist/modes/interactive/interactive-mode.js"),

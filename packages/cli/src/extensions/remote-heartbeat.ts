@@ -3,7 +3,7 @@
  */
 
 import type { RelayContext } from "./remote-types.js";
-import { emitSessionMetadataUpdate } from "./remote/chunked-delivery.js";
+import { emitSessionMetadataUpdate, readQueuedFollowUps } from "./remote/chunked-delivery.js";
 
 let tokenUsageCache: { key: string; value: ReturnType<typeof buildTokenUsage> } | null = null;
 
@@ -48,6 +48,7 @@ export function buildHeartbeat(rctx: RelayContext) {
         sessionName: rctx.getCurrentSessionName(),
         uptime: rctx.sessionStartedAt !== null ? Date.now() - rctx.sessionStartedAt : null,
         cwd: rctx.latestCtx?.cwd ?? null,
+        queuedMessages: readQueuedFollowUps(rctx),
     };
 }
 
