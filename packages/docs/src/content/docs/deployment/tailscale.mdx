@@ -20,23 +20,9 @@ If you're running PizzaPi on a machine in your [Tailscale](https://tailscale.com
 ## Setup
 
 <Steps>
-1. **Generate a TLS certificate**
+1. **Start Tailscale Serve**
 
-   Tailscale can provision a Let's Encrypt certificate for your machine's Tailscale hostname:
-
-   ```bash
-   tailscale cert your-hostname.tail12345.ts.net
-   ```
-
-   This writes `your-hostname.tail12345.ts.net.crt` and `.key` to the current directory. Tailscale Serve uses these automatically — you don't need to configure them manually.
-
-   <Aside type="tip">
-     Find your Tailscale hostname with `tailscale status --self` or in the [admin console](https://login.tailscale.com/admin/machines).
-   </Aside>
-
-2. **Start Tailscale Serve**
-
-   Proxy HTTPS traffic to the local PizzaPi port (default `7492`):
+   Proxy HTTPS traffic to the local PizzaPi port (default `7492`). No manual certificate is needed — Tailscale Serve provisions and renews its own TLS certificate automatically.
 
    ```bash
    tailscale serve --bg http://localhost:7492
@@ -48,11 +34,15 @@ If you're running PizzaPi on a machine in your [Tailscale](https://tailscale.com
    https://your-hostname.tail12345.ts.net/
    ```
 
-   Tailscale handles TLS termination and certificate renewal automatically.
+   <Aside type="tip">
+     Find your Tailscale hostname with `tailscale status --self` or in the [admin console](https://login.tailscale.com/admin/machines).
+   </Aside>
 
-3. **Update allowed origins**
+2. **Update allowed origins**
 
    The server validates request origins for security. Add your Tailscale HTTPS URL to `PIZZAPI_EXTRA_ORIGINS`.
+
+   See the [Self-Hosting guide](/PizzaPi/deployment/self-hosting/) for full details on setting environment variables and override files.
 
    <Tabs>
      <TabItem label="pizza web (Docker)">
@@ -89,6 +79,8 @@ If you're running PizzaPi on a machine in your [Tailscale](https://tailscale.com
 
        ```bash
        export PIZZAPI_EXTRA_ORIGINS=https://your-hostname.tail12345.ts.net
+       bun install
+       bun run build
        cd packages/server && bun run start
        ```
      </TabItem>
@@ -98,7 +90,7 @@ If you're running PizzaPi on a machine in your [Tailscale](https://tailscale.com
      Do **not** include a trailing slash — browser origins never have one.
    </Aside>
 
-4. **Verify**
+3. **Verify**
 
    Open `https://your-hostname.tail12345.ts.net/` in your browser. You should see a valid certificate issued by Let's Encrypt and the PizzaPi login page.
 </Steps>
@@ -112,7 +104,7 @@ If you're running PizzaPi on a machine in your [Tailscale](https://tailscale.com
 tailscale serve status
 
 # Stop serving
-tailscale serve --https=443 off
+tailscale serve off
 ```
 
 <Aside type="note">
