@@ -20,6 +20,7 @@ Run `pizzapi --help` for a quick summary of all commands:
 
 Commands:
   pizza                       Start an interactive agent session
+  pizza local [flags]         Start local relay + runner in one command
   pizza web [flags]           Manage the PizzaPi web hub (Docker)
   pizza runner [args]         Manage the background runner daemon
   pizza runner stop           Stop the runner daemon
@@ -86,6 +87,42 @@ When startup takes longer than 5 seconds, a warning is displayed in both the TUI
 
 <Aside type="tip">
   See the [Safe Mode & Startup Performance guide](/PizzaPi/security/sandbox/) for detailed troubleshooting, timeout tuning, and per-server diagnostics.
+</Aside>
+
+---
+
+### `pizzapi local`
+
+Start the **local relay, web UI, and runner** in one command. This is the fastest way to get a self-hosted PizzaPi running on your own machine.
+
+```bash
+pizzapi local
+pizzapi local --port 8080
+pizzapi local --no-browser
+```
+
+What it does:
+
+1. Starts the local relay + web UI via `pizza web` (Docker Compose) if it is not already healthy.
+2. Runs the first-time setup wizard if no API key for the local relay is saved.
+3. Opens the browser to the local UI (unless `--no-browser` is passed).
+4. Starts the runner in the **foreground**.
+
+Process ownership:
+
+- The **relay** is managed by Docker / `pizza web`. It keeps running after this command exits; stop it with `pizza web stop`.
+- The **runner** is owned by this command. Press `Ctrl+C` to stop the runner. No orphan daemon is left behind.
+
+Re-running `pizzapi local` is safe and idempotent: an already-healthy relay is reused, an already-running runner is reported, and an existing local API key is preserved.
+
+| Flag | Description |
+|------|-------------|
+| `--port <number>` | Relay port (default: `7492`) |
+| `--no-browser` | Print the UI URL instead of opening the browser |
+| `-h, --help` | Show help |
+
+<Aside type="note">
+  Requires **Docker** with Docker Compose. If a remote relay is already configured, `pizzapi local` will not overwrite it; run `pizzapi setup` to switch to the local relay, or start the runner manually with `PIZZAPI_RELAY_URL` set.
 </Aside>
 
 ---
