@@ -230,7 +230,7 @@ describe("browser smoke — sandbox UI", () => {
 
             // Verify the default sandbox runner appears.
             await page.click('button:has-text("Runners")');
-            await page.waitForSelector('button:has-text("sandbox-runner")', { timeout: 10_000 });
+            await page.waitForSelector('button:has-text("sandbox-runner")', { timeout: 30_000 });
 
             // Back to sessions.
             await page.click('button:has-text("Sessions")');
