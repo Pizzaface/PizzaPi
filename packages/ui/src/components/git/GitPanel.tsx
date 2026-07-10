@@ -73,15 +73,22 @@ export function GitPanel({ cwd, className }: GitPanelProps) {
     const [activeTab, setActiveTab] = useState<GitTab>("changes");
     const [pathFilter, setPathFilter] = useState("");
 
+    // Current branch info is used by the header hash chip and the commit
+    // message tooltip. Compute it early so the log fetch effect below can
+    // re-fire whenever HEAD moves (shortHash changes after commit/pull/etc).
+    const currentBranchInfo = git.branches.find((b) => b.isCurrent);
+
     // Fetch the last commit subject for the status row. Falls back to the
     // branch list's date text if log hasn't resolved yet.
     const branchNameForLog = git.status?.branch;
+    const currentShortHash = currentBranchInfo?.shortHash;
     useEffect(() => {
         if (!branchNameForLog) return;
-        // ponytail: one-entry log fetch, fire-and-forget; hook discards stale cwd results
+        // ponytail: one-entry log fetch; re-fire when HEAD shortHash changes
+        // so the tooltip shows the new commit message after a commit.
         git.fetchLog(undefined, 1).catch(() => {});
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [branchNameForLog]);
+    }, [branchNameForLog, currentShortHash]);
 
     // Toast-style feedback for operations
     const [toast, setToast] = useState<GitOperationFeedback | null>(null);
@@ -252,22 +259,25 @@ export function GitPanel({ cwd, className }: GitPanelProps) {
     const showPush = git.status.ahead > 0 || !git.status.hasUpstream;
     const showPull = git.status.behind > 0 && git.status.hasUpstream;
 
-    const currentBranchInfo = git.branches.find((b) => b.isCurrent);
-    const lastCommitSubject = git.log[0]?.subject;
-    const lastCommitShortHash = lastCommitSubject
-        ? currentBranchInfo?.shortHash ?? git.log[0]?.shortHash
-        : currentBranchInfo?.shortHash;
-    const lastCommitTooltip = lastCommitSubject
-        ? `${currentBranchInfo?.shortHash ?? git.log[0]?.shortHash} ${lastCommitSubject}`
+    const headLogEntry = git.log[0];
+    // Only trust the log entry's subject while its shortHash matches the
+    // current branch head; otherwise show the hash + relative date fallback
+    // until the new log entry arrives.
+    const logMatchesHead = !!headLogEntry && currentBranchInfo?.shortHash === headLogEntry.shortHash;
+    const lastCommitShortHash = currentBranchInfo?.shortHash ?? headLogEntry?.shortHash;
+    const lastCommitTooltip = logMatchesHead
+        ? `${headLogEntry.shortHash} ${headLogEntry.subject}`
         : currentBranchInfo
-            ? `${currentBranchInfo.shortHash} ${currentBranchInfo.lastCommit}`
-            : undefined;
+            ? `${currentBranchInfo.shortHash} · ${currentBranchInfo.lastCommit}`
+            : headLogEntry
+                ? `${headLogEntry.shortHash} ${headLogEntry.subject}`
+                : undefined;
 
     return (
         <div className={cn("flex flex-col h-full overflow-hidden", className)}>
             {/* Status / branch header */}
-            <div className="flex flex-col sm:flex-row sm:items-center gap-2 px-2 py-1.5 border-b border-border bg-muted/50 min-h-[40px] overflow-hidden">
-                <div className="flex items-center gap-1.5 min-w-0 w-full sm:w-auto sm:flex-1 overflow-hidden">
+            <div className="flex flex-col @sm:flex-row @sm:items-center gap-2 px-2 py-1.5 border-b border-border bg-muted/50 min-h-[40px] overflow-hidden">
+                <div className="flex items-center gap-1.5 min-w-0 w-full @sm:w-auto @sm:flex-1 overflow-hidden">
                     <GitBranchSelector
                         currentBranch={git.status.branch}
                         branches={git.branches}
@@ -288,7 +298,7 @@ export function GitPanel({ cwd, className }: GitPanelProps) {
                     )}
                 </div>
 
-                <div className="flex flex-wrap items-center justify-end gap-1.5 min-w-0 w-full sm:w-auto sm:shrink-0 sm:ml-auto">
+                <div className="flex flex-wrap items-center justify-end gap-1.5 min-w-0 w-full @sm:w-auto @sm:shrink-0 @sm:ml-auto">
                     {/* Ahead/behind badges */}
                     {git.status.ahead > 0 && (
                         <span
@@ -312,7 +322,7 @@ export function GitPanel({ cwd, className }: GitPanelProps) {
                             <Tooltip>
                                 <TooltipTrigger asChild>
                                     <span
-                                        className="hidden sm:inline-flex items-center gap-1 min-w-0 text-xs text-muted-foreground cursor-help"
+                                        className="inline-flex items-center gap-1 min-w-0 text-xs text-muted-foreground cursor-help"
                                     >
                                         <GitCommit className="size-3 shrink-0" />
                                         <span className="truncate">{lastCommitShortHash}</span>
@@ -503,7 +513,7 @@ export function GitPanel({ cwd, className }: GitPanelProps) {
                 const isStashConflict = git.lastConflictType === "git_stash_result";
                 const isMergeConflict = git.lastConflictType === "git_merge_result";
                 return (
-                    <div className="flex flex-col sm:flex-row items-start sm:items-center gap-2 px-3 py-2 text-xs border-b bg-amber-500/10 border-amber-500/20 text-amber-600 dark:text-amber-400"
+                    <div className="flex flex-col @sm:flex-row items-start @sm:items-center gap-2 px-3 py-2 text-xs border-b bg-amber-500/10 border-amber-500/20 text-amber-600 dark:text-amber-400"
                     >
                         <div className="flex items-center gap-2 min-w-0 w-full">
                             <AlertCircle className="size-3 shrink-0" />
@@ -518,18 +528,18 @@ export function GitPanel({ cwd, className }: GitPanelProps) {
                                 type="button"
                                 onClick={() => git.mergeAbort()}
                                 disabled={git.operationInProgress !== null}
-                                className="inline-flex items-center justify-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-red-500/20 text-red-500 dark:text-red-400 hover:bg-red-500/30 disabled:opacity-50 w-full sm:w-auto"
+                                className="inline-flex items-center justify-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-red-500/20 text-red-500 dark:text-red-400 hover:bg-red-500/30 disabled:opacity-50 w-full @sm:w-auto"
                                 title="Abort the merge"
                             >
                                 <StopCircle className="size-3" /> Abort Merge
                             </button>
                         ) : isStashConflict ? null : (
-                            <div className="flex items-center gap-2 w-full sm:w-auto">
+                            <div className="flex items-center gap-2 w-full @sm:w-auto">
                                 <button
                                     type="button"
                                     onClick={() => git.rebaseContinue()}
                                     disabled={git.operationInProgress !== null}
-                                    className="inline-flex items-center justify-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-green-600/20 text-green-600 dark:text-green-400 hover:bg-green-600/30 disabled:opacity-50 flex-1 sm:flex-initial"
+                                    className="inline-flex items-center justify-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-green-600/20 text-green-600 dark:text-green-400 hover:bg-green-600/30 disabled:opacity-50 flex-1 @sm:flex-initial"
                                     title="Continue rebase after resolving conflicts"
                                 >
                                     <Play className="size-3" /> Continue
@@ -538,7 +548,7 @@ export function GitPanel({ cwd, className }: GitPanelProps) {
                                     type="button"
                                     onClick={() => git.rebaseAbort()}
                                     disabled={git.operationInProgress !== null}
-                                    className="inline-flex items-center justify-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-red-500/20 text-red-500 dark:text-red-400 hover:bg-red-500/30 disabled:opacity-50 flex-1 sm:flex-initial"
+                                    className="inline-flex items-center justify-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-red-500/20 text-red-500 dark:text-red-400 hover:bg-red-500/30 disabled:opacity-50 flex-1 @sm:flex-initial"
                                     title="Abort the rebase"
                                 >
                                     <StopCircle className="size-3" /> Abort
@@ -557,7 +567,7 @@ export function GitPanel({ cwd, className }: GitPanelProps) {
                         type="button"
                         onClick={() => setActiveTab(t.id)}
                         className={cn(
-                            "px-2 py-1 text-[0.65rem] sm:px-2.5 sm:py-1.5 sm:text-xs font-medium whitespace-nowrap border-b-2 -mb-px transition-colors shrink-0",
+                            "px-2 py-1 text-[0.65rem] @sm:px-2.5 @sm:py-1.5 @sm:text-xs font-medium whitespace-nowrap border-b-2 -mb-px transition-colors shrink-0",
                             activeTab === t.id
                                 ? "border-primary text-foreground"
                                 : "border-transparent text-muted-foreground hover:text-foreground",

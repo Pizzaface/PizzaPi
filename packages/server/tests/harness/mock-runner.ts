@@ -196,7 +196,8 @@ function defaultGitStatus(): MockGitStatus {
         changes: [
             // Porcelain v1 XY codes — the UI partitions staged/unstaged on the
             // 2-char status, so single-char codes render an empty Changes tab.
-            { status: " M", path: "src/index.ts" },
+            // "M " is a staged modification so the commit form is usable.
+            { status: "M ", path: "src/index.ts" },
             { status: "??", path: "notes.md" },
         ],
         ahead: 1,
@@ -269,6 +270,9 @@ export async function createMockRunner(
     let pluginsList: RunnerPlugin[] = opts?.plugins ?? defaultPlugins();
     const mockFiles: Map<string, MockFileEntry[]> = opts?.mockFiles ?? defaultMockFiles();
     let gitStatus: MockGitStatus = opts?.mockGitStatus ?? defaultGitStatus();
+    // Mutable HEAD state so the mock can simulate commits moving HEAD.
+    let headShortHash = "abc1234";
+    let headSubject = "Add harness scaffolding";
     let sandboxConfig: MockSandboxConfig = defaultSandboxConfig();
     sandboxConfig.platform = opts?.platform ?? "linux";
     let usageData: MockUsageData = defaultUsageData();
@@ -896,7 +900,7 @@ export async function createMockRunner(
                     },
                     currentBranch: gitStatus.branch,
                     branches: [
-                        { name: gitStatus.branch, shortHash: "abc1234", lastCommit: "2 hours ago", isCurrent: true, isRemote: false },
+                        { name: gitStatus.branch, shortHash: headShortHash, lastCommit: "2 hours ago", isCurrent: true, isRemote: false },
                         { name: "main", shortHash: "def5678", lastCommit: "1 day ago", isCurrent: false, isRemote: false },
                     ],
                     worktrees: [
@@ -904,7 +908,7 @@ export async function createMockRunner(
                             path: cwd,
                             displayPath: ".",
                             branch: gitStatus.branch,
-                            shortHash: "abc1234",
+                            shortHash: headShortHash,
                             isDetached: false,
                             isMain: true,
                             changeCount: gitStatus.changes.length,
@@ -934,12 +938,12 @@ export async function createMockRunner(
                     ok: true,
                     entries: [
                         {
-                            hash: "abc1234567890abcdef1234567890abcdef123456",
-                            shortHash: "abc1234",
+                            hash: `${headShortHash}${headShortHash.padEnd(40 - headShortHash.length, "0")}`,
+                            shortHash: headShortHash,
                             author: "Mock Author",
-                            authorDate: "2026-07-05T10:00:00Z",
-                            commitDate: "2026-07-05T10:00:00Z",
-                            subject: "Add harness scaffolding",
+                            authorDate: new Date().toISOString(),
+                            commitDate: new Date().toISOString(),
+                            subject: headSubject,
                             body: "",
                             refs: ["HEAD", gitStatus.branch],
                         },
@@ -969,7 +973,7 @@ export async function createMockRunner(
                             path: (payload.cwd as string) ?? "/mock",
                             displayPath: ".",
                             branch: gitStatus.branch,
-                            shortHash: "abc1234",
+                            shortHash: headShortHash,
                             isDetached: false,
                             isMain: true,
                             changeCount: gitStatus.changes.length,
@@ -985,7 +989,7 @@ export async function createMockRunner(
                     ok: true,
                     currentBranch: gitStatus.branch,
                     branches: [
-                        { name: gitStatus.branch, shortHash: "abc1234", lastCommit: "2 hours ago", isCurrent: true, isRemote: false },
+                        { name: gitStatus.branch, shortHash: headShortHash, lastCommit: "2 hours ago", isCurrent: true, isRemote: false },
                         { name: "main", shortHash: "def5678", lastCommit: "1 day ago", isCurrent: false, isRemote: false },
                     ],
                 });
@@ -1007,9 +1011,14 @@ export async function createMockRunner(
             case "git_unstage":
                 emitGit("git_unstage_result", { ok: true });
                 break;
-            case "git_commit":
-                emitGit("git_commit_result", { ok: true, summary: "[main abc1234] Mock commit" });
+            case "git_commit": {
+                const message = (payload.message as string) ?? "Mock commit";
+                // Simulate HEAD moving to a new commit.
+                headShortHash = Math.random().toString(16).slice(2, 9);
+                headSubject = message;
+                emitGit("git_commit_result", { ok: true, summary: `[${gitStatus.branch} ${headShortHash}] ${message}` });
                 break;
+            }
             case "git_push":
                 emitGit("git_push_result", { ok: true, output: "Everything up-to-date" });
                 break;

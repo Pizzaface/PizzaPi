@@ -187,4 +187,61 @@ describe("GitPanel", () => {
         // reset for afterEach
         gitState.lastConflictType = null;
     });
+
+    test("re-fetches last-commit log when current branch shortHash changes", () => {
+        gitState.status.branch = "feature/test";
+        gitState.branches = [
+            { name: "feature/test", shortHash: "abc1234", lastCommit: "2 hours ago", isCurrent: true, isRemote: false },
+        ];
+        gitState.log = [];
+        const callsBefore = gitState.fetchLog.mock.calls.length;
+
+        const { rerender } = render(<GitPanel cwd="/repo" />);
+        expect(gitState.fetchLog.mock.calls.length).toBeGreaterThan(callsBefore);
+
+        const callsAfterInitial = gitState.fetchLog.mock.calls.length;
+
+        gitState.branches = [
+            { name: "feature/test", shortHash: "def5678", lastCommit: "1 hour ago", isCurrent: true, isRemote: false },
+        ];
+        rerender(<GitPanel cwd="/repo" />);
+        expect(gitState.fetchLog.mock.calls.length).toBe(callsAfterInitial + 1);
+    });
+
+    test("falls back to hash+date tooltip when log entry is stale relative to HEAD", () => {
+        gitState.status.branch = "feature/test";
+        gitState.branches = [
+            { name: "feature/test", shortHash: "newhash", lastCommit: "5 min ago", isCurrent: true, isRemote: false },
+        ];
+        gitState.log = [
+            {
+                hash: "oldhasholdhasholdhasholdhasholdhasholdhash",
+                shortHash: "oldhash",
+                author: "Dev",
+                authorDate: "2026-07-05T10:00:00Z",
+                commitDate: "2026-07-05T10:00:00Z",
+                subject: "Old subject",
+                body: "",
+                refs: ["HEAD", "feature/test"],
+            },
+        ];
+
+        const { rerender, getByText } = render(<GitPanel cwd="/repo" />);
+        expect(getByText("newhash · 5 min ago")).toBeTruthy();
+
+        gitState.log = [
+            {
+                hash: "newhashhashhashhashhashhashhashhashhashhas",
+                shortHash: "newhash",
+                author: "Dev",
+                authorDate: "2026-07-09T10:00:00Z",
+                commitDate: "2026-07-09T10:00:00Z",
+                subject: "New subject",
+                body: "",
+                refs: ["HEAD", "feature/test"],
+            },
+        ];
+        rerender(<GitPanel cwd="/repo" />);
+        expect(getByText("newhash New subject")).toBeTruthy();
+    });
 });
