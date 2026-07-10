@@ -237,19 +237,19 @@ export function parseViewerConnectedEnvelope(raw: unknown): ParseResult<ViewerCo
     return { ok: false, error: "viewer connected envelope missing string sessionId" };
   }
   const meta_source = raw.meta_source === "hub" ? "hub" : undefined;
-  return {
-    ok: true,
-    value: {
-      sessionId: raw.sessionId,
-      lastSeq: optionalNumber(raw.lastSeq),
-      replayOnly: optionalBoolean(raw.replayOnly),
-      isActive: typeof raw.isActive === "boolean" ? raw.isActive : undefined,
-      lastHeartbeatAt: optionalStringOrNull(raw.lastHeartbeatAt),
-      sessionName: optionalStringOrNull(raw.sessionName),
-      meta_source,
-      generation: optionalNumber(raw.generation),
-    },
+  const value: ViewerConnectedEnvelope = {
+    sessionId: raw.sessionId,
+    lastSeq: optionalNumber(raw.lastSeq),
+    replayOnly: optionalBoolean(raw.replayOnly),
+    isActive: typeof raw.isActive === "boolean" ? raw.isActive : undefined,
+    lastHeartbeatAt: optionalStringOrNull(raw.lastHeartbeatAt),
+    meta_source,
+    generation: optionalNumber(raw.generation),
   };
+  if (raw.sessionName !== undefined) {
+    value.sessionName = optionalStringOrNull(raw.sessionName);
+  }
+  return { ok: true, value };
 }
 
 // ── Hub state snapshot ────────────────────────────────────────────────────

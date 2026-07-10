@@ -86,6 +86,28 @@ describe("parseViewerConnectedEnvelope", () => {
     expect(result.value).toEqual(input);
   });
 
+  test("omits sessionName key when field is absent", () => {
+    const result = parseViewerConnectedEnvelope({ sessionId: "sess-1" });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(Object.prototype.hasOwnProperty.call(result.value, "sessionName")).toBe(false);
+  });
+
+  test("preserves explicit null sessionName as a clear signal", () => {
+    const result = parseViewerConnectedEnvelope({ sessionId: "sess-1", sessionName: null });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(Object.prototype.hasOwnProperty.call(result.value, "sessionName")).toBe(true);
+    expect(result.value.sessionName).toBeNull();
+  });
+
+  test("preserves explicit string sessionName", () => {
+    const result = parseViewerConnectedEnvelope({ sessionId: "sess-1", sessionName: "My session" });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.sessionName).toBe("My session");
+  });
+
   const malformed = [
     { label: "primitive", value: 123, expectOk: false },
     { label: "missing sessionId", value: { lastSeq: 1 }, expectOk: false },

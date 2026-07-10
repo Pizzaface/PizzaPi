@@ -3040,17 +3040,15 @@ export function App() {
       const seen = metaVersionsRef.current.get(sessionId) ?? 0;
       if (version <= seen) return;
       metaVersionsRef.current.set(sessionId, version);
-      if (isMetaRelayEvent(event)) {
-        applyMetaPatch(metaEventToStatePatch(event));
-        if (event.type === "mcp_startup_report" && event.report) {
-          // Buffer if session not yet hydrated — the new slim CLI no longer retries
-          // in heartbeats, so without this the report would be lost for live events
-          // that race session_active delivery.
-          if (lifecycleRefs.hydrated.current) {
-            applyMcpReport(event.report);
-          } else {
-            pendingMcpReportRef.current = event.report as Record<string, unknown>;
-          }
+      applyMetaPatch(metaEventToStatePatch(event));
+      if (event.type === "mcp_startup_report" && event.report) {
+        // Buffer if session not yet hydrated — the new slim CLI no longer retries
+        // in heartbeats, so without this the report would be lost for live events
+        // that race session_active delivery.
+        if (lifecycleRefs.hydrated.current) {
+          applyMcpReport(event.report);
+        } else {
+          pendingMcpReportRef.current = event.report as Record<string, unknown>;
         }
       }
     };
