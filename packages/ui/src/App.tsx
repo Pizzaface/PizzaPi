@@ -119,6 +119,7 @@ import { exportToMarkdown } from "@/lib/export-markdown";
 import { useAttentionIngestion } from "@/hooks/useAttentionIngestion";
 import { useMobileSidebar } from "@/hooks/useMobileSidebar";
 import { useBrowserNotifications } from "@/hooks/useBrowserNotifications";
+import { useMountOnFirstOpen } from "@/hooks/useMountOnFirstOpen";
 import {
   toRelayMessage,
   deduplicateMessages,
@@ -509,6 +510,7 @@ export function App() {
   const [setupClaimToken, setSetupClaimToken] = React.useState<string | null>(null);
   const [showRunners, setShowRunners] = React.useState(false);
   const [historyOpen, setHistoryOpen] = React.useState(false);
+  const historyMounted = useMountOnFirstOpen(historyOpen);
   const [selectedRunnerId, setSelectedRunnerId] = React.useState<string | null>(null);
   const [runnersForSidebar, setRunnersForSidebar] = React.useState<Array<{
     runnerId: string;
@@ -682,6 +684,7 @@ export function App() {
   }, [draggingButton, buttonPositions, terminalColumnRef]);
 
   const [newSessionOpen, setNewSessionOpen] = React.useState(false);
+  const newSessionMounted = useMountOnFirstOpen(newSessionOpen);
   const [spawnRunnerId, setSpawnRunnerId] = React.useState<string | undefined>(undefined);
   const [spawnCwd, setSpawnCwd] = React.useState<string>("");
   const [spawnPreselectedRunnerId, setSpawnPreselectedRunnerId] = React.useState<string | null>(null);
@@ -715,6 +718,7 @@ export function App() {
   const [hiddenModels, setHiddenModels] = React.useState<Set<string>>(() => loadHiddenModels());
   const [hiddenModelsOpen, setHiddenModelsOpen] = React.useState(false);
   const [changePasswordOpen, setChangePasswordOpen] = React.useState(false);
+  const changePasswordMounted = useMountOnFirstOpen(changePasswordOpen);
 
   // Live session status from heartbeats (isCompacting and planModeEnabled are intentionally
   // NOT part of SessionState because they are not reset by clearSelection)
@@ -729,6 +733,7 @@ export function App() {
     return /Mac|iPhone|iPad/i.test(platform);
   }, []);
   const [showShortcutsHelp, setShowShortcutsHelp] = React.useState(false);
+  const shortcutsMounted = useMountOnFirstOpen(showShortcutsHelp);
 
   // Sequence tracking for gap detection
   const lastSeqRef = React.useRef<number | null>(null);
@@ -5087,12 +5092,14 @@ export function App() {
         onHiddenModelsChange={setHiddenModels}
       />
 
-      <Suspense fallback={<PanelFallback label="Password" />}>
-        <LazyChangePasswordDialog
-          open={changePasswordOpen}
-          onOpenChange={setChangePasswordOpen}
-        />
-      </Suspense>
+      {changePasswordMounted && (
+        <Suspense fallback={<PanelFallback label="Password" />}>
+          <LazyChangePasswordDialog
+            open={changePasswordOpen}
+            onOpenChange={setChangePasswordOpen}
+          />
+        </Suspense>
+      )}
 
       <div className="pp-shell flex flex-1 min-h-0 overflow-hidden relative">
         <div
@@ -5676,79 +5683,83 @@ export function App() {
             </div>
           )}
         </div>
-        <Suspense fallback={<PanelFallback label="History" />}>
-          <LazyHistoryCommandPalette
-            open={historyOpen}
-            onOpenChange={setHistoryOpen}
-            sessions={resumeSessions}
-            loading={resumeSessionsLoading}
-            onRefresh={requestResumeSessions}
-            onResumeSession={async (sessionId) => {
-            const session = resumeSessions.find((s) => s.id === sessionId);
-            if (!session) return;
+        {historyMounted && (
+          <Suspense fallback={<PanelFallback label="History" />}>
+            <LazyHistoryCommandPalette
+              open={historyOpen}
+              onOpenChange={setHistoryOpen}
+              sessions={resumeSessions}
+              loading={resumeSessionsLoading}
+              onRefresh={requestResumeSessions}
+              onResumeSession={async (sessionId) => {
+              const session = resumeSessions.find((s) => s.id === sessionId);
+              if (!session) return;
 
-            // Determine runnerId: prefer session-level (server-sourced), fall back to active session's runner
-            const runnerId = session.runnerId || activeSessionInfo?.runnerId;
-            if (!runnerId) {
-              setViewerStatus("No runner available for this session");
-              return;
-            }
-            setHistoryOpen(false);
-            setViewerStatus("Resuming session…");
-            try {
-              // Server-sourced sessions don't have the .jsonl path — send resumeId
-              // so the runner daemon resolves the path from the session ID.
-              const payload: any = {
-                runnerId,
-                ...(session.serverSourced
-                  ? { resumeId: session.id }
-                  : { resumePath: session.path }),
-                ...(session.cwd ? { cwd: session.cwd } : {}),
-              };
-              const res = await fetch("/api/runners/spawn", {
-                method: "POST",
-                credentials: "include",
-                headers: { "content-type": "application/json" },
-                body: JSON.stringify(payload),
-              });
-              const body = await res.json().catch(() => null) as { error?: string; sessionId?: string } | null;
-              if (!res.ok) {
-                setViewerStatus(body?.error ?? "Failed to resume session");
+              // Determine runnerId: prefer session-level (server-sourced), fall back to active session's runner
+              const runnerId = session.runnerId || activeSessionInfo?.runnerId;
+              if (!runnerId) {
+                setViewerStatus("No runner available for this session");
                 return;
               }
-              const newSessionId = typeof body?.sessionId === "string" ? body.sessionId : null;
-              if (!newSessionId) {
-                setViewerStatus("Resume failed: missing sessionId");
-                return;
+              setHistoryOpen(false);
+              setViewerStatus("Resuming session…");
+              try {
+                // Server-sourced sessions don't have the .jsonl path — send resumeId
+                // so the runner daemon resolves the path from the session ID.
+                const payload: any = {
+                  runnerId,
+                  ...(session.serverSourced
+                    ? { resumeId: session.id }
+                    : { resumePath: session.path }),
+                  ...(session.cwd ? { cwd: session.cwd } : {}),
+                };
+                const res = await fetch("/api/runners/spawn", {
+                  method: "POST",
+                  credentials: "include",
+                  headers: { "content-type": "application/json" },
+                  body: JSON.stringify(payload),
+                });
+                const body = await res.json().catch(() => null) as { error?: string; sessionId?: string } | null;
+                if (!res.ok) {
+                  setViewerStatus(body?.error ?? "Failed to resume session");
+                  return;
+                }
+                const newSessionId = typeof body?.sessionId === "string" ? body.sessionId : null;
+                if (!newSessionId) {
+                  setViewerStatus("Resume failed: missing sessionId");
+                  return;
+                }
+                const live = await waitForSessionToGoLive(newSessionId, 30_000);
+                if (!live) {
+                  setViewerStatus("Session is starting…");
+                  return;
+                }
+                handleOpenSession(newSessionId);
+                setViewerStatus("Connecting…");
+              } catch (err) {
+                setViewerStatus("Failed to resume session");
+                console.error("Resume session error:", err);
               }
-              const live = await waitForSessionToGoLive(newSessionId, 30_000);
-              if (!live) {
-                setViewerStatus("Session is starting…");
-                return;
-              }
-              handleOpenSession(newSessionId);
-              setViewerStatus("Connecting…");
-            } catch (err) {
-              setViewerStatus("Failed to resume session");
-              console.error("Resume session error:", err);
-            }
-          }}
-          nextCursor={resumeSessionsNextCursor}
-          onLoadMore={() => { if (resumeSessionsNextCursor) requestResumeSessions(resumeSessionsNextCursor); }}
-        />
-      </Suspense>
+            }}
+            nextCursor={resumeSessionsNextCursor}
+            onLoadMore={() => { if (resumeSessionsNextCursor) requestResumeSessions(resumeSessionsNextCursor); }}
+          />
+        </Suspense>
+      )}
 
-        <Suspense fallback={<PanelFallback label="New session" />}>
-          <LazyNewSessionWizardDialog
-          open={newSessionOpen}
-          onOpenChange={(open) => { if (!spawningSession) setNewSessionOpen(open); }}
-          runners={feedRunners.map((r) => ({ ...r, name: r.name ?? null, isOnline: true, sessionCount: liveSessions.filter(s => s.runnerId === r.runnerId).length }))}
-          runnersLoading={runnersStatus === "connecting"}
-          preselectedRunnerId={spawnPreselectedRunnerId}
-          initialCwd={spawnCwd}
-          onSpawn={handleWizardSpawn}
-        />
-      </Suspense>
+        {newSessionMounted && (
+          <Suspense fallback={<PanelFallback label="New session" />}>
+            <LazyNewSessionWizardDialog
+            open={newSessionOpen}
+            onOpenChange={(open) => { if (!spawningSession) setNewSessionOpen(open); }}
+            runners={feedRunners.map((r) => ({ ...r, name: r.name ?? null, isOnline: true, sessionCount: liveSessions.filter(s => s.runnerId === r.runnerId).length }))}
+            runnersLoading={runnersStatus === "connecting"}
+            preselectedRunnerId={spawnPreselectedRunnerId}
+            initialCwd={spawnCwd}
+            onSpawn={handleWizardSpawn}
+          />
+        </Suspense>
+      )}
 
         {showPreferences && (
           <Suspense fallback={<PanelFallback label="Settings" />}>
@@ -5797,9 +5808,11 @@ export function App() {
           </div>
         )}
 
-        <Suspense fallback={<PanelFallback label="Shortcuts" />}>
-          <LazyShortcutsDialog open={showShortcutsHelp} onOpenChange={setShowShortcutsHelp} />
-        </Suspense>
+        {shortcutsMounted && (
+          <Suspense fallback={<PanelFallback label="Shortcuts" />}>
+            <LazyShortcutsDialog open={showShortcutsHelp} onOpenChange={setShowShortcutsHelp} />
+          </Suspense>
+        )}
 
         <Dialog open={setupClaimOpen} onOpenChange={setSetupClaimOpen}>
           <DialogContent className="max-w-md p-0 overflow-hidden">
