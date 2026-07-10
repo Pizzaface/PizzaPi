@@ -113,11 +113,9 @@ describe("store.ts", () => {
     });
 });
 
-// ── Cursor-based pagination tests ────────────────────────────────────────────
-// TODO(ltl2EKmU): mock.module doesn't isolate getKysely in CI — Bun single-process singleton clobbering
-const isCI = !!process.env.CI;
-const describeDB = isCI ? describe.skip : describe;
 
+
+// ── Cursor-based pagination tests ────────────────────────────────────────────
 const TEST_USER = "pagination-test-user";
 
 async function insertPaginationSession(opts: {
@@ -147,7 +145,7 @@ async function insertPaginationSession(opts: {
         .execute();
 }
 
-describeDB("listPersistedRelaySessionsForUser — cursor pagination", () => {
+describe("listPersistedRelaySessionsForUser — cursor pagination", () => {
     let store: Awaited<typeof paginationStorePromise>;
 
     beforeAll(async () => {

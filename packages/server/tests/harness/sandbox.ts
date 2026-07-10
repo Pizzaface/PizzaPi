@@ -713,7 +713,7 @@ async function main() {
             // so headless browsers and curl work without cert gymnastics.
             env: { ...process.env, PORT: serverPort, PIZZAPI_SANDBOX_NO_TLS: "1" },
             stdout: "ignore",
-            stderr: "ignore",
+            stderr: opts.headless ? "inherit" : "ignore",
         },
     );
     // Wait for Vite to be ready (HTTP — TLS is disabled for sandbox)
