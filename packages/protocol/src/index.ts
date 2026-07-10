@@ -96,6 +96,22 @@ export {
   isSocketProtocolCompatible,
 } from "./version.js";
 
+// Runtime payload guards for critical external boundaries
+export {
+  parseViewerEventEnvelope,
+  parseViewerConnectedEnvelope,
+  parseHubStateSnapshot,
+  parseHubMetaEvent,
+  parseMetaRelayEvent,
+  parseSpawnResponse,
+  normalizeSessionMetaState,
+} from "./payload-guards.js";
+export type {
+  ViewerEventEnvelope,
+  ViewerConnectedEnvelope,
+  SpawnResponse,
+} from "./payload-guards.js";
+
 // /runners namespace (Browser runner feed)
 export type {
   RunnersClientToServerEvents,

@@ -23,7 +23,7 @@ import type {
   HubClientToServerEvents,
   SessionMetaState,
 } from "@pizzapi/protocol";
-import { isMetaRelayEvent, SOCKET_PROTOCOL_VERSION } from "@pizzapi/protocol";
+import { SOCKET_PROTOCOL_VERSION, parseViewerEventEnvelope, parseViewerConnectedEnvelope, parseHubStateSnapshot, parseHubMetaEvent, parseSpawnResponse } from "@pizzapi/protocol";
 import { cn } from "@/lib/utils";
 import { pulseStreamingHaptic, cancelHaptic, startToolHaptic, stopToolHaptic } from "@/lib/haptics";
 import { shouldCenterTopSpanFullWidth, shouldCenterBottomSpanFullWidth } from "@/utils/panelLayoutHelpers";
@@ -179,6 +179,10 @@ function PanelFallback({ label }: { label?: string }) {
 }
 
 const log = createLogger("relay");
+
+function isPayloadObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
 
 // Sync all CSS animations (pulse, chase-spin, etc.) to the same phase globally.
 initAnimationSync();
@@ -2946,7 +2950,13 @@ export function App() {
     hubSocketRef.current = socket;
     setHubSocket(socket);
 
-    const handleStateSnapshot = ({ sessionId, state }: { sessionId: string; state: SessionMetaState }) => {
+    const handleStateSnapshot = (raw: unknown) => {
+      const parsed = parseHubStateSnapshot(raw);
+      if (!parsed.ok) {
+        logFrontendEvent("hub", "warning", "Malformed state snapshot", parsed.error);
+        return;
+      }
+      const { sessionId, state } = parsed.value;
       const currentSessionId = lifecycleRefs.activeSessionId.current;
 
       // For background sessions: extract pendingQuestion/pendingPlan from the
@@ -2985,19 +2995,26 @@ export function App() {
       applyMetaStateSnapshot(state);
     };
 
-    const handleMetaEvent = (payload: { sessionId: string; version: number } & Record<string, unknown>) => {
+    const handleMetaEvent = (raw: unknown) => {
+      const parsed = parseHubMetaEvent(raw);
+      if (!parsed.ok) {
+        logFrontendEvent("hub", "warning", "Malformed meta event", parsed.error);
+        return;
+      }
+      const { sessionId, version, event } = parsed.value;
+
       // Update the sidebar pending-question badge for ANY session's meta event,
       // not just the active one.  Background sessions emit pendingQuestion
       // and pendingPlan updates into their own meta rooms; the badge must
       // reflect all of them.
-      if (Object.prototype.hasOwnProperty.call(payload, "pendingQuestion") ||
-          Object.prototype.hasOwnProperty.call(payload, "pendingPlan")) {
+      if (event.type === "question_pending" || event.type === "question_cleared" ||
+          event.type === "plan_pending" || event.type === "plan_cleared") {
         setSessionsAwaitingInput((prev) => {
           const next = new Set(prev);
-          if (payload.pendingQuestion || payload.pendingPlan) {
-            next.add(payload.sessionId);
+          if (event.type === "question_cleared" || event.type === "plan_cleared") {
+            next.delete(sessionId);
           } else {
-            next.delete(payload.sessionId);
+            next.add(sessionId);
           }
           return next;
         });
@@ -3006,21 +3023,20 @@ export function App() {
       // Track compaction state for ANY session's meta event (same pattern as
       // sessionsAwaitingInput above) so the sidebar shows the yellow chase
       // indicator even for background sessions.
-      if (payload.type === "compact_started" || payload.type === "compact_ended") {
+      if (event.type === "compact_started" || event.type === "compact_ended") {
         setSessionsCompacting((prev) => {
           const next = new Set(prev);
-          if (payload.type === "compact_started") {
-            next.add(payload.sessionId);
+          if (event.type === "compact_started") {
+            next.add(sessionId);
           } else {
-            next.delete(payload.sessionId);
+            next.delete(sessionId);
           }
           return next;
         });
       }
 
       const currentSessionId = lifecycleRefs.activeSessionId.current;
-      if (payload.sessionId !== currentSessionId) return;
-      const { sessionId, version, ...event } = payload;
+      if (sessionId !== currentSessionId) return;
       const seen = metaVersionsRef.current.get(sessionId) ?? 0;
       if (version <= seen) return;
       metaVersionsRef.current.set(sessionId, version);
@@ -3280,34 +3296,40 @@ export function App() {
       });
 
       nextSocket.on("connected", (data) => {
+        const envelope = parseViewerConnectedEnvelope(data);
+        if (!envelope.ok) {
+          logFrontendEvent("viewer", "warning", "Malformed viewer connected envelope", envelope.error);
+          return;
+        }
+        const payload = envelope.value;
         if (!isActiveViewerSessionPayload(
           lifecycleRefs.activeSessionId.current,
-          data.sessionId,
+          payload.sessionId,
           lifecycleRefs.generation.current,
-          data.generation,
+          payload.generation,
         )) {
           return;
         }
         lastViewerEventAtRef.current = Date.now();
 
-        metaSourceHubRef.current = data.meta_source === "hub";
+        metaSourceHubRef.current = payload.meta_source === "hub";
         onViewerConnected({
-          replayOnly: data.replayOnly,
-          isActive: data.isActive,
-          meta_source: data.meta_source,
+          replayOnly: payload.replayOnly,
+          isActive: payload.isActive,
+          meta_source: payload.meta_source,
         });
 
-        if (typeof data.lastSeq === "number") {
-          lastSeqRef.current = mergeConnectedSeq(lastSeqRef.current, data.lastSeq);
+        if (typeof payload.lastSeq === "number") {
+          lastSeqRef.current = mergeConnectedSeq(lastSeqRef.current, payload.lastSeq);
         }
 
-        if (typeof data.isActive === "boolean") {
-          setAgentActive(data.isActive);
-          patchSessionCache({ agentActive: data.isActive });
+        if (typeof payload.isActive === "boolean") {
+          setAgentActive(payload.isActive);
+          patchSessionCache({ agentActive: payload.isActive });
         }
 
-        if (Object.prototype.hasOwnProperty.call(data, "sessionName")) {
-          const nextName = normalizeSessionName(data.sessionName);
+        if (Object.prototype.hasOwnProperty.call(payload, "sessionName")) {
+          const nextName = normalizeSessionName(payload.sessionName);
           setSessionName(nextName);
           patchSessionCache({ sessionName: nextName });
         }
@@ -3316,20 +3338,26 @@ export function App() {
       });
 
       nextSocket.on("event", (data) => {
+        const envelope = parseViewerEventEnvelope(data);
+        if (!envelope.ok) {
+          logFrontendEvent("viewer", "warning", "Malformed viewer event envelope", envelope.error);
+          return;
+        }
+        const { event: rawEvent, seq: envelopeSeq, deltaReplay, generation } = envelope.value;
+
         // During session switch, only accept events that explicitly match our generation.
         // This prevents events without generation tags from old sessions being processed
         // while we're awaiting the snapshot for the new session.
         if (lifecycleRefs.awaitingSnapshot.current) {
-          if (data.generation !== lifecycleRefs.generation.current) {
+          if (generation !== lifecycleRefs.generation.current) {
             return;
           }
-        } else if (!matchesViewerGeneration(lifecycleRefs.generation.current, data.generation)) {
+        } else if (!matchesViewerGeneration(lifecycleRefs.generation.current, generation)) {
           return;
         }
         if (!lifecycleRefs.activeSessionId.current) return;
         lastViewerEventAtRef.current = Date.now();
 
-        const rawEvent = data.event;
         const eventType =
           rawEvent && typeof rawEvent === "object" && typeof (rawEvent as Record<string, unknown>).type === "string"
             ? (rawEvent as Record<string, unknown>).type as string
@@ -3343,9 +3371,9 @@ export function App() {
           return;
         }
 
-        const seq = typeof data.seq === "number" ? data.seq : null;
+        const seq = envelopeSeq ?? null;
         if (seq !== null) {
-          if (data.deltaReplay === true) {
+          if (deltaReplay === true) {
             lastSeqRef.current = seq;
           } else {
             const allowOutOfOrderHydrationSnapshot = shouldAllowOutOfOrderSnapshotDuringHydration(
@@ -3370,7 +3398,7 @@ export function App() {
           }
         }
 
-        handleRelayEvent(data.event, seq ?? undefined);
+        handleRelayEvent(rawEvent, seq ?? undefined);
       });
 
       nextSocket.on("session_messages_page", (data) => {
@@ -5457,22 +5485,23 @@ export function App() {
                 headers: { "content-type": "application/json" },
                 body: JSON.stringify(payload),
               });
-              const body = await res.json().catch(() => null) as { error?: string; sessionId?: string } | null;
+              const body: unknown = await res.json().catch(() => null);
               if (!res.ok) {
-                setLifecycleStatus(body?.error ?? "Failed to resume session");
+                const error = isPayloadObject(body) && typeof body.error === "string" ? body.error : undefined;
+                setLifecycleStatus(error ?? "Failed to resume session");
                 return;
               }
-              const newSessionId = typeof body?.sessionId === "string" ? body.sessionId : null;
-              if (!newSessionId) {
-                setLifecycleStatus("Resume failed: missing sessionId");
+              const parsed = parseSpawnResponse(body);
+              if (!parsed.ok) {
+                setLifecycleStatus(parsed.error);
                 return;
               }
-              const live = await waitForSessionToGoLive(newSessionId, 30_000);
+              const live = await waitForSessionToGoLive(parsed.value.sessionId, 30_000);
               if (!live) {
                 setLifecycleStatus("Session is starting…");
                 return;
               }
-              handleOpenSession(newSessionId);
+              handleOpenSession(parsed.value.sessionId);
               setLifecycleStatus("Connecting…");
             } catch (err) {
               setLifecycleStatus("Failed to resume session");
