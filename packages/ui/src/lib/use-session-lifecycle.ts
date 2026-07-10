@@ -9,6 +9,7 @@
  */
 
 import * as React from "react";
+import { parseSpawnResponse } from "@pizzapi/protocol";
 import type { HubSession } from "@/components/SessionSidebar";
 import { mapUserError } from "@/lib/user-error-message";
 import {
@@ -247,10 +248,7 @@ export function useSessionLifecycle(
       if (agent) payload.agent = agent;
 
       let res: Response;
-      let body: {
-        error?: string;
-        sessionId?: string;
-      } | null;
+      let body: unknown;
       try {
         res = await fetch("/api/runners/spawn", {
           method: "POST",
@@ -258,7 +256,7 @@ export function useSessionLifecycle(
           headers: { "content-type": "application/json" },
           body: JSON.stringify(payload),
         });
-        body = (await res.json().catch(() => null)) as typeof body;
+        body = await res.json().catch(() => null);
       } catch (err) {
         const mapped = mapUserError({
           error: err,
@@ -269,25 +267,22 @@ export function useSessionLifecycle(
       }
 
       if (!res.ok) {
-        const mapped = mapUserError({
-          error: body?.error,
-          statusCode: res.status,
-          context: "session_spawn",
-        });
+        const error = body && typeof body === "object" && "error" in body && typeof body.error === "string"
+          ? body.error
+          : undefined;
+        const mapped = mapUserError({ error, statusCode: res.status, context: "session_spawn" });
         dispatch(lifecycleActions.spawnFailed(mapped.userMessage));
         throw new Error(mapped.userMessage);
       }
 
-      const sessionId = typeof body?.sessionId === "string" ? body.sessionId : null;
-      if (!sessionId) {
-        const mapped = mapUserError({
-          error: "Spawn failed: missing sessionId",
-          context: "session_spawn",
-        });
+      const parsed = parseSpawnResponse(body);
+      if (!parsed.ok) {
+        const mapped = mapUserError({ error: parsed.error, context: "session_spawn" });
         dispatch(lifecycleActions.spawnFailed(mapped.userMessage));
         throw new Error(mapped.userMessage);
       }
 
+      const { sessionId } = parsed.value;
       dispatch(lifecycleActions.spawnSucceeded(sessionId));
       const live = await waitForSessionToGoLive(sessionId, spawnTimeoutMs ?? SPAWN_TIMEOUT_MS);
       if (!live) {
