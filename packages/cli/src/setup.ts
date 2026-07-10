@@ -182,11 +182,12 @@ export async function runQrSetup(relayUrl: string, pollIntervalMs = 2000): Promi
  *
  * Returns true if setup completed successfully, false if skipped/aborted.
  */
-export async function runSetup(opts: { force?: boolean; scan?: boolean } = {}): Promise<boolean> {
+export async function runSetup(opts: { force?: boolean; scan?: boolean; relayDefault?: string } = {}): Promise<boolean> {
     const iface = rl();
 
     try {
         const configPath = join(homedir(), ".pizzapi", "config.json");
+        const relayDefault = opts.relayDefault ?? RELAY_DEFAULT;
 
         const frame = c.label("─".repeat(43));
         log.info("");
@@ -208,17 +209,17 @@ export async function runSetup(opts: { force?: boolean; scan?: boolean } = {}): 
 
         // QR-code setup path
         if (opts.scan) {
-            const relayInput = await ask(iface, `Relay server URL [${RELAY_DEFAULT}]: `);
-            const relayUrl = (relayInput.trim() || RELAY_DEFAULT).replace(/\/$/, "");
+            const relayInput = await ask(iface, `Relay server URL [${relayDefault}]: `);
+            const relayUrl = (relayInput.trim() || relayDefault).replace(/\/$/, "");
             return await runQrSetup(relayUrl, process.env.CI ? 100 : 2000);
         }
 
         // Relay URL
         const relayInput = await ask(
             iface,
-            `Relay server URL [${RELAY_DEFAULT}]: `,
+            `Relay server URL [${relayDefault}]: `,
         );
-        const relayUrl = (relayInput.trim() || RELAY_DEFAULT).replace(/\/$/, "");
+        const relayUrl = (relayInput.trim() || relayDefault).replace(/\/$/, "");
 
         // Identity
         const name = (await ask(iface, "Your name (leave blank if account already exists): ")).trim();

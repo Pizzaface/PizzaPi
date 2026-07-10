@@ -78,6 +78,12 @@ async function main() {
         return;
     }
 
+    if (args[0] === "local") {
+        const { runLocal } = await import("./local.js");
+        await runLocal(args.slice(1));
+        return;
+    }
+
     if (args[0] === "setup") {
         await runSetup({ force: true, scan: args.includes("--scan") });
         return;
@@ -337,6 +343,7 @@ async function main() {
         log.info("");
         log.info(c.label("Commands"));
         log.info(`  ${c.cmd("pizza")}                       Start an interactive agent session`);
+        log.info(`  ${c.cmd("pizza local")} ${c.dim("[flags]")}         Start local relay + runner in one command`);
         log.info(`  ${c.cmd("pizza web")} ${c.dim("[flags]")}           Manage the PizzaPi web hub (Docker)`);
         log.info(`  ${c.cmd("pizza runner")} ${c.dim("[args]")}         Manage the background runner daemon`);
         log.info(`  ${c.cmd("pizza runner stop")}           Stop the runner daemon`);
