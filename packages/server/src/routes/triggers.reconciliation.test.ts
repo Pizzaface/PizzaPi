@@ -31,6 +31,7 @@ const mockLinkSessionToRunner = mock(() => Promise.resolve());
 mock.module("../ws/sio-registry.js", () => ({
     getSharedSession: mockGetSharedSession,
     getLocalTuiSocket: mockGetLocalTuiSocket,
+    waitForLocalTuiSocket: mockGetLocalTuiSocket,
     emitToRelaySessionVerified: mockEmitToRelaySessionVerified,
     broadcastToSessionViewers: mockBroadcastToSessionViewers,
     getLocalRunnerSocket: mockGetLocalRunnerSocket,
@@ -69,6 +70,7 @@ mock.module("../sessions/trigger-store.js", () => ({
 mock.module("../sessions/runner-trigger-listener-store.js", () => ({
     getRunnerListenerTypes: mock(() => Promise.resolve([])),
     getRunnerTriggerListener: mock(() => Promise.resolve(null)),
+    listRunnerTriggerListeners: mock(() => Promise.resolve([])),
     updateRunnerTriggerListener: mock(() => Promise.resolve(false)),
 }));
 

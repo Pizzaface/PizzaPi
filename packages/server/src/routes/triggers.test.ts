@@ -6,8 +6,6 @@
 
 import { describe, test, expect, beforeEach, afterEach, afterAll, mock, spyOn } from "bun:test";
 
-const isCI = !!process.env.CI;
-
 afterAll(() => mock.restore());
 
 // ── Mock sio-registry ────────────────────────────────────────────────────
@@ -1085,7 +1083,7 @@ describe("POST /api/runners/:runnerId/trigger-broadcast", () => {
         expect(emitMock).toHaveBeenCalledTimes(2);
     });
 
-    (isCI ? test.skip : test)("array payloads match scalar subscription filters and bodyContains performs substring matching", async () => {
+    test("array payloads match scalar subscription filters and bodyContains performs substring matching", async () => {
         mockGetSubscribersForTrigger.mockReturnValue(
             Promise.resolve(["sess-label", "sess-body", "sess-miss"]),
         );
