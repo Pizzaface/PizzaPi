@@ -1,4 +1,5 @@
 import * as React from "react";
+import { Suspense } from "react";
 import { ThemeProvider } from "@/components/ThemeProvider";
 import { initAnimationSync } from "@/lib/synced-animation";
 import { SessionSidebar, type DotState, type HubSession } from "@/components/SessionSidebar";
@@ -6,15 +7,7 @@ import { SessionViewer, type RelayMessage } from "@/components/SessionViewer";
 import type { CommandResultData } from "@/components/session-viewer/rendering";
 import { detectInFlightTools } from "@/components/session-viewer/utils";
 import { DesktopHeader, MobileHeader } from "@/components/AppHeaders";
-import { UserPreferencesPanel } from "@/components/UserPreferencesPanel";
 import { AuthPage } from "@/components/AuthPage";
-import { ApiKeyManager } from "@/components/ApiKeyManager";
-import { RunnerTokenManager } from "@/components/RunnerTokenManager";
-import { DeviceSetupScanner } from "@/components/DeviceSetupScanner";
-import { MobileSetupQR } from "@/components/MobileSetupQR";
-import { RunnerManager } from "@/components/RunnerManager";
-import { NewSessionWizardDialog } from "@/components/NewSessionWizardDialog";
-import { HistoryCommandPalette } from "@/components/HistoryCommandPalette";
 import { authClient, type BetterAuthSession } from "@/lib/auth-client";
 import { usePizzaPiSession } from "@/lib/use-pizzapi-session";
 import { useRunnersFeed } from "@/lib/useRunnersFeed";
@@ -67,12 +60,8 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { X, TerminalIcon, FolderTree, GitBranch, EyeOff, Zap, BarChart3 } from "lucide-react";
-import { SessionAnalyzerBody } from "@/components/session-viewer/SessionAnalyzerPanel";
-import { TriggersPanel, type TriggerHistoryEntry } from "@/components/TriggersPanel";
+import type { TriggerHistoryEntry } from "@/components/TriggersPanel";
 import type { ProviderUsageMap } from "@/components/UsageIndicator";
-import { TerminalManager } from "@/components/TerminalManager";
-import { FileExplorer } from "@/components/FileExplorer";
-import { GitPanel } from "@/components/git";
 import { CombinedPanel, type CombinedPanelTab } from "@/components/CombinedPanel";
 import { DockedPanelGroup, TAB_BAR_HEIGHT } from "@/components/DockedPanelGroup";
 import type { PanelPosition } from "@/hooks/usePanelLayout";
@@ -105,11 +94,9 @@ import {
   ModelSelectorShortcut,
 } from "@/components/ai-elements/model-selector";
 import { HiddenModelsManager, loadHiddenModels, fetchHiddenModels, modelKey } from "@/components/HiddenModelsManager";
-import { ChangePasswordDialog } from "@/components/ChangePasswordDialog";
 import { DegradedBanner } from "@/components/DegradedBanner";
 import { RunnerWarningBanner } from "@/components/RunnerWarningBanner";
 import { VersionBanner } from "@/components/VersionBanner";
-import { ShortcutsDialog } from "@/components/ShortcutsDialog";
 import { ButtonRail, ButtonStrip } from "@/components/session-viewer/ButtonSidebar";
 import {
   beginInputAttempt,
@@ -156,6 +143,36 @@ import {
 } from "@/lib/session-seq";
 import { createLogger } from "@pizzapi/tools";
 import { isActiveViewerSessionPayload, matchesViewerGeneration } from "@/lib/viewer-switch";
+
+// Lazy-loaded low-frequency surfaces. Auth, session sidebar/viewer, banners,
+// and loading/error UI remain eager so critical paths stay fast.
+const LazyUserPreferencesPanel = React.lazy(() => import("@/components/UserPreferencesPanel").then((m) => ({ default: m.UserPreferencesPanel })));
+const LazyApiKeyManager = React.lazy(() => import("@/components/ApiKeyManager").then((m) => ({ default: m.ApiKeyManager })));
+const LazyRunnerTokenManager = React.lazy(() => import("@/components/RunnerTokenManager").then((m) => ({ default: m.RunnerTokenManager })));
+const LazyDeviceSetupScanner = React.lazy(() => import("@/components/DeviceSetupScanner").then((m) => ({ default: m.DeviceSetupScanner })));
+const LazyMobileSetupQR = React.lazy(() => import("@/components/MobileSetupQR").then((m) => ({ default: m.MobileSetupQR })));
+const LazyRunnerManager = React.lazy(() => import("@/components/RunnerManager").then((m) => ({ default: m.RunnerManager })));
+const LazyNewSessionWizardDialog = React.lazy(() => import("@/components/NewSessionWizardDialog").then((m) => ({ default: m.NewSessionWizardDialog })));
+const LazyHistoryCommandPalette = React.lazy(() => import("@/components/HistoryCommandPalette").then((m) => ({ default: m.HistoryCommandPalette })));
+const LazySessionAnalyzerBody = React.lazy(() => import("@/components/session-viewer/SessionAnalyzerPanel").then((m) => ({ default: m.SessionAnalyzerBody })));
+const LazyTriggersPanel = React.lazy(() => import("@/components/TriggersPanel").then((m) => ({ default: m.TriggersPanel })));
+const LazyTerminalManager = React.lazy(() => import("@/components/TerminalManager").then((m) => ({ default: m.TerminalManager })));
+const LazyFileExplorer = React.lazy(() => import("@/components/FileExplorer").then((m) => ({ default: m.FileExplorer })));
+const LazyGitPanel = React.lazy(() => import("@/components/git").then((m) => ({ default: m.GitPanel })));
+const LazyChangePasswordDialog = React.lazy(() => import("@/components/ChangePasswordDialog").then((m) => ({ default: m.ChangePasswordDialog })));
+const LazyShortcutsDialog = React.lazy(() => import("@/components/ShortcutsDialog").then((m) => ({ default: m.ShortcutsDialog })));
+
+/** Stable, accessible Suspense fallback for lazy panels. */
+function PanelFallback({ label }: { label?: string }) {
+  return (
+    <div className="flex h-full w-full min-h-[120px] items-center justify-center">
+      <div className="flex flex-col items-center gap-2 text-muted-foreground">
+        <Spinner className="size-5 text-primary/60" />
+        {label && <span className="text-xs">{label}</span>}
+      </div>
+    </div>
+  );
+}
 
 const log = createLogger("relay");
 
@@ -4651,25 +4668,27 @@ export function App() {
     onDragStart: (e) => startPanelDragWith(e, handleTerminalPositionChange),
     keepMountedWhenInactive: true,
     content: (
-      <TerminalManager
-        className="h-full"
-        embedded
-        sessionId={activeSessionId}
-        runnerId={activeSessionInfo?.runnerId ?? undefined}
-        defaultCwd={activeSessionInfo?.cwd || undefined}
-        runners={feedRunners.map(r => ({
-          runnerId: r.runnerId,
-          name: r.name,
-          roots: r.roots,
-          sessionCount: liveSessions.filter(s => s.runnerId === r.runnerId).length,
-        }))}
-        runnersLoading={runnersStatus === "connecting"}
-        tabs={terminalTabs}
-        activeTabId={activeTerminalId}
-        onActiveTabChange={setActiveTerminalId}
-        onTabAdd={handleTerminalTabAdd}
-        onTabClose={handleTerminalTabClose}
-      />
+      <Suspense fallback={<PanelFallback label="Terminal" />}>
+        <LazyTerminalManager
+          className="h-full"
+          embedded
+          sessionId={activeSessionId}
+          runnerId={activeSessionInfo?.runnerId ?? undefined}
+          defaultCwd={activeSessionInfo?.cwd || undefined}
+          runners={feedRunners.map(r => ({
+            runnerId: r.runnerId,
+            name: r.name,
+            roots: r.roots,
+            sessionCount: liveSessions.filter(s => s.runnerId === r.runnerId).length,
+          }))}
+          runnersLoading={runnersStatus === "connecting"}
+          tabs={terminalTabs}
+          activeTabId={activeTerminalId}
+          onActiveTabChange={setActiveTerminalId}
+          onTabAdd={handleTerminalTabAdd}
+          onTabClose={handleTerminalTabClose}
+        />
+      </Suspense>
     ),
   } : null, [showTerminal, activeSessionId, activeSessionInfo?.runnerId, activeSessionInfo?.cwd, feedRunners, liveSessions, runnersStatus, terminalTabs, activeTerminalId, setActiveTerminalId, handleTerminalTabAdd, handleTerminalTabClose, startPanelDragWith, handleTerminalPositionChange]);
 
@@ -4680,11 +4699,13 @@ export function App() {
     onClose: () => setShowFileExplorer(false),
     onDragStart: (e) => startPanelDragWith(e, handleFilesPositionChange),
     content: (
-      <FileExplorer
-        runnerId={activeSessionInfo.runnerId}
-        cwd={activeSessionInfo.cwd}
-        className="h-full"
-      />
+      <Suspense fallback={<PanelFallback label="Files" />}>
+        <LazyFileExplorer
+          runnerId={activeSessionInfo.runnerId}
+          cwd={activeSessionInfo.cwd}
+          className="h-full"
+        />
+      </Suspense>
     ),
   } : null, [showFileExplorer, activeSessionInfo?.runnerId, activeSessionInfo?.cwd, startPanelDragWith, handleFilesPositionChange]);
 
@@ -4695,9 +4716,11 @@ export function App() {
     onClose: () => setShowGit(false),
     onDragStart: (e) => startPanelDragWith(e, handleGitPositionChange),
     content: (
-      <GitPanel
-        cwd={activeSessionInfo.cwd}
-      />
+      <Suspense fallback={<PanelFallback label="Git" />}>
+        <LazyGitPanel
+          cwd={activeSessionInfo.cwd}
+        />
+      </Suspense>
     ),
   } : null, [showGit, activeSessionInfo?.runnerId, activeSessionInfo?.cwd, startPanelDragWith, handleGitPositionChange]);
 
@@ -4708,7 +4731,9 @@ export function App() {
     onClose: () => setShowTriggers(false),
     onDragStart: (e) => startPanelDragWith(e, handleTriggersPositionChange),
     content: (
-      <TriggersPanel sessionId={activeSessionId} triggerDefs={runnerTriggerDefs} viewerSocket={viewerSocket} />
+      <Suspense fallback={<PanelFallback label="Triggers" />}>
+        <LazyTriggersPanel sessionId={activeSessionId} triggerDefs={runnerTriggerDefs} viewerSocket={viewerSocket} />
+      </Suspense>
     ),
   } : null, [showTriggers, activeSessionId, runnerTriggerDefs, viewerSocket, startPanelDragWith, handleTriggersPositionChange, setShowTriggers]);
 
@@ -4721,11 +4746,13 @@ export function App() {
       onClose: () => setShowAnalyzer(false),
       onDragStart: (e) => startPanelDragWith(e, handleAnalyzerPositionChange),
       content: (
-        <SessionAnalyzerBody
-          analysis={analysis}
-          runnerId={activeSessionInfo?.runnerId ?? null}
-          sessionId={activeSessionId}
-        />
+        <Suspense fallback={<PanelFallback label="Analysis" />}>
+          <LazySessionAnalyzerBody
+            analysis={analysis}
+            runnerId={activeSessionInfo?.runnerId ?? null}
+            sessionId={activeSessionId}
+          />
+        </Suspense>
       ),
     };
   }, [showAnalyzer, activeSessionId, activeSessionInfo?.runnerId, analysis, startPanelDragWith, handleAnalyzerPositionChange]);
@@ -5060,10 +5087,12 @@ export function App() {
         onHiddenModelsChange={setHiddenModels}
       />
 
-      <ChangePasswordDialog
-        open={changePasswordOpen}
-        onOpenChange={setChangePasswordOpen}
-      />
+      <Suspense fallback={<PanelFallback label="Password" />}>
+        <LazyChangePasswordDialog
+          open={changePasswordOpen}
+          onOpenChange={setChangePasswordOpen}
+        />
+      </Suspense>
 
       <div className="pp-shell flex flex-1 min-h-0 overflow-hidden relative">
         <div
@@ -5269,14 +5298,16 @@ export function App() {
               <div id="main-content" role="main" tabIndex={-1} className="flex flex-col flex-1 min-w-0 min-h-0 overflow-hidden">
                   {showRunners ? (
                     <ErrorBoundary level="section" resetKeys={[activeSessionId]}>
-                      <RunnerManager
-                        runners={feedRunners}
-                        runnersStatus={runnersStatus}
-                        sessions={liveSessions}
-                        onOpenSession={(id) => { handleOpenSession(id); setShowRunners(false); }}
-                        selectedRunnerId={selectedRunnerId}
-                        onSelectRunner={setSelectedRunnerId}
-                      />
+                      <Suspense fallback={<PanelFallback label="Runners" />}>
+                        <LazyRunnerManager
+                          runners={feedRunners}
+                          runnersStatus={runnersStatus}
+                          sessions={liveSessions}
+                          onOpenSession={(id) => { handleOpenSession(id); setShowRunners(false); }}
+                          selectedRunnerId={selectedRunnerId}
+                          onSelectRunner={setSelectedRunnerId}
+                        />
+                      </Suspense>
                     </ErrorBoundary>
                   ) : (
                     <ErrorBoundary level="section" resetKeys={[activeSessionId]}>
@@ -5645,13 +5676,14 @@ export function App() {
             </div>
           )}
         </div>
-        <HistoryCommandPalette
-          open={historyOpen}
-          onOpenChange={setHistoryOpen}
-          sessions={resumeSessions}
-          loading={resumeSessionsLoading}
-          onRefresh={requestResumeSessions}
-          onResumeSession={async (sessionId) => {
+        <Suspense fallback={<PanelFallback label="History" />}>
+          <LazyHistoryCommandPalette
+            open={historyOpen}
+            onOpenChange={setHistoryOpen}
+            sessions={resumeSessions}
+            loading={resumeSessionsLoading}
+            onRefresh={requestResumeSessions}
+            onResumeSession={async (sessionId) => {
             const session = resumeSessions.find((s) => s.id === sessionId);
             if (!session) return;
 
@@ -5704,8 +5736,10 @@ export function App() {
           nextCursor={resumeSessionsNextCursor}
           onLoadMore={() => { if (resumeSessionsNextCursor) requestResumeSessions(resumeSessionsNextCursor); }}
         />
+      </Suspense>
 
-        <NewSessionWizardDialog
+        <Suspense fallback={<PanelFallback label="New session" />}>
+          <LazyNewSessionWizardDialog
           open={newSessionOpen}
           onOpenChange={(open) => { if (!spawningSession) setNewSessionOpen(open); }}
           runners={feedRunners.map((r) => ({ ...r, name: r.name ?? null, isOnline: true, sessionCount: liveSessions.filter(s => s.runnerId === r.runnerId).length }))}
@@ -5714,13 +5748,16 @@ export function App() {
           initialCwd={spawnCwd}
           onSpawn={handleWizardSpawn}
         />
+      </Suspense>
 
         {showPreferences && (
-          <UserPreferencesPanel
-            onClose={() => setShowPreferences(false)}
-            onShowHiddenModels={() => setHiddenModelsOpen(true)}
-            hiddenModelCount={availableModels.filter(m => hiddenModels.has(modelKey(m.provider, m.id))).length}
-          />
+          <Suspense fallback={<PanelFallback label="Settings" />}>
+            <LazyUserPreferencesPanel
+              onClose={() => setShowPreferences(false)}
+              onShowHiddenModels={() => setHiddenModelsOpen(true)}
+              hiddenModelCount={availableModels.filter(m => hiddenModels.has(modelKey(m.provider, m.id))).length}
+            />
+          </Suspense>
         )}
 
         {showApiKeys && (
@@ -5748,24 +5785,30 @@ export function App() {
               </Tooltip>
             </div>
             <div className="flex-1 overflow-y-auto p-4">
-              <div className="flex flex-col gap-4">
-                <MobileSetupQR />
-                <ApiKeyManager refreshSignal={apiKeyVersion} onKeysChanged={() => setApiKeyVersion((v) => v + 1)} />
-                <RunnerTokenManager refreshSignal={apiKeyVersion} onKeysChanged={() => setApiKeyVersion((v) => v + 1)} />
-                <DeviceSetupScanner onClose={() => setShowApiKeys(false)} />
-              </div>
+              <Suspense fallback={<PanelFallback label="API keys" />}>
+                <div className="flex flex-col gap-4">
+                  <LazyMobileSetupQR />
+                  <LazyApiKeyManager refreshSignal={apiKeyVersion} onKeysChanged={() => setApiKeyVersion((v) => v + 1)} />
+                  <LazyRunnerTokenManager refreshSignal={apiKeyVersion} onKeysChanged={() => setApiKeyVersion((v) => v + 1)} />
+                  <LazyDeviceSetupScanner onClose={() => setShowApiKeys(false)} />
+                </div>
+              </Suspense>
             </div>
           </div>
         )}
 
-        <ShortcutsDialog open={showShortcutsHelp} onOpenChange={setShowShortcutsHelp} />
+        <Suspense fallback={<PanelFallback label="Shortcuts" />}>
+          <LazyShortcutsDialog open={showShortcutsHelp} onOpenChange={setShowShortcutsHelp} />
+        </Suspense>
 
         <Dialog open={setupClaimOpen} onOpenChange={setSetupClaimOpen}>
           <DialogContent className="max-w-md p-0 overflow-hidden">
-            <DeviceSetupScanner
-              initialToken={setupClaimToken ?? undefined}
-              onClose={() => setSetupClaimOpen(false)}
-            />
+            <Suspense fallback={<PanelFallback label="Device setup" />}>
+              <LazyDeviceSetupScanner
+                initialToken={setupClaimToken ?? undefined}
+                onClose={() => setSetupClaimOpen(false)}
+              />
+            </Suspense>
           </DialogContent>
         </Dialog>
 

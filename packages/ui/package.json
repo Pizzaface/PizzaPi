@@ -3,7 +3,8 @@
   "version": "0.1.32",
   "type": "module",
   "scripts": {
-    "build": "vite build",
+    "build": "vite build && bun run bundle-budget",
+    "bundle-budget": "bun scripts/bundle-budget.ts",
     "dev": "vite",
     "preview": "vite preview"
   },
