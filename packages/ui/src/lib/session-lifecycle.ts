@@ -84,7 +84,7 @@ export interface SessionLifecycleActions {
     preselectedRunnerId?: string | null;
   }) => SessionLifecycleAction;
   /** User selected / switched to a session. */
-  sessionSelected: (sessionId: string) => SessionLifecycleAction;
+  sessionSelected: (sessionId: string, generation?: number) => SessionLifecycleAction;
   /** Viewer socket confirmed connection to the active session. */
   connected: (payload?: {
     replayOnly?: boolean;
@@ -145,10 +145,10 @@ export const sessionLifecycleActions: SessionLifecycleActions = {
   spawnSucceeded: (sessionId) => ({ type: "SPAWN_SUCCEEDED", sessionId }),
   spawnFailed: (error) => ({ type: "SPAWN_FAILED", error }),
   spawnParamsChanged: (params) => ({ type: "SPAWN_PARAMS_CHANGED", ...params }),
-  sessionSelected: (sessionId) => ({
+  sessionSelected: (sessionId, generation) => ({
     type: "SESSION_SELECTED",
     sessionId,
-    generation: Date.now(), // logical generation; hook may override
+    generation: generation ?? Date.now(), // logical generation; hook passes a monotonic value
   }),
   connected: (payload = {}) => ({ type: "CONNECTED", ...payload }),
   disconnected: (payload) => ({ type: "DISCONNECTED", ...payload }),

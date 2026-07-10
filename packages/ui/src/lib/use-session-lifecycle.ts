@@ -159,7 +159,9 @@ export function useSessionLifecycle(
     restartPendingSessionIdRef.current = state.reconnect.restartPendingSessionId;
   }, [state]);
 
-  // Wait-for-live waiter registry. Resolved by the liveSessions effect below.
+  // Monotonic switch generation. Survives clearSelection() so reopened
+  // sessions never reuse a generation that stale in-flight events might carry.
+  const viewerSwitchGenerationRef = React.useRef(0);
   const waitersRef = React.useRef<
     Map<
       string,
@@ -210,8 +212,12 @@ export function useSessionLifecycle(
   }, [state.status]);
 
   const openSession = React.useCallback((sessionId: string): number => {
-    const generation = Date.now();
-    dispatch(lifecycleActions.sessionSelected(sessionId));
+    const generation = ++viewerSwitchGenerationRef.current;
+    // Synchronize refs immediately so any code that reads them before the
+    // next render (e.g. App's socket setup) sees the new identity.
+    activeSessionIdRef.current = sessionId;
+    generationRef.current = generation;
+    dispatch(lifecycleActions.sessionSelected(sessionId, generation));
     return generation;
   }, []);
 
@@ -240,17 +246,27 @@ export function useSessionLifecycle(
       if (cwd) payload.cwd = cwd;
       if (agent) payload.agent = agent;
 
-      const res = await fetch("/api/runners/spawn", {
-        method: "POST",
-        credentials: "include",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-
-      const body = (await res.json().catch(() => null)) as {
+      let res: Response;
+      let body: {
         error?: string;
         sessionId?: string;
       } | null;
+      try {
+        res = await fetch("/api/runners/spawn", {
+          method: "POST",
+          credentials: "include",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        body = (await res.json().catch(() => null)) as typeof body;
+      } catch (err) {
+        const mapped = mapUserError({
+          error: err,
+          context: "session_spawn",
+        });
+        dispatch(lifecycleActions.spawnFailed(mapped.userMessage));
+        throw new Error(mapped.userMessage, { cause: err });
+      }
 
       if (!res.ok) {
         const mapped = mapUserError({

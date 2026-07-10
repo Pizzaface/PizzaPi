@@ -135,6 +135,7 @@ import {
 import { evictLruIfNeeded, touchSessionCache, MAX_SESSION_UI_CACHE_SIZE } from "@/lib/session-ui-cache";
 import { removeMessagesByStableKey, replaceMessageByStableKey } from "@/lib/mcp-auth-banners";
 import { useSessionLifecycle } from "@/lib/use-session-lifecycle";
+import { createWizardSpawnHandler } from "@/lib/wizard-spawn-handler";
 import { sessionLifecycleActions as lifecycleActions } from "@/lib/session-lifecycle";
 import {
   analyzeIncomingSeq,
@@ -4126,10 +4127,14 @@ export function App() {
   // ── Session live waiter is now owned by useSessionLifecycle. ──────────
 
   /** Spawn handler for the new wizard dialog. */
-  const handleWizardSpawn = React.useCallback(async (runnerId: string, cwd: string | undefined) => {
-    const sessionId = await lifecycleSpawnSession(runnerId, cwd);
-    handleOpenSession(sessionId);
-  }, [lifecycleSpawnSession, handleOpenSession]);
+  const handleWizardSpawn = React.useCallback(
+    createWizardSpawnHandler({
+      spawnSession: lifecycleSpawnSession,
+      openSession: handleOpenSession,
+      setOpen: setNewSessionOpen,
+    }),
+    [lifecycleSpawnSession, handleOpenSession, setNewSessionOpen],
+  );
 
   // ── Respond to a trigger from a child session ─────────────────────────────
   const handleTriggerResponse = React.useCallback((triggerId: string, response: string, action?: string, sourceSessionId?: string): Promise<boolean> => {

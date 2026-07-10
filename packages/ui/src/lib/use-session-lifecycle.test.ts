@@ -63,17 +63,28 @@ describe("useSessionLifecycle", () => {
     expect(apiRef.current!.state.activeSessionId).toBeNull();
   });
 
-  test("openSession selects a session and returns a generation", () => {
+  test("openSession returns generation matching state and refs, and consecutive opens are strictly increasing", () => {
     const { apiRef } = renderHarness();
-    let generation = 0;
+
+    let firstGeneration = 0;
     act(() => {
-      generation = apiRef.current!.openSession("session-abc");
+      firstGeneration = apiRef.current!.openSession("session-1");
     });
-    expect(generation).toBeGreaterThan(0);
-    expect(apiRef.current!.state.activeSessionId).toBe("session-abc");
-    expect(apiRef.current!.state.phase).toBe("connecting");
-    expect(apiRef.current!.viewerStatus).toBe("Connecting…");
-    expect(apiRef.current!.refs.activeSessionId.current).toBe("session-abc");
+
+    expect(firstGeneration).toBeGreaterThan(0);
+    expect(apiRef.current!.state.generation).toBe(firstGeneration);
+    expect(apiRef.current!.refs.generation.current).toBe(firstGeneration);
+    expect(apiRef.current!.refs.activeSessionId.current).toBe("session-1");
+
+    let secondGeneration = 0;
+    act(() => {
+      secondGeneration = apiRef.current!.openSession("session-2");
+    });
+
+    expect(secondGeneration).toBeGreaterThan(firstGeneration);
+    expect(apiRef.current!.state.generation).toBe(secondGeneration);
+    expect(apiRef.current!.refs.generation.current).toBe(secondGeneration);
+    expect(apiRef.current!.refs.activeSessionId.current).toBe("session-2");
   });
 
   test("spawnSession resolves when the session is already live", async () => {
@@ -110,6 +121,25 @@ describe("useSessionLifecycle", () => {
 
     expect(resolvedSessionId).toBe("session-abc");
     expect(apiRef.current!.state.phase).toBe("registering");
+  });
+
+  test("spawnSession dispatches SPAWN_FAILED on network error", async () => {
+    globalThis.fetch = mock(() => Promise.reject(new Error("Network failure"))) as unknown as typeof fetch;
+
+    const { apiRef } = renderHarness([], 50);
+
+    let thrown: Error | null = null;
+    await act(async () => {
+      try {
+        await apiRef.current!.spawnSession("runner-1", undefined);
+      } catch (err) {
+        thrown = err as Error;
+      }
+    });
+
+    expect(thrown).not.toBeNull();
+    expect(apiRef.current!.state.phase).toBe("error");
+    expect(apiRef.current!.state.spawn.error).toBeTruthy();
   });
 
   test("spawnSession throws and records error on API failure", async () => {
