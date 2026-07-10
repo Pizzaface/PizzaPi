@@ -4,6 +4,8 @@ import { join } from "node:path";
 import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { loadConfig } from "../config.js";
+import { getCachedOllamaCloudModels, toOllamaCloudRuntimeModel } from "../ollama-cloud-models.js";
+import { mergeModelLists } from "../session-models-cache.js";
 import { getRelaySessionId } from "./remote.js";
 import { buildProviderUsage, refreshAllUsage } from "./remote-provider-usage.js";
 import { formatProviderUsage, getUsageKey, normalizeUsageKeys } from "./format-usage.js";
@@ -289,8 +291,19 @@ export const spawnSessionExtension: ExtensionFactory = (pi) => {
             const isHidden = (m: { provider: string | symbol; id: string }) =>
                 hiddenModelKeys.has(`${String(m.provider)}/${m.id}`);
 
-            const allModels = ctx.modelRegistry.getAll().filter((m) => !isHidden(m));
-            const availableModels = ctx.modelRegistry.getAvailable().filter((m) => !isHidden(m));
+            // Ollama Cloud models are discovered dynamically (fetched live from ollama.com,
+            // not baked into the static registry) — merge in the runner's cached list, same
+            // as the Web UI and `pizza models` do, so newly-pulled cloud models show up here.
+            const hasOllamaAuth = ctx.modelRegistry.authStorage.hasAuth("ollama-cloud") || !!process.env.OLLAMA_API_KEY;
+            const ollamaModels = hasOllamaAuth
+                ? (getCachedOllamaCloudModels() ?? []).map(toOllamaCloudRuntimeModel).filter((m) => !isHidden(m))
+                : [];
+
+            const allModels = mergeModelLists(ctx.modelRegistry.getAll().filter((m) => !isHidden(m)), ollamaModels);
+            const availableModels = mergeModelLists(
+                ctx.modelRegistry.getAvailable().filter((m) => !isHidden(m)),
+                ollamaModels,
+            );
             const availableKeys = new Set(availableModels.map((m) => `${m.provider}:${m.id}`));
 
             const models = params.onlyAvailable ? availableModels : allModels;
