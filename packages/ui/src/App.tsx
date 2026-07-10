@@ -5482,6 +5482,8 @@ export function App() {
           nextCursor={resumeSessionsNextCursor}
           onLoadMore={() => { if (resumeSessionsNextCursor) requestResumeSessions(resumeSessionsNextCursor); }}
         />
+          </Suspense>
+        )}
 
         {newSessionMounted && (
           <Suspense fallback={<PanelFallback label="New session" />}>
