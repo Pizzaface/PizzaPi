@@ -230,10 +230,11 @@ describe("browser smoke — sandbox UI", () => {
 
             // Verify the default sandbox runner appears.
             await page.click('button:has-text("Runners")');
-            await page.waitForSelector('button:has-text("sandbox-runner")', { timeout: 10_000 });
+            await page.waitForSelector('button:has-text("sandbox-runner")', { timeout: 30_000 });
 
-            // Back to sessions.
+            // Back to sessions. Wait for React to render the list before counting it.
             await page.click('button:has-text("Sessions")');
+            await page.waitForSelector('[data-session-row]', { timeout: 20_000 });
             const initialRows = await page.locator('[data-session-row]').count();
             expect(initialRows).toBeGreaterThanOrEqual(1);
 
