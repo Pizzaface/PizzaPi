@@ -1080,6 +1080,7 @@ async function main() {
     }
 
     // Handle Ctrl+C for graceful shutdown
+    let shuttingDown = false;
     process.on("SIGINT", () => {
         console.log("");
         doShutdown();
@@ -1102,7 +1103,17 @@ async function main() {
     }
 
     async function doShutdown() {
+        if (shuttingDown) return;
+        shuttingDown = true;
         console.log("🧹 Shutting down...");
+
+        // Kill Vite immediately before any slow awaited teardown so it is not
+        // orphaned if the parent force-kills the sandbox process.
+        try {
+            viteProc.kill("SIGKILL");
+            await viteProc.exited;
+        } catch {}
+
         // Disconnect runners
         for (const r of runners) {
             try { await r.disconnect(); } catch {}
@@ -1113,11 +1124,10 @@ async function main() {
         } else {
             process.env.PIZZAPI_BASE_URL = savedBaseUrl;
         }
-        sandboxApi.stop();
-        monitorServer.stop();
-        await scenario.teardown();
-        viteProc.kill();
-        await stopRedis();
+        try { sandboxApi.stop(); } catch {}
+        try { monitorServer.stop(); } catch {}
+        try { await scenario.teardown(); } catch {}
+        try { await stopRedis(); } catch {}
         console.log("👋 Goodbye!\n");
         process.exit(0);
     }

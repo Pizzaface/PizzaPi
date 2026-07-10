@@ -157,14 +157,30 @@ describe("browser smoke — sandbox UI", () => {
         try {
             await browser?.close();
         } catch { /* ignore */ }
+
+        // Signal the sandbox and give it a bounded ~5s grace to exit cleanly.
+        // The sandbox kills Vite first, then tears down Redis/runners/etc.
+        const GRACE_MS = 5_000;
         try {
             proc?.kill();
         } catch { /* ignore */ }
-        // Give the sandbox process a moment to exit, then force-kill if needed.
-        await new Promise((r) => setTimeout(r, 500));
-        try {
-            if (proc?.pid) process.kill(proc.pid, "SIGKILL");
-        } catch { /* ignore */ }
+
+        if (proc?.exited) {
+            const exited = proc.exited.catch(() => undefined);
+            try {
+                await Promise.race([
+                    exited,
+                    new Promise<void>((_, reject) =>
+                        setTimeout(() => reject(new Error("sandbox exit timeout")), GRACE_MS),
+                    ),
+                ]);
+            } catch {
+                try {
+                    if (proc?.pid) process.kill(proc.pid, "SIGKILL");
+                } catch { /* ignore */ }
+            }
+        }
+
         try {
             await redisServer?.stop();
         } catch { /* ignore */ }
