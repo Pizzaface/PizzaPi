@@ -134,6 +134,8 @@ import {
 } from "@/lib/message-helpers";
 import { evictLruIfNeeded, touchSessionCache, MAX_SESSION_UI_CACHE_SIZE } from "@/lib/session-ui-cache";
 import { removeMessagesByStableKey, replaceMessageByStableKey } from "@/lib/mcp-auth-banners";
+import { useSessionLifecycle } from "@/lib/use-session-lifecycle";
+import { sessionLifecycleActions as lifecycleActions } from "@/lib/session-lifecycle";
 import {
   analyzeIncomingSeq,
   canFinalizeChunkHydration,
@@ -197,9 +199,7 @@ const BUILD_TIMESTAMP =
 // — nothing can be accidentally left stale when switching sessions.
 interface SessionState {
   viewerSocket: Socket<ViewerServerToClientEvents, ViewerClientToServerEvents> | null;
-  activeSessionId: string | null;
   messages: RelayMessage[];
-  viewerStatus: string;
   retryState: { errorMessage: string; detectedAt: number } | null;
   pendingQuestion: { toolCallId: string; questions: Array<{ question: string; options: string[]; type?: QuestionType }>; display: QuestionDisplayMode } | null;
   pendingPlan: { toolCallId: string; title: string; description: string | null; steps: Array<{ title: string; description?: string }> } | null;
@@ -231,9 +231,7 @@ interface SessionState {
 function createInitialSessionState(): SessionState {
   return {
     viewerSocket: null,
-    activeSessionId: null,
     messages: [],
-    viewerStatus: "Idle",
     retryState: null,
     pendingQuestion: null,
     pendingPlan: null,
@@ -308,7 +306,7 @@ export function App() {
   // clearSelection() resets this entire object in a single atomic call.
   const [sessionState, setSessionState] = React.useState<SessionState>(createInitialSessionState);
   const {
-    viewerSocket, activeSessionId, messages, viewerStatus, retryState,
+    viewerSocket, messages, retryState,
     pendingQuestion, pendingPlan, pluginTrustPrompt, activeToolCalls,
     mcpOAuthPastes, messageQueue, activeModel, sessionName, availableModels,
     modelSelectorOpen, isChangingModel, agentActive, effortLevel, authSource,
@@ -326,19 +324,9 @@ export function App() {
       setSessionState((p: SessionState) => ({ ...p, viewerSocket: typeof v === "function" ? v(p.viewerSocket) : v })),
     []
   );
-  const setActiveSessionId = React.useCallback(
-    (v: React.SetStateAction<string | null>) =>
-      setSessionState((p: SessionState) => ({ ...p, activeSessionId: typeof v === "function" ? v(p.activeSessionId) : v })),
-    []
-  );
   const setMessages = React.useCallback(
     (v: React.SetStateAction<RelayMessage[]>) =>
       setSessionState((p: SessionState) => ({ ...p, messages: typeof v === "function" ? v(p.messages) : v })),
-    []
-  );
-  const setViewerStatus = React.useCallback(
-    (v: React.SetStateAction<string>) =>
-      setSessionState((p: SessionState) => ({ ...p, viewerStatus: typeof v === "function" ? v(p.viewerStatus) : v })),
     []
   );
   const setRetryState = React.useCallback(
@@ -564,6 +552,58 @@ export function App() {
     }
   }, []);
 
+  const [sessionsAwaitingInput, setSessionsAwaitingInput] = React.useState<Set<string>>(new Set());
+
+  /** Set of session IDs that are actively compacting their context window. */
+  const [sessionsCompacting, setSessionsCompacting] = React.useState<Set<string>>(new Set());
+
+  const [liveSessions, setLiveSessions] = React.useState<HubSession[]>([]);
+
+  // Ref kept in sync with liveSessions so openSession can look up runner IDs
+  // without including liveSessions in its dependency array.
+  const liveSessionsRef = React.useRef<HubSession[]>(liveSessions);
+  React.useLayoutEffect(() => { liveSessionsRef.current = liveSessions; }, [liveSessions]);
+
+  // Lifecycle hook: single owner of session phase/status/error/hydration/reconnect.
+  const lifecycle = useSessionLifecycle({ liveSessions });
+  const activeSessionId = lifecycle.state.activeSessionId;
+  const viewerStatus = lifecycle.viewerStatus;
+  const lifecycleIsHydrating = lifecycle.isHydrating;
+  const lifecycleState = lifecycle.state;
+  const lifecycleRefs = lifecycle.refs;
+  const lifecycleDispatch = lifecycle.dispatch;
+  const setLifecycleSpawnParams = lifecycle.setSpawnParams;
+  const setLifecycleStatus = lifecycle.setStatus;
+  const lifecycleOpenSession = lifecycle.openSession;
+  const lifecycleClearSelection = lifecycle.clearSelection;
+  const lifecycleSpawnSession = lifecycle.spawnSession;
+  const waitForSessionToGoLive = lifecycle.waitForSessionToGoLive;
+  const onViewerConnected = lifecycle.onViewerConnected;
+  const onViewerDisconnected = lifecycle.onViewerDisconnected;
+  const onViewerError = lifecycle.onViewerError;
+  const onSnapshotStarted = lifecycle.onSnapshotStarted;
+  const onChunkProgress = lifecycle.onChunkProgress;
+  const onSnapshotComplete = lifecycle.onSnapshotComplete;
+  const onReconnecting = lifecycle.onReconnecting;
+  const onRestartPendingCleared = lifecycle.onRestartPendingCleared;
+
+  // Derive a sessionId → sessionName map for browser notifications.
+  const sessionNamesMap = React.useMemo(() => {
+    const map = new Map<string, string | null>();
+    for (const s of liveSessions) {
+      map.set(s.sessionId, s.sessionName ?? null);
+    }
+    return map;
+  }, [liveSessions]);
+
+  // Fire browser Notification API alerts when a session is awaiting input
+  // and the tab is hidden or the user is viewing a different session.
+  useBrowserNotifications({
+    sessionsAwaitingInput,
+    activeSessionId,
+    sessionNames: sessionNamesMap,
+  });
+
   const panelLayout = usePanelLayout(activeSessionId);
   const {
     showTerminal, setShowTerminal,
@@ -685,18 +725,7 @@ export function App() {
 
   const [newSessionOpen, setNewSessionOpen] = React.useState(false);
   const newSessionMounted = useMountOnFirstOpen(newSessionOpen);
-  const [spawnRunnerId, setSpawnRunnerId] = React.useState<string | undefined>(undefined);
-  const [spawnCwd, setSpawnCwd] = React.useState<string>("");
-  const [spawnPreselectedRunnerId, setSpawnPreselectedRunnerId] = React.useState<string | null>(null);
-  const [spawningSession, setSpawningSession] = React.useState(false);
-  const [recentFolders, setRecentFolders] = React.useState<string[]>([]);
-  const [recentFoldersLoading, setRecentFoldersLoading] = React.useState(false);
 
-  /** Set of session IDs that currently have a pending AskUserQuestion. */
-  const [sessionsAwaitingInput, setSessionsAwaitingInput] = React.useState<Set<string>>(new Set());
-
-  /** Set of session IDs that are actively compacting their context window. */
-  const [sessionsCompacting, setSessionsCompacting] = React.useState<Set<string>>(new Set());
 
   // Cached fallback promptKey for when toolCallId is absent (legacy/compat).
   // Only changes when the question content changes, preventing heartbeat
@@ -772,7 +801,7 @@ export function App() {
   // until the initial snapshot (session_active / agent_end / heartbeat) arrives.
   // This prevents pre-snapshot live events from rendering and then being
   // replaced, which causes visible message "jumping".
-  const awaitingSnapshotRef = React.useRef(false);
+  // (Owned by lifecycleRefs.awaitingSnapshot in useSessionLifecycle.)
 
   // Track which MCP startup report timestamps have already been rendered
   // to avoid duplicates when heartbeats re-deliver the same report.
@@ -781,7 +810,7 @@ export function App() {
   // Whether session_active has been received for the current session.
   // Heartbeat MCP reports are deferred until after session_active hydrates
   // messages, otherwise the report gets appended then immediately replaced.
-  const sessionHydratedRef = React.useRef(false);
+  // (Owned by lifecycleRefs.hydrated in useSessionLifecycle.)
 
   // Holds an MCP startup report that arrived (via hub state_snapshot) before
   // session_active hydration completed. Flushed when hydration finishes.
@@ -809,19 +838,7 @@ export function App() {
   // The snapshotId ties chunks to their originating session_active so stale
   // chunks from a previous stream are discarded (e.g. if a new viewer
   // connects mid-stream and triggers a fresh emitSessionActive).
-  const chunkedDeliveryRef = React.useRef<{
-    snapshotId: string;
-    totalMessages: number;
-    totalChunks: number;
-    receivedChunkIndexes: Set<number>;
-    finalChunkSeen: boolean;
-    loadedMessages: number; // cumulative count for progress display
-    chunkBuffer: Map<number, unknown[]>; // raw messages buffered by chunkIndex for ordered assembly
-  } | null>(null);
-
-  // Track the last completed snapshot ID so we can reject stale chunks that
-  // arrive after the ref has been cleared (e.g. from a superseded sender).
-  const lastCompletedSnapshotRef = React.useRef<string | null>(null);
+  // (Owned by lifecycleRefs.chunked / lifecycleRefs.lastCompletedSnapshot.)
 
   // Mobile layout
   const {
@@ -829,28 +846,6 @@ export function App() {
     sidebarSwipeOffset, suppressOverlayClickRef,
     handleSidebarPointerDown, handleSidebarPointerMove, handleSidebarPointerUp,
   } = useMobileSidebar();
-  const [liveSessions, setLiveSessions] = React.useState<HubSession[]>([]);
-
-  // Derive a sessionId → sessionName map for browser notifications.
-  const sessionNamesMap = React.useMemo(() => {
-    const map = new Map<string, string | null>();
-    for (const s of liveSessions) {
-      map.set(s.sessionId, s.sessionName ?? null);
-    }
-    return map;
-  }, [liveSessions]);
-
-  // Fire browser Notification API alerts when a session is awaiting input
-  // and the tab is hidden or the user is viewing a different session.
-  useBrowserNotifications({
-    sessionsAwaitingInput,
-    activeSessionId,
-    sessionNames: sessionNamesMap,
-  });
-  // Ref kept in sync with liveSessions so openSession can look up runner IDs
-  // without including liveSessions in its dependency array.
-  const liveSessionsRef = React.useRef<HubSession[]>(liveSessions);
-  React.useLayoutEffect(() => { liveSessionsRef.current = liveSessions; }, [liveSessions]);
 
   React.useEffect(() => {
     confirmedMetaLiveSessionIdsRef.current = new Set(liveSessions.map((s) => s.sessionId));
@@ -898,40 +893,11 @@ export function App() {
 
   // Tracks a session that was restarted via the remote exec "restart" command.
   // When the session comes back live (hub sends session_added), we auto-reconnect.
-  const restartPendingSessionIdRef = React.useRef<string | null>(null);
-  const restartPendingTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  // (Owned by lifecycleRefs.restartPendingSessionId in useSessionLifecycle.)
 
 
 
-  // Fetch recent folders when a runner is selected in the new-session dialog.
-  React.useEffect(() => {
-    if (!newSessionOpen || !spawnRunnerId) {
-      setRecentFolders([]);
-      return;
-    }
 
-    let cancelled = false;
-    setRecentFoldersLoading(true);
-    void fetch(`/api/runners/${encodeURIComponent(spawnRunnerId)}/recent-folders`, { credentials: "include" })
-      .then((res) => (res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`))))
-      .then((data) => {
-        if (cancelled) return;
-        const list = Array.isArray((data as any)?.folders) ? (data as any).folders as string[] : [];
-        setRecentFolders(list);
-      })
-      .catch(() => {
-        if (cancelled) return;
-        setRecentFolders([]);
-      })
-      .finally(() => {
-        if (cancelled) return;
-        setRecentFoldersLoading(false);
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [newSessionOpen, spawnRunnerId]);
 
   const viewerWsRef = React.useRef<Socket<ViewerServerToClientEvents, ViewerClientToServerEvents> | null>(null);
   const paginationStateRef = React.useRef<{
@@ -944,9 +910,7 @@ export function App() {
   const hubSocketRef = React.useRef<Socket<HubServerToClientEvents, HubClientToServerEvents> | null>(null);
   // Tracked as state so HubSocketContext consumers re-render when the socket changes.
   const [hubSocket, setHubSocket] = React.useState<Socket<HubServerToClientEvents, HubClientToServerEvents> | null>(null);
-  const activeSessionRef = React.useRef<string | null>(null);
   const agentActiveRef = React.useRef(false);
-  const viewerSwitchGenerationRef = React.useRef(0);
 
   const checkVersionCompatibility = React.useCallback(async () => {
     try {
@@ -972,7 +936,7 @@ export function App() {
   const sessionUiCacheRef = React.useRef<Map<string, SessionUiCacheEntry>>(new Map());
 
   const patchSessionCache = React.useCallback((patch: Partial<SessionUiCacheEntry>) => {
-    const sessionId = activeSessionRef.current;
+    const sessionId = lifecycleRefs.activeSessionId.current;
     if (!sessionId) return;
 
     const prev = sessionUiCacheRef.current.get(sessionId);
@@ -1001,7 +965,7 @@ export function App() {
     };
 
     // Evict the least-recently-accessed entry if we're over the size limit.
-    evictLruIfNeeded(sessionUiCacheRef.current, sessionId, MAX_SESSION_UI_CACHE_SIZE, activeSessionRef.current);
+    evictLruIfNeeded(sessionUiCacheRef.current, sessionId, MAX_SESSION_UI_CACHE_SIZE, lifecycleRefs.activeSessionId.current);
 
     sessionUiCacheRef.current.set(sessionId, next);
 
@@ -1076,22 +1040,21 @@ export function App() {
     }
     viewerWsRef.current?.disconnect();
     viewerWsRef.current = null;
-    activeSessionRef.current = null;
     lastSeqRef.current = null;
-    awaitingSnapshotRef.current = false;
     renderedMcpReportTsRef.current = null;
     injectedMessagesRef.current = [];
     // Single atomic reset — all session-scoped fields defined in SessionState
     // are cleared together. New fields added to SessionState are automatically
     // included; nothing can be accidentally left stale between sessions.
     setSessionState(createInitialSessionState());
+    lifecycleClearSelection();
     // Reset live-status fields that are intentionally outside SessionState
     // (they are driven by heartbeats, not snapshots) but must still be cleared
     // when switching sessions so stale "compacting" / "plan mode" indicators
     // are not carried over until the next heartbeat arrives.
     setIsCompacting(false);
     setPlanModeEnabled(false);
-  }, []);
+  }, [lifecycleClearSelection]);
 
   // Full reset: cancel the RAF and wipe all pending streaming state. Use before
   // replacing the entire message list (session_active, agent_end) so a queued
@@ -1362,7 +1325,7 @@ export function App() {
     ts?: number;
   }) => {
     const reportTs = typeof mcpReport.ts === "number" ? mcpReport.ts : 0;
-    if (reportTs <= 0 || reportTs === renderedMcpReportTsRef.current || !sessionHydratedRef.current) return;
+    if (reportTs <= 0 || reportTs === renderedMcpReportTsRef.current || !lifecycleRefs.hydrated.current) return;
     const hasErrors = Array.isArray(mcpReport.errors) && mcpReport.errors.length > 0;
     const showSlow = mcpReport.showSlowWarning !== false;
     const isSlow = mcpReport.slow === true && showSlow;
@@ -1430,7 +1393,7 @@ export function App() {
           };
           setPendingQuestion(resolved);
           cachePatch.pendingQuestion = resolved;
-          setViewerStatus("Waiting for answer…");
+          setLifecycleStatus("Waiting for answer…");
         } else {
           setPendingQuestion(null);
           cachePatch.pendingQuestion = null;
@@ -1457,7 +1420,7 @@ export function App() {
         };
         setPendingPlan(resolved);
         cachePatch.pendingPlan = resolved;
-        setViewerStatus("Waiting for plan review…");
+        setLifecycleStatus("Waiting for plan review…");
       } else {
         setPendingPlan(null);
         cachePatch.pendingPlan = null;
@@ -1473,9 +1436,9 @@ export function App() {
       setIsCompacting(state.isCompacting);
       cachePatch.isCompacting = state.isCompacting;
       if (state.isCompacting) {
-        setViewerStatus("Compacting…");
+        setLifecycleStatus("Compacting…");
       }
-      const snapSessionId = activeSessionRef.current;
+      const snapSessionId = lifecycleRefs.activeSessionId.current;
       if (snapSessionId) {
         setSessionsCompacting((prev) => {
           const next = new Set(prev);
@@ -1548,7 +1511,7 @@ export function App() {
     // the new slim-heartbeat CLI no longer retries in every heartbeat, so without this
     // the report would be permanently lost for any viewer connecting to an existing session.
     if (state.mcpStartupReport) {
-      if (sessionHydratedRef.current) {
+      if (lifecycleRefs.hydrated.current) {
         applyMcpReport(state.mcpStartupReport as Record<string, unknown>);
       } else {
         pendingMcpReportRef.current = state.mcpStartupReport as Record<string, unknown>;
@@ -1572,7 +1535,7 @@ export function App() {
       if (patch.pendingQuestion) {
         setPendingQuestion(patch.pendingQuestion);
         cachePatch.pendingQuestion = patch.pendingQuestion;
-        setViewerStatus("Waiting for answer…");
+        setLifecycleStatus("Waiting for answer…");
       } else {
         setPendingQuestion(null);
         cachePatch.pendingQuestion = null;
@@ -1596,7 +1559,7 @@ export function App() {
           };
           setPendingPlan(resolved);
           cachePatch.pendingPlan = resolved;
-          setViewerStatus("Waiting for plan review…");
+          setLifecycleStatus("Waiting for plan review…");
         }
       } else {
         setPendingPlan(null);
@@ -1612,7 +1575,7 @@ export function App() {
     if (patch.isCompacting !== undefined) {
       setIsCompacting(patch.isCompacting);
       cachePatch.isCompacting = patch.isCompacting;
-      const patchSessionId = activeSessionRef.current;
+      const patchSessionId = lifecycleRefs.activeSessionId.current;
       if (patchSessionId) {
         setSessionsCompacting((prev) => {
           const next = new Set(prev);
@@ -1621,12 +1584,12 @@ export function App() {
         });
       }
       if (patch.viewerStatusOverride) {
-        setViewerStatus(patch.viewerStatusOverride);
+        setLifecycleStatus(patch.viewerStatusOverride);
       } else if (!patch.isCompacting) {
-        setViewerStatus((prev) => (prev === "Compacting…" ? "Connected" : prev));
+        setLifecycleStatus((prev) => (prev === "Compacting…" ? "Connected" : prev));
       }
     } else if (patch.viewerStatusOverride) {
-      setViewerStatus(patch.viewerStatusOverride);
+      setLifecycleStatus(patch.viewerStatusOverride);
     }
 
     if ("retryState" in patch) {
@@ -1706,8 +1669,9 @@ export function App() {
     // would drop the guard before the viewer is in the room, allowing
     // in-flight chunks or deltas to be accepted and then overwritten by
     // the later snapshot header.
-    if (type === "session_active" || type === "agent_end") {
-      awaitingSnapshotRef.current = false;
+    // session_active handles its own snapshot start via onSnapshotStarted.
+    if (type === "agent_end") {
+      onSnapshotStarted({});
     }
 
     // While awaiting the initial snapshot OR during chunked hydration, skip
@@ -1718,7 +1682,7 @@ export function App() {
     // without this guard, tool_execution_update partials can write synthetic
     // toolResult messages into state before the snapshot hydrates the real
     // conversation, producing orphan/duplicate tool output on reconnect.
-    if (awaitingSnapshotRef.current || chunkedDeliveryRef.current) {
+    if (lifecycleRefs.awaitingSnapshot.current || lifecycleRefs.chunked.current) {
       if (
         type === "message_update" || type === "message_start" || type === "message_end" || type === "turn_end" ||
         type === "tool_execution_start" || type === "tool_execution_update" || type === "tool_execution_end"
@@ -1751,7 +1715,7 @@ export function App() {
       setAgentActive(nextAgentActive);
       setIsCompacting(nextIsCompacting);
 
-      const hbSessionId = activeSessionRef.current;
+      const hbSessionId = lifecycleRefs.activeSessionId.current;
       if (hbSessionId) {
         setSessionsCompacting((prev) => {
           const next = new Set(prev);
@@ -1761,9 +1725,9 @@ export function App() {
       }
 
       if (nextIsCompacting) {
-        setViewerStatus("Compacting…");
+        setLifecycleStatus("Compacting…");
       } else {
-        setViewerStatus((prev) => (prev === "Compacting…" ? "Connected" : prev));
+        setLifecycleStatus((prev) => (prev === "Compacting…" ? "Connected" : prev));
       }
 
       if (typeof hb.ts === "number") {
@@ -1892,6 +1856,10 @@ export function App() {
       const state = evt.state as Record<string, unknown> | undefined;
       const rawMessages = Array.isArray(state?.messages) ? (state?.messages as unknown[]) : [];
       const isChunked = !!state?.chunked;
+      const snapshotId = typeof state?.snapshotId === "string" ? state.snapshotId : "";
+      const totalMessages = typeof state?.totalMessages === "number" ? state.totalMessages : rawMessages.length;
+      onSnapshotStarted({ chunked: isChunked, snapshotId, totalMessages });
+
       const stateModel = normalizeModel(state?.model);
       const stateModels = Array.isArray(state?.availableModels)
         ? normalizeModelList(state.availableModels as unknown[])
@@ -1911,7 +1879,6 @@ export function App() {
       // aren't part of the server-side state snapshot.
       const injected = injectedMessagesRef.current;
       setMessages(injected.length > 0 ? [...normalizedMessages, ...injected] : normalizedMessages);
-      const totalMessages = typeof state?.totalMessages === "number" ? state.totalMessages : normalizedMessages.length;
       const serverHasMore = state?.hasMore === true;
       const oldestLoadedIndex = typeof state?.oldestLoadedIndex === "number" ? state.oldestLoadedIndex : 0;
       paginationStateRef.current = { totalMessages, hasMore: serverHasMore, oldestLoadedIndex };
@@ -1948,35 +1915,13 @@ export function App() {
       }
 
       // Track chunked delivery state — messages arrive as subsequent
-      // session_messages_chunk events when the session is large.
-      if (isChunked) {
-        const totalMessages = typeof state?.totalMessages === "number" ? state.totalMessages : 0;
-        const snapshotId = typeof state?.snapshotId === "string" ? state.snapshotId : "";
-        chunkedDeliveryRef.current = {
-          snapshotId,
-          totalMessages,
-          totalChunks: 0, // updated as chunks arrive
-          receivedChunkIndexes: new Set<number>(),
-          finalChunkSeen: false,
-          loadedMessages: 0,
-          chunkBuffer: new Map<number, unknown[]>(),
-        };
-        setViewerStatus(`Loading session (0 of ${totalMessages} messages)…`);
-      } else {
-        chunkedDeliveryRef.current = null;
-        // Mark that we have a complete non-chunked snapshot so any stale
-        // chunks from a superseded chunked sender are rejected.
-        lastCompletedSnapshotRef.current = "non-chunked";
-      }
+      // session_messages_chunk events when the session is large. Lifecycle
+      // state (chunked / lastCompletedSnapshot / hydrated) is owned by
+      // useSessionLifecycle via onSnapshotStarted / onSnapshotComplete.
 
       // Don't clobber transient statuses with a generic "Connected" when the
       // CLI sends a session_active snapshot right after a command.
-      if (!isChunked) {
-        setViewerStatus((prev) => {
-          if (prev === "Model set" || prev === "Compacting…" || prev.startsWith("Compacted")) return prev;
-          return "Connected";
-        });
-      }
+      // (Non-chunked completion is handled by onSnapshotComplete.)
 
       // Don't unconditionally clear pendingQuestion / pendingPlan here.
       // session_active is also emitted for non-session-switch actions (model
@@ -1998,7 +1943,6 @@ export function App() {
         setActiveToolCalls(new Map());
       }
       setIsChangingModel(false);
-      sessionHydratedRef.current = !isChunked; // defer until final chunk
       // For non-chunked sessions, flush any pending MCP report immediately
       if (!isChunked && pendingMcpReportRef.current) {
         applyMcpReport(pendingMcpReportRef.current);
@@ -2045,6 +1989,9 @@ export function App() {
           ...(hasStateGoal ? { goal: stateGoal ?? null } : {}),
         });
       }
+      if (!isChunked) {
+        onSnapshotComplete();
+      }
       return;
     }
 
@@ -2057,7 +2004,7 @@ export function App() {
       // delivers in-flight chunks before the viewer's initial snapshot replay.
       // Without this guard, chunks are appended to stale/empty state and then
       // the later metadata-only session_active clears them with setMessages([]).
-      if (awaitingSnapshotRef.current && !chunkedDeliveryRef.current) {
+      if (lifecycleRefs.awaitingSnapshot.current && !lifecycleRefs.chunked.current) {
         return;
       }
 
@@ -2074,15 +2021,15 @@ export function App() {
       //    the superseded sender are still draining — reject if the ID
       //    doesn't match the last completed snapshot.
       if (chunkSnapshotId) {
-        if (chunkedDeliveryRef.current && chunkedDeliveryRef.current.snapshotId !== chunkSnapshotId) {
+        if (lifecycleRefs.chunked.current && lifecycleRefs.chunked.current.snapshotId !== chunkSnapshotId) {
           return; // stale chunk — a newer snapshot is loading
         }
-        if (!chunkedDeliveryRef.current && lastCompletedSnapshotRef.current && lastCompletedSnapshotRef.current !== chunkSnapshotId) {
+        if (!lifecycleRefs.chunked.current && lifecycleRefs.lastCompletedSnapshot.current && lifecycleRefs.lastCompletedSnapshot.current !== chunkSnapshotId) {
           return; // stale chunk — arrived after a newer snapshot completed
         }
       }
 
-      const chunkState = chunkedDeliveryRef.current;
+      const chunkState = lifecycleRefs.chunked.current;
       if (!chunkState || chunkIndex < 0) {
         return;
       }
@@ -2109,7 +2056,7 @@ export function App() {
       // Update progress counter for status display.
       chunkState.loadedMessages += chunkMessages.length;
       const loaded = chunkState.loadedMessages;
-      setViewerStatus(`Loading session (${Math.min(loaded, totalMessages)} of ${totalMessages} messages)…`);
+      onChunkProgress(loaded, totalMessages);
 
       const readyToFinalize = canFinalizeChunkHydration(
         chunkState.finalChunkSeen,
@@ -2136,15 +2083,15 @@ export function App() {
           .filter((m): m is RelayMessage => m !== null);
         const finalMessages = deduplicateMessages(convertedOrdered);
 
-        lastCompletedSnapshotRef.current = chunkSnapshotId || null;
-        chunkedDeliveryRef.current = null;
-        sessionHydratedRef.current = true;
+        lifecycleRefs.lastCompletedSnapshot.current = chunkSnapshotId || null;
+        lifecycleRefs.chunked.current = null;
+        lifecycleRefs.hydrated.current = true;
         // Flush any MCP startup report that arrived before hydration completed
         if (pendingMcpReportRef.current) {
           applyMcpReport(pendingMcpReportRef.current);
           pendingMcpReportRef.current = null;
         }
-        setViewerStatus("Connected");
+        onSnapshotComplete();
 
         // Capture the merged result inside the updater so patchSessionCache
         // receives the same value that setMessages commits — including any
@@ -2179,6 +2126,7 @@ export function App() {
       // messages. If any survived (e.g. abort), the next heartbeat re-syncs.
       setMessageQueue([]);
       patchSessionCache({ messageQueue: [] });
+      onSnapshotComplete();
       return;
     }
 
@@ -2225,7 +2173,7 @@ export function App() {
           // (compaction is still running), and unconditionally clearing the
           // flag would re-enable input prematurely until the next heartbeat.
         }
-        setViewerStatus(`/${command}: ${error}`);
+        setLifecycleStatus(`/${command}: ${error}`);
         return;
       }
 
@@ -2238,7 +2186,7 @@ export function App() {
           setProviderUsage(nextUsage);
           patchSessionCache({ providerUsage: nextUsage });
         }
-        setViewerStatus("Usage refreshed");
+        setLifecycleStatus("Usage refreshed");
         return;
       }
 
@@ -2283,7 +2231,7 @@ export function App() {
         setResumeSessionsNextCursor(nextCursor);
         setResumeSessionsLoading(false);
         if (!isAppend && normalized.length === 0) {
-          setViewerStatus("No resumable sessions");
+          setLifecycleStatus("No resumable sessions");
         }
         return;
       }
@@ -2300,7 +2248,7 @@ export function App() {
         setForkMessages(normalized);
         setForkMessagesLoading(false);
         if (normalized.length === 0) {
-          setViewerStatus("No messages to rewind to");
+          setLifecycleStatus("No messages to rewind to");
         }
         return;
       }
@@ -2309,7 +2257,7 @@ export function App() {
         // The runner emits a fresh session_active with the rewound transcript;
         // stale fork candidates from the pre-fork session are cleared here.
         setForkMessages([]);
-        setViewerStatus("Conversation rewound");
+        setLifecycleStatus("Conversation rewound");
         return;
       }
 
@@ -2317,9 +2265,9 @@ export function App() {
         const text = typeof result?.text === "string" ? result.text : "";
         if (text) {
           void navigator.clipboard.writeText(text);
-          setViewerStatus("Copied");
+          setLifecycleStatus("Copied");
         } else {
-          setViewerStatus("Nothing to copy");
+          setLifecycleStatus("Nothing to copy");
         }
         return;
       }
@@ -2393,7 +2341,7 @@ export function App() {
         const summary = typeof result?.summary === "string"
           ? result.summary
           : `MCP tools loaded: ${toolCount}`;
-        setViewerStatus(summary);
+        setLifecycleStatus(summary);
         return;
       }
 
@@ -2463,7 +2411,7 @@ export function App() {
         });
 
         const verb = disabled ? "Disabled" : "Enabled";
-        setViewerStatus(`${verb} MCP server "${toggledServer}". ${toolCount} tools loaded.`);
+        setLifecycleStatus(`${verb} MCP server "${toggledServer}". ${toolCount} tools loaded.`);
         return;
       }
 
@@ -2471,7 +2419,7 @@ export function App() {
         const newLevel = typeof result?.thinkingLevel === "string" ? result.thinkingLevel : null;
         setEffortLevel(newLevel);
         patchSessionCache({ effortLevel: newLevel });
-        setViewerStatus(newLevel && newLevel !== "off" ? `Effort: ${newLevel}` : "Effort: off");
+        setLifecycleStatus(newLevel && newLevel !== "off" ? `Effort: ${newLevel}` : "Effort: off");
         return;
       }
 
@@ -2479,7 +2427,7 @@ export function App() {
         const enabled = !!result?.planModeEnabled;
         setPlanModeEnabled(enabled);
         patchSessionCache({ planModeEnabled: enabled });
-        setViewerStatus(enabled ? "⏸ Plan mode ON" : "▶ Plan mode OFF");
+        setLifecycleStatus(enabled ? "⏸ Plan mode ON" : "▶ Plan mode OFF");
         return;
       }
 
@@ -2487,12 +2435,12 @@ export function App() {
         const nextSessionName = normalizeSessionName(result?.sessionName);
         setSessionName(nextSessionName);
         patchSessionCache({ sessionName: nextSessionName });
-        setViewerStatus(nextSessionName ? "Session renamed" : "Session name cleared");
+        setLifecycleStatus(nextSessionName ? "Session renamed" : "Session name cleared");
         return;
       }
 
       if (command === "set_model" || command === "cycle_model") {
-        setViewerStatus("Model set");
+        setLifecycleStatus("Model set");
         // Runner should also emit session_active/model_select, but in case it doesn't,
         // opportunistically refresh capabilities by asking for commands again (cheap).
         return;
@@ -2500,7 +2448,7 @@ export function App() {
 
       if (command === "compact") {
         setIsCompacting(false);
-        const compactDoneId = activeSessionRef.current;
+        const compactDoneId = lifecycleRefs.activeSessionId.current;
         if (compactDoneId) {
           setSessionsCompacting((prev) => { const next = new Set(prev); next.delete(compactDoneId); return next; });
         }
@@ -2508,9 +2456,9 @@ export function App() {
         const summary = typeof result?.summary === "string"
           ? `Compacted (${tokensBefore > 0 ? `${Math.round(tokensBefore / 1000)}k tokens summarized` : "done"})`
           : "Compacted";
-        setViewerStatus(summary);
+        setLifecycleStatus(summary);
         // Clear the compact status after a few seconds so it doesn't stick forever
-        setTimeout(() => setViewerStatus((prev) => (prev === summary || prev.startsWith("Compacted") ? "Connected" : prev)), 5000);
+        setTimeout(() => setLifecycleStatus((prev) => (prev === summary || prev.startsWith("Compacted") ? "Connected" : prev)), 5000);
         return;
       }
 
@@ -2532,45 +2480,38 @@ export function App() {
           messageQueue: [],
         });
         // Clear trigger history so the Triggers panel starts fresh
-        const sid = activeSessionRef.current;
+        const sid = lifecycleRefs.activeSessionId.current;
         if (sid) {
           void fetch(`/api/sessions/${encodeURIComponent(sid)}/triggers`, {
             method: "DELETE",
             credentials: "include",
           }).catch(() => {});
         }
-        setViewerStatus("New session started");
+        setLifecycleStatus("New session started");
         return;
       }
 
       if (command === "restart") {
-        setViewerStatus("Restarting CLI…");
         // Remember which session is restarting so we can auto-reconnect when it
         // comes back live.  The session ID is stable across a restart (PIZZAPI_SESSION_ID).
-        const pendingId = activeSessionRef.current;
+        const pendingId = lifecycleRefs.activeSessionId.current;
         if (pendingId) {
-          restartPendingSessionIdRef.current = pendingId;
-          if (restartPendingTimerRef.current) clearTimeout(restartPendingTimerRef.current);
-          // Give up auto-reconnect after 60 s in case the CLI never comes back.
-          restartPendingTimerRef.current = setTimeout(() => {
-            restartPendingSessionIdRef.current = null;
-            restartPendingTimerRef.current = null;
-          }, 60_000);
+          onViewerDisconnected({ reason: "Session reconnected", isRestarting: true });
         }
         return;
       }
 
       if (command === "end_session") {
-        setViewerStatus("Ending session…");
+        setLifecycleStatus("Ending session…");
         return;
       }
 
       if (command === "resume_session") {
-        setViewerStatus("Session resumed");
+        setLifecycleStatus("Session resumed");
         return;
       }
 
-      setViewerStatus("OK");
+      setLifecycleStatus("OK");
       return;
     }
 
@@ -2705,10 +2646,10 @@ export function App() {
       setIsChangingModel(false);
       if (ok) {
         // Keep wording consistent with "model_select" and make it clear the change succeeded.
-        setViewerStatus("Model set");
+        setLifecycleStatus("Model set");
       } else {
         const message = typeof evt.message === "string" ? evt.message : "Failed to set model";
-        setViewerStatus(message);
+        setLifecycleStatus(message);
       }
       return;
     }
@@ -2807,7 +2748,7 @@ export function App() {
           questions,
           display: parsePendingQuestionDisplayMode(args, questions.length),
         });
-        setViewerStatus("Waiting for answer…");
+        setLifecycleStatus("Waiting for answer…");
       }
       return;
     }
@@ -2834,7 +2775,7 @@ export function App() {
 
     if (type === "tool_execution_end" && evt.toolName === "AskUserQuestion") {
       setPendingQuestion(null);
-      setViewerStatus("Connected");
+      setLifecycleStatus("Connected");
       return;
     }
 
@@ -2859,7 +2800,7 @@ export function App() {
           description: typeof args.description === "string" && args.description.trim() ? args.description.trim() : null,
           steps,
         });
-        setViewerStatus("Waiting for plan review…");
+        setLifecycleStatus("Waiting for plan review…");
       }
       return;
     }
@@ -2892,7 +2833,7 @@ export function App() {
 
     if (type === "tool_execution_end" && evt.toolName === "plan_mode") {
       setPendingPlan(null);
-      setViewerStatus("Connected");
+      setLifecycleStatus("Connected");
       return;
     }
 
@@ -2980,6 +2921,9 @@ export function App() {
     removeQueuedMessageByContent,
     applyQueuedMessagesSync,
     activeModel,
+    onSnapshotStarted,
+    onSnapshotComplete,
+    onChunkProgress,
   ]);
 
   // Only connect once auth is confirmed — a pre-login handshake is rejected by
@@ -3002,7 +2946,7 @@ export function App() {
     setHubSocket(socket);
 
     const handleStateSnapshot = ({ sessionId, state }: { sessionId: string; state: SessionMetaState }) => {
-      const currentSessionId = activeSessionRef.current;
+      const currentSessionId = lifecycleRefs.activeSessionId.current;
 
       // For background sessions: extract pendingQuestion/pendingPlan from the
       // initial state_snapshot so badges are correct on load/reconnect even
@@ -3073,7 +3017,7 @@ export function App() {
         });
       }
 
-      const currentSessionId = activeSessionRef.current;
+      const currentSessionId = lifecycleRefs.activeSessionId.current;
       if (payload.sessionId !== currentSessionId) return;
       const { sessionId, version, ...event } = payload;
       const seen = metaVersionsRef.current.get(sessionId) ?? 0;
@@ -3085,7 +3029,7 @@ export function App() {
           // Buffer if session not yet hydrated — the new slim CLI no longer retries
           // in heartbeats, so without this the report would be lost for live events
           // that race session_active delivery.
-          if (sessionHydratedRef.current) {
+          if (lifecycleRefs.hydrated.current) {
             applyMcpReport(event.report);
           } else {
             pendingMcpReportRef.current = event.report as Record<string, unknown>;
@@ -3209,7 +3153,7 @@ export function App() {
 
   const openSession = React.useCallback((relaySessionId: string) => {
     // Already viewing this session — nothing to do.
-    if (relaySessionId === activeSessionRef.current) return;
+    if (relaySessionId === lifecycleRefs.activeSessionId.current) return;
 
     // Flush/cancel any pending RAF queues (streaming deltas & tool-stream
     // partials) from the previous session so they can't leak into the new one.
@@ -3224,7 +3168,7 @@ export function App() {
     // same-runner switches causes a flash to empty and unnecessary re-renders
     // in the header / model selector.
     const sessions = liveSessionsRef.current;
-    const prevSessionId = activeSessionRef.current;
+    const prevSessionId = lifecycleRefs.activeSessionId.current;
     const prevRunnerId = prevSessionId
       ? sessions.find((s) => s.sessionId === prevSessionId)?.runnerId ?? null
       : null;
@@ -3232,24 +3176,17 @@ export function App() {
     const nextRunnerId = nextLiveSession?.runnerId ?? null;
     const sameRunner = !!(prevRunnerId && nextRunnerId && prevRunnerId === nextRunnerId);
     const prevViewerSocket = viewerWsRef.current;
-    const nextGeneration = ++viewerSwitchGenerationRef.current;
+    const nextGeneration = lifecycleOpenSession(relaySessionId);
 
     localStorage.setItem("pp.lastSessionId", relaySessionId);
-    activeSessionRef.current = relaySessionId;
     lastSeqRef.current = null;
     lastViewerEventAtRef.current = Date.now(); // treat open as an "event" so we don't fire immediately
-    awaitingSnapshotRef.current = true;
     renderedMcpReportTsRef.current = null;
-    sessionHydratedRef.current = false;
     pendingMcpReportRef.current = null;
-    chunkedDeliveryRef.current = null;
-    lastCompletedSnapshotRef.current = null;
     injectedMessagesRef.current = [];
     metaSourceHubRef.current = false;
     paginationStateRef.current = null;
     setLoadingOlderMessages(false);
-    setActiveSessionId(relaySessionId);
-    setViewerStatus("Connecting…");
     setRetryState(null);
     setActiveToolCalls(new Map());
     setMcpOAuthPastes([]);
@@ -3318,7 +3255,7 @@ export function App() {
       // Only armed when the agent is active — idle sessions produce no events,
       // so silence is expected and not a sign of a broken connection.
       staleCheckTimerRef.current = setInterval(() => {
-        if (!activeSessionRef.current) return;
+        if (!lifecycleRefs.activeSessionId.current) return;
         if (!nextSocket.connected) return;
         if (!agentActiveRef.current) return;
         const elapsed = Date.now() - lastViewerEventAtRef.current;
@@ -3330,22 +3267,22 @@ export function App() {
       }, STALE_CHECK_INTERVAL_MS);
 
       nextSocket.on("connect", () => {
-        const currentSessionId = activeSessionRef.current;
+        const currentSessionId = lifecycleRefs.activeSessionId.current;
         if (!currentSessionId) return;
-        setViewerStatus("Connecting…");
-        setViewerSwitchGeneration(nextSocket, viewerSwitchGenerationRef.current);
+        setLifecycleStatus("Connecting…");
+        setViewerSwitchGeneration(nextSocket, lifecycleRefs.generation.current);
         nextSocket.emit("switch_session", {
           sessionId: currentSessionId,
-          generation: viewerSwitchGenerationRef.current,
+          generation: lifecycleRefs.generation.current,
           lastSeq: lastSeqRef.current ?? undefined,
         });
       });
 
       nextSocket.on("connected", (data) => {
         if (!isActiveViewerSessionPayload(
-          activeSessionRef.current,
+          lifecycleRefs.activeSessionId.current,
           data.sessionId,
-          viewerSwitchGenerationRef.current,
+          lifecycleRefs.generation.current,
           data.generation,
         )) {
           return;
@@ -3353,8 +3290,11 @@ export function App() {
         lastViewerEventAtRef.current = Date.now();
 
         metaSourceHubRef.current = data.meta_source === "hub";
-        const replayOnly = data.replayOnly === true;
-        setViewerStatus(replayOnly ? "Snapshot replay" : "Connected");
+        onViewerConnected({
+          replayOnly: data.replayOnly,
+          isActive: data.isActive,
+          meta_source: data.meta_source,
+        });
 
         if (typeof data.lastSeq === "number") {
           lastSeqRef.current = mergeConnectedSeq(lastSeqRef.current, data.lastSeq);
@@ -3378,14 +3318,14 @@ export function App() {
         // During session switch, only accept events that explicitly match our generation.
         // This prevents events without generation tags from old sessions being processed
         // while we're awaiting the snapshot for the new session.
-        if (awaitingSnapshotRef.current) {
-          if (data.generation !== viewerSwitchGenerationRef.current) {
+        if (lifecycleRefs.awaitingSnapshot.current) {
+          if (data.generation !== lifecycleRefs.generation.current) {
             return;
           }
-        } else if (!matchesViewerGeneration(viewerSwitchGenerationRef.current, data.generation)) {
+        } else if (!matchesViewerGeneration(lifecycleRefs.generation.current, data.generation)) {
           return;
         }
-        if (!activeSessionRef.current) return;
+        if (!lifecycleRefs.activeSessionId.current) return;
         lastViewerEventAtRef.current = Date.now();
 
         const rawEvent = data.event;
@@ -3396,8 +3336,8 @@ export function App() {
 
         if (shouldDeferEventForHydration(
           eventType,
-          awaitingSnapshotRef.current,
-          !!chunkedDeliveryRef.current,
+          lifecycleRefs.awaitingSnapshot.current,
+          !!lifecycleRefs.chunked.current,
         )) {
           return;
         }
@@ -3409,7 +3349,7 @@ export function App() {
           } else {
             const allowOutOfOrderHydrationSnapshot = shouldAllowOutOfOrderSnapshotDuringHydration(
               eventType,
-              awaitingSnapshotRef.current,
+              lifecycleRefs.awaitingSnapshot.current,
               lastSeqRef.current,
               seq,
             );
@@ -3433,8 +3373,8 @@ export function App() {
       });
 
       nextSocket.on("session_messages_page", (data) => {
-        if (data.sessionId !== activeSessionRef.current) return;
-        if (!matchesViewerGeneration(viewerSwitchGenerationRef.current, data.generation)) {
+        if (data.sessionId !== lifecycleRefs.activeSessionId.current) return;
+        if (!matchesViewerGeneration(lifecycleRefs.generation.current, data.generation)) {
           return;
         }
         lastViewerEventAtRef.current = Date.now();
@@ -3452,36 +3392,30 @@ export function App() {
         // Important: check generation to prevent exec_result events from old sessions
         // being processed after a session switch. Unlike other events, exec_result doesn't
         // always include generation data, so we also guard with a recent-switch check.
-        if (!activeSessionRef.current) return;
+        if (!lifecycleRefs.activeSessionId.current) return;
         // If we're in the initial phase of a session switch (awaiting snapshot), reject
         // any exec_results that might be from the old session. We'll start accepting them
         // once the "connected" event confirms we're synchronized with the new session.
-        if (awaitingSnapshotRef.current) return;
+        if (lifecycleRefs.awaitingSnapshot.current) return;
         lastViewerEventAtRef.current = Date.now();
         handleRelayEvent({ type: "exec_result", ...data });
       });
 
       nextSocket.on("disconnected", (data) => {
-        if (!matchesViewerGeneration(viewerSwitchGenerationRef.current, data.generation)) {
+        if (!matchesViewerGeneration(lifecycleRefs.generation.current, data.generation)) {
           return;
         }
-        const currentSessionId = activeSessionRef.current;
+        const currentSessionId = lifecycleRefs.activeSessionId.current;
         if (!currentSessionId) return;
         lastViewerEventAtRef.current = Date.now();
-        if (data.reason === "Session reconnected" && restartPendingSessionIdRef.current !== currentSessionId) {
-          restartPendingSessionIdRef.current = currentSessionId;
-          if (restartPendingTimerRef.current) clearTimeout(restartPendingTimerRef.current);
-          restartPendingTimerRef.current = setTimeout(() => {
-            restartPendingSessionIdRef.current = null;
-            restartPendingTimerRef.current = null;
-          }, 60_000);
-        }
-        const isRestarting = restartPendingSessionIdRef.current === currentSessionId;
-        if (!isRestarting) {
-          setViewerStatus(data.reason || "Disconnected");
-        } else {
-          setViewerStatus("Restarting CLI…");
-        }
+
+        const isRestarting = data.reason === "Session reconnected";
+        onViewerDisconnected({
+          reason: data.reason,
+          isRestarting,
+          stopReconnect: shouldStopViewerReconnect(data),
+        });
+
         setPendingQuestion(null);
         setPendingPlan(null);
         setIsChangingModel(false);
@@ -3492,10 +3426,10 @@ export function App() {
       });
 
       nextSocket.on("error", (data) => {
-        if (!matchesViewerGeneration(viewerSwitchGenerationRef.current, data.generation)) {
+        if (!matchesViewerGeneration(lifecycleRefs.generation.current, data.generation)) {
           return;
         }
-        if (!activeSessionRef.current) return;
+        if (!lifecycleRefs.activeSessionId.current) return;
         lastViewerEventAtRef.current = Date.now();
         const mapped = mapUserError({
           error: data.message,
@@ -3503,42 +3437,39 @@ export function App() {
           fallbackMessage: "Failed to load session.",
         });
         console.error("Viewer socket error:", mapped.technicalMessage, data);
-        setViewerStatus(mapped.userMessage);
+        onViewerError(mapped.userMessage);
       });
 
       nextSocket.on("connect_error", (err) => {
-        if (activeSessionRef.current) {
+        if (lifecycleRefs.activeSessionId.current) {
           const mapped = mapUserError({
             error: err,
             context: "viewer_connection",
           });
           console.error("Viewer socket connect_error:", err);
-          setViewerStatus(mapped.userMessage);
+          onViewerError(mapped.userMessage);
         }
       });
 
       nextSocket.on("disconnect", (reason) => {
-        if (activeSessionRef.current) {
-          const isRestarting = restartPendingSessionIdRef.current === activeSessionRef.current;
-          setViewerStatus((prev) =>
-            isRestarting
-              ? "Restarting CLI…"
-              : prev === "Connected" || prev === "Connecting…"
-                ? "Disconnected"
-                : prev,
-          );
-          setPendingQuestion(null);
-          setPendingPlan(null);
-          setIsChangingModel(false);
-          lastViewerEventAtRef.current = Date.now();
+        const sessionId = lifecycleRefs.activeSessionId.current;
+        if (!sessionId) return;
+        const isRestarting = lifecycleRefs.restartPendingSessionId.current === sessionId;
+        onViewerDisconnected({
+          reason: isRestarting ? "Session reconnected" : "Disconnected",
+          isRestarting,
+        });
+        setPendingQuestion(null);
+        setPendingPlan(null);
+        setIsChangingModel(false);
+        lastViewerEventAtRef.current = Date.now();
 
-          if (reason === "io server disconnect") {
-            setTimeout(() => {
-              if (activeSessionRef.current && !nextSocket.connected) {
-                nextSocket.connect();
-              }
-            }, 2000);
-          }
+        if (reason === "io server disconnect") {
+          setTimeout(() => {
+            if (lifecycleRefs.activeSessionId.current && !nextSocket.connected) {
+              nextSocket.connect();
+            }
+          }, 2000);
         }
       });
     }
@@ -3551,7 +3482,7 @@ export function App() {
     } else {
       socket.connect();
     }
-  }, [handleRelayEvent, patchSessionCache, cancelPendingDeltas]);
+  }, [handleRelayEvent, patchSessionCache, cancelPendingDeltas, lifecycleOpenSession, onViewerConnected, onViewerDisconnected, onViewerError]);
 
   // Auto-reopen the last viewed session once live sessions arrive.
   // Deep-links (/session/<id>) take priority over the stored lastSessionId.
@@ -3578,20 +3509,15 @@ export function App() {
 
   // When a restarted session comes back live, automatically reconnect to it.
   React.useEffect(() => {
-    const pendingId = restartPendingSessionIdRef.current;
+    const pendingId = lifecycleRefs.restartPendingSessionId.current;
     if (!pendingId) return;
     const isLive = liveSessions.some((s) => s.sessionId === pendingId);
     if (!isLive) return;
 
     // Clear the pending restart state before reconnecting.
-    restartPendingSessionIdRef.current = null;
-    if (restartPendingTimerRef.current) {
-      clearTimeout(restartPendingTimerRef.current);
-      restartPendingTimerRef.current = null;
-    }
-
+    lifecycleDispatch(lifecycleActions.restartPendingCleared());
     openSession(pendingId);
-  }, [liveSessions, openSession]);
+  }, [liveSessions, openSession, lifecycleDispatch]);
 
 
   // Dedup guard: prevent sending the exact same message text within a short window.
@@ -3600,7 +3526,7 @@ export function App() {
 
   const requestOlderMessages = React.useCallback(() => {
     const socket = viewerWsRef.current;
-    const sessionId = activeSessionRef.current;
+    const sessionId = lifecycleRefs.activeSessionId.current;
     const pagination = paginationStateRef.current;
     if (!socket || !socket.connected || !sessionId || !pagination?.hasMore || loadingOlderMessages) return;
     setLoadingOlderMessages(true);
@@ -3613,23 +3539,23 @@ export function App() {
 
   const sendSessionInput = React.useCallback(async (message: { text: string; files?: Array<{ file?: File; mediaType?: string; filename?: string; url?: string }>; deliverAs?: "steer" | "followUp" } | string) => {
     const socket = viewerWsRef.current;
-    const sessionId = activeSessionRef.current;
+    const sessionId = lifecycleRefs.activeSessionId.current;
     if (!sessionId) {
-      setViewerStatus("Not connected to a live session");
+      setLifecycleStatus("Not connected to a live session");
       return false;
     }
     if (isCompacting) {
-      setViewerStatus("Compacting…");
+      setLifecycleStatus("Compacting…");
       return false;
     }
-    if (awaitingSnapshotRef.current || !canSubmitSessionInput(sessionId, viewerStatus, isCompacting)) {
-      if (isSessionHydrating(viewerStatus) || awaitingSnapshotRef.current) {
-        setViewerStatus("Connecting…");
+    if (lifecycleRefs.awaitingSnapshot.current || !canSubmitSessionInput(sessionId, viewerStatus, isCompacting)) {
+      if (isSessionHydrating(viewerStatus) || lifecycleRefs.awaitingSnapshot.current) {
+        setLifecycleStatus("Connecting…");
       }
       return false;
     }
     if (!socket || !socket.connected) {
-      setViewerStatus("Not connected to a live session");
+      setLifecycleStatus("Not connected to a live session");
       return false;
     }
 
@@ -3669,7 +3595,7 @@ export function App() {
 
       for (const [index, file] of rawFiles.entries()) {
         const displayName = file.filename || `attachment-${index + 1}`;
-        setViewerStatus(`Uploading attachment ${index + 1}/${rawFiles.length}: ${displayName}`);
+        setLifecycleStatus(`Uploading attachment ${index + 1}/${rawFiles.length}: ${displayName}`);
 
         const formData = new FormData();
         try {
@@ -3687,7 +3613,7 @@ export function App() {
                 );
           formData.append("files", uploadFile);
         } catch {
-          setViewerStatus(`Failed to prepare attachment: ${displayName}`);
+          setLifecycleStatus(`Failed to prepare attachment: ${displayName}`);
           failCurrentAttempt();
           return false;
         }
@@ -3702,7 +3628,7 @@ export function App() {
           if (!uploadRes.ok) {
             const body = await uploadRes.json().catch(() => null);
             const message = body && typeof body.error === "string" ? body.error : `Upload failed for ${displayName}`;
-            setViewerStatus(message);
+            setLifecycleStatus(message);
             failCurrentAttempt();
             return false;
           }
@@ -3710,7 +3636,7 @@ export function App() {
           const body = await uploadRes.json().catch(() => null) as any;
           const first = Array.isArray(body?.attachments) ? body.attachments[0] : null;
           if (!first || typeof first.attachmentId !== "string") {
-            setViewerStatus(`Upload failed for ${displayName}`);
+            setLifecycleStatus(`Upload failed for ${displayName}`);
             failCurrentAttempt();
             return false;
           }
@@ -3723,14 +3649,14 @@ export function App() {
             expiresAt: typeof first.expiresAt === "string" ? first.expiresAt : undefined,
           });
         } catch {
-          setViewerStatus(`Upload failed for ${displayName}`);
+          setLifecycleStatus(`Upload failed for ${displayName}`);
           failCurrentAttempt();
           return false;
         }
       }
 
       attachments = uploaded;
-      setViewerStatus(`Uploaded ${attachments.length} attachment${attachments.length === 1 ? "" : "s"}. Sending…`);
+      setLifecycleStatus(`Uploaded ${attachments.length} attachment${attachments.length === 1 ? "" : "s"}. Sending…`);
     }
 
     const deliverAs = typeof message === "object" ? message.deliverAs : undefined;
@@ -3762,7 +3688,7 @@ export function App() {
           const next = [...messagesRef.current, optimisticSteerMessage];
           setMessages(next);
           patchSessionCache({ messages: next });
-          setViewerStatus("Steering message sent");
+          setLifecycleStatus("Steering message sent");
         } else {
           // Suppress runner queue syncs briefly — a heartbeat built before
           // the runner received this input would wipe the optimistic entry.
@@ -3781,14 +3707,14 @@ export function App() {
             return nextQueue;
           });
           patchSessionCache({ messageQueue: nextQueue });
-          setViewerStatus("Follow-up queued");
+          setLifecycleStatus("Follow-up queued");
         }
       } else {
-        setViewerStatus("Connected");
+        setLifecycleStatus("Connected");
       }
       return true;
     } catch {
-      setViewerStatus("Failed to send message");
+      setLifecycleStatus("Failed to send message");
       failCurrentAttempt();
       return false;
     }
@@ -3796,15 +3722,15 @@ export function App() {
 
   const sendRemoteExec = React.useCallback((payload: any) => {
     const socket = viewerWsRef.current;
-    if (!socket || !socket.connected || !activeSessionRef.current) {
-      setViewerStatus("Not connected to a live session");
+    if (!socket || !socket.connected || !lifecycleRefs.activeSessionId.current) {
+      setLifecycleStatus("Not connected to a live session");
       return false;
     }
     const command = payload && typeof payload === "object" && typeof payload.command === "string" ? payload.command : null;
     if (command === "end_session") {
-      setViewerStatus("Ending session…");
+      setLifecycleStatus("Ending session…");
     } else if (command === "compact") {
-      setViewerStatus("Compacting…");
+      setLifecycleStatus("Compacting…");
     } else if (command === "abort") {
       // Optimistically mark as inactive so the UI updates immediately
       // instead of waiting for the next heartbeat cycle.
@@ -3813,7 +3739,7 @@ export function App() {
       // Also update the sidebar's live session list so the session row
       // transitions from "active" to "completed unread" without waiting
       // for the hub's next session_status heartbeat.
-      const sid = activeSessionRef.current;
+      const sid = lifecycleRefs.activeSessionId.current;
       if (sid) {
         setLiveSessions((prev) =>
           prev.map((s) => (s.sessionId === sid ? { ...s, isActive: false } : s)),
@@ -3825,7 +3751,7 @@ export function App() {
       socket.emit("exec", rest);
       return true;
     } catch {
-      setViewerStatus("Failed to send command");
+      setLifecycleStatus("Failed to send command");
       return false;
     }
   }, []);
@@ -3854,7 +3780,7 @@ export function App() {
    */
   const handleEndSession = React.useCallback((sessionId: string) => {
     // Active session: reuse the existing viewer socket
-    if (sessionId === activeSessionRef.current && viewerWsRef.current?.connected) {
+    if (sessionId === lifecycleRefs.activeSessionId.current && viewerWsRef.current?.connected) {
       sendRemoteExec({
         type: "exec",
         id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
@@ -3970,7 +3896,7 @@ export function App() {
 
   const requestResumeSessions = React.useCallback((cursor?: string) => {
     // If no active session, fall back to server-side persisted sessions
-    if (!activeSessionRef.current) {
+    if (!lifecycleRefs.activeSessionId.current) {
       void requestPersistedSessions(cursor);
       return true; // Signal that a request was initiated
     }
@@ -4013,7 +3939,7 @@ export function App() {
   const refreshUsage = React.useCallback(() => {
     if (usageRefreshing) return false;
     setUsageRefreshing(true);
-    setViewerStatus("Refreshing usage…");
+    setLifecycleStatus("Refreshing usage…");
     const ok = sendRemoteExec({
       type: "exec",
       id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
@@ -4057,19 +3983,19 @@ export function App() {
 
   const selectModel = React.useCallback((model: ConfiguredModelInfo) => {
     const socket = viewerWsRef.current;
-    if (!socket || !socket.connected || !activeSessionRef.current) {
-      setViewerStatus("Not connected to a live session");
+    if (!socket || !socket.connected || !lifecycleRefs.activeSessionId.current) {
+      setLifecycleStatus("Not connected to a live session");
       return;
     }
 
     try {
       setIsChangingModel(true);
-      setViewerStatus(`Switching model to ${model.provider}/${model.id}…`);
+      setLifecycleStatus(`Switching model to ${model.provider}/${model.id}…`);
       socket.emit("model_set", { provider: model.provider, modelId: model.id });
       setModelSelectorOpen(false);
     } catch {
       setIsChangingModel(false);
-      setViewerStatus("Failed to change model");
+      setLifecycleStatus("Failed to change model");
     }
   }, []);
 
@@ -4161,7 +4087,7 @@ export function App() {
       // Cmd/Ctrl + . — Abort the active agent
       if (meta && !e.shiftKey && !e.altKey && e.key === ".") {
         e.preventDefault();
-        if (agentActive && activeSessionRef.current) {
+        if (agentActive && lifecycleRefs.activeSessionId.current) {
           sendRemoteExec({
             type: "exec",
             id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
@@ -4177,20 +4103,14 @@ export function App() {
   }, [isMac, agentActive, sendRemoteExec]);
 
   const handleNewSession = React.useCallback(() => {
-    setSpawnRunnerId(undefined);
-    setSpawnPreselectedRunnerId(null);
-    setSpawnCwd("");
-    setRecentFolders([]);
+    setLifecycleSpawnParams({ runnerId: undefined, preselectedRunnerId: null, cwd: "" });
     setNewSessionOpen(true);
-  }, []);
+  }, [setLifecycleSpawnParams]);
 
   const handleDuplicateSession = React.useCallback((runnerId: string, cwd: string) => {
-    setSpawnRunnerId(runnerId);
-    setSpawnPreselectedRunnerId(runnerId);
-    setSpawnCwd(cwd);
-    setRecentFolders([]);
+    setLifecycleSpawnParams({ runnerId, preselectedRunnerId: runnerId, cwd });
     setNewSessionOpen(true);
-  }, []);
+  }, [setLifecycleSpawnParams]);
 
   const handleExport = React.useCallback(() => {
     if (!messages.length) return;
@@ -4203,164 +4123,20 @@ export function App() {
     URL.revokeObjectURL(url);
   }, [messages, activeSessionId]);
 
-  // ── Session live waiter — resolves via /hub feed, no polling ──────────────
-  const sessionWaitersRef = React.useRef<Map<string, {
-    resolve: (found: boolean) => void;
-    timer: ReturnType<typeof setTimeout>;
-  }>>(new Map());
-
-  // Resolve any pending waiters when liveSessions updates
-  React.useEffect(() => {
-    for (const [sessionId, waiter] of sessionWaitersRef.current) {
-      if (liveSessions.some(s => s.sessionId === sessionId)) {
-        clearTimeout(waiter.timer);
-        sessionWaitersRef.current.delete(sessionId);
-        waiter.resolve(true);
-      }
-    }
-  }, [liveSessions]);
-
-  const waitForSessionToGoLive = React.useCallback(
-    (sessionId: string, timeoutMs: number): Promise<boolean> => {
-      // Fast path: already live
-      if (liveSessions.some(s => s.sessionId === sessionId)) {
-        return Promise.resolve(true);
-      }
-      return new Promise((resolve) => {
-        const timer = setTimeout(() => {
-          sessionWaitersRef.current.delete(sessionId);
-          resolve(false);
-        }, timeoutMs);
-        sessionWaitersRef.current.set(sessionId, { resolve, timer });
-      });
-    },
-    [liveSessions],
-  );
-
-  const spawnNewRunnerSession = React.useCallback(async () => {
-    if (spawningSession) return;
-
-    setSpawningSession(true);
-    setViewerStatus("Spawning session…");
-
-    if (!spawnRunnerId) {
-      setViewerStatus("Pick a runner");
-      setSpawningSession(false);
-      return;
-    }
-
-    const payload: any = {
-      runnerId: spawnRunnerId,
-      ...(spawnCwd.trim() ? { cwd: spawnCwd.trim() } : {}),
-    };
-
-    let sessionId: string | null = null;
-    try {
-      const res = await fetch("/api/runners/spawn", {
-        method: "POST",
-        credentials: "include",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-
-      const body = await res.json().catch(() => null) as { error?: string; sessionId?: string } | null;
-      if (!res.ok) {
-        const mapped = mapUserError({
-          error: body?.error,
-          statusCode: res.status,
-          context: "session_spawn",
-        });
-        console.error("Failed to spawn session:", mapped.technicalMessage, body);
-        setViewerStatus(mapped.userMessage);
-        return;
-      }
-
-      sessionId = typeof body?.sessionId === "string" ? body.sessionId : null;
-      if (!sessionId) {
-        const mapped = mapUserError({
-          error: "Spawn failed: missing sessionId",
-          context: "session_spawn",
-        });
-        console.error("Failed to spawn session:", mapped.technicalMessage, body);
-        setViewerStatus(mapped.userMessage);
-        return;
-      }
-
-      setNewSessionOpen(false);
-
-      // Wait until the worker actually registers with the relay, otherwise opening the
-      // viewer websocket would immediately fall back to snapshot replay and disconnect.
-      const live = await waitForSessionToGoLive(sessionId, 30_000);
-      if (!live) {
-        setViewerStatus("Session is starting… (it will appear in the sidebar soon)");
-        return;
-      }
-
-      handleOpenSession(sessionId);
-      setViewerStatus("Connecting…");
-    } catch (err) {
-      const mapped = mapUserError({
-        error: err,
-        context: "session_spawn",
-      });
-      console.error("Failed to spawn session:", err);
-      setViewerStatus(mapped.userMessage);
-    } finally {
-      setSpawningSession(false);
-    }
-  }, [spawningSession, spawnRunnerId, spawnCwd, handleOpenSession, waitForSessionToGoLive]);
+  // ── Session live waiter is now owned by useSessionLifecycle. ──────────
 
   /** Spawn handler for the new wizard dialog. */
   const handleWizardSpawn = React.useCallback(async (runnerId: string, cwd: string | undefined) => {
-    setViewerStatus("Spawning session…");
-
-    const payload: any = { runnerId, ...(cwd ? { cwd } : {}) };
-    const res = await fetch("/api/runners/spawn", {
-      method: "POST",
-      credentials: "include",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-
-    const body = await res.json().catch(() => null) as { error?: string; sessionId?: string } | null;
-    if (!res.ok) {
-      const mapped = mapUserError({
-        error: body?.error,
-        statusCode: res.status,
-        context: "session_spawn",
-      });
-      console.error("Failed to spawn session from wizard:", mapped.technicalMessage, body);
-      throw new Error(mapped.userMessage);
-    }
-
-    const sessionId = typeof body?.sessionId === "string" ? body.sessionId : null;
-    if (!sessionId) {
-      const mapped = mapUserError({
-        error: "Spawn failed: missing sessionId",
-        context: "session_spawn",
-      });
-      console.error("Spawn response missing sessionId:", mapped.technicalMessage, body);
-      throw new Error(mapped.userMessage);
-    }
-
-    setNewSessionOpen(false);
-
-    const live = await waitForSessionToGoLive(sessionId, 30_000);
-    if (!live) {
-      setViewerStatus("Session is starting… (it will appear in the sidebar soon)");
-      return;
-    }
-
+    const sessionId = await lifecycleSpawnSession(runnerId, cwd);
     handleOpenSession(sessionId);
-    setViewerStatus("Connecting…");
-  }, [handleOpenSession, waitForSessionToGoLive]);
+  }, [lifecycleSpawnSession, handleOpenSession]);
 
   // ── Respond to a trigger from a child session ─────────────────────────────
   const handleTriggerResponse = React.useCallback((triggerId: string, response: string, action?: string, sourceSessionId?: string): Promise<boolean> => {
     const socket = viewerWsRef.current;
-    const sessionId = activeSessionRef.current;
+    const sessionId = lifecycleRefs.activeSessionId.current;
     if (!socket || !socket.connected || !sessionId) {
-      setViewerStatus("Not connected to a live session");
+      setLifecycleStatus("Not connected to a live session");
       return Promise.resolve(false);
     }
 
@@ -4374,7 +4150,7 @@ export function App() {
       const settle = (success: boolean, message?: string) => {
         if (resolved) return;
         resolved = true;
-        if (message) setViewerStatus(message);
+        if (message) setLifecycleStatus(message);
         errorCleanup();
         resolve(success);
       };
@@ -4424,70 +4200,27 @@ export function App() {
     const cwd = sessionInfo?.cwd;
 
     if (!runnerId) {
-      setViewerStatus("No runner available — open a session first");
+      setLifecycleStatus("No runner available — open a session first");
       return;
     }
 
-    setViewerStatus(`Spawning ${agent.name} agent session…`);
-
     try {
-      const res = await fetch("/api/runners/spawn", {
-        method: "POST",
-        credentials: "include",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          runnerId,
-          ...(cwd ? { cwd } : {}),
-          agent: {
-            name: agent.name,
-            ...(agent.systemPrompt ? { systemPrompt: agent.systemPrompt } : {}),
-            ...(agent.tools ? { tools: agent.tools } : {}),
-            ...(agent.disallowedTools ? { disallowedTools: agent.disallowedTools } : {}),
-          },
-        }),
+      const sessionId = await lifecycleSpawnSession(runnerId, cwd, {
+        name: agent.name,
+        ...(agent.systemPrompt ? { systemPrompt: agent.systemPrompt } : {}),
+        ...(agent.tools ? { tools: agent.tools } : {}),
+        ...(agent.disallowedTools ? { disallowedTools: agent.disallowedTools } : {}),
       });
-
-      const body = await res.json().catch(() => null) as { error?: string; sessionId?: string } | null;
-      if (!res.ok) {
-        const mapped = mapUserError({
-          error: body?.error,
-          statusCode: res.status,
-          context: "session_spawn",
-        });
-        console.error("Failed to spawn agent session:", mapped.technicalMessage, body);
-        setViewerStatus(mapped.userMessage);
-        return;
-      }
-
-      const sessionId = typeof body?.sessionId === "string" ? body.sessionId : null;
-      if (!sessionId) {
-        const mapped = mapUserError({
-          error: "Spawn failed: missing sessionId",
-          context: "session_spawn",
-        });
-        console.error("Agent spawn response missing sessionId:", mapped.technicalMessage, body);
-        setViewerStatus(mapped.userMessage);
-        return;
-      }
-
-      // Wait until the worker registers with the relay
-      const live = await waitForSessionToGoLive(sessionId, 30_000);
-      if (!live) {
-        setViewerStatus("Agent session is starting… (it will appear in the sidebar soon)");
-        return;
-      }
-
       handleOpenSession(sessionId);
-      setViewerStatus("Connecting…");
     } catch (err) {
       const mapped = mapUserError({
         error: err,
         context: "session_spawn",
       });
       console.error("Failed to spawn agent session:", err);
-      setViewerStatus(mapped.userMessage);
+      setLifecycleStatus(mapped.userMessage);
     }
-  }, [activeSessionId, liveSessions, handleOpenSession, waitForSessionToGoLive]);
+  }, [activeSessionId, liveSessions, lifecycleSpawnSession, handleOpenSession]);
 
   // Derive runner/cwd for the active session (used by File Explorer)
   const activeSessionInfo = React.useMemo(() => {
@@ -4662,8 +4395,8 @@ export function App() {
 
   const pizzaPiNavActions = React.useMemo<PizzaPiNavActions>(() => ({
     toggleServicePanel: handleToggleServicePanel,
-    setActiveSessionId,
-  }), [handleToggleServicePanel, setActiveSessionId]);
+    setActiveSessionId: (sessionId: string) => handleOpenSession(sessionId),
+  }), [handleToggleServicePanel, handleOpenSession]);
 
   const terminalPanelTab = React.useMemo<CombinedPanelTab | null>(() => showTerminal ? {
     id: "terminal",
@@ -4901,7 +4634,7 @@ export function App() {
 
   const handleShowPreferences = React.useCallback(() => setShowPreferences(true), []);
   const handleShowApiKeys = React.useCallback(() => { setShowApiKeys(true); setShowRunners(false); }, []);
-  const handleShowRunners = React.useCallback(() => { setShowRunners(true); setShowApiKeys(false); activeSessionRef.current = null; setActiveSessionId(null); }, []);
+  const handleShowRunners = React.useCallback(() => { setShowRunners(true); setShowApiKeys(false); lifecycleClearSelection(); }, [lifecycleClearSelection]);
   const handleShowShortcuts = React.useCallback(() => setShowShortcutsHelp(true), []);
   const handleChangePassword = React.useCallback(() => setChangePasswordOpen(true), []);
   const handleToggleSidebar = React.useCallback(() => setSidebarOpen((prev) => !prev), []);
@@ -4923,7 +4656,7 @@ export function App() {
   // Mobile-specific variants that also close the sidebar
   const handleMobileShowPreferences = React.useCallback(() => { setShowPreferences(true); setSidebarOpen(false); }, []);
   const handleMobileShowApiKeys = React.useCallback(() => { setShowApiKeys(true); setShowRunners(false); setSidebarOpen(false); }, []);
-  const handleMobileShowRunners = React.useCallback(() => { setShowRunners(true); setShowApiKeys(false); activeSessionRef.current = null; setActiveSessionId(null); setSidebarOpen(false); }, []);
+  const handleMobileShowRunners = React.useCallback(() => { setShowRunners(true); setShowApiKeys(false); lifecycleClearSelection(); setSidebarOpen(false); }, [lifecycleClearSelection]);
   const handleMobileChangePassword = React.useCallback(() => { setChangePasswordOpen(true); setSidebarOpen(false); }, []);
   const handleSessionSwitcherOpenChange = React.useCallback((open: boolean) => setSessionSwitcherOpen(open), []);
 
@@ -5115,7 +4848,7 @@ export function App() {
               onOpenSession={handleOpenSession}
               onNewSession={handleNewSession}
               onClearSelection={handleClearSelection}
-              onShowRunners={() => { setShowRunners(true); setShowApiKeys(false); activeSessionRef.current = null; setActiveSessionId(null); }}
+              onShowRunners={() => { setShowRunners(true); setShowApiKeys(false); lifecycleClearSelection(); }}
               activeSessionId={activeSessionId}
               showRunners={showRunners}
               activeModel={activeModel}
@@ -5695,71 +5428,69 @@ export function App() {
               const session = resumeSessions.find((s) => s.id === sessionId);
               if (!session) return;
 
-              // Determine runnerId: prefer session-level (server-sourced), fall back to active session's runner
-              const runnerId = session.runnerId || activeSessionInfo?.runnerId;
-              if (!runnerId) {
-                setViewerStatus("No runner available for this session");
+            // Determine runnerId: prefer session-level (server-sourced), fall back to active session's runner
+            const runnerId = session.runnerId || activeSessionInfo?.runnerId;
+            if (!runnerId) {
+              setLifecycleStatus("No runner available for this session");
+              return;
+            }
+            setHistoryOpen(false);
+            setLifecycleStatus("Resuming session…");
+            try {
+              // Server-sourced sessions don't have the .jsonl path — send resumeId
+              // so the runner daemon resolves the path from the session ID.
+              const payload: any = {
+                runnerId,
+                ...(session.serverSourced
+                  ? { resumeId: session.id }
+                  : { resumePath: session.path }),
+                ...(session.cwd ? { cwd: session.cwd } : {}),
+              };
+              const res = await fetch("/api/runners/spawn", {
+                method: "POST",
+                credentials: "include",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify(payload),
+              });
+              const body = await res.json().catch(() => null) as { error?: string; sessionId?: string } | null;
+              if (!res.ok) {
+                setLifecycleStatus(body?.error ?? "Failed to resume session");
                 return;
               }
-              setHistoryOpen(false);
-              setViewerStatus("Resuming session…");
-              try {
-                // Server-sourced sessions don't have the .jsonl path — send resumeId
-                // so the runner daemon resolves the path from the session ID.
-                const payload: any = {
-                  runnerId,
-                  ...(session.serverSourced
-                    ? { resumeId: session.id }
-                    : { resumePath: session.path }),
-                  ...(session.cwd ? { cwd: session.cwd } : {}),
-                };
-                const res = await fetch("/api/runners/spawn", {
-                  method: "POST",
-                  credentials: "include",
-                  headers: { "content-type": "application/json" },
-                  body: JSON.stringify(payload),
-                });
-                const body = await res.json().catch(() => null) as { error?: string; sessionId?: string } | null;
-                if (!res.ok) {
-                  setViewerStatus(body?.error ?? "Failed to resume session");
-                  return;
-                }
-                const newSessionId = typeof body?.sessionId === "string" ? body.sessionId : null;
-                if (!newSessionId) {
-                  setViewerStatus("Resume failed: missing sessionId");
-                  return;
-                }
-                const live = await waitForSessionToGoLive(newSessionId, 30_000);
-                if (!live) {
-                  setViewerStatus("Session is starting…");
-                  return;
-                }
-                handleOpenSession(newSessionId);
-                setViewerStatus("Connecting…");
-              } catch (err) {
-                setViewerStatus("Failed to resume session");
-                console.error("Resume session error:", err);
+              const newSessionId = typeof body?.sessionId === "string" ? body.sessionId : null;
+              if (!newSessionId) {
+                setLifecycleStatus("Resume failed: missing sessionId");
+                return;
               }
-            }}
-            nextCursor={resumeSessionsNextCursor}
-            onLoadMore={() => { if (resumeSessionsNextCursor) requestResumeSessions(resumeSessionsNextCursor); }}
-          />
-        </Suspense>
-      )}
+              const live = await waitForSessionToGoLive(newSessionId, 30_000);
+              if (!live) {
+                setLifecycleStatus("Session is starting…");
+                return;
+              }
+              handleOpenSession(newSessionId);
+              setLifecycleStatus("Connecting…");
+            } catch (err) {
+              setLifecycleStatus("Failed to resume session");
+              console.error("Resume session error:", err);
+            }
+          }}
+          nextCursor={resumeSessionsNextCursor}
+          onLoadMore={() => { if (resumeSessionsNextCursor) requestResumeSessions(resumeSessionsNextCursor); }}
+        />
 
         {newSessionMounted && (
           <Suspense fallback={<PanelFallback label="New session" />}>
             <LazyNewSessionWizardDialog
-            open={newSessionOpen}
-            onOpenChange={(open) => { if (!spawningSession) setNewSessionOpen(open); }}
-            runners={feedRunners.map((r) => ({ ...r, name: r.name ?? null, isOnline: true, sessionCount: liveSessions.filter(s => s.runnerId === r.runnerId).length }))}
-            runnersLoading={runnersStatus === "connecting"}
-            preselectedRunnerId={spawnPreselectedRunnerId}
-            initialCwd={spawnCwd}
-            onSpawn={handleWizardSpawn}
-          />
-        </Suspense>
-      )}
+              open={newSessionOpen}
+              onOpenChange={(open) => { if (lifecycleState.phase !== "spawning" && lifecycleState.phase !== "registering") setNewSessionOpen(open); }}
+              runners={feedRunners.map((r) => ({ ...r, name: r.name ?? null, isOnline: true, sessionCount: liveSessions.filter(s => s.runnerId === r.runnerId).length }))}
+              runnersLoading={runnersStatus === "connecting"}
+              preselectedRunnerId={lifecycleState.spawn.preselectedRunnerId}
+              initialCwd={lifecycleState.spawn.cwd}
+              onSpawn={handleWizardSpawn}
+            />
+          </Suspense>
+        )}
 
         {showPreferences && (
           <Suspense fallback={<PanelFallback label="Settings" />}>
