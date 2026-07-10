@@ -47,7 +47,7 @@ describe("useSessionLifecycle", () => {
   beforeEach(() => {
     globalThis.fetch = mock(() =>
       Promise.resolve(
-        new Response(JSON.stringify({ sessionId: "session-abc" }), { status: 200 }),
+        new Response(JSON.stringify({ ok: true, runnerId: "runner-1", sessionId: "session-abc" }), { status: 200 }),
       ),
     ) as unknown as typeof fetch;
   });
@@ -95,7 +95,7 @@ describe("useSessionLifecycle", () => {
           setTimeout(
             () =>
               resolve(
-                new Response(JSON.stringify({ sessionId: "session-abc" }), { status: 200 }),
+                new Response(JSON.stringify({ ok: true, runnerId: "runner-1", sessionId: "session-abc" }), { status: 200 }),
               ),
             50,
           ),
