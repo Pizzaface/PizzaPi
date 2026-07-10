@@ -1,0 +1,331 @@
+diff --git a/dist/config.js b/dist/config.js
+index 4600b23493be21d2316303d056ef135313dcef43..85bd9b0d26c0de32a7aabfd0e254fed05659f958 100644
+--- a/dist/config.js
++++ b/dist/config.js
+@@ -358,6 +358,10 @@ export function getExamplesPath() {
+ }
+ /** Get path to CHANGELOG.md */
+ export function getChangelogPath() {
++    // PATCH(pizzapi): allow PizzaPi to display its wrapper changelog.
++    if (process.env.PIZZAPI_CHANGELOG_PATH) {
++        return resolve(process.env.PIZZAPI_CHANGELOG_PATH);
++    }
+     return resolve(join(getPackageDir(), "CHANGELOG.md"));
+ }
+ /**
+@@ -391,7 +395,7 @@ const piConfigName = pkg.piConfig?.name;
+ export const PACKAGE_NAME = pkg.name || "@earendil-works/pi-coding-agent";
+ export const APP_NAME = piConfigName || "pi";
+ export const APP_TITLE = piConfigName ? APP_NAME : "π";
+-export const CONFIG_DIR_NAME = pkg.piConfig?.configDir || ".pi";
++export const CONFIG_DIR_NAME = ".pizzapi"; // PATCH(pizzapi): force PizzaPi's config namespace instead of upstream .pi.
+ export const VERSION = pkg.version || "0.0.0";
+ // e.g., PI_CODING_AGENT_DIR or TAU_CODING_AGENT_DIR
+ export const ENV_AGENT_DIR = `${APP_NAME.toUpperCase()}_CODING_AGENT_DIR`;
+@@ -414,7 +418,8 @@ export function getAgentDir() {
+     if (envDir) {
+         return expandTildePath(envDir);
+     }
+-    return join(homedir(), CONFIG_DIR_NAME, "agent");
++    // PATCH(pizzapi): flat directory structure, no nested agent/ segment.
++    return join(homedir(), CONFIG_DIR_NAME);
+ }
+ /** Get path to user's custom themes directory */
+ export function getCustomThemesDir() {
+diff --git a/dist/core/agent-session.js b/dist/core/agent-session.js
+index a208774c956e3039c47ca54ce1f2f362ce3e4db3..793a3d318e92ece7863895517d742a023f60603b 100644
+--- a/dist/core/agent-session.js
++++ b/dist/core/agent-session.js
+@@ -1104,9 +1104,10 @@ export class AgentSession {
+             if (images.length === 0)
+                 images = undefined;
+         }
+-        // Use prompt() with expandPromptTemplates: false to skip command handling and template expansion
++        // Use prompt() with expandPromptTemplates: false by default to skip command handling and template expansion.
++        // PATCH(pizzapi): allow callers to opt into command/template expansion (e.g. web UI input).
+         await this.prompt(text, {
+-            expandPromptTemplates: false,
++            expandPromptTemplates: options?.expandPromptTemplates ?? false,
+             streamingBehavior: options?.deliverAs,
+             images,
+             source: "extension",
+@@ -1866,6 +1867,17 @@ export class AgentSession {
+             },
+             getThinkingLevel: () => this.thinkingLevel,
+             setThinkingLevel: (level) => this.setThinkingLevel(level),
++            // PATCH(pizzapi): expose the pending queues so the remote extension can sync them to the web UI.
++            getQueuedMessages: () => ({ steering: [...this._steeringMessages], followUp: [...this._followUpMessages] }),
++            // PATCH(pizzapi): replace the pending follow-up queue (web UI queue edits/removals).
++            // ponytail: text-only — queued image attachments are dropped on replace; the queue mirrors only store text.
++            replaceQueuedMessages: (followUp) => {
++                const { steering } = this.clearQueue();
++                for (const text of steering)
++                    void this._queueSteer(text);
++                for (const text of followUp)
++                    void this._queueFollowUp(text);
++            },
+         }, {
+             getModel: () => this.model,
+             isIdle: () => this.isIdle,
+diff --git a/dist/core/extensions/loader.js b/dist/core/extensions/loader.js
+index 575a208f581631bd98561b36ada62e31c235eb56..987fd0c76d580a595aba0aaae48ddf5d791660a6 100644
+--- a/dist/core/extensions/loader.js
++++ b/dist/core/extensions/loader.js
+@@ -137,6 +137,10 @@ export function createExtensionRuntime() {
+         sendUserMessage: notInitialized,
+         appendEntry: notInitialized,
+         setSessionName: notInitialized,
++        // PATCH(pizzapi): expose session-control actions on ExtensionAPI, not only command contexts.
++        newSession: () => Promise.reject(new Error("Extension runtime not initialized")),
++        switchSession: () => Promise.reject(new Error("Extension runtime not initialized")),
++        fork: () => Promise.reject(new Error("Extension runtime not initialized")),
+         getSessionName: notInitialized,
+         setLabel: notInitialized,
+         getActiveTools: notInitialized,
+@@ -148,6 +152,9 @@ export function createExtensionRuntime() {
+         setModel: () => Promise.reject(new Error("Extension runtime not initialized")),
+         getThinkingLevel: notInitialized,
+         setThinkingLevel: notInitialized,
++        // PATCH(pizzapi): pending-queue read/replace for remote queue sync.
++        getQueuedMessages: notInitialized,
++        replaceQueuedMessages: notInitialized,
+         flagValues: new Map(),
+         pendingProviderRegistrations: [],
+         assertActive,
+@@ -241,6 +248,28 @@ function createExtensionAPI(extension, runtime, cwd, eventBus) {
+             runtime.assertActive();
+             runtime.setSessionName(name);
+         },
++        // PATCH(pizzapi): remote exec handlers need /new and /resume from lifecycle/event handlers.
++        newSession(options) {
++            runtime.assertActive();
++            return runtime.newSession(options);
++        },
++        switchSession(sessionPath, options) {
++            runtime.assertActive();
++            return runtime.switchSession(sessionPath, options);
++        },
++        fork(entryId, options) {
++            runtime.assertActive();
++            return runtime.fork(entryId, options);
++        },
++        // PATCH(pizzapi): pending-queue read/replace for remote queue sync (web UI queue edits).
++        getQueuedMessages() {
++            runtime.assertActive();
++            return runtime.getQueuedMessages();
++        },
++        replaceQueuedMessages(followUp) {
++            runtime.assertActive();
++            runtime.replaceQueuedMessages(followUp);
++        },
+         getSessionName() {
+             runtime.assertActive();
+             return runtime.getSessionName();
+diff --git a/dist/core/extensions/runner.js b/dist/core/extensions/runner.js
+index a8923cf91df514396bb7f66d9b36579a02088113..71b02b27e65abe8fea5a21956da9a219e20f9bc1 100644
+--- a/dist/core/extensions/runner.js
++++ b/dist/core/extensions/runner.js
+@@ -169,6 +169,9 @@ export class ExtensionRunner {
+         this.runtime.setModel = actions.setModel;
+         this.runtime.getThinkingLevel = actions.getThinkingLevel;
+         this.runtime.setThinkingLevel = actions.setThinkingLevel;
++        // PATCH(pizzapi): expose pending-queue read/replace to extensions (remote queue sync).
++        this.runtime.getQueuedMessages = actions.getQueuedMessages;
++        this.runtime.replaceQueuedMessages = actions.replaceQueuedMessages;
+         // Context actions (required)
+         this.getModel = contextActions.getModel;
+         this.isIdleFn = contextActions.isIdle;
+@@ -222,17 +225,24 @@ export class ExtensionRunner {
+         if (actions) {
+             this.waitForIdleFn = actions.waitForIdle;
+             this.newSessionHandler = actions.newSession;
++            // PATCH(pizzapi): make session controls available to ExtensionAPI callers.
++            this.runtime.newSession = (options) => this.newSessionHandler(options);
+             this.forkHandler = actions.fork;
++            this.runtime.fork = (entryId, options) => this.forkHandler(entryId, options);
+             this.navigateTreeHandler = actions.navigateTree;
+             this.switchSessionHandler = actions.switchSession;
++            this.runtime.switchSession = (sessionPath, options) => this.switchSessionHandler(sessionPath, options);
+             this.reloadHandler = actions.reload;
+             return;
+         }
+         this.waitForIdleFn = async () => { };
+         this.newSessionHandler = async () => ({ cancelled: false });
++        this.runtime.newSession = (options) => this.newSessionHandler(options);
+         this.forkHandler = async () => ({ cancelled: false });
++        this.runtime.fork = (entryId, options) => this.forkHandler(entryId, options);
+         this.navigateTreeHandler = async () => ({ cancelled: false });
+         this.switchSessionHandler = async () => ({ cancelled: false });
++        this.runtime.switchSession = (sessionPath, options) => this.switchSessionHandler(sessionPath, options);
+         this.reloadHandler = async () => { };
+     }
+     setUIContext(uiContext, mode = "print") {
+diff --git a/dist/core/extensions/types.d.ts b/dist/core/extensions/types.d.ts
+index 1ea58b6375ddd9188d0c7411c510b1f96b32bd92..ec2dbf4cc49294eb61f60976814f79575c14cffe 100644
+--- a/dist/core/extensions/types.d.ts
++++ b/dist/core/extensions/types.d.ts
+@@ -902,11 +902,32 @@ export interface ExtensionAPI {
+      */
+     sendUserMessage(content: string | (TextContent | ImageContent)[], options?: {
+         deliverAs?: "steer" | "followUp";
++        /** PATCH(pizzapi): opt into slash-command and template expansion (default false). */
++        expandPromptTemplates?: boolean;
+     }): void;
+     /** Append a custom entry to the session for state persistence (not sent to LLM). */
+     appendEntry<T = unknown>(customType: string, data?: T): void;
+     /** Set the session display name (shown in session selector). */
+     setSessionName(name: string): void;
++    /** Start a new session. Available to PizzaPi remote event handlers. */
++    newSession(options?: {
++        parentSession?: string;
++        setup?: (sessionManager: SessionManager) => Promise<void>;
++        withSession?: (ctx: ReplacedSessionContext) => Promise<void>;
++    }): Promise<{ cancelled: boolean; }>;
++    /** Switch to a different session file. Available to PizzaPi remote event handlers. */
++    switchSession(sessionPath: string, options?: {
++        withSession?: (ctx: ReplacedSessionContext) => Promise<void>;
++    }): Promise<{ cancelled: boolean; }>;
++    /** Fork from a specific entry, creating a new session file. Available to PizzaPi remote event handlers. */
++    fork(entryId: string, options?: {
++        position?: "before" | "at";
++        withSession?: (ctx: ReplacedSessionContext) => Promise<void>;
++    }): Promise<{ cancelled: boolean; selectedText?: string; }>;
++    /** PATCH(pizzapi): read the pending steering/follow-up queues (remote queue sync). */
++    getQueuedMessages(): { steering: string[]; followUp: string[]; };
++    /** PATCH(pizzapi): replace the pending follow-up queue (web UI queue edits/removals). */
++    replaceQueuedMessages(followUp: string[]): void;
+     /** Get the current session name, if set. */
+     getSessionName(): string | undefined;
+     /** Set or clear a label on an entry. Labels are user-defined markers for bookmarking/navigation. */
+@@ -1087,6 +1108,8 @@ export type SendMessageHandler = <T = unknown>(message: Pick<CustomMessage<T>, "
+ }) => void;
+ export type SendUserMessageHandler = (content: string | (TextContent | ImageContent)[], options?: {
+     deliverAs?: "steer" | "followUp";
++    /** PATCH(pizzapi): opt into slash-command and template expansion (default false). */
++    expandPromptTemplates?: boolean;
+ }) => void;
+ export type AppendEntryHandler = <T = unknown>(customType: string, data?: T) => void;
+ export type SetSessionNameHandler = (name: string) => void;
+@@ -1138,6 +1161,9 @@ export interface ExtensionActions {
+     sendUserMessage: SendUserMessageHandler;
+     appendEntry: AppendEntryHandler;
+     setSessionName: SetSessionNameHandler;
++    newSession: ExtensionCommandContextActions["newSession"];
++    switchSession: ExtensionCommandContextActions["switchSession"];
++    fork: ExtensionCommandContextActions["fork"];
+     getSessionName: GetSessionNameHandler;
+     setLabel: SetLabelHandler;
+     getActiveTools: GetActiveToolsHandler;
+@@ -1148,6 +1174,9 @@ export interface ExtensionActions {
+     setModel: SetModelHandler;
+     getThinkingLevel: GetThinkingLevelHandler;
+     setThinkingLevel: SetThinkingLevelHandler;
++    /** PATCH(pizzapi): pending-queue read/replace for remote queue sync. */
++    getQueuedMessages: () => { steering: string[]; followUp: string[]; };
++    replaceQueuedMessages: (followUp: string[]) => void;
+ }
+ /**
+  * Actions for ExtensionContext (ctx.* in event handlers).
+diff --git a/dist/core/model-resolver.js b/dist/core/model-resolver.js
+index a2b74cc81d8347974674b4c7241fed3c413001e1..96c810c7778ad945968887f09c19abbfc24c5383 100644
+--- a/dist/core/model-resolver.js
++++ b/dist/core/model-resolver.js
+@@ -20,6 +20,7 @@ export const defaultModelPerProvider = {
+     "google-vertex": "gemini-3.1-pro-preview",
+     "github-copilot": "gpt-5.4",
+     openrouter: "moonshotai/kimi-k2.6",
++    "ollama-cloud": "glm-5.1",
+     "vercel-ai-gateway": "zai/glm-5.1",
+     xai: "grok-4.20-0309-reasoning",
+     groq: "openai/gpt-oss-120b",
+diff --git a/dist/core/provider-display-names.js b/dist/core/provider-display-names.js
+index 28c807e8ca3e6375daf30e1b9ad491a428b9d429..2f0f07eff66c74099d379406f5e74c8783616cfa 100644
+--- a/dist/core/provider-display-names.js
++++ b/dist/core/provider-display-names.js
+@@ -23,6 +23,7 @@ export const BUILT_IN_PROVIDER_DISPLAY_NAMES = {
+     "opencode-go": "OpenCode Go",
+     openai: "OpenAI",
+     openrouter: "OpenRouter",
++    "ollama-cloud": "Ollama Cloud",
+     together: "Together AI",
+     "vercel-ai-gateway": "Vercel AI Gateway",
+     xai: "xAI",
+diff --git a/dist/index.d.ts b/dist/index.d.ts
+index c42127436241c9fe64c47153658916003e036737..0465adb3d9cb198bdda4d2a83cff865e9bfcd78b 100644
+--- a/dist/index.d.ts
++++ b/dist/index.d.ts
+@@ -12,6 +12,7 @@ export { ModelRegistry } from "./core/model-registry.ts";
+ export { type ModelScopeDiagnostic, type ResolveCliModelResult, type ResolveModelScopeResult, resolveCliModel, resolveModelScopeWithDiagnostics, type ScopedModel, } from "./core/model-resolver.ts";
+ export type { PackageManager, PathMetadata, ProgressCallback, ProgressEvent, ResolvedPaths, ResolvedResource, } from "./core/package-manager.ts";
+ export { DefaultPackageManager } from "./core/package-manager.ts";
++export { handleConfigCommand, handlePackageCommand } from "./package-manager-cli.ts";
+ export type { ResourceCollision, ResourceDiagnostic, ResourceLoader } from "./core/resource-loader.ts";
+ export { DefaultResourceLoader, loadProjectContextFiles } from "./core/resource-loader.ts";
+ export { AgentSessionRuntime, type AgentSessionRuntimeDiagnostic, type AgentSessionServices, type CreateAgentSessionFromServicesOptions, type CreateAgentSessionOptions, type CreateAgentSessionResult, type CreateAgentSessionRuntimeFactory, type CreateAgentSessionRuntimeResult, type CreateAgentSessionServicesOptions, createAgentSession, createAgentSessionFromServices, createAgentSessionRuntime, createAgentSessionServices, createBashTool, createCodingTools, createEditTool, createFindTool, createGrepTool, createLsTool, createReadOnlyTools, createReadTool, createWriteTool, type PromptTemplate, } from "./core/sdk.ts";
+diff --git a/dist/index.js b/dist/index.js
+index 2cb0269490b9d58f12948970cf137dd593fc2330..4c33cf96bde2cdac324c417632178e3264b2aec2 100644
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -13,6 +13,7 @@ export { convertToLlm } from "./core/messages.js";
+ export { ModelRegistry } from "./core/model-registry.js";
+ export { resolveCliModel, resolveModelScopeWithDiagnostics, } from "./core/model-resolver.js";
+ export { DefaultPackageManager } from "./core/package-manager.js";
++export { handleConfigCommand, handlePackageCommand } from "./package-manager-cli.js";
+ export { DefaultResourceLoader, loadProjectContextFiles } from "./core/resource-loader.js";
+ // SDK for programmatic usage
+ export { AgentSessionRuntime, 
+diff --git a/dist/modes/interactive/interactive-mode.js b/dist/modes/interactive/interactive-mode.js
+index 02455d69435ab71a2b321a887abf077f5efe79b1..374379fcd48c5b383e693af9df806dd3d00ea9ae 100644
+--- a/dist/modes/interactive/interactive-mode.js
++++ b/dist/modes/interactive/interactive-mode.js
+@@ -34,7 +34,6 @@ import { getCwdRelativePath } from "../../utils/paths.js";
+ import { getPiUserAgent } from "../../utils/pi-user-agent.js";
+ import { killTrackedDetachedChildren } from "../../utils/shell.js";
+ import { ensureTool } from "../../utils/tools-manager.js";
+-import { checkForNewPiVersion } from "../../utils/version-check.js";
+ import { ArminComponent } from "./components/armin.js";
+ import { AssistantMessageComponent } from "./components/assistant-message.js";
+ import { BashExecutionComponent } from "./components/bash-execution.js";
+@@ -592,12 +591,6 @@ export class InteractiveMode {
+      */
+     async run() {
+         await this.init();
+-        // Start version check asynchronously
+-        checkForNewPiVersion(this.version).then((newRelease) => {
+-            if (newRelease) {
+-                this.showNewVersionNotification(newRelease);
+-            }
+-        });
+         // Start package update check asynchronously
+         this.checkForPackageUpdates().then((updates) => {
+             if (updates.length > 0) {
+@@ -3155,29 +3148,6 @@ export class InteractiveMode {
+         this.chatContainer.addChild(new Text(theme.fg("warning", `Warning: ${warningMessage}`), 1, 0));
+         this.ui.requestRender();
+     }
+-    showNewVersionNotification(release) {
+-        const action = theme.fg("accent", `${APP_NAME} update`);
+-        const updateInstruction = theme.fg("muted", `New version ${release.version} is available. Run `) + action;
+-        const changelogUrl = "https://pi.dev/changelog";
+-        const changelogLink = getCapabilities().hyperlinks
+-            ? hyperlink(theme.fg("accent", changelogUrl), changelogUrl)
+-            : theme.fg("accent", changelogUrl);
+-        const changelogLine = theme.fg("muted", "Changelog: ") + changelogLink;
+-        const note = release.note?.trim();
+-        this.chatContainer.addChild(new Spacer(1));
+-        this.chatContainer.addChild(new DynamicBorder((text) => theme.fg("warning", text)));
+-        this.chatContainer.addChild(new Text(`${theme.bold(theme.fg("warning", "Update Available"))}\n${updateInstruction}`, 1, 0));
+-        if (note) {
+-            this.chatContainer.addChild(new Spacer(1));
+-            this.chatContainer.addChild(new Markdown(note, 1, 0, this.getMarkdownThemeWithSettings(), {
+-                color: (text) => theme.fg("muted", text),
+-            }));
+-            this.chatContainer.addChild(new Spacer(1));
+-        }
+-        this.chatContainer.addChild(new Text(changelogLine, 1, 0));
+-        this.chatContainer.addChild(new DynamicBorder((text) => theme.fg("warning", text)));
+-        this.ui.requestRender();
+-    }
+     showPackageUpdateNotification(packages) {
+         const action = theme.fg("accent", `${APP_NAME} update --extensions`);
+         const updateInstruction = theme.fg("muted", "Package updates are available. Run ") + action;

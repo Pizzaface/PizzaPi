@@ -1,0 +1,28 @@
+diff --git a/dist/agent-loop.js b/dist/agent-loop.js
+index dcea976fc74a0ca3c8f53e17d3992f7e62df09de..a27a384f6d7c3a0aff2d8135c61e559d1b99db02 100644
+--- a/dist/agent-loop.js
++++ b/dist/agent-loop.js
+@@ -101,6 +101,9 @@ async function runLoop(initialContext, newMessages, initialConfig, signal, emit,
+                 }
+                 pendingMessages = [];
+             }
++            // PATCH(pizzapi): refresh dynamic tool/prompt state before each assistant response
++            currentContext.systemPrompt = currentContext.__getLatestSystemPrompt?.() ?? currentContext.systemPrompt;
++            currentContext.tools = currentContext.__getLatestTools?.() ?? currentContext.tools;
+             // Stream assistant response
+             const message = await streamAssistantResponse(currentContext, config, signal, emit, streamFn);
+             newMessages.push(message);
+diff --git a/dist/agent.js b/dist/agent.js
+index c98a07ac413ceda0e4dfedc8f71514965c589af2..c2624ca9ae89e60b316f0c2c3f5f41c415da8630 100644
+--- a/dist/agent.js
++++ b/dist/agent.js
+@@ -273,6 +273,9 @@ export class Agent {
+     createContextSnapshot() {
+         return {
+             systemPrompt: this._state.systemPrompt,
++            // PATCH(pizzapi): allow the agent loop to refresh dynamic tool/prompt state
++            __getLatestSystemPrompt: () => this._state.systemPrompt,
++            __getLatestTools: () => this._state.tools.slice(),
+             messages: this._state.messages.slice(),
+             tools: this._state.tools.slice(),
+         };
