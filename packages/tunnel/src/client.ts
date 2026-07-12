@@ -64,6 +64,15 @@ const HOP_BY_HOP = new Set([
 
 const STRIP_AUTH = new Set(["cookie", "authorization", "x-api-key"]);
 
+type LoopbackHost = "127.0.0.1" | "[::1]";
+
+function otherLoopback(host: LoopbackHost): LoopbackHost {
+  return host === "127.0.0.1" ? "[::1]" : "127.0.0.1";
+}
+
+/** Max request-body bytes buffered to allow a loopback-family retry replay. */
+const RETRY_BODY_BUFFER_LIMIT = 4 * 1024 * 1024;
+
 function parseMessageText(raw: string | Buffer | ArrayBuffer | ArrayBufferView): string {
   if (typeof raw === "string") return raw;
   if (raw instanceof ArrayBuffer) return Buffer.from(raw).toString("utf-8");
@@ -97,7 +106,23 @@ export class TunnelClient extends EventEmitter {
   private connectionStartedAt = 0;
 
   /** Active HTTP requests: requestId → { controller, req } */
-  private activeRequests = new Map<string, { controller: AbortController; req: http.ClientRequest }>();
+  private activeRequests = new Map<
+    string,
+    {
+      controller: AbortController;
+      req: http.ClientRequest;
+      /** Body chunks buffered for loopback retry replay; null once connected or over limit. */
+      bodyChunks: Buffer[] | null;
+      bodyBytes: number;
+      bodyEnded: boolean;
+    }
+  >();
+  /**
+   * ponytail: on Windows `localhost` often resolves to ::1 first, so local dev
+   * servers can be IPv6-only and 127.0.0.1 gets ECONNREFUSED. We retry the
+   * other loopback family once and cache the working family per port.
+   */
+  private loopbackHost = new Map<number, LoopbackHost>();
   /** Active local WebSocket connections: wsId → WebSocket */
   private activeWs = new Map<string, WebSocket>();
 
@@ -333,14 +358,20 @@ export class TunnelClient extends EventEmitter {
     forwardHeaders.host = `127.0.0.1:${port}`;
 
     const controller = new AbortController();
+    const attempt = (hostname: LoopbackHost, canRetry: boolean): http.ClientRequest => {
+    const target = new URL(parsed.toString());
+    target.hostname = hostname;
     const req = http.request(
-      parsed,
+      target,
       {
         method,
         headers: forwardHeaders,
         signal: controller.signal,
       },
       (response) => {
+        this.loopbackHost.set(port, hostname);
+        const active = this.activeRequests.get(id);
+        if (active) active.bodyChunks = null; // connected — replay buffer no longer needed
         const responseHeaders: Record<string, string | string[]> = {};
         for (const [key, value] of Object.entries(response.headers)) {
           if (value === undefined) continue;
@@ -378,14 +409,25 @@ export class TunnelClient extends EventEmitter {
       },
     );
 
-    this.activeRequests.set(id, { controller, req });
-
     req.on("error", (error) => {
-      this.activeRequests.delete(id);
       const code = (error as NodeJS.ErrnoException).code;
       if (code === "ABORT_ERR" || controller.signal.aborted) {
+        this.activeRequests.delete(id);
         return;
       }
+      const active = this.activeRequests.get(id);
+      if (code === "ECONNREFUSED" && canRetry && active?.bodyChunks) {
+        // Local service may be listening on the other loopback family
+        // (IPv6-only binds are common on Windows). Retry once, replaying
+        // any buffered request body.
+        this.loopbackHost.delete(port);
+        const retryReq = attempt(otherLoopback(hostname), false);
+        active.req = retryReq;
+        for (const chunk of active.bodyChunks) retryReq.write(chunk);
+        if (active.bodyEnded) retryReq.end();
+        return;
+      }
+      this.activeRequests.delete(id);
       this.send({
         type: "response-start",
         id,
@@ -403,17 +445,32 @@ export class TunnelClient extends EventEmitter {
       });
       this.send({ type: "response-data-end", id });
     });
+    return req;
+    };
+
+    const req = attempt(this.loopbackHost.get(port) ?? "127.0.0.1", true);
+    this.activeRequests.set(id, { controller, req, bodyChunks: [], bodyBytes: 0, bodyEnded: false });
   }
 
   private handleRequestData(msg: TunnelRequestDataMessage): void {
     const active = this.activeRequests.get(msg.id);
     if (!active) return;
-    active.req.write(Buffer.from(msg.data, "binary"));
+    const chunk = Buffer.from(msg.data, "binary");
+    if (active.bodyChunks) {
+      active.bodyBytes += chunk.length;
+      if (active.bodyBytes > RETRY_BODY_BUFFER_LIMIT) {
+        active.bodyChunks = null; // too big to replay — give up on retry, stop buffering
+      } else {
+        active.bodyChunks.push(chunk);
+      }
+    }
+    active.req.write(chunk);
   }
 
   private handleRequestDataEnd(msg: TunnelRequestDataEndMessage): void {
     const active = this.activeRequests.get(msg.id);
     if (!active) return;
+    active.bodyEnded = true;
     active.req.end();
   }
 
@@ -456,6 +513,7 @@ export class TunnelClient extends EventEmitter {
     }
     forwardHeaders.host = `127.0.0.1:${port}`;
 
+    const connect = (hostname: LoopbackHost, canRetry: boolean): void => {
     try {
       const WebSocketCtor = WebSocket as unknown as {
         new (
@@ -467,7 +525,10 @@ export class TunnelClient extends EventEmitter {
         ): WebSocket;
       };
 
-      const ws = new WebSocketCtor(parsed.toString(), {
+      const target = new URL(parsed.toString());
+      target.hostname = hostname;
+      let opened = false;
+      const ws = new WebSocketCtor(target.toString(), {
         headers: forwardHeaders,
         protocols,
       });
@@ -476,6 +537,8 @@ export class TunnelClient extends EventEmitter {
       ws.binaryType = "arraybuffer";
 
       ws.addEventListener("open", () => {
+        opened = true;
+        this.loopbackHost.set(port, hostname);
         this.send({ type: "ws-opened", id, protocol: ws.protocol || undefined });
       });
 
@@ -493,18 +556,33 @@ export class TunnelClient extends EventEmitter {
       });
 
       ws.addEventListener("close", (event: CloseEvent) => {
+        if (this.activeWs.get(id) !== ws) return; // superseded by loopback retry
         this.activeWs.delete(id);
+        if (!opened && canRetry) {
+          this.loopbackHost.delete(port);
+          connect(otherLoopback(hostname), false);
+          return;
+        }
         this.send({ type: "ws-close", id, code: event.code, reason: event.reason });
       });
 
       ws.addEventListener("error", () => {
+        if (this.activeWs.get(id) !== ws) return; // superseded by loopback retry
         this.activeWs.delete(id);
+        if (!opened && canRetry) {
+          this.loopbackHost.delete(port);
+          connect(otherLoopback(hostname), false);
+          return;
+        }
         this.send({ type: "ws-error", id, message: "WebSocket connection error" });
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.send({ type: "ws-error", id, message });
     }
+    };
+
+    connect(this.loopbackHost.get(port) ?? "127.0.0.1", true);
   }
 
   private handleWsData(msg: TunnelWsDataMessage): void {
