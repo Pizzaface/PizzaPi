@@ -242,6 +242,34 @@ describe("Aggregator", () => {
     db.close();
   });
 
+  test("projectShort handles Windows-style paths", () => {
+    const db = createTestDb();
+    const now = Date.now();
+
+    db.run(
+      `INSERT INTO sessions (id, project, session_name, started_at, ended_at,
+       message_count, total_input, total_output, total_cache_read, total_cache_write,
+       total_cost, primary_model, primary_provider)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ["s1", "C:\\Users\\jordan\\Projects\\PizzaPi", null, now, now + 60000, 1, 100, 50, 0, 0, 2.0, "claude-opus", "anthropic"]
+    );
+
+    db.run(
+      `INSERT INTO usage_events (session_id, project, timestamp, provider, model,
+       input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+       cost_usd, cost_input, cost_output, cost_cache_read, cost_cache_write)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ["s1", "C:\\Users\\jordan\\Projects\\PizzaPi", now, "anthropic", "claude-opus", 100, 50, 0, 0, 2.0, 1.2, 0.8, 0, 0]
+    );
+
+    const data = getUsageData(db, "all");
+
+    expect(data.byProject[0].projectShort).toBe("PizzaPi");
+    expect(data.recentSessions[0].projectShort).toBe("PizzaPi");
+
+    db.close();
+  });
+
   test("summary excludes null costs", () => {
     const db = createTestDb();
     const now = Date.now();
