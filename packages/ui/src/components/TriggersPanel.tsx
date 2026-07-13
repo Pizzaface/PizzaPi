@@ -46,6 +46,7 @@ import {
 } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
+import { cronFromSchedule, scheduleFromCron, type RecurringSchedule } from "@/lib/cron-schedule";
 import type { JsonValue, ServiceTriggerDef, ServiceTriggerParamDef } from "@pizzapi/protocol";
 
 // ── Shared trigger utilities (re-exported for backward compat) ─────────────
@@ -1484,6 +1485,16 @@ function ServiceCatalogAccordion({
                               <option value="false">false</option>
                             </select>
 
+                          /* Cron expression: friendly recurring-schedule builder */
+                          ) : p.name === "cron" ? (
+                            <CronScheduleBuilder
+                              value={typeof currentVal === "string" ? currentVal : ""}
+                              onChange={(v) => onParamValuesChange((prev) => ({
+                                ...prev,
+                                [def.type]: { ...prev[def.type], [p.name]: v },
+                              }))}
+                            />
+
                           /* Default: text/number input */
                           ) : (
                             <input
@@ -2223,6 +2234,116 @@ export function TriggersPanel({ sessionId, triggerDefs = [], viewerSocket }: Tri
         triggerDefs={triggerDefs}
         onSent={() => { void fetchTriggers(true); }}
       />
+    </div>
+  );
+}
+
+// ── Cron schedule builder ───────────────────────────────────────────────────
+
+const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+const DEFAULT_SCHEDULE: RecurringSchedule = { freq: "daily", hour: 9, minute: 0, day: 1 };
+
+const cronInputCls = "rounded border border-border bg-background px-1.5 py-0.5 text-[10px] focus:outline-none focus:ring-1 focus:ring-ring";
+
+/**
+ * Friendly Daily/Weekly/Monthly builder for cron params. The user picks a
+ * local time; the stored param value is the equivalent UTC cron expression
+ * (the runner evaluates cron in UTC). Unrepresentable expressions (steps,
+ * ranges, lists) fall back to a raw "Custom" input.
+ */
+function CronScheduleBuilder({ value, onChange }: { value: string; onChange: (value: string) => void }) {
+  const parsed = React.useMemo(() => scheduleFromCron(value), [value]);
+  const [customMode, setCustomMode] = React.useState(() => value.trim() !== "" && !parsed);
+
+  // Seed the default schedule so subscribing without touching the form works.
+  React.useEffect(() => {
+    if (!customMode && value.trim() === "") onChange(cronFromSchedule(DEFAULT_SCHEDULE));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const sched = parsed ?? DEFAULT_SCHEDULE;
+  const set = (patch: Partial<RecurringSchedule>) => onChange(cronFromSchedule({ ...sched, ...patch }));
+
+  return (
+    <div className="flex-1 space-y-1">
+      <div className="flex flex-wrap items-center gap-1.5">
+        <select
+          value={customMode ? "custom" : sched.freq}
+          onChange={(e) => {
+            const freq = e.target.value;
+            if (freq === "custom") {
+              setCustomMode(true);
+            } else {
+              setCustomMode(false);
+              set({ freq: freq as RecurringSchedule["freq"], day: 1 });
+            }
+          }}
+          className={cronInputCls}
+        >
+          <option value="daily">Daily</option>
+          <option value="weekly">Weekly</option>
+          <option value="monthly">Monthly</option>
+          <option value="custom">Custom (cron)</option>
+        </select>
+
+        {!customMode && sched.freq === "weekly" && (
+          <select
+            value={String(sched.day)}
+            onChange={(e) => set({ day: Number(e.target.value) })}
+            className={cronInputCls}
+          >
+            {WEEKDAYS.map((name, i) => (
+              <option key={name} value={String(i)}>{name}</option>
+            ))}
+          </select>
+        )}
+
+        {!customMode && sched.freq === "monthly" && (
+          <label className="flex items-center gap-1 text-[10px] text-muted-foreground/70">
+            day
+            <input
+              type="number"
+              min={1}
+              max={31}
+              value={sched.day}
+              onChange={(e) => {
+                const n = Number(e.target.value);
+                if (Number.isInteger(n) && n >= 1 && n <= 31) set({ day: n });
+              }}
+              className={cn(cronInputCls, "w-12")}
+            />
+          </label>
+        )}
+
+        {!customMode && (
+          <label className="flex items-center gap-1 text-[10px] text-muted-foreground/70">
+            at
+            <input
+              type="time"
+              value={`${String(sched.hour).padStart(2, "0")}:${String(sched.minute).padStart(2, "0")}`}
+              onChange={(e) => {
+                const [h, m] = e.target.value.split(":").map(Number);
+                if (Number.isInteger(h) && Number.isInteger(m)) set({ hour: h, minute: m });
+              }}
+              className={cronInputCls}
+            />
+          </label>
+        )}
+      </div>
+
+      {customMode ? (
+        <input
+          type="text"
+          placeholder="*/30 * * * * (UTC)"
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          className={cn(cronInputCls, "w-full font-mono")}
+        />
+      ) : (
+        <p className="text-[9px] text-muted-foreground/60">
+          <span className="font-mono">{value || cronFromSchedule(sched)}</span> — local time, stored as UTC cron
+        </p>
+      )}
     </div>
   );
 }
