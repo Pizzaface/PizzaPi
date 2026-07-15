@@ -492,7 +492,14 @@ export function SessionViewer({
     ignoreTargetSelector: "[data-pp-prompt]",
   });
 
-  const composerReady = canSubmitSessionInput(sessionId, viewerStatus, !!isCompacting);
+  // Allow composing while the session is still hydrating (e.g. MCP servers
+  // loading on the runner) — input submitted then is queued and flushed once
+  // the snapshot completes. Only lock the composer when hydration is stuck
+  // (runner likely offline) so drafts aren't queued into the void.
+  const hydrating = isSessionHydrating(viewerStatus);
+  const composerReady =
+    canSubmitSessionInput(sessionId, viewerStatus, !!isCompacting) ||
+    (!!sessionId && !isCompacting && hydrating && !hydrationStuck);
 
   React.useEffect(() => {
     if (!sessionId || !isSessionHydrating(viewerStatus)) {
@@ -508,7 +515,7 @@ export function SessionViewer({
     (message: PromptInputMessage) => {
       if (!composerReady) {
         if (isSessionHydrating(viewerStatus)) {
-          setComposerError("Session is still connecting — wait a moment and try again.");
+          setComposerError("Session is still connecting — your draft is preserved, try again shortly.");
         }
         return;
       }
