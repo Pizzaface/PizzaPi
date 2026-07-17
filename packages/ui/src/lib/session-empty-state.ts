@@ -41,6 +41,26 @@ export function canSubmitSessionInput(
 }
 
 /**
+ * Decides what to do with input submitted to a session.
+ *
+ * "queue" means the session is still hydrating (e.g. the runner is loading
+ * MCP servers) — the message should be buffered and flushed once the
+ * snapshot completes, instead of being rejected and forcing a manual retry.
+ */
+export type SessionInputGate = "send" | "queue" | "reject";
+
+export function classifySessionInput(
+  sessionId: string | null | undefined,
+  viewerStatus: string | null | undefined,
+  isCompacting: boolean,
+  awaitingSnapshot: boolean,
+): SessionInputGate {
+  if (!sessionId || isCompacting) return "reject";
+  if (awaitingSnapshot || isSessionHydrating(viewerStatus)) return "queue";
+  return "send";
+}
+
+/**
  * Copy + animation state for session-specific empty states.
  */
 export function getSessionEmptyStateUi(viewerStatus: string | null | undefined): SessionEmptyStateUi {

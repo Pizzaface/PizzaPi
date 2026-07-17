@@ -69,7 +69,7 @@ import { ViewerSocketContext } from "@/lib/viewer-socket-context";
 import { HubSocketContext } from "@/lib/hub-socket-context";
 import { shouldStopViewerReconnect } from "@/lib/viewer-connection";
 import { mapUserError } from "@/lib/user-error-message";
-import { canSubmitSessionInput, isSessionHydrating } from "@/lib/session-empty-state";
+import { classifySessionInput } from "@/lib/session-empty-state";
 import { getConfirmedMetaSubscriptionTargets } from "@/lib/meta-subscriptions";
 import { evaluateVersionNegotiation } from "@/lib/version-negotiation";
 import { useRunnerServices, attachServiceAnnounceListener, seedServiceCache, setViewerSwitchGeneration } from "@/hooks/useRunnerServices";
@@ -3551,6 +3551,12 @@ export function App() {
   const inputDedupeRef = React.useRef<InputDedupeState | null>(null);
   const inputAttemptIdRef = React.useRef(0);
 
+  type SessionInputMessage = { text: string; files?: Array<{ file?: File; mediaType?: string; filename?: string; url?: string }>; deliverAs?: "steer" | "followUp" } | string;
+
+  // Messages submitted while the session was still hydrating (e.g. the runner
+  // was loading MCP servers). Flushed once the snapshot completes.
+  const pendingHydrationInputsRef = React.useRef<Array<{ sessionId: string; message: SessionInputMessage }>>([]);
+
   const requestOlderMessages = React.useCallback(() => {
     const socket = viewerWsRef.current;
     const sessionId = lifecycleRefs.activeSessionId.current;
@@ -3564,7 +3570,7 @@ export function App() {
     });
   }, [loadingOlderMessages]);
 
-  const sendSessionInput = React.useCallback(async (message: { text: string; files?: Array<{ file?: File; mediaType?: string; filename?: string; url?: string }>; deliverAs?: "steer" | "followUp" } | string) => {
+  const sendSessionInput = React.useCallback(async (message: SessionInputMessage) => {
     const socket = viewerWsRef.current;
     const sessionId = lifecycleRefs.activeSessionId.current;
     if (!sessionId) {
@@ -3575,12 +3581,15 @@ export function App() {
       setLifecycleStatus("Compacting…");
       return false;
     }
-    if (lifecycleRefs.awaitingSnapshot.current || !canSubmitSessionInput(sessionId, viewerStatus, isCompacting)) {
-      if (isSessionHydrating(viewerStatus) || lifecycleRefs.awaitingSnapshot.current) {
-        setLifecycleStatus("Connecting…");
-      }
-      return false;
+    const gate = classifySessionInput(sessionId, viewerStatus, isCompacting, lifecycleRefs.awaitingSnapshot.current);
+    if (gate === "queue") {
+      // Session is still hydrating (usually MCP servers loading on the
+      // runner). Queue the message and flush it once the snapshot completes
+      // instead of rejecting and forcing the user to retry.
+      pendingHydrationInputsRef.current.push({ sessionId, message });
+      return true;
     }
+    if (gate === "reject") return false;
     if (!socket || !socket.connected) {
       setLifecycleStatus("Not connected to a live session");
       return false;
@@ -3746,6 +3755,23 @@ export function App() {
       return false;
     }
   }, [isCompacting, patchSessionCache, viewerStatus]);
+
+  const sendSessionInputRef = React.useRef(sendSessionInput);
+  React.useEffect(() => { sendSessionInputRef.current = sendSessionInput; });
+
+  // Flush input queued during hydration once the session goes live. Entries
+  // for a session the user has since switched away from are dropped.
+  React.useEffect(() => {
+    if (!lifecycle.isLive) return;
+    const pending = pendingHydrationInputsRef.current;
+    if (pending.length === 0) return;
+    pendingHydrationInputsRef.current = [];
+    const activeId = lifecycleRefs.activeSessionId.current;
+    for (const item of pending) {
+      if (item.sessionId !== activeId) continue;
+      void sendSessionInputRef.current(item.message);
+    }
+  }, [lifecycle.isLive, lifecycleRefs]);
 
   const sendRemoteExec = React.useCallback((payload: any) => {
     const socket = viewerWsRef.current;
