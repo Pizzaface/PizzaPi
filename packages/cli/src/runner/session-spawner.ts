@@ -23,6 +23,23 @@ export interface RunnerSession {
     sessionFile?: string;
 }
 
+/**
+ * Kill an entire session process group (worker + everything it spawned:
+ * bash children, MCP stdio servers, dev servers).  Workers are spawned with
+ * `detached: true`, making the worker PID the process-group ID.
+ * Returns false if the group signal could not be sent (already dead, or
+ * platform without process groups).
+ */
+export function killSessionProcessGroup(pid: number | undefined, signal: NodeJS.Signals = "SIGTERM"): boolean {
+    if (!pid) return false;
+    try {
+        process.kill(-pid, signal);
+        return true;
+    } catch {
+        return false;
+    }
+}
+
 /** Is this process running inside a compiled Bun single-file binary? */
 // Detect compiled Bun single-file binary.
 // - Unix: import.meta.url contains "$bunfs"
@@ -176,6 +193,10 @@ export function spawnSession(
 
     const child = spawn(process.execPath, workerArgs, {
         env,
+        // New process group (PGID = worker PID).  Everything the session spawns
+        // (bash commands, MCP stdio servers, dev servers) inherits the group, so
+        // we can enumerate it (pgrep -g) and kill it wholesale on session end.
+        detached: true,
         // Include an IPC channel (fd[3]) so the worker can send a "pre_restart"
         // message to the daemon before calling process.exit(43).  This lets us
         // add the sessionId to restartingSessions *before* the process exits and
@@ -219,6 +240,10 @@ export function spawnSession(
             // message above; this add is a belt-and-suspenders fallback for the
             // (unlikely) case where the IPC message was not sent or was lost.
             restartingSessions.add(sessionId);
+            // ponytail: background processes from the old worker's group survive a
+            // restart-in-place (intentional — session continues) but land in a
+            // different pgid than the new worker. Track historical pgids per
+            // session if orphans from restarted workers become a problem.
             logInfo(`re-spawning session ${sessionId} (worker restart requested)`);
             onRestartRequested();
         } else {
@@ -227,6 +252,11 @@ export function spawnSession(
             // by then, so this is the reliable cleanup point for spawned sessions.
             // Also remove from killedSessions if this was an explicit kill to prevent leaks.
             killedSessions.delete(sessionId);
+            // Reap any stragglers the session left behind (background dev
+            // servers etc.) — the worker is gone, so signal its whole group.
+            if (killSessionProcessGroup(child.pid)) {
+                logInfo(`session ${sessionId} process group ${child.pid} signaled for cleanup`);
+            }
             void cleanupSessionAttachments(sessionId).catch(() => {});
         }
     });

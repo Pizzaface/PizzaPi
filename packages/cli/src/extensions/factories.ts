@@ -5,6 +5,7 @@ import { initialPromptExtension } from "./initial-prompt.js";
 import { mcpExtension } from "./mcp-extension.js";
 import { remoteExtension } from "./remote.js";
 import { restartExtension } from "./restart.js";
+import { sessionProcessesExtension } from "./session-processes.js";
 
 import { setSessionNameExtension } from "./set-session-name.js";
 import { spawnSessionExtension } from "./spawn-session.js";
@@ -74,6 +75,7 @@ export function buildPizzaPiExtensionFactories(options: BuildExtensionFactoriesO
     factories.push(
         named(goalExtension, "goal"),
         named(restartExtension, "restart"),
+        named(sessionProcessesExtension, "session-processes"),
         named(setSessionNameExtension, "session-name"),
         named(updateTodoExtension, "todo"),
         named(spawnSessionExtension, "spawn-session"),
