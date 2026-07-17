@@ -7,9 +7,25 @@
 import { describe, test, expect, mock } from "bun:test";
 
 // ── Minimal mocks for TriggersPanel's UI imports ─────────────────────────────
+// IMPORTANT: bun's mock.module is process-global and is NOT undone by
+// mock.restore(), so these leak into every test file that runs after this one.
+// The stubs must therefore render their children (a `() => null` Button here
+// blanked out buttons in unrelated component tests, e.g. DeviceSetupScanner's
+// "Allow Camera & Scan" — which tests failed depended on file order).
 /* eslint-disable @typescript-eslint/no-explicit-any */
-mock.module("@/components/ui/button", () => ({ Button: () => null }));
-mock.module("@/components/ui/badge", () => ({ Badge: () => null }));
+const R = await import("react");
+const childStub = (tag: string) => {
+  const Stub = R.forwardRef(({ children, ...props }: any, ref: any) =>
+    R.createElement(tag, { ...props, ref }, children),
+  );
+  Stub.displayName = `Stub(${tag})`;
+  return Stub;
+};
+mock.module("@/components/ui/button", () => ({ Button: childStub("button") }));
+mock.module("@/components/ui/badge", () => ({ Badge: childStub("span") }));
+// Dialog stubs stay null: real dialogs hide content until opened, so a
+// children-rendering stub would leak inline dialog text into later files
+// and break their single-match queries the same way.
 mock.module("@/components/ui/dialog", () => ({
   Dialog: () => null, DialogContent: () => null, DialogHeader: () => null,
   DialogTitle: () => null, DialogFooter: () => null, DialogDescription: () => null,
