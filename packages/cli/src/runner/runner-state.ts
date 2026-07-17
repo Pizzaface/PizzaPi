@@ -124,7 +124,7 @@ export function releaseStateLock(statePath: string) {
 }
 
 export function isPidRunning(pid: number): boolean {
-    if (!Number.isFinite(pid) || pid <= 0) return false;
+    if (!Number.isInteger(pid) || pid <= 0) return false;
     try {
         process.kill(pid, 0);
     } catch (err: any) {
@@ -140,13 +140,21 @@ export function isPidRunning(pid: number): boolean {
     try {
         let cmd: string;
         if (process.platform === "win32") {
-            // On Windows, use WMIC to inspect the process command line.
-            // wmic is available on Windows 7+ and returns the full command line.
+            // wmic is removed from Windows 11 24H2+, so query CIM via PowerShell.
             cmd = execFileSync(
-                "wmic",
-                ["process", "where", `ProcessId=${pid}`, "get", "CommandLine", "/format:list"],
-                { encoding: "utf-8", timeout: 5000 },
+                "powershell.exe",
+                [
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-Command",
+                    `(Get-CimInstance Win32_Process -Filter 'ProcessId=${pid}').CommandLine`,
+                ],
+                { encoding: "utf-8", timeout: 10000, windowsHide: true },
             ).trim();
+            // Empty output: the process is gone, or its command line is not ours
+            // to read (another user's / a system process). The runner always runs
+            // as the current user, so either way this PID is not the runner.
+            if (cmd.length === 0) return false;
         } else {
             cmd = execFileSync("ps", ["-p", String(pid), "-o", "command="], { encoding: "utf-8", timeout: 3000 }).trim();
         }

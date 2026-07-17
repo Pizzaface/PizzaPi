@@ -18,7 +18,8 @@ for (const pkg of packages) {
 
   // Check if the link already points to the correct target
   try {
-    const existing = readlinkSync(link);
+    // Junction targets on Windows may come back with a \\?\ prefix.
+    const existing = readlinkSync(link).replace(/^\\\\\?\\/, "");
     if (resolve(scope, existing) === target) continue;
     // Symlink exists but points to the wrong target — remove it
     rmSync(link, { recursive: true, force: true });
@@ -34,7 +35,8 @@ for (const pkg of packages) {
   }
 
   try {
-    symlinkSync(target, link);
+    // Junctions on Windows work without Developer Mode/admin, unlike symlinks.
+    symlinkSync(target, link, process.platform === "win32" ? "junction" : null);
   } catch (err) {
     console.error(
       `[link-workspaces] Failed to symlink @pizzapi/${pkg} → ${target}: ${(err as Error).message}\n` +

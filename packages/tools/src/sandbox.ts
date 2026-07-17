@@ -413,8 +413,9 @@ function _normalizePath(filePath: string): string {
         }
         let parent = dirname(resolved);
         const tail: string[] = [resolved.slice(parent.length)];
-        while (parent !== "/" && !existsSync(parent)) {
+        while (!existsSync(parent)) {
             const next = dirname(parent);
+            if (next === parent) break; // filesystem root ("/", "C:\", or a UNC root)
             tail.unshift(parent.slice(next.length));
             parent = next;
         }
@@ -444,8 +445,9 @@ function _normalizeRulePath(rulePath: string): string {
         }
         let parent = dirname(resolved);
         const tail: string[] = [resolved.slice(parent.length)];
-        while (parent !== "/" && !existsSync(parent)) {
+        while (!existsSync(parent)) {
             const next = dirname(parent);
+            if (next === parent) break; // filesystem root ("/", "C:\", or a UNC root)
             tail.unshift(parent.slice(next.length));
             parent = next;
         }
@@ -512,18 +514,30 @@ function _pathStartsWith(path: string, prefix: string): boolean {
         : path.startsWith(prefix);
 }
 
+/**
+ * Canonicalize separators for comparison: resolved paths use backslashes on
+ * Windows, and comparing them against a "/"-joined rule prefix would make
+ * every allow-check fail (and every deny-check under-match).
+ */
+function _toComparable(p: string): string {
+    return p.replace(/\\/g, "/");
+}
+
+function _pathIsUnderRule(normalizedPath: string, rulePath: string): boolean {
+    const rule = _toComparable(_normalizeRulePath(rulePath));
+    const path = _toComparable(normalizedPath);
+    // A rule already ending in "/" ("/" itself, or a drive root like "C:/") is
+    // a ready-made prefix; appending another "/" would never match.
+    const prefix = rule.endsWith("/") ? rule : rule + "/";
+    return _pathsEqual(path, rule) || _pathStartsWith(path, prefix);
+}
+
 function _pathMatchesDeny(normalizedPath: string, deniedPath: string): boolean {
-    const rule = _normalizeRulePath(deniedPath);
-    // When the rule is "/" (filesystem root), every absolute path is a child.
-    // Appending "/" naively would produce "//" which never matches.
-    const prefix = rule === "/" ? "/" : rule + "/";
-    return _pathsEqual(normalizedPath, rule) || _pathStartsWith(normalizedPath, prefix);
+    return _pathIsUnderRule(normalizedPath, deniedPath);
 }
 
 function _pathWithinAllow(normalizedPath: string, allowedPath: string): boolean {
-    const rule = _normalizeRulePath(allowedPath);
-    const prefix = rule === "/" ? "/" : rule + "/";
-    return _pathsEqual(normalizedPath, rule) || _pathStartsWith(normalizedPath, prefix);
+    return _pathIsUnderRule(normalizedPath, allowedPath);
 }
 
 /** Record a violation. Caps at MAX_VIOLATIONS entries. */

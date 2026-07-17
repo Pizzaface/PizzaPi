@@ -103,12 +103,16 @@ export function printLocalHelp(): void {
     log.info("");
 }
 
+// The relay/ws URLs pin 127.0.0.1: Docker's short-form port publish binds the
+// IPv4 wildcard only, while `localhost` can resolve to `::1` first (notably on
+// native Windows), making health checks and runner connects fail. The browser
+// URL keeps `localhost` — browsers fall back across address families themselves.
 export function buildLocalRelayUrl(port: number): string {
-    return `http://localhost:${port}`;
+    return `http://127.0.0.1:${port}`;
 }
 
 export function buildLocalWsRelayUrl(port: number): string {
-    return `ws://localhost:${port}`;
+    return `ws://127.0.0.1:${port}`;
 }
 
 export function buildLocalBrowserUrl(port: number): string {

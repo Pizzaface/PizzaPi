@@ -528,8 +528,11 @@ export async function handleExecFromWeb(
                     process.exit(43);
                     return;
                 }
+                // detached:true on Windows allocates a new console for the child,
+                // popping a window — the inherited stdio is enough to keep the
+                // replacement attached to the current console there.
                 const child = spawn(process.execPath, process.argv.slice(1), {
-                    detached: true,
+                    detached: process.platform !== "win32",
                     stdio: "inherit",
                     env: process.env,
                 });

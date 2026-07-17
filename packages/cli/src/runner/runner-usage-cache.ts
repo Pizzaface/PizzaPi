@@ -1,4 +1,4 @@
-import { writeFileSync } from "node:fs";
+import { renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { AuthStorage } from "@earendil-works/pi-coding-agent";
@@ -289,11 +289,38 @@ async function refreshAndWriteRunnerUsageCache(opts: { forceAnthropic?: boolean 
 
     const cache: RunnerUsageCacheFile = { fetchedAt: Date.now(), providers };
     try {
-        writeFileSync(runnerUsageCacheFilePath(), JSON.stringify(cache, null, 2), { encoding: "utf-8", mode: 0o600 });
+        await writeUsageCacheAtomic(runnerUsageCacheFilePath(), JSON.stringify(cache, null, 2));
         logInfo(`usage cache refreshed (${Object.keys(providers).join(", ")})`);
     } catch (err: any) {
         logWarn(`failed to write usage cache: ${err?.message ?? String(err)}`);
     }
+}
+
+/**
+ * Write the cache via temp-file + rename so workers never observe a
+ * truncated/partial JSON file mid-write. On Windows the rename can fail
+ * transiently (EPERM/EACCES/EBUSY) while a worker holds the destination open
+ * for reading — retry briefly, then fall back to a direct write rather than
+ * dropping the refresh entirely.
+ */
+async function writeUsageCacheAtomic(path: string, contents: string): Promise<void> {
+    const tmp = `${path}.tmp`;
+    writeFileSync(tmp, contents, { encoding: "utf-8", mode: 0o600 });
+    for (let attempt = 0; attempt < 5; attempt++) {
+        try {
+            renameSync(tmp, path);
+            return;
+        } catch (err: any) {
+            const code = err?.code;
+            if (code !== "EPERM" && code !== "EACCES" && code !== "EBUSY") {
+                rmSync(tmp, { force: true });
+                throw err;
+            }
+            await new Promise((r) => setTimeout(r, 50 * (attempt + 1)));
+        }
+    }
+    writeFileSync(path, contents, { encoding: "utf-8", mode: 0o600 });
+    rmSync(tmp, { force: true });
 }
 
 export function startUsageRefreshLoop(): void {

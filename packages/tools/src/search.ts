@@ -306,9 +306,14 @@ export const searchTool: AgentTool = {
         // rg handles its own relative path matching via --glob patterns.
         let absSafePath: string;
         try { absSafePath = realpathSync(pathResolve(safePath)); } catch { absSafePath = pathResolve(safePath); }
+        // On Windows, `find` resolves to System32's string-search tool (no
+        // -name/-type support), so file listing goes through ripgrep instead —
+        // its gitignore-style globs match basenames at any depth like -name.
         const [cmd, args, maxLines] =
             type === "files"
-                ? (["find", [absSafePath, ...denyExclusions.find, "-name", pattern, "-type", "f", "-print"], 50] as const)
+                ? process.platform === "win32"
+                    ? (["rg", ["--files", ...denyExclusions.rg, "--glob", pattern, "--", safePath], 50] as const)
+                    : (["find", [absSafePath, ...denyExclusions.find, "-name", pattern, "-type", "f", "-print"], 50] as const)
                 : (["rg", ["--no-heading", "-n", ...denyExclusions.rg, "-e", pattern, "--", safePath], 100] as const);
 
         let result: SpawnResult;
@@ -324,18 +329,21 @@ export const searchTool: AgentTool = {
         // Normalize type for isFailure — unknown values fall through to "content"
         // (rg branch) in command selection, so must match here too.
         const normalizedType = type === "files" ? "files" : "content";
+        // Exit-code semantics follow the binary actually used, not the search
+        // mode: rg exits 1 for "no matches" even in --files mode.
+        const exitSemantics = cmd === "rg" ? "content" : "files";
 
         let output: string;
         if (result.lines.length > 0) {
             output = result.lines.join("\n");
             // Surface partial errors (e.g. permission denied on some subdirs,
             // timeout with partial output) so the caller knows results may be incomplete.
-            if (isFailure(result, normalizedType)) {
+            if (isFailure(result, exitSemantics)) {
                 const reason = result.error?.split("\n")[0]
                     || (result.exitCode === null ? "process terminated unexpectedly" : `exit code ${result.exitCode}`);
                 output += `\n\n[warning: some results may be missing — ${reason}]`;
             }
-        } else if (isFailure(result, normalizedType)) {
+        } else if (isFailure(result, exitSemantics)) {
             const reason = result.error?.split("\n")[0];
             if (result.exitCode === null && !result.truncated) {
                 output = `Search failed: ${reason || "timed out or command not found"}`;

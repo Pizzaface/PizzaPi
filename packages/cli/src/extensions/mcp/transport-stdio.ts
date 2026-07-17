@@ -7,6 +7,7 @@
 
 import { spawn, type ChildProcessWithoutNullStreams } from "child_process";
 import { expandHome, expandVars, expandVarsDeep } from "../../config.js";
+import { buildSpawnInvocation } from "./windows-command.js";
 import {
   MCP_PROTOCOL_VERSION,
   MCP_SUPPORTED_VERSIONS,
@@ -41,9 +42,13 @@ export async function createStdioMcpClient(opts: {
   // expansion doesn't occur.
 
 
-  const child: ChildProcessWithoutNullStreams = spawn(command, args, {
+  // On Windows, `.cmd`/`.bat` shims (npx, npm-installed servers) cannot be
+  // spawned directly — reroute through cmd.exe with PATHEXT resolution.
+  const invocation = buildSpawnInvocation(command, args);
+  const child: ChildProcessWithoutNullStreams = spawn(invocation.command, invocation.args, {
     stdio: "pipe",
     env: mergedEnv,
+    ...(invocation.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
     ...(cwd ? { cwd } : {}),
   });
 

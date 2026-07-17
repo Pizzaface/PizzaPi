@@ -493,11 +493,29 @@ export function getTrustedPlugins(): string[] {
 }
 
 /**
+ * Canonicalize a plugin root for comparison: resolve to an absolute path and
+ * strip trailing separators of either flavor.
+ */
+function canonicalPluginPath(p: string): string {
+    return resolve(p).replace(/[\\/]+$/, "");
+}
+
+/**
+ * Compare plugin roots. Case-insensitive on Windows (NTFS is case-insensitive,
+ * and the same directory can legally arrive as `C:\Users\…` or `c:\users\…`) —
+ * a trust decision must not silently flip on casing or separator differences.
+ */
+function pluginPathsEqual(a: string, b: string): boolean {
+    const ca = canonicalPluginPath(a);
+    const cb = canonicalPluginPath(b);
+    return process.platform === "win32" ? ca.toLowerCase() === cb.toLowerCase() : ca === cb;
+}
+
+/**
  * Check whether a plugin at the given root path is in the trust list.
  */
 export function isPluginTrusted(pluginRootPath: string): boolean {
-    const resolved = pluginRootPath.replace(/\/+$/, ""); // strip trailing slashes
-    return getTrustedPlugins().some((p) => p.replace(/\/+$/, "") === resolved);
+    return getTrustedPlugins().some((p) => pluginPathsEqual(p, pluginRootPath));
 }
 
 /**
@@ -505,10 +523,9 @@ export function isPluginTrusted(pluginRootPath: string): boolean {
  * Returns true if it was added (false if already present).
  */
 export function trustPlugin(pluginRootPath: string): boolean {
-    const resolved = pluginRootPath.replace(/\/+$/, "");
     const list = getTrustedPlugins();
-    if (list.some((p) => p.replace(/\/+$/, "") === resolved)) return false;
-    list.push(resolved);
+    if (list.some((p) => pluginPathsEqual(p, pluginRootPath))) return false;
+    list.push(canonicalPluginPath(pluginRootPath));
     saveGlobalConfig({ trustedPlugins: list });
     return true;
 }
@@ -518,9 +535,8 @@ export function trustPlugin(pluginRootPath: string): boolean {
  * Returns true if it was removed (false if not found).
  */
 export function untrustPlugin(pluginRootPath: string): boolean {
-    const resolved = pluginRootPath.replace(/\/+$/, "");
     const list = getTrustedPlugins();
-    const filtered = list.filter((p) => p.replace(/\/+$/, "") !== resolved);
+    const filtered = list.filter((p) => !pluginPathsEqual(p, pluginRootPath));
     if (filtered.length === list.length) return false;
     saveGlobalConfig({ trustedPlugins: filtered });
     return true;

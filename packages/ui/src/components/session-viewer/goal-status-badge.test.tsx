@@ -1,7 +1,19 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, mock, test } from "bun:test";
 import { Window } from "happy-dom";
 import { cleanup, render } from "@testing-library/react";
 import * as React from "react";
+
+// Register our own tooltip mock so this file is immune to module mocks leaked
+// by earlier test files (bun's mock.module is process-global and mocks are
+// resolved-path-keyed, so importing "the actual" back is impossible once a
+// mock is registered). Trigger renders inline, content renders nothing —
+// matching real (closed) tooltip behavior so text queries stay single-match.
+mock.module("@/components/ui/tooltip", () => ({
+  TooltipProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  Tooltip: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  TooltipTrigger: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  TooltipContent: () => null,
+}));
 
 const win = new Window({ url: "http://localhost/" });
 /* eslint-disable @typescript-eslint/no-explicit-any */
