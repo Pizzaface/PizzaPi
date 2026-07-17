@@ -3,7 +3,9 @@ import { promisify } from "node:util";
 
 const execAsync = promisify(exec);
 import { hostname, homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { existsSync, rmSync } from "node:fs";
+import { forceKillTree, isShutdownMessage, requestChildShutdown, STOP_FILE_NAME } from "./process-kill.js";
 import { ServiceRegistry, type ServiceHandler, type ServiceInitOptions } from "./service-handler.js";
 import { TerminalService } from "./services/terminal-service.js";
 import { FileExplorerService } from "./services/file-explorer-service.js";
@@ -34,6 +36,7 @@ import { setLogComponent, logInfo, logWarn, logError } from "./logger.js";
 import { extractHookSummary } from "./hook-summary.js";
 import { sanitizeConfigForUI, restoreMaskedServerEntry, findRenamedServerMatch, MASK_SENTINEL, validateProviderOverridesSection, mergeProviderOverridesSection } from "./daemon-config-sanitize.js";
 import { defaultStatePath, acquireStateAndIdentity, releaseStateLock } from "./runner-state.js";
+import { normalizeLoopbackHost } from "../relay-url.js";
 import { startUsageRefreshLoop, stopUsageRefreshLoop } from "./runner-usage-cache.js";
 import { startOllamaModelsRefreshLoop, stopOllamaModelsRefreshLoop } from "./runner-ollama-models-cache.js";
 import { getWorkspaceRoots, isCwdAllowed } from "./workspace.js";
@@ -169,8 +172,8 @@ function escalateToSigkill(child: ChildProcess, label: string, timeoutMs = 5_000
     const timer = setTimeout(() => {
         try {
             if (!child.killed && child.exitCode === null) {
-                logWarn(`[daemon] ${label} did not exit after ${timeoutMs}ms; force-killing with SIGKILL`);
-                child.kill("SIGKILL");
+                logWarn(`[daemon] ${label} did not exit after ${timeoutMs}ms; force-killing`);
+                forceKillTree(child);
             }
         } catch {
             // Process already exited; ignore.
@@ -343,9 +346,11 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
 
         // ── Socket.IO connection setup ────────────────────────────────────
         // Priority: env var > config.json > default
-        const relayRaw = (process.env.PIZZAPI_RELAY_URL ?? resolveConfigRelayUrl() ?? "ws://localhost:7492")
-            .trim()
-            .replace(/\/$/, "");
+        const relayRaw = normalizeLoopbackHost(
+            (process.env.PIZZAPI_RELAY_URL ?? resolveConfigRelayUrl() ?? "ws://localhost:7492")
+                .trim()
+                .replace(/\/$/, ""),
+        );
 
         // Normalise the relay URL for socket.io-client (needs http(s)://).
         // If the user supplies a bare hostname (no scheme), default to https://.
@@ -773,9 +778,23 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             triggerScan();
         }, 5 * 60 * 1000);
 
+        // Windows `runner stop` cannot deliver a catchable signal — it drops a
+        // stop file next to the state file instead; poll for it. A stale file
+        // from an earlier unclean exit is cleared before polling starts.
+        const stopFilePath = join(dirname(statePath), STOP_FILE_NAME);
+        try { rmSync(stopFilePath, { force: true }); } catch {}
+        const stopFilePoll = setInterval(() => {
+            if (existsSync(stopFilePath)) {
+                try { rmSync(stopFilePath, { force: true }); } catch {}
+                logInfo("stop requested via stop file — shutting down");
+                void shutdown(0);
+            }
+        }, 1_000);
+
         const shutdown = async (code: number) => {
             if (isShuttingDown) return;
             isShuttingDown = true;
+            clearInterval(stopFilePoll);
             clearInterval(endedSessionSweep);
             clearInterval(sessionCloseMetadataSweep);
             clearInterval(usageScanInterval);
@@ -793,6 +812,11 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
 
         process.on("SIGINT", () => shutdown(0));
         process.on("SIGTERM", () => shutdown(0));
+        // Windows: the supervisor requests shutdown over IPC because a signal
+        // would TerminateProcess us before any of the cleanup above could run.
+        process.on("message", (msg: unknown) => {
+            if (isShutdownMessage(msg)) void shutdown(0);
+        });
 
         // ── Helper: emit registration ─────────────────────────────────────
         const emitRegister = () => {
@@ -1320,12 +1344,16 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             if (entry) {
                 if (entry.child) {
                     try {
-                        // Mark as killed BEFORE sending SIGTERM so the child's
+                        // Mark as killed BEFORE requesting shutdown so the child's
                         // exit handler sees it even if exit code 43 (restart-in-place)
-                        // arrives before SIGTERM is delivered.
+                        // arrives before the shutdown request is delivered.
                         killedSessions.add(sessionId);
-                        entry.child.kill("SIGTERM");
-                        escalateToSigkill(entry.child, `session ${sessionId}`);
+                        // SIGTERM on POSIX; IPC shutdown message on Windows (where
+                        // kill() would TerminateProcess and skip worker cleanup).
+                        const child = entry.child;
+                        requestChildShutdown(child, (timeoutMs) =>
+                            logWarn(`[daemon] session ${sessionId} did not exit after ${timeoutMs}ms; force-killing`),
+                        );
                     } catch {}
                 } else if (entry.adopted) {
                     // No child handle — ask the relay to disconnect the worker's

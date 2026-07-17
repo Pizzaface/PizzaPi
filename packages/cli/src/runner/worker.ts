@@ -710,6 +710,13 @@ async function main(): Promise<void> {
 
     process.on("SIGTERM", shutdown);
     process.on("SIGINT", shutdown);
+    // Windows: the daemon can't deliver a catchable SIGTERM (kill() there is an
+    // immediate TerminateProcess) — it sends a shutdown request over IPC instead.
+    process.on("message", (msg: unknown) => {
+        if (typeof msg === "object" && msg !== null && (msg as Record<string, unknown>).type === "shutdown") {
+            void shutdown();
+        }
+    });
 
     // Keep the process alive; work happens via relay/websocket events.
     await new Promise<void>(() => {});

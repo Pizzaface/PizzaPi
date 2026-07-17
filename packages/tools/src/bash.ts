@@ -3,6 +3,7 @@ import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { exec } from "child_process";
 import { promisify } from "util";
 import { wrapCommand, getSandboxEnv, isSandboxActive } from "./sandbox.js";
+import { resolvePosixShell } from "./posix-shell.js";
 
 // ── Internal types for dependency injection (used in tests) ───────────────────
 
@@ -61,8 +62,14 @@ export function createBashTool(deps?: Partial<BashDeps>): AgentTool {
                 }
             }
 
+            // The tool contract is bash semantics. On Windows exec() defaults to
+            // cmd.exe, which breaks POSIX command strings — route through Git for
+            // Windows' bash.exe when available (cmd.exe remains the last resort).
+            const posixShell = process.platform === "win32" ? resolvePosixShell() : null;
+            const shellOpt = posixShell ? { shell: posixShell.shell } : {};
+
             try {
-                const { stdout, stderr } = await execAsync(command, { timeout, env, maxBuffer });
+                const { stdout, stderr } = await execAsync(command, { timeout, env, maxBuffer, ...shellOpt });
                 return {
                     content: [{ type: "text" as const, text: stdout + (stderr ? `\nstderr: ${stderr}` : "") }],
                     details: { command: params.command, stdout, stderr },

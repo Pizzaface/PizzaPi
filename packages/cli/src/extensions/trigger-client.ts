@@ -31,6 +31,7 @@ import type { JsonValue } from "@pizzapi/protocol";
 import type { ServiceSigilDef } from "@pizzapi/protocol";
 import { getRelaySocket as getRelaySocketDefault } from "./remote.js";
 import { loadConfig } from "../config.js";
+import { normalizeLoopbackHost } from "../relay-url.js";
 
 const log = createLogger("trigger-client");
 
@@ -76,7 +77,9 @@ function defaultGetRelayHttpBaseUrl(): string | null {
 
     if (configured.toLowerCase() === "off") return null;
 
-    const trimmed = configured.trim().replace(/\/$/, "").replace(/\/ws\/sessions$/, "");
+    const trimmed = normalizeLoopbackHost(
+        configured.trim().replace(/\/$/, "").replace(/\/ws\/sessions$/, ""),
+    );
     if (trimmed.startsWith("ws://")) return `http://${trimmed.slice("ws://".length)}`;
     if (trimmed.startsWith("wss://")) return `https://${trimmed.slice("wss://".length)}`;
     if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) return trimmed;

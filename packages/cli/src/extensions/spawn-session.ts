@@ -4,6 +4,7 @@ import { join } from "node:path";
 import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { loadConfig } from "../config.js";
+import { normalizeLoopbackHost } from "../relay-url.js";
 import { getCachedOllamaCloudModels, toOllamaCloudRuntimeModel } from "../ollama-cloud-models.js";
 import { mergeModelLists } from "../session-models-cache.js";
 import { getRelaySessionId } from "./remote.js";
@@ -31,7 +32,9 @@ export const spawnSessionExtension: ExtensionFactory = (pi) => {
 
         if (configured.toLowerCase() === "off") return null;
 
-        const trimmed = configured.trim().replace(/\/$/, "").replace(/\/ws\/sessions$/, "");
+        const trimmed = normalizeLoopbackHost(
+            configured.trim().replace(/\/$/, "").replace(/\/ws\/sessions$/, ""),
+        );
         // Normalize to HTTP(S) base URL
         if (trimmed.startsWith("ws://")) return `http://${trimmed.slice("ws://".length)}`;
         if (trimmed.startsWith("wss://")) return `https://${trimmed.slice("wss://".length)}`;

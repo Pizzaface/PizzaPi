@@ -1,5 +1,5 @@
-import { homedir } from "os";
-import { join, resolve } from "path";
+import { homedir, tmpdir } from "os";
+import { isAbsolute, join, resolve } from "path";
 
 import {
     type PizzaPiConfig,
@@ -29,6 +29,10 @@ const SENSITIVE_DENY_READ: string[] = [
     "~/.mozilla/firefox",
     "~/.config/google-chrome",
     "~/.config/chromium",
+    // Windows equivalents (harmless elsewhere — the paths simply don't exist)
+    "~/AppData/Local/Google/Chrome/User Data",
+    "~/AppData/Roaming/Mozilla/Firefox",
+    "~/AppData/Roaming/gcloud",
 ];
 
 const SENSITIVE_DENY_WRITE: string[] = [
@@ -43,10 +47,14 @@ const SENSITIVE_DENY_WRITE: string[] = [
  * `basic` preset: filesystem protection, unrestricted network.
  * No `network` key → srt does not activate network sandboxing.
  */
+// os.tmpdir() instead of a hardcoded "/tmp": on Windows the temp dir lives
+// under %LOCALAPPDATA%, and a literal "/tmp" resolves to a nonexistent C:\tmp.
+const TMP_DIR = tmpdir();
+
 const PRESET_BASIC: Omit<SrtConfig, "network"> = {
     filesystem: {
         denyRead: SENSITIVE_DENY_READ,
-        allowWrite: [".", "/tmp"],
+        allowWrite: [".", TMP_DIR],
         denyWrite: SENSITIVE_DENY_WRITE,
     },
 };
@@ -64,7 +72,7 @@ const PRESET_FULL: SrtConfig = {
     },
     filesystem: {
         denyRead: SENSITIVE_DENY_READ,
-        allowWrite: [".", "/tmp"],
+        allowWrite: [".", TMP_DIR],
         denyWrite: SENSITIVE_DENY_WRITE,
     },
 };
@@ -139,8 +147,9 @@ function sanitizeSandboxConfig(raw: SandboxConfig): SandboxConfig {
 function resolveSandboxPath(p: string, cwd: string): string {
     const expanded = p.startsWith("~") ? join(homedir(), p.slice(1)) : p;
     if (expanded === ".") return resolve(cwd);
-    // Relative paths (not starting with /) are resolved against cwd
-    if (!expanded.startsWith("/")) return resolve(cwd, expanded);
+    // isAbsolute (not startsWith("/")) so Windows paths like C:\data and
+    // \\server\share are recognized as absolute instead of joined onto cwd.
+    if (!isAbsolute(expanded)) return resolve(cwd, expanded);
     return expanded;
 }
 

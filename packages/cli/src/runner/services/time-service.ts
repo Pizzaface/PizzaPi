@@ -35,6 +35,10 @@ import {
     nextCronTime,
 } from "./time-utils.js";
 import { logInfo, logWarn, logError } from "../logger.js";
+import { normalizeLoopbackHost } from "../../relay-url.js";
+
+/** Largest delay setTimeout honors; anything above overflows and fires immediately. */
+const MAX_TIMEOUT_MS = 2 ** 31 - 1;
 
 // ── Relay helpers ────────────────────────────────────────────────────────────
 
@@ -47,7 +51,7 @@ function resolveRelayUrl(): string {
             if (typeof cfg?.relayUrl === "string" && cfg.relayUrl !== "off") raw = cfg.relayUrl.trim();
         } catch { /* ignore */ }
     }
-    raw = raw || "http://localhost:7492";
+    raw = normalizeLoopbackHost(raw || "http://localhost:7492");
     if (raw.startsWith("ws://")) return raw.replace(/^ws:/, "http:").replace(/\/$/, "");
     if (raw.startsWith("wss://")) return raw.replace(/^wss:/, "https:").replace(/\/$/, "");
     return raw.replace(/\/$/, "");
@@ -489,7 +493,7 @@ export class TimeService implements ServiceHandler {
 
         logInfo(`[time] starting timer for session ${sessionId}: ${durationStr} (${formatDuration(durationMs)})${label ? ` [${label}]` : ""}`);
 
-        const handle = setTimeout(() => {
+        const handle = this.#setTimeoutUntil(key, fireAt, () => {
             this.#timers.delete(key);
             void this.#fireOneShot(sessionId, subscriptionId, "time:timer_fired", {
                 duration: durationStr,
@@ -498,7 +502,7 @@ export class TimeService implements ServiceHandler {
                 label,
                 message,
             }, message ?? (label ? `Timer "${label}" fired after ${formatDuration(durationMs)}` : `Timer fired after ${formatDuration(durationMs)}`));
-        }, durationMs);
+        });
 
         this.#timers.set(key, {
             subscriptionId,
@@ -508,6 +512,22 @@ export class TimeService implements ServiceHandler {
             triggerType: "time:timer_fired",
             label,
         });
+    }
+
+    /**
+     * setTimeout against an absolute deadline. Delays beyond 2^31-1 ms overflow
+     * setTimeout and fire immediately, so longer waits are chained in max-size
+     * hops; each hop refreshes the handle stored in #timers under `key` so
+     * clearTimeout on unsubscribe still cancels the live hop.
+     */
+    #setTimeoutUntil(key: string, fireAt: number, cb: () => void): ReturnType<typeof setTimeout> {
+        const remaining = fireAt - Date.now();
+        if (remaining <= MAX_TIMEOUT_MS) return setTimeout(cb, Math.max(0, remaining));
+        return setTimeout(() => {
+            const entry = this.#timers.get(key);
+            if (!entry) return; // unsubscribed while waiting
+            entry.handle = this.#setTimeoutUntil(key, fireAt, cb);
+        }, MAX_TIMEOUT_MS);
     }
 
     #handleAtSubscription(subscriptionId: string, sessionId: string, params: any, action: string): void {
@@ -551,7 +571,7 @@ export class TimeService implements ServiceHandler {
 
         logInfo(`[time] scheduling at-timer for session ${sessionId}: ${atStr} (in ${formatDuration(delayMs)})${label ? ` [${label}]` : ""}`);
 
-        const handle = setTimeout(() => {
+        const handle = this.#setTimeoutUntil(key, targetMs, () => {
             this.#timers.delete(key);
             void this.#fireOneShot(sessionId, subscriptionId, "time:at", {
                 at: new Date(targetMs).toISOString(),
@@ -559,7 +579,7 @@ export class TimeService implements ServiceHandler {
                 label,
                 message,
             }, message ?? (label ? `Scheduled "${label}" fired` : `Scheduled trigger fired (target: ${atStr})`));
-        }, delayMs);
+        });
 
         this.#timers.set(key, {
             subscriptionId,

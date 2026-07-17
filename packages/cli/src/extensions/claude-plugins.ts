@@ -26,6 +26,7 @@ import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { createLogger } from "@pizzapi/tools";
+import { resolveShell } from "./hooks/index.js";
 
 const log = createLogger("claude-plugins");
 
@@ -38,11 +39,10 @@ interface HookExecResult {
 }
 
 /**
- * Execute a hook command via /bin/sh.
+ * Execute a hook command via the resolved POSIX shell.
  *
  * Platform note: Claude Code plugins assume a POSIX shell environment.
- * This adapter targets macOS and Linux only (matching pi's supported
- * platforms). Windows support would require a different shell strategy.
+ * On Windows this uses Git for Windows' bundled bash (see resolveShell).
  */
 async function execHookCommand(
     command: string,
@@ -52,10 +52,11 @@ async function execHookCommand(
 ): Promise<HookExecResult> {
     const resolved = resolvePluginRoot(command, pluginRoot);
 
+    const { shell, flag } = resolveShell();
     return new Promise((resolveP) => {
         const child = execFile(
-            "/bin/sh",
-            ["-c", resolved],
+            shell,
+            [flag, resolved],
             {
                 timeout: timeoutMs,
                 maxBuffer: 1024 * 256,
@@ -142,8 +143,9 @@ function registerPluginCommand(
             for (const match of inlineMatches) {
                 const shellCmd = match[1];
                 try {
+                    const { shell, flag } = resolveShell();
                     const result = await new Promise<string>((res) => {
-                        execFile("/bin/sh", ["-c", shellCmd], {
+                        execFile(shell, [flag, shellCmd], {
                             timeout: 5000,
                             maxBuffer: 64 * 1024,
                             cwd: ctx.cwd,

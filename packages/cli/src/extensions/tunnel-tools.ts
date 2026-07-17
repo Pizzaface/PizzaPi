@@ -21,6 +21,7 @@ import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { getRelaySocket as getRelaySocketDefault, getRelaySessionId as getRelaySessionIdDefault } from "./remote.js";
 import { loadConfig as loadConfigDefault } from "../config.js";
+import { normalizeLoopbackHost } from "../relay-url.js";
 
 /** Timeout for service_message request/response round-trips. */
 const SERVICE_TIMEOUT_MS = 10_000;
@@ -115,7 +116,9 @@ function getRelayHttpBaseUrl(deps: TunnelToolsDeps): string | null {
 
     if (configured.toLowerCase() === "off") return null;
 
-    const trimmed = configured.trim().replace(/\/$/, "").replace(/\/ws\/sessions$/, "");
+    const trimmed = normalizeLoopbackHost(
+        configured.trim().replace(/\/$/, "").replace(/\/ws\/sessions$/, ""),
+    );
     if (trimmed.startsWith("ws://")) return `http://${trimmed.slice("ws://".length)}`;
     if (trimmed.startsWith("wss://")) return `https://${trimmed.slice("wss://".length)}`;
     if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) return trimmed;

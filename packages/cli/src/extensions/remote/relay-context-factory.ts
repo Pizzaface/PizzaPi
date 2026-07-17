@@ -11,6 +11,7 @@
 import { randomUUID } from "node:crypto";
 import { buildSessionContext } from "@earendil-works/pi-coding-agent";
 import { loadConfig } from "../../config.js";
+import { normalizeLoopbackHost } from "../../relay-url.js";
 import { buildHeartbeat } from "../remote-heartbeat.js";
 import { getCurrentTodoList } from "../update-todo.js";
 import { isDisabled, toWebSocketBaseUrl } from "./connection.js";
@@ -98,7 +99,7 @@ export function createRelayContext(
                 process.env.PIZZAPI_RELAY_URL ??
                 loadConfig(process.cwd()).relayUrl ??
                 RELAY_DEFAULT;
-            return configured.replace(/\/$/, "");
+            return normalizeLoopbackHost(configured.replace(/\/$/, ""));
         },
 
         relayHttpBaseUrl(): string {

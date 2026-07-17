@@ -86,8 +86,8 @@ describe("parseLocalArgs", () => {
 
 describe("URL builders", () => {
     test("build local relay, ws, and browser URLs", () => {
-        expect(buildLocalRelayUrl(7492)).toBe("http://localhost:7492");
-        expect(buildLocalWsRelayUrl(7492)).toBe("ws://localhost:7492");
+        expect(buildLocalRelayUrl(7492)).toBe("http://127.0.0.1:7492");
+        expect(buildLocalWsRelayUrl(7492)).toBe("ws://127.0.0.1:7492");
         expect(buildLocalBrowserUrl(7492)).toBe("http://localhost:7492");
         expect(buildLocalBrowserUrl(8080)).toBe("http://localhost:8080");
     });
@@ -367,7 +367,7 @@ describe("runLocal orchestration", () => {
         await expect(runLocal([], deps as any)).rejects.toThrow("exit:0");
         expect(calls.runWeb).toHaveLength(0);
         expect(setupCalled).toBe(true);
-        expect(calls.runSetup).toEqual([{ force: false, relayDefault: "http://localhost:7492" }]);
+        expect(calls.runSetup).toEqual([{ force: false, relayDefault: "http://127.0.0.1:7492" }]);
         expect(calls.runSupervisor).toBe(1);
         expect(calls.openBrowser).toEqual(["http://localhost:7492"]);
     });
@@ -501,7 +501,7 @@ describe("runLocal orchestration", () => {
             },
         });
         await expect(runLocal(["--port", "8080", "--no-browser"], deps as any)).rejects.toThrow("exit:0");
-        expect(calls.runSetup).toEqual([{ force: false, relayDefault: "http://localhost:8080" }]);
+        expect(calls.runSetup).toEqual([{ force: false, relayDefault: "http://127.0.0.1:8080" }]);
         expect(calls.runSupervisor).toBe(1);
     });
 });
