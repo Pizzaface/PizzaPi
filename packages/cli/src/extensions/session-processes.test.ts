@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { formatWidgetLine, shortCommand, type GroupProcess } from "./session-processes.js";
+import { formatWidgetLine, sessionProcessesExtension, shortCommand, type GroupProcess } from "./session-processes.js";
 
 const proc = (pid: number, command: string): GroupProcess => ({ pid, etime: "01:00", rssKb: 1024, command });
 
@@ -9,6 +9,24 @@ describe("shortCommand", () => {
         expect(shortCommand("node /app/server.js")).toBe("node server.js");
         expect(shortCommand("sleep 30")).toBe("sleep 30");
         expect(shortCommand("pgrep -g 0")).toBe("pgrep");
+    });
+});
+
+describe("sessionProcessesExtension", () => {
+    test("session_start is a no-op outside TUI mode (runner workers stub ui.theme)", () => {
+        const handlers: Record<string, (event: unknown, ctx: unknown) => void> = {};
+        sessionProcessesExtension({ on: (name: string, fn: any) => { handlers[name] = fn; } } as any);
+
+        let widgetCalls = 0;
+        // Mirrors the runner worker's headless ui stub: hasUI true, theme undefined.
+        const ctx = {
+            mode: "rpc",
+            hasUI: true,
+            ui: { setWidget: () => { widgetCalls++; }, get theme() { return undefined; } },
+        };
+        expect(() => handlers.session_start({}, ctx)).not.toThrow();
+        expect(widgetCalls).toBe(0);
+        handlers.session_shutdown({}, ctx);
     });
 });
 

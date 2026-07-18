@@ -61,7 +61,9 @@ export const sessionProcessesExtension: ExtensionFactory = (pi) => {
     let lastLine: string | null | undefined;
 
     pi.on("session_start", (_event, ctx: any) => {
-        if (!ctx.hasUI || timer) return;
+        // TUI only: hasUI is also true in RPC mode (runner workers), where
+        // ctx.ui is a headless stub whose theme is undefined.
+        if (ctx.mode !== "tui" || timer) return;
 
         const update = async () => {
             let line: string | null;
