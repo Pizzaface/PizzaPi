@@ -163,19 +163,36 @@ export function trackReceivedTrigger(triggerId: string, sourceSessionId: string,
 // These are rendered client-side by the UI without needing a resolve endpoint.
 // They are always available regardless of which runner services are installed.
 export const BUILTIN_SIGIL_DEFS: ServiceSigilDef[] = [
-    { type: "action", label: "Action", description: "Interactive action button. Variants: confirm, choose, input. Use [[action:confirm question=\"...\"]],  [[action:choose question=\"...\" options=\"a,b,c\"]], or [[action:input question=\"...\" placeholder=\"...\"]].", icon: "mouse-pointer-click" },
+    {
+        type: "action",
+        label: "Action",
+        description: "Interactive action button rendered inline. Pick a variant via the id, e.g. [[action:confirm question=\"...\"]], [[action:choose question=\"...\" options=\"a,b,c\"]], or [[action:input question=\"...\" placeholder=\"...\"]].",
+        icon: "mouse-pointer-click",
+        variants: [
+            { name: "confirm", description: "Yes/No confirmation — renders Confirm and Cancel buttons. Params: question." },
+            { name: "choose", description: "Single choice/selection from a list — renders one button per option. Params: question, options (comma-separated)." },
+            { name: "input", description: "Free-text entry — renders a text field and Submit button. Params: question, placeholder (optional)." },
+        ],
+    },
     { type: "file", label: "File", description: "A file path reference. Renders as a clickable file pill.", icon: "file" },
     { type: "status", label: "Status", description: "A status indicator.", icon: "circle" },
     { type: "error", label: "Error", description: "An error or warning indicator.", icon: "alert-triangle", aliases: ["warn", "notice"] },
     { type: "cost", label: "Cost", description: "A cost or price value.", icon: "dollar-sign", aliases: ["price", "budget"] },
     { type: "duration", label: "Duration", description: "A time duration value.", icon: "clock", aliases: ["elapsed"] },
     { type: "session", label: "Session", description: "A reference to an agent session.", icon: "terminal" },
-    { type: "model", label: "Model", description: "An AI model reference.", icon: "brain", aliases: ["agent", "llm"] },
+    { type: "model", label: "Model", description: "An AI model reference.", icon: "brain", aliases: ["llm"] },
     { type: "cmd", label: "Command", description: "A shell command reference.", icon: "terminal-square", aliases: ["bash", "shell"] },
     { type: "tag", label: "Tag", description: "A tag or label.", icon: "tag" },
     { type: "test", label: "Test", description: "A test case reference.", icon: "flask-conical" },
     { type: "link", label: "Link", description: "An external URL link.", icon: "external-link", aliases: ["url", "href"] },
     { type: "diff", label: "Diff", description: "A diff or changeset reference.", icon: "diff" },
+    // ── PizzaPi entity sigils ──
+    { type: "skill", label: "Skill", description: "A reference to an agent skill.", icon: "sparkles" },
+    { type: "runner", label: "Runner", description: "A reference to a runner (machine executing sessions).", icon: "server" },
+    { type: "service", label: "Service", description: "A reference to a runner service.", icon: "boxes", aliases: ["plugin"] },
+    { type: "trigger", label: "Trigger", description: "A reference to a trigger type or event.", icon: "zap" },
+    { type: "tunnel", label: "Tunnel", description: "A reference to a relay tunnel exposing a local port.", icon: "share-2" },
+    { type: "agent", label: "Agent", description: "A reference to a subagent definition.", icon: "bot" },
 ];
 
 /**
@@ -679,9 +696,12 @@ export const triggersExtension: ExtensionFactory = (pi) => {
 
             const lines = defs.map((d) => {
                 const aliases = d.aliases && d.aliases.length > 0 ? `\n  Aliases: ${d.aliases.join(", ")}` : "";
+                const variants = d.variants && d.variants.length > 0
+                    ? `\n  Variants:\n${d.variants.map((v) => `    - ${d.type}:${v.name} — ${v.description}`).join("\n")}`
+                    : "";
                 const resolver = d.resolve ? `\n  Resolve: ${d.resolve}` : "";
                 const service = d.serviceId ? `\n  Service: ${d.serviceId}` : "";
-                return `• ${d.type} — ${d.label}${d.description ? `\n  ${d.description}` : ""}${aliases}${resolver}${service}`;
+                return `• ${d.type} — ${d.label}${d.description ? `\n  ${d.description}` : ""}${variants}${aliases}${resolver}${service}`;
             });
             return {
                 content: [{ type: "text" as const, text: `Available sigils (${defs.length}):\n${lines.join("\n")}` }],

@@ -257,18 +257,24 @@ import { BUILTIN_SIGIL_DEFS, mergeWithBuiltinSigils } from "./extension.js";
 import type { ServiceSigilDef } from "@pizzapi/protocol";
 
 describe("BUILTIN_SIGIL_DEFS", () => {
-    it("contains the action sigil", () => {
+    it("contains the action sigil with confirm/choose/input variants", () => {
         const action = BUILTIN_SIGIL_DEFS.find((d) => d.type === "action");
         expect(action).toBeDefined();
         expect(action!.label).toBe("Action");
-        expect(action!.description).toContain("confirm");
-        expect(action!.description).toContain("choose");
-        expect(action!.description).toContain("input");
+        const variantNames = (action!.variants ?? []).map((v) => v.name);
+        expect(variantNames).toEqual(["confirm", "choose", "input"]);
     });
 
     it("contains file, status, error, and other utility sigils", () => {
         const types = BUILTIN_SIGIL_DEFS.map((d) => d.type);
         for (const expected of ["file", "status", "error", "cost", "duration", "session", "model", "cmd", "tag", "test", "link", "diff"]) {
+            expect(types).toContain(expected);
+        }
+    });
+
+    it("contains PizzaPi entity sigils (skill, runner, service, trigger, tunnel, agent)", () => {
+        const types = BUILTIN_SIGIL_DEFS.map((d) => d.type);
+        for (const expected of ["skill", "runner", "service", "trigger", "tunnel", "agent"]) {
             expect(types).toContain(expected);
         }
     });
@@ -325,7 +331,7 @@ describe("mergeWithBuiltinSigils", () => {
             { type: "idea", label: "Idea", serviceId: "godmother" },
         ];
         const result = mergeWithBuiltinSigils(serviceDefs);
-        // Total = 3 service + (13 built-in - 2 overridden) = 14
+        // Total = service defs + (built-ins minus any the services override)
         const expectedCount = serviceDefs.length + BUILTIN_SIGIL_DEFS.filter(
             (b) => !serviceDefs.some((s) => s.type === b.type),
         ).length;
