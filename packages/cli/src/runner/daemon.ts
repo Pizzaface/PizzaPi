@@ -9,7 +9,7 @@ import { forceKillTree, isShutdownMessage, requestChildShutdown, STOP_FILE_NAME 
 import { ServiceRegistry, type ServiceHandler, type ServiceInitOptions } from "./service-handler.js";
 import { TerminalService } from "./services/terminal-service.js";
 import { FileExplorerService } from "./services/file-explorer-service.js";
-import { GitService } from "./services/git-service.js";
+import { GitService, GIT_SIGIL_DEFS } from "./services/git-service.js";
 // Resolves @VARIABLE@ tokens used in service panel requires
 import { resolvePizzaPiVar } from "../config/io.js";
 import { mergeModelLists, readSessionModelsCache, type SessionModelEntry } from "../session-models-cache.js";
@@ -617,6 +617,19 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                 hasPanel: false,
                 triggers: TIME_TRIGGER_DEFS,
                 sigils: TIME_SIGIL_DEFS,
+            });
+        }
+
+        // Register built-in Git service sigil defs so they flow through service_announce.
+        // The git panel is a native UI component (not an iframe), so hasPanel:false — this
+        // entry exists only to advertise git-domain sigils; they render client-side (no resolve).
+        if (!isServiceDisabled("git")) {
+            panelEntries.set("git", {
+                serviceId: "git",
+                label: "Git",
+                icon: "git-branch",
+                hasPanel: false,
+                sigils: GIT_SIGIL_DEFS,
             });
         }
 

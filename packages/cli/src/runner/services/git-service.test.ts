@@ -1,6 +1,20 @@
 import { describe, test, expect } from "bun:test";
 import type { ServiceEnvelope } from "../service-handler.js";
-import { GitService } from "./git-service.js";
+import { GitService, GIT_SIGIL_DEFS } from "./git-service.js";
+
+describe("GIT_SIGIL_DEFS", () => {
+    test("every def has a type, label, and icon with unique types", () => {
+        const types = new Set<string>();
+        for (const def of GIT_SIGIL_DEFS) {
+            expect(def.type).toBeTruthy();
+            expect(def.label).toBeTruthy();
+            expect(def.icon).toBeTruthy();
+            expect(types.has(def.type)).toBe(false);
+            types.add(def.type);
+        }
+        expect(types).toEqual(new Set(["commit", "branch", "repo", "stash"]));
+    });
+});
 
 function createMockSocket() {
     const emitted: ServiceEnvelope[] = [];

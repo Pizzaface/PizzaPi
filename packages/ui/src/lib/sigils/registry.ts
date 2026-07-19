@@ -104,6 +104,36 @@ const BUILTIN_CONFIGS: Record<string, SigilRenderConfig> = {
     icon: "diff",
     colorClass: "bg-amber-500/20 text-amber-800 dark:text-amber-300 ring-amber-500/35",
   },
+  skill: {
+    label: "Skill",
+    icon: "sparkles",
+    colorClass: "bg-fuchsia-500/20 text-fuchsia-800 dark:text-fuchsia-300 ring-fuchsia-500/35",
+  },
+  runner: {
+    label: "Runner",
+    icon: "server",
+    colorClass: "bg-slate-500/20 text-slate-800 dark:text-slate-300 ring-slate-500/35",
+  },
+  service: {
+    label: "Service",
+    icon: "boxes",
+    colorClass: "bg-indigo-500/20 text-indigo-800 dark:text-indigo-300 ring-indigo-500/35",
+  },
+  trigger: {
+    label: "Trigger",
+    icon: "zap",
+    colorClass: "bg-yellow-500/20 text-yellow-800 dark:text-yellow-300 ring-yellow-500/35",
+  },
+  tunnel: {
+    label: "Tunnel",
+    icon: "share-2",
+    colorClass: "bg-teal-500/20 text-teal-800 dark:text-teal-300 ring-teal-500/35",
+  },
+  agent: {
+    label: "Agent",
+    icon: "bot",
+    colorClass: "bg-pink-500/20 text-pink-800 dark:text-pink-300 ring-pink-500/35",
+  },
 };
 
 // ── Alias map ────────────────────────────────────────────────────────────────
@@ -134,7 +164,7 @@ const BUILTIN_ALIASES: Record<string, string> = {
   timer: "countdown",
   environment: "link",
   env: "link",
-  agent: "model",
+  plugin: "service",
   llm: "model",
   warn: "error",
   notice: "error",

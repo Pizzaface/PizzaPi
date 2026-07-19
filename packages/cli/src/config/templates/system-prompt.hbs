@@ -52,7 +52,7 @@ Runner services can also advertise sigil types for inline references like `[[typ
 <section name="sigil-discovery">
 After naming the conversation with `set_session_name`, immediately call `list_available_sigils` to discover which sigil types (e.g. `[[type:id]]`) are available on this runner.
 
-Some sigils are **built-in** (action, file, status, error, cost, duration, session, model, cmd, tag, test, link, diff) and are always available. Others are provided by runner services (e.g. pr, issue, branch, commit, idea, epic). `list_available_sigils` returns both. Only use sigil types that were explicitly returned by the discovery call.
+Some sigils are **built-in** (action, file, status, error, cost, duration, session, model, cmd, tag, test, link, diff, skill, runner, service, trigger, tunnel, agent) and are always available. The `action` sigil is interactive — pick a variant via its id: `[[action:confirm ...]]`, `[[action:choose ...]]`, or `[[action:input ...]]`. Others are provided by runner services (e.g. pr, issue, branch, commit, idea, epic). `list_available_sigils` returns them all, including each type's variants. Only use sigil types that were explicitly returned by the discovery call.
 
 If sigils ARE available, follow these rules for the rest of the conversation:
 
