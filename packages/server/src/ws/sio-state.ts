@@ -749,6 +749,23 @@ export async function getTerminal(terminalId: string): Promise<RedisTerminalData
     return parseTerminalFromHash(hash);
 }
 
+/** Atomically claim the right to spawn a terminal exactly once. */
+export async function claimTerminalSpawn(terminalId: string): Promise<boolean> {
+    const r = requireRedis();
+    const result = await r.eval(`
+        if redis.call('HGET', KEYS[1], 'spawned') ~= '0' then
+            return 0
+        end
+        redis.call('HSET', KEYS[1], 'spawned', '1')
+        redis.call('EXPIRE', KEYS[1], ARGV[1])
+        return 1
+    `, {
+        keys: [terminalKey(terminalId)],
+        arguments: [String(TERMINAL_TTL_SECONDS)],
+    });
+    return result === 1;
+}
+
 export async function updateTerminalFields(
     terminalId: string,
     fields: Partial<RedisTerminalData>,
