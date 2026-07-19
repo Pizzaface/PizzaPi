@@ -3,6 +3,12 @@ import { existsSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { cleanupSessionAttachments } from "../extensions/session-attachments.js";
 import { logInfo } from "./logger.js";
+import {
+    sessionProcFilePath,
+    ensureSessionProcDir,
+    readRecordedGroupPids,
+    removeSessionProcFile,
+} from "./session-procs.js";
 import { runnerUsageCacheFilePath, trackSessionCwd, untrackSessionCwd } from "./runner-usage-cache.js";
 import { isCwdAllowed } from "./workspace.js";
 import { loadConfig } from "../config.js";
@@ -21,6 +27,23 @@ export interface RunnerSession {
     parentSessionId?: string;
     /** JSONL transcript file for this relay session, reported by the worker after startup. */
     sessionFile?: string;
+}
+
+/**
+ * Kill an entire session process group (worker + everything it spawned:
+ * bash children, MCP stdio servers, dev servers).  Workers are spawned with
+ * `detached: true`, making the worker PID the process-group ID.
+ * Returns false if the group signal could not be sent (already dead, or
+ * platform without process groups).
+ */
+export function killSessionProcessGroup(pid: number | undefined, signal: NodeJS.Signals = "SIGTERM"): boolean {
+    if (!pid) return false;
+    try {
+        process.kill(-pid, signal);
+        return true;
+    } catch {
+        return false;
+    }
 }
 
 /** Is this process running inside a compiled Bun single-file binary? */
@@ -77,6 +100,10 @@ export function spawnSession(
     if (runningSessions.has(sessionId)) {
         throw new Error(`Session already running: ${sessionId}`);
     }
+
+    // Ensure the recorded-group pid file directory exists before the worker
+    // starts appending to it.
+    ensureSessionProcDir();
 
     // Resolve the effective cwd for this session now so we can register it for
     // usage auth lookups and clean it up on exit without re-deriving it.
@@ -151,6 +178,10 @@ export function spawnSession(
         // Tell the worker where the runner-managed usage cache lives so it can
         // read quota data without making its own provider API calls.
         PIZZAPI_RUNNER_USAGE_CACHE_PATH: runnerUsageCacheFilePath(),
+        // Per-session file where the worker's bash command prefix records each
+        // command's detached group-leader PID, so the daemon can enumerate and
+        // kill background processes that escaped the worker's own process group.
+        PIZZAPI_SESSION_PROC_FILE: sessionProcFilePath(sessionId),
         ...(requestedCwd ? { PIZZAPI_WORKER_CWD: requestedCwd } : {}),
         // Initial prompt and model for the new session (set by spawn_session tool).
         ...(options?.prompt ? { PIZZAPI_WORKER_INITIAL_PROMPT: options.prompt } : {}),
@@ -176,6 +207,10 @@ export function spawnSession(
 
     const child = spawn(process.execPath, workerArgs, {
         env,
+        // New process group (PGID = worker PID).  Everything the session spawns
+        // (bash commands, MCP stdio servers, dev servers) inherits the group, so
+        // we can enumerate it (pgrep -g) and kill it wholesale on session end.
+        detached: true,
         // Include an IPC channel (fd[3]) so the worker can send a "pre_restart"
         // message to the daemon before calling process.exit(43).  This lets us
         // add the sessionId to restartingSessions *before* the process exits and
@@ -219,6 +254,10 @@ export function spawnSession(
             // message above; this add is a belt-and-suspenders fallback for the
             // (unlikely) case where the IPC message was not sent or was lost.
             restartingSessions.add(sessionId);
+            // ponytail: background processes from the old worker's group survive a
+            // restart-in-place (intentional — session continues) but land in a
+            // different pgid than the new worker. Track historical pgids per
+            // session if orphans from restarted workers become a problem.
             logInfo(`re-spawning session ${sessionId} (worker restart requested)`);
             onRestartRequested();
         } else {
@@ -227,6 +266,17 @@ export function spawnSession(
             // by then, so this is the reliable cleanup point for spawned sessions.
             // Also remove from killedSessions if this was an explicit kill to prevent leaks.
             killedSessions.delete(sessionId);
+            // Reap any stragglers the session left behind (background dev
+            // servers etc.) — the worker is gone, so signal its whole group
+            // plus every recorded bash-command group (which is where detached
+            // background processes actually live), then drop the pid file.
+            if (killSessionProcessGroup(child.pid)) {
+                logInfo(`session ${sessionId} process group ${child.pid} signaled for cleanup`);
+            }
+            for (const groupPid of readRecordedGroupPids(sessionProcFilePath(sessionId))) {
+                if (groupPid !== child.pid) killSessionProcessGroup(groupPid);
+            }
+            removeSessionProcFile(sessionId);
             void cleanupSessionAttachments(sessionId).catch(() => {});
         }
     });

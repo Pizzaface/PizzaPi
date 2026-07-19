@@ -1,4 +1,5 @@
-import { createAgentSession, DefaultResourceLoader, AuthStorage } from "@earendil-works/pi-coding-agent";
+import { createAgentSession, DefaultResourceLoader, AuthStorage, SettingsManager } from "@earendil-works/pi-coding-agent";
+import { SHELL_PROC_CAPTURE_PREFIX } from "./session-procs.js";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { maybeBuildSystemPrompt, defaultAgentDir, expandHome, loadConfig, resolveSandboxConfig, validateSandboxOverride, applyProviderSettingsEnv } from "../config.js";
@@ -388,12 +389,27 @@ async function main(): Promise<void> {
         // Non-fatal — diagnostic only
     }
 
+    // Install a shell command prefix that records each bash command's detached
+    // group-leader PID into $PIZZAPI_SESSION_PROC_FILE, so the daemon's process
+    // service can enumerate and kill background processes that escape the
+    // worker's own process group. Wrapping getShellCommandPrefix (rather than
+    // applyOverrides, which settingsManager.reload() would wipe) survives
+    // reloads and is baked into the bash tool at build time. Unix-only: the
+    // prefix uses POSIX shell + $$ and group tracking needs pgrep/ps.
+    const settingsManager = SettingsManager.create(cwd, agentDir);
+    if (process.platform !== "win32") {
+        const origGetPrefix = settingsManager.getShellCommandPrefix.bind(settingsManager);
+        settingsManager.getShellCommandPrefix = () =>
+            [origGetPrefix(), SHELL_PROC_CAPTURE_PREFIX].filter(Boolean).join("\n");
+    }
+
     bootTimer.start("[boot] create-session");
     const { session } = await createAgentSession({
         cwd,
         agentDir,
         authStorage,
         resourceLoader: loader,
+        settingsManager,
     });
     bootTimer.end("[boot] create-session");
 

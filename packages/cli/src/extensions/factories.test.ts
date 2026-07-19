@@ -26,6 +26,7 @@ import { toolSearchExtension } from "./tool-search.js";
 import { ollamaWebToolsExtension } from "./ollama-web-tools.js";
 import { sessionAnalysisExtension } from "./session-analysis.js";
 import { providerRequestLogExtension } from "./provider-request-log.js";
+import { sessionProcessesExtension } from "./session-processes.js";
 
 const CORE_EXTENSIONS: ExtensionFactory[] = [
     providerRequestLogExtension,
@@ -37,6 +38,7 @@ const CORE_EXTENSIONS: ExtensionFactory[] = [
     ollamaWebToolsExtension,
     goalExtension,
     restartExtension,
+    sessionProcessesExtension,
     setSessionNameExtension,
     updateTodoExtension,
     spawnSessionExtension,

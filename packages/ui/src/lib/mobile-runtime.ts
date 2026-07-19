@@ -81,6 +81,22 @@ export function resolveMobileUrl(path: string): string {
 }
 
 /**
+ * Resolve a relative media path (e.g. /api/attachments/…) for use as an
+ * <img>/<video> src in the bundled mobile app. Unlike resolveMobileUrl, this
+ * also appends the API key as a query param: element loads can't carry the
+ * x-api-key header the fetch patch injects, and the download endpoint accepts
+ * ?apiKey= for exactly this case. No-op on web (relative src stays same-origin).
+ */
+export function resolveMobileMediaUrl(path: string): string {
+    if (!path.startsWith("/")) return path;
+    const { serverUrl, apiKey, isMobileBundled } = getMobileRuntimeConfig();
+    if (!isMobileBundled || !serverUrl) return path;
+    const url = new URL(`${serverUrl.replace(/\/+$/, "")}${path}`);
+    if (apiKey && !url.searchParams.has("apiKey")) url.searchParams.set("apiKey", apiKey);
+    return url.toString();
+}
+
+/**
  * Dynamically import the native secure-storage plugin. No-op on web.
  *
  * IMPORTANT: the returned Capacitor plugin proxy (registerPlugin()'s Proxy)

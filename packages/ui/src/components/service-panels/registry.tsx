@@ -21,8 +21,9 @@
  * 3. Start an HTTP server in init() and call announcePanel(port)
  */
 import React from "react";
-import { Network } from "lucide-react";
+import { Network, Cpu } from "lucide-react";
 import { TunnelPanel } from "@/components/TunnelPanel";
+import { ProcessPanel } from "@/components/ProcessPanel";
 
 export interface ServicePanelDef {
     /** Must match the runner service's `id` */
@@ -45,5 +46,11 @@ export const SERVICE_PANELS: ServicePanelDef[] = [
         label: "Tunnels",
         icon: <Network className="size-3.5" />,
         component: TunnelPanel,
+    },
+    {
+        serviceId: "process",
+        label: "Processes",
+        icon: <Cpu className="size-3.5" />,
+        component: ProcessPanel,
     },
 ];

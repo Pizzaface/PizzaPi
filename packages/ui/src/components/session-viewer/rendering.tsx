@@ -67,6 +67,7 @@ export { tryRenderServerToolBlock } from "@/components/session-viewer/server-too
 
 import { CommandResultCard, type CommandResultData } from "@/components/session-viewer/cards/CommandResultCard";
 import { TriggerCard } from "@/components/session-viewer/cards/TriggerCard";
+import { resolveMobileMediaUrl } from "@/lib/mobile-runtime";
 import { tryRenderServerToolBlock } from "@/components/session-viewer/server-tools";
 
 /** Type guard: is the content a structured command result? */
@@ -342,7 +343,7 @@ export function renderContent(
                 return (
                   <img
                     key={i}
-                    src={url}
+                    src={resolveMobileMediaUrl(url)}
                     alt="Message attachment"
                     className="max-h-80 max-w-full rounded border border-border object-contain"
                     loading="lazy"

@@ -11,7 +11,9 @@ import {
     setMobileApiKey,
     clearMobileApiKey,
     initMobileRuntime,
+    resolveMobileMediaUrl,
     _resetMobileRuntimeCache,
+    _setMobileRuntimeCache,
 } from "./mobile-runtime";
 
 const origLocalStorage = (globalThis as any).localStorage;
@@ -74,5 +76,45 @@ describe("mobile-runtime (web no-op path)", () => {
     test("initMobileRuntime is a no-op on web", async () => {
         await expect(initMobileRuntime()).resolves.toBeUndefined();
         expect(getMobileRuntimeConfig().apiKey).toBeNull();
+    });
+
+    test("resolveMobileMediaUrl leaves relative paths untouched on web", () => {
+        expect(resolveMobileMediaUrl("/api/attachments/abc")).toBe("/api/attachments/abc");
+    });
+});
+
+describe("resolveMobileMediaUrl (mobile-bundled path)", () => {
+    beforeEach(() => {
+        _resetMobileRuntimeCache();
+        Object.defineProperty(globalThis, "localStorage", {
+            value: makeLocalStorage("https://relay.example.com"),
+            configurable: true,
+            writable: true,
+        });
+    });
+
+    afterEach(() => {
+        _resetMobileRuntimeCache();
+        (globalThis as any).localStorage = origLocalStorage;
+    });
+
+    test("prepends server URL and appends API key for relative media paths", () => {
+        _setMobileRuntimeCache("secret-key");
+        expect(resolveMobileMediaUrl("/api/attachments/abc")).toBe(
+            "https://relay.example.com/api/attachments/abc?apiKey=secret-key",
+        );
+    });
+
+    test("prepends server URL without key when none is cached", () => {
+        expect(resolveMobileMediaUrl("/api/attachments/abc")).toBe(
+            "https://relay.example.com/api/attachments/abc",
+        );
+    });
+
+    test("leaves absolute URLs untouched", () => {
+        _setMobileRuntimeCache("secret-key");
+        expect(resolveMobileMediaUrl("https://cdn.example.com/x.png")).toBe(
+            "https://cdn.example.com/x.png",
+        );
     });
 });

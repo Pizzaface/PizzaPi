@@ -15,6 +15,7 @@ import { resolvePizzaPiVar } from "../config/io.js";
 import { mergeModelLists, readSessionModelsCache, type SessionModelEntry } from "../session-models-cache.js";
 import { getCachedOllamaCloudModels } from "../ollama-cloud-models.js";
 import { TunnelService } from "./services/tunnel-service.js";
+import { ProcessService } from "./services/process-service.js";
 import { TimeService, TIME_TRIGGER_DEFS, TIME_SIGIL_DEFS } from "./services/time-service.js";
 import { discoverServices } from "./service-loader.js";
 import { globalPluginDirs } from "../plugins/discover.js";
@@ -40,7 +41,7 @@ import { normalizeLoopbackHost } from "../relay-url.js";
 import { startUsageRefreshLoop, stopUsageRefreshLoop } from "./runner-usage-cache.js";
 import { startOllamaModelsRefreshLoop, stopOllamaModelsRefreshLoop } from "./runner-ollama-models-cache.js";
 import { getWorkspaceRoots, isCwdAllowed } from "./workspace.js";
-import { type RunnerSession, spawnSession } from "./session-spawner.js";
+import { type RunnerSession, spawnSession, killSessionProcessGroup } from "./session-spawner.js";
 import { pruneSessionCloseMetadata, type SessionCloseMetadata } from "./session-close-metadata.js";
 
 import {
@@ -173,7 +174,9 @@ function escalateToSigkill(child: ChildProcess, label: string, timeoutMs = 5_000
         try {
             if (!child.killed && child.exitCode === null) {
                 logWarn(`[daemon] ${label} did not exit after ${timeoutMs}ms; force-killing`);
-                forceKillTree(child);
+                // Kill the whole process group (worker + descendants); fall back
+                // to tree-kill (Windows) / plain kill if group signaling isn't possible.
+                if (!killSessionProcessGroup(child.pid, "SIGKILL")) forceKillTree(child);
             }
         } catch {
             // Process already exited; ignore.
@@ -432,6 +435,11 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             logInfo('[services] built-in service "git" disabled by config');
         } else {
             registry.register(new GitService());
+        }
+        if (isServiceDisabled("process")) {
+            logInfo('[services] built-in service "process" disabled by config');
+        } else {
+            registry.register(new ProcessService((sessionId) => runningSessions.get(sessionId)?.child?.pid ?? null));
         }
         const cleanupGitSessionState = (sessionId: string) => {
             const gitService = registry.get("git");
@@ -1361,12 +1369,19 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                         // exit handler sees it even if exit code 43 (restart-in-place)
                         // arrives before the shutdown request is delivered.
                         killedSessions.add(sessionId);
-                        // SIGTERM on POSIX; IPC shutdown message on Windows (where
-                        // kill() would TerminateProcess and skip worker cleanup).
+                        // Signal the whole process group so background processes
+                        // spawned by the session die too. Falls back to the
+                        // standard graceful path (IPC shutdown message on Windows,
+                        // where kill() would TerminateProcess and skip cleanup;
+                        // plain SIGTERM elsewhere) if group signaling fails.
                         const child = entry.child;
-                        requestChildShutdown(child, (timeoutMs) =>
-                            logWarn(`[daemon] session ${sessionId} did not exit after ${timeoutMs}ms; force-killing`),
-                        );
+                        if (!killSessionProcessGroup(child.pid)) {
+                            requestChildShutdown(child, (timeoutMs) =>
+                                logWarn(`[daemon] session ${sessionId} did not exit after ${timeoutMs}ms; force-killing`),
+                            );
+                        } else {
+                            escalateToSigkill(child, `session ${sessionId}`);
+                        }
                     } catch {}
                 } else if (entry.adopted) {
                     // No child handle — ask the relay to disconnect the worker's
