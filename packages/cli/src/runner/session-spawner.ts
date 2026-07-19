@@ -3,6 +3,12 @@ import { existsSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { cleanupSessionAttachments } from "../extensions/session-attachments.js";
 import { logInfo } from "./logger.js";
+import {
+    sessionProcFilePath,
+    ensureSessionProcDir,
+    readRecordedGroupPids,
+    removeSessionProcFile,
+} from "./session-procs.js";
 import { runnerUsageCacheFilePath, trackSessionCwd, untrackSessionCwd } from "./runner-usage-cache.js";
 import { isCwdAllowed } from "./workspace.js";
 import { loadConfig } from "../config.js";
@@ -95,6 +101,10 @@ export function spawnSession(
         throw new Error(`Session already running: ${sessionId}`);
     }
 
+    // Ensure the recorded-group pid file directory exists before the worker
+    // starts appending to it.
+    ensureSessionProcDir();
+
     // Resolve the effective cwd for this session now so we can register it for
     // usage auth lookups and clean it up on exit without re-deriving it.
     const effectiveCwd = requestedCwd ?? process.cwd();
@@ -168,6 +178,10 @@ export function spawnSession(
         // Tell the worker where the runner-managed usage cache lives so it can
         // read quota data without making its own provider API calls.
         PIZZAPI_RUNNER_USAGE_CACHE_PATH: runnerUsageCacheFilePath(),
+        // Per-session file where the worker's bash command prefix records each
+        // command's detached group-leader PID, so the daemon can enumerate and
+        // kill background processes that escaped the worker's own process group.
+        PIZZAPI_SESSION_PROC_FILE: sessionProcFilePath(sessionId),
         ...(requestedCwd ? { PIZZAPI_WORKER_CWD: requestedCwd } : {}),
         // Initial prompt and model for the new session (set by spawn_session tool).
         ...(options?.prompt ? { PIZZAPI_WORKER_INITIAL_PROMPT: options.prompt } : {}),
@@ -253,10 +267,16 @@ export function spawnSession(
             // Also remove from killedSessions if this was an explicit kill to prevent leaks.
             killedSessions.delete(sessionId);
             // Reap any stragglers the session left behind (background dev
-            // servers etc.) — the worker is gone, so signal its whole group.
+            // servers etc.) — the worker is gone, so signal its whole group
+            // plus every recorded bash-command group (which is where detached
+            // background processes actually live), then drop the pid file.
             if (killSessionProcessGroup(child.pid)) {
                 logInfo(`session ${sessionId} process group ${child.pid} signaled for cleanup`);
             }
+            for (const groupPid of readRecordedGroupPids(sessionProcFilePath(sessionId))) {
+                if (groupPid !== child.pid) killSessionProcessGroup(groupPid);
+            }
+            removeSessionProcFile(sessionId);
             void cleanupSessionAttachments(sessionId).catch(() => {});
         }
     });

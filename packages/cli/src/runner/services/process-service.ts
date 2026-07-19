@@ -3,19 +3,20 @@ import { promisify } from "node:util";
 import type { Socket } from "socket.io-client";
 import type { ServiceHandler, ServiceInitOptions, ServiceEnvelope } from "../service-handler.js";
 import { logInfo } from "../logger.js";
+import {
+    sessionProcFilePath,
+    readRecordedGroupPids,
+    pruneProcFile,
+    selectGroupProcesses,
+    parsePsFullLine,
+    type SessionProcess,
+} from "../session-procs.js";
 
 const execFileAsync = promisify(execFile);
 
-export interface SessionProcess {
-    pid: number;
-    /** Elapsed time as reported by ps (e.g. "02:13" or "1-04:00:00"). */
-    etime: string;
-    /** Resident set size in KB. */
-    rssKb: number;
-    command: string;
-}
+export type { SessionProcess };
 
-/** Parse one `ps -o pid=,etime=,rss=,command=` output line. */
+/** Parse one `ps -o pid=,etime=,rss=,command=` output line (legacy helper). */
 export function parsePsLine(line: string): SessionProcess | null {
     const m = line.match(/^\s*(\d+)\s+(\S+)\s+(\d+)\s+(.*)$/);
     if (!m) return null;
@@ -23,9 +24,14 @@ export function parsePsLine(line: string): SessionProcess | null {
 }
 
 /**
- * Lists and kills OS processes belonging to a session's process group.
- * Workers are spawned detached, so PGID = worker PID and every descendant
- * (bash children, MCP stdio servers, dev servers) is enumerable via `pgrep -g`.
+ * Lists and kills OS processes belonging to a session.
+ *
+ * A session's processes span multiple process groups: the worker's own group
+ * (PGID = worker PID, holds inline children like MCP stdio servers) plus one
+ * group per bash command (the pi bash tool spawns each command detached, so it
+ * becomes its own group leader). Command group-leader PIDs are recorded at
+ * spawn time into a per-session pid file (see session-procs.ts), which lets us
+ * also enumerate — and kill — background processes that reparented to init.
  */
 export class ProcessService implements ServiceHandler {
     readonly id = "process";
@@ -33,7 +39,10 @@ export class ProcessService implements ServiceHandler {
     private socket: Socket | null = null;
     private _onServiceMessage: ((envelope: ServiceEnvelope) => void) | null = null;
 
-    constructor(private getWorkerPid: (sessionId: string) => number | null) {}
+    constructor(
+        private getWorkerPid: (sessionId: string) => number | null,
+        private getProcFilePath: (sessionId: string) => string = sessionProcFilePath,
+    ) {}
 
     init(socket: Socket, { isShuttingDown }: ServiceInitOptions): void {
         this.socket = socket;
@@ -63,26 +72,58 @@ export class ProcessService implements ServiceHandler {
         this._onServiceMessage = null;
     }
 
-    /** PIDs in the session's process group. Empty when the group is gone. */
-    private async groupPids(workerPid: number): Promise<number[]> {
-        try {
-            const { stdout } = await execFileAsync("pgrep", ["-g", String(workerPid)]);
-            return stdout.split("\n").map((l) => parseInt(l, 10)).filter((n) => Number.isFinite(n));
-        } catch {
-            // pgrep exits 1 when no processes match
-            return [];
-        }
+    /**
+     * Process groups belonging to this session: the worker's own group plus
+     * every recorded bash-command group. `workerPid` is null for adopted
+     * sessions (no child handle after a daemon restart) — recorded groups from
+     * the still-running worker's pid file still apply.
+     */
+    private sessionGroups(sessionId: string, workerPid: number | null): { groups: Set<number>; filePath: string } {
+        const filePath = this.getProcFilePath(sessionId);
+        const groups = new Set<number>(readRecordedGroupPids(filePath));
+        if (workerPid) groups.add(workerPid);
+        return { groups, filePath };
     }
 
-    private async listProcesses(workerPid: number): Promise<SessionProcess[]> {
-        const pids = await this.groupPids(workerPid);
-        if (pids.length === 0) return [];
+    /** Full `ps` snapshot of every process (pid, pgid, etime, rss, command). */
+    private async psSnapshot(): Promise<string> {
+        const { stdout } = await execFileAsync("ps", ["-A", "-ww", "-o", "pid=,pgid=,etime=,rss=,command="]);
+        return stdout;
+    }
+
+    private async listProcesses(sessionId: string, workerPid: number | null): Promise<SessionProcess[]> {
+        const { groups, filePath } = this.sessionGroups(sessionId, workerPid);
+        if (groups.size === 0) return [];
+        let snapshot: string;
         try {
-            const { stdout } = await execFileAsync("ps", ["-o", "pid=,etime=,rss=,command=", "-p", pids.join(",")]);
-            return stdout.split("\n").map(parsePsLine).filter((p): p is SessionProcess => p !== null);
+            snapshot = await this.psSnapshot();
         } catch {
-            return [];
+            return []; // no ps (e.g. Windows) — process tracking unavailable
         }
+        const { processes, liveGroups } = selectGroupProcesses(snapshot, groups);
+        // Prune the recorded pid file to groups that still have live members
+        // (never drop the worker's own group — it isn't recorded there).
+        const liveRecorded = [...liveGroups].filter((g) => g !== workerPid);
+        pruneProcFile(filePath, liveRecorded);
+        return processes;
+    }
+
+    /** All PIDs that belong to this session (members of any session group). */
+    private async sessionMemberPids(sessionId: string, workerPid: number | null): Promise<Set<number>> {
+        const { groups } = this.sessionGroups(sessionId, workerPid);
+        const members = new Set<number>();
+        if (groups.size === 0) return members;
+        let snapshot: string;
+        try {
+            snapshot = await this.psSnapshot();
+        } catch {
+            return members;
+        }
+        for (const line of snapshot.split("\n")) {
+            const p = parsePsFullLine(line);
+            if (p && groups.has(p.pgid)) members.add(p.pid);
+        }
+        return members;
     }
 
     private emit(type: string, payload: unknown, requestId?: string): void {
@@ -104,9 +145,7 @@ export class ProcessService implements ServiceHandler {
     private async handleList(envelope: ServiceEnvelope): Promise<void> {
         const sessionId = this.resolveSessionId(envelope);
         const workerPid = sessionId ? this.getWorkerPid(sessionId) : null;
-        // workerPid is null for adopted sessions (worker survived a daemon
-        // restart — no child handle) and ended sessions. Report an empty list.
-        const processes = workerPid ? await this.listProcesses(workerPid) : [];
+        const processes = sessionId ? await this.listProcesses(sessionId, workerPid) : [];
         this.emit("process_list_result", { workerPid, processes }, envelope.requestId);
     }
 
@@ -116,15 +155,15 @@ export class ProcessService implements ServiceHandler {
         const pid = typeof payload?.pid === "number" ? payload.pid : NaN;
         const workerPid = sessionId ? this.getWorkerPid(sessionId) : null;
 
-        if (!workerPid || !Number.isInteger(pid) || pid <= 0) {
+        if (!sessionId || !Number.isInteger(pid) || pid <= 0) {
             this.emit("process_error", { error: `Invalid kill request (pid=${payload?.pid})` }, envelope.requestId);
             return;
         }
 
         // Trust boundary: only allow killing PIDs that are actually members of
-        // this session's process group — never arbitrary system PIDs.
-        const pids = await this.groupPids(workerPid);
-        if (!pids.includes(pid)) {
+        // one of this session's process groups — never arbitrary system PIDs.
+        const members = await this.sessionMemberPids(sessionId, workerPid);
+        if (!members.has(pid)) {
             this.emit("process_error", { error: `PID ${pid} is not part of session ${sessionId}` }, envelope.requestId);
             return;
         }
@@ -135,12 +174,12 @@ export class ProcessService implements ServiceHandler {
 
         try {
             process.kill(pid, "SIGTERM");
-            logInfo(`[process] killed pid ${pid} in session ${sessionId} group ${workerPid}`);
+            logInfo(`[process] killed pid ${pid} in session ${sessionId}`);
         } catch {
             // Already exited — fall through to refreshed list
         }
         // Respond with a fresh list so the panel updates immediately.
-        const processes = await this.listProcesses(workerPid);
+        const processes = await this.listProcesses(sessionId, workerPid);
         this.emit("process_list_result", { workerPid, processes }, envelope.requestId);
     }
 }
