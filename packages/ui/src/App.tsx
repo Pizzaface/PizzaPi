@@ -5259,27 +5259,6 @@ export function App() {
                 />
               )}
 
-              {/* ── BOTTOM ICON STRIP ────────────────────────────────────── */}
-              {/* ponytail: strip lives outside the docked panel so it stays pinned to the bottom edge; the panel slides out above it */}
-              <ButtonStrip
-                position="center-bottom"
-                buttonIds={buttonPositions.slots["center-bottom"]}
-                onDragStart={handleButtonDragStart}
-                servicePanels={railServicePanels}
-                onToggleServicePanel={handleToggleServicePanelFromDock}
-                onToggleTerminal={() => openPanelFromDockedButton("terminal", showTerminal, setShowTerminal, handleTerminalPositionChange)}
-                onToggleFileExplorer={() => openPanelFromDockedButton("files", showFileExplorer, setShowFileExplorer, handleFilesPositionChange)}
-                onToggleGit={() => openPanelFromDockedButton("git", showGit, setShowGit, handleGitPositionChange)}
-                onToggleTriggers={() => openPanelFromDockedButton("triggers", showTriggers, setShowTriggers, handleTriggersPositionChange)}
-                onToggleAnalyzer={() => openPanelFromDockedButton("analyzer", showAnalyzer, setShowAnalyzer, handleAnalyzerPositionChange)}
-                onDuplicateSession={activeSessionInfo?.runnerId ? () => handleDuplicateSession(activeSessionInfo.runnerId!, activeSessionInfo.cwd || "") : undefined}
-                onExport={handleExport}
-                onExec={sendRemoteExec}
-                sessionId={activeSessionId}
-                effortLevel={effortLevel}
-                planModeEnabled={planModeEnabled}
-                tokenUsage={tokenUsage}
-              />
             </div>{/* end center column */}
 
             {/* ── RIGHT COLUMN ────────────────────────────────────────────── */}
@@ -5379,6 +5358,28 @@ export function App() {
               />
             </div>
           )}
+
+          {/* ── BOTTOM ICON STRIP ────────────────────────────────────── */}
+          {/* ponytail: render after the side rails so the strip owns the true bottom-left/right corners */}
+          <ButtonStrip
+            position="center-bottom"
+            buttonIds={buttonPositions.slots["center-bottom"]}
+            onDragStart={handleButtonDragStart}
+            servicePanels={railServicePanels}
+            onToggleServicePanel={handleToggleServicePanelFromDock}
+            onToggleTerminal={() => openPanelFromDockedButton("terminal", showTerminal, setShowTerminal, handleTerminalPositionChange)}
+            onToggleFileExplorer={() => openPanelFromDockedButton("files", showFileExplorer, setShowFileExplorer, handleFilesPositionChange)}
+            onToggleGit={() => openPanelFromDockedButton("git", showGit, setShowGit, handleGitPositionChange)}
+            onToggleTriggers={() => openPanelFromDockedButton("triggers", showTriggers, setShowTriggers, handleTriggersPositionChange)}
+            onToggleAnalyzer={() => openPanelFromDockedButton("analyzer", showAnalyzer, setShowAnalyzer, handleAnalyzerPositionChange)}
+            onDuplicateSession={activeSessionInfo?.runnerId ? () => handleDuplicateSession(activeSessionInfo.runnerId!, activeSessionInfo.cwd || "") : undefined}
+            onExport={handleExport}
+            onExec={sendRemoteExec}
+            sessionId={activeSessionId}
+            effortLevel={effortLevel}
+            planModeEnabled={planModeEnabled}
+            tokenUsage={tokenUsage}
+          />
 
           {/* ── MOBILE OVERLAY ──────────────────────────────────────────── */}
           {mobilePanelTabs.length > 0 && (
