@@ -13,7 +13,7 @@
 
 import { type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { runWorkflow } from "./runtime.js";
-import { listSavedWorkflows, loadWorkflow, saveWorkflow } from "./persistence.js";
+import { listSavedWorkflows, loadWorkflow, saveWorkflow, workflowTemplate } from "./persistence.js";
 import type { WorkflowDetails } from "./types.js";
 
 // ── Tool parameter schemas (JSON Schema) ───────────────────────────────
@@ -170,9 +170,9 @@ export const workflowExtension = (pi: ExtensionAPI) => {
     // automatically in both the TUI and web UI's command menus/autocomplete
     // — no separate frontend wiring needed.
     pi.registerCommand?.("workflow", {
-        description: "List saved workflows, or run one: /workflow <name> [json-args]",
+        description: "List saved workflows, run one, or scaffold a new one: /workflow [new <name> | <name> [json-args]]",
         getArgumentCompletions: (prefix: string) => {
-            // Only complete the workflow-name token, not a trailing args blob.
+            // Only complete the first token, not a trailing args blob.
             // Checked against the RAW prefix — trimming first would swallow
             // the trailing space that signals "name is done, args follow".
             if (/\s/.test(prefix) || prefix.includes("{")) return null;
@@ -181,13 +181,44 @@ export const workflowExtension = (pi: ExtensionAPI) => {
             try {
                 names = listSavedWorkflows(process.cwd(), "both").map((w) => w.name);
             } catch {
-                return null;
+                names = [];
             }
-            const filtered = p ? names.filter((n) => n.toLowerCase().startsWith(p)) : names;
+            const candidates = ["new", ...names];
+            const filtered = p ? candidates.filter((n) => n.toLowerCase().startsWith(p)) : candidates;
             return filtered.length ? filtered.map((value) => ({ value, label: value })) : null;
         },
         handler: async (rawArgs: string, ctx) => {
             const trimmed = (rawArgs ?? "").trim();
+
+            const newMatch = trimmed.match(/^new(?:\s+(\S+))?$/i);
+            if (newMatch) {
+                const name = newMatch[1];
+                if (!name) {
+                    ctx.ui.notify("Usage: /workflow new <name>", "error");
+                    return;
+                }
+                let existing: ReturnType<typeof loadWorkflow>;
+                try {
+                    existing = loadWorkflow(ctx.cwd, name);
+                } catch (err) {
+                    ctx.ui.notify(`Failed to check for an existing "${name}" workflow: ${err instanceof Error ? err.message : String(err)}`, "error");
+                    return;
+                }
+                if (existing) {
+                    ctx.ui.notify(`A workflow named "${name}" already exists. Choose another name or edit it directly.`, "error");
+                    return;
+                }
+                let filePath: string;
+                try {
+                    filePath = saveWorkflow(ctx.cwd, { name, script: workflowTemplate() });
+                } catch (err) {
+                    ctx.ui.notify(`Failed to create workflow "${name}": ${err instanceof Error ? err.message : String(err)}`, "error");
+                    return;
+                }
+                ctx.ui.notify(`Created ${filePath} \u2014 edit it, then run it with /workflow ${name}`);
+                return;
+            }
+
             if (!trimmed) {
                 let list: ReturnType<typeof listSavedWorkflows>;
                 try {
