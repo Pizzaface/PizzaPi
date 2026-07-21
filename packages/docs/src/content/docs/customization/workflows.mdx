@@ -77,6 +77,18 @@ Pass `save: { name, scope? }` to `run_workflow` to persist a successful script f
 - **`list_workflows`** — lists saved workflows (`scope: "project" | "user" | "both"`, default `"both"`)
 - **`run_saved_workflow`** — loads and runs a saved script by name, with optional `args`
 
+### Running a saved workflow manually
+
+Once a workflow is saved, you don't have to ask the agent to re-run it through chat — the `/workflow` slash command runs it directly:
+
+```
+/workflow                        # lists saved workflows (name, scope, description)
+/workflow audit-routes           # runs the saved workflow with no args
+/workflow audit-routes {"dir":"src/api"}   # runs it with JSON args
+```
+
+This works in both the TUI and the web UI — `/workflow` autocompletes saved workflow names, and results are reported the same way as other slash commands (no tool call, no agent turn required).
+
 ### Save locations
 
 | Scope | Path |

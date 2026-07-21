@@ -163,6 +163,91 @@ export const workflowExtension = (pi: ExtensionAPI) => {
         },
     });
 
+    // ── /workflow slash command ─────────────────────────────────────────
+    // Manual entry point that doesn't require going through a chat turn:
+    // `/workflow` lists saved workflows, `/workflow <name> [json-args]` runs
+    // one directly. Registering via pi.registerCommand surfaces this
+    // automatically in both the TUI and web UI's command menus/autocomplete
+    // — no separate frontend wiring needed.
+    pi.registerCommand?.("workflow", {
+        description: "List saved workflows, or run one: /workflow <name> [json-args]",
+        getArgumentCompletions: (prefix: string) => {
+            // Only complete the workflow-name token, not a trailing args blob.
+            // Checked against the RAW prefix — trimming first would swallow
+            // the trailing space that signals "name is done, args follow".
+            if (/\s/.test(prefix) || prefix.includes("{")) return null;
+            const p = prefix.trim().toLowerCase();
+            let names: string[];
+            try {
+                names = listSavedWorkflows(process.cwd(), "both").map((w) => w.name);
+            } catch {
+                return null;
+            }
+            const filtered = p ? names.filter((n) => n.toLowerCase().startsWith(p)) : names;
+            return filtered.length ? filtered.map((value) => ({ value, label: value })) : null;
+        },
+        handler: async (rawArgs: string, ctx) => {
+            const trimmed = (rawArgs ?? "").trim();
+            if (!trimmed) {
+                let list: ReturnType<typeof listSavedWorkflows>;
+                try {
+                    list = listSavedWorkflows(ctx.cwd, "both");
+                } catch (err) {
+                    ctx.ui.notify(`Failed to list workflows: ${err instanceof Error ? err.message : String(err)}`, "error");
+                    return;
+                }
+                ctx.ui.notify(
+                    list.length === 0
+                        ? "No saved workflows. Ask the agent to run_workflow with save:{name} to create one."
+                        : list.map((w) => `${w.name} (${w.scope})${w.meta?.description ? `: ${w.meta.description}` : ""}`).join("\n"),
+                );
+                return;
+            }
+
+            // First whitespace-separated token is the name; anything after is
+            // an optional JSON args blob.
+            const spaceIdx = trimmed.search(/\s/);
+            const name = spaceIdx === -1 ? trimmed : trimmed.slice(0, spaceIdx);
+            const argsText = spaceIdx === -1 ? "" : trimmed.slice(spaceIdx + 1).trim();
+
+            let args: unknown;
+            if (argsText) {
+                try {
+                    args = JSON.parse(argsText);
+                } catch (err) {
+                    ctx.ui.notify(`Invalid JSON args for /workflow: ${err instanceof Error ? err.message : String(err)}`, "error");
+                    return;
+                }
+            }
+
+            let loaded: ReturnType<typeof loadWorkflow>;
+            try {
+                loaded = loadWorkflow(ctx.cwd, name);
+            } catch (err) {
+                ctx.ui.notify(`Failed to load workflow "${name}": ${err instanceof Error ? err.message : String(err)}`, "error");
+                return;
+            }
+            if (!loaded) {
+                ctx.ui.notify(`No saved workflow named "${name}". Run /workflow with no arguments to list saved workflows.`, "error");
+                return;
+            }
+
+            ctx.ui.notify(`Running workflow "${name}"\u2026`);
+            const { details, text } = await runWorkflow({
+                script: loaded.script,
+                args,
+                name: loaded.meta?.name ?? name,
+                signal: ctx.signal,
+                ctx: { cwd: ctx.cwd, modelRegistry: ctx.modelRegistry },
+            });
+
+            ctx.ui.notify(
+                details.status === "error" ? `Workflow "${name}" failed: ${details.error ?? text}` : text,
+                details.status === "error" ? "error" : "info",
+            );
+        },
+    });
+
     pi.registerTool({
         name: "run_saved_workflow",
         label: "Run Saved Workflow",
