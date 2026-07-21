@@ -25,7 +25,7 @@ The script body runs as an async function with four names in scope: `agent`, `pi
 
 ### `agent(prompt, opts?)`
 
-Runs one subagent and returns its text output — or a parsed object if `opts.schema` is set (the text is `JSON.parse`'d).
+Runs one subagent and returns its text output. If `opts.schema` is set, the text is `JSON.parse`'d and the parsed object is returned; if parsing fails, the raw text string is returned unchanged, so guard for both shapes.
 
 ```js
 const summary = await agent("Summarize the auth module in src/auth/");
@@ -94,8 +94,8 @@ On a name conflict, **project shadows user** — same precedence as [agent disco
 
 Workflows are for *large* fan-out — the caps reflect that:
 
-- **16 agents concurrently**
-- **1000 agents per run**, total
+- **16 concurrent agents per `pipeline()` call** — `pipeline()` bounds its own fan-out to 16 in flight at once. This limit is *per pipeline*; bare `agent()` calls you fire yourself (e.g. via `Promise.all`) are not throttled by it, so don't hand-roll unbounded fan-out — use `pipeline()` and let it pace the work.
+- **1000 agents per run**, total — a global cap enforced across every `agent()` call regardless of how it's invoked; exceeding it aborts the run.
 
 These are fixed, not project-configurable — a project's config can't raise its own fan-out limit. Every agent call spends real tokens: a workflow that fans out to hundreds of subagents can rack up cost quickly even though none of it appears in your context. Prefer `subagent` for small tasks; reach for a workflow when the fan-out itself is the point.
 
