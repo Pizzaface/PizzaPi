@@ -1,5 +1,5 @@
 import { describe, expect, test, beforeEach, afterEach } from "bun:test";
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { workflowDirs, listSavedWorkflows, saveWorkflow, loadWorkflow } from "./persistence.js";
@@ -114,5 +114,99 @@ describe("listSavedWorkflows", () => {
         expect(list).toHaveLength(1);
         expect(list[0].name).toBe("bare");
         expect(list[0].meta).toBeUndefined();
+    });
+
+    test("scope:'user' is not hidden by a same-named project workflow (filters before shadowing)", () => {
+        saveWorkflow(projectDir, { name: "shared", script: "return 'user';", scope: "user", description: "user version" });
+        saveWorkflow(projectDir, { name: "shared", script: "return 'project';", scope: "project", description: "project version" });
+
+        // "both" (default) shadows: only the project entry survives.
+        const both = listSavedWorkflows(projectDir);
+        expect(both.find((w) => w.name === "shared")?.scope).toBe("project");
+
+        // Explicitly asking for scope:"user" must still surface the user entry,
+        // not silently drop it because a project workflow shadows it in "both".
+        const userOnly = listSavedWorkflows(projectDir, "user");
+        expect(userOnly).toHaveLength(1);
+        expect(userOnly[0]).toMatchObject({ name: "shared", scope: "user" });
+        expect(userOnly[0].meta?.description).toBe("user version");
+
+        const projectOnly = listSavedWorkflows(projectDir, "project");
+        expect(projectOnly).toHaveLength(1);
+        expect(projectOnly[0]).toMatchObject({ name: "shared", scope: "project" });
+    });
+});
+
+describe("listSavedWorkflows — metadata parsing is not code execution (RCE guard)", () => {
+    test("a malicious meta block does not execute during listSavedWorkflows", () => {
+        const dir = join(projectDir, ".pizzapi", "workflows");
+        mkdirSync(dir, { recursive: true });
+        // Old implementation used `new Function(...)`/eval to parse this —
+        // merely listing workflows would have executed the IIFE below.
+        const marker = "__WORKFLOW_META_RCE_MARKER__";
+        const malicious = [
+            `export const meta = (function() { globalThis.${marker} = true; return { name: "evil" }; })();`,
+            "",
+            "return 1;",
+        ].join("\n");
+        writeFileSync(join(dir, "evil.js"), malicious);
+
+        const list = listSavedWorkflows(projectDir);
+
+        expect((globalThis as Record<string, unknown>)[marker]).toBeUndefined();
+        expect(list).toHaveLength(1);
+        expect(list[0].name).toBe("evil");
+        // Not a JSON object literal, so parsing fails safely and meta is absent.
+        expect(list[0].meta).toBeUndefined();
+    });
+
+    test("a getter-based meta block does not execute during listSavedWorkflows", () => {
+        const dir = join(projectDir, ".pizzapi", "workflows");
+        mkdirSync(dir, { recursive: true });
+        const marker = "__WORKFLOW_META_GETTER_MARKER__";
+        const malicious = `export const meta = { name: "x", get description() { globalThis.${marker} = true; return "y"; } };\n\nreturn 1;`;
+        writeFileSync(join(dir, "evil2.js"), malicious);
+
+        const list = listSavedWorkflows(projectDir);
+
+        expect((globalThis as Record<string, unknown>)[marker]).toBeUndefined();
+        expect(list.find((w) => w.name === "evil2")?.meta).toBeUndefined();
+    });
+});
+
+describe("saveWorkflow — symlink guard", () => {
+    test("refuses to write when the workflows dir is a symlink to outside the project", () => {
+        const outside = mkdtempSync(join(tmpdir(), "workflow-outside-"));
+        mkdirSync(join(projectDir, ".pizzapi"), { recursive: true });
+        symlinkSync(outside, join(projectDir, ".pizzapi", "workflows"));
+
+        expect(() => saveWorkflow(projectDir, { name: "pwn", script: "return 1;", scope: "project" })).toThrow(/symlink/i);
+
+        try {
+            rmSync(outside, { recursive: true, force: true });
+        } catch {}
+    });
+
+    test("refuses to overwrite an existing file that is a symlink to outside the project", () => {
+        const outsideFile = join(mkdtempSync(join(tmpdir(), "workflow-outside-file-")), "secret.txt");
+        writeFileSync(outsideFile, "do not touch me");
+        const dir = join(projectDir, ".pizzapi", "workflows");
+        mkdirSync(dir, { recursive: true });
+        symlinkSync(outsideFile, join(dir, "pwn.js"));
+
+        expect(() => saveWorkflow(projectDir, { name: "pwn", script: "return 1;", scope: "project" })).toThrow(/symlink/i);
+    });
+
+    test("path traversal in the name can never escape the workflows dir", () => {
+        const workflowsDir = join(projectDir, ".pizzapi", "workflows");
+        for (const evilName of ["../../etc/evil", "..", "../../../../../../tmp/evil", "a/../../b"]) {
+            const filePath = saveWorkflow(projectDir, { name: evilName, script: "return 1;", scope: "project" });
+            // Must land directly inside the workflows dir as a single filename
+            // segment — never escape it, regardless of how the sanitized name
+            // happens to render (a literal ".." substring in a filename like
+            // "a-..-..-b.js" is harmless; a path separator is not).
+            expect(filePath.startsWith(workflowsDir + "/")).toBe(true);
+            expect(filePath.slice(workflowsDir.length + 1)).not.toContain("/");
+        }
     });
 });
