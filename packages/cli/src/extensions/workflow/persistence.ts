@@ -36,6 +36,14 @@ export function workflowDirs(cwd: string): { project: string; user: string } {
 // only handles a single top-level object literal (no template strings
 // containing unbalanced braces). Upgrade to a real parser if saved workflows
 // need richer metadata.
+//
+// SECURITY: the extracted literal is parsed with JSON.parse, never
+// evaluated. Listing/discovery reads workflow files from disk (including,
+// potentially, an untrusted cloned repo's `.pizzapi/workflows/`) — merely
+// listing must never execute file contents. saveWorkflow always writes meta
+// via JSON.stringify, so legitimate files are valid JSON; anything else
+// (including a deliberately malicious `meta` block) just fails to parse and
+// is treated as absent metadata.
 function extractMeta(content: string): { meta?: WorkflowMeta; script: string } {
     const match = content.match(/^\s*export\s+const\s+meta\s*=\s*(\{)/m);
     if (!match || match.index === undefined) return { script: content };
@@ -61,27 +69,41 @@ function extractMeta(content: string): { meta?: WorkflowMeta; script: string } {
     const objLiteral = content.slice(start, end + 1);
     let meta: WorkflowMeta | undefined;
     try {
-        // eslint-disable-next-line no-new-func
-        const value = new Function(`return (${objLiteral});`)();
-        if (value && typeof value === "object" && typeof value.name === "string") {
-            meta = { name: value.name, description: typeof value.description === "string" ? value.description : undefined };
+        const value: unknown = JSON.parse(objLiteral);
+        if (value && typeof value === "object" && typeof (value as Record<string, unknown>).name === "string") {
+            const v = value as Record<string, unknown>;
+            meta = { name: v.name as string, description: typeof v.description === "string" ? v.description : undefined };
         }
     } catch {
-        // Malformed meta block — treat as absent, still try to run the script.
+        // Malformed/non-JSON meta block — treat as absent, still try to run the script.
+        // NEVER fall back to eval here (that's the exact RCE this replaced).
     }
 
     const script = (content.slice(0, match.index) + content.slice(afterEnd)).trim();
     return { meta, script };
 }
 
-export function listSavedWorkflows(cwd: string): SavedWorkflowInfo[] {
+export function listSavedWorkflows(cwd: string, scope: "project" | "user" | "both" = "both"): SavedWorkflowInfo[] {
     const dirs = workflowDirs(cwd);
     const byName = new Map<string, SavedWorkflowInfo>();
 
-    for (const [scope, dir] of [
-        ["user", dirs.user],
-        ["project", dirs.project],
-    ] as const) {
+    // SECURITY/CORRECTNESS: only scan the requested scope's directory. If we
+    // scanned both and filtered afterwards, a project-scope workflow would
+    // shadow (hide) a same-named user-scope workflow even when the caller
+    // explicitly asked for scope:"user" — filtering must happen before
+    // shadowing, which in practice means never reading the other scope's dir
+    // at all when a specific scope was requested.
+    const scopesToScan =
+        scope === "both"
+            ? ([
+                  ["user", dirs.user],
+                  ["project", dirs.project],
+              ] as const)
+            : scope === "user"
+              ? ([["user", dirs.user]] as const)
+              : ([["project", dirs.project]] as const);
+
+    for (const [scopeName, dir] of scopesToScan) {
         let files: string[];
         try {
             files = fs.readdirSync(dir).filter((f) => f.endsWith(".js"));
@@ -99,11 +121,39 @@ export function listSavedWorkflows(cwd: string): SavedWorkflowInfo[] {
             }
             // Iterating user first then project means project overwrites,
             // giving project scope precedence on name conflicts.
-            byName.set(name, { name, scope, path: filePath, meta });
+            byName.set(name, { name, scope: scopeName, path: filePath, meta });
         }
     }
 
     return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
+}
+
+// SECURITY: refuse to write through a symlink. `root` is a trusted path we
+// already control (cwd or HOME); `target` is a path built underneath it
+// (e.g. `<cwd>/.pizzapi/workflows/name.js`). Walk each path segment between
+// root and target that already exists on disk and reject if any of them
+// (an intermediate dir OR the final file) is a symlink — a cloned repo
+// could otherwise ship `.pizzapi/workflows` (or a single workflow file) as
+// a symlink pointing outside the workflows dir, turning a routine save into
+// an overwrite of an arbitrary file on disk.
+function assertNoSymlinkInPath(root: string, target: string): void {
+    const rel = path.relative(root, target);
+    if (rel.startsWith("..") || path.isAbsolute(rel)) {
+        throw new Error(`Refusing to write outside ${root}: ${target}`);
+    }
+    let current = root;
+    for (const segment of rel.split(path.sep).filter(Boolean)) {
+        current = path.join(current, segment);
+        let st: fs.Stats;
+        try {
+            st = fs.lstatSync(current);
+        } catch {
+            continue; // doesn't exist yet — will be created for real, nothing to check
+        }
+        if (st.isSymbolicLink()) {
+            throw new Error(`Refusing to write through symlink: ${current}`);
+        }
+    }
 }
 
 export function saveWorkflow(
@@ -112,11 +162,16 @@ export function saveWorkflow(
 ): string {
     const dirs = workflowDirs(cwd);
     const scope = opts.scope ?? "project";
+    const root = scope === "project" ? cwd : process.env.HOME || homedir();
     const dir = scope === "project" ? dirs.project : dirs.user;
+
+    assertNoSymlinkInPath(root, dir);
     fs.mkdirSync(dir, { recursive: true });
 
     const safeName = sanitizeAgentFileSegment(opts.name);
     const filePath = path.join(dir, `${safeName}.js`);
+    assertNoSymlinkInPath(root, filePath);
+
     const meta: WorkflowMeta = { name: safeName, description: opts.description };
     const metaHeader = `export const meta = ${JSON.stringify(meta, null, 2)};\n\n`;
     fs.writeFileSync(filePath, metaHeader + opts.script.trimStart());
