@@ -16,6 +16,7 @@ import { spawnSessionExtension } from "./spawn-session.js";
 import { updateTodoExtension } from "./update-todo.js";
 import { memoryExtension } from "./memory/index.js";
 import { subagentExtension } from "./subagent.js";
+import { workflowExtension } from "./workflow/index.js";
 import { tunnelToolsExtension } from "./tunnel-tools.js";
 import { planModeToggleExtension } from "./plan-mode/index.js";
 import { triggersExtension } from "./triggers/extension.js";
@@ -51,6 +52,7 @@ const CORE_EXTENSIONS: ExtensionFactory[] = [
     memoryExtension,
     spawnSessionExtension,
     subagentExtension,
+    workflowExtension,
     planModeToggleExtension,
     sandboxEventsExtension,
     pizzapiTitleExtension,
