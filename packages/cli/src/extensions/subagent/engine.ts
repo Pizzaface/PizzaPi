@@ -124,6 +124,14 @@ export interface ModelRegistryLike {
 }
 
 /**
+ * True when the registry is a real ModelRegistry (safe to hand to
+ * createAgentSession for API-key resolution), not a narrow test mock.
+ */
+function isFullModelRegistry(registry: ModelRegistryLike): registry is ModelRegistryLike & import("@earendil-works/pi-coding-agent").ModelRegistry {
+    return typeof (registry as { getApiKeyForProvider?: unknown }).getApiKeyForProvider === "function";
+}
+
+/**
  * Select the cheapest available model from the registry.
  *
  * When no model is explicitly specified (neither by the caller nor the agent
@@ -142,6 +150,32 @@ export function selectLightweightModel(registry: ModelRegistryLike): Model<any> 
     // Sort by output token cost ascending — cheapest first
     const sorted = [...available].sort((a, b) => a.cost.output - b.cost.output);
     return sorted[0];
+}
+
+/**
+ * Resolve an explicit model spec against the registry.
+ *
+ * Falls back through:
+ *   1. Exact provider/id match — but only if it has credentials configured
+ *   2. Cached Ollama Cloud catalog (dynamic models not in the static registry)
+ *   3. Same model id under a different available provider — e.g. the
+ *      claude-subscription extension registers the same model ids under its
+ *      own provider while the built-in "anthropic" catalog has no API key, so
+ *      "anthropic/claude-haiku-4-5" resolves to
+ *      "claude-subscription/claude-haiku-4-5".
+ *   4. The credential-less exact match, so the downstream auth error names
+ *      the provider the caller actually asked for.
+ */
+export function resolveModelSpec(spec: ModelOverride, registry: ModelRegistryLike): Model<any> | undefined {
+    const exact = registry.find(spec.provider, spec.id);
+    const available = registry.getAvailable();
+    if (exact && available.includes(exact)) return exact;
+    return (
+        findCachedOllamaCloudModel(spec.provider, spec.id) ??
+        // ponytail: same-id fallback only, no fuzzy matching
+        available.find((m) => m.id === spec.id) ??
+        exact
+    );
 }
 
 export async function runSingleAgent(
@@ -262,12 +296,9 @@ export async function runSingleAgent(
         let resolvedModel: Model<any> | undefined;
         const modelSpec = modelOverride ?? (agent.model ? parseModelString(agent.model) : undefined);
         if (modelSpec && modelRegistry) {
-            // Explicit model specified — look it up. Ollama Cloud models are
-            // discovered dynamically and aren't in the static registry, so fall
-            // back to the cached catalog before giving up.
-            resolvedModel =
-                modelRegistry.find(modelSpec.provider, modelSpec.id) ??
-                findCachedOllamaCloudModel(modelSpec.provider, modelSpec.id);
+            // Explicit model specified — look it up (with same-id provider
+            // fallback for cases like claude-subscription replacing anthropic).
+            resolvedModel = resolveModelSpec(modelSpec, modelRegistry);
             if (!resolvedModel) {
                 currentResult.exitCode = 1;
                 currentResult.stderr = `Model not found: ${modelSpec.provider}/${modelSpec.id}. Use the \`models\` command to see available models.`;
@@ -286,6 +317,11 @@ export async function runSingleAgent(
             tools,
             resourceLoader: loader,
             ...(resolvedModel && { model: resolvedModel }),
+            // Share the parent's model registry so extension-registered
+            // providers (e.g. claude-subscription, ollama-cloud) resolve with
+            // their API keys — the subagent session skips extensions, so a
+            // fresh registry would fail with "No API key found".
+            ...(modelRegistry && isFullModelRegistry(modelRegistry) && { modelRegistry }),
         });
 
         // Subscribe to events to track messages and usage
