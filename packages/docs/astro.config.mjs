@@ -121,6 +121,7 @@ export default defineConfig({
                         { label: "Runner Services", slug: "customization/runner-services" },
                         { label: "Extension Providers", slug: "customization/providers" },
                         { label: "Subagents", slug: "customization/subagents" },
+                        { label: "Dynamic Workflows", slug: "customization/workflows" },
                     ],
                 },
                 {
