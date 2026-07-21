@@ -8,6 +8,7 @@ import { restartExtension } from "./restart.js";
 import { sessionProcessesExtension } from "./session-processes.js";
 
 import { setSessionNameExtension } from "./set-session-name.js";
+import { currentTimeExtension } from "./current-time.js";
 import { spawnSessionExtension } from "./spawn-session.js";
 import { updateTodoExtension } from "./update-todo.js";
 import { goalExtension } from "./goal/index.js";
@@ -77,6 +78,7 @@ export function buildPizzaPiExtensionFactories(options: BuildExtensionFactoriesO
         named(restartExtension, "restart"),
         named(sessionProcessesExtension, "session-processes"),
         named(setSessionNameExtension, "session-name"),
+        named(currentTimeExtension, "current-time"),
         named(updateTodoExtension, "todo"),
         named(spawnSessionExtension, "spawn-session"),
         named(subagentExtension, "subagent"),

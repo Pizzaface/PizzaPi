@@ -11,6 +11,7 @@ import { providerExtension } from "./providers/extension.js";
 import { restartExtension } from "./restart.js";
 
 import { setSessionNameExtension } from "./set-session-name.js";
+import { currentTimeExtension } from "./current-time.js";
 import { spawnSessionExtension } from "./spawn-session.js";
 import { updateTodoExtension } from "./update-todo.js";
 import { subagentExtension } from "./subagent.js";
@@ -40,6 +41,7 @@ const CORE_EXTENSIONS: ExtensionFactory[] = [
     restartExtension,
     sessionProcessesExtension,
     setSessionNameExtension,
+    currentTimeExtension,
     updateTodoExtension,
     spawnSessionExtension,
     subagentExtension,
