@@ -67,6 +67,7 @@ import { AskUserQuestionCard } from "@/components/session-viewer/cards/AskUserQu
 import { PlanModeCard } from "@/components/session-viewer/cards/PlanModeCard";
 import { TogglePlanModeCard } from "@/components/session-viewer/cards/TogglePlanModeCard";
 import { SubagentResultCard } from "@/components/session-viewer/cards/SubagentResultCard";
+import { WorkflowResultCard } from "@/components/session-viewer/cards/WorkflowResultCard";
 import {
   WebSearchQueryCard,
   WebSearchResultsCard,
@@ -848,6 +849,13 @@ export function renderGroupedToolExecution(
         details={details}
       />
     );
+  } else if (
+    norm === "run_workflow" ||
+    norm.endsWith(".run_workflow") ||
+    norm === "run_saved_workflow" ||
+    norm.endsWith(".run_saved_workflow")
+  ) {
+    card = <WorkflowResultCard details={details} content={content} />;
   } else if (norm === "askuserquestion" || norm.endsWith(".askuserquestion")) {
     const resultText = hasOutput ? extractTextFromToolContent(content) : null;
     card = (
