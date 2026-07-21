@@ -400,6 +400,9 @@ export interface PizzaPiConfig {
      */
     disabledMcpServers?: string[];
 
+    /** Model keys hidden from PizzaPi model selection and agent delegation. */
+    hiddenModels?: string[];
+
     /** PIZZAPI_* environment overrides applied to runner worker sessions. */
     envOverrides?: Record<string, string>;
 

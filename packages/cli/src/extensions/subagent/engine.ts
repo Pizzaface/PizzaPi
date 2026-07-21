@@ -16,6 +16,7 @@ import type { AgentConfig } from "../subagent-agents.js";
 import type { Model } from "@earendil-works/pi-ai";
 import { defaultAgentDir } from "../../config.js";
 import { findCachedOllamaCloudModel } from "../../ollama-cloud-models.js";
+import { filterVisibleModels, getHiddenModels, isModelHidden } from "../../model-visibility.js";
 import type { SingleResult, SubagentDetails, OnUpdateCallback } from "./types.js";
 import { getFinalOutput, summarizeResultForStreaming } from "./types.js";
 
@@ -143,8 +144,11 @@ function isFullModelRegistry(registry: ModelRegistryLike): registry is ModelRegi
  *   2. Pick the cheapest model that has credentials configured.
  *   3. If no available models, return undefined (fall back to default).
  */
-export function selectLightweightModel(registry: ModelRegistryLike): Model<any> | undefined {
-    const available = registry.getAvailable();
+export function selectLightweightModel(
+    registry: ModelRegistryLike,
+    hiddenModels: string[] = getHiddenModels(),
+): Model<any> | undefined {
+    const available = filterVisibleModels(registry.getAvailable(), hiddenModels);
     if (available.length === 0) return undefined;
 
     // Sort by output token cost ascending — cheapest first
@@ -294,7 +298,13 @@ export async function runSingleAgent(
 
         // Resolve model: tool parameter > agent frontmatter > auto-select cheapest > inherit parent default
         let resolvedModel: Model<any> | undefined;
+        const hiddenModels = getHiddenModels();
         const modelSpec = modelOverride ?? (agent.model ? parseModelString(agent.model) : undefined);
+        if (modelSpec && isModelHidden(modelSpec, hiddenModels)) {
+            currentResult.exitCode = 1;
+            currentResult.stderr = `Model is hidden on this runner: ${modelSpec.provider}/${modelSpec.id}.`;
+            return currentResult;
+        }
         if (modelSpec && modelRegistry) {
             // Explicit model specified — look it up (with same-id provider
             // fallback for cases like claude-subscription replacing anthropic).
@@ -304,11 +314,20 @@ export async function runSingleAgent(
                 currentResult.stderr = `Model not found: ${modelSpec.provider}/${modelSpec.id}. Use the \`models\` command to see available models.`;
                 return currentResult;
             }
+            if (isModelHidden(resolvedModel, hiddenModels)) {
+                currentResult.exitCode = 1;
+                currentResult.stderr = `Resolved model is hidden on this runner: ${resolvedModel.provider}/${resolvedModel.id}.`;
+                return currentResult;
+            }
         } else if (modelRegistry) {
-            // No explicit model — auto-select the cheapest available model
-            resolvedModel = selectLightweightModel(modelRegistry);
-            // If no available models at all, resolvedModel stays undefined and
-            // createAgentSession will fall back to its own default selection.
+            // No explicit model — auto-select the cheapest visible model.
+            resolvedModel = selectLightweightModel(modelRegistry, hiddenModels);
+            if (!resolvedModel && hiddenModels.length > 0) {
+                currentResult.exitCode = 1;
+                currentResult.stderr = "No visible models with configured credentials are available on this runner.";
+                return currentResult;
+            }
+            // With no hidden policy, preserve pi's default fallback behavior.
         }
 
         const { session } = await createAgentSession({

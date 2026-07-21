@@ -93,7 +93,7 @@ import {
   ModelSelectorName,
   ModelSelectorShortcut,
 } from "@/components/ai-elements/model-selector";
-import { HiddenModelsManager, loadHiddenModels, fetchHiddenModels, modelKey } from "@/components/HiddenModelsManager";
+import { HiddenModelsManager, fetchRunnerModelVisibility, modelKey, type ModelInfo } from "@/components/HiddenModelsManager";
 import { DegradedBanner } from "@/components/DegradedBanner";
 import { RunnerWarningBanner } from "@/components/RunnerWarningBanner";
 import { VersionBanner } from "@/components/VersionBanner";
@@ -572,6 +572,9 @@ export function App() {
   // Lifecycle hook: single owner of session phase/status/error/hydration/reconnect.
   const lifecycle = useSessionLifecycle({ liveSessions });
   const activeSessionId = lifecycle.state.activeSessionId;
+  const activeRunnerId = activeSessionId
+    ? liveSessions.find((item) => item.sessionId === activeSessionId)?.runnerId ?? null
+    : null;
   const viewerStatus = lifecycle.viewerStatus;
   const lifecycleIsHydrating = lifecycle.isHydrating;
   const lifecycleState = lifecycle.state;
@@ -749,7 +752,8 @@ export function App() {
     }
     return pendingQuestionFallbackRef.current.key;
   }, []);
-  const [hiddenModels, setHiddenModels] = React.useState<Set<string>>(() => loadHiddenModels());
+  const [hiddenModels, setHiddenModels] = React.useState<Set<string>>(new Set());
+  const [runnerModelCatalog, setRunnerModelCatalog] = React.useState<ModelInfo[]>([]);
   const [hiddenModelsOpen, setHiddenModelsOpen] = React.useState(false);
   const [changePasswordOpen, setChangePasswordOpen] = React.useState(false);
   const changePasswordMounted = useMountOnFirstOpen(changePasswordOpen);
@@ -1009,17 +1013,21 @@ export function App() {
   // contentIndex → elapsed seconds at thinking_end
   const thinkingDurationsRef = React.useRef<Map<number, number>>(new Map());
 
-  // Fetch hidden models from server once authenticated — server is the
-  // source of truth; localStorage is the fast-load cache.
+  // The active runner owns both its live model catalog and visibility policy.
   React.useEffect(() => {
-    if (!session) return;
+    if (!session || !activeRunnerId) {
+      setHiddenModels(new Set());
+      setRunnerModelCatalog([]);
+      return;
+    }
     let cancelled = false;
-    void fetchHiddenModels().then((serverSet) => {
+    void fetchRunnerModelVisibility(activeRunnerId).then((result) => {
       if (cancelled) return;
-      setHiddenModels(serverSet);
+      setHiddenModels(result.hiddenModels);
+      setRunnerModelCatalog(result.models);
     });
     return () => { cancelled = true; };
-  }, [session]);
+  }, [session, activeRunnerId]);
 
   React.useEffect(() => {
     if (!session) return;
@@ -4877,7 +4885,8 @@ export function App() {
       <HiddenModelsManager
         open={hiddenModelsOpen}
         onOpenChange={setHiddenModelsOpen}
-        models={availableModels}
+        runnerId={activeRunnerId ?? ""}
+        models={runnerModelCatalog.length > 0 ? runnerModelCatalog : availableModels}
         hiddenModels={hiddenModels}
         onHiddenModelsChange={setHiddenModels}
       />

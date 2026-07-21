@@ -275,7 +275,7 @@ Remove a folder from the recent-folders list.
 
 ### `GET /api/runners/{runnerId}/models`
 
-List available AI models on a runner, excluding user-hidden models.
+Retrieve the model catalog and persisted visibility policy directly from a runner. `models` contains selectable models; `allModels` also includes hidden models so visibility settings can reveal them again.
 
 **Auth:** Session cookie.
 
@@ -284,10 +284,24 @@ List available AI models on a runner, excluding user-hidden models.
 ```json
 {
   "models": [
+    { "provider": "anthropic", "id": "claude-sonnet-4-20250514" }
+  ],
+  "allModels": [
     { "provider": "anthropic", "id": "claude-sonnet-4-20250514" },
     { "provider": "openai", "id": "gpt-4o" }
-  ]
+  ],
+  "hiddenModels": ["openai/gpt-4o"]
 }
+```
+
+### `PUT /api/runners/{runnerId}/models`
+
+Replace the runner-local hidden model set. The relay authenticates and forwards this request; the runner persists it in `~/.pizzapi/config.json`.
+
+**Request body:**
+
+```json
+{ "hiddenModels": ["openai/gpt-4o"] }
 ```
 
 ---
@@ -1416,42 +1430,6 @@ Answer a pending agent question directly from a push notification (e.g. from mob
 - `409` — No question pending, or answer already submitted
 - `403` — Session not in collab mode
 - `502` — Runner not connected
-
----
-
-## Settings
-
-### `GET /api/settings/hidden-models`
-
-Get the list of hidden (disabled) models for the authenticated user.
-
-**Auth:** Session cookie.
-
-**Response:**
-
-```json
-{ "hiddenModels": ["openai/gpt-4", "anthropic/claude-2"] }
-```
-
----
-
-### `PUT /api/settings/hidden-models`
-
-Update the list of hidden models.
-
-**Auth:** Session cookie.
-
-**Request body:**
-
-```json
-{ "hiddenModels": ["openai/gpt-4"] }
-```
-
-**Response:**
-
-```json
-{ "ok": true, "hiddenModels": ["openai/gpt-4"] }
-```
 
 ---
 

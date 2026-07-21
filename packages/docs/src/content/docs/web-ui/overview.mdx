@@ -178,7 +178,7 @@ The **Model Visibility** dialog lets you control which models appear in the mode
 - Use the **search box** to filter models by name, ID, or provider.
 - A **"Show all"** button appears when any models are hidden, showing the count (e.g., "Show all (3 hidden)").
 
-Hidden model preferences are saved to both `localStorage` (for instant load) and the server (for cross-device sync). The server is the source of truth — on load, the UI fetches from the server and updates `localStorage` to match.
+Model visibility is scoped to the active runner. The runner persists it in `~/.pizzapi/config.json`, so the web selector, agent-facing `list_models`, model switching, spawned sessions, and in-process subagents use the same policy. Browser `localStorage` is only a runner-keyed display cache; the relay forwards reads and writes to the runner.
 
 ## API keys & runner tokens
 

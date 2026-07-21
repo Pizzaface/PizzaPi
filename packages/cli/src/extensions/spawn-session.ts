@@ -7,6 +7,7 @@ import { loadConfig } from "../config.js";
 import { normalizeLoopbackHost } from "../relay-url.js";
 import { getCachedOllamaCloudModels, toOllamaCloudRuntimeModel } from "../ollama-cloud-models.js";
 import { mergeModelLists } from "../session-models-cache.js";
+import { getHiddenModels, modelKey } from "../model-visibility.js";
 import { getRelaySessionId } from "./remote.js";
 import { buildProviderUsage, refreshAllUsage } from "./remote-provider-usage.js";
 import { formatProviderUsage, getUsageKey, normalizeUsageKeys } from "./format-usage.js";
@@ -165,11 +166,8 @@ export const spawnSessionExtension: ExtensionFactory = (pi) => {
             body.parentSessionId = ownSessionId;
 
             if (params.model) {
-                // Note: hidden-model enforcement is done server-side (runners.ts).
-                // A client-side check here using PIZZAPI_HIDDEN_MODELS would be
-                // stale — the env var is set once at worker start and does not
-                // reflect later changes made via PUT /api/settings/hidden-models.
-                // Relying on the server ensures the freshest list is always used.
+                // The runner validates this against its persisted visibility
+                // policy immediately before creating the child worker.
                 body.model = {
                     provider: params.model.provider,
                     id: params.model.id,
@@ -279,20 +277,11 @@ export const spawnSessionExtension: ExtensionFactory = (pi) => {
         async execute(_toolCallId, rawParams, _signal, _onUpdate, ctx) {
             const params = (rawParams ?? {}) as { onlyAvailable?: boolean };
 
-            // Load hidden models from env (set by the runner daemon from user preferences).
-            // Format: JSON array of "provider/modelId" strings.
-            let hiddenModelKeys: Set<string>;
-            try {
-                const raw = process.env.PIZZAPI_HIDDEN_MODELS;
-                hiddenModelKeys = raw
-                    ? new Set(JSON.parse(raw).filter((x: unknown): x is string => typeof x === "string"))
-                    : new Set();
-            } catch {
-                hiddenModelKeys = new Set();
-            }
-
+            // Runner-local config is authoritative and is read on every call so
+            // long-lived TUI/worker sessions see visibility changes immediately.
+            const hiddenModelKeys = new Set(getHiddenModels());
             const isHidden = (m: { provider: string | symbol; id: string }) =>
-                hiddenModelKeys.has(`${String(m.provider)}/${m.id}`);
+                hiddenModelKeys.has(modelKey({ provider: String(m.provider), id: m.id }));
 
             // Ollama Cloud models are discovered dynamically (fetched live from ollama.com,
             // not baked into the static registry) — merge in the runner's cached list, same

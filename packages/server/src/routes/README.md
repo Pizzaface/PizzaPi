@@ -16,7 +16,7 @@ routes/
 ├── sessions.ts       /api/sessions/* — list, pin/unpin
 ├── attachments.ts    Upload (POST /api/sessions/:id/attachments), download (GET /api/attachments/:id)
 ├── push.ts           /api/push/* — VAPID key, subscribe, unsubscribe, events
-├── settings.ts       /api/settings/hidden-models — GET & PUT
+├── settings.ts       legacy /api/settings/hidden-models compatibility — GET & PUT
 ├── index.test.ts     Dispatcher tests (health, 404, router delegation)
 └── utils.test.ts     parseJsonArray unit tests
 ```
@@ -84,5 +84,5 @@ type RouteHandler = (req: Request, url: URL) => Promise<Response | undefined>;
 | GET | `/api/push/subscriptions` | push.ts | Session |
 | PUT | `/api/push/events` | push.ts | Session |
 | POST | `/api/push/answer` | push.ts | Session |
-| GET | `/api/settings/hidden-models` | settings.ts | Session |
-| PUT | `/api/settings/hidden-models` | settings.ts | Session |
+| GET | `/api/settings/hidden-models` | settings.ts | Session (legacy compatibility) |
+| PUT | `/api/settings/hidden-models` | settings.ts | Session (legacy compatibility) |

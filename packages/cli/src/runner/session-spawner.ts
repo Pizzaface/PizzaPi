@@ -88,7 +88,6 @@ export function spawnSession(
     options?: {
         prompt?: string;
         model?: { provider: string; id: string };
-        hiddenModels?: string[];
         agent?: { name: string; systemPrompt?: string; tools?: string; disallowedTools?: string };
         parentSessionId?: string;
         resumePath?: string;
@@ -189,11 +188,6 @@ export function spawnSession(
             PIZZAPI_WORKER_INITIAL_MODEL_PROVIDER: options.model.provider,
             PIZZAPI_WORKER_INITIAL_MODEL_ID: options.model.id,
         } : {}),
-        // Hidden model keys (JSON array of "provider/modelId" strings).
-        // The list_models tool filters these from its output.
-        ...(options?.hiddenModels && options.hiddenModels.length > 0
-            ? { PIZZAPI_HIDDEN_MODELS: JSON.stringify(options.hiddenModels) }
-            : {}),
         // Agent session config — spawn the worker "as" this agent.
         // Parent session ID for trigger system (child→parent communication).
         ...(options?.parentSessionId ? { PIZZAPI_WORKER_PARENT_SESSION_ID: options.parentSessionId } : {}),

@@ -116,7 +116,6 @@ describe("session-spawner child", () => {
                 {
                     prompt: "hello",
                     model: { provider: "anthropic", id: "claude-sonnet" },
-                    hiddenModels: ["anthropic/claude-opus"],
                     agent: {
                         name: "researcher",
                         systemPrompt: "system",
@@ -142,7 +141,6 @@ describe("session-spawner child", () => {
                 PIZZAPI_WORKER_INITIAL_PROMPT: "hello",
                 PIZZAPI_WORKER_INITIAL_MODEL_PROVIDER: "anthropic",
                 PIZZAPI_WORKER_INITIAL_MODEL_ID: "claude-sonnet",
-                PIZZAPI_HIDDEN_MODELS: JSON.stringify(["anthropic/claude-opus"]),
                 PIZZAPI_WORKER_PARENT_SESSION_ID: "parent-1",
                 PIZZAPI_WORKER_AGENT_NAME: "researcher",
                 PIZZAPI_WORKER_AGENT_SYSTEM_PROMPT: "system",

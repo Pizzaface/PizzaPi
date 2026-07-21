@@ -14,6 +14,7 @@ import { GitService, GIT_SIGIL_DEFS } from "./services/git-service.js";
 import { resolvePizzaPiVar } from "../config/io.js";
 import { mergeModelLists, readSessionModelsCache, type SessionModelEntry } from "../session-models-cache.js";
 import { getCachedOllamaCloudModels } from "../ollama-cloud-models.js";
+import { filterVisibleModels, getHiddenModels, isModelHidden, setHiddenModels } from "../model-visibility.js";
 import { TunnelService } from "./services/tunnel-service.js";
 import { ProcessService } from "./services/process-service.js";
 import { TimeService, TIME_TRIGGER_DEFS, TIME_SIGIL_DEFS } from "./services/time-service.js";
@@ -1270,6 +1271,17 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                 return;
             }
 
+            // Migrate the legacy server-owned preference once. New servers no
+            // longer send hiddenModels; an explicit local [] remains authoritative.
+            const runnerConfig = loadGlobalConfig();
+            if (!Object.prototype.hasOwnProperty.call(runnerConfig, "hiddenModels") && Array.isArray(requestedHiddenModels)) {
+                setHiddenModels(requestedHiddenModels);
+            }
+            if (requestedModel && isModelHidden(requestedModel)) {
+                socket.emit("session_error", { sessionId, message: "Requested model is hidden on this runner" });
+                return;
+            }
+
             // The worker uses the runner's API key to register with the /relay namespace.
             if (!apiKey) {
                 socket.emit("session_error", { sessionId, message: "Runner is missing PIZZAPI_API_KEY" });
@@ -1336,8 +1348,8 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                     // On restart (exit code 43), the session already has
                     // the prompt in its history — re-sending would duplicate it.
                     const spawnOpts = isFirstSpawn
-                        ? { prompt: requestedPrompt, model: requestedModel, hiddenModels: requestedHiddenModels, agent: resolvedAgent, parentSessionId: requestedParentSessionId, resumePath: resolvedResumePath, autoClose: requestedAutoClose === true }
-                        : { hiddenModels: requestedHiddenModels, agent: resolvedAgent, parentSessionId: requestedParentSessionId, autoClose: requestedAutoClose === true }; // Always pass agent + hidden models + parent + autoClose on restart
+                        ? { prompt: requestedPrompt, model: requestedModel, agent: resolvedAgent, parentSessionId: requestedParentSessionId, resumePath: resolvedResumePath, autoClose: requestedAutoClose === true }
+                        : { agent: resolvedAgent, parentSessionId: requestedParentSessionId, autoClose: requestedAutoClose === true };
                     isFirstSpawn = false;
                     spawnSession(sessionId, apiKey!, relayRaw, requestedCwd, runningSessions, restartingSessions, killedSessions, doSpawn, spawnOpts);
                     setSessionCloseMetadata(sessionId, {
@@ -1848,10 +1860,33 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             if (isShuttingDown) return;
             const requestId = data?.requestId;
             try {
-                const models = listConfiguredModels(process.cwd());
-                socket.emit("models_list", { requestId, models });
+                const allModels = listConfiguredModels(process.cwd());
+                const config = loadGlobalConfig();
+                const hiddenModels = getHiddenModels();
+                socket.emit("models_list", {
+                    requestId,
+                    models: filterVisibleModels(allModels, hiddenModels),
+                    allModels,
+                    hiddenModels,
+                    modelVisibilityConfigured: Object.prototype.hasOwnProperty.call(config, "hiddenModels"),
+                });
             } catch (e: any) {
-                socket.emit("models_list", { requestId, models: [], error: e.message ?? "Failed to list models" });
+                socket.emit("models_list", { requestId, models: [], allModels: [], hiddenModels: getHiddenModels(), modelVisibilityConfigured: Object.prototype.hasOwnProperty.call(loadGlobalConfig(), "hiddenModels"), error: e.message ?? "Failed to list models" });
+            }
+        });
+
+        socket.on("set_hidden_models", (data: any) => {
+            if (isShuttingDown) return;
+            const requestId = data?.requestId;
+            try {
+                const hiddenModels = setHiddenModels(data?.hiddenModels);
+                socket.emit("file_result", { requestId, ok: true, hiddenModels });
+            } catch (err) {
+                socket.emit("file_result", {
+                    requestId,
+                    ok: false,
+                    message: err instanceof Error ? err.message : String(err),
+                });
             }
         });
 

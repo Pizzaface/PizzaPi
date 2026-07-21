@@ -143,7 +143,7 @@ export interface RunnerClientToServerEvents {
     [key: string]: unknown;
   }) => void;
 
-  /** Runner responds with available models */
+  /** Runner responds with its available models and visibility policy. */
   models_list: (data: {
     requestId?: string;
     models: Array<{
@@ -153,6 +153,17 @@ export interface RunnerClientToServerEvents {
       reasoning?: boolean;
       contextWindow?: number;
     }>;
+    /** Unfiltered inventory used by model-visibility settings. */
+    allModels?: Array<{
+      provider: string;
+      id: string;
+      name?: string;
+      reasoning?: boolean;
+      contextWindow?: number;
+    }>;
+    hiddenModels?: string[];
+    /** False only when no runner-local preference has ever been persisted. */
+    modelVisibilityConfigured?: boolean;
     error?: string;
   }) => void;
 
@@ -273,8 +284,7 @@ export interface RunnerServerToClientEvents {
     prompt?: string;
     model?: { provider: string; id: string };
     skills?: string[];
-    /** Model keys hidden by the user, format: "provider/modelId". The worker should
-     *  filter these from list_models tool results. */
+    /** @deprecated Legacy relay-owned preference, copied once by new runners. */
     hiddenModels?: string[];
     /** Optional agent config — spawn the session "as" this agent. */
     agent?: {
@@ -448,9 +458,15 @@ export interface RunnerServerToClientEvents {
     config: Record<string, unknown>;
   }) => void;
 
-  /** Requests available models from the runner */
+  /** Requests the runner's available model catalog and visibility policy. */
   list_models: (data: {
     requestId?: string;
+  }) => void;
+
+  /** Replaces the runner-local hidden model set. */
+  set_hidden_models: (data: {
+    requestId?: string;
+    hiddenModels: string[];
   }) => void;
 
   /** Requests usage dashboard data from the runner */

@@ -8,6 +8,7 @@ import type { RelayContext } from "../remote-types.js";
 import { getAuthSource } from "../remote-auth-source.js";
 import { emitSessionActive } from "./chunked-delivery.js";
 import { findCachedOllamaCloudModel } from "../../ollama-cloud-models.js";
+import { isModelHidden } from "../../model-visibility.js";
 
 /**
  * Handle a web-initiated model change request.
@@ -23,6 +24,16 @@ export async function setModelFromWeb(
     if (!rctx.latestCtx) return;
 
     try {
+        if (isModelHidden({ provider, id: modelId })) {
+            rctx.forwardEvent({
+                type: "model_set_result",
+                ok: false,
+                provider,
+                modelId,
+                message: "Model is hidden on this runner.",
+            });
+            return;
+        }
         const model =
             rctx.latestCtx.modelRegistry.find(provider, modelId) ??
             findCachedOllamaCloudModel(provider, modelId);

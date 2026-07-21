@@ -12,73 +12,19 @@ import { ModelSelectorLogo } from "@/components/ai-elements/model-selector";
 import { cn } from "@/lib/utils";
 import { Eye, EyeOff, Search, RotateCcw } from "lucide-react";
 import { Input } from "@/components/ui/input";
-
-const STORAGE_KEY = "pp-hidden-models";
-
-/** Read hidden model keys from localStorage (sync, used for initial render). */
-export function loadHiddenModels(): Set<string> {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return new Set();
-    const parsed = JSON.parse(raw);
-    if (Array.isArray(parsed)) return new Set(parsed.filter((x: unknown): x is string => typeof x === "string"));
-  } catch {}
-  return new Set();
-}
-
-/** Persist hidden model keys to localStorage AND sync to server. */
-export function saveHiddenModels(hidden: Set<string>): void {
-  const arr = [...hidden];
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(arr));
-  } catch {}
-
-  // Fire-and-forget server sync
-  void fetch("/api/settings/hidden-models", {
-    method: "PUT",
-    credentials: "include",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ hiddenModels: arr }),
-  }).catch(() => {});
-}
-
-/**
- * Fetch hidden models from the server and merge with localStorage.
- * Returns the authoritative set and updates localStorage to match.
- */
-export async function fetchHiddenModels(): Promise<Set<string>> {
-  try {
-    const res = await fetch("/api/settings/hidden-models", { credentials: "include" });
-    if (res.ok) {
-      const data = await res.json();
-      const arr: string[] = Array.isArray(data?.hiddenModels)
-        ? (data.hiddenModels as unknown[]).filter((x): x is string => typeof x === "string")
-        : [];
-      const models = new Set<string>(arr);
-      // Update localStorage to stay in sync
-      try { localStorage.setItem(STORAGE_KEY, JSON.stringify([...models])); } catch {}
-      return models;
-    }
-  } catch {}
-  // Fallback to localStorage if server is unreachable
-  return loadHiddenModels();
-}
+import { saveHiddenModels, type ModelInfo } from "./model-visibility";
+export { fetchRunnerModelVisibility, loadHiddenModels, type ModelInfo } from "./model-visibility";
 
 /** Build a model key for the hidden set. */
 export function modelKey(provider: string, id: string): string {
   return `${provider}/${id}`;
 }
 
-interface ModelInfo {
-  provider: string;
-  id: string;
-  name?: string;
-}
-
 export interface HiddenModelsManagerProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  /** All models known across sessions/runners. */
+  runnerId: string;
+  /** All models reported by this runner. */
   models: ModelInfo[];
   /** Current hidden model keys. */
   hiddenModels: Set<string>;
@@ -89,6 +35,7 @@ export interface HiddenModelsManagerProps {
 export function HiddenModelsManager({
   open,
   onOpenChange,
+  runnerId,
   models,
   hiddenModels,
   onHiddenModelsChange,
@@ -137,10 +84,10 @@ export function HiddenModelsManager({
       } else {
         next.add(key);
       }
-      saveHiddenModels(next);
+      saveHiddenModels(runnerId, next);
       onHiddenModelsChange(next);
     },
-    [hiddenModels, onHiddenModelsChange]
+    [hiddenModels, onHiddenModelsChange, runnerId]
   );
 
   const toggleProvider = React.useCallback(
@@ -157,16 +104,16 @@ export function HiddenModelsManager({
         for (const k of keys) next.add(k);
       }
 
-      saveHiddenModels(next);
+      saveHiddenModels(runnerId, next);
       onHiddenModelsChange(next);
     },
-    [hiddenModels, onHiddenModelsChange]
+    [hiddenModels, onHiddenModelsChange, runnerId]
   );
 
   const showAll = React.useCallback(() => {
-    saveHiddenModels(new Set());
+    saveHiddenModels(runnerId, new Set());
     onHiddenModelsChange(new Set());
-  }, [onHiddenModelsChange]);
+  }, [onHiddenModelsChange, runnerId]);
 
   const hiddenCount = models.filter((m) => hiddenModels.has(modelKey(m.provider, m.id))).length;
 

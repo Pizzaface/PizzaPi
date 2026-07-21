@@ -47,12 +47,14 @@ mock.module("../sessions/runner-trigger-listener-store.js", () => ({
     updateRunnerTriggerListener: mockUpdateRunnerTriggerListener,
 }));
 
+const mockGetHiddenModels = mock(() => Promise.resolve([] as string[]));
 const mockGetSession = mock(() => Promise.resolve(null));
 const mockEmitTriggerSubscriptionDelta = mock((_runnerId: string, _delta: any) => Promise.resolve());
+const mockSendRunnerCommand = mock((_runnerId: string, _command: Record<string, unknown>) => Promise.resolve({ ok: true } as any));
 mock.module("../ws/namespaces/runner.js", () => ({
     sendSkillCommand: mock(() => Promise.resolve({ ok: true })),
     sendAgentCommand: mock(() => Promise.resolve({ ok: true })),
-    sendRunnerCommand: mock(() => Promise.resolve({ ok: true })),
+    sendRunnerCommand: mockSendRunnerCommand,
     emitTriggerSubscriptionDelta: mockEmitTriggerSubscriptionDelta,
 }));
 mock.module("../ws/runner-control.js", () => ({ waitForSpawnAck: mock(() => Promise.resolve({ ok: true })) }));
@@ -61,7 +63,7 @@ mock.module("../runner-recent-folders.js", () => ({
     getRecentFolders: mock(() => Promise.resolve([])),
     recordRecentFolder: mock(() => Promise.resolve()),
 }));
-mock.module("../user-hidden-models.js", () => ({ getHiddenModels: mock(() => Promise.resolve([])) }));
+mock.module("../user-hidden-models.js", () => ({ getHiddenModels: mockGetHiddenModels }));
 import * as _runnerRegistryModule from "../ws/sio-registry/runners.js";
 import * as _sioStateModule from "../ws/sio-state/index.js";
 const mockRunnerServicesSpy = spyOn(_runnerRegistryModule, "getRunnerServices").mockImplementation(mockGetRunnerServices as any);
@@ -107,6 +109,88 @@ describe("runner service toggle route", () => {
             disabledServiceIds: ["taxonomy"],
             serviceId: "taxonomy",
             enabled: false,
+        });
+    });
+});
+
+describe("runner model routes", () => {
+    beforeEach(() => {
+        mockRequireSession.mockReset();
+        mockRequireSession.mockReturnValue(Promise.resolve({ userId: "user-1", userName: "TestUser" } as any));
+        mockGetRunnerData.mockReset();
+        mockGetRunnerData.mockReturnValue(Promise.resolve({ userId: "user-1", runnerId: "runner-A" } as any));
+        mockSendRunnerCommand.mockReset();
+        mockGetHiddenModels.mockReset();
+        mockGetHiddenModels.mockReturnValue(Promise.resolve([]));
+    });
+
+    test("relays the runner-provided visible and full model catalogs", async () => {
+        mockSendRunnerCommand.mockReturnValue(Promise.resolve({
+            models: [{ provider: "openai", id: "visible" }],
+            allModels: [{ provider: "openai", id: "visible" }, { provider: "openai", id: "hidden" }],
+            hiddenModels: ["openai/hidden"],
+        }));
+
+        const [req, url] = makeReq("GET", "/api/runners/runner-A/models");
+        const res = await handleRunnersRoute(req, url);
+
+        expect(res!.status).toBe(200);
+        expect(await res!.json()).toEqual({
+            models: [{ provider: "openai", id: "visible" }],
+            allModels: [{ provider: "openai", id: "visible" }, { provider: "openai", id: "hidden" }],
+            hiddenModels: ["openai/hidden"],
+        });
+        expect(mockSendRunnerCommand).toHaveBeenCalledWith("runner-A", { type: "list_models" });
+    });
+
+    test("migrates legacy preferences into an unconfigured new runner", async () => {
+        mockSendRunnerCommand
+            .mockReturnValueOnce(Promise.resolve({
+                models: [{ provider: "openai", id: "visible" }, { provider: "openai", id: "hidden" }],
+                allModels: [{ provider: "openai", id: "visible" }, { provider: "openai", id: "hidden" }],
+                hiddenModels: [],
+                modelVisibilityConfigured: false,
+            }))
+            .mockReturnValueOnce(Promise.resolve({ ok: true }));
+        mockGetHiddenModels.mockReturnValue(Promise.resolve(["openai/hidden"]));
+
+        const [req, url] = makeReq("GET", "/api/runners/runner-A/models");
+        const res = await handleRunnersRoute(req, url);
+        expect(await res!.json()).toEqual({
+            models: [{ provider: "openai", id: "visible" }],
+            allModels: [{ provider: "openai", id: "visible" }, { provider: "openai", id: "hidden" }],
+            hiddenModels: ["openai/hidden"],
+        });
+        expect(mockSendRunnerCommand).toHaveBeenLastCalledWith("runner-A", {
+            type: "set_hidden_models",
+            hiddenModels: ["openai/hidden"],
+        });
+    });
+
+    test("falls back to legacy relay preferences for an old runner", async () => {
+        mockSendRunnerCommand.mockReturnValue(Promise.resolve({
+            models: [{ provider: "openai", id: "visible" }, { provider: "openai", id: "hidden" }],
+        }));
+        mockGetHiddenModels.mockReturnValue(Promise.resolve(["openai/hidden"]));
+
+        const [req, url] = makeReq("GET", "/api/runners/runner-A/models");
+        const res = await handleRunnersRoute(req, url);
+        expect(await res!.json()).toEqual({
+            models: [{ provider: "openai", id: "visible" }],
+            allModels: [{ provider: "openai", id: "visible" }, { provider: "openai", id: "hidden" }],
+            hiddenModels: ["openai/hidden"],
+        });
+    });
+
+    test("relays visibility updates to the runner", async () => {
+        mockSendRunnerCommand.mockReturnValue(Promise.resolve({ ok: true, hiddenModels: ["openai/hidden"] }));
+        const [req, url] = makeReq("PUT", "/api/runners/runner-A/models", { hiddenModels: ["openai/hidden"] });
+        const res = await handleRunnersRoute(req, url);
+
+        expect(res!.status).toBe(200);
+        expect(mockSendRunnerCommand).toHaveBeenCalledWith("runner-A", {
+            type: "set_hidden_models",
+            hiddenModels: ["openai/hidden"],
         });
     });
 });

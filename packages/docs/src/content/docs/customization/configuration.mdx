@@ -138,6 +138,7 @@ You can also override any setting with **environment variables**.
 | `agentDir` | `string` | `~/.pizzapi` | Agent config directory (skills, extensions, etc.) |
 | `skills` | `string[]` | `[]` | Additional skill directories. Supports `~` expansion. |
 | `hooks` | `object` | — | Lifecycle hook scripts. See [Hooks](/PizzaPi/customization/hooks/). |
+| `hiddenModels` | `string[]` | `[]` | Runner-local model keys (`provider/modelId`) excluded from PizzaPi model selection and agent delegation. Managed by the web Model Visibility dialog. |
 | `envOverrides` | `Record<string, string>` | — | Environment variables to inject into runner worker sessions. |
 | `allowProjectHooks` | `boolean` | `false` | Trust gate: allow project-local hooks to run. **Global config only.** |
 | `allowProjectMcp` | `boolean` | `false` | Silences the warning for project-local MCP server definitions. **Global config only.** |

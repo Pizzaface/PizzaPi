@@ -1,5 +1,5 @@
-/**
- * Settings router — user preferences (e.g. hidden models).
+/** Legacy hidden-model settings API retained for old web clients.
+ * New clients use runner-scoped GET/PUT /api/runners/:id/models.
  */
 
 import { requireSession } from "../middleware.js";

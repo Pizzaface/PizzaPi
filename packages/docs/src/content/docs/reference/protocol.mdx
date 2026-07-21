@@ -150,14 +150,14 @@ The largest namespace — handles runner lifecycle, session spawning, terminal m
 | Event | Purpose |
 |---|---|
 | `runner_registered` | Confirm registration — includes `existingSessions` for re-adoption |
-| `new_session` | Spawn a session (with cwd, prompt, model, skills, agent config, hiddenModels) |
+| `new_session` | Spawn a session (with cwd, prompt, model, skills, and agent config; legacy `hiddenModels` is migration-only) |
 | `kill_session` / `session_ended` | Session lifecycle commands |
 | `list_sessions` / `list_terminals` | List active sessions or terminals |
 | `list_skills` / `create_skill` / `update_skill` / `delete_skill` / `get_skill` | Skill CRUD |
 | `list_agents` / `create_agent` / `update_agent` / `delete_agent` / `get_agent` | Agent CRUD |
 | `list_plugins` | Plugin discovery |
 | `list_files` / `search_files` / `read_file` | File operations |
-| `list_models` / `get_usage` | Model and usage queries |
+| `list_models` / `set_hidden_models` / `get_usage` | Runner-owned model catalog, visibility, and usage queries |
 | `analyze_session` | On-demand session context analysis |
 | `settings_get_config` / `settings_update_section` | Read/write runner settings |
 | `packages_list` / `packages_install` / `packages_remove` / `packages_update` | Package management |

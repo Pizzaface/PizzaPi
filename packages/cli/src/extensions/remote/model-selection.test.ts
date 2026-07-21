@@ -3,15 +3,18 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setModelFromWeb } from "./model-selection.js";
+import { _setGlobalConfigDir } from "../../config.js";
 
 async function withTempHome(fn: () => Promise<void> | void) {
     const previousHome = process.env.HOME;
     const tempHome = mkdtempSync(join(tmpdir(), "model-selection-test-"));
     process.env.HOME = tempHome;
+    _setGlobalConfigDir(join(tempHome, ".pizzapi"));
     try {
         await fn();
     } finally {
         rmSync(tempHome, { recursive: true, force: true });
+        _setGlobalConfigDir(null);
         if (previousHome === undefined) delete process.env.HOME;
         else process.env.HOME = previousHome;
     }
@@ -76,6 +79,27 @@ describe("setModelFromWeb", () => {
         await setModelFromWeb({ latestCtx: null, forwardEvent: (event: any) => events.push(event) } as any, pi, "x", "y");
 
         expect(events).toEqual([]);
+    });
+
+    test("rejects a model hidden in runner-local config", async () => {
+        await withTempHome(async () => {
+            const dir = join(process.env.HOME!, ".pizzapi");
+            mkdirSync(dir, { recursive: true });
+            writeFileSync(join(dir, "config.json"), JSON.stringify({ hiddenModels: ["ollama-cloud/glm-5.1"] }));
+            const { rctx, events } = createRctx(ollamaCloudModel("glm-5.1"));
+            let selected = false;
+
+            await setModelFromWeb(rctx, { setModel: async () => { selected = true; return true; } }, "ollama-cloud", "glm-5.1");
+
+            expect(selected).toBe(false);
+            expect(events).toContainEqual({
+                type: "model_set_result",
+                ok: false,
+                provider: "ollama-cloud",
+                modelId: "glm-5.1",
+                message: "Model is hidden on this runner.",
+            });
+        });
     });
 
     test("uses the static registry model when present", async () => {

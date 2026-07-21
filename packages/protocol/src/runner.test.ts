@@ -122,6 +122,18 @@ describe("runner — RunnerClientToServerEvents payloads", () => {
     expect(failure.message).toBe("Skill write failed");
   });
 
+  test("models_list carries visible, full, and hidden model state", () => {
+    type Payload = Parameters<RunnerClientToServerEvents["models_list"]>[0];
+    const payload: Payload = {
+      models: [{ provider: "openai", id: "visible" }],
+      allModels: [{ provider: "openai", id: "visible" }, { provider: "openai", id: "hidden" }],
+      hiddenModels: ["openai/hidden"],
+      modelVisibilityConfigured: true,
+    };
+    expect(payload.allModels).toHaveLength(2);
+    expect(payload.hiddenModels).toEqual(["openai/hidden"]);
+  });
+
   test("file_result carries optional ok and arbitrary keys", () => {
     type Payload = Parameters<RunnerClientToServerEvents["file_result"]>[0];
     const p: Payload = { ok: true, entries: ["a.ts", "b.ts"], requestId: "r1" };
@@ -422,6 +434,12 @@ describe("runner — RunnerServerToClientEvents payloads", () => {
     };
     expect(p.config).toBeDefined();
     expect(typeof p.config).toBe("object");
+  });
+
+  test("set_hidden_models carries the replacement runner-local policy", () => {
+    type Payload = Parameters<RunnerServerToClientEvents["set_hidden_models"]>[0];
+    const payload: Payload = { requestId: "models-1", hiddenModels: ["openai/hidden"] };
+    expect(payload.hiddenModels).toEqual(["openai/hidden"]);
   });
 
   test("error carries message string", () => {

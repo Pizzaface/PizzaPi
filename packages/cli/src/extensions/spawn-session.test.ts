@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSessionExtension } from "./spawn-session.js";
 import type { OllamaCloudModel } from "../ollama-cloud-models.js";
+import { _setGlobalConfigDir } from "../config.js";
 
 // list_models must surface dynamically-discovered Ollama Cloud models (cached
 // on disk, never in the static ModelRegistry) alongside the disk registry's
@@ -45,10 +46,10 @@ describe("list_models tool — Ollama Cloud merge", () => {
         tempHome = mkdtempSync(join(tmpdir(), "list-models-test-"));
         process.env.HOME = tempHome;
         delete process.env.OLLAMA_API_KEY;
-        delete process.env.PIZZAPI_HIDDEN_MODELS;
 
         const dir = join(tempHome, ".pizzapi");
         mkdirSync(dir, { recursive: true });
+        _setGlobalConfigDir(dir);
         const cached: OllamaCloudModel[] = [
             {
                 id: "glm-5.2",
@@ -69,7 +70,7 @@ describe("list_models tool — Ollama Cloud merge", () => {
         process.env.HOME = originalHome;
         if (originalKey === undefined) delete process.env.OLLAMA_API_KEY;
         else process.env.OLLAMA_API_KEY = originalKey;
-        delete process.env.PIZZAPI_HIDDEN_MODELS;
+        _setGlobalConfigDir(null);
         try {
             rmSync(tempHome, { recursive: true, force: true });
         } catch {
@@ -99,5 +100,19 @@ describe("list_models tool — Ollama Cloud merge", () => {
 
         expect(ids).not.toContain("ollama-cloud/glm-5.2");
         expect(ids).toContain("anthropic/claude-x");
+    });
+
+    test("reads runner-local hidden models on every call", async () => {
+        const pi = createMockPi();
+        spawnSessionExtension(pi as any);
+        const tool = pi.tools.get("list_models");
+        const configPath = join(tempHome, ".pizzapi", "config.json");
+
+        const before = await tool.execute("call-1", {}, undefined, undefined, fakeCtx(false));
+        expect((before.details.models as any[]).map((m) => m.id)).toContain("claude-x");
+
+        writeFileSync(configPath, JSON.stringify({ hiddenModels: ["anthropic/claude-x"] }));
+        const after = await tool.execute("call-2", {}, undefined, undefined, fakeCtx(false));
+        expect(after.content[0].text).toBe("No models found.");
     });
 });

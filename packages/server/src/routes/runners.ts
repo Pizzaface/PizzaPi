@@ -33,7 +33,6 @@ import { getHiddenModels } from "../user-hidden-models.js";
 import { cwdMatchesRoots } from "../security.js";
 import { isValidSkillName } from "../validation.js";
 import { parseJsonArray } from "./utils.js";
-import { isHiddenModel } from "./model-guard.js";
 import type { RouteHandler } from "./types.js";
 import { createLogger } from "@pizzapi/tools";
 
@@ -143,21 +142,9 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
             }
         }
 
-        // Block spawns that explicitly request a hidden model.
-        // Hidden models are filtered from list_models output but must also be
-        // enforced as a hard block here so they can't be reached by name.
-        // This check runs before the socket lookup so we reject cheaply.
-        let hiddenModels: string[];
-        try {
-            hiddenModels = await getHiddenModels(identity.userId);
-        } catch (err) {
-            log.error("Failed to fetch hidden models for user", identity.userId, err);
-            return Response.json({ error: "Unable to validate model availability" }, { status: 500 });
-        }
-
-        if (requestedModel && isHiddenModel(hiddenModels, requestedModel)) {
-            return Response.json({ error: "Requested model is not available" }, { status: 400 });
-        }
+        // Legacy migration only: old releases persisted this preference on the
+        // relay. New runners copy it once when no local hiddenModels key exists.
+        const hiddenModels = await getHiddenModels(identity.userId).catch(() => []);
 
         const runnerSocket = getLocalRunnerSocket(runnerId);
         if (!runnerSocket) {
@@ -416,7 +403,7 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
 
     // ── Available models ───────────────────────────────────────────
     const modelsMatch = url.pathname.match(/^\/api\/runners\/([^/]+)\/models$/);
-    if (modelsMatch && req.method === "GET") {
+    if (modelsMatch) {
         const identity = await requireSession(req);
         if (identity instanceof Response) return identity;
 
@@ -426,21 +413,56 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
         if (runner.userId !== identity.userId) return Response.json({ error: "Forbidden" }, { status: 403 });
 
         try {
-            const result = await sendRunnerCommand(runnerId, { type: "list_models" }) as any;
-            const models = Array.isArray(result?.models) ? result.models : [];
-            // Filter out hidden models
-            let hiddenModels: string[];
-            try {
-                hiddenModels = await getHiddenModels(identity.userId);
-            } catch {
-                hiddenModels = [];
+            if (req.method === "GET") {
+                const result = await sendRunnerCommand(runnerId, { type: "list_models" }) as any;
+                const runnerModels = Array.isArray(result?.models) ? result.models : [];
+                const allModels = Array.isArray(result?.allModels) ? result.allModels : runnerModels;
+                if (result?.modelVisibilityConfigured === false) {
+                    const legacyHiddenModels = await getHiddenModels(identity.userId).catch(() => []);
+                    if (legacyHiddenModels.length > 0) {
+                        await sendRunnerCommand(runnerId, {
+                            type: "set_hidden_models",
+                            hiddenModels: legacyHiddenModels,
+                        });
+                        const hidden = new Set(legacyHiddenModels);
+                        return Response.json({
+                            models: allModels.filter((model: any) => !hidden.has(`${model.provider}/${model.id}`)),
+                            allModels,
+                            hiddenModels: legacyHiddenModels,
+                        });
+                    }
+                }
+                if (Array.isArray(result?.hiddenModels)) {
+                    return Response.json({
+                        models: runnerModels,
+                        allModels,
+                        hiddenModels: result.hiddenModels,
+                    });
+                }
+
+                // Mixed-version fallback for runners that predate runner-owned
+                // visibility. Remove after the legacy settings API is retired.
+                const hiddenModels = await getHiddenModels(identity.userId).catch(() => []);
+                const hidden = new Set(hiddenModels);
+                return Response.json({
+                    models: runnerModels.filter((model: any) => !hidden.has(`${model.provider}/${model.id}`)),
+                    allModels: runnerModels,
+                    hiddenModels,
+                });
             }
-            const visible = models.filter((m: any) =>
-                !hiddenModels.includes(`${m.provider}/${m.id}`)
-            );
-            return Response.json({ models: visible });
-        } catch {
-            return Response.json({ models: [] });
+            if (req.method === "PUT") {
+                const body = await req.json().catch(() => null) as Record<string, unknown> | null;
+                if (!body || !Array.isArray(body.hiddenModels)) {
+                    return Response.json({ error: "hiddenModels must be an array" }, { status: 400 });
+                }
+                const result = await sendRunnerCommand(runnerId, {
+                    type: "set_hidden_models",
+                    hiddenModels: body.hiddenModels,
+                });
+                return Response.json(result);
+            }
+        } catch (err) {
+            return Response.json({ error: err instanceof Error ? err.message : String(err) }, { status: 502 });
         }
     }
 
@@ -590,16 +612,6 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
                 && typeof (body.model as Record<string, unknown>).id === "string"
                 ? body.model as { provider: string; id: string }
                 : undefined;
-            if (model) {
-                try {
-                    const hiddenModels = await getHiddenModels(identity.userId);
-                    if (isHiddenModel(hiddenModels, model)) {
-                        return Response.json({ error: "Model is hidden and cannot be used" }, { status: 403 });
-                    }
-                } catch {
-                }
-            }
-
             const autoClose = body?.autoClose === true ? true : undefined;
 
             const listenerId = await addRunnerTriggerListener(runnerId, triggerType, {
@@ -638,15 +650,6 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
                 && typeof (body.model as Record<string, unknown>).id === "string"
                 ? body.model as { provider: string; id: string }
                 : undefined;
-            if (model) {
-                try {
-                    const hiddenModels = await getHiddenModels(identity.userId);
-                    if (isHiddenModel(hiddenModels, model)) {
-                        return Response.json({ error: "Model is hidden and cannot be used" }, { status: 403 });
-                    }
-                } catch { }
-            }
-
             const autoClose = typeof body.autoClose === "boolean" ? body.autoClose : undefined;
 
             const updated = await updateRunnerTriggerListener(runnerId, target, {

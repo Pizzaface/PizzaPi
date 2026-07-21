@@ -450,21 +450,21 @@ describe("selectLightweightModel", () => {
             { provider: "anthropic", id: "claude-sonnet-4", cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 } },
             { provider: "anthropic", id: "claude-haiku-4-5", cost: { input: 0.8, output: 4, cacheRead: 0.08, cacheWrite: 1 } },
         ]);
-        const selected = selectLightweightModel(registry);
+        const selected = selectLightweightModel(registry, []);
         expect(selected).toBeDefined();
         expect(selected!.id).toBe("claude-haiku-4-5");
     });
 
     test("returns undefined when no models are available", () => {
         const registry = makeRegistry([]);
-        expect(selectLightweightModel(registry)).toBeUndefined();
+        expect(selectLightweightModel(registry, [])).toBeUndefined();
     });
 
     test("returns the only model if just one is available", () => {
         const registry = makeRegistry([
             { provider: "google", id: "gemini-2.5-pro", cost: { input: 1.25, output: 10, cacheRead: 0, cacheWrite: 0 } },
         ]);
-        const selected = selectLightweightModel(registry);
+        const selected = selectLightweightModel(registry, []);
         expect(selected).toBeDefined();
         expect(selected!.id).toBe("gemini-2.5-pro");
     });
@@ -475,8 +475,16 @@ describe("selectLightweightModel", () => {
             { provider: "google", id: "gemini-2.5-flash", cost: { input: 0.15, output: 0.6, cacheRead: 0, cacheWrite: 0 } },
             { provider: "anthropic", id: "claude-haiku-4-5", cost: { input: 0.8, output: 4, cacheRead: 0, cacheWrite: 0 } },
         ]);
-        const selected = selectLightweightModel(registry);
+        const selected = selectLightweightModel(registry, []);
         expect(selected!.id).toBe("gemini-2.5-flash");
+    });
+
+    test("skips hidden models during automatic selection", () => {
+        const registry = makeRegistry([
+            { provider: "google", id: "cheap", cost: { input: 0, output: 0.1, cacheRead: 0, cacheWrite: 0 } },
+            { provider: "anthropic", id: "visible", cost: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 } },
+        ]);
+        expect(selectLightweightModel(registry, ["google/cheap"])?.id).toBe("visible");
     });
 
     test("does not mutate the registry's model array", () => {
@@ -485,7 +493,7 @@ describe("selectLightweightModel", () => {
             { provider: "anthropic", id: "haiku", cost: { input: 0.8, output: 4, cacheRead: 0, cacheWrite: 0 } },
         ];
         const registry = makeRegistry(models);
-        selectLightweightModel(registry);
+        selectLightweightModel(registry, []);
         expect(models[0].id).toBe("opus"); // not reordered
     });
 });

@@ -15,7 +15,6 @@ const COMMON_VARS: { name: string; hint: string }[] = [
     { name: "PIZZAPI_NO_RELAY", hint: '"1" to disable relay' },
     { name: "PIZZAPI_RUNNER_ROOTS", hint: "comma-separated paths" },
     { name: "PIZZAPI_WORKSPACE_ROOTS", hint: "comma-separated paths" },
-    { name: "PIZZAPI_HIDDEN_MODELS", hint: "comma-separated model IDs" },
     { name: "PIZZAPI_SANDBOX_MODE", hint: '"none", "basic", or "full"' },
     { name: "PIZZAPI_WEB_SEARCH", hint: '"1" to enable' },
 ];
