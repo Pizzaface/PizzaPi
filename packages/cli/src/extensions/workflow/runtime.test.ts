@@ -382,6 +382,92 @@ describe("runWorkflow — pipeline() mapper-internal fan-out cleanup", () => {
     }, 15000);
 });
 
+describe("runWorkflow — top-level bare fan-out cleanup", () => {
+    test("a bare Promise.all([agent, agent]) at top level (outside pipeline) awaits the sibling before resolving, and leaves no agent non-terminal / no onUpdate after return", async () => {
+        // 'ok' stays pending under test control until released; 'fail'
+        // rejects immediately. Without run-level cleanup, runWorkflow()
+        // would resolve with status:"error" as soon as 'fail' rejects,
+        // while 'ok' keeps running in the background and mutates `details`
+        // (and fires onUpdate) after the promise already resolved.
+        let releaseOk: (() => void) | undefined;
+        const runner: RunSingleAgentFn = (async (
+            _defaultCwd: string,
+            _agents: unknown[],
+            agentName: string,
+            task: string,
+        ) => {
+            if (task === "fail") {
+                return failResult(agentName, task, "boom");
+            }
+            await new Promise<void>((resolve) => {
+                releaseOk = resolve;
+            });
+            return successResult(agentName, task, task);
+        }) as unknown as RunSingleAgentFn;
+
+        const updatesAfterResolve: WorkflowDetails[] = [];
+        let resolved = false;
+        const { details } = await new Promise<Awaited<ReturnType<typeof runWorkflow>>>((resolveTest) => {
+            const runPromise = runWorkflow({
+                script: "return await Promise.all([agent('ok'), agent('fail')]);",
+                ctx,
+                runSingleAgentFn: runner,
+                onUpdate: (d) => {
+                    if (resolved) updatesAfterResolve.push(JSON.parse(JSON.stringify(d)));
+                },
+            });
+            runPromise.then((r) => {
+                resolved = true;
+                resolveTest(r);
+            });
+
+            // Wait until 'ok' has actually started (its releaseOk is set) and
+            // 'fail' has rejected, then confirm runWorkflow() has NOT resolved
+            // while 'ok' is still in flight.
+            const waitAndFail = async () => {
+                while (!releaseOk) {
+                    await new Promise((r) => setTimeout(r, 0));
+                }
+                await new Promise((r) => setTimeout(r, 10));
+                expect(resolved).toBe(false);
+                releaseOk!();
+            };
+            void waitAndFail();
+        });
+
+        expect(details.status).toBe("error");
+        expect(details.error).toBe("boom");
+        const statuses = details.phases.flatMap((p) => p.agents.map((a) => a.status));
+        expect(statuses.every((s) => s === "done" || s === "error")).toBe(true);
+        expect(statuses).toContain("error");
+        expect(statuses).toContain("done");
+        // Nothing should have fired onUpdate after runWorkflow() already resolved.
+        expect(updatesAfterResolve).toEqual([]);
+    }, 15000);
+});
+
+describe("runWorkflow — abort re-checked after script resolves", () => {
+    test("reports status:'error' if the run was aborted even though the script resolved normally", async () => {
+        const controller = new AbortController();
+        const runner = makeFakeRunner((task) => {
+            // Simulate a script that catches/ignores the abort mid-run and
+            // still produces a normal-looking result.
+            controller.abort();
+            return { text: `echo:${task}` };
+        });
+
+        const { details } = await runWorkflow({
+            script: "return await agent('hi');",
+            ctx,
+            signal: controller.signal,
+            runSingleAgentFn: runner,
+        });
+
+        expect(details.status).toBe("error");
+        expect(details.error).toBe("aborted");
+    });
+});
+
 describe("runWorkflow — agent runner throws during setup", () => {
     test("marks the agent entry 'error' (not stuck 'running') when runSingleAgentFn itself throws", async () => {
         const runner: RunSingleAgentFn = (async () => {
