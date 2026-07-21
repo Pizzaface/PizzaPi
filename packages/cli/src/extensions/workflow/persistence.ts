@@ -107,8 +107,13 @@ export function listSavedWorkflows(cwd: string, scope: "project" | "user" | "bot
         let files: string[];
         try {
             files = fs.readdirSync(dir).filter((f) => f.endsWith(".js"));
-        } catch {
-            continue;
+        } catch (err) {
+            // A missing workflows dir just means "no saved workflows in this
+            // scope yet" — fine, keep scanning other scopes. Anything else
+            // (EACCES, EIO, ...) is a real problem the caller needs to know
+            // about, not silently-empty results.
+            if ((err as NodeJS.ErrnoException).code === "ENOENT") continue;
+            throw err;
         }
         for (const file of files) {
             const name = file.slice(0, -3);
@@ -174,7 +179,37 @@ export function saveWorkflow(
 
     const meta: WorkflowMeta = { name: safeName, description: opts.description };
     const metaHeader = `export const meta = ${JSON.stringify(meta, null, 2)};\n\n`;
-    fs.writeFileSync(filePath, metaHeader + opts.script.trimStart());
+    const content = metaHeader + opts.script.trimStart();
+
+    // SECURITY: write-then-rename instead of writeFileSync(filePath, ...)
+    // directly. writeFileSync follows a symlink at `filePath` and writes
+    // THROUGH it to wherever it points; renameSync does not — it atomically
+    // replaces the destination directory entry itself, so even if an
+    // attacker plants a symlink at `filePath` in the instant after the
+    // assertNoSymlinkInPath check above, the rename can never be tricked
+    // into following it. The temp file is created with "wx" (O_EXCL) so a
+    // pre-planted symlink at the temp path can't be written through either.
+    // ponytail: this closes the file-level TOCTOU but not the directory one
+    // — an attacker with local write access to `dir` could still swap an
+    // intermediate path *component* for a symlink between the re-check
+    // below and the rename syscall itself. Fully closing that needs
+    // O_NOFOLLOW directory-handle traversal (openat), which is
+    // over-engineering for this threat model (the workflow author's own
+    // project/home dir, not a hostile multi-tenant filesystem) — upgrade
+    // there if untrusted-local-attacker hardening is ever required.
+    const tempPath = path.join(dir, `.${safeName}.${process.pid}.${Date.now()}.tmp`);
+    try {
+        fs.writeFileSync(tempPath, content, { flag: "wx" });
+        assertNoSymlinkInPath(root, dir);
+        fs.renameSync(tempPath, filePath);
+    } catch (err) {
+        try {
+            fs.unlinkSync(tempPath);
+        } catch {
+            // best-effort cleanup — the write itself may never have succeeded
+        }
+        throw err;
+    }
     return filePath;
 }
 

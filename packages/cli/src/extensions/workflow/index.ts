@@ -98,15 +98,26 @@ export const workflowExtension = (pi: ExtensionAPI) => {
                 try {
                     saveWorkflow(ctx.cwd, { name: params.save.name, script: params.script, scope: params.save.scope });
                 } catch (err) {
-                    // Wrap: a save failure (fs error, symlink guard, etc.)
-                    // must not blow up a tool call whose workflow run itself
-                    // already succeeded — surface it as a warning instead.
                     saveError = err instanceof Error ? err.message : String(err);
                 }
             }
 
+            if (saveError) {
+                // The workflow itself ran fine, but the requested `save` did
+                // not — that's a genuine failure of what the caller asked for,
+                // not a footnote. Surface it as a structured error result
+                // (not a "done" status with a text warning) so callers can
+                // detect and react to it programmatically.
+                const errorDetails: WorkflowDetails = { ...details, status: "error", error: `Workflow completed but failed to save: ${saveError}` };
+                return {
+                    content: [{ type: "text", text: `${text}\n\nFailed to save workflow: ${saveError}` }],
+                    details: errorDetails,
+                    isError: true,
+                };
+            }
+
             return {
-                content: [{ type: "text", text: saveError ? `${text}\n\n(Warning: failed to save workflow: ${saveError})` : text }],
+                content: [{ type: "text", text }],
                 details,
                 ...(details.status === "error" && { isError: true }),
             };
