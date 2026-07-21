@@ -12,6 +12,7 @@ import {
     summarizeResultForStreaming,
     summarizeResultsForStreaming,
     parseModelString,
+    resolveModelSpec,
     selectLightweightModel,
 } from "./subagent.js";
 import { _setGlobalConfigDir, loadConfig, loadGlobalConfig } from "../config.js";
@@ -382,6 +383,58 @@ describe("parseModelString", () => {
 
     test("trims whitespace", () => {
         expect(parseModelString("  haiku  ")).toEqual({ provider: "anthropic", id: "claude-haiku-4-5" });
+    });
+});
+
+describe("resolveModelSpec", () => {
+    const makeRegistry = (models: Array<{ provider: string; id: string; available?: boolean }>) => ({
+        find: (provider: string, modelId: string) => models.find(m => m.provider === provider && m.id === modelId) as any,
+        getAvailable: () => models.filter(m => m.available !== false) as any[],
+    });
+
+    test("resolves an exact provider/id match", () => {
+        const registry = makeRegistry([
+            { provider: "anthropic", id: "claude-haiku-4-5" },
+            { provider: "claude-subscription", id: "claude-haiku-4-5" },
+        ]);
+        const model = resolveModelSpec({ provider: "anthropic", id: "claude-haiku-4-5" }, registry);
+        expect(model!.provider).toBe("anthropic");
+    });
+
+    test("prefers a same-id available provider over a credential-less exact match", () => {
+        // Built-in anthropic catalog remains registered but has no API key when
+        // the claude-subscription extension is the only configured provider.
+        const registry = makeRegistry([
+            { provider: "anthropic", id: "claude-haiku-4-5", available: false },
+            { provider: "claude-subscription", id: "claude-haiku-4-5" },
+        ]);
+        const model = resolveModelSpec({ provider: "anthropic", id: "claude-haiku-4-5" }, registry);
+        expect(model!.provider).toBe("claude-subscription");
+    });
+
+    test("returns the credential-less exact match when no same-id fallback exists", () => {
+        const registry = makeRegistry([
+            { provider: "anthropic", id: "claude-haiku-4-5", available: false },
+        ]);
+        const model = resolveModelSpec({ provider: "anthropic", id: "claude-haiku-4-5" }, registry);
+        expect(model!.provider).toBe("anthropic");
+    });
+
+    test("falls back to same id under another provider when the requested provider is missing", () => {
+        // claude-subscription unregisters "anthropic" and re-registers the same ids
+        const registry = makeRegistry([
+            { provider: "claude-subscription", id: "claude-haiku-4-5" },
+        ]);
+        const model = resolveModelSpec({ provider: "anthropic", id: "claude-haiku-4-5" }, registry);
+        expect(model).toBeDefined();
+        expect(model!.provider).toBe("claude-subscription");
+    });
+
+    test("returns undefined when no provider has the id", () => {
+        const registry = makeRegistry([
+            { provider: "claude-subscription", id: "claude-haiku-4-5" },
+        ]);
+        expect(resolveModelSpec({ provider: "anthropic", id: "claude-opus-4-5" }, registry)).toBeUndefined();
     });
 });
 
