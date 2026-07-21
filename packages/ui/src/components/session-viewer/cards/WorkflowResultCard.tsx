@@ -30,7 +30,11 @@ import { ToolCardShell } from "@/components/ui/tool-card";
 
 // ── Types (mirroring cli workflow/types.ts — keep in sync) ─────────────
 
-type WorkflowAgentStatus = "pending" | "running" | "done" | "error";
+const AGENT_STATUSES = ["pending", "running", "done", "error"] as const;
+const WORKFLOW_STATUSES = ["running", "done", "error"] as const;
+
+type WorkflowAgentStatus = (typeof AGENT_STATUSES)[number] | "unknown";
+type WorkflowStatus = (typeof WORKFLOW_STATUSES)[number] | "unknown";
 
 interface WorkflowAgentInfo {
   id: string;
@@ -50,7 +54,7 @@ interface WorkflowPhase {
 
 interface WorkflowDetails {
   name?: string;
-  status: "running" | "done" | "error";
+  status: WorkflowStatus;
   phases: WorkflowPhase[];
   totalAgents: number;
   totalTokens: number;
@@ -60,30 +64,64 @@ interface WorkflowDetails {
 
 // ── Validation (never crash on partial/malformed data) ──────────────────
 
-function isValidAgent(a: unknown): a is WorkflowAgentInfo {
-  if (!a || typeof a !== "object") return false;
-  const obj = a as Record<string, unknown>;
-  return typeof obj.id === "string" && typeof obj.status === "string" && typeof obj.prompt === "string";
+/** Returns `value` if it's a string, otherwise `undefined` — guards every
+ * optional field before it can reach truncate() or a React child slot. */
+function asString(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
 }
 
-function isValidPhase(p: unknown): p is WorkflowPhase {
+/** Narrows an arbitrary value to one of `allowed`, else "unknown" — never
+ * lets an unrecognized status string render as a valid state. */
+function normalizeStatus<T extends string>(value: unknown, allowed: readonly T[]): T | "unknown" {
+  return typeof value === "string" && (allowed as readonly string[]).includes(value) ? (value as T) : "unknown";
+}
+
+function isValidAgent(a: unknown): a is Record<string, unknown> {
+  if (!a || typeof a !== "object") return false;
+  const obj = a as Record<string, unknown>;
+  return typeof obj.id === "string" && typeof obj.prompt === "string";
+}
+
+/** Structural gate + coercion: required fields (id/prompt) must be strings;
+ * every optional field is coerced to a safe string or dropped entirely. */
+function sanitizeAgent(a: Record<string, unknown>): WorkflowAgentInfo {
+  return {
+    id: a.id as string,
+    prompt: a.prompt as string,
+    label: asString(a.label),
+    status: normalizeStatus(a.status, AGENT_STATUSES),
+    model: asString(a.model),
+    tokens: typeof a.tokens === "number" ? a.tokens : undefined,
+    result: asString(a.result),
+    error: asString(a.error),
+  };
+}
+
+function isValidPhase(p: unknown): p is Record<string, unknown> {
   if (!p || typeof p !== "object") return false;
   const obj = p as Record<string, unknown>;
-  return typeof obj.label === "string" && Array.isArray(obj.agents) && obj.agents.every(isValidAgent);
+  return Array.isArray(obj.agents) && obj.agents.every(isValidAgent);
+}
+
+function sanitizePhase(p: Record<string, unknown>): WorkflowPhase {
+  return {
+    label: asString(p.label) ?? "Untitled phase",
+    agents: (p.agents as Record<string, unknown>[]).map(sanitizeAgent),
+  };
 }
 
 function parseWorkflowDetails(details: unknown): WorkflowDetails | null {
   if (!details || typeof details !== "object" || Array.isArray(details)) return null;
   const obj = details as Record<string, unknown>;
-  if (typeof obj.status !== "string" || !Array.isArray(obj.phases)) return null;
+  if (!Array.isArray(obj.phases)) return null;
   if (!obj.phases.every(isValidPhase)) return null;
   return {
-    name: typeof obj.name === "string" ? obj.name : undefined,
-    status: obj.status as WorkflowDetails["status"],
-    phases: obj.phases as WorkflowPhase[],
+    name: asString(obj.name),
+    status: normalizeStatus(obj.status, WORKFLOW_STATUSES),
+    phases: (obj.phases as Record<string, unknown>[]).map(sanitizePhase),
     totalAgents: typeof obj.totalAgents === "number" ? obj.totalAgents : 0,
     totalTokens: typeof obj.totalTokens === "number" ? obj.totalTokens : 0,
-    error: typeof obj.error === "string" ? obj.error : undefined,
+    error: asString(obj.error),
     result: obj.result,
   };
 }
@@ -144,7 +182,7 @@ function StatusIcon({ status }: { status: WorkflowAgentStatus }) {
   }
 }
 
-function StatusPillFor({ status }: { status: "running" | "done" | "error" }) {
+function StatusPillFor({ status }: { status: WorkflowStatus }) {
   if (status === "running") {
     return (
       <span className="ml-auto inline-flex items-center gap-1 text-[10px] text-violet-400 shrink-0">
@@ -161,10 +199,18 @@ function StatusPillFor({ status }: { status: "running" | "done" | "error" }) {
       </span>
     );
   }
+  if (status === "done") {
+    return (
+      <span className="ml-auto inline-flex items-center gap-1 text-[10px] text-emerald-400 shrink-0">
+        <CheckCircle2Icon className="size-3" />
+        Done
+      </span>
+    );
+  }
   return (
-    <span className="ml-auto inline-flex items-center gap-1 text-[10px] text-emerald-400 shrink-0">
-      <CheckCircle2Icon className="size-3" />
-      Done
+    <span className="ml-auto inline-flex items-center gap-1 text-[10px] text-zinc-500 shrink-0">
+      <CircleIcon className="size-3" />
+      Unknown
     </span>
   );
 }
@@ -175,32 +221,40 @@ function AgentRow({ agent }: { agent: WorkflowAgentInfo }) {
   const [expanded, setExpanded] = React.useState(false);
   const detail = agent.status === "error" ? agent.error : agent.result;
   const hasDetail = typeof detail === "string" && detail.length > 0;
+  const rowContent = (
+    <>
+      {hasDetail ? (
+        <ChevronRightIcon
+          className={cn("size-3 shrink-0 text-zinc-500 transition-transform", expanded && "rotate-90")}
+        />
+      ) : (
+        <span className="size-3 shrink-0" />
+      )}
+      <StatusIcon status={agent.status} />
+      <span className="text-[0.75rem] text-zinc-300 truncate flex-1">
+        {truncate(agent.label || agent.prompt || agent.id, 80)}
+      </span>
+      {agent.model && <span className="text-[10px] font-mono text-zinc-500 shrink-0">{agent.model}</span>}
+      {typeof agent.tokens === "number" && agent.tokens > 0 && (
+        <span className="text-[10px] font-mono text-zinc-600 shrink-0">{formatTokens(agent.tokens)}</span>
+      )}
+    </>
+  );
 
   return (
     <div className="border-t border-zinc-800/60 first:border-t-0">
-      <button
-        onClick={() => hasDetail && setExpanded((e) => !e)}
-        className={cn(
-          "flex w-full items-center gap-2 px-3 py-1.5 text-left",
-          hasDetail && "hover:bg-zinc-900/60 transition-colors",
-        )}
-      >
-        {hasDetail ? (
-          <ChevronRightIcon
-            className={cn("size-3 shrink-0 text-zinc-500 transition-transform", expanded && "rotate-90")}
-          />
-        ) : (
-          <span className="size-3 shrink-0" />
-        )}
-        <StatusIcon status={agent.status} />
-        <span className="text-[0.75rem] text-zinc-300 truncate flex-1">
-          {truncate(agent.label || agent.prompt || agent.id, 80)}
-        </span>
-        {agent.model && <span className="text-[10px] font-mono text-zinc-500 shrink-0">{agent.model}</span>}
-        {typeof agent.tokens === "number" && agent.tokens > 0 && (
-          <span className="text-[10px] font-mono text-zinc-600 shrink-0">{formatTokens(agent.tokens)}</span>
-        )}
-      </button>
+      {hasDetail ? (
+        <button
+          type="button"
+          aria-expanded={expanded}
+          onClick={() => setExpanded((e) => !e)}
+          className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-zinc-900/60 transition-colors"
+        >
+          {rowContent}
+        </button>
+      ) : (
+        <div className="flex w-full items-center gap-2 px-3 py-1.5 text-left">{rowContent}</div>
+      )}
       {expanded && hasDetail && (
         <div
           className={cn(
@@ -225,6 +279,8 @@ function PhaseSection({ phase, defaultOpen }: { phase: WorkflowPhase; defaultOpe
   return (
     <div className="border-t border-zinc-800/60 first:border-t-0">
       <button
+        type="button"
+        aria-expanded={open}
         onClick={() => setOpen((o) => !o)}
         className="flex w-full items-center gap-2 px-3 py-2 hover:bg-zinc-900/40 transition-colors text-left"
       >
