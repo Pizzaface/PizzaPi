@@ -93,12 +93,20 @@ export const workflowExtension = (pi: ExtensionAPI) => {
                     : undefined,
             });
 
+            let saveError: string | undefined;
             if (details.status === "done" && params.save) {
-                saveWorkflow(ctx.cwd, { name: params.save.name, script: params.script, scope: params.save.scope });
+                try {
+                    saveWorkflow(ctx.cwd, { name: params.save.name, script: params.script, scope: params.save.scope });
+                } catch (err) {
+                    // Wrap: a save failure (fs error, symlink guard, etc.)
+                    // must not blow up a tool call whose workflow run itself
+                    // already succeeded — surface it as a warning instead.
+                    saveError = err instanceof Error ? err.message : String(err);
+                }
             }
 
             return {
-                content: [{ type: "text", text }],
+                content: [{ type: "text", text: saveError ? `${text}\n\n(Warning: failed to save workflow: ${saveError})` : text }],
                 details,
                 ...(details.status === "error" && { isError: true }),
             };
@@ -114,8 +122,21 @@ export const workflowExtension = (pi: ExtensionAPI) => {
         async execute(_toolCallId, rawParams, _signal, _onUpdate, ctx) {
             const params = rawParams as { scope?: "project" | "user" | "both" };
             const scope = params.scope ?? "both";
-            const all = listSavedWorkflows(ctx.cwd);
-            const filtered = scope === "both" ? all : all.filter((w) => w.scope === scope);
+
+            let filtered: ReturnType<typeof listSavedWorkflows>;
+            try {
+                // Filter by scanning only the requested scope's directory —
+                // filtering AFTER a combined/deduped listing would hide a
+                // user-scope workflow shadowed by a same-named project one.
+                filtered = listSavedWorkflows(ctx.cwd, scope);
+            } catch (err) {
+                const message = err instanceof Error ? err.message : String(err);
+                return {
+                    content: [{ type: "text", text: `Failed to list workflows: ${message}` }],
+                    details: { status: "error", error: message, workflows: [] },
+                    isError: true,
+                };
+            }
 
             const text =
                 filtered.length === 0
@@ -139,7 +160,17 @@ export const workflowExtension = (pi: ExtensionAPI) => {
 
         async execute(_toolCallId, rawParams, signal, onUpdate, ctx) {
             const params = rawParams as { name: string; args?: unknown };
-            const loaded = loadWorkflow(ctx.cwd, params.name);
+            let loaded: ReturnType<typeof loadWorkflow>;
+            try {
+                loaded = loadWorkflow(ctx.cwd, params.name);
+            } catch (err) {
+                const message = err instanceof Error ? err.message : String(err);
+                return {
+                    content: [{ type: "text", text: `Failed to load workflow "${params.name}": ${message}` }],
+                    details: { name: params.name, status: "error", phases: [], totalAgents: 0, totalTokens: 0, error: message } satisfies WorkflowDetails,
+                    isError: true,
+                };
+            }
             if (!loaded) {
                 return {
                     content: [{ type: "text", text: `No saved workflow named "${params.name}".` }],

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { runWorkflow, WORKFLOW_MAX_TOTAL_AGENTS, type RunSingleAgentFn } from "./runtime.js";
+import { runWorkflow, WORKFLOW_MAX_CONCURRENCY, WORKFLOW_MAX_TOTAL_AGENTS, type RunSingleAgentFn } from "./runtime.js";
 import type { WorkflowDetails } from "./types.js";
 import type { SingleResult } from "../subagent/types.js";
 
@@ -214,6 +214,161 @@ describe("runWorkflow — onUpdate", () => {
         expect(updates.some((d) => d.phases[0]?.agents[0]?.status === "running")).toBe(true);
         expect(updates.some((d) => d.phases[0]?.agents[0]?.status === "done")).toBe(true);
         expect(updates[updates.length - 1].status).toBe("done");
+    });
+});
+
+describe("runWorkflow — global concurrency semaphore", () => {
+    test("caps peak concurrent agent() executions at WORKFLOW_MAX_CONCURRENCY even via bare Promise.all fan-out", async () => {
+        let active = 0;
+        let peak = 0;
+        const deferreds: Array<() => void> = [];
+        const runner: RunSingleAgentFn = (async (_defaultCwd: string, _agents: unknown[], agentName: string, task: string) => {
+            active++;
+            peak = Math.max(peak, active);
+            await new Promise<void>((resolve) => deferreds.push(resolve));
+            active--;
+            return successResult(agentName, task, task);
+        }) as unknown as RunSingleAgentFn;
+
+        const items = Array.from({ length: WORKFLOW_MAX_CONCURRENCY * 3 }, (_, i) => i);
+        const runPromise = runWorkflow({
+            // Bare Promise.all — deliberately bypasses pipeline()'s own bounded
+            // mapper to prove the cap is enforced inside runOneAgent itself.
+            script: "return await Promise.all(args.map((i) => agent('item ' + i)));",
+            args: items,
+            ctx,
+            runSingleAgentFn: runner,
+        });
+
+        // Let every agent() call reach the runner and queue on the semaphore,
+        // then release them all in one go and check the recorded peak.
+        while (deferreds.length < WORKFLOW_MAX_CONCURRENCY && active < WORKFLOW_MAX_CONCURRENCY) {
+            await new Promise((r) => setTimeout(r, 0));
+        }
+        await new Promise((r) => setTimeout(r, 5));
+        expect(peak).toBeLessThanOrEqual(WORKFLOW_MAX_CONCURRENCY);
+        expect(active).toBeLessThanOrEqual(WORKFLOW_MAX_CONCURRENCY);
+
+        while (deferreds.length > 0) {
+            const resolve = deferreds.shift()!;
+            resolve();
+            await new Promise((r) => setTimeout(r, 0));
+        }
+
+        const { details } = await runPromise;
+        expect(details.status).toBe("done");
+        expect(peak).toBeLessThanOrEqual(WORKFLOW_MAX_CONCURRENCY);
+        expect(details.totalAgents).toBe(items.length);
+    }, 15000);
+});
+
+describe("runWorkflow — pipeline() failure cleanup", () => {
+    test("aborts sibling workers and awaits full settlement before returning the error", async () => {
+        // Deterministic control: every agent() call blocks on an
+        // externally-resolved promise, so the test can wait until all 4 are
+        // truly in-flight (abort listeners attached) before deciding which
+        // one fails — no setTimeout race.
+        const controls: Record<number, { fail: () => void }> = {};
+        const abortedIndexes: number[] = [];
+        const finishedIndexes: number[] = [];
+        const runner: RunSingleAgentFn = (async (
+            _defaultCwd: string,
+            _agents: unknown[],
+            agentName: string,
+            task: string,
+            _cwd: string | undefined,
+            _step: number | undefined,
+            signal: AbortSignal | undefined,
+        ) => {
+            const idx = Number(task.split(" ")[1]);
+            const outcome = await new Promise<"ok" | "fail">((resolve, reject) => {
+                controls[idx] = { fail: () => resolve("fail") };
+                signal?.addEventListener(
+                    "abort",
+                    () => {
+                        abortedIndexes.push(idx);
+                        reject(new Error("cancelled"));
+                    },
+                    { once: true },
+                );
+            });
+            if (outcome === "fail") return failResult(agentName, task, "boom");
+            finishedIndexes.push(idx);
+            return successResult(agentName, task, task);
+        }) as unknown as RunSingleAgentFn;
+
+        const runPromise = runWorkflow({
+            script: "return await pipeline(args, (item) => agent('item ' + item));",
+            args: [0, 1, 2, 3],
+            ctx,
+            runSingleAgentFn: runner,
+        });
+
+        while (Object.keys(controls).length < 4) {
+            await new Promise((r) => setTimeout(r, 0));
+        }
+        controls[0]!.fail();
+
+        const { details } = await runPromise;
+
+        expect(details.status).toBe("error");
+        expect(details.error).toBe("boom");
+        // The siblings must have been aborted rather than left to finish
+        // naturally in the background. (item 0's own abort listener also
+        // fires on the shared pipeline signal since it's still attached at
+        // that point — harmless, its outcome was already decided; only the
+        // OTHER siblings' abort matters here.)
+        expect(finishedIndexes).toEqual([]);
+        expect(new Set(abortedIndexes.filter((i) => i !== 0))).toEqual(new Set([1, 2, 3]));
+        // By the time runWorkflow() resolves, every agent must be in a
+        // terminal state — nothing left "pending"/"running" for a background
+        // worker to still be mutating.
+        const statuses = details.phases[0].agents.map((a) => a.status);
+        expect(statuses.every((s) => s === "done" || s === "error")).toBe(true);
+    }, 15000);
+});
+
+describe("runWorkflow — agent runner throws during setup", () => {
+    test("marks the agent entry 'error' (not stuck 'running') when runSingleAgentFn itself throws", async () => {
+        const runner: RunSingleAgentFn = (async () => {
+            throw new Error("setup exploded");
+        }) as unknown as RunSingleAgentFn;
+
+        const result = await runWorkflow({
+            script: "return await agent('hi');",
+            ctx,
+            runSingleAgentFn: runner,
+        });
+
+        expect(result.details.status).toBe("error");
+        expect(result.details.error).toBe("setup exploded");
+        expect(result.details.phases[0].agents[0].status).toBe("error");
+        expect(result.details.phases[0].agents[0].error).toBe("setup exploded");
+    });
+});
+
+describe("runWorkflow — result serialization guard", () => {
+    test("normalizes BigInt in the script result instead of throwing uncaught", async () => {
+        const runner = makeFakeRunner(() => ({ text: "unused" }));
+        const { details, text } = await runWorkflow({
+            script: "return { count: 10n };",
+            ctx,
+            runSingleAgentFn: runner,
+        });
+        expect(details.status).toBe("done");
+        expect(details.result).toEqual({ count: "10n" });
+        expect(text).toContain("10n");
+    });
+
+    test("a circular result surfaces as a clean workflow error, not an uncaught throw", async () => {
+        const runner = makeFakeRunner(() => ({ text: "unused" }));
+        const { details } = await runWorkflow({
+            script: "const o = {}; o.self = o; return o;",
+            ctx,
+            runSingleAgentFn: runner,
+        });
+        expect(details.status).toBe("error");
+        expect(details.error).toContain("not JSON-serializable");
     });
 });
 
