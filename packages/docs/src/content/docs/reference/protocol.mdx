@@ -144,6 +144,7 @@ The largest namespace — handles runner lifecycle, session spawning, terminal m
 | `terminal_ready` / `terminal_data` / `terminal_exit` / `terminal_error` | Terminal PTY output |
 | `disconnect_session` | Request relay to disconnect an adopted session |
 | `trigger_subscriptions_applied` | Ack a trigger subscription snapshot or delta |
+| `trigger_subscriptions_restore` | Re-upload session subscriptions missing from a reconnect snapshot (e.g. after the relay's ephemeral Redis was recreated) |
 
 **Key server→client events:**
 
@@ -326,7 +327,7 @@ interface TunnelInfo {
 
 ### Service Sigils & Trigger Subscriptions
 
-Services can also declare **sigil types** (`ServiceSigilDef`) for inline references rendered in the UI, and **trigger filters** (`TriggerFilter` / `TriggerFilterMode`) so subscribers can restrict which events they receive. Trigger subscriptions are reconciled between server and runner via `TriggerSubscriptionsSnapshot`, `TriggerSubscriptionDelta`, and the `trigger_subscriptions_applied` ack in the `/runner` namespace.
+Services can also declare **sigil types** (`ServiceSigilDef`) for inline references rendered in the UI, and **trigger filters** (`TriggerFilter` / `TriggerFilterMode`) so subscribers can restrict which events they receive. Trigger subscriptions are reconciled between server and runner via `TriggerSubscriptionsSnapshot`, `TriggerSubscriptionDelta`, and the `trigger_subscriptions_applied` ack in the `/runner` namespace. Reconciliation is two-way: when a reconnect snapshot is missing subscriptions the runner still has cached (the relay's Redis is ephemeral and is wiped when `pizza web` recreates the container), the runner merges them back locally and re-uploads them via `trigger_subscriptions_restore` so trigger delivery resumes without a runner restart.
 
 ## Session Meta-State
 

@@ -26,7 +26,7 @@ import type {
 import { shouldPreserveOnSocketDisconnect } from "../../health.js";
 import { apiKeyAuthMiddleware } from "./auth.js";
 import { bindSocketHandlersToAuthContext } from "./context.js";
-import { getSubscriptionsForRunnerSessions, nextTriggerSubRevision } from "../../sessions/trigger-subscription-store.js";
+import { getSubscriptionsForRunnerSessions, nextTriggerSubRevision, restoreSessionSubscriptions } from "../../sessions/trigger-subscription-store.js";
 import { listRunnerTriggerListeners } from "../../sessions/runner-trigger-listener-store.js";
 
 // Inline definitions mirror packages/protocol/src/shared.ts.
@@ -774,6 +774,45 @@ export function registerRunnerNamespace(io: SocketIOServer, context: AuthContext
             const runnerId = socket.data.runnerId;
             if (!runnerId) return;
             log.info(`[trigger-reconciliation] runner ${runnerId} applied revision ${data?.revision}, ${data?.applied ?? 0} subscriptions${data?.errors?.length ? `, ${data.errors.length} errors` : ""}`);
+        });
+
+        // ── trigger_subscriptions_restore — runner re-uploads lost subscriptions ─
+        // After a relay restart that wiped Redis (ephemeral redis in `pizza web`),
+        // the reconnect snapshot the server sends is missing all session
+        // subscriptions. The runner daemon still holds them in memory and
+        // uploads the missing entries here so the delivery path
+        // (getSubscribersForTrigger) works again without restarting anything.
+        socket.on("trigger_subscriptions_restore" as any, async (data: any) => {
+            const runnerId = socket.data.runnerId;
+            if (!runnerId) return;
+            const entries = Array.isArray(data?.subscriptions) ? data.subscriptions : [];
+            if (entries.length === 0) return;
+            try {
+                // Clamp runnerId to the authenticated runner and drop synthetic
+                // runner-listener entries (those are SQLite-backed and rebuilt
+                // server-side; they must never enter the session-subscription store).
+                const MAX_RESTORE_ENTRIES = 500;
+                const sanitized = entries
+                    .filter((e: any) =>
+                        e && typeof e.sessionId === "string" && e.sessionId.length > 0 &&
+                        typeof e.subscriptionId === "string" && e.subscriptionId.length > 0 &&
+                        typeof e.triggerType === "string" && e.triggerType.length > 0 &&
+                        !e.sessionId.startsWith("runner-listener:"))
+                    .slice(0, MAX_RESTORE_ENTRIES)
+                    .map((e: any) => ({
+                        sessionId: e.sessionId,
+                        subscriptionId: e.subscriptionId,
+                        triggerType: e.triggerType,
+                        runnerId,
+                        ...(e.params && typeof e.params === "object" ? { params: e.params } : {}),
+                        ...(Array.isArray(e.filters) && e.filters.length > 0 ? { filters: e.filters } : {}),
+                        ...(e.filterMode === "or" || e.filterMode === "and" ? { filterMode: e.filterMode } : {}),
+                    }));
+                const restored = await restoreSessionSubscriptions(sanitized);
+                log.info(`[trigger-reconciliation] restored ${restored}/${entries.length} subscriptions uploaded by runner ${runnerId}`);
+            } catch (err) {
+                log.warn(`[trigger-reconciliation] failed to restore subscriptions from runner ${runnerId}:`, err);
+            }
         });
 
         // ── session_ready — worker session connected ─────────────────────────

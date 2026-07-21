@@ -62,6 +62,21 @@ export interface TriggerSubscriptionDelta {
 }
 
 /**
+ * Runner → server upload of subscriptions the server is missing.
+ *
+ * Sent after an `isReconnect` snapshot when the runner's cached subscription
+ * state contains entries absent from the snapshot — which happens when the
+ * relay's Redis was wiped (e.g. `pizza web` recreating the ephemeral redis
+ * container). The runner is the only surviving holder of that state, so it
+ * restores it; the server re-writes the entries into Redis after clamping
+ * runnerId to the authenticated runner.
+ */
+export interface TriggerSubscriptionsRestore {
+  /** Subscriptions the runner has cached that were missing from the reconnect snapshot. */
+  subscriptions: TriggerSubscriptionEntry[];
+}
+
+/**
  * Ack from runner → server confirming it applied a snapshot or delta.
  */
 export interface TriggerSubscriptionsApplied {
@@ -210,6 +225,9 @@ export interface RunnerClientToServerEvents {
 
   /** Ack that the runner applied a trigger subscription snapshot or delta. */
   trigger_subscriptions_applied: (data: TriggerSubscriptionsApplied) => void;
+
+  /** Restore subscriptions the server lost (e.g. after a Redis wipe on relay restart). */
+  trigger_subscriptions_restore: (data: TriggerSubscriptionsRestore) => void;
 
   /** Generic service message from runner → relay → viewer.
    *  The relay forwards this verbatim; it does not inspect serviceId. */

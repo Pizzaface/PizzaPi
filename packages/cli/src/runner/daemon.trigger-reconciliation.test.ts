@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { TriggerSubscriptionEntry } from "@pizzapi/protocol";
-import { applyTriggerSubscriptionDeltaToCache, reconcileSnapshotSubscriptions } from "./daemon.js";
+import { applyTriggerSubscriptionDeltaToCache, computeSubscriptionsToRestore, reconcileSnapshotSubscriptions } from "./daemon.js";
 import { ServiceRegistry, type ServiceHandler, type ServiceInitOptions, type ReconcileOptions } from "./service-handler.js";
 import type { Socket } from "socket.io-client";
 
@@ -124,5 +124,39 @@ describe("reconcileSnapshotSubscriptions", () => {
             '[trigger-reconciliation] service "terminal" does not implement reconcileSubscriptions, skipping 1 subscriptions',
         ]);
         expect(logs.error).toEqual([]);
+    });
+});
+
+describe("computeSubscriptionsToRestore", () => {
+    test("returns cached entries missing from the snapshot (redis-wipe reconnect)", () => {
+        const cached = [
+            entry("session-1", "github:pr_opened", "sub-1"),
+            entry("session-2", "time:cron", "sub-2"),
+        ];
+        // Empty reconnect snapshot — the server lost everything.
+        expect(computeSubscriptionsToRestore(cached, [])).toEqual(cached);
+    });
+
+    test("entries present in the snapshot are not restored", () => {
+        const kept = entry("session-1", "github:pr_opened", "sub-1");
+        const lost = entry("session-2", "time:cron", "sub-2");
+        expect(computeSubscriptionsToRestore([kept, lost], [kept])).toEqual([lost]);
+    });
+
+    test("excludes synthetic runner-listener entries", () => {
+        const listener = {
+            ...entry("runner-listener:listener:abc:github:pr_comment", "github:pr_comment", "listener:abc"),
+        };
+        const session = entry("session-1", "github:pr_opened", "sub-1");
+        expect(computeSubscriptionsToRestore([listener, session], [])).toEqual([session]);
+    });
+
+    test("excludes legacy sentinel subscription ids", () => {
+        const legacy = entry("session-1", "time:timer_fired", "legacy:all:time:timer_fired");
+        expect(computeSubscriptionsToRestore([legacy], [])).toEqual([]);
+    });
+
+    test("empty cache restores nothing", () => {
+        expect(computeSubscriptionsToRestore([], [entry("session-1", "t:a")])).toEqual([]);
     });
 });

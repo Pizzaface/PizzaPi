@@ -227,6 +227,30 @@ export function applyTriggerSubscriptionDeltaToCache(
     return action === "unsubscribe" ? next : [...next, subscription];
 }
 
+/**
+ * Compute which cached subscriptions are missing from a reconnect snapshot.
+ *
+ * When the relay's Redis is wiped (e.g. `pizza web` recreating the ephemeral
+ * redis container), the reconnect snapshot arrives without any session
+ * subscriptions — the daemon's in-memory cache is the only surviving copy.
+ * These entries are merged back into the applied set and uploaded to the
+ * server via `trigger_subscriptions_restore`.
+ *
+ * Synthetic runner-listener entries are excluded: those are SQLite-backed on
+ * the server and always present in the snapshot when they exist.
+ */
+export function computeSubscriptionsToRestore(
+    cached: TriggerSubscriptionEntry[],
+    snapshot: TriggerSubscriptionEntry[],
+): TriggerSubscriptionEntry[] {
+    const present = new Set(snapshot.map((sub) => sub.subscriptionId));
+    return cached.filter((sub) =>
+        !!sub.subscriptionId &&
+        !sub.subscriptionId.startsWith("legacy:all:") &&
+        !sub.sessionId?.startsWith("runner-listener:") &&
+        !present.has(sub.subscriptionId));
+}
+
 export function reconcileSnapshotSubscriptions(
     registry: ServiceRegistry,
     subscriptions: TriggerSubscriptionEntry[],
@@ -1182,7 +1206,23 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                 lastAppliedRevision = revision;
 
                 logInfo(`[trigger-reconciliation] received snapshot revision=${revision} with ${subscriptions.length} subscriptions`);
-                cachedTriggerSubscriptions = subscriptions as TriggerSubscriptionEntry[];
+                let incoming = subscriptions as TriggerSubscriptionEntry[];
+
+                // On reconnect the server may have LOST session subscriptions
+                // (ephemeral Redis wiped by a relay redeploy). This cache is the
+                // only surviving copy — merge the missing entries back into the
+                // applied set so service timers/watchers survive, and upload them
+                // so server-side delivery (getSubscribersForTrigger) works again
+                // without restarting the runner.
+                if (isReconnect && cachedTriggerSubscriptions.length > 0) {
+                    const missing = computeSubscriptionsToRestore(cachedTriggerSubscriptions, incoming);
+                    if (missing.length > 0) {
+                        incoming = [...incoming, ...missing];
+                        socket.emit("trigger_subscriptions_restore" as any, { subscriptions: missing });
+                        logInfo(`[trigger-reconciliation] reconnect snapshot missing ${missing.length} cached subscription(s) — restored to server`);
+                    }
+                }
+                cachedTriggerSubscriptions = incoming;
 
                 const { applied: totalApplied, errors: allErrors } = reconcileSnapshotSubscriptions(registry, cachedTriggerSubscriptions);
 

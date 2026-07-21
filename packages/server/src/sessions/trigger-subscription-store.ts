@@ -270,6 +270,52 @@ export async function subscribeSessionToTrigger(
 }
 
 /**
+ * Restore subscriptions uploaded by a runner after the relay lost its Redis
+ * state (e.g. `pizza web` recreating the ephemeral redis container).
+ *
+ * Unlike subscribeSessionToTrigger this PRESERVES the caller-provided
+ * subscriptionId so the runner's in-memory service state (timers, watchers
+ * keyed by subscriptionId) stays consistent with the server. Writes are
+ * idempotent — re-restoring an existing subscription overwrites the same
+ * hash field and re-adds the same set member.
+ *
+ * Callers must clamp entry.runnerId to the authenticated runner before
+ * calling. Entries are not validated against live session state: delivery
+ * re-checks session ownership at fire time, and the standard TTL reaps
+ * entries for sessions that never come back.
+ *
+ * Returns the number of entries written.
+ */
+export async function restoreSessionSubscriptions(
+    entries: Array<{ sessionId: string } & SubscriptionValue>,
+    ttlSeconds = DEFAULT_TTL_SECONDS,
+): Promise<number> {
+    if (entries.length === 0) return 0;
+    const redis = await getClient();
+    if (!redis) return 0;
+
+    let restored = 0;
+    try {
+        const pipeline = redis.multi();
+        for (const entry of entries) {
+            if (!entry.sessionId || !entry.subscriptionId || !entry.triggerType || !entry.runnerId) continue;
+            const sessionKey = SESSION_SUBS_KEY(entry.sessionId);
+            const indexKey = RUNNER_TYPE_INDEX_KEY(entry.runnerId, entry.triggerType);
+            pipeline.hSet(sessionKey, entry.subscriptionId, serializeSubValue(entry));
+            pipeline.expire(sessionKey, ttlSeconds);
+            pipeline.sAdd(indexKey, entry.sessionId);
+            pipeline.expire(indexKey, ttlSeconds);
+            restored++;
+        }
+        if (restored > 0) await pipeline.exec();
+        return restored;
+    } catch (err) {
+        log.warn("Failed to restore session subscriptions:", err);
+        return 0;
+    }
+}
+
+/**
  * Unsubscribe a session from a specific trigger type.
  * - Reads the stored runnerId for this (sessionId, triggerType) pair
  * - Removes from session hash and runner+type index

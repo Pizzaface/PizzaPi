@@ -13,6 +13,7 @@ import {
     clearSessionSubscriptions,
     getSubscriptionsForSessionTrigger,
     unsubscribeSessionSubscription,
+    restoreSessionSubscriptions,
     _injectRedisForTesting,
     _resetRedisForTesting,
 } from "./trigger-subscription-store";
@@ -398,5 +399,68 @@ describe("subscription params", () => {
         });
         const params = await getSubscriptionParams("session-1", "test:event");
         expect(params).toEqual({ name: "test", count: 5, active: true });
+    });
+});
+
+describe("restoreSessionSubscriptions", () => {
+    beforeEach(resetState);
+
+    test("restores entries preserving subscriptionId, params, and filters", async () => {
+        const restored = await restoreSessionSubscriptions([
+            {
+                sessionId: "session-1",
+                subscriptionId: "sub:session-1:github:pr_opened:123:abc",
+                triggerType: "github:pr_opened",
+                runnerId: "runner-A",
+                params: { repo: "foo/bar" },
+                filters: [{ field: "number", value: 42, op: "eq" }],
+                filterMode: "and",
+            },
+        ]);
+        expect(restored).toBe(1);
+
+        const subs = await listSessionSubscriptions("session-1");
+        expect(subs).toHaveLength(1);
+        expect(subs[0].subscriptionId).toBe("sub:session-1:github:pr_opened:123:abc");
+        expect(subs[0].triggerType).toBe("github:pr_opened");
+        expect(subs[0].runnerId).toBe("runner-A");
+        expect(subs[0].params).toEqual({ repo: "foo/bar" });
+        expect(subs[0].filters).toEqual([{ field: "number", value: 42, op: "eq" }]);
+
+        // Reverse index rebuilt — the delivery path finds the subscriber again.
+        const subscribers = await getSubscribersForTrigger("runner-A", "github:pr_opened");
+        expect(subscribers).toEqual(["session-1"]);
+    });
+
+    test("is idempotent — re-restoring the same entry does not duplicate", async () => {
+        const entry = {
+            sessionId: "session-1",
+            subscriptionId: "sub:session-1:time:cron:1:x",
+            triggerType: "time:cron",
+            runnerId: "runner-A",
+        };
+        await restoreSessionSubscriptions([entry]);
+        await restoreSessionSubscriptions([entry]);
+
+        const subs = await listSessionSubscriptions("session-1");
+        expect(subs).toHaveLength(1);
+        const subscribers = await getSubscribersForTrigger("runner-A", "time:cron");
+        expect(subscribers).toEqual(["session-1"]);
+    });
+
+    test("skips malformed entries and counts only written ones", async () => {
+        const restored = await restoreSessionSubscriptions([
+            { sessionId: "", subscriptionId: "sub:1", triggerType: "t:a", runnerId: "runner-A" },
+            { sessionId: "session-1", subscriptionId: "", triggerType: "t:a", runnerId: "runner-A" },
+            { sessionId: "session-1", subscriptionId: "sub:ok", triggerType: "t:a", runnerId: "runner-A" },
+        ]);
+        expect(restored).toBe(1);
+        const subs = await listSessionSubscriptions("session-1");
+        expect(subs).toHaveLength(1);
+        expect(subs[0].subscriptionId).toBe("sub:ok");
+    });
+
+    test("empty input is a no-op", async () => {
+        expect(await restoreSessionSubscriptions([])).toBe(0);
     });
 });

@@ -64,6 +64,7 @@ export type {
   TriggerSubscriptionsSnapshot,
   TriggerSubscriptionDelta,
   TriggerSubscriptionsApplied,
+  TriggerSubscriptionsRestore,
 } from "./runner.js";
 
 // /terminal namespace (Browser terminal viewer ↔ Server)
