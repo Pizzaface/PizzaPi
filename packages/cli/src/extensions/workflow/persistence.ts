@@ -161,6 +161,42 @@ function assertNoSymlinkInPath(root: string, target: string): void {
     }
 }
 
+/**
+ * Starter script for a new saved workflow — the boilerplate most scripts
+ * need (guard against missing `args`, one `agent()` call, one `pipeline()`
+ * fan-out) with comments explaining each of the four injected names. Meant
+ * to be edited, not run as-is.
+ */
+export function workflowTemplate(): string {
+    const lines = [
+        "// Four names are injected into every workflow script:",
+        "//   agent(prompt, opts?)   \u2014 run one subagent, returns its text (or a",
+        "//                            parsed object if opts.schema is set)",
+        "//   pipeline(list, fn)     \u2014 run fn(item, index) over every item in",
+        "//                            `list` with bounded concurrency (<=16 at",
+        "//                            once), typically calling agent() inside fn",
+        "//   args                   \u2014 whatever was passed to run_workflow /",
+        "//                            run_saved_workflow / `/workflow name {...}`",
+        "//   console                \u2014 normal console, for your own debugging",
+        "//",
+        "// Only the script's `return` value comes back to the caller \u2014 everything",
+        "// else (every agent()'s output, every pipeline() intermediate) stays out",
+        "// of context. Guard against a missing `args` so `/workflow <name>` with",
+        "// no JSON still runs something sensible.",
+        "",
+        'const items = args?.items ?? ["example-a", "example-b"];',
+        "",
+        "const results = await pipeline(items, async (item) => {",
+        "  const summary = await agent(`Summarize ${item} in one sentence.`, { label: item });",
+        "  return { item, summary };",
+        "});",
+        "",
+        "return results;",
+        "",
+    ];
+    return lines.join("\n");
+}
+
 export function saveWorkflow(
     cwd: string,
     opts: { name: string; script: string; scope?: "project" | "user"; description?: string },

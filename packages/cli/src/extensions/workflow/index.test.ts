@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { workflowExtension } from "./index.js";
-import { saveWorkflow } from "./persistence.js";
+import { saveWorkflow, loadWorkflow, workflowTemplate } from "./persistence.js";
 
 /**
  * index.ts tool-surface tests, focused on error-shape correctness: a
@@ -236,6 +236,56 @@ describe("/workflow command — running", () => {
     });
 });
 
+describe("/workflow command — new", () => {
+    test("scaffolds a template and reports the path", async () => {
+        const pi = createMockPi();
+        workflowExtension(pi as any);
+        const cmd = pi.commands.get("workflow")!;
+        const { ctx, notifications } = createNotifyCtx(projectDir);
+
+        await cmd.handler("new my-flow", ctx);
+
+        expect(notifications).toHaveLength(1);
+        expect(notifications[0].type).toBeUndefined();
+        expect(notifications[0].message).toContain("Created");
+        expect(notifications[0].message).toContain("my-flow");
+
+        // loadWorkflow trims the round-tripped script (via extractMeta), so
+        // compare against the same trimmed form rather than the raw template.
+        const loaded = loadWorkflow(projectDir, "my-flow");
+        expect(loaded?.script).toBe(workflowTemplate().trim());
+    });
+
+    test("refuses to overwrite an existing workflow", async () => {
+        const pi = createMockPi();
+        workflowExtension(pi as any);
+        saveWorkflow(projectDir, { name: "taken", script: "return 1;" });
+
+        const cmd = pi.commands.get("workflow")!;
+        const { ctx, notifications } = createNotifyCtx(projectDir);
+        await cmd.handler("new taken", ctx);
+
+        expect(notifications).toHaveLength(1);
+        expect(notifications[0].type).toBe("error");
+        expect(notifications[0].message).toContain("already exists");
+        // Original script must be untouched.
+        expect(loadWorkflow(projectDir, "taken")?.script).toBe("return 1;");
+    });
+
+    test("requires a name", async () => {
+        const pi = createMockPi();
+        workflowExtension(pi as any);
+        const cmd = pi.commands.get("workflow")!;
+        const { ctx, notifications } = createNotifyCtx(projectDir);
+
+        await cmd.handler("new", ctx);
+
+        expect(notifications).toHaveLength(1);
+        expect(notifications[0].type).toBe("error");
+        expect(notifications[0].message).toContain("Usage: /workflow new");
+    });
+});
+
 describe("/workflow command — argument completions", () => {
     test("completes saved workflow names by prefix", async () => {
         const pi = createMockPi();
@@ -253,6 +303,14 @@ describe("/workflow command — argument completions", () => {
 
             const withSpace = cmd.getArgumentCompletions!("alpha ");
             expect(withSpace).toBeNull();
+
+            // "new" is always offered alongside saved workflow names.
+            const empty = cmd.getArgumentCompletions!("");
+            expect(empty).toEqual([
+                { value: "new", label: "new" },
+                { value: "alpha", label: "alpha" },
+                { value: "beta", label: "beta" },
+            ]);
         } finally {
             process.chdir(originalCwd);
         }
