@@ -165,6 +165,24 @@ export async function runWorkflow(opts: RunWorkflowOptions): Promise<RunWorkflow
     // pipelines run concurrently.
     const phaseContext = new AsyncLocalStorage<PhaseContext>();
 
+    // RUN-LEVEL mirror of PhaseContext.pendingAgents: a script can fan out at
+    // the TOP LEVEL, outside any pipeline() (e.g. `await Promise.all([agent(a),
+    // agent(b)])` directly in the script body), where there is no PhaseContext
+    // store to register siblings in. Every agent() call — top-level or nested
+    // inside a pipeline — adds its promise here too, so run-level cleanup can
+    // await ALL in-flight agents regardless of where they were started.
+    // `runController` gives that cleanup something to abort: it chains from
+    // the caller's `signal` (external abort -> run aborts) and is itself
+    // aborted on script failure so any pipeline() still active at that moment
+    // (a sibling of the branch that just threw) tears down too, instead of
+    // being left to mutate `details` in the background after this function
+    // has already returned.
+    const runController = new AbortController();
+    const runPendingAgents = new Set<Promise<unknown>>();
+    if (signal?.aborted) runController.abort();
+    const forwardRunAbort = () => runController.abort();
+    signal?.addEventListener("abort", forwardRunAbort, { once: true });
+
     async function runOneAgent(phase: WorkflowPhase, prompt: string, agentOpts: AgentCallOptions | undefined, effectiveSignal: AbortSignal | undefined): Promise<string> {
         if (details.totalAgents >= WORKFLOW_MAX_TOTAL_AGENTS) {
             throw new Error(`Workflow exceeded ${WORKFLOW_MAX_TOTAL_AGENTS}-agent limit`);
@@ -252,6 +270,12 @@ export async function runWorkflow(opts: RunWorkflowOptions): Promise<RunWorkflow
         // a mapper's own `Promise.all([agent(a), agent(b)])`) is trackable
         // by pipeline cleanup even while this one is still in flight.
         store?.pendingAgents.add(agentPromise);
+        // Always register at run scope too (whether or not a phase-scoped
+        // set exists) — this is what lets run-level cleanup await bare
+        // top-level fan-out, and it's a superset of every phase-scoped set
+        // so it also covers pipeline()-nested agents if a sibling pipeline
+        // is still active when the run aborts.
+        runPendingAgents.add(agentPromise);
         const text = await agentPromise;
         if (agentOpts?.schema) {
             try {
@@ -321,7 +345,12 @@ export async function runWorkflow(opts: RunWorkflowOptions): Promise<RunWorkflow
 
         const controller = new AbortController();
         const forwardAbort = () => controller.abort();
-        signal?.addEventListener("abort", forwardAbort, { once: true });
+        // Forward from runController rather than the raw external `signal`:
+        // runController already chains from `signal` (so external abort still
+        // reaches here), AND it's the same controller run-level cleanup aborts
+        // on a sibling's top-level failure — so an active pipeline() correctly
+        // tears down if a sibling branch throws, not just on caller abort.
+        runController.signal.addEventListener("abort", forwardAbort, { once: true });
         const pendingAgents = new Set<Promise<unknown>>();
 
         try {
@@ -329,7 +358,7 @@ export async function runWorkflow(opts: RunWorkflowOptions): Promise<RunWorkflow
                 runPipelineWorkers(list, mapper, controller, pendingAgents),
             );
         } finally {
-            signal?.removeEventListener("abort", forwardAbort);
+            runController.signal.removeEventListener("abort", forwardAbort);
         }
     }
 
@@ -362,6 +391,21 @@ export async function runWorkflow(opts: RunWorkflowOptions): Promise<RunWorkflow
     try {
         if (signal?.aborted) throw new Error("Workflow was aborted");
         const rawResult = await scriptFn(agent, pipeline, args, console);
+
+        // FIX (P3): a script can swallow an abort internally (e.g. catch a
+        // cancelled agent() and return a fallback value anyway) and resolve
+        // normally. Re-check the abort state here instead of trusting a
+        // normal return to mean "done" — a caller that cancelled this run
+        // must see status:"error", not a stale success.
+        if (signal?.aborted || runController.signal.aborted) {
+            runController.abort();
+            await Promise.allSettled([...runPendingAgents]);
+            details.status = "error";
+            details.error = "aborted";
+            emit();
+            return { details, text: `Workflow failed: ${details.error}` };
+        }
+
         const result = ensureSerializable(rawResult);
         details.status = "done";
         details.result = result;
@@ -369,9 +413,23 @@ export async function runWorkflow(opts: RunWorkflowOptions): Promise<RunWorkflow
         const text = typeof result === "string" ? result : JSON.stringify(result ?? null, null, 2);
         return { details, text };
     } catch (err) {
+        // FIX (P2): the script can fan out at the TOP LEVEL, outside any
+        // pipeline() (e.g. `await Promise.all([agent(a), agent(b)])` directly
+        // in the script body). If one rejects, Promise.all — and so the
+        // script — throws immediately, landing here, while sibling agent()
+        // calls (and any concurrently-active pipeline(), which now tears
+        // down too via its abort forwarding from runController) are still in
+        // flight. Mirror runPipelineWorkers' discipline at the run level:
+        // abort, then await every registered agent settling, BEFORE
+        // returning — so nothing mutates `details` or fires onUpdate after
+        // this promise has already resolved.
+        runController.abort();
+        await Promise.allSettled([...runPendingAgents]);
         details.status = "error";
         details.error = err instanceof Error ? err.message : String(err);
         emit();
         return { details, text: `Workflow failed: ${details.error}` };
+    } finally {
+        signal?.removeEventListener("abort", forwardRunAbort);
     }
 }
