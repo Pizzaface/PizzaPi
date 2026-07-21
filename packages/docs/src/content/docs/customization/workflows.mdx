@@ -13,7 +13,7 @@ This mirrors Claude Code's "dynamic workflows" feature, built on PizzaPi's exist
 
 | Use... | For... |
 |--------|--------|
-| [`subagent`](/PizzaPi/customization/subagents/) | A handful of delegated tasks (single, parallel up to 8, or chain) where you want each result to land in your context |
+| [`subagent`](/PizzaPi/customization/subagents/) | A handful of delegated tasks (single, parallel — up to 4 concurrent by default, or chain) where you want each result to land in your context |
 | [Skills](/PizzaPi/customization/skills/) | Reusable instructions/procedures the agent reads and follows itself |
 | **`run_workflow`** | Large fan-out work — audits, migrations, cross-checked research — where dozens or hundreds of subagent calls would otherwise flood your context with intermediate output |
 
@@ -94,7 +94,7 @@ On a name conflict, **project shadows user** — same precedence as [agent disco
 
 Workflows are for *large* fan-out — the caps reflect that:
 
-- **16 concurrent agents per `pipeline()` call** — `pipeline()` bounds its own fan-out to 16 in flight at once. This limit is *per pipeline*; bare `agent()` calls you fire yourself (e.g. via `Promise.all`) are not throttled by it, so don't hand-roll unbounded fan-out — use `pipeline()` and let it pace the work.
+- **16 concurrent agents per run (global)** — a single per-run semaphore gates *every* `agent()` call, no matter how it's invoked: directly, from a `pipeline()` mapper, or from a bare `Promise.all` fan-out you write yourself. Two concurrent pipelines share the same budget of 16. (`pipeline()` additionally caps its own worker pool at `min(16, list.length)`, but the global semaphore is what actually bounds in-flight agents.)
 - **1000 agents per run**, total — a global cap enforced across every `agent()` call regardless of how it's invoked; exceeding it aborts the run.
 
 These are fixed, not project-configurable — a project's config can't raise its own fan-out limit. Every agent call spends real tokens: a workflow that fans out to hundreds of subagents can rack up cost quickly even though none of it appears in your context. Prefer `subagent` for small tasks; reach for a workflow when the fan-out itself is the point.
