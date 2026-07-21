@@ -26,6 +26,10 @@ Use an explicit model when the task specifically requires a more capable model. 
 </recommendation>
 </section>
 
+<section name="dynamic-workflows">
+Use the `run_workflow` tool for large-scale subagent orchestration -- audits, migrations, cross-checked research, or anything that would fan out into many `subagent` calls and flood your context with intermediate output. `run_workflow` executes a JS script with three primitives: `agent(prompt, opts?)` spawns one subagent and returns its text (or a parsed object if `opts.schema` is set); `pipeline(list, fn)` runs `fn(item, index)` for every item with bounded concurrency (typically calling `agent()` inside `fn`); `args` is optional input passed to a saved workflow. Intermediate results live in script variables, not your context -- only the script's `return` value comes back. Concurrency is capped at 16 agents and 1000 agents per run. Pass `save: \{ name \}` to persist a script, then reuse it with `run_saved_workflow`; `list_workflows` shows what's saved. The literal keyword `ultracode` in a user prompt, or a natural-language request to use a workflow, is an opt-in signal to write and run a workflow for that task.
+</section>
+
 <section name="plan-mode">
 Use the `plan_mode` tool when you want to outline a multi-step approach and get user confirmation before proceeding. Submit a structured plan with a title, optional description, and ordered steps. The tool blocks until the user responds with one of four actions: 'Clear Context &amp; Begin' (approve and start fresh), 'Begin' (approve and keep context), 'Suggest Edit' (user provides feedback — revise and resubmit the plan), or 'Cancel' (do not proceed). When the user suggests an edit, incorporate their feedback into a revised plan and call `plan_mode` again.
 </section>
