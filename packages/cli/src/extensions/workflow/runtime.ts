@@ -62,6 +62,18 @@ interface AgentCallOptions {
 interface PhaseContext {
     phase: WorkflowPhase;
     signal: AbortSignal | undefined;
+    /**
+     * Every agent() promise created anywhere within this pipeline scope —
+     * not just the ones a worker directly `await`s. A mapper can fan out
+     * internally (`async x => Promise.all([agent(a), agent(b)])`); if `a`
+     * rejects, `Promise.all` rejects immediately but `b`'s underlying
+     * agent() call keeps running and mutating `details` in the background.
+     * Since AsyncLocalStorage context follows the async call graph
+     * regardless of nesting, every agent() call made while this store is
+     * active — direct or sibling — registers itself here, so pipeline
+     * cleanup can await ALL of them, not just the ones a worker awaited.
+     */
+    pendingAgents: Set<Promise<unknown>>;
 }
 
 function slugPrompt(prompt: string): string {
@@ -107,26 +119,26 @@ function createSemaphore(max: number) {
 // SECURITY: normalize a script's return value into something guaranteed
 // JSON-serializable before it's stored in `details.result` / broadcast via
 // onUpdate. BigInt is stringified rather than rejected (it round-trips
-// losslessly for display); a circular reference has no safe normalization,
-// so it throws a clear error instead (caught by the caller and surfaced as
-// a normal workflow error, not an uncaught exception from JSON.stringify).
+// losslessly for display). Cycle detection is JSON.stringify's own — it
+// throws "Converting circular structure to JSON" natively, which correctly
+// distinguishes a true cycle from a merely-repeated (acyclic) reference to
+// the same object (valid JSON, serializes fine). A `WeakSet`-based
+// hand-rolled cycle check was tried here before and rejected the latter by
+// mistake — trust the platform instead of re-implementing it.
 function ensureSerializable(value: unknown): unknown {
-    const seen = new WeakSet<object>();
-    const replacer = (_key: string, val: unknown) => {
-        if (typeof val === "bigint") return `${val}n`;
-        if (val !== null && typeof val === "object") {
-            if (seen.has(val as object)) throw new Error("circular reference");
-            seen.add(val as object);
-        }
-        return val;
-    };
+    const replacer = (_key: string, val: unknown) => (typeof val === "bigint" ? `${val}n` : val);
     let json: string | undefined;
     try {
         json = JSON.stringify(value, replacer);
     } catch (err) {
         throw new Error(`Workflow result is not JSON-serializable: ${err instanceof Error ? err.message : String(err)}`);
     }
-    return json === undefined ? undefined : JSON.parse(json);
+    // JSON.stringify returns undefined (not a string) for a top-level
+    // undefined, function, or symbol — none of those are valid tool results.
+    if (json === undefined) {
+        throw new Error("Workflow result is not JSON-serializable: top-level value is undefined (or a function/symbol)");
+    }
+    return JSON.parse(json);
 }
 
 export async function runWorkflow(opts: RunWorkflowOptions): Promise<RunWorkflowResult> {
@@ -235,7 +247,12 @@ export async function runWorkflow(opts: RunWorkflowOptions): Promise<RunWorkflow
             emit();
         }
         const effectiveSignal = store?.signal ?? signal;
-        const text = await runOneAgent(phase, prompt, agentOpts, effectiveSignal);
+        const agentPromise = runOneAgent(phase, prompt, agentOpts, effectiveSignal);
+        // Register BEFORE awaiting so a sibling call (e.g. the other half of
+        // a mapper's own `Promise.all([agent(a), agent(b)])`) is trackable
+        // by pipeline cleanup even while this one is still in flight.
+        store?.pendingAgents.add(agentPromise);
+        const text = await agentPromise;
         if (agentOpts?.schema) {
             try {
                 return JSON.parse(text);
@@ -246,7 +263,12 @@ export async function runWorkflow(opts: RunWorkflowOptions): Promise<RunWorkflow
         return text;
     }
 
-    async function runPipelineWorkers<TItem, TOut>(list: TItem[], mapper: (item: TItem, index: number) => Promise<TOut>, controller: AbortController): Promise<TOut[]> {
+    async function runPipelineWorkers<TItem, TOut>(
+        list: TItem[],
+        mapper: (item: TItem, index: number) => Promise<TOut>,
+        controller: AbortController,
+        pendingAgents: Set<Promise<unknown>>,
+    ): Promise<TOut[]> {
         const limit = Math.max(1, Math.min(WORKFLOW_MAX_CONCURRENCY, list.length));
         const results: TOut[] = new Array(list.length);
         let nextIndex = 0;
@@ -275,7 +297,18 @@ export async function runWorkflow(opts: RunWorkflowOptions): Promise<RunWorkflow
             }
         });
 
+        // Wait for every worker loop to finish (or hit its catch) FIRST —
+        // that's what guarantees every agent() call a mapper was ever going
+        // to make has at least been *started* (and so registered itself in
+        // `pendingAgents`, which happens synchronously before any await).
+        // Only then is it safe to snapshot `pendingAgents`: a rejected
+        // mapper only means the promise a worker directly awaited settled —
+        // it says nothing about sibling agent() calls the same mapper
+        // invocation may have fanned out internally (Promise.all etc), which
+        // can still be in flight. Await those too before returning/throwing,
+        // so nothing is still mutating `details` in the background.
         await Promise.allSettled(workers);
+        await Promise.allSettled([...pendingAgents]);
         if (hasError) throw firstError;
         return results;
     }
@@ -289,9 +322,12 @@ export async function runWorkflow(opts: RunWorkflowOptions): Promise<RunWorkflow
         const controller = new AbortController();
         const forwardAbort = () => controller.abort();
         signal?.addEventListener("abort", forwardAbort, { once: true });
+        const pendingAgents = new Set<Promise<unknown>>();
 
         try {
-            return await phaseContext.run({ phase, signal: controller.signal }, () => runPipelineWorkers(list, mapper, controller));
+            return await phaseContext.run({ phase, signal: controller.signal, pendingAgents }, () =>
+                runPipelineWorkers(list, mapper, controller, pendingAgents),
+            );
         } finally {
             signal?.removeEventListener("abort", forwardAbort);
         }
