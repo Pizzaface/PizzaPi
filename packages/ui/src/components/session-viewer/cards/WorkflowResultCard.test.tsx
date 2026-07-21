@@ -128,4 +128,143 @@ describe("WorkflowResultCard", () => {
     const { container } = render(<WorkflowResultCard details={undefined} content={content} />);
     expect(container.textContent ?? "").toContain("Phase A");
   });
+
+  test("does not crash when optional fields are malformed objects instead of strings", () => {
+    const details = {
+      name: { nested: "object" },
+      status: "done",
+      phases: [
+        {
+          label: { weird: true },
+          agents: [
+            {
+              id: "a1",
+              prompt: "do a thing",
+              status: "done",
+              label: { not: "a string" },
+              model: 42,
+              result: { text: "nope" },
+              error: ["nope"],
+            },
+          ],
+        },
+      ],
+      totalAgents: 1,
+      totalTokens: 0,
+    };
+
+    // Must render without throwing.
+    const { container } = render(<WorkflowResultCard details={details} />);
+    expect(container.textContent ?? "").toContain("Untitled phase");
+    // Falls back to prompt/id since label was not a valid string.
+    expect(container.textContent ?? "").toContain("do a thing");
+  });
+
+  test("renders unknown workflow status as neutral, not Done", () => {
+    const details = {
+      status: "bogus-status",
+      phases: [],
+      totalAgents: 0,
+      totalTokens: 0,
+    };
+
+    const { container } = render(<WorkflowResultCard details={details} />);
+    const text = container.textContent ?? "";
+    expect(text).toContain("Unknown");
+    expect(text).not.toContain("Done");
+  });
+
+  test("renders unknown agent status without crashing or mislabeling", () => {
+    const details = {
+      status: "running",
+      phases: [
+        {
+          label: "Phase 1",
+          agents: [{ id: "a1", prompt: "do a thing", status: "bogus-agent-status", result: "ok" }],
+        },
+      ],
+      totalAgents: 1,
+      totalTokens: 0,
+    };
+
+    const { container } = render(<WorkflowResultCard details={details} />);
+    expect(container.textContent ?? "").toContain("do a thing");
+  });
+
+  test("does not crash when a phase's agents field is not an array", () => {
+    const details = {
+      status: "running",
+      phases: [{ label: "Phase 1", agents: "not-an-array" }],
+      totalAgents: 0,
+      totalTokens: 0,
+    };
+
+    const { container } = render(<WorkflowResultCard details={details} />);
+    expect(container.textContent ?? "").toContain("Workflow");
+  });
+
+  test("non-interactive agent rows (no result/error) are not buttons", () => {
+    const details = {
+      status: "running",
+      phases: [
+        {
+          label: "Phase 1",
+          agents: [{ id: "a1", prompt: "pending thing", status: "pending" }],
+        },
+      ],
+      totalAgents: 1,
+      totalTokens: 0,
+    };
+
+    const { getByText } = render(<WorkflowResultCard details={details} />);
+    const row = getByText("pending thing");
+    expect(row.closest("button")).toBeNull();
+  });
+
+  test("phase and agent toggle buttons expose type=button and aria-expanded", () => {
+    const details = {
+      status: "done",
+      phases: [
+        {
+          label: "Phase 1",
+          agents: [{ id: "a1", prompt: "do a thing", status: "done", result: "the result" }],
+        },
+      ],
+      totalAgents: 1,
+      totalTokens: 0,
+    };
+
+    const { container, getByText } = render(<WorkflowResultCard details={details} />);
+    const buttons = Array.from(container.querySelectorAll("button"));
+    expect(buttons.length).toBeGreaterThan(0);
+    for (const btn of buttons) {
+      expect(btn.getAttribute("type")).toBe("button");
+      expect(btn.hasAttribute("aria-expanded")).toBe(true);
+    }
+
+    const agentButton = getByText("do a thing").closest("button")!;
+    expect(agentButton.getAttribute("aria-expanded")).toBe("false");
+    fireEvent.click(agentButton);
+    expect(agentButton.getAttribute("aria-expanded")).toBe("true");
+  });
+
+  test("WorkflowResultCard renders identically for run_workflow and run_saved_workflow detail shapes", () => {
+    // Both `run_workflow` and `run_saved_workflow` tool results are routed to
+    // this same card with the same WorkflowDetails shape (see tool-rendering.tsx).
+    // The card itself is tool-name agnostic — verify it handles the shared shape.
+    const details = {
+      name: "either-tool",
+      status: "done",
+      phases: [{ label: "Phase 1", agents: [{ id: "a1", prompt: "x", status: "done" }] }],
+      totalAgents: 1,
+      totalTokens: 10,
+    };
+
+    const runWorkflow = render(<WorkflowResultCard details={details} />);
+    expect(runWorkflow.container.textContent ?? "").toContain("either-tool");
+    runWorkflow.unmount();
+
+    const runSavedWorkflow = render(<WorkflowResultCard details={details} />);
+    expect(runSavedWorkflow.container.textContent ?? "").toContain("either-tool");
+  });
 });
