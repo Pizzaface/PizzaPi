@@ -1,5 +1,6 @@
-import { describe, expect, test, beforeEach, afterEach } from "bun:test";
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync, symlinkSync } from "node:fs";
+import { describe, expect, test, beforeEach, afterEach, spyOn } from "bun:test";
+import * as fs from "node:fs";
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, symlinkSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { workflowDirs, listSavedWorkflows, saveWorkflow, loadWorkflow } from "./persistence.js";
@@ -208,5 +209,45 @@ describe("saveWorkflow — symlink guard", () => {
             expect(filePath.startsWith(workflowsDir + "/")).toBe(true);
             expect(filePath.slice(workflowsDir.length + 1)).not.toContain("/");
         }
+    });
+});
+
+describe("saveWorkflow — atomic write", () => {
+    test("leaves no leftover temp file behind after a successful save", () => {
+        saveWorkflow(projectDir, { name: "atomic", script: "return 1;", scope: "project" });
+        const dir = join(projectDir, ".pizzapi", "workflows");
+        expect(readdirSync(dir)).toEqual(["atomic.js"]);
+    });
+
+    test("cleans up its temp file and propagates the error when the rename fails", () => {
+        const renameSpy = spyOn(fs, "renameSync").mockImplementation(() => {
+            throw new Error("disk exploded");
+        });
+        try {
+            expect(() => saveWorkflow(projectDir, { name: "boom", script: "return 1;", scope: "project" })).toThrow("disk exploded");
+        } finally {
+            renameSpy.mockRestore();
+        }
+        const dir = join(projectDir, ".pizzapi", "workflows");
+        // No leftover temp file, and the real target was never created.
+        expect(readdirSync(dir)).toEqual([]);
+    });
+});
+
+describe("listSavedWorkflows — fs error surfacing", () => {
+    test("an unreadable-dir error (not ENOENT) is rethrown, not swallowed as an empty list", () => {
+        mkdirSync(join(projectDir, ".pizzapi", "workflows"), { recursive: true });
+        const readdirSpy = spyOn(fs, "readdirSync").mockImplementation(() => {
+            throw Object.assign(new Error("permission denied"), { code: "EACCES" });
+        });
+        try {
+            expect(() => listSavedWorkflows(projectDir)).toThrow("permission denied");
+        } finally {
+            readdirSpy.mockRestore();
+        }
+    });
+
+    test("a missing (ENOENT) workflows dir is still treated as empty, not an error", () => {
+        expect(listSavedWorkflows(projectDir)).toEqual([]);
     });
 });

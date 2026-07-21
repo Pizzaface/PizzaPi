@@ -328,6 +328,60 @@ describe("runWorkflow — pipeline() failure cleanup", () => {
     }, 15000);
 });
 
+describe("runWorkflow — pipeline() mapper-internal fan-out cleanup", () => {
+    test("awaits a sibling agent() call (Promise.all inside the mapper) before returning, even though only one branch rejects", async () => {
+        // Each mapper invocation fans out to TWO agent() calls itself
+        // (bypassing pipeline's own per-item boundary) via Promise.all.
+        // 'a-0' fails immediately; 'b-0' stays pending under test control —
+        // proving runWorkflow() cannot resolve until the sibling settles.
+        const controls: Record<string, () => void> = {};
+        const runner: RunSingleAgentFn = (async (
+            _defaultCwd: string,
+            _agents: unknown[],
+            agentName: string,
+            task: string,
+        ) => {
+            return await new Promise<SingleResult>((resolve) => {
+                controls[task] = () =>
+                    resolve(task.startsWith("a-") ? failResult(agentName, task, "boom") : successResult(agentName, task, task));
+            });
+        }) as unknown as RunSingleAgentFn;
+
+        const runPromise = runWorkflow({
+            script: "return await pipeline([0], (item) => Promise.all([agent('a-' + item), agent('b-' + item)]));",
+            ctx,
+            runSingleAgentFn: runner,
+        });
+
+        while (!controls["a-0"] || !controls["b-0"]) {
+            await new Promise((r) => setTimeout(r, 0));
+        }
+
+        // Fail the 'a' branch — Promise.all rejects immediately, well before
+        // 'b' has any chance to settle.
+        controls["a-0"]!();
+
+        let settled = false;
+        runPromise.then(() => {
+            settled = true;
+        });
+        await new Promise((r) => setTimeout(r, 20));
+        // Without the fix, runWorkflow() would already have resolved here —
+        // 'b-0' is still running in the background, unaccounted for.
+        expect(settled).toBe(false);
+
+        controls["b-0"]!();
+        const { details } = await runPromise;
+
+        expect(details.status).toBe("error");
+        expect(details.error).toBe("boom");
+        const statuses = details.phases[0].agents.map((a) => a.status);
+        expect(statuses.every((s) => s === "done" || s === "error")).toBe(true);
+        expect(statuses).toContain("error");
+        expect(statuses).toContain("done");
+    }, 15000);
+});
+
 describe("runWorkflow — agent runner throws during setup", () => {
     test("marks the agent entry 'error' (not stuck 'running') when runSingleAgentFn itself throws", async () => {
         const runner: RunSingleAgentFn = (async () => {
@@ -364,6 +418,28 @@ describe("runWorkflow — result serialization guard", () => {
         const runner = makeFakeRunner(() => ({ text: "unused" }));
         const { details } = await runWorkflow({
             script: "const o = {}; o.self = o; return o;",
+            ctx,
+            runSingleAgentFn: runner,
+        });
+        expect(details.status).toBe("error");
+        expect(details.error).toContain("not JSON-serializable");
+    });
+
+    test("accepts a repeated (non-cyclic) reference to the same object", async () => {
+        const runner = makeFakeRunner(() => ({ text: "unused" }));
+        const { details } = await runWorkflow({
+            script: "const shared = { x: 1 }; return { a: shared, b: shared };",
+            ctx,
+            runSingleAgentFn: runner,
+        });
+        expect(details.status).toBe("done");
+        expect(details.result).toEqual({ a: { x: 1 }, b: { x: 1 } });
+    });
+
+    test("rejects a top-level undefined result instead of silently accepting it", async () => {
+        const runner = makeFakeRunner(() => ({ text: "unused" }));
+        const { details } = await runWorkflow({
+            script: "return undefined;",
             ctx,
             runSingleAgentFn: runner,
         });
