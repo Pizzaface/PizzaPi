@@ -83,11 +83,14 @@ Once a workflow is saved, you don't have to ask the agent to re-run it through c
 
 ```
 /workflow                        # lists saved workflows (name, scope, description)
+/workflow new my-audit           # scaffolds .pizzapi/workflows/my-audit.js from a starter template
 /workflow audit-routes           # runs the saved workflow with no args
 /workflow audit-routes {"dir":"src/api"}   # runs it with JSON args
 ```
 
-This works in both the TUI and the web UI — `/workflow` autocompletes saved workflow names, and results are reported the same way as other slash commands (no tool call, no agent turn required).
+This works in both the TUI and the web UI — `/workflow` autocompletes saved workflow names (and `new`), and results are reported the same way as other slash commands (no tool call, no agent turn required).
+
+`/workflow new <name>` writes a commented starter script (guarding against missing `args`, one `agent()` call, one `pipeline()` fan-out) so you don't start from a blank file. It refuses to overwrite an existing workflow of the same name.
 
 ### Save locations
 
