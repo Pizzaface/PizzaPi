@@ -5,7 +5,7 @@
  *  - Request inputs are rebuilt against the resolved URL, preserving method,
  *    headers, and body (spreading a Request drops all of these).
  */
-import { describe, test, expect, beforeEach } from "bun:test";
+import { describe, test, expect, beforeEach, afterAll } from "bun:test";
 import { Window } from "happy-dom";
 
 const SERVER_URL = "https://relay.example.com";
@@ -71,6 +71,13 @@ beforeEach(() => {
     localStorage.clear();
     _resetMobileRuntimeCache();
     seedMobile();
+});
+
+// ponytail: bun shares globalThis across test files, so leaving
+// pizzapi.serverUrl set puts every later file into "mobile bundled" mode.
+afterAll(() => {
+    localStorage.clear();
+    _resetMobileRuntimeCache();
 });
 
 describe("patchedFetch — api key gating", () => {
