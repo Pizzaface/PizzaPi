@@ -16,6 +16,7 @@ import { mergeModelLists, readSessionModelsCache, type SessionModelEntry } from 
 import { getCachedOllamaCloudModels } from "../ollama-cloud-models.js";
 import { TunnelService } from "./services/tunnel-service.js";
 import { ProcessService } from "./services/process-service.js";
+import { MemoryService } from "./services/memory-service.js";
 import { TimeService, TIME_TRIGGER_DEFS, TIME_SIGIL_DEFS } from "./services/time-service.js";
 import { discoverServices } from "./service-loader.js";
 import { globalPluginDirs } from "../plugins/discover.js";
@@ -455,6 +456,11 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
         const sessionCloseMetadataSweep = setInterval(() => {
             pruneSessionCloseMetadata(sessionCloseMetadata, runningSessions);
         }, 5 * 60_000);
+        if (isServiceDisabled("memory")) {
+            logInfo('[services] built-in service "memory" disabled by config');
+        } else {
+            registry.register(new MemoryService((sessionId) => sessionCloseMetadata.get(sessionId)?.cwd ?? null));
+        }
         const resolveConfiguredAgentDir = (cwd = process.cwd()) => {
             const config = loadConfig(cwd);
             return config.agentDir ? expandHome(config.agentDir) : defaultAgentDir();

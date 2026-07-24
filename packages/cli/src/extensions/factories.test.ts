@@ -14,6 +14,7 @@ import { setSessionNameExtension } from "./set-session-name.js";
 import { currentTimeExtension } from "./current-time.js";
 import { spawnSessionExtension } from "./spawn-session.js";
 import { updateTodoExtension } from "./update-todo.js";
+import { memoryExtension } from "./memory/index.js";
 import { subagentExtension } from "./subagent.js";
 import { tunnelToolsExtension } from "./tunnel-tools.js";
 import { planModeToggleExtension } from "./plan-mode/index.js";
@@ -43,6 +44,7 @@ const CORE_EXTENSIONS: ExtensionFactory[] = [
     setSessionNameExtension,
     currentTimeExtension,
     updateTodoExtension,
+    memoryExtension,
     spawnSessionExtension,
     subagentExtension,
     planModeToggleExtension,

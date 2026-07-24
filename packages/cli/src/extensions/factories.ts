@@ -11,6 +11,7 @@ import { setSessionNameExtension } from "./set-session-name.js";
 import { currentTimeExtension } from "./current-time.js";
 import { spawnSessionExtension } from "./spawn-session.js";
 import { updateTodoExtension } from "./update-todo.js";
+import { memoryExtension } from "./memory/index.js";
 import { goalExtension } from "./goal/index.js";
 import { createClaudePluginExtension } from "./claude-plugins.js";
 import { subagentExtension } from "./subagent.js";
@@ -80,6 +81,7 @@ export function buildPizzaPiExtensionFactories(options: BuildExtensionFactoriesO
         named(setSessionNameExtension, "session-name"),
         named(currentTimeExtension, "current-time"),
         named(updateTodoExtension, "todo"),
+        named(memoryExtension, "memory"),
         named(spawnSessionExtension, "spawn-session"),
         named(subagentExtension, "subagent"),
         named(planModeToggleExtension, "plan-mode"),
