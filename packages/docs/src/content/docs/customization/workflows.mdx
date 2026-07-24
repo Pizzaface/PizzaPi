@@ -1,0 +1,134 @@
+---
+title: Dynamic Workflows
+description: Orchestrate large fan-out subagent work with JS scripts that keep intermediate output out of your context
+---
+
+import { Aside } from "@astrojs/starlight/components";
+
+A **dynamic workflow** is a JavaScript script the agent writes and runs via the `run_workflow` tool. The script orchestrates many [subagents](/PizzaPi/customization/subagents/) using two primitives — `agent()` and `pipeline()` — and only its final `return` value comes back into the parent's context. Everything each subagent produces along the way stays in script-local variables.
+
+This mirrors Claude Code's "dynamic workflows" feature, built on PizzaPi's existing subagent engine — no new agent-spawning logic, just a scripting layer on top.
+
+## When to use a workflow vs. subagents/skills
+
+| Use... | For... |
+|--------|--------|
+| [`subagent`](/PizzaPi/customization/subagents/) | A handful of delegated tasks (single, parallel — up to 4 concurrent by default, or chain) where you want each result to land in your context |
+| [Skills](/PizzaPi/customization/skills/) | Reusable instructions/procedures the agent reads and follows itself |
+| **`run_workflow`** | Large fan-out work — audits, migrations, cross-checked research — where dozens or hundreds of subagent calls would otherwise flood your context with intermediate output |
+
+If the result of each individual agent call matters to you, use `subagent`. If only the *aggregate* result matters, use a workflow.
+
+## The primitives
+
+The script body runs as an async function with four names in scope: `agent`, `pipeline`, `args`, and `console`.
+
+### `agent(prompt, opts?)`
+
+Runs one subagent and returns its text output. If `opts.schema` is set, the text is `JSON.parse`'d and the parsed object is returned; if parsing fails, the raw text string is returned unchanged, so guard for both shapes.
+
+```js
+const summary = await agent("Summarize the auth module in src/auth/");
+```
+
+### `pipeline(list, fn)`
+
+Runs `fn(item, index)` for every item in `list` with bounded concurrency (capped at 16 in flight), typically calling `agent()` inside `fn`. Returns an array of results in input order.
+
+```js
+const results = await pipeline(files, async (file) => {
+  return await agent(`Review ${file} for bugs`);
+});
+```
+
+### `args`
+
+Whatever was passed as the `args` parameter to `run_workflow` or `run_saved_workflow` — use it to parameterize a saved workflow instead of hardcoding values.
+
+## Intermediate results stay out of your context
+
+This is the whole point. Every `agent()` call runs an isolated subagent session — its transcript never touches the parent. Only the script's `return` value becomes the `run_workflow` tool result. A script that fans out to 200 agents and only returns a three-line summary costs you three lines of context, not 200 agent transcripts.
+
+## Running a workflow
+
+Call `run_workflow` with an inline `script` (the source for an async function body):
+
+```json
+{
+  "script": "const files = await agent('List all route files in src/api/'); const routes = files.split('\\n').filter(Boolean); const findings = await pipeline(routes, (f) => agent(`Audit ${f} for missing auth checks`)); return findings.filter((f) => f.includes('MISSING')).join('\\n');"
+}
+```
+
+### The `ultracode` opt-in
+
+Writing and running a workflow is a deliberate choice, not a default fallback for every multi-step task. The literal keyword `ultracode` in a user prompt, or a natural-language request to use a workflow, is the signal that opts the agent into authoring one for that task.
+
+## Saving & reusing workflows
+
+Pass `save: { name, scope? }` to `run_workflow` to persist a successful script for reuse:
+
+```json
+{
+  "script": "...",
+  "save": { "name": "audit-routes", "scope": "project" }
+}
+```
+
+- **`list_workflows`** — lists saved workflows (`scope: "project" | "user" | "both"`, default `"both"`)
+- **`run_saved_workflow`** — loads and runs a saved script by name, with optional `args`
+
+### Running a saved workflow manually
+
+Once a workflow is saved, you don't have to ask the agent to re-run it through chat — the `/workflow` slash command runs it directly:
+
+```
+/workflow                        # lists saved workflows (name, scope, description)
+/workflow new my-audit           # scaffolds .pizzapi/workflows/my-audit.js from a starter template
+/workflow audit-routes           # runs the saved workflow with no args
+/workflow audit-routes {"dir":"src/api"}   # runs it with JSON args
+```
+
+This works in both the TUI and the web UI — `/workflow` autocompletes saved workflow names (and `new`), and results are reported the same way as other slash commands (no tool call, no agent turn required).
+
+`/workflow new <name>` writes a commented starter script (guarding against missing `args`, one `agent()` call, one `pipeline()` fan-out) so you don't start from a blank file. It refuses to overwrite an existing workflow of the same name.
+
+### Save locations
+
+| Scope | Path |
+|-------|------|
+| `project` (default) | `.pizzapi/workflows/<name>.js` |
+| `user` | `~/.pizzapi/workflows/<name>.js` |
+
+On a name conflict, **project shadows user** — same precedence as [agent discovery](/PizzaPi/customization/subagents/#agent-discovery-paths).
+
+<Aside type="caution">
+  Saved workflows in `.pizzapi/workflows/` come from the repository and could contain untrusted scripts, just like project-scope agent definitions. Only run saved workflows from repositories you trust.
+</Aside>
+
+## Caps and cost
+
+Workflows are for *large* fan-out — the caps reflect that:
+
+- **16 concurrent agents per run (global)** — a single per-run semaphore gates *every* `agent()` call, no matter how it's invoked: directly, from a `pipeline()` mapper, or from a bare `Promise.all` fan-out you write yourself. Two concurrent pipelines share the same budget of 16. (`pipeline()` additionally caps its own worker pool at `min(16, list.length)`, but the global semaphore is what actually bounds in-flight agents.)
+- **1000 agents per run**, total — a global cap enforced across every `agent()` call regardless of how it's invoked; exceeding it aborts the run.
+
+These are fixed, not project-configurable — a project's config can't raise its own fan-out limit. Every agent call spends real tokens: a workflow that fans out to hundreds of subagents can rack up cost quickly even though none of it appears in your context. Prefer `subagent` for small tasks; reach for a workflow when the fan-out itself is the point.
+
+## Example: audit-routes
+
+```js
+// List every API route file, then audit each one in parallel for
+// missing auth checks. Only the final findings list comes back.
+const listing = await agent("List all route files under src/api/, one per line, no other text.");
+const files = listing.split("\n").map((f) => f.trim()).filter(Boolean);
+
+const findings = await pipeline(files, async (file) => {
+  const result = await agent(`Read ${file} and report "MISSING" if it lacks an auth check, else "OK".`);
+  return { file, result };
+});
+
+const missing = findings.filter((f) => f.result.includes("MISSING"));
+return missing.length
+  ? `Missing auth checks:\n${missing.map((f) => f.file).join("\n")}`
+  : "All routes have auth checks.";
+```
