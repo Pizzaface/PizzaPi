@@ -21,9 +21,10 @@
  * 3. Start an HTTP server in init() and call announcePanel(port)
  */
 import React from "react";
-import { Network, Cpu } from "lucide-react";
+import { Network, Cpu, Brain } from "lucide-react";
 import { TunnelPanel } from "@/components/TunnelPanel";
 import { ProcessPanel } from "@/components/ProcessPanel";
+import { MemoryPanel } from "@/components/MemoryPanel";
 
 export interface ServicePanelDef {
     /** Must match the runner service's `id` */
@@ -52,5 +53,11 @@ export const SERVICE_PANELS: ServicePanelDef[] = [
         label: "Processes",
         icon: <Cpu className="size-3.5" />,
         component: ProcessPanel,
+    },
+    {
+        serviceId: "memory",
+        label: "Memory",
+        icon: <Brain className="size-3.5" />,
+        component: MemoryPanel,
     },
 ];
