@@ -8,7 +8,7 @@
  * runner itself, independent of session activity, refreshing every 12 hours.
  */
 import { join } from "node:path";
-import { AuthStorage } from "@earendil-works/pi-coding-agent";
+import { readStoredCredential } from "@earendil-works/pi-coding-agent";
 import { loadConfig, defaultAgentDir, expandHome } from "../config.js";
 import { fetchOllamaCloudModels } from "../ollama-cloud-models.js";
 import { logInfo, logWarn } from "./logger.js";
@@ -22,7 +22,7 @@ function hasOllamaCreds(): boolean {
     try {
         const config = loadConfig(process.cwd());
         const agentDir = config.agentDir ? expandHome(config.agentDir) : defaultAgentDir();
-        return AuthStorage.create(join(agentDir, "auth.json")).hasAuth("ollama-cloud");
+        return readStoredCredential("ollama-cloud", join(agentDir, "auth.json"))?.type === "api_key";
     } catch {
         return false;
     }

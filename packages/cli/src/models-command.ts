@@ -6,7 +6,7 @@
  * https://ollama.com/v1/models endpoint is fetched and enriched with /api/show
  * metadata. Results are cached for 24 hours in ~/.pizzapi.
  */
-import { AuthStorage, ModelRegistry } from "@earendil-works/pi-coding-agent";
+import { ModelRegistry, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { join } from "path";
 import { c } from "./cli-colors.js";
 import { defaultAgentDir, expandHome, loadConfig } from "./config.js";
@@ -30,8 +30,11 @@ export async function runModelsCommand(args: string[], cwd: string): Promise<num
     const config = loadConfig(cwd);
     const agentDir = config.agentDir ? expandHome(config.agentDir) : defaultAgentDir();
 
-    const authStorage = AuthStorage.create(join(agentDir, "auth.json"));
-    const modelRegistry = ModelRegistry.create(authStorage, join(agentDir, "models.json"));
+    const runtime = await ModelRuntime.create({
+        authPath: join(agentDir, "auth.json"),
+        modelsPath: join(agentDir, "models.json"),
+    });
+    const modelRegistry = new ModelRegistry(runtime);
 
     const staticEntries = modelRegistry
         .getAvailable()
@@ -44,7 +47,7 @@ export async function runModelsCommand(args: string[], cwd: string): Promise<num
         }));
 
     let ollamaEntries: ModelListEntry[] = [];
-    if (authStorage.hasAuth("ollama-cloud") || process.env.OLLAMA_API_KEY) {
+    if (runtime.hasConfiguredAuth("ollama-cloud") || process.env.OLLAMA_API_KEY) {
         try {
             const live = await fetchOllamaCloudModels();
             ollamaEntries = live.map(toModelListEntry);

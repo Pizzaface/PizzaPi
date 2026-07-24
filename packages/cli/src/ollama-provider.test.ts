@@ -242,18 +242,18 @@ describe("Ollama built-in provider", () => {
 
   test("coding-agent treats Ollama Cloud as a built-in API-key login provider", async () => {
     const { defaultModelPerProvider } = await import(piCodingAgentPath("dist/core/model-resolver.js"));
-    const { BUILT_IN_PROVIDER_DISPLAY_NAMES } = await import(piCodingAgentPath("dist/core/provider-display-names.js"));
-    const { isApiKeyLoginProvider } = await import(
-      piCodingAgentPath("dist/modes/interactive/interactive-mode.js")
-    );
+    const { ollamaCloudProvider } = await import("@earendil-works/pi-ai/providers/all");
 
     expect(defaultModelPerProvider["ollama-cloud"]).toBe("glm-5.1");
-    expect(BUILT_IN_PROVIDER_DISPLAY_NAMES["ollama-cloud"]).toBe("Ollama Cloud");
-    expect(isApiKeyLoginProvider("ollama-cloud", new Set())).toBe(true);
+    const provider = ollamaCloudProvider();
+    expect(provider.name).toBe("Ollama Cloud");
+    // API-key auth only, no OAuth handler — login flows treat it as an API-key provider.
+    expect(provider.auth.apiKey).toBeDefined();
+    expect(provider.auth.oauth).toBeUndefined();
   });
 
   test("custom local ollama models remain separate from built-in cloud auth", async () => {
-    const { AuthStorage, ModelRegistry } = await import("@earendil-works/pi-coding-agent");
+    const { ModelRegistry, ModelRuntime } = await import("@earendil-works/pi-coding-agent");
 
     const dir = mkdtempSync(join(tmpdir(), "ollama-cloud-registry-"));
     const modelsPath = join(dir, "models.json");
@@ -270,11 +270,14 @@ describe("Ollama built-in provider", () => {
         },
       }),
     );
+    const authPath = join(dir, "auth.json");
+    writeFileSync(authPath, "{}");
 
     const prev = process.env.OLLAMA_API_KEY;
     process.env.OLLAMA_API_KEY = "test-ollama-key";
     try {
-      const registry = ModelRegistry.create(AuthStorage.inMemory(), modelsPath);
+      const runtime = await ModelRuntime.create({ authPath, modelsPath });
+      const registry = new ModelRegistry(runtime);
       const available = registry.getAvailable();
 
       expect(available.some((m: any) => m.provider === "ollama-cloud" && m.id === "glm-5.1")).toBe(true);

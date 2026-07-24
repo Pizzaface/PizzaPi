@@ -4,7 +4,116 @@ Patches in this directory are applied automatically by Bun via the
 `patchedDependencies` field in the root `package.json`. They are reapplied on
 every `bun install` — no postinstall script is needed.
 
-## @earendil-works/pi-agent-core@0.80.6
+## @earendil-works/pi-agent-core@0.82.0
+
+Same runtime fix as 0.80.6, ported forward unchanged — neither patched file
+(`dist/agent.js`, `dist/agent-loop.js`) changed upstream between 0.80.6 and
+0.82.0.
+
+## @earendil-works/pi-tui@0.82.0
+
+Same Windows console lifecycle patch as 0.80.6, ported forward unchanged —
+`dist/terminal.js` didn't change upstream between 0.80.6 and 0.82.0.
+
+## @earendil-works/pi-ai@0.82.0
+
+Same intent as 0.80.6 (Anthropic web-search passthrough, Claude Code
+credentials fallback, Ollama Cloud support, retryable-JSON-parse patterns),
+ported to upstream's restructured 0.82.0 layout:
+
+- The Anthropic OAuth module moved from `dist/utils/oauth/anthropic.js` to
+  `dist/auth/oauth/anthropic.js`, and its shape changed: the old
+  `anthropicOAuthProvider.refreshToken(credentials)` object is gone, replaced
+  by `anthropicOAuth.refresh(credential)` on the same `anthropicOAuth` object
+  used for login. The Claude Code Keychain/file fallback now lives inside
+  that `refresh()` method.
+- `dist/models.generated.js`'s `OLLAMA_CLOUD_MODELS` constant is now exported
+  (it was module-private in 0.80.6) so the new provider factory below can
+  import it.
+- **New in 0.82.0:** upstream restructured how built-in providers register —
+  `dist/providers/all.js`'s `builtinProviders()` now assembles one `Provider`
+  object (id, name, baseUrl, auth, models, api) per provider, rather than
+  coding-agent statically listing provider display names
+  (`provider-display-names.js`, removed upstream — see the pi-coding-agent
+  entry below). This patch adds an `ollamaCloudProvider()` factory function to
+  `dist/providers/all.js` (and its `.d.ts`) following the same pattern as
+  `openrouterProvider()`/`togetherProvider()`, registers it in
+  `builtinProviders()`, and exports `OLLAMA_CLOUD_MODELS`/adds an
+  `ollama-cloud` entry to `models.generated.d.ts` so the factory type-checks.
+  It's inlined into the existing `all.js` file rather than a new
+  `providers/ollama-cloud.js` file for the same `bun patch`-can't-add-nested-
+  files reason as `OLLAMA_CLOUD_MODELS` itself (see the 0.80.6 note below).
+
+**What it changes:**
+
+| File | Change |
+|------|--------|
+| `dist/api/anthropic-messages.js` | Same Anthropic web-search patch as 0.80.6 (unchanged file) |
+| `dist/auth/oauth/anthropic.js` | Claude Code Keychain/file credentials fallback, now inside `anthropicOAuth.refresh()` |
+| `dist/env-api-keys.js` | Same `OLLAMA_API_KEY` recognition as 0.80.6 (unchanged file) |
+| `dist/models.generated.js` | Same `OLLAMA_CLOUD_MODELS` catalog as 0.80.6, now exported |
+| `dist/models.generated.d.ts` | Same `ollama-cloud` typing as 0.80.6 (unchanged file) |
+| `dist/providers/all.js` / `.d.ts` | **New**: `ollamaCloudProvider()` factory, registered in `builtinProviders()` |
+| `dist/types.d.ts` | Same `ollama-cloud` `KnownProvider` addition as 0.80.6 (unchanged file) |
+| `dist/utils/retry.js` | Same retryable-JSON-parse patterns as 0.80.6 (unchanged file) |
+
+## @earendil-works/pi-coding-agent@0.82.0
+
+Same PizzaPi integration changes as 0.80.6, ported forward, with two upstream
+removals absorbed elsewhere rather than restored:
+
+- **`dist/core/provider-display-names.js` was deleted upstream.** Provider
+  display names now come from each provider's own `name` field (set at
+  registration in pi-ai's `builtinProviders()`) via
+  `ModelRegistry.getProviderDisplayName()` → `runtime.getProvider(id)?.name`.
+  The `Ollama Cloud` display name patch moved to the pi-ai `all.js` patch
+  above (`ollamaCloudProvider()`'s `name` field) instead of living here.
+- **`AuthStorage` (and its associated types) is no longer exported from the
+  package root**, and the class itself was rewritten to a plain
+  `CredentialStore` (read/list/modify/delete) with all OAuth-refresh/env-
+  fallback/runtime-override orchestration moved into `ModelRuntime`. Only
+  `readStoredCredential(providerId, authPath)` (a stateless raw JSON read,
+  unchanged in shape) remains exported. This patch does **not** try to
+  restore the old export — the class it pointed to doesn't exist in the old
+  shape anymore. Instead, `packages/cli` callers were migrated to
+  `ModelRuntime`/`ModelRegistry`/`readStoredCredential` (see below).
+
+**What it changes:**
+
+| File | Change |
+|------|--------|
+| `dist/config.js` | Same `.pizzapi` config-dir / flat-directory / `PIZZAPI_CHANGELOG_PATH` overrides as 0.80.6 |
+| `dist/core/agent-session.js` | Same `expandPromptTemplates` opt-in as 0.80.6 |
+| `dist/core/extensions/loader.js` / `dist/core/extensions/runner.js` | Same `newSession()`/`switchSession()`/`fork()` general-API exposure as 0.80.6 |
+| `dist/core/extensions/types.d.ts` | Same `ExtensionAPI`/`ExtensionActions` typings as 0.80.6 |
+| `dist/core/model-resolver.js` | Same `ollama-cloud` default model (`glm-5.1`) as 0.80.6 |
+| `dist/modes/interactive/interactive-mode.js` | Same version-notification-UI removal as 0.80.6 (upstream shifted a few lines; hunk re-applied manually) |
+| `dist/index.js` / `dist/index.d.ts` | Same `handlePackageCommand`/`handleConfigCommand` re-export as 0.80.6 |
+
+**No longer present (see above for why):** `dist/core/provider-display-names.js`.
+
+### packages/cli auth call-site migration (not a patch — our own source)
+
+Because `AuthStorage` and `ModelRegistry.create()`/`.authStorage` are gone,
+every `packages/cli` call site that constructed or read through them was
+updated to the new API:
+
+| Old | New |
+|-----|-----|
+| `AuthStorage.create(authPath)` + `ModelRegistry.create(authStorage, modelsPath)` | `await ModelRuntime.create({ authPath, modelsPath })` + `new ModelRegistry(runtime)` |
+| `authStorage.get(provider)` (raw credential read) | `readStoredCredential(provider, authPath)` (same shape, now a plain exported function) |
+| `authStorage.hasAuth(provider)` | `modelRegistry.getProviderAuthStatus(provider).configured` (or `runtime.hasConfiguredAuth(provider)` where only the runtime is in scope) |
+| `ctx.modelRegistry.authStorage.get(provider)` (extension auth-source detection) | `ctx.modelRegistry.isUsingOAuth(ctx.model)` + `ctx.modelRegistry.getProviderAuthStatus(provider)` |
+| `authStorage.getApiKey("google-gemini-cli")` (a synthetic, non-model-registry credential slot used only for usage reporting) | `readStoredCredential("google-gemini-cli", authPath)` — this slot is api_key-only in practice (no real OAuth provider registered for it), so the raw `.key` read is behavior-preserving |
+| `worker.ts`'s `createAuthStorageWithRetry()` (lock-contention retry wrapper around `AuthStorage.create()`, feeding `createAgentSession({ authStorage })`) | `createModelRuntimeWithRetry()`, same retry/backoff/lockless-fallback structure around `ModelRuntime.create()` + `runtime.listCredentials()`, feeding `createAgentSession({ modelRuntime })`. The last-resort in-memory snapshot tier uses a small local class structurally matching pi-ai's (unexported) `CredentialStore` interface, since there's no public in-memory credential store constructor anymore. |
+
+Affected files: `models-command.ts`, `index.ts`, `runner/daemon.ts`,
+`runner/runner-ollama-models-cache.ts`, `runner/runner-usage-cache.ts`,
+`runner/worker.ts`, `extensions/ollama-web-tools.ts`,
+`extensions/remote-auth-source.ts`, `extensions/remote-provider-usage.ts`,
+`extensions/spawn-session.ts`, plus their tests.
+
+## @earendil-works/pi-coding-agent@0.80.6
 
 Adds one PizzaPi-specific runtime fix:
 
@@ -302,6 +411,17 @@ syntactic validity. Run with `bun test packages/cli/src/patches.test.ts`.
 this patch can be deleted.
 
 ## Previously patched (no longer needed)
+
+### @earendil-works/*@0.80.6 (replaced by 0.82.0 patches)
+
+The 0.80.6 patch files are retained in this directory for history but are no
+longer referenced by `patchedDependencies`. See the 0.82.0 entries above for
+what changed in the port: `pi-agent-core` and `pi-tui` carried over unchanged;
+`pi-ai` needed a new `ollamaCloudProvider()` registration (upstream moved from
+static display-name/model-catalog data to per-provider factory objects) and an
+Anthropic OAuth module path/shape change; `pi-coding-agent` lost the
+`provider-display-names.js` file and the top-level `AuthStorage` export
+entirely, requiring `packages/cli` call-site migrations to `ModelRuntime`.
 
 ### @earendil-works/*@0.80.5 (replaced by 0.80.6 patches)
 

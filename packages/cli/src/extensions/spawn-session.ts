@@ -297,7 +297,7 @@ export const spawnSessionExtension: ExtensionFactory = (pi) => {
             // Ollama Cloud models are discovered dynamically (fetched live from ollama.com,
             // not baked into the static registry) — merge in the runner's cached list, same
             // as the Web UI and `pizza models` do, so newly-pulled cloud models show up here.
-            const hasOllamaAuth = ctx.modelRegistry.authStorage.hasAuth("ollama-cloud") || !!process.env.OLLAMA_API_KEY;
+            const hasOllamaAuth = ctx.modelRegistry.getProviderAuthStatus("ollama-cloud").configured || !!process.env.OLLAMA_API_KEY;
             const ollamaModels = hasOllamaAuth
                 ? (getCachedOllamaCloudModels() ?? []).map(toOllamaCloudRuntimeModel).filter((m) => !isHidden(m))
                 : [];

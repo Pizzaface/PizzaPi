@@ -53,9 +53,9 @@
     "@capacitor/push-notifications": "^8.1.1",
     "@capawesome/capacitor-badge": "^8.0.2",
     "@capgo/capacitor-updater": "^8",
-    "@earendil-works/pi-agent-core": "^0.80.6",
-    "@earendil-works/pi-ai": "^0.80.6",
-    "@earendil-works/pi-tui": "^0.80.6",
+    "@earendil-works/pi-agent-core": "^0.82.0",
+    "@earendil-works/pi-ai": "^0.82.0",
+    "@earendil-works/pi-tui": "^0.82.0",
     "motion": "^12.34.2",
     "pizzapi": "."
   },
@@ -70,9 +70,9 @@
   },
   "version": "",
   "patchedDependencies": {
-    "@earendil-works/pi-agent-core@0.80.6": "patches/@earendil-works%2Fpi-agent-core@0.80.6.patch",
-    "@earendil-works/pi-tui@0.80.6": "patches/@earendil-works%2Fpi-tui@0.80.6.patch",
-    "@earendil-works/pi-ai@0.80.6": "patches/@earendil-works%2Fpi-ai@0.80.6.patch",
-    "@earendil-works/pi-coding-agent@0.80.6": "patches/@earendil-works%2Fpi-coding-agent@0.80.6.patch"
+    "@earendil-works/pi-agent-core@0.82.0": "patches/@earendil-works%2Fpi-agent-core@0.82.0.patch",
+    "@earendil-works/pi-tui@0.82.0": "patches/@earendil-works%2Fpi-tui@0.82.0.patch",
+    "@earendil-works/pi-ai@0.82.0": "patches/@earendil-works%2Fpi-ai@0.82.0.patch",
+    "@earendil-works/pi-coding-agent@0.82.0": "patches/@earendil-works%2Fpi-coding-agent@0.82.0.patch"
   }
 }
