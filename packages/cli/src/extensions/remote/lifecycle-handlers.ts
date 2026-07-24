@@ -149,6 +149,10 @@ export function registerLifecycleHandlers(deps: LifecycleHandlersDeps): void {
 
     // Session-local error-fired flag (not shared — only used inside agent_end/turn_start).
     let sessionErrorFired = false;
+    // Messages from the last agent_end, consumed by agent_settled. agent_end
+    // fires after every attempt (including ones pi will auto-retry); completion
+    // and error reporting must wait for agent_settled.
+    let settledMessages: any[] | null = null;
 
     // ── Register tools ────────────────────────────────────────────────────────
     registerAskUserTool(rctx);
@@ -364,16 +368,25 @@ export function registerLifecycleHandlers(deps: LifecycleHandlersDeps): void {
 
     pi.on("agent_end", (event: any, ctx: any) => {
         rctx.isAgentActive = false;
+        rctx.forwardEvent(event);
+        rctx.forwardEvent(rctx.buildHeartbeat());
+        // Defer completion/error reporting to agent_settled: pi fires agent_end
+        // after every attempt, including ones it will auto-retry. agent_settled
+        // fires once, only after retries/compaction/continuations are exhausted.
+        settledMessages = (event as any).messages ?? [];
+    });
+
+    pi.on("agent_settled", (_event: any, ctx: any) => {
+        const messages = settledMessages;
+        settledMessages = null;
         const lastError = rctx.lastRetryableError;
         rctx.lastRetryableError = null;
         emitRetryStateChanged(rctx, null);
-        rctx.forwardEvent(event);
-        rctx.forwardEvent(rctx.buildHeartbeat());
+        if (messages === null) return; // settled without a preceding agent_end
 
         if (!ctx.hasPendingMessages()) {
             let summary = "Session completed";
             let fullOutputPath: string | undefined;
-            const messages = (event as any).messages;
             if (Array.isArray(messages)) {
                 for (let i = messages.length - 1; i >= 0; i--) {
                     const msg = messages[i];
