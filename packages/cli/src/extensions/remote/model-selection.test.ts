@@ -50,7 +50,8 @@ function createRctx(modelFromRegistry?: any) {
             model: null,
             modelRegistry: {
                 find: () => modelFromRegistry,
-                authStorage: { get: () => ({ type: "api_key" }) },
+                isUsingOAuth: () => false,
+                getProviderAuthStatus: () => ({ configured: true, source: "stored" as const }),
             },
             sessionManager: {
                 getEntries: () => [],

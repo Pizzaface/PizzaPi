@@ -255,9 +255,14 @@ describe("pi-coding-agent API surface compatibility", () => {
         expect(typeof mod.SessionManager).toBe("function");
     });
 
-    test("AuthStorage is exported", async () => {
+    test("readStoredCredential is exported", async () => {
         const mod = await import("@earendil-works/pi-coding-agent");
-        expect(mod.AuthStorage).toBeDefined();
+        expect(typeof mod.readStoredCredential).toBe("function");
+    });
+
+    test("ModelRuntime is exported", async () => {
+        const mod = await import("@earendil-works/pi-coding-agent");
+        expect(typeof mod.ModelRuntime).toBe("function");
     });
 
     test("buildSessionContext is exported", async () => {
@@ -502,7 +507,7 @@ describe("pi-ai patch application — Anthropic web search", () => {
 describe("pi-ai patch application — Claude Code credentials fallback (Keychain-first)", () => {
     test("anthropic.js (oauth): tryReadClaudeCodeCredentials with Keychain + file fallback", async () => {
         const source = await Bun.file(
-            piAiPath("dist/utils/oauth/anthropic.js"),
+            piAiPath("dist/auth/oauth/anthropic.js"),
         ).text();
 
         expect(source).toContain("PATCH(pizzapi): read Claude Code credentials as a refresh fallback");
@@ -518,29 +523,28 @@ describe("pi-ai patch application — Claude Code credentials fallback (Keychain
 
     test("anthropic.js (oauth): refreshToken awaits Claude Code credentials first", async () => {
         const source = await Bun.file(
-            piAiPath("dist/utils/oauth/anthropic.js"),
+            piAiPath("dist/auth/oauth/anthropic.js"),
         ).text();
 
         expect(source).toContain("PATCH(pizzapi): try Claude Code credentials first");
         // Verify the fallback awaits tryReadClaudeCodeCredentials before refreshAnthropicToken
         const ccCredsIndex = source.indexOf("await tryReadClaudeCodeCredentials()");
-        const refreshIndex = source.indexOf("refreshAnthropicToken(credentials.refresh)");
+        const refreshIndex = source.indexOf("refreshAnthropicToken(credential.refresh)");
         expect(ccCredsIndex).toBeGreaterThan(-1);
         expect(refreshIndex).toBeGreaterThan(-1);
         expect(ccCredsIndex).toBeLessThan(refreshIndex);
     });
 
     test("anthropic.js (oauth): file is syntactically valid", async () => {
-        const mod = await import(piAiPath("dist/utils/oauth/anthropic.js"));
-        expect(typeof mod.anthropicOAuthProvider).toBe("object");
-        expect(typeof mod.anthropicOAuthProvider.refreshToken).toBe("function");
-        expect(typeof mod.loginAnthropic).toBe("function");
-        expect(typeof mod.refreshAnthropicToken).toBe("function");
+        const mod = await import(piAiPath("dist/auth/oauth/anthropic.js"));
+        expect(typeof mod.anthropicOAuth).toBe("object");
+        expect(typeof mod.anthropicOAuth.refresh).toBe("function");
+        expect(typeof mod.anthropicOAuth.login).toBe("function");
     });
 
     test("anthropic.js (oauth): 60s safety margin on credential expiry", async () => {
         const source = await Bun.file(
-            piAiPath("dist/utils/oauth/anthropic.js"),
+            piAiPath("dist/auth/oauth/anthropic.js"),
         ).text();
 
         // Ensures we don't use credentials that expire within 60 seconds

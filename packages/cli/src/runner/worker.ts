@@ -1,4 +1,4 @@
-import { createAgentSession, DefaultResourceLoader, AuthStorage, SettingsManager } from "@earendil-works/pi-coding-agent";
+import { createAgentSession, DefaultResourceLoader, ModelRuntime, readStoredCredential, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { SHELL_PROC_CAPTURE_PREFIX } from "./session-procs.js";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -14,30 +14,56 @@ import { findCachedOllamaCloudModel } from "../ollama-cloud-models.js";
 import { setLogComponent, setLogSessionId, logInfo, logWarn, logError, logAuth } from "./logger.js";
 
 /**
- * Create an AuthStorage instance with retried file locking.
+ * Minimal in-memory credential store for the lockless fallback tier below.
+ * Structurally matches pi-ai's `CredentialStore` interface (read/list/modify/
+ * delete); that type isn't part of pi-ai's public export surface, so we
+ * match its shape rather than importing/implementing it by name.
+ */
+class InMemoryCredentialsFallback {
+    constructor(private data: Record<string, any>) {}
+    async read(providerId: string) {
+        return this.data[providerId];
+    }
+    async list() {
+        return Object.entries(this.data).map(([providerId, credential]) => ({
+            providerId,
+            type: (credential as { type: string }).type,
+        }));
+    }
+    async modify(providerId: string, fn: (current: any) => Promise<any>) {
+        const next = await fn(this.data[providerId]);
+        if (next !== undefined) this.data[providerId] = next;
+        return this.data[providerId];
+    }
+    async delete(providerId: string) {
+        delete this.data[providerId];
+    }
+}
+
+/**
+ * Create a ModelRuntime with retried file locking on auth.json.
  *
  * When many worker processes spawn simultaneously (e.g. 6 sub-sessions in
- * parallel), the upstream AuthStorage constructor acquires a synchronous
- * file lock on auth.json during its `reload()` call. The sync lock uses
- * only 10 retries × 20ms = ~200ms window, which is too short when another
- * process is doing an async OAuth token refresh (seconds). Workers that
- * lose the lock race silently start with empty credentials → "No API key
- * found" errors.
+ * parallel), the underlying auth-storage backend acquires a synchronous
+ * file lock on auth.json while loading. The sync lock uses only 10 retries
+ * × 20ms = ~200ms window, which is too short when another process is doing
+ * an async OAuth token refresh (seconds). Workers that lose the lock race
+ * silently start with empty credentials → "No API key found" errors.
  *
- * This helper retries AuthStorage creation with increasing delays,
+ * This helper retries ModelRuntime creation with increasing delays,
  * and if all retries fail, falls back to a lockless read so the worker
  * at least has stale-but-valid credentials rather than none.
  */
-async function createAuthStorageWithRetry(authPath: string, maxAttempts = 5): Promise<AuthStorage> {
+async function createModelRuntimeWithRetry(authPath: string, modelsPath: string, maxAttempts = 5): Promise<ModelRuntime> {
     let lastError: unknown;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
         try {
-            const storage = AuthStorage.create(authPath);
+            const runtime = await ModelRuntime.create({ authPath, modelsPath });
             // Verify it actually loaded credentials (not silently empty due to lock failure)
-            const providers = storage.list();
+            const providers = await runtime.listCredentials();
             if (providers.length > 0) {
-                return storage;
+                return runtime;
             }
             // If the file exists but we got zero providers, it could be a lock failure
             // that was silently swallowed. Check if the file actually has data.
@@ -46,12 +72,12 @@ async function createAuthStorageWithRetry(authPath: string, maxAttempts = 5): Pr
                     const raw = readFileSync(authPath, "utf-8");
                     const data = JSON.parse(raw);
                     if (Object.keys(data).length > 0) {
-                        // File has data but AuthStorage didn't load it — lock contention.
+                        // File has data but the runtime didn't load it — lock contention.
                         // Wait and retry.
                         logWarn(
-                            `pizzapi worker: auth.json has ${Object.keys(data).length} provider(s) but AuthStorage loaded 0 (attempt ${attempt}/${maxAttempts}, likely lock contention)`,
+                            `pizzapi worker: auth.json has ${Object.keys(data).length} provider(s) but ModelRuntime loaded 0 (attempt ${attempt}/${maxAttempts}, likely lock contention)`,
                         );
-                        lastError = new Error("Lock contention: auth.json has data but AuthStorage loaded empty");
+                        lastError = new Error("Lock contention: auth.json has data but ModelRuntime loaded empty");
                         if (attempt < maxAttempts) {
                             // Exponential backoff: 100ms, 200ms, 400ms, 800ms
                             await Bun.sleep(100 * Math.pow(2, attempt - 1));
@@ -59,12 +85,12 @@ async function createAuthStorageWithRetry(authPath: string, maxAttempts = 5): Pr
                         }
                         // Final attempt still hit lock contention — break out of the
                         // loop so we fall through to the lockless fallback below
-                        // instead of returning the empty storage.
+                        // instead of returning the empty runtime.
                         break;
                     }
                 } catch {
                     // Partial/empty JSON during a concurrent token refresh —
-                    // retry instead of returning the empty storage (P1 fix).
+                    // retry instead of returning the empty runtime (P1 fix).
                     lastError = new Error("Lockless auth.json probe got unreadable/partial JSON");
                     if (attempt < maxAttempts) {
                         await Bun.sleep(100 * Math.pow(2, attempt - 1));
@@ -74,7 +100,7 @@ async function createAuthStorageWithRetry(authPath: string, maxAttempts = 5): Pr
                 }
             }
             // File genuinely empty or doesn't exist — return as-is
-            return storage;
+            return runtime;
         } catch (err) {
             lastError = err;
             if (attempt < maxAttempts) {
@@ -88,7 +114,7 @@ async function createAuthStorageWithRetry(authPath: string, maxAttempts = 5): Pr
     // Retry the lockless read a few times with short delays because a
     // concurrent writeFileSync can produce empty/partial JSON momentarily.
     logWarn(
-        `pizzapi worker: AuthStorage lock retries exhausted (${maxAttempts} attempts), falling back to lockless read`,
+        `pizzapi worker: ModelRuntime lock retries exhausted (${maxAttempts} attempts), falling back to lockless read`,
     );
     const locklessRetries = 3;
     for (let lr = 1; lr <= locklessRetries; lr++) {
@@ -105,15 +131,16 @@ async function createAuthStorageWithRetry(authPath: string, maxAttempts = 5): Pr
             const data = JSON.parse(raw);
             if (Object.keys(data).length > 0) {
                 // The lock holder may have finished by now — try one final
-                // AuthStorage.create() so we get a file-backed instance that
+                // ModelRuntime.create() so we get a file-backed instance that
                 // can persist token refreshes and see future credential updates.
                 try {
-                    const fileStorage = AuthStorage.create(authPath);
-                    if (fileStorage.list().length > 0) {
+                    const fileRuntime = await ModelRuntime.create({ authPath, modelsPath });
+                    const fileCreds = await fileRuntime.listCredentials();
+                    if (fileCreds.length > 0) {
                         logInfo(
-                            `pizzapi worker: lock released — file-backed AuthStorage loaded ${fileStorage.list().length} provider(s) on final retry`,
+                            `pizzapi worker: lock released — file-backed ModelRuntime loaded ${fileCreds.length} provider(s) on final retry`,
                         );
-                        return fileStorage;
+                        return fileRuntime;
                     }
                 } catch {
                     // Still can't acquire lock — fall through to in-memory
@@ -121,11 +148,15 @@ async function createAuthStorageWithRetry(authPath: string, maxAttempts = 5): Pr
                 // Use in-memory as last resort (read-only snapshot — token
                 // refreshes won't be persisted and credential updates won't
                 // be visible, but at least the worker can start).
-                const storage = AuthStorage.inMemory(data);
+                const runtime = await ModelRuntime.create({
+                    authPath,
+                    modelsPath,
+                    credentials: new InMemoryCredentialsFallback(data) as any,
+                });
                 logWarn(
                     `pizzapi worker: lockless fallback loaded ${Object.keys(data).length} provider(s) from ${authPath} (in-memory snapshot — token refreshes will not persist)`,
                 );
-                return storage;
+                return runtime;
             }
             // Parsed OK but empty object — file genuinely has no providers
             break;
@@ -148,7 +179,7 @@ async function createAuthStorageWithRetry(authPath: string, maxAttempts = 5): Pr
     logError(
         `pizzapi worker: failed to load auth credentials after ${maxAttempts} attempts: ${lastError instanceof Error ? lastError.message : String(lastError)}`,
     );
-    return AuthStorage.create(authPath);
+    return ModelRuntime.create({ authPath, modelsPath });
 }
 
 // buildPromptPaths moved to ../skills.ts as buildPromptTemplatePaths
@@ -356,17 +387,18 @@ async function main(): Promise<void> {
     await loader.reload();
     bootTimer.end("[boot] resource-loader");
 
-    // Create AuthStorage with retry logic to handle lock contention when
+    // Create a ModelRuntime with retry logic to handle lock contention when
     // multiple workers spawn simultaneously (common with parallel sub-sessions).
     const authPath = join(agentDir, "auth.json");
-    const authStorage = await createAuthStorageWithRetry(authPath);
+    const modelsPath = join(agentDir, "models.json");
+    const modelRuntime = await createModelRuntimeWithRetry(authPath, modelsPath);
 
     // ── Auth diagnostics — log credential state before first API call ────
     // This helps diagnose intermittent "No API key found" failures in
     // concurrent worker sessions (see Godmother idea fIUvBDLZ).
     try {
         for (const provider of ["anthropic", "google-gemini-cli", "openai-codex"]) {
-            const raw = authStorage.get(provider);
+            const raw = readStoredCredential(provider, authPath);
             if (raw && typeof raw === "object" && "type" in raw) {
                 const cred = raw as { type: string; expires?: number };
                 if (cred.type === "oauth" && cred.expires) {
@@ -407,7 +439,7 @@ async function main(): Promise<void> {
     const { session } = await createAgentSession({
         cwd,
         agentDir,
-        authStorage,
+        modelRuntime,
         resourceLoader: loader,
         settingsManager,
     });

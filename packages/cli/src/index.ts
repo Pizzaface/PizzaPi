@@ -1,12 +1,12 @@
 #!/usr/bin/env bun
 import {
-    AuthStorage,
     createAgentSession,
     createAgentSessionFromServices,
     createAgentSessionRuntime,
     createAgentSessionServices,
     DefaultResourceLoader,
     InteractiveMode,
+    readStoredCredential,
     SessionManager,
 } from "@earendil-works/pi-coding-agent";
 import { join } from "path";
@@ -92,7 +92,7 @@ async function main() {
     if (args[0] === "usage") {
         const config = loadConfig(cwd);
         const agentDir = config.agentDir ? expandHome(config.agentDir) : defaultAgentDir();
-        const authStorage = AuthStorage.create(join(agentDir, "auth.json"));
+        const authPath = join(agentDir, "auth.json");
         const showJson = args.includes("--json");
 
         // Determine which provider(s) to show
@@ -107,7 +107,7 @@ async function main() {
             // auth.json first, then fall back to Claude Code's own OAuth token
             // (Keychain / ~/.claude/.credentials.json) for users who never ran
             // /login inside pizzapi — read-only, never refreshed.
-            const accessToken = getOAuthAccessToken(authStorage.get("anthropic")) ?? getAnthropicKeychainToken();
+            const accessToken = getOAuthAccessToken(readStoredCredential("anthropic", authPath)) ?? getAnthropicKeychainToken();
             if (!accessToken) {
                 if (providerArg === "anthropic") {
                     log.error("No Anthropic credentials found. Log in with /login inside pizzapi.");
@@ -196,7 +196,8 @@ async function main() {
 
         // ── Gemini (Google Cloud Code Assist, OAuth) ───────────────────────────
         if (showGemini) {
-            const rawCred = await authStorage.getApiKey("google-gemini-cli");
+            const geminiCred = readStoredCredential("google-gemini-cli", authPath);
+            const rawCred = geminiCred?.type === "api_key" ? geminiCred.key : undefined;
             if (!rawCred) {
                 if (providerArg === "gemini") {
                     log.error("No Gemini credentials found. Log in with /login inside pizzapi.");

@@ -10,19 +10,22 @@ import { getEnvApiKey } from "@earendil-works/pi-ai/compat";
 import type { AuthSource } from "./remote-types.js";
 
 /**
- * Mirrors AuthStorage.getApiKey() priority chain to determine WHERE the
+ * Mirrors the auth-resolution priority chain to determine WHERE the
  * active API key comes from, so we can relay that to the user.
  */
 export function getAuthSource(ctx: ExtensionContext | null): AuthSource {
     if (!ctx?.model) return "unknown";
     const provider = ctx.model.provider;
 
-    // 1. Check auth.json credentials (highest priority after runtime overrides)
-    const cred = ctx.modelRegistry.authStorage.get(provider);
-    if (cred?.type === "oauth") return "oauth";
-    if (cred?.type === "api_key") return "auth.json";
+    // 1. OAuth takes priority when active
+    if (ctx.modelRegistry.isUsingOAuth(ctx.model)) return "oauth";
 
-    // 2. Check environment variable
+    // 2. Stored auth.json credential vs. environment variable
+    const status = ctx.modelRegistry.getProviderAuthStatus(provider);
+    if (status.configured && status.source === "stored") return "auth.json";
+    if (status.configured && status.source === "environment") return "env";
+
+    // 3. Fallback: raw environment variable check
     if (getEnvApiKey(provider)) return "env";
 
     return "unknown";

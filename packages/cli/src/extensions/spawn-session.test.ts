@@ -33,7 +33,7 @@ function fakeCtx(hasOllamaAuth: boolean) {
         modelRegistry: {
             getAll: () => [fakeDiskModel("claude-x")],
             getAvailable: () => [fakeDiskModel("claude-x")],
-            authStorage: { hasAuth: (provider: string) => hasOllamaAuth && provider === "ollama-cloud" },
+            getProviderAuthStatus: (provider: string) => ({ configured: hasOllamaAuth && provider === "ollama-cloud" }),
         },
     } as any;
 }

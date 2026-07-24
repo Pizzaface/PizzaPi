@@ -31,7 +31,7 @@ import type { PizzaPiConfig } from "../config.js";
 import { findSessionPathById } from "./session-list-cache.js";
 import { cleanupSessionAttachments, sweepOrphanedAttachments } from "../extensions/session-attachments.js";
 import { triggerSessionClose } from "../extensions/providers/extension.js";
-import { AuthStorage, ModelRegistry } from "@earendil-works/pi-coding-agent";
+import { ModelRegistry, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import type { ServiceTriggerDef, ServiceSigilDef, TriggerSubscriptionEntry } from "@pizzapi/protocol";
 import { setLogComponent, logInfo, logWarn, logError } from "./logger.js";
 import { extractHookSummary } from "./hook-summary.js";
@@ -459,10 +459,13 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             const config = loadConfig(cwd);
             return config.agentDir ? expandHome(config.agentDir) : defaultAgentDir();
         };
-        const listConfiguredModels = (cwd = process.cwd()) => {
+        const listConfiguredModels = async (cwd = process.cwd()) => {
             const agentDir = resolveConfiguredAgentDir(cwd);
-            const authStorage = AuthStorage.create(join(agentDir, "auth.json"));
-            const modelRegistry = ModelRegistry.create(authStorage, join(agentDir, "models.json"));
+            const runtime = await ModelRuntime.create({
+                authPath: join(agentDir, "auth.json"),
+                modelsPath: join(agentDir, "models.json"),
+            });
+            const modelRegistry = new ModelRegistry(runtime);
             const diskModels = modelRegistry
                 .getAvailable()
                 .map((model: any) => ({
@@ -478,7 +481,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             // the session snapshot yet. Gated on Ollama credentials so we don't
             // advertise models the runner can't actually use.
             let ollamaModels: SessionModelEntry[] = [];
-            if (authStorage.hasAuth("ollama-cloud") || process.env.OLLAMA_API_KEY) {
+            if (runtime.hasConfiguredAuth("ollama-cloud") || process.env.OLLAMA_API_KEY) {
                 ollamaModels = (getCachedOllamaCloudModels() ?? []).map((model) => ({
                     provider: model.provider,
                     id: model.id,
@@ -495,10 +498,10 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                 readSessionModelsCache() ?? [],
             );
         };
-        const getContextWindowsForAnalysis = (cwd = process.cwd()): Map<string, number> => {
+        const getContextWindowsForAnalysis = async (cwd = process.cwd()): Promise<Map<string, number>> => {
             const windows = new Map<string, number>();
             try {
-                for (const model of listConfiguredModels(cwd)) {
+                for (const model of await listConfiguredModels(cwd)) {
                     if (typeof model.contextWindow !== "number") continue;
                     windows.set(`${model.provider}:${model.id}`, model.contextWindow);
                 }
@@ -1844,11 +1847,11 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
 
         // ── Models ──────────────────────────────────────────────────────
 
-        socket.on("list_models", (data: any) => {
+        socket.on("list_models", async (data: any) => {
             if (isShuttingDown) return;
             const requestId = data?.requestId;
             try {
-                const models = listConfiguredModels(process.cwd());
+                const models = await listConfiguredModels(process.cwd());
                 socket.emit("models_list", { requestId, models });
             } catch (e: any) {
                 socket.emit("models_list", { requestId, models: [], error: e.message ?? "Failed to list models" });
@@ -1929,7 +1932,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                 const analysis = reconstructContext(
                     entries,
                     leafId,
-                    getContextWindowsForAnalysis(sessionMetadata?.cwd),
+                    await getContextWindowsForAnalysis(sessionMetadata?.cwd),
                 );
                 socket.emit("analyze_session_data", { requestId, data: analysis });
             } catch (e: any) {

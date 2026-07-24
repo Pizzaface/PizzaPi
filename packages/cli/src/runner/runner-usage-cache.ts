@@ -1,7 +1,7 @@
 import { renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { AuthStorage } from "@earendil-works/pi-coding-agent";
+import { readStoredCredential } from "@earendil-works/pi-coding-agent";
 import { loadConfig, defaultAgentDir, expandHome } from "../config.js";
 import { getOAuthAccessToken, getAnthropicKeychainToken, parseGeminiQuotaCredential } from "./usage-auth.js";
 import { logInfo, logWarn } from "./logger.js";
@@ -55,38 +55,32 @@ export function runnerUsageCacheFilePath(): string {
 }
 
 /**
- * Returns all unique AuthStorage instances known to the daemon:
+ * Returns all unique auth.json paths known to the daemon:
  * the daemon's own startup CWD first, followed by any CWD registered by active
  * worker sessions that maps to a different auth.json (e.g. a project-specific
- * agentDir override).  Results are deduplicated by resolved auth.json path so
- * the same file is never probed twice.
+ * agentDir override). Deduplicated so the same file is never probed twice.
  *
- * Usage fetch functions iterate this list and use the first storage that
+ * Usage fetch functions iterate this list and use the first path that
  * yields valid credentials, ensuring that sessions spawned in projects with
  * their own agentDir overrides are covered even when the daemon was started
  * from a different directory.
  */
-function getKnownAuthStorages(): AuthStorage[] {
+function getKnownAuthPaths(): string[] {
     const seen = new Set<string>();
-    const result: AuthStorage[] = [];
     const cwds = [process.cwd(), ..._activeSessionCwds.keys()];
     for (const cwd of cwds) {
         const config = loadConfig(cwd);
         const agentDir = config.agentDir ? expandHome(config.agentDir) : defaultAgentDir();
-        const authPath = join(agentDir, "auth.json");
-        if (!seen.has(authPath)) {
-            seen.add(authPath);
-            result.push(AuthStorage.create(authPath));
-        }
+        seen.add(join(agentDir, "auth.json"));
     }
-    return result;
+    return [...seen];
 }
 
 async function fetchAnthropicUsageData(): Promise<ProviderUsageData | null> {
     let token: string | null = null;
     try {
-        for (const authStorage of getKnownAuthStorages()) {
-            const raw = authStorage.get("anthropic");
+        for (const authPath of getKnownAuthPaths()) {
+            const raw = readStoredCredential("anthropic", authPath);
             token = getOAuthAccessToken(raw);
             if (token) break;
         }
@@ -153,14 +147,14 @@ async function fetchGeminiUsageData(): Promise<ProviderUsageData | null> {
     let token: string | undefined;
     let projectId: string | undefined;
     try {
-        for (const authStorage of getKnownAuthStorages()) {
-            // AuthStorage.getApiKey handles OAuth token refresh and returns
-            // JSON.stringify({ token, projectId }) via the provider's getApiKey().
+        for (const authPath of getKnownAuthPaths()) {
+            // The stored credential's `key` is JSON.stringify({ token, projectId }).
             // Use parseGeminiQuotaCredential to validate the result — API-key
-            // credentials return a plain string that fails JSON.parse, so we
+            // credentials with an unrelated shape fail JSON.parse, so we
             // must not short-circuit on the first truthy raw value; we need to
-            // confirm it is a valid OAuth Gemini credential before stopping.
-            const raw = await authStorage.getApiKey("google-gemini-cli");
+            // confirm it is a valid Gemini quota credential before stopping.
+            const stored = readStoredCredential("google-gemini-cli", authPath);
+            const raw = stored?.type === "api_key" ? stored.key : undefined;
             const cred = parseGeminiQuotaCredential(raw);
             if (cred) {
                 token = cred.token;
@@ -204,8 +198,8 @@ async function fetchGeminiUsageData(): Promise<ProviderUsageData | null> {
 async function fetchCodexUsageData(): Promise<ProviderUsageData | null> {
     let token: string | null = null;
     try {
-        for (const authStorage of getKnownAuthStorages()) {
-            const raw = authStorage.get("openai-codex");
+        for (const authPath of getKnownAuthPaths()) {
+            const raw = readStoredCredential("openai-codex", authPath);
             token = getOAuthAccessToken(raw);
             if (token) break;
         }

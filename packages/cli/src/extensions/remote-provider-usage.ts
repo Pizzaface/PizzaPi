@@ -7,7 +7,7 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { AuthStorage } from "@earendil-works/pi-coding-agent";
+import { readStoredCredential } from "@earendil-works/pi-coding-agent";
 import { loadConfig, defaultAgentDir, expandHome } from "../config.js";
 import { getAnthropicKeychainToken } from "../runner/usage-auth.js";
 import type { UsageWindow, ProviderUsageData } from "./remote-types.js";
@@ -234,8 +234,8 @@ async function refreshGeminiUsage(opts: { force?: boolean } = {}): Promise<void>
     try {
         const config = loadConfig(process.cwd());
         const agentDir = config.agentDir ? expandHome(config.agentDir) : defaultAgentDir();
-        const authStorage = AuthStorage.create(join(agentDir, "auth.json"));
-        const raw = await authStorage.getApiKey("google-gemini-cli");
+        const cred = readStoredCredential("google-gemini-cli", join(agentDir, "auth.json"));
+        const raw = cred?.type === "api_key" ? cred.key : undefined;
         if (!raw) return;
         const parsed = JSON.parse(raw) as { token?: string; projectId?: string };
         if (!parsed.token || !parsed.projectId) return;
