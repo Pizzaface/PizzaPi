@@ -87,19 +87,21 @@ function setup(lastRetryableError: { errorMessage: string; detectedAt: number } 
     });
 
     const agentEnd = handlers.get("agent_end")!;
-    return { agentEnd, emitted };
+    const agentSettled = handlers.get("agent_settled")!;
+    return { agentEnd, agentSettled, emitted, rctx };
 }
 
 const agentEndCtx = { hasPendingMessages: () => false, shutdown: () => {} };
 
 describe("agent_end — session_error / session_complete ordering", () => {
     test("emits session_error before session_complete for a child session usage-limit error", () => {
-        const { agentEnd, emitted } = setup({
+        const { agentEnd, agentSettled, emitted } = setup({
             errorMessage: "You have exceeded your usage limit",
             detectedAt: Date.now(),
         });
 
         agentEnd({ messages: [] }, agentEndCtx);
+        agentSettled({}, agentEndCtx);
 
         // Both are emitted synchronously within the handler call (before any
         // await/microtask), so capturing immediately after invocation is safe.
@@ -107,9 +109,37 @@ describe("agent_end — session_error / session_complete ordering", () => {
     });
 
     test("emits only session_complete when there is no usage-limit error", () => {
-        const { agentEnd, emitted } = setup(null);
+        const { agentEnd, agentSettled, emitted } = setup(null);
 
         agentEnd({ messages: [] }, agentEndCtx);
+        agentSettled({}, agentEndCtx);
+
+        expect(emitted).toEqual(["session_complete"]);
+    });
+
+    test("agent_end alone emits nothing — reporting waits for agent_settled (auto-retry pending)", () => {
+        const { agentEnd, emitted } = setup({
+            errorMessage: "You have exceeded your usage limit",
+            detectedAt: Date.now(),
+        });
+
+        agentEnd({ messages: [] }, agentEndCtx);
+
+        expect(emitted).toEqual([]);
+    });
+
+    test("no session_error when a retry recovers before settling", () => {
+        const { agentEnd, agentSettled, emitted, rctx } = setup({
+            errorMessage: "You have exceeded your usage limit",
+            detectedAt: Date.now(),
+        });
+
+        // Attempt 1 errors, pi auto-retries.
+        agentEnd({ messages: [] }, agentEndCtx);
+        // Retry succeeds: message_end (non-error) clears the latch.
+        (rctx as any).lastRetryableError = null;
+        agentEnd({ messages: [] }, agentEndCtx);
+        agentSettled({}, agentEndCtx);
 
         expect(emitted).toEqual(["session_complete"]);
     });
