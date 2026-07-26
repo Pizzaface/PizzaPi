@@ -9,7 +9,7 @@ import { setRegisteredCommandsProvider } from "../extensions/command-introspecti
 import { initSandbox, cleanupSandbox, isSandboxActive } from "@pizzapi/tools";
 import { createBootTimer } from "./boot-timing.js";
 import { headlessFork } from "./worker-fork.js";
-import { applySettingsDefaultModel } from "./apply-default-model.js";
+import { applySettingsDefaultModel, flushPendingExtensionProviders } from "./apply-default-model.js";
 import { findCachedOllamaCloudModel } from "../ollama-cloud-models.js";
 import { setLogComponent, setLogSessionId, logInfo, logWarn, logError, logAuth } from "./logger.js";
 
@@ -392,6 +392,14 @@ async function main(): Promise<void> {
     const authPath = join(agentDir, "auth.json");
     const modelsPath = join(agentDir, "models.json");
     const modelRuntime = await createModelRuntimeWithRetry(authPath, modelsPath);
+
+    // pi 0.82 moved the extension-provider flush out of the AgentSession
+    // constructor into createAgentSessionServices(), which this worker bypasses
+    // (it builds its own loader + ModelRuntime). Flush here so findInitialModel
+    // inside createAgentSession can resolve extension providers (e.g.
+    // claude-subscription) instead of falling back to openai-codex/gpt-5.5.
+    const flushed = flushPendingExtensionProviders({ loader, modelRuntime, warn: logWarn });
+    if (flushed > 0) logInfo(`registered ${flushed} extension provider(s) before session creation`);
 
     // ── Auth diagnostics — log credential state before first API call ────
     // This helps diagnose intermittent "No API key found" failures in

@@ -15,6 +15,52 @@
  */
 import { findCachedOllamaCloudModel } from "../ollama-cloud-models.js";
 
+interface PendingProviderRuntime {
+    pendingProviderRegistrations: Array<{ name: string; config: unknown; extensionPath: string }>;
+    pendingNativeProviderRegistrations: Array<{ provider: unknown; extensionPath: string }>;
+}
+
+export interface ProviderFlushTargets {
+    loader: { getExtensions(): { runtime: PendingProviderRuntime } };
+    modelRuntime: {
+        registerProvider(name: string, config: unknown): void;
+        registerNativeProvider(provider: unknown): void;
+    };
+    warn: (message: string) => void;
+}
+
+/**
+ * Flush provider registrations queued by extension factories into the
+ * ModelRuntime — mirrors pi 0.82's createAgentSessionServices(), which the
+ * worker bypasses by building its own loader + ModelRuntime. Without this,
+ * extension providers (e.g. claude-subscription) are invisible to
+ * findInitialModel and new sessions fall back to the first built-in provider
+ * default (openai-codex/gpt-5.5). Returns the number of providers registered.
+ */
+export function flushPendingExtensionProviders({ loader, modelRuntime, warn }: ProviderFlushTargets): number {
+    const runtime = loader.getExtensions().runtime;
+    let registered = 0;
+    for (const { name, config, extensionPath } of runtime.pendingProviderRegistrations) {
+        try {
+            modelRuntime.registerProvider(name, config);
+            registered++;
+        } catch (e) {
+            warn(`extension "${extensionPath}" provider registration failed: ${e instanceof Error ? e.message : String(e)}`);
+        }
+    }
+    runtime.pendingProviderRegistrations = [];
+    for (const { provider, extensionPath } of runtime.pendingNativeProviderRegistrations) {
+        try {
+            modelRuntime.registerNativeProvider(provider);
+            registered++;
+        } catch (e) {
+            warn(`extension "${extensionPath}" native provider registration failed: ${e instanceof Error ? e.message : String(e)}`);
+        }
+    }
+    runtime.pendingNativeProviderRegistrations = [];
+    return registered;
+}
+
 interface ModelRef {
     provider: string;
     id: string;
