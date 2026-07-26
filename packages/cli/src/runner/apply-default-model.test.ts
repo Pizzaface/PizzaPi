@@ -2,7 +2,7 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { applySettingsDefaultModel, type DefaultModelSession } from "./apply-default-model.js";
+import { applySettingsDefaultModel, flushPendingExtensionProviders, type DefaultModelSession } from "./apply-default-model.js";
 
 function makeSession(overrides: Partial<{
     current: { provider: string; id: string } | undefined;
@@ -124,5 +124,67 @@ describe("applySettingsDefaultModel", () => {
         const { session, setCalls } = makeSession({ messages: [{ role: "user" }] });
         expect(await applySettingsDefaultModel(session)).toBe(false);
         expect(setCalls).toEqual([]);
+    });
+});
+
+describe("flushPendingExtensionProviders", () => {
+    function makeTargets(pending: { name: string; config: unknown; extensionPath: string }[], nativePending: { provider: unknown; extensionPath: string }[] = [], failFor: string[] = []) {
+        const runtime = {
+            pendingProviderRegistrations: pending,
+            pendingNativeProviderRegistrations: nativePending,
+        };
+        const registered: string[] = [];
+        const warnings: string[] = [];
+        return {
+            runtime,
+            registered,
+            warnings,
+            targets: {
+                loader: { getExtensions: () => ({ runtime }) },
+                modelRuntime: {
+                    registerProvider(name: string) {
+                        if (failFor.includes(name)) throw new Error(`boom ${name}`);
+                        registered.push(name);
+                    },
+                    registerNativeProvider(provider: unknown) {
+                        registered.push(`native:${(provider as { name: string }).name}`);
+                    },
+                },
+                warn: (m: string) => { warnings.push(m); },
+            },
+        };
+    }
+
+    test("registers queued providers into the runtime and clears the queues", () => {
+        const { targets, runtime, registered } = makeTargets(
+            [{ name: "claude-subscription", config: {}, extensionPath: "/ext/a" }],
+            [{ provider: { name: "native-x" }, extensionPath: "/ext/b" }],
+        );
+        const count = flushPendingExtensionProviders(targets);
+        expect(count).toBe(2);
+        expect(registered).toEqual(["claude-subscription", "native:native-x"]);
+        expect(runtime.pendingProviderRegistrations).toEqual([]);
+        expect(runtime.pendingNativeProviderRegistrations).toEqual([]);
+    });
+
+    test("a failing registration warns but does not block the rest", () => {
+        const { targets, registered, warnings } = makeTargets(
+            [
+                { name: "bad", config: {}, extensionPath: "/ext/bad" },
+                { name: "good", config: {}, extensionPath: "/ext/good" },
+            ],
+            [],
+            ["bad"],
+        );
+        const count = flushPendingExtensionProviders(targets);
+        expect(count).toBe(1);
+        expect(registered).toEqual(["good"]);
+        expect(warnings.length).toBe(1);
+        expect(warnings[0]).toContain("/ext/bad");
+    });
+
+    test("no-op when queues are empty", () => {
+        const { targets } = makeTargets([]);
+        expect(flushPendingExtensionProviders(targets)).toBe(0);
     });
 });
