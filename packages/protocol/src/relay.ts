@@ -162,6 +162,11 @@ export interface RelayServerToClientEvents {
     modelId: string;
   }) => void;
 
+  /** Pushes the owner's updated hidden-model list to a running session */
+  hidden_models_update: (data: {
+    hiddenModels: string[];
+  }) => void;
+
   /** Remote command execution request from viewer */
   exec: (data: {
     id: string;

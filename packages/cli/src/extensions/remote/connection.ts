@@ -28,6 +28,7 @@ import { emitSessionActive } from "./chunked-delivery.js";
 import { resetRelayRegistrationGate, signalRelayRegistered } from "./registration-gate.js";
 import { decideRegisteredParentState } from "../remote-registered-parent-state.js";
 import { waitForWorkerStartupComplete } from "../worker-startup-gate.js";
+import { setHiddenModelKeys } from "../../hidden-models.js";
 import { resolveInputDeliverAs } from "./deliver-as-default.js";
 import { sendSessionCompleteFollowUp } from "./session-complete-followup.js";
 
@@ -423,6 +424,10 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
 
     sock.on("model_set", (data) => {
         void handlers.setModelFromWeb(data.provider, data.modelId);
+    });
+
+    sock.on("hidden_models_update", (data) => {
+        setHiddenModelKeys(data?.hiddenModels);
     });
 
     sock.on("session_message", (data) => {

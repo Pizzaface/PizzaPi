@@ -16,6 +16,7 @@ import type { AgentConfig } from "../subagent-agents.js";
 import type { Model } from "@earendil-works/pi-ai";
 import { defaultAgentDir } from "../../config.js";
 import { findCachedOllamaCloudModel } from "../../ollama-cloud-models.js";
+import { isModelHidden } from "../../hidden-models.js";
 import type { SingleResult, SubagentDetails, OnUpdateCallback } from "./types.js";
 import { getFinalOutput, summarizeResultForStreaming } from "./types.js";
 
@@ -144,7 +145,7 @@ function isFullModelRegistry(registry: ModelRegistryLike): registry is ModelRegi
  *   3. If no available models, return undefined (fall back to default).
  */
 export function selectLightweightModel(registry: ModelRegistryLike): Model<any> | undefined {
-    const available = registry.getAvailable();
+    const available = registry.getAvailable().filter((m) => !isModelHidden(m.provider, m.id));
     if (available.length === 0) return undefined;
 
     // Sort by output token cost ascending — cheapest first
@@ -167,13 +168,16 @@ export function selectLightweightModel(registry: ModelRegistryLike): Model<any> 
  *      the provider the caller actually asked for.
  */
 export function resolveModelSpec(spec: ModelOverride, registry: ModelRegistryLike): Model<any> | undefined {
+    // Hidden models are hard-blocked by name everywhere (spawn route, model
+    // switching) — subagents included.
+    if (isModelHidden(spec.provider, spec.id)) return undefined;
     const exact = registry.find(spec.provider, spec.id);
     const available = registry.getAvailable();
     if (exact && available.includes(exact)) return exact;
     return (
         findCachedOllamaCloudModel(spec.provider, spec.id) ??
         // ponytail: same-id fallback only, no fuzzy matching
-        available.find((m) => m.id === spec.id) ??
+        available.find((m) => m.id === spec.id && !isModelHidden(m.provider, m.id)) ??
         exact
     );
 }

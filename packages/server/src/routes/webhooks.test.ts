@@ -111,6 +111,13 @@ mock.module("../sessions/trigger-store.js", () => ({
     pushTriggerHistory: mockPushTriggerHistory,
 }));
 
+// ── Mock hidden models ─────────────────────────────────────────────────
+const mockGetHiddenModels = mock((_userId: string) => Promise.resolve([] as string[]));
+
+mock.module("../user-hidden-models.js", () => ({
+    getHiddenModels: mockGetHiddenModels,
+}));
+
 // Import AFTER mocks
 const { handleWebhooksRoute } = await import("./webhooks.js");
 
@@ -182,6 +189,19 @@ describe("POST /api/webhooks — create webhook", () => {
         expect(res?.status).toBe(400);
         const body = await res!.json();
         expect(body.error).toContain("name");
+    });
+
+    test("returns 403 when the requested model is hidden", async () => {
+        mockGetHiddenModels.mockReturnValue(Promise.resolve(["anthropic/claude-opus-4"]));
+        const [req, url] = makeReq("POST", "/api/webhooks", {
+            name: "Hook",
+            source: "custom",
+            model: { provider: "anthropic", id: "claude-opus-4" },
+        });
+        const res = await handleWebhooksRoute(req, url);
+        expect(res?.status).toBe(403);
+        expect(mockCreateWebhook).not.toHaveBeenCalled();
+        mockGetHiddenModels.mockReturnValue(Promise.resolve([]));
     });
 
     test("returns 400 when source is missing", async () => {
@@ -889,6 +909,48 @@ describe("POST /api/webhooks/:id/fire — spawn behavior", () => {
         mockGetRunnerData.mockReturnValue(
             Promise.resolve({ runnerId: "runner-1", userId: "user-1" }),
         );
+    });
+
+    test("drops a since-hidden model at fire time and forwards hiddenModels", async () => {
+        mockGetHiddenModels.mockReturnValue(Promise.resolve(["anthropic/claude-opus-4"]));
+        const hook = { ...ACTIVE_WEBHOOK, model: { provider: "anthropic", id: "claude-opus-4" } };
+        mockGetWebhook.mockReturnValue(Promise.resolve(hook));
+
+        const runnerEmitMock = mock(() => {});
+        mockGetLocalRunnerSocket.mockReturnValue({ emit: runnerEmitMock });
+        mockWaitForSpawnAck.mockReturnValue(Promise.resolve({ ok: true }));
+        const sessionEmitMock = mock(() => {});
+        mockGetLocalTuiSocket.mockReturnValue({ connected: true, emit: sessionEmitMock });
+
+        const [req, url] = makeFireReq("/api/webhooks/wh-1/fire", { event: "x" }, ACTIVE_WEBHOOK.secret);
+        const res = await handleWebhooksRoute(req, url);
+        expect(res?.status).toBe(200);
+
+        const spawnArgs = (runnerEmitMock.mock.calls[0] as any[])[1];
+        expect(spawnArgs.model).toBeUndefined();
+        expect(spawnArgs.hiddenModels).toEqual(["anthropic/claude-opus-4"]);
+        mockGetHiddenModels.mockReturnValue(Promise.resolve([]));
+    });
+
+    test("keeps a visible model at fire time", async () => {
+        mockGetHiddenModels.mockReturnValue(Promise.resolve(["anthropic/claude-opus-4"]));
+        const hook = { ...ACTIVE_WEBHOOK, model: { provider: "anthropic", id: "claude-haiku-4-5" } };
+        mockGetWebhook.mockReturnValue(Promise.resolve(hook));
+
+        const runnerEmitMock = mock(() => {});
+        mockGetLocalRunnerSocket.mockReturnValue({ emit: runnerEmitMock });
+        mockWaitForSpawnAck.mockReturnValue(Promise.resolve({ ok: true }));
+        const sessionEmitMock = mock(() => {});
+        mockGetLocalTuiSocket.mockReturnValue({ connected: true, emit: sessionEmitMock });
+
+        const [req, url] = makeFireReq("/api/webhooks/wh-1/fire", { event: "x" }, ACTIVE_WEBHOOK.secret);
+        const res = await handleWebhooksRoute(req, url);
+        expect(res?.status).toBe(200);
+
+        const spawnArgs = (runnerEmitMock.mock.calls[0] as any[])[1];
+        expect(spawnArgs.model).toEqual({ provider: "anthropic", id: "claude-haiku-4-5" });
+        expect(spawnArgs.hiddenModels).toEqual(["anthropic/claude-opus-4"]);
+        mockGetHiddenModels.mockReturnValue(Promise.resolve([]));
     });
 
     test("passes cwd and prompt to runner spawn", async () => {

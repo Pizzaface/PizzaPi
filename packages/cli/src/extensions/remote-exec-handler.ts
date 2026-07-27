@@ -12,6 +12,7 @@ import { isPlanModeEnabled, togglePlanModeFromRemote, setPlanModeFromRemote } fr
 import { isSandboxActive, getSandboxMode, getViolations, getResolvedConfig } from "@pizzapi/tools";
 import { refreshAllUsage, buildProviderUsage } from "./remote-provider-usage.js";
 import { backgroundPendingJobs } from "./background-bash.js";
+import { isModelHidden } from "../hidden-models.js";
 import type { RemoteExecRequest, RemoteExecResponse } from "./remote-commands.js";
 import type { RelayContext, RelayModelInfo } from "./remote-types.js";
 import { emitThinkingLevelChanged, emitCompactStarted, emitCompactEnded, emitRetryStateChanged, emitPluginTrustResolved } from "./remote-meta-events.js";
@@ -146,7 +147,8 @@ export async function handleExecFromWeb(
                 replyErr("No active session");
                 return;
             }
-            const models = rctx.getConfiguredModels();
+            // Cycle only through models the user hasn't hidden.
+            const models = rctx.getConfiguredModels().filter((m: RelayModelInfo) => !isModelHidden(m.provider, m.id));
             const state = rctx.buildSessionState();
             const currentKey = state?.model ? `${(state.model as any).provider}/${(state.model as any).id}` : null;
             const idx = currentKey ? models.findIndex((m: RelayModelInfo) => `${m.provider}/${m.id}` === currentKey) : -1;

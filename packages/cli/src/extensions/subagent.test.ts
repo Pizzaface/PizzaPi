@@ -17,6 +17,10 @@ import {
 } from "./subagent.js";
 import { _setGlobalConfigDir, loadConfig, loadGlobalConfig } from "../config.js";
 
+// Hermetic: the dev/CI machine may itself run under a PizzaPi worker with
+// PIZZAPI_HIDDEN_MODELS set — that must not leak into these tests.
+delete process.env.PIZZAPI_HIDDEN_MODELS;
+
 /**
  * Tests for the subagent tool utility functions.
  *
@@ -390,6 +394,31 @@ describe("resolveModelSpec", () => {
     const makeRegistry = (models: Array<{ provider: string; id: string; available?: boolean }>) => ({
         find: (provider: string, modelId: string) => models.find(m => m.provider === provider && m.id === modelId) as any,
         getAvailable: () => models.filter(m => m.available !== false) as any[],
+    });
+
+    test("refuses hidden models", () => {
+        process.env.PIZZAPI_HIDDEN_MODELS = JSON.stringify(["anthropic/claude-haiku-4-5"]);
+        try {
+            const registry = makeRegistry([{ provider: "anthropic", id: "claude-haiku-4-5" }]);
+            expect(resolveModelSpec({ provider: "anthropic", id: "claude-haiku-4-5" }, registry)).toBeUndefined();
+        } finally {
+            delete process.env.PIZZAPI_HIDDEN_MODELS;
+        }
+    });
+
+    test("same-id provider fallback skips hidden providers", () => {
+        process.env.PIZZAPI_HIDDEN_MODELS = JSON.stringify(["claude-subscription/claude-haiku-4-5"]);
+        try {
+            const registry = makeRegistry([
+                { provider: "anthropic", id: "claude-haiku-4-5", available: false },
+                { provider: "claude-subscription", id: "claude-haiku-4-5" },
+            ]);
+            const model = resolveModelSpec({ provider: "anthropic", id: "claude-haiku-4-5" }, registry);
+            // Falls through to the credential-less exact match instead of the hidden provider
+            expect(model!.provider).toBe("anthropic");
+        } finally {
+            delete process.env.PIZZAPI_HIDDEN_MODELS;
+        }
     });
 
     test("resolves an exact provider/id match", () => {

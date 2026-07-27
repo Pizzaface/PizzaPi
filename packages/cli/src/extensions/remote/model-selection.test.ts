@@ -4,6 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setModelFromWeb } from "./model-selection.js";
 
+// Hermetic: the dev/CI machine may itself run under a PizzaPi worker with
+// PIZZAPI_HIDDEN_MODELS set — that must not leak into these tests.
+delete process.env.PIZZAPI_HIDDEN_MODELS;
+
 async function withTempHome(fn: () => Promise<void> | void) {
     const previousHome = process.env.HOME;
     const tempHome = mkdtempSync(join(tmpdir(), "model-selection-test-"));
@@ -70,6 +74,30 @@ function createRctx(modelFromRegistry?: any) {
 }
 
 describe("setModelFromWeb", () => {
+    test("rejects hidden models before touching the registry", async () => {
+        const previous = process.env.PIZZAPI_HIDDEN_MODELS;
+        process.env.PIZZAPI_HIDDEN_MODELS = JSON.stringify(["ollama-cloud/glm-5.2"]);
+        try {
+            const { rctx, events } = createRctx(ollamaCloudModel("glm-5.2"));
+            let called = false;
+            const pi = { setModel: async () => { called = true; return true; } };
+
+            await setModelFromWeb(rctx, pi, "ollama-cloud", "glm-5.2");
+
+            expect(called).toBe(false);
+            expect(events).toContainEqual({
+                type: "model_set_result",
+                ok: false,
+                provider: "ollama-cloud",
+                modelId: "glm-5.2",
+                message: "Model is hidden by user preferences.",
+            });
+        } finally {
+            if (previous === undefined) delete process.env.PIZZAPI_HIDDEN_MODELS;
+            else process.env.PIZZAPI_HIDDEN_MODELS = previous;
+        }
+    });
+
     test("returns without side effects when there is no session context", async () => {
         const events: any[] = [];
         const pi = { setModel: async () => true };

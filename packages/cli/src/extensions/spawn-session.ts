@@ -7,6 +7,7 @@ import { loadConfig } from "../config.js";
 import { normalizeLoopbackHost } from "../relay-url.js";
 import { getCachedOllamaCloudModels, toOllamaCloudRuntimeModel } from "../ollama-cloud-models.js";
 import { mergeModelLists } from "../session-models-cache.js";
+import { isModelHidden } from "../hidden-models.js";
 import { getRelaySessionId } from "./remote.js";
 import { buildProviderUsage, refreshAllUsage } from "./remote-provider-usage.js";
 import { formatProviderUsage, getUsageKey, normalizeUsageKeys } from "./format-usage.js";
@@ -279,20 +280,10 @@ export const spawnSessionExtension: ExtensionFactory = (pi) => {
         async execute(_toolCallId, rawParams, _signal, _onUpdate, ctx) {
             const params = (rawParams ?? {}) as { onlyAvailable?: boolean };
 
-            // Load hidden models from env (set by the runner daemon from user preferences).
-            // Format: JSON array of "provider/modelId" strings.
-            let hiddenModelKeys: Set<string>;
-            try {
-                const raw = process.env.PIZZAPI_HIDDEN_MODELS;
-                hiddenModelKeys = raw
-                    ? new Set(JSON.parse(raw).filter((x: unknown): x is string => typeof x === "string"))
-                    : new Set();
-            } catch {
-                hiddenModelKeys = new Set();
-            }
-
+            // Hidden models: seeded via PIZZAPI_HIDDEN_MODELS at spawn, kept
+            // fresh by the relay's hidden_models_update push.
             const isHidden = (m: { provider: string | symbol; id: string }) =>
-                hiddenModelKeys.has(`${String(m.provider)}/${m.id}`);
+                isModelHidden(m.provider, m.id);
 
             // Ollama Cloud models are discovered dynamically (fetched live from ollama.com,
             // not baked into the static registry) — merge in the runner's cached list, same
