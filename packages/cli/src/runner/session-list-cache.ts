@@ -14,7 +14,7 @@
  * the common case where most sessions haven't changed.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync, statSync, readdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, statSync, readdirSync, openSync, readSync, closeSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { readFile, stat, readdir } from "node:fs/promises";
@@ -143,6 +143,69 @@ export function invalidateSessionListCache(): void {
     }
 }
 
+// ── Bounded first-line read ─────────────────────────────────────────────────────
+
+/**
+ * Read only the first line of a file efficiently, without loading the entire file
+ * into memory. Uses bounded buffering (64KB chunks, 1MB max) to avoid excessive
+ * I/O for very large session files.
+ *
+ * Returns the first line (without trailing newline) as a string, or null on error.
+ * Handles UTF-8 multibyte characters correctly by decoding only after finding the newline.
+ */
+function readFirstLineSync(filePath: string): string | null {
+    const CHUNK_SIZE = 64 * 1024; // 64KB per read
+    const MAX_READ_SIZE = 1 * 1024 * 1024; // 1MB cap
+
+    let fd: number | null = null;
+    try {
+        fd = openSync(filePath, "r");
+        const chunks: Buffer[] = [];
+        let totalBytes = 0;
+        let buffer = Buffer.alloc(CHUNK_SIZE);
+        let bytesRead: number;
+
+        // Read chunks until we find a newline or hit the cap
+        while (totalBytes < MAX_READ_SIZE) {
+            bytesRead = readSync(fd, buffer, 0, CHUNK_SIZE, null);
+            if (bytesRead === 0) break; // EOF
+
+            // Copy chunk to avoid aliasing — buffer.slice returns a view, not a copy
+            const chunk = Buffer.from(buffer.subarray(0, bytesRead));
+            chunks.push(chunk);
+            totalBytes += bytesRead;
+
+            // Check if this chunk contains a newline
+            const newlineIndex = chunk.indexOf(0x0a); // \n
+
+            if (newlineIndex >= 0) {
+                // Found newline — extract everything before it
+                // Concatenate all chunks up to and including the current one
+                const allData = Buffer.concat(chunks);
+                // Find the position of newline in the concatenated data
+                const newlinePos = allData.indexOf(0x0a);
+                const firstLineBuffer = allData.slice(0, newlinePos);
+                // Decode to string (handles UTF-8 correctly since we have the complete line)
+                return firstLineBuffer.toString("utf8");
+            }
+        }
+
+        // No newline found within the cap — return all data as first line
+        if (chunks.length > 0) {
+            const allData = Buffer.concat(chunks);
+            return allData.toString("utf8");
+        }
+
+        return null;
+    } catch {
+        return null;
+    } finally {
+        if (fd !== null) {
+            closeSync(fd);
+        }
+    }
+}
+
 /**
  * Find a session's `.jsonl` file path by session ID across all project directories.
  *
@@ -185,11 +248,9 @@ export async function findSessionPathById(
             for (const file of files) {
                 const filePath = join(dirPath, file);
                 try {
-                    // Read just the first line to check the session ID
-                    const content = readFileSync(filePath, "utf8");
-                    const firstNewline = content.indexOf("\n");
-                    const firstLine = firstNewline >= 0 ? content.slice(0, firstNewline) : content;
-                    if (!firstLine.trim()) continue;
+                    // Read just the first line to check the session ID (bounded read)
+                    const firstLine = readFirstLineSync(filePath);
+                    if (!firstLine || !firstLine.trim()) continue;
                     const header = JSON.parse(firstLine);
                     if (header.type === "session" && header.id === sessionId) {
                         return filePath;

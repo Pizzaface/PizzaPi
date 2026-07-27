@@ -10,7 +10,7 @@ process.env.HOME = fakeHome;
 mkdirSync(join(fakeHome, ".pizzapi"), { recursive: true });
 
 // Dynamic import after HOME override
-const { listSessionsCached, invalidateSessionListCache, flushSessionListCache } = await import("./session-list-cache.js");
+const { listSessionsCached, invalidateSessionListCache, flushSessionListCache, findSessionPathById } = await import("./session-list-cache.js");
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -321,4 +321,166 @@ describe("session-list-cache", () => {
 import { afterAll } from "bun:test";
 afterAll(() => {
     process.env.HOME = originalHome;
+});
+
+describe("bounded first-line read (via findSessionPathById)", () => {
+    test("findSessionPathById finds session by ID", async () => {
+        const sessionsRoot = mkdtempSync(join(tmpdir(), "slc-find-"));
+        mkdirSync(join(sessionsRoot, "projects"), { recursive: true });
+        
+        try {
+            writeSessionFile(join(sessionsRoot, "projects"), "session.jsonl", {
+                id: "find-me-123",
+                messages: [{ role: "user", content: "Find me" }],
+            });
+
+            invalidateSessionListCache();
+            const found = await findSessionPathById(sessionsRoot, "find-me-123");
+            expect(found).toBeDefined();
+            expect(found).toContain("session.jsonl");
+        } finally {
+            rmSync(sessionsRoot, { recursive: true, force: true });
+        }
+    });
+
+    test("findSessionPathById returns null for nonexistent ID", async () => {
+        const sessionsRoot = mkdtempSync(join(tmpdir(), "slc-null-"));
+        mkdirSync(join(sessionsRoot, "projects"), { recursive: true });
+        
+        try {
+            writeSessionFile(join(sessionsRoot, "projects"), "session.jsonl", {
+                id: "other-id",
+                messages: [{ role: "user", content: "Test" }],
+            });
+
+            invalidateSessionListCache();
+            const found = await findSessionPathById(sessionsRoot, "nonexistent-id");
+            expect(found).toBeNull();
+        } finally {
+            rmSync(sessionsRoot, { recursive: true, force: true });
+        }
+    });
+
+    test("bounded read: large file (>64KB) parsed correctly", async () => {
+        const sessionsRoot = mkdtempSync(join(tmpdir(), "slc-large-"));
+        mkdirSync(join(sessionsRoot, "projects"), { recursive: true });
+
+        try {
+            const filePath = join(sessionsRoot, "projects", "large.jsonl");
+            // Write a small header and then many large lines (>1MB total)
+            const header = JSON.stringify({
+                type: "session",
+                id: "large-file-test",
+                timestamp: new Date().toISOString(),
+                cwd: "/tmp",
+            });
+            let content = header + "\n";
+            // Add many lines to make file >1MB
+            for (let i = 0; i < 100; i++) {
+                content += JSON.stringify({
+                    type: "message",
+                    id: `msg-${i}`,
+                    message: { role: "user", content: "x".repeat(10000) },
+                }) + "\n";
+            }
+            writeFileSync(filePath, content);
+
+            invalidateSessionListCache();
+            const found = await findSessionPathById(sessionsRoot, "large-file-test");
+            expect(found).toBeDefined();
+            expect(found).toContain("large.jsonl");
+        } finally {
+            rmSync(sessionsRoot, { recursive: true, force: true });
+        }
+    });
+
+    test("bounded read: file with no trailing newline", async () => {
+        const sessionsRoot = mkdtempSync(join(tmpdir(), "slc-nonewline-"));
+        mkdirSync(join(sessionsRoot, "projects"), { recursive: true });
+
+        try {
+            const filePath = join(sessionsRoot, "projects", "nonewline.jsonl");
+            const header = JSON.stringify({
+                type: "session",
+                id: "no-newline-test",
+                timestamp: new Date().toISOString(),
+                cwd: "/tmp",
+            });
+            // Write without trailing newline
+            writeFileSync(filePath, header);
+
+            invalidateSessionListCache();
+            const found = await findSessionPathById(sessionsRoot, "no-newline-test");
+            expect(found).toBeDefined();
+        } finally {
+            rmSync(sessionsRoot, { recursive: true, force: true });
+        }
+    });
+
+    test("bounded read: empty and corrupt files handled gracefully", async () => {
+        const sessionsRoot = mkdtempSync(join(tmpdir(), "slc-corrupt-"));
+        mkdirSync(join(sessionsRoot, "projects"), { recursive: true });
+
+        try {
+            // Empty file
+            writeFileSync(join(sessionsRoot, "projects", "empty.jsonl"), "");
+            // File with invalid JSON
+            writeFileSync(join(sessionsRoot, "projects", "corrupt.jsonl"), "not valid json\n");
+            // File with wrong type in header
+            writeFileSync(
+                join(sessionsRoot, "projects", "wrong-type.jsonl"),
+                JSON.stringify({ type: "message", id: "test" }) + "\n"
+            );
+
+            invalidateSessionListCache();
+            const found = await findSessionPathById(sessionsRoot, "nonexistent");
+            expect(found).toBeNull();
+        } finally {
+            rmSync(sessionsRoot, { recursive: true, force: true });
+        }
+    });
+
+    test("bounded read: first line longer than 64KB chunk (critical alias test)", async () => {
+        // This test fails on the old code due to buffer.slice() aliasing bug
+        // Creates a header ~100KB to force multi-chunk reads, then verifies correct parsing
+        const sessionsRoot = mkdtempSync(join(tmpdir(), "slc-longheader-"));
+        mkdirSync(join(sessionsRoot, "projects"), { recursive: true });
+
+        try {
+            // Build a header with a large padding field to exceed 64KB
+            // Total size should be >64KB but <1MB
+            const paddingSize = 96 * 1024; // 96KB padding
+            const header = JSON.stringify({
+                type: "session",
+                id: "long-header-test-12345",
+                timestamp: new Date().toISOString(),
+                cwd: "/tmp/very/long/path/to/nowhere".repeat(100),
+                metadata: {
+                    padding: "x".repeat(paddingSize),
+                    description: "This header spans multiple 64KB chunks",
+                },
+            });
+
+            // Verify header is actually >64KB
+            expect(header.length).toBeGreaterThan(64 * 1024);
+            expect(header.length).toBeLessThan(1 * 1024 * 1024);
+
+            const filePath = join(sessionsRoot, "projects", "longheader.jsonl");
+            writeFileSync(filePath, header + "\n" + JSON.stringify({ type: "message" }) + "\n");
+
+            invalidateSessionListCache();
+            const found = await findSessionPathById(sessionsRoot, "long-header-test-12345");
+            expect(found).toBeDefined();
+            expect(found).toContain("longheader.jsonl");
+
+            // Verify we can actually parse the first line correctly
+            // (this would fail if chunks were aliased)
+            const lines = readFileSync(filePath, "utf8").split("\n");
+            const parsedHeader = JSON.parse(lines[0]);
+            expect(parsedHeader.id).toBe("long-header-test-12345");
+            expect(parsedHeader.metadata.padding.length).toBe(paddingSize);
+        } finally {
+            rmSync(sessionsRoot, { recursive: true, force: true });
+        }
+    });
 });
