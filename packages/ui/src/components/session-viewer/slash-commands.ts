@@ -142,7 +142,7 @@ export function useSlashCommands(
       new Set([
         "new", "resume", "rewind", "fork", "mcp", "plugins", "skills", "agents", "model",
         "cycle_model", "effort", "cycle_effort", "compact", "name", "copy",
-        "stop", "restart", "remote", "plan", "sandbox", "goal",
+        "stop", "restart", "remote", "plan", "sandbox", "goal", "background",
       ]),
     [],
   );
@@ -174,6 +174,7 @@ export function useSlashCommands(
       { name: "name", description: "Set session name" },
       { name: "copy", description: "Copy last assistant message" },
       { name: "stop", description: "Abort current generation" },
+      { name: "background", description: "Send the running command to the background" },
       { name: "restart", description: "Restart the CLI process" },
       { name: "plan", description: "Toggle plan mode (read-only exploration)" },
       {
@@ -825,6 +826,14 @@ export function useSlashCommands(
 
       if (rawCommand === "copy") {
         onExec({ type: "exec", id, command: "get_last_assistant_text" });
+        setInput("");
+        setCommandOpen(false);
+        setCommandQuery("");
+        return true;
+      }
+
+      if (rawCommand === "background") {
+        onExec({ type: "exec", id, command: "background_bash" });
         setInput("");
         setCommandOpen(false);
         setCommandQuery("");

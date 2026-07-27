@@ -2,6 +2,7 @@ export type RemoteExecRequest =
     | { type: "exec"; id: string; command: "get_commands" }
     | { type: "exec"; id: string; command: "mcp"; action?: "status" | "reload" }
     | { type: "exec"; id: string; command: "abort" }
+    | { type: "exec"; id: string; command: "background_bash" }
     | { type: "exec"; id: string; command: "set_model"; provider: string; modelId: string }
     | { type: "exec"; id: string; command: "cycle_model" }
     | { type: "exec"; id: string; command: "get_available_models" }

@@ -58,6 +58,12 @@ These variables control the [Agent Sandbox](/PizzaPi/security/sandbox/) behavior
 | `PIZZAPI_SANDBOX` | Override sandbox mode: `enforce`, `audit`, or `off`. | Config value |
 | `PIZZAPI_NO_SANDBOX` | Set to `1` to disable sandbox (shorthand for `PIZZAPI_SANDBOX=off`). | — |
 
+### Bash Tool Variables
+
+| Variable | Description | Default |
+|---|---|---|
+| `PIZZAPI_BASH_BACKGROUND_SECONDS` | Seconds a `bash` command streams output in the foreground before it auto-backgrounds. `0` backgrounds immediately. Overrides `bash.backgroundAfterSeconds` in `config.json`. | `15` |
+
 ### Web Search Variables
 
 These variables control provider web search tools. They can also be configured via `providerSettings.<provider>.webSearch` in `config.json`. See [Configuration → Web Search](/PizzaPi/customization/configuration/#web-search) for details.

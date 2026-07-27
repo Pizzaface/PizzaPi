@@ -9,6 +9,7 @@ import { sessionProcessesExtension } from "./session-processes.js";
 
 import { setSessionNameExtension } from "./set-session-name.js";
 import { currentTimeExtension } from "./current-time.js";
+import { backgroundBashExtension } from "./background-bash.js";
 import { spawnSessionExtension } from "./spawn-session.js";
 import { updateTodoExtension } from "./update-todo.js";
 import { memoryExtension } from "./memory/index.js";
@@ -80,6 +81,7 @@ export function buildPizzaPiExtensionFactories(options: BuildExtensionFactoriesO
         named(sessionProcessesExtension, "session-processes"),
         named(setSessionNameExtension, "session-name"),
         named(currentTimeExtension, "current-time"),
+        named(backgroundBashExtension, "background-bash"),
         named(updateTodoExtension, "todo"),
         named(memoryExtension, "memory"),
         named(spawnSessionExtension, "spawn-session"),

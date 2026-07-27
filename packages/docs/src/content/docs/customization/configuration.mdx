@@ -149,6 +149,7 @@ You can also override any setting with **environment variables**.
 | `oauthCallbackPort` | `number` | `0` | Global default local callback port for MCP OAuth redirect URI. `0` means OS-assigned ephemeral port. Per-server values take precedence. |
 | `mcpTimeout` | `number` | `30000` | Timeout (ms) for each MCP server's `tools/list` call during startup. Set to `0` to disable. |
 | `toolSearch` | `object` | — | Dynamic MCP tool discovery config. See [Tool Search](/PizzaPi/customization/tool-search/). |
+| `bash.backgroundAfterSeconds` | `number` | `15` | Seconds a `bash` command streams output in the foreground before it auto-backgrounds. `0` = background immediately. See [Bash auto-backgrounding](#bash-auto-backgrounding). |
 | `sandbox` | `object` | *(see below)* | OS-level sandbox config. See [Agent Sandbox](/PizzaPi/security/sandbox/). |
 | `sandbox.mode` | `string` | `"basic"` | Preset: `"none"`, `"basic"`, or `"full"`. |
 | `sandbox.network.allowedDomains` | `string[]` | `[]` (full) / unset (basic) | Domains the agent may reach. Required for outbound access in `full` mode. |
@@ -166,6 +167,37 @@ You can also override any setting with **environment variables**.
 | `allowProjectProviders` | `boolean` | `false` | Allow loading extension providers from project-local `.pizzapi/providers/` directories. **Global config only.** |
 | `providers` | `object` | — | Extension provider configurations keyed by provider ID. See [Extension Providers](/PizzaPi/customization/providers/). |
 | `providerSettings` | `object` | — | Provider-specific settings. See [Web Search](#web-search) and [Per-Provider Overrides](#per-provider-overrides) below. |
+
+---
+
+## Bash Auto-Backgrounding
+
+The `bash` tool streams output normally for the first 15 seconds. If the command is still
+running after that, the tool call returns, the process keeps running, its output is redirected
+to a temp log file, and a message is delivered into the session when it exits:
+
+```
+Run server tests exited with code 1 after 92s
+
+See full stdout/stderr in /tmp/pizzapi-bash-1761...log
+```
+
+Every `bash` call takes a `title` describing its purpose — that is the name used in the running
+and completion messages. The agent is instructed never to `sleep`-poll for a backgrounded
+command; it can call `bash_output(pid)` for incremental output or `kill_shell(pid)` to stop it.
+Setting `run_in_background: true` skips the foreground wait entirely.
+
+```json
+{
+  "bash": {
+    "backgroundAfterSeconds": 15
+  }
+}
+```
+
+Override per-process with `PIZZAPI_BASH_BACKGROUND_SECONDS`. Users can also background a
+running command manually with <kbd>ctrl+shift+b</kbd>, `/background`, or the web UI's
+background button.
 
 ---
 

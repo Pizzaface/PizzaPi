@@ -530,6 +530,18 @@ export interface PizzaPiConfig {
      * Also supports per-server `deferLoading: true` in mcpServers entries.
      */
     toolSearch?: ToolSearchConfig;
+
+    /** Bash tool configuration. */
+    bash?: {
+        /**
+         * Seconds a bash command streams output in the foreground before it is
+         * auto-backgrounded (output redirected to a log file, completion message
+         * delivered on exit). Default: 15. 0 = background immediately.
+         * Overridden by PIZZAPI_BASH_BACKGROUND_SECONDS.
+         */
+        backgroundAfterSeconds?: number;
+    };
+
     /**
      * `/goal` command configuration.
      */

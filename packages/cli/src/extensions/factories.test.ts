@@ -29,6 +29,7 @@ import { ollamaWebToolsExtension } from "./ollama-web-tools.js";
 import { sessionAnalysisExtension } from "./session-analysis.js";
 import { providerRequestLogExtension } from "./provider-request-log.js";
 import { sessionProcessesExtension } from "./session-processes.js";
+import { backgroundBashExtension } from "./background-bash.js";
 
 const CORE_EXTENSIONS: ExtensionFactory[] = [
     providerRequestLogExtension,
@@ -43,6 +44,7 @@ const CORE_EXTENSIONS: ExtensionFactory[] = [
     sessionProcessesExtension,
     setSessionNameExtension,
     currentTimeExtension,
+    backgroundBashExtension,
     updateTodoExtension,
     memoryExtension,
     spawnSessionExtension,

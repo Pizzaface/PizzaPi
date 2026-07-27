@@ -2182,6 +2182,12 @@ export function App() {
         return;
       }
 
+      if (command === "background_bash") {
+        const list = Array.isArray(result?.backgrounded) ? (result.backgrounded as string[]) : [];
+        setLifecycleStatus(`Backgrounded: ${list.join(", ")}`);
+        return;
+      }
+
       if (command === "refresh_usage") {
         const nextUsage = result?.providerUsage && typeof result.providerUsage === "object"
           ? (result.providerUsage as ProviderUsageMap)
