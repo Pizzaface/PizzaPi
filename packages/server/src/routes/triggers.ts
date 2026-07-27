@@ -34,6 +34,8 @@
  */
 
 import { requireSession, validateApiKey } from "../middleware.js";
+import { getHiddenModels } from "../user-hidden-models.js";
+import { isHiddenModel } from "./model-guard.js";
 import {
     getSharedSession,
     getLocalTuiSocket,
@@ -1045,9 +1047,21 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
             });
             const runnerSocket = getLocalRunnerSocket(runnerId);
             if (runnerSocket) {
+                // Fire-time hidden-model recheck: the listener's model was
+                // validated at create/update time, but may have been hidden
+                // since. Drop it (runner default) rather than failing the spawn.
+                const hiddenModels = runnerData.userId
+                    ? await getHiddenModels(runnerData.userId).catch(() => [] as string[])
+                    : [];
                 for (const listener of matchingListeners) {
                     const spawnedSessionId = randomUUID();
                     const ackPromise = waitForSpawnAck(spawnedSessionId, 10_000);
+                    const listenerModel = listener.model && !isHiddenModel(hiddenModels, listener.model)
+                        ? listener.model
+                        : undefined;
+                    if (listener.model && !listenerModel) {
+                        log.warn(`trigger auto-spawn: dropping hidden model ${listener.model.provider}/${listener.model.id}, using runner default`);
+                    }
                     try {
                         // Don't pass the listener prompt as the initial prompt —
                         // it's already merged into the trigger payload below.
@@ -1056,7 +1070,8 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
                         runnerSocket.emit("new_session", {
                             sessionId: spawnedSessionId,
                             ...(listener.cwd ? { cwd: listener.cwd } : {}),
-                            ...(listener.model ? { model: listener.model } : {}),
+                            ...(listenerModel ? { model: listenerModel } : {}),
+                            ...(hiddenModels.length > 0 ? { hiddenModels } : {}),
                             ...(listener.autoClose ? { autoClose: true } : {}),
                         });
                         const ack = await ackPromise;

@@ -43,6 +43,8 @@ import { getPendingChunkedSnapshot } from "./relay/index.js";
 import { getLatestCachedSnapshotEvent } from "../../sessions/redis.js";
 import { getPersistedRelaySessionSnapshot } from "../../sessions/store.js";
 import { recordTriggerResponse } from "../../sessions/trigger-store.js";
+import { getHiddenModels } from "../../user-hidden-models.js";
+import { isHiddenModel } from "../../routes/model-guard.js";
 import { createLogger } from "@pizzapi/tools";
 import { hydrateViewerFromCache, sendCachedDeltaReplayEvents, sendLatestSnapshotFromCache } from "./viewer-cache.js";
 import { getBestSnapshot } from "./snapshot-provider.js";
@@ -653,6 +655,18 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
             if (!currentSessionId) return;
             const currentSession = await getSharedSession(currentSessionId);
             if (!currentSession?.collabMode) return;
+
+            // Hard-block hidden models by name (same rule as the spawn route).
+            // Fresh DB read — the worker's env copy may be stale.
+            try {
+                const hiddenModels = await getHiddenModels(viewerUserId);
+                if (isHiddenModel(hiddenModels, { provider: String(data?.provider ?? ""), id: String(data?.modelId ?? "") })) {
+                    log.warn(`blocked model_set of hidden model ${data.provider}/${data.modelId} on ${currentSessionId}`);
+                    return;
+                }
+            } catch {
+                // On lookup failure, fall through — the worker-side guard still applies.
+            }
 
             const tuiSocket = getLocalTuiSocket(currentSessionId);
             if (!tuiSocket) return;

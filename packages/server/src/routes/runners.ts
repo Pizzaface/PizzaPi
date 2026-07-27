@@ -436,7 +436,7 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
                 hiddenModels = [];
             }
             const visible = models.filter((m: any) =>
-                !hiddenModels.includes(`${m.provider}/${m.id}`)
+                !isHiddenModel(hiddenModels, { provider: String(m.provider ?? ""), id: String(m.id ?? "") })
             );
             return Response.json({ models: visible });
         } catch {
