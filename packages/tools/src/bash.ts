@@ -1,7 +1,6 @@
 import { Type } from "@earendil-works/pi-ai";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { exec } from "child_process";
-import { promisify } from "util";
 import { wrapCommand, getSandboxEnv, isSandboxActive } from "./sandbox.js";
 import { resolvePosixShell } from "./posix-shell.js";
 
@@ -39,7 +38,21 @@ export function createBashTool(deps?: Partial<BashDeps>): AgentTool {
                 };
             }
 
-            const execAsync = promisify(execFn);
+            // ponytail: hand-rolled instead of promisify(exec) so we can close the
+            // child's stdin. exec() leaves stdin as an open pipe, so any command that
+            // reads stdin (e.g. `rtk`) blocks forever waiting for EOF.
+            const execAsync = (cmd: string, opts: any) =>
+                new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
+                    const child = execFn(cmd, opts, (err: any, stdout: any, stderr: any) => {
+                        if (err) {
+                            Object.assign(err, { stdout, stderr });
+                            reject(err);
+                        } else {
+                            resolve({ stdout: String(stdout ?? ""), stderr: String(stderr ?? "") });
+                        }
+                    });
+                    child?.stdin?.end();
+                });
             const timeout = params.timeout ?? 30_000;
             // ponytail: 10 MB stdout+stderr cap; raise if a legitimate tool genuinely needs larger output
             const maxBuffer = 10 * 1024 * 1024;

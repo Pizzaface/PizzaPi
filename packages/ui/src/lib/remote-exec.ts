@@ -2,6 +2,7 @@ export type RemoteExecCommand =
   | { command: "get_commands" }
   | { command: "mcp"; action?: "status" | "reload" }
   | { command: "abort" }
+  | { command: "background_bash" }
   | { command: "set_model"; provider: string; modelId: string }
   | { command: "cycle_model" }
   | { command: "get_available_models" }

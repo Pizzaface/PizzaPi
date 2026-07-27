@@ -11,6 +11,7 @@ import { toggleMcpServer, saveGlobalConfig, loadConfig, loadGlobalConfig, resolv
 import { isPlanModeEnabled, togglePlanModeFromRemote, setPlanModeFromRemote } from "./plan-mode/index.js";
 import { isSandboxActive, getSandboxMode, getViolations, getResolvedConfig } from "@pizzapi/tools";
 import { refreshAllUsage, buildProviderUsage } from "./remote-provider-usage.js";
+import { backgroundPendingJobs } from "./background-bash.js";
 import type { RemoteExecRequest, RemoteExecResponse } from "./remote-commands.js";
 import type { RelayContext, RelayModelInfo } from "./remote-types.js";
 import { emitThinkingLevelChanged, emitCompactStarted, emitCompactEnded, emitRetryStateChanged, emitPluginTrustResolved } from "./remote-meta-events.js";
@@ -109,6 +110,16 @@ export async function handleExecFromWeb(
             }
             const snapshot = await bridge.reload();
             replyOk({ ...snapshot as object, action: "reload", toggledServer: serverName, disabled });
+            return;
+        }
+
+        if (req.command === "background_bash") {
+            const backgrounded = backgroundPendingJobs();
+            if (backgrounded.length === 0) {
+                replyErr("No bash command is running");
+                return;
+            }
+            replyOk({ backgrounded });
             return;
         }
 
