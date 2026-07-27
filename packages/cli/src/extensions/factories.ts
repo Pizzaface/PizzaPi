@@ -25,6 +25,7 @@ import { pizzapiTitleExtension } from "./pizzapi-title.js";
 import { pizzapiHeaderExtension } from "./pizzapi-header.js";
 import { toolSearchExtension } from "./tool-search.js";
 import { ollamaWebToolsExtension } from "./ollama-web-tools.js";
+import { ollamaCloudProviderExtension } from "./ollama-cloud-provider.js";
 import { providerExtension } from "./providers/extension.js";
 import { sessionAnalysisExtension } from "./session-analysis.js";
 import { providerRequestLogExtension } from "./provider-request-log.js";
@@ -54,6 +55,11 @@ function named(factory: ExtensionFactory, displayName: string): ExtensionFactory
  */
 export function buildPizzaPiExtensionFactories(options: BuildExtensionFactoriesOptions): ExtensionFactory[] {
     const factories: ExtensionFactory[] = [];
+
+    // Static Ollama Cloud provider + fallback model catalog baseline — must
+    // run before other factories so --provider ollama-cloud and model listing
+    // see the provider immediately (see ollama-cloud-provider.ts).
+    factories.push(named(ollamaCloudProviderExtension, "ollama-cloud-provider"));
 
     // Diagnostic (off unless PIZZAPI_LOG_PROVIDER_REQUEST is set): log the
     // resolved provider/api and request shape for each outbound turn.

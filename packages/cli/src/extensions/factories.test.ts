@@ -31,8 +31,10 @@ import { providerRequestLogExtension } from "./provider-request-log.js";
 import { sessionProcessesExtension } from "./session-processes.js";
 import { backgroundBashExtension } from "./background-bash.js";
 import { queueFlushExtension } from "./queue-flush.js";
+import { ollamaCloudProviderExtension } from "./ollama-cloud-provider.js";
 
 const CORE_EXTENSIONS: ExtensionFactory[] = [
+    ollamaCloudProviderExtension,
     providerRequestLogExtension,
     triggersExtension,  // Must be before remoteExtension (shutdown ordering)
     remoteExtension,

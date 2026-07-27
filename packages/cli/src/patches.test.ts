@@ -552,6 +552,60 @@ describe("pi-ai patch application — Claude Code credentials fallback (Keychain
     });
 });
 
+describe("pi-ai patch application — ollama-cloud hunks removed (replaced by extension registration)", () => {
+    // Task 0.2 (Godmother idea Uq2WsWiW): the ollama-cloud hunks that used to
+    // live in this patch (env-key recognition, inlined model catalog,
+    // providers/all.js factory, KnownProvider typing) are gone. The provider
+    // and its fallback model catalog are now registered at runtime via
+    // ollamaCloudProviderExtension calling pi.registerProvider() — see
+    // extensions/ollama-cloud-provider.ts and ollama-provider.test.ts for the
+    // functional replacement tests.
+    test("env-api-keys.js no longer maps ollama-cloud to OLLAMA_API_KEY", async () => {
+        const source = await Bun.file(piAiPath("dist/env-api-keys.js")).text();
+        expect(source).not.toContain("ollama-cloud");
+    });
+
+    test("models.generated.js/.d.ts no longer inline an Ollama Cloud catalog", async () => {
+        const source = await Bun.file(piAiPath("dist/models.generated.js")).text();
+        const types = await Bun.file(piAiPath("dist/models.generated.d.ts")).text();
+        expect(source).not.toContain("ollama");
+        expect(source).not.toContain("OLLAMA");
+        expect(types).not.toContain("ollama");
+    });
+
+    test("providers/all.js/.d.ts no longer export ollamaCloudProvider()", async () => {
+        const source = await Bun.file(piAiPath("dist/providers/all.js")).text();
+        const types = await Bun.file(piAiPath("dist/providers/all.d.ts")).text();
+        expect(source).not.toContain("ollamaCloudProvider");
+        expect(types).not.toContain("ollamaCloudProvider");
+    });
+
+    test("types.d.ts KnownProvider no longer includes ollama-cloud", async () => {
+        const source = await Bun.file(piAiPath("dist/types.d.ts")).text();
+        expect(source).not.toContain("ollama-cloud");
+    });
+
+    test("getModels('ollama-cloud') returns nothing from the bare pi-ai catalog (no longer builtin)", async () => {
+        const { getModels } = await import(piAiPath("dist/compat.js"));
+        expect(getModels("ollama-cloud")).toEqual([]);
+    });
+
+    test("ollamaCloudProviderExtension provides the same provider + models via pi.registerProvider", async () => {
+        const { ollamaCloudProviderExtension } = await import("./extensions/ollama-cloud-provider.js");
+        const registered: Array<{ name: string; config: any }> = [];
+        await ollamaCloudProviderExtension({
+            registerProvider: (name: string, config: any) => registered.push({ name, config }),
+        } as any);
+
+        expect(registered).toHaveLength(1);
+        expect(registered[0].name).toBe("ollama-cloud");
+        expect(registered[0].config.apiKey).toBe("$OLLAMA_API_KEY");
+        expect(registered[0].config.api).toBe("openai-completions");
+        expect(registered[0].config.models.length).toBeGreaterThan(0);
+        expect(registered[0].config.models.some((m: any) => m.id === "glm-5.1")).toBe(true);
+    });
+});
+
 // ===========================================================================
 // pi-tui patches (Windows console output lifecycle)
 // ===========================================================================
