@@ -1,6 +1,6 @@
 {
   "name": "@pizzapi/cli",
-  "version": "0.5.5",
+  "version": "0.5.6",
   "type": "module",
   "piConfig": {
     "configDir": ".pizzapi"
