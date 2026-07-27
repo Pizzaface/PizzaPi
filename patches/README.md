@@ -4,18 +4,18 @@ Patches in this directory are applied automatically by Bun via the
 `patchedDependencies` field in the root `package.json`. They are reapplied on
 every `bun install` — no postinstall script is needed.
 
-## @earendil-works/pi-agent-core@0.82.0
+## @earendil-works/pi-agent-core@0.82.1
 
 Same runtime fix as 0.80.6, ported forward unchanged — neither patched file
 (`dist/agent.js`, `dist/agent-loop.js`) changed upstream between 0.80.6 and
 0.82.0.
 
-## @earendil-works/pi-tui@0.82.0
+## @earendil-works/pi-tui@0.82.1
 
 Same Windows console lifecycle patch as 0.80.6, ported forward unchanged —
 `dist/terminal.js` didn't change upstream between 0.80.6 and 0.82.0.
 
-## @earendil-works/pi-ai@0.82.0
+## @earendil-works/pi-ai@0.82.1
 
 Same intent as 0.80.6 (Anthropic web-search passthrough, Claude Code
 credentials fallback, Ollama Cloud support, retryable-JSON-parse patterns),
@@ -57,7 +57,7 @@ ported to upstream's restructured 0.82.0 layout:
 | `dist/types.d.ts` | Same `ollama-cloud` `KnownProvider` addition as 0.80.6 (unchanged file) |
 | `dist/utils/retry.js` | Same retryable-JSON-parse patterns as 0.80.6 (unchanged file) |
 
-## @earendil-works/pi-coding-agent@0.82.0
+## @earendil-works/pi-coding-agent@0.82.1
 
 Same PizzaPi integration changes as 0.80.6, ported forward, with two upstream
 removals absorbed elsewhere rather than restored:
@@ -412,7 +412,14 @@ this patch can be deleted.
 
 ## Previously patched (no longer needed)
 
-### @earendil-works/*@0.80.6 (replaced by 0.82.0 patches)
+### @earendil-works/*@0.82.0
+
+Regenerated verbatim against 0.82.1 — the only upstream change touching a
+patched file was two added lines in `pi-coding-agent`'s
+`dist/core/extensions/types.d.ts` (`MessageRenderOptions.outputPad`), which
+shifted hunk offsets. No patch content changed.
+
+### @earendil-works/*@0.80.6 and @0.82.0 (replaced by 0.82.1 patches)
 
 The 0.80.6 patch files are retained in this directory for history but are no
 longer referenced by `patchedDependencies`. See the 0.82.0 entries above for

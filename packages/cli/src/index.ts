@@ -9,6 +9,7 @@ import {
     readStoredCredential,
     SessionManager,
 } from "@earendil-works/pi-coding-agent";
+import { registerBunOAuthFlows } from "@earendil-works/pi-ai/bun-oauth";
 import { join } from "path";
 import { maybeBuildSystemPrompt, defaultAgentDir, expandHome, loadConfig, resolveSandboxConfig, validateSandboxOverride, applyProviderSettingsEnv } from "./config.js";
 import { isPackageCommand, runPackageCommand } from "./package-commands.js";
@@ -22,6 +23,9 @@ import { runSetup } from "./setup.js";
 import { createLogger, initSandbox, cleanupSandbox, isSandboxActive } from "@pizzapi/tools";
 
 const log = createLogger("cli");
+
+// ponytail: standalone binaries can't resolve pi-ai's dynamic OAuth imports; register the statically bundled flows.
+registerBunOAuthFlows();
 
 async function main() {
     const args = process.argv.slice(2);
