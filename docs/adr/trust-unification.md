@@ -81,33 +81,50 @@ independent per-resource-type gates over `.pizzapi/*`.
   dedicated `trust.json`. Adopting `trust.json` would mean a second
   persistence format to keep in sync.
 
-## 4. Proposed migration (future phase, not this one)
+## 4. Why the two systems should NOT be merged by flag-remapping
 
-Add a PizzaPi extension that registers a `project_trust` handler and maps
-the resulting binary decision onto the existing per-resource gates, without
-replacing them:
+An earlier draft of this ADR proposed a `project_trust` handler that, on
+`trusted: "yes"`, would flip PizzaPi's `allowProjectHooks`,
+`allowProjectProviders`, and `trustedPlugins` open. **That proposal is
+wrong and is rejected.** Two upstream facts make it unworkable:
 
-- On `project_trust` with `trusted: "yes"` (and `remember: true`): set
-  `allowProjectHooks: true`, `allowProjectProviders: true`, and add the
-  project's plugin root(s) to `trustedPlugins` in the global config —
-  effectively "trusting a project" flips PizzaPi's independent gates open,
-  matching the granularity users already rely on today rather than
-  collapsing it.
-- On `trusted: "no"`: leave existing gates as-is (default closed);
-  optionally set them `false` explicitly if a per-directory decision needs
-  to be recorded.
-- `allowProjectMcp` / MCP loading stays warn-only and is **not** touched by
-  this handler — MCP always loads, project_trust only affects whether the
-  warning is silenced (i.e. the handler could set `allowProjectMcp: true`
-  as a side effect of "yes", but never gates the load itself).
-- The handler is additive: an extension providing `project_trust` is
-  optional infrastructure that a user session may or may not load. Without
-  it, PizzaPi's current per-flag gates behave exactly as documented in
-  section 1 — nothing about upstream's `project_trust` event is required
-  for PizzaPi to function.
+1. **The handler can't observe a resolved decision — it produces one.**
+   `ProjectTrustHandler = (event: ProjectTrustEvent, ctx) => Promise<ProjectTrustEventResult> | ProjectTrustEventResult`.
+   The event payload (`{ type: "project_trust", cwd }`) carries *only* the
+   cwd; there is no persisted-trust lookup passed in. The handler runs
+   *before* pi resolves `trust.json` / `defaultProjectTrust` — its job is to
+   supply the decision (`trusted: "yes" | "no" | "undecided"`), not to react
+   to one that already exists. A PizzaPi extension hooking this event has no
+   way to say "only run my side effect when pi decided this project is
+   trusted" — it would have to re-implement its own ask/persist/lookup logic
+   just to get that information, duplicating `ProjectTrustStore`.
+2. **PizzaPi's four gates are global, not per-directory.** `allowProjectHooks`,
+   `allowProjectProviders`, `trustedPlugins`, and `allowProjectMcp` all live in
+   `~/.pizzapi/config.json` with no cwd scoping (section 1). Setting any of
+   them from a `project_trust` handler — which fires per-cwd — would trust
+   *every* project globally the first time *any one* directory is trusted.
+   That's a strict security regression versus today's already-global (but at
+   least explicit, user-set) flags, not a migration.
 
-This mapping needs its own idea/PR with real tests before implementation;
-it is out of scope here.
+### What's actually viable, in order of laziness
+
+- **Recommended for now: don't adopt `project_trust` for these four gates.**
+  Keep them independent, global, and explicitly user-set exactly as they are
+  today. The granularity (hooks vs. MCP vs. providers vs. plugins trusted
+  separately) is a real feature upstream's single yes/no doesn't offer, and
+  `allowProjectMcp`'s warn-only UX (section 1) has no upstream equivalent to
+  map onto. Simplest, safest, zero new code — this ADR's actual recommendation.
+- **Future work, only if per-directory granularity is wanted:** give PizzaPi
+  its own per-directory trust store mirroring upstream's `trust.json`
+  (canonical path → decision, nearest-ancestor lookup) and gate resources by
+  `(cwd, resource)` instead of by resource alone. That is new persistence and
+  new call-site plumbing at every gate check — not a flag remap — and would
+  need its own idea/PR with real tests. Out of scope here.
+- **Where `project_trust` genuinely fits:** if/when PizzaPi introduces a
+  resource that only makes sense as "is this cwd trusted at all" (mirroring
+  upstream's `.pi/*` bundle), subscribing to `project_trust` to *supply* that
+  per-cwd decision is legitimate — that's the event's actual contract. It is
+  not a mechanism for retrofitting global flags.
 
 ## 5. Non-goals (this phase)
 
@@ -118,5 +135,6 @@ it is out of scope here.
 - No adoption of `trust.json` or the upstream `ProjectTrustStore` in this
   phase — PizzaPi's `~/.pizzapi/config.json`-based gates remain the only
   persistence mechanism for now.
-- No new extension registering `pi.on("project_trust", ...)` yet — section 4
-  is a proposal, not an implementation plan for this PR.
+- No new extension registering `pi.on("project_trust", ...)` — section 4
+  recommends against adopting it for the existing four gates at all, and
+  scopes any future per-directory work as a separate, out-of-scope effort.
