@@ -69,7 +69,7 @@ describe("exec fork", () => {
     test("forks via pi.fork and pushes a fresh snapshot", async () => {
         const forkCalls: string[] = [];
         const { rctx, sent, forwarded } = buildRctx({
-            pi: {
+            sessionHost: {
                 fork: async (entryId: string) => {
                     forkCalls.push(entryId);
                     return { cancelled: false, selectedText: "second question" };
@@ -87,7 +87,7 @@ describe("exec fork", () => {
 
     test("reports cancellation as an error", async () => {
         const { rctx, sent, forwarded } = buildRctx({
-            pi: { fork: async () => ({ cancelled: true }) },
+            sessionHost: { fork: async () => ({ cancelled: true }) },
         });
 
         await handleExecFromWeb({ type: "exec", id: "1", command: "fork", entryId: "u2" }, rctx, callbacks);
@@ -103,7 +103,7 @@ describe("exec fork", () => {
         expect(sent[0].ok).toBe(false);
         expect(sent[0].error).toContain("not available");
 
-        const { rctx: rctx2, sent: sent2 } = buildRctx({ pi: { fork: async () => ({ cancelled: false }) } });
+        const { rctx: rctx2, sent: sent2 } = buildRctx({ sessionHost: { fork: async () => ({ cancelled: false }) } });
         await handleExecFromWeb({ type: "exec", id: "2", command: "fork", entryId: "  " } as any, rctx2, callbacks);
         expect(sent2[0].ok).toBe(false);
         expect(sent2[0].error).toContain("entryId");

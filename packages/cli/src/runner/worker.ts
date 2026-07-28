@@ -9,6 +9,8 @@ import { setRegisteredCommandsProvider } from "../extensions/command-introspecti
 import { initSandbox, cleanupSandbox, isSandboxActive } from "@pizzapi/tools";
 import { createBootTimer } from "./boot-timing.js";
 import { headlessFork } from "./worker-fork.js";
+import { SessionHost } from "./session-host.js";
+import { setRemoteSessionHost } from "../extensions/remote/session-host-ref.js";
 import { applySettingsDefaultModel, flushPendingExtensionProviders } from "./apply-default-model.js";
 import { findCachedOllamaCloudModel } from "../ollama-cloud-models.js";
 import { setLogComponent, setLogSessionId, logInfo, logWarn, logError, logAuth } from "./logger.js";
@@ -501,174 +503,199 @@ async function main(): Promise<void> {
     publishSessionMetadata(session);
     bootTimer.start("[boot] bind-extensions");
     try {
-    await session.bindExtensions({
-        commandContextActions: {
-            waitForIdle: () => session.agent.waitForIdle(),
+    const sessionControlActions = {
+        waitForIdle: () => session.agent.waitForIdle(),
 
-            newSession: async () => {
-                const extensionRunner = session.extensionRunner;
-                const previousSessionFile = session.sessionFile;
+        newSession: async () => {
+            const extensionRunner = session.extensionRunner;
+            const previousSessionFile = session.sessionFile;
 
-                // Let extensions cancel the switch (e.g. unsaved work)
-                if (extensionRunner?.hasHandlers("session_before_switch")) {
-                    const result = await extensionRunner.emit({
-                        type: "session_before_switch",
-                        reason: "new",
-                    });
-                    if ((result as any)?.cancel) {
-                        return { cancelled: true };
-                    }
-                }
-
-                // Stop any running agent turn
-                await session.abort();
-
-                // Reset agent transcript, queues, and runtime flags
-                session.agent.reset();
-
-                // Create a fresh session file
-                session.sessionManager.newSession();
-                session.agent.sessionId = session.sessionManager.getSessionId();
-                publishSessionMetadata(session);
-
-                // Clear AgentSession's private tracking queues so stale steering/
-                // follow-up messages from the old conversation don't leak through.
-                (session as any)._steeringMessages = [];
-                (session as any)._followUpMessages = [];
-                (session as any)._pendingNextTurnMessages = [];
-                (session as any)._lastAssistantMessage = undefined;
-                (session as any)._overflowRecoveryAttempted = false;
-
-                // Persist the current thinking level in the new session header
-                session.sessionManager.appendThinkingLevelChange(session.thinkingLevel);
-
-                // Re-inject context tracking entries for the new session
-                try {
-                    injectContextTrackingEntries(session, cwd, agentDir, config);
-                } catch { /* non-fatal */ }
-
-                // Notify extensions — the remote extension's session_switch handler
-                // cancels pending triggers, delinks children, and pushes the new
-                // (empty) conversation to the web UI via session_active.
-                // NOTE: "session_switch" was removed from the upstream type union in
-                // 0.66.1, but PizzaPi's remote extension still registers a runtime
-                // handler for it. The cast is safe — emit() dispatches by string key.
-                if (extensionRunner) {
-                    await extensionRunner.emit({
-                        type: "session_switch" as any,
-                        reason: "new",
-                        previousSessionFile,
-                    });
-                }
-
-                logInfo("new session created (in-place)");
-                return { cancelled: false };
-            },
-
-            switchSession: async (sessionPath: string) => {
-                const extensionRunner = session.extensionRunner;
-                const previousSessionFile = session.sessionFile;
-
-                // Let extensions cancel
-                if (extensionRunner?.hasHandlers("session_before_switch")) {
-                    const result = await extensionRunner.emit({
-                        type: "session_before_switch",
-                        reason: "resume",
-                        targetSessionFile: sessionPath,
-                    });
-                    if ((result as any)?.cancel) {
-                        return { cancelled: true };
-                    }
-                }
-
-                await session.abort();
-
-                // Clear AgentSession queues
-                (session as any)._steeringMessages = [];
-                (session as any)._followUpMessages = [];
-                (session as any)._pendingNextTurnMessages = [];
-                (session as any)._lastAssistantMessage = undefined;
-                (session as any)._overflowRecoveryAttempted = false;
-
-                // Load the target session file into the existing SessionManager
-                session.sessionManager.setSessionFile(sessionPath);
-                session.agent.sessionId = session.sessionManager.getSessionId();
-                publishSessionMetadata(session);
-
-                // Rebuild messages from the target session
-                const sessionContext = session.sessionManager.buildSessionContext();
-
-                // Notify extensions before we replace messages — the remote
-                // extension's session_switch handler emits session_active which
-                // reads from the (now updated) sessionManager.
-                // NOTE: see newSession comment for why this uses `as any`.
-                if (extensionRunner) {
-                    await extensionRunner.emit({
-                        type: "session_switch" as any,
-                        reason: "resume",
-                        previousSessionFile,
-                    });
-                }
-
-                // Restore the conversation transcript
-                session.agent.state.messages = sessionContext.messages;
-
-                // Restore model if the session had one saved
-                if (sessionContext.model) {
-                    const modelRegistry = (session as any)._modelRegistry;
-                    if (modelRegistry) {
-                        try {
-                            const available = await modelRegistry.getAvailable();
-                            // Ollama Cloud models are discovered dynamically and
-                            // aren't in getAvailable() — fall back to the cached
-                            // catalog so a resumed ollama-cloud model is restored.
-                            const match =
-                                available.find(
-                                    (m: any) =>
-                                        m.provider === sessionContext.model!.provider &&
-                                        m.id === sessionContext.model!.modelId,
-                                ) ??
-                                findCachedOllamaCloudModel(
-                                    sessionContext.model!.provider,
-                                    sessionContext.model!.modelId,
-                                );
-                            if (match) {
-                                await session.setModel(match);
-                            }
-                        } catch {
-                            // Model restore is best-effort
-                        }
-                    }
-                }
-
-                // Restore thinking level if saved
-                if (sessionContext.thinkingLevel) {
-                    session.setThinkingLevel(sessionContext.thinkingLevel as any);
-                }
-
-                logInfo(`switched to session ${sessionPath}`);
-                return { cancelled: false };
-            },
-
-            fork: async (entryId: string, options?: { position?: "before" | "at" }) => {
-                const result = await headlessFork(session, entryId, options, () => {
-                    publishSessionMetadata(session);
+            // Let extensions cancel the switch (e.g. unsaved work)
+            if (extensionRunner?.hasHandlers("session_before_switch")) {
+                const result = await extensionRunner.emit({
+                    type: "session_before_switch",
+                    reason: "new",
                 });
-                if (!result.cancelled) {
-                    logInfo(`forked session at entry ${entryId} → ${session.sessionManager.getSessionFile()}`);
+                if ((result as any)?.cancel) {
+                    return { cancelled: true };
                 }
-                return result;
-            },
+            }
 
-            // Tree navigation is not supported in headless mode
-            navigateTree: async () => ({ cancelled: true }),
+            // Stop any running agent turn
+            await session.abort();
 
-            reload: async () => {
-                await session.reload();
-                // reload() re-syncs queue modes from settings — re-apply.
-                session.agent.followUpMode = "all";
-            },
+            // Reset agent transcript, queues, and runtime flags
+            session.agent.reset();
+
+            // Create a fresh session file
+            session.sessionManager.newSession();
+            session.agent.sessionId = session.sessionManager.getSessionId();
+            publishSessionMetadata(session);
+
+            // Clear AgentSession's private tracking queues so stale steering/
+            // follow-up messages from the old conversation don't leak through.
+            (session as any)._steeringMessages = [];
+            (session as any)._followUpMessages = [];
+            (session as any)._pendingNextTurnMessages = [];
+            (session as any)._lastAssistantMessage = undefined;
+            (session as any)._overflowRecoveryAttempted = false;
+
+            // Persist the current thinking level in the new session header
+            session.sessionManager.appendThinkingLevelChange(session.thinkingLevel);
+
+            // Re-inject context tracking entries for the new session
+            try {
+                injectContextTrackingEntries(session, cwd, agentDir, config);
+            } catch { /* non-fatal */ }
+
+            // Notify extensions — the remote extension's session_switch handler
+            // cancels pending triggers, delinks children, and pushes the new
+            // (empty) conversation to the web UI via session_active.
+            // NOTE: "session_switch" was removed from the upstream type union in
+            // 0.66.1, but PizzaPi's remote extension still registers a runtime
+            // handler for it. The cast is safe — emit() dispatches by string key.
+            if (extensionRunner) {
+                await extensionRunner.emit({
+                    type: "session_switch" as any,
+                    reason: "new",
+                    previousSessionFile,
+                });
+            }
+
+            logInfo("new session created (in-place)");
+            return { cancelled: false };
         },
+
+        switchSession: async (sessionPath: string) => {
+            const extensionRunner = session.extensionRunner;
+            const previousSessionFile = session.sessionFile;
+
+            // Let extensions cancel
+            if (extensionRunner?.hasHandlers("session_before_switch")) {
+                const result = await extensionRunner.emit({
+                    type: "session_before_switch",
+                    reason: "resume",
+                    targetSessionFile: sessionPath,
+                });
+                if ((result as any)?.cancel) {
+                    return { cancelled: true };
+                }
+            }
+
+            await session.abort();
+
+            // Clear AgentSession queues
+            (session as any)._steeringMessages = [];
+            (session as any)._followUpMessages = [];
+            (session as any)._pendingNextTurnMessages = [];
+            (session as any)._lastAssistantMessage = undefined;
+            (session as any)._overflowRecoveryAttempted = false;
+
+            // Load the target session file into the existing SessionManager
+            session.sessionManager.setSessionFile(sessionPath);
+            session.agent.sessionId = session.sessionManager.getSessionId();
+            publishSessionMetadata(session);
+
+            // Rebuild messages from the target session
+            const sessionContext = session.sessionManager.buildSessionContext();
+
+            // Notify extensions before we replace messages — the remote
+            // extension's session_switch handler emits session_active which
+            // reads from the (now updated) sessionManager.
+            // NOTE: see newSession comment for why this uses `as any`.
+            if (extensionRunner) {
+                await extensionRunner.emit({
+                    type: "session_switch" as any,
+                    reason: "resume",
+                    previousSessionFile,
+                });
+            }
+
+            // Restore the conversation transcript
+            session.agent.state.messages = sessionContext.messages;
+
+            // Restore model if the session had one saved
+            if (sessionContext.model) {
+                const modelRegistry = (session as any)._modelRegistry;
+                if (modelRegistry) {
+                    try {
+                        const available = await modelRegistry.getAvailable();
+                        // Ollama Cloud models are discovered dynamically and
+                        // aren't in getAvailable() — fall back to the cached
+                        // catalog so a resumed ollama-cloud model is restored.
+                        const match =
+                            available.find(
+                                (m: any) =>
+                                    m.provider === sessionContext.model!.provider &&
+                                    m.id === sessionContext.model!.modelId,
+                            ) ??
+                            findCachedOllamaCloudModel(
+                                sessionContext.model!.provider,
+                                sessionContext.model!.modelId,
+                            );
+                        if (match) {
+                            await session.setModel(match);
+                        }
+                    } catch {
+                        // Model restore is best-effort
+                    }
+                }
+            }
+
+            // Restore thinking level if saved
+            if (sessionContext.thinkingLevel) {
+                session.setThinkingLevel(sessionContext.thinkingLevel as any);
+            }
+
+            logInfo(`switched to session ${sessionPath}`);
+            return { cancelled: false };
+        },
+
+        fork: async (entryId: string, options?: { position?: "before" | "at" }) => {
+            const result = await headlessFork(session, entryId, options, () => {
+                publishSessionMetadata(session);
+            });
+            if (!result.cancelled) {
+                logInfo(`forked session at entry ${entryId} → ${session.sessionManager.getSessionFile()}`);
+            }
+            return result;
+        },
+
+        // Tree navigation is not supported in headless mode
+        navigateTree: async () => ({ cancelled: true }),
+
+        reload: async () => {
+            await session.reload();
+            // reload() re-syncs queue modes from settings — re-apply.
+            session.agent.followUpMode = "all";
+        },
+    };
+
+    // Phase 1: route remote session control through a host-owned SessionHost
+    // backed by these same in-place actions. Behavior-preserving — the handlers
+    // call the identical closures pi.newSession()/switchSession()/fork() route to
+    // today — but via a direct handle, removing the remote extension's need for
+    // the patched ExtensionAPI control surface.
+    const workerSessionHost = new SessionHost(
+        () => session,
+        {
+            newSession: () => sessionControlActions.newSession(),
+            switchSession: (path) => sessionControlActions.switchSession(path),
+            fork: (entryId, o) => sessionControlActions.fork(entryId, o),
+        },
+        // replaceQueuedMessages: repopulate the queue with already-expanded text.
+        // Uses pi's private raw-enqueue directly (as the worker already does for
+        // queue clearing) to avoid the double-expansion that steer()/followUp() cause.
+        (followUp) => {
+            const { steering } = session.clearQueue();
+            for (const text of steering) void (session as any)._queueSteer(text);
+            for (const text of followUp) void (session as any)._queueFollowUp(text);
+        },
+    );
+    setRemoteSessionHost(workerSessionHost);
+
+    await session.bindExtensions({
+        commandContextActions: sessionControlActions,
         shutdownHandler: () => {
             // Extension-initiated shutdown (e.g. auto-close after session
             // completion) — run provider close with "complete" semantics.

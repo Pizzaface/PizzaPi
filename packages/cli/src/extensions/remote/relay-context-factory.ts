@@ -15,6 +15,7 @@ import { normalizeLoopbackHost } from "../../relay-url.js";
 import { buildHeartbeat } from "../remote-heartbeat.js";
 import { getCurrentTodoList } from "../update-todo.js";
 import { isDisabled, toWebSocketBaseUrl } from "./connection.js";
+import { getRemoteSessionHost } from "./session-host-ref.js";
 import type { RelayContext, RelayModelInfo, TriggerResponse } from "../remote-types.js";
 import { getActiveGoalFromEntries, toMetaGoalStatus } from "../goal/state.js";
 import { getCommandIntrospection } from "../command-introspection.js";
@@ -50,6 +51,7 @@ export function createRelayContext(
 ): RelayContext {
     const rctx: RelayContext = {
         pi,
+        sessionHost: getRemoteSessionHost(),
         relay: null,
         sioSocket: null,
         latestCtx: null,

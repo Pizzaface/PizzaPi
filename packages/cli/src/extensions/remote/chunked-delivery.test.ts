@@ -207,7 +207,7 @@ describe("readQueuedFollowUps", () => {
     test("returns a copy of pi's follow-up queue", () => {
         const ctx = makeContext();
         const followUp = ["first", "second"];
-        (ctx as any).pi = { getQueuedMessages: () => ({ steering: ["s"], followUp }) };
+        (ctx as any).sessionHost = { getQueuedMessages: () => ({ steering: ["s"], followUp }) };
         const result = readQueuedFollowUps(ctx);
         expect(result).toEqual(["first", "second"]);
         expect(result).not.toBe(followUp);
@@ -215,13 +215,13 @@ describe("readQueuedFollowUps", () => {
 
     test("returns [] when getQueuedMessages throws (stale extension ctx)", () => {
         const ctx = makeContext();
-        (ctx as any).pi = { getQueuedMessages: () => { throw new Error("stale"); } };
+        (ctx as any).sessionHost = { getQueuedMessages: () => { throw new Error("stale"); } };
         expect(readQueuedFollowUps(ctx)).toEqual([]);
     });
 
     test("session_metadata_update and session_active include queuedMessages", () => {
         const ctx = makeContext({ leafId: "leaf-queue" });
-        (ctx as any).pi = { getQueuedMessages: () => ({ steering: [], followUp: ["queued follow-up"] }) };
+        (ctx as any).sessionHost = { getQueuedMessages: () => ({ steering: [], followUp: ["queued follow-up"] }) };
 
         recordEmittedMessageState(ctx);
         emitSessionMetadataUpdate(ctx);
@@ -230,7 +230,7 @@ describe("readQueuedFollowUps", () => {
         expect(meta.metadata.queuedMessages).toEqual(["queued follow-up"]);
 
         const activeCtx = makeContext({ leafId: "leaf-queue-2" });
-        (activeCtx as any).pi = { getQueuedMessages: () => ({ steering: [], followUp: ["queued follow-up"] }) };
+        (activeCtx as any).sessionHost = { getQueuedMessages: () => ({ steering: [], followUp: ["queued follow-up"] }) };
         emitSessionActive(activeCtx);
         const active = activeCtx.emitted[0] as any;
         expect(active.type).toBe("session_active");

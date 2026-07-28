@@ -18,6 +18,8 @@ function makeRctx(pi: unknown) {
     const forwarded: unknown[] = [];
     const rctx = {
         pi,
+        // set_queued_messages now drives the host-owned SessionHost handle.
+        sessionHost: pi,
         sendToWeb: (payload: unknown) => sent.push(payload),
         forwardEvent: (event: unknown) => forwarded.push(event),
         buildHeartbeat: () => ({ type: "heartbeat", queuedMessages: ["from-heartbeat"] }),
