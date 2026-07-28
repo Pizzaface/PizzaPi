@@ -10,6 +10,7 @@ import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expandHome } from "./config.js";
+import { parseFrontmatterDescription } from "./frontmatter.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -55,22 +56,10 @@ export function parseSkillFrontmatter(filePath: string): { description: string }
         return { description: "" };
     }
 
-    return parseSkillFrontmatterFromString(content);
+    return parseFrontmatterDescription(content);
 }
 
-/**
- * Parse the `description` field out of a frontmatter string.
- * Pure function — no filesystem access.
- */
-export function parseSkillFrontmatterFromString(content: string): { description: string } {
-    if (!content.startsWith("---")) return { description: "" };
-    const end = content.indexOf("\n---", 3);
-    if (end === -1) return { description: "" };
-
-    const block = content.slice(3, end);
-    const match = block.match(/^description:\s*(.+)$/m);
-    return { description: match ? match[1].trim().replace(/^["']|["']$/g, "") : "" };
-}
+export { parseFrontmatterDescription as parseSkillFrontmatterFromString } from "./frontmatter.js";
 
 // ── Skill scanning ────────────────────────────────────────────────────────────
 
