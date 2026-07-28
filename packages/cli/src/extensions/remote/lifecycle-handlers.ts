@@ -48,6 +48,7 @@ import { registerPlanModeTool } from "../remote-plan-mode.js";
 import { isDisabled } from "./connection.js";
 import { emitSessionActive, emitSessionMetadataUpdate } from "./chunked-delivery.js";
 import { shouldAutoClose } from "./auto-close.js";
+import { hasActiveSubagents, noteSubagentSettlementDeferred, onSubagentsIdle } from "../subagent/background-state.js";
 import type { RelayContext } from "../remote-types.js";
 import type { TriggerWaitManager } from "../trigger-wait-manager.js";
 import type { DelinkManager } from "./delink-management.js";
@@ -153,6 +154,17 @@ export function registerLifecycleHandlers(deps: LifecycleHandlersDeps): void {
     // fires after every attempt (including ones pi will auto-retry); completion
     // and error reporting must wait for agent_settled.
     let settledMessages: any[] | null = null;
+    let deferredSettlementCtx: any | null = null;
+    const stopWatchingSubagents = onSubagentsIdle((followUpStarted) => {
+        if (followUpStarted) {
+            deferredSettlementCtx = null;
+            return;
+        }
+        if (!deferredSettlementCtx) return;
+        const ctx = deferredSettlementCtx;
+        deferredSettlementCtx = null;
+        handleAgentSettled({}, ctx);
+    });
 
     // ── Register tools ────────────────────────────────────────────────────────
     registerAskUserTool(rctx);
@@ -340,6 +352,7 @@ export function registerLifecycleHandlers(deps: LifecycleHandlersDeps): void {
         followUpGrace.clearFollowUpGrace();
         stopHeartbeat();
         stopSessionNameSync();
+        stopWatchingSubagents();
         clearCtx();
         const shutdownExitReason = rctx.wasAborted ? "killed" : rctx.lastRetryableError ? "error" : "completed";
         await followUpGrace.fireSessionComplete(undefined, undefined, shutdownExitReason);
@@ -376,15 +389,22 @@ export function registerLifecycleHandlers(deps: LifecycleHandlersDeps): void {
         settledMessages = (event as any).messages ?? [];
     });
 
-    pi.on("agent_settled", (_event: any, ctx: any) => {
+    function handleAgentSettled(_event: any, ctx: any) {
+        if (settledMessages === null) return; // settled without a preceding agent_end
+        if (hasActiveSubagents()) {
+            deferredSettlementCtx = ctx;
+            noteSubagentSettlementDeferred();
+            return;
+        }
+
+        deferredSettlementCtx = null;
         const messages = settledMessages;
         settledMessages = null;
         const lastError = rctx.lastRetryableError;
         rctx.lastRetryableError = null;
         emitRetryStateChanged(rctx, null);
-        if (messages === null) return; // settled without a preceding agent_end
 
-        if (!ctx.hasPendingMessages()) {
+        if (!ctx.hasPendingMessages() && !rctx.isAgentActive) {
             let summary = "Session completed";
             let fullOutputPath: string | undefined;
             if (Array.isArray(messages)) {
@@ -508,7 +528,8 @@ export function registerLifecycleHandlers(deps: LifecycleHandlersDeps): void {
                 })();
             }
         }
-    });
+    }
+    pi.on("agent_settled", handleAgentSettled);
 
     pi.on("turn_end", (event: any) => {
         rctx.forwardEvent(event);

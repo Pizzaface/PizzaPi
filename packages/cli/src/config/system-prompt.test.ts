@@ -138,6 +138,12 @@ describe("buildSystemPrompt", () => {
         expect(result).not.toContain("{{>");
     });
 
+    test("contains background subagent guidance", () => {
+        const result = buildSystemPrompt();
+        expect(result).toContain("Subagents run in the background");
+        expect(result).toContain("do not poll or wait for them");
+    });
+
     test("contains subagent model recommendation", () => {
         const result = buildSystemPrompt();
         expect(result).toContain("subagent-model-selection");

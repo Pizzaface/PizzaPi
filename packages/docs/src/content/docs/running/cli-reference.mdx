@@ -532,7 +532,7 @@ PizzaPi registers several tools that are available in every agent session:
 
 ### `subagent`
 
-Delegate tasks to specialized subagent processes. Each subagent runs in its own isolated context window (separate `pi` process), keeping the parent session's token budget lean.
+Delegate tasks to specialized agents in isolated in-process sessions. The tool returns immediately; each result is automatically delivered as a follow-up message when ready, so the parent can keep working without polling.
 
 **Modes:**
 - **Single**: `{ agent: "name", task: "..." }` — invoke one agent

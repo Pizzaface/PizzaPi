@@ -79,6 +79,7 @@ interface SubagentDetails {
   agentScope: "user" | "project" | "both";
   projectAgentsDir: string | null;
   results: SingleResult[];
+  background?: { taskId: string; status: "started" };
 }
 
 // ── Formatting helpers ─────────────────────────────────────────────────
@@ -428,7 +429,12 @@ export function SubagentResultCard({
         <div className="flex items-center gap-2 border-b border-zinc-800 px-3 py-2">
           <ModeIcon className="size-3.5 shrink-0 text-violet-400" />
           <span className="text-[0.8rem] font-semibold text-zinc-300">{headerLabel}</span>
-          {isStreaming && !hasError ? (
+          {details?.background?.status === "started" ? (
+            <span className="ml-auto inline-flex items-center gap-1 text-[10px] text-violet-400 shrink-0">
+              <ZapIcon className="size-2.5" />
+              Background
+            </span>
+          ) : isStreaming && !hasError ? (
             <span className="ml-auto inline-flex items-center gap-1 text-[10px] text-violet-400 shrink-0">
               <Loader2Icon className="size-2.5 animate-spin" />
               Active

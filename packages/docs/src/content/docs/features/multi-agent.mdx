@@ -251,18 +251,18 @@ Fire a trigger into **any** session — not just children. This enables peer-to-
 
 | | `subagent` tool | `spawn_session` (linked child) |
 |---|---|---|
-| **Communication** | Tool call → result (synchronous) | Triggers + `tell_child` |
-| **Blocking** | Yes — parent waits for result | No — parent continues, triggers arrive async |
+| **Communication** | Automatic follow-up result | Triggers + `tell_child` |
+| **Blocking** | No — parent continues, result arrives async | No — parent continues, triggers arrive async |
 | **Context** | Isolated in-process session | Fully independent session + process |
 | **UI** | Inline card in parent session | Separate session in web UI |
 | **Overhead** | Near-zero (in-process SDK) | Higher (relay round-trip, new PTY) |
 | **Model selection** | Via agent definition `model` field | Via `model` parameter |
-| **Best for** | Quick tasks: research, review, refactor | Long-running parallel work, background tasks |
+| **Best for** | Background tasks that only need a result | Interactive children and cross-runner work |
 | **Agent definitions** | File-based (`~/.pizzapi/agents/`) | Prompt-based (inline) |
 | **Modes** | Single, parallel, chain | One session per call |
 
 <Aside type="tip">
-  **Prefer `subagent` for most delegation.** It's simpler, manages context isolation automatically, and returns results inline. Use `spawn_session` only when you need independent lifecycle, background execution, or async trigger-based coordination. See the [Subagents guide](/PizzaPi/customization/subagents/) for full details.
+  **Prefer `subagent` for most delegation.** It's simpler, runs in the background, and delivers results automatically. Use `spawn_session` when you need an independently visible session, cross-runner execution, or interactive trigger-based coordination. See the [Subagents guide](/PizzaPi/customization/subagents/) for full details.
 </Aside>
 
 ---

@@ -295,6 +295,7 @@ export async function runSingleAgent(
             ...(agent.systemPrompt.trim() && { appendSystemPrompt: [agent.systemPrompt] }),
         });
         await loader.reload();
+        if (signal?.aborted) throw new Error("Subagent was aborted");
 
         // Resolve model: tool parameter > agent frontmatter > auto-select cheapest > inherit parent default
         let resolvedModel: Model<any> | undefined;
@@ -327,6 +328,10 @@ export async function runSingleAgent(
             // fresh registry would fail with "No API key found".
             ...(modelRegistry && isFullModelRegistry(modelRegistry) && { modelRegistry }),
         });
+        if (signal?.aborted) {
+            session.dispose();
+            throw new Error("Subagent was aborted");
+        }
 
         // Subscribe to events to track messages and usage
         const unsubscribe = session.subscribe((event) => {
@@ -372,7 +377,6 @@ export async function runSingleAgent(
         });
 
         // Handle external abort signal — use session.abort() for real cancellation
-        if (signal?.aborted) throw new Error("Subagent was aborted");
         const onAbort = () => { session.abort().catch(() => {}); };
         signal?.addEventListener("abort", onAbort, { once: true });
 
