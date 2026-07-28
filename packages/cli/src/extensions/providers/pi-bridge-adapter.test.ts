@@ -3,7 +3,7 @@ import { describe, test, expect } from "bun:test";
 import { wrapProviderAsExtension } from "./pi-bridge-adapter.js";
 import type { ExtensionProvider } from "../../providers/types.js";
 
-type Handler = (event: any, ctx: any) => unknown | Promise<unknown>;
+type Handler = (event: any, ctx: any) => Promise<unknown>;
 
 function makeFakeApi() {
   const handlers = new Map<string, Handler>();
