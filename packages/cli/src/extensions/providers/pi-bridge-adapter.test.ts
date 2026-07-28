@@ -173,6 +173,32 @@ describe("wrapProviderAsExtension", () => {
     expect(disposeCalls).toBe(1);
   });
 
+  test("two overlapping (concurrent) shutdowns only notify/dispose once each", async () => {
+    let shutdownCalls = 0;
+    let disposeCalls = 0;
+    const provider = makeProvider({
+      onSessionShutdown: async () => {
+        shutdownCalls++;
+        // Yield so a second concurrent invocation has a chance to race in
+        // before this one reaches its state-reset.
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      },
+      dispose: async () => { disposeCalls++; },
+    });
+
+    const handlers = await install(provider);
+    await handlers.get("session_start")?.({ reason: "startup" }, makeCtx());
+
+    const shutdown = handlers.get("session_shutdown")!;
+    await Promise.all([
+      shutdown({ reason: "quit" }, makeCtx()),
+      shutdown({ reason: "quit" }, makeCtx()),
+    ]);
+
+    expect(shutdownCalls).toBe(1);
+    expect(disposeCalls).toBe(1);
+  });
+
   test("onSessionClose is never called — pi has no equivalent event", async () => {
     let closeCalled = false;
     const provider = makeProvider({

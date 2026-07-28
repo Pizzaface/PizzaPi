@@ -136,28 +136,32 @@ export function wrapProviderAsExtension(
     pi.on("session_shutdown", async (event, ctx) => {
       // Guard on active state: a shutdown before any session_start, or two
       // shutdowns in a row, must be a no-op — nothing to notify or dispose.
-      if (!initialized && !bridge) return;
-      try {
-        if (bridge && isLifecycleHook(provider)) {
-          const sessionId = ctx.sessionManager?.getSessionFile?.() ?? "unknown";
-          await bridge.onSessionShutdown(
-            { reason: event.reason, targetSessionFile: event.targetSessionFile },
-            makeProviderContext(ctx, sessionId, timeoutMs),
-          );
-        }
-        // NOTE: onSessionClose is not called here — see module doc comment above.
-        if (initialized) {
-          await provider.dispose();
-        }
-      } finally {
-        // Reset lifecycle state even if onSessionShutdown/dispose() throws —
-        // mirrors production's defensive cleanup (extension.ts session_shutdown):
-        // a failed dispose must never leave stale state for the next session to
-        // skip init() or reuse a disabled/error-laden bridge.
-        initialized = false;
-        // Drop the bridge so a new session_start builds a fresh one — error
-        // counters and disabled-provider state must not leak across sessions.
-        bridge = null;
+      const activeBridge = bridge;
+      const wasInitialized = initialized;
+      if (!wasInitialized && !activeBridge) return;
+      // Claim the lifecycle state synchronously, before the first await.
+      // Two overlapping session_shutdown invocations both pass the guard
+      // above before either reaches an await — resetting state only in a
+      // `finally` (the old approach) left a TOCTOU window where the second
+      // invocation would see stale `initialized`/`bridge` and re-run
+      // onSessionShutdown()/dispose(). Resetting here means a concurrent
+      // shutdown captures null/false locals and no-ops instead.
+      initialized = false;
+      bridge = null;
+      if (activeBridge && isLifecycleHook(provider)) {
+        const sessionId = ctx.sessionManager?.getSessionFile?.() ?? "unknown";
+        await activeBridge.onSessionShutdown(
+          { reason: event.reason, targetSessionFile: event.targetSessionFile },
+          makeProviderContext(ctx, sessionId, timeoutMs),
+        );
+      }
+      // NOTE: onSessionClose is not called here — see module doc comment above.
+      if (wasInitialized) {
+        // Errors from dispose() propagate to the caller unchanged (matches
+        // the previous behavior: no catch here). State is already claimed
+        // above, so a throwing dispose() still leaves initialized/bridge
+        // cleared for the next session_start to re-init.
+        await provider.dispose();
       }
     });
   };
