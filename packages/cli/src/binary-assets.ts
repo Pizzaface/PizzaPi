@@ -17,8 +17,8 @@ export function copyBinaryAssets(piPkgDir: string, outDir: string): void {
     for (const [source, destination] of [
         [join(piPkgDir, "dist", "modes", "interactive", "theme"), "theme"],
         [join(piPkgDir, "dist", "core", "export-html"), "export-html"],
-        [join(import.meta.dirname, "src", "templates"), "templates"],
-        [join(import.meta.dirname, "src", "skills"), "skills"],
+        [join(import.meta.dirname, "templates"), "templates"],
+        [join(import.meta.dirname, "skills"), "skills"],
     ]) {
         if (existsSync(source)) cpSync(source, join(outDir, destination), { recursive: true });
     }

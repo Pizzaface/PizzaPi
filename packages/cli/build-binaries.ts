@@ -17,7 +17,7 @@ import { $ } from "bun";
 import { join, dirname } from "path";
 import { existsSync, mkdirSync, cpSync, readdirSync, readFileSync, rmSync } from "fs";
 import { platform as osPlatform, arch as osArch } from "os";
-import { copyBinaryAssets } from "./binary-assets.js";
+import { copyBinaryAssets } from "./src/binary-assets.js";
 
 // ---------------------------------------------------------------------------
 // Platform targets

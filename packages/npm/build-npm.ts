@@ -15,7 +15,7 @@
 
 import { join, dirname } from "path";
 import { existsSync, mkdirSync, cpSync, rmSync, writeFileSync, readFileSync, chmodSync } from "fs";
-import { PACKAGED_BINARY_ASSETS } from "../cli/binary-assets.js";
+import { PACKAGED_BINARY_ASSETS } from "../cli/src/binary-assets.js";
 
 const ROOT = join(import.meta.dirname, "..", "..");
 const CLI_PKG = join(ROOT, "packages", "cli");
