@@ -95,14 +95,35 @@ removals absorbed elsewhere rather than restored:
 | File | Change |
 |------|--------|
 | `dist/config.js` | Same `.pizzapi` config-dir / flat-directory / `PIZZAPI_CHANGELOG_PATH` overrides as 0.80.6 |
-| `dist/core/agent-session.js` | Same `expandPromptTemplates` opt-in as 0.80.6 |
-| `dist/core/extensions/loader.js` / `dist/core/extensions/runner.js` | Same `newSession()`/`switchSession()`/`fork()` general-API exposure as 0.80.6 |
-| `dist/core/extensions/types.d.ts` | Same `ExtensionAPI`/`ExtensionActions` typings as 0.80.6 |
+| `dist/core/agent-session.js` | `sendUserMessage({ expandPromptTemplates })` opt-in (web UI input path). **The `getQueuedMessages`/`replaceQueuedMessages` runtime getters were removed in Phase 1** — see below. |
+| `dist/core/extensions/types.d.ts` | `ExtensionAPI.sendUserMessage` `expandPromptTemplates` typing only. |
 | `dist/core/model-resolver.js` | Same `ollama-cloud` default model (`glm-5.1`) as 0.80.6 |
 | `dist/modes/interactive/interactive-mode.js` | Same version-notification-UI removal as 0.80.6 (upstream shifted a few lines; hunk re-applied manually) |
 | `dist/index.js` / `dist/index.d.ts` | Same `handlePackageCommand`/`handleConfigCommand` re-export as 0.80.6 |
 
 **No longer present (see above for why):** `dist/core/provider-display-names.js`.
+
+### Phase 1: control-plane exposure removed (was `loader.js` / `runner.js` / `types.d.ts`)
+
+Earlier revisions copied session-control capabilities onto `ExtensionAPI` so
+PizzaPi's remote extension (which runs in event handlers and only sees
+`ExtensionAPI`) could reach them: `newSession`/`switchSession`/`fork` and
+`getQueuedMessages`/`replaceQueuedMessages`. These were **pure surface-widening**
+— the capabilities are already native on `AgentSessionRuntime` (new/switch/fork)
+and `AgentSession` (`getSteeringMessages`/`getFollowUpMessages`/`clearQueue`).
+
+They were removed from the patch once PizzaPi's remote extension was rewired to
+drive control through a host-owned **SessionHost**
+(`packages/cli/src/runner/session-host.ts`), threaded into the relay context via
+`packages/cli/src/extensions/remote/session-host-ref.ts`. The worker backs the
+host with its existing headless in-place lifecycle actions; the local TUI backs
+it with the runtime. `replaceQueuedMessages` has no clean public native path (it
+needs pi's private raw-enqueue to avoid double-expanding already-expanded queued
+text), so the worker's SessionHost reaches those private methods directly — as
+it already does for queue clearing — rather than via a patch. The
+`sendUserMessage({ expandPromptTemplates })` hunk stays (the primary input path
+still uses it). `patches.test.ts` has regression guards asserting the removed
+hunks do not silently return on a version bump.
 
 ### packages/cli auth call-site migration (not a patch — our own source)
 
