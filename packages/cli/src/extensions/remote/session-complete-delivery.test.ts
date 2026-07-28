@@ -33,7 +33,7 @@ describe("emitSessionCompleteWithAck", () => {
                 sourceSessionId: "child-1",
                 targetSessionId: "parent-1",
                 triggerId: "trigger-1",
-                deliverAs: "followUp",
+                deliverAs: "steer",
                 expectsResponse: true,
                 payload: {
                     summary: "Done",

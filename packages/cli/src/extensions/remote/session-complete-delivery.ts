@@ -43,7 +43,10 @@ function buildSessionCompleteTrigger(
             exitReason: opts.exitReason,
             ...(opts.fullOutputPath ? { fullOutputPath: opts.fullOutputPath } : {}),
         },
-        deliverAs: "followUp",
+        // steer: the child now waits indefinitely for an ack/follow-up (no more
+        // shutdown-by-clock, see followup-grace.ts) — the parent must be interrupted
+        // to notice, not left to find out whenever it next goes idle.
+        deliverAs: "steer",
         expectsResponse: true,
         triggerId: opts.triggerId,
         ts: new Date().toISOString(),

@@ -446,7 +446,10 @@ export function registerPlanModeTool(rctx: RelayContext) {
                         steps,
                         description: description ?? undefined,
                     },
-                    deliverAs: "followUp" as const,
+                    // steer: the child is blocked waiting on this decision (indefinitely,
+                    // see waitForTriggerResponse) — the parent must be interrupted to see
+                    // it now, not whenever its current turn queue happens to drain.
+                    deliverAs: "steer" as const,
                     expectsResponse: true,
                     triggerId,
                     ts: new Date().toISOString(),

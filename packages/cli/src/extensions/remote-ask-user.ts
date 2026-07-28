@@ -448,7 +448,10 @@ export function registerAskUserTool(rctx: RelayContext) {
                         options: questions.flatMap(q => q.options),
                         questions,
                     },
-                    deliverAs: "followUp" as const,
+                    // steer: the child is blocked waiting on this answer (indefinitely,
+                    // see waitForTriggerResponse) — the parent must be interrupted to see
+                    // it now, not whenever its current turn queue happens to drain.
+                    deliverAs: "steer" as const,
                     expectsResponse: true,
                     triggerId,
                     ts: new Date().toISOString(),

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
 import { createFollowUpGrace, isManualAbort, type FollowUpGraceState } from "./followup-grace.js";
 
 describe("isManualAbort", () => {
@@ -17,7 +17,6 @@ const mockLogger = {
 function makeState(): FollowUpGraceState {
     return {
         sessionCompleteFired: false,
-        followUpGraceTimer: null,
         followUpGraceShutdown: null,
         sessionCompleteGeneration: 0,
         sessionCompleteTransportGeneration: 0,
@@ -37,6 +36,41 @@ function makeRelayContext() {
         sioSocket: { connected: true },
     } as any;
 }
+
+describe("startFollowUpGrace / shutdownFollowUpGraceImmediately", () => {
+    test("startFollowUpGrace never schedules a timer — no auto-shutdown clock", () => {
+        const setTimeoutSpy = spyOn(globalThis, "setTimeout");
+        const followUpGrace = createFollowUpGrace(makeRelayContext(), makeState(), { logger: mockLogger });
+        const shutdown = mock(() => {});
+
+        followUpGrace.startFollowUpGrace({ shutdown });
+
+        expect(setTimeoutSpy).not.toHaveBeenCalled();
+        expect(shutdown).not.toHaveBeenCalled();
+        setTimeoutSpy.mockRestore();
+    });
+
+    test("shutdownFollowUpGraceImmediately still shuts down on an explicit parent delink", () => {
+        const followUpGrace = createFollowUpGrace(makeRelayContext(), makeState(), { logger: mockLogger });
+        const shutdown = mock(() => {});
+
+        followUpGrace.startFollowUpGrace({ shutdown });
+        followUpGrace.shutdownFollowUpGraceImmediately();
+
+        expect(shutdown).toHaveBeenCalledTimes(1);
+    });
+
+    test("clearFollowUpGrace disarms without ever invoking shutdown", () => {
+        const followUpGrace = createFollowUpGrace(makeRelayContext(), makeState(), { logger: mockLogger });
+        const shutdown = mock(() => {});
+
+        followUpGrace.startFollowUpGrace({ shutdown });
+        followUpGrace.clearFollowUpGrace();
+        followUpGrace.shutdownFollowUpGraceImmediately();
+
+        expect(shutdown).not.toHaveBeenCalled();
+    });
+});
 
 describe("createFollowUpGrace fireSessionComplete", () => {
     beforeEach(() => {
