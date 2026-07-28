@@ -17,6 +17,7 @@ import { $ } from "bun";
 import { join, dirname } from "path";
 import { existsSync, mkdirSync, cpSync, readdirSync, readFileSync, rmSync } from "fs";
 import { platform as osPlatform, arch as osArch } from "os";
+import { copyBinaryAssets } from "./binary-assets.js";
 
 // ---------------------------------------------------------------------------
 // Platform targets
@@ -57,39 +58,6 @@ function resolvePiPackageDir(): string {
         dir = dirname(dir);
     }
     throw new Error("Could not locate @earendil-works/pi-coding-agent package root");
-}
-
-// ---------------------------------------------------------------------------
-// Copy runtime assets
-// ---------------------------------------------------------------------------
-
-function copyAssets(piPkgDir: string, outDir: string): void {
-    // 1. package.json — read at module load time via readFileSync
-    cpSync(join(piPkgDir, "package.json"), join(outDir, "package.json"));
-
-    // 2. theme/ — built-in UI themes (dark.json, light.json, theme-schema.json)
-    const themeSrc = join(piPkgDir, "dist", "modes", "interactive", "theme");
-    if (existsSync(themeSrc)) {
-        cpSync(themeSrc, join(outDir, "theme"), { recursive: true });
-    }
-
-    // 3. export-html/ — HTML export template
-    const exportSrc = join(piPkgDir, "dist", "core", "export-html");
-    if (existsSync(exportSrc)) {
-        cpSync(exportSrc, join(outDir, "export-html"), { recursive: true });
-    }
-
-    // 4. templates/ — compose.yml.template for `pizza web`
-    const templatesSrc = join(import.meta.dirname ?? __dirname, "src", "templates");
-    if (existsSync(templatesSrc)) {
-        cpSync(templatesSrc, join(outDir, "templates"), { recursive: true });
-    }
-
-    // 5. skills/ — built-in SKILL.md files shipped with the CLI
-    const skillsSrc = join(import.meta.dirname ?? __dirname, "src", "skills");
-    if (existsSync(skillsSrc)) {
-        cpSync(skillsSrc, join(outDir, "skills"), { recursive: true });
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -298,7 +266,7 @@ for (const target of targets) {
 
     console.log(`  ✓ Compiled`);
 
-    copyAssets(piPkgDir, outDir);
+    copyBinaryAssets(piPkgDir, outDir);
     console.log(`  ✓ Assets copied`);
 
     if (copyPtyLib(target, outDir)) {

@@ -15,6 +15,7 @@
 
 import { join, dirname } from "path";
 import { existsSync, mkdirSync, cpSync, rmSync, writeFileSync, readFileSync, chmodSync } from "fs";
+import { PACKAGED_BINARY_ASSETS } from "../cli/binary-assets.js";
 
 const ROOT = join(import.meta.dirname, "..", "..");
 const CLI_PKG = join(ROOT, "packages", "cli");
@@ -142,7 +143,7 @@ for (const platform of PLATFORMS) {
 
     // Copy assets (package.json from pi, theme/, export-html/, PTY native lib)
     const assetDir = join(BINARIES_DIR, platform.binaryDir);
-    for (const asset of ["package.json", "theme", "export-html", "templates", "skills"]) {
+    for (const asset of PACKAGED_BINARY_ASSETS) {
         const src = join(assetDir, asset);
         if (existsSync(src)) {
             cpSync(src, join(binDir, asset), { recursive: true });
