@@ -61,12 +61,6 @@ async function simulateRespondToTrigger(
         return { text: `Error: No pending trigger with ID ${params.triggerId}` };
     }
 
-    const TRIGGER_TTL_MS = 10 * 60 * 1000;
-    if (Date.now() - pending.trackedAt > TRIGGER_TTL_MS) {
-        receivedTriggers.delete(params.triggerId);
-        return { text: `Error: Trigger ${params.triggerId} has expired` };
-    }
-
     if (pending.type === "session_complete") {
         const action = params.action ?? "ack";
         if (action === "followUp") {
@@ -232,20 +226,20 @@ describe("respond_to_trigger handling for session_complete", () => {
         expect(receivedTriggers.has("trig_plan_fail")).toBe(true);
     });
 
-    it("expired triggers are rejected and removed", async () => {
+    it("triggers never expire — an old pending trigger can still be responded to", async () => {
         const conn = createMockSocket();
         trackReceivedTrigger("trig_old", "child-old", "session_complete");
         const pending = receivedTriggers.get("trig_old");
-        if (pending) pending.trackedAt = Date.now() - (11 * 60 * 1000);
+        if (pending) pending.trackedAt = Date.now() - 60 * 60 * 1000; // 1 hour ago
 
         const result = await simulateRespondToTrigger(
             { triggerId: "trig_old", response: "late ack", action: "ack" },
             conn,
         );
 
-        expect(result?.text).toContain("expired");
+        expect(result?.text).toBe("Acknowledged session completion from child-old");
         expect(receivedTriggers.has("trig_old")).toBe(false);
-        expect(conn.emitted.length).toBe(0);
+        expect(conn.emitted.some((e) => e.event === "cleanup_child_session")).toBe(true);
     });
 });
 

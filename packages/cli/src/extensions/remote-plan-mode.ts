@@ -449,7 +449,6 @@ export function registerPlanModeTool(rctx: RelayContext) {
                     deliverAs: "followUp" as const,
                     expectsResponse: true,
                     triggerId,
-                    timeoutMs: 300_000,
                     ts: new Date().toISOString(),
                 };
 
@@ -467,7 +466,8 @@ export function registerPlanModeTool(rctx: RelayContext) {
                     };
                 }
 
-                const triggerResult = await rctx.waitForTriggerResponse(triggerId, trigger.timeoutMs, signal);
+                // No timeout: wait until the parent actually responds (or cancels).
+                const triggerResult = await rctx.waitForTriggerResponse(triggerId, undefined, signal);
 
                 // Treat timeout / delivery-failure as cancellation
                 if (triggerResult.cancelled) {

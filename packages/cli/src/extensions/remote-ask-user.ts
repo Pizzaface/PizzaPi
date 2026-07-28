@@ -451,7 +451,6 @@ export function registerAskUserTool(rctx: RelayContext) {
                     deliverAs: "followUp" as const,
                     expectsResponse: true,
                     triggerId,
-                    timeoutMs: 300_000,
                     ts: new Date().toISOString(),
                 };
 
@@ -471,7 +470,8 @@ export function registerAskUserTool(rctx: RelayContext) {
                     };
                 }
 
-                const triggerResult = await rctx.waitForTriggerResponse(triggerId, trigger.timeoutMs, signal);
+                // No timeout: wait until the parent actually responds (or cancels).
+                const triggerResult = await rctx.waitForTriggerResponse(triggerId, undefined, signal);
 
                 return {
                     content: [{ type: "text", text: triggerResult.response }],
