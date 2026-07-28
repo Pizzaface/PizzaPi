@@ -48,6 +48,13 @@ function makeProviderContext(
  * single-provider `ProviderBridge` instance so those semantics can never
  * drift from the existing multi-provider bridge — no reimplementation.
  *
+ * Matches production's per-session bridge lifecycle (see providerExtension in
+ * extension.ts): a fresh `ProviderBridge` is created on every `session_start`
+ * and dropped on `session_shutdown`. This is required because the bridge
+ * auto-disables a provider after 3 consecutive errors — if the same bridge
+ * instance were reused across sessions, that disabled state (and error
+ * counters) would leak into a brand-new session forever.
+ *
  * `opts.timeoutMs` defaults to the same 5000ms the existing providerExtension
  * hardcodes; exposed as a param (not a config file) purely so tests can
  * exercise timeout enforcement without a real 5s wait.
@@ -58,7 +65,9 @@ export function wrapProviderAsExtension(
 ): ExtensionFactory {
   const timeoutMs = opts?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   return async (pi: ExtensionAPI) => {
-    const bridge = new ProviderBridge([provider]);
+    // Recreated fresh on every session_start, cleared on session_shutdown —
+    // never reused across sessions (see lifecycle note above).
+    let bridge: ProviderBridge | null = null;
     let initialized = false;
 
     pi.on("session_start", async (event, ctx) => {
@@ -71,6 +80,7 @@ export function wrapProviderAsExtension(
         });
         initialized = true;
       }
+      bridge = new ProviderBridge([provider]);
       if (!isLifecycleHook(provider)) return;
       const sessionId = ctx.sessionManager?.getSessionFile?.() ?? "unknown";
       await bridge.onSessionStart(
@@ -80,6 +90,7 @@ export function wrapProviderAsExtension(
     });
 
     pi.on("before_agent_start", async (event, ctx) => {
+      if (!bridge) return;
       if (!isContextProvider(provider)) return;
       bridge.resetDedupeState();
       const sessionId = ctx.sessionManager?.getSessionFile?.() ?? "unknown";
@@ -100,6 +111,7 @@ export function wrapProviderAsExtension(
     });
 
     pi.on("turn_end", async (event, ctx) => {
+      if (!bridge) return;
       if (!isLifecycleHook(provider)) return;
       const sessionId = ctx.sessionManager?.getSessionFile?.() ?? "unknown";
       await bridge.onTurnEnd(
@@ -122,7 +134,7 @@ export function wrapProviderAsExtension(
     });
 
     pi.on("session_shutdown", async (event, ctx) => {
-      if (isLifecycleHook(provider)) {
+      if (bridge && isLifecycleHook(provider)) {
         const sessionId = ctx.sessionManager?.getSessionFile?.() ?? "unknown";
         await bridge.onSessionShutdown(
           { reason: event.reason, targetSessionFile: event.targetSessionFile },
@@ -132,6 +144,9 @@ export function wrapProviderAsExtension(
       // NOTE: onSessionClose is not called here — see module doc comment above.
       await provider.dispose();
       initialized = false;
+      // Drop the bridge so a new session_start builds a fresh one — error
+      // counters and disabled-provider state must not leak across sessions.
+      bridge = null;
     });
   };
 }

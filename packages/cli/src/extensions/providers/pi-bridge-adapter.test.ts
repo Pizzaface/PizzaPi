@@ -81,6 +81,7 @@ describe("wrapProviderAsExtension", () => {
     });
 
     const handlers = await install(provider);
+    await handlers.get("session_start")?.({ reason: "startup" }, makeCtx());
     const result = await handlers.get("before_agent_start")?.(
       { prompt: "hello", images: [], systemPrompt: "BASE" },
       makeCtx(),
@@ -97,6 +98,7 @@ describe("wrapProviderAsExtension", () => {
     });
 
     const handlers = await install(provider);
+    await handlers.get("session_start")?.({ reason: "startup" }, makeCtx());
     await handlers.get("turn_end")?.(
       {
         turnIndex: 3,
@@ -121,6 +123,7 @@ describe("wrapProviderAsExtension", () => {
     });
 
     const handlers = await install(provider);
+    await handlers.get("session_start")?.({ reason: "startup" }, makeCtx());
     await handlers.get("session_shutdown")?.({ reason: "quit", targetSessionFile: undefined }, makeCtx());
 
     expect(order).toEqual(["shutdown", "dispose"]);
@@ -174,6 +177,7 @@ describe("wrapProviderAsExtension", () => {
     });
 
     const handlers = await install(provider, { timeoutMs: 200 });
+    await handlers.get("session_start")?.({ reason: "startup" }, makeCtx());
     for (let i = 0; i < 5; i++) {
       await handlers.get("before_agent_start")?.({ prompt: `p${i}`, systemPrompt: "BASE" }, makeCtx());
     }
@@ -181,5 +185,38 @@ describe("wrapProviderAsExtension", () => {
     // Bridge disables the provider after the 3rd consecutive error, so calls
     // 4 and 5 never reach the provider hook.
     expect(calls).toBe(3);
+  });
+
+  test("disabled-provider state does not leak across sessions (P1 regression)", async () => {
+    let calls = 0;
+    const provider = makeProvider({
+      onBeforeAgentStart: async () => {
+        calls++;
+        throw new Error("boom");
+      },
+    });
+
+    const handlers = await install(provider, { timeoutMs: 200 });
+
+    await handlers.get("session_start")?.({ reason: "startup" }, makeCtx());
+
+    // 3 consecutive errors disable the provider within this session's bridge.
+    for (let i = 0; i < 3; i++) {
+      await handlers.get("before_agent_start")?.({ prompt: `p${i}`, systemPrompt: "BASE" }, makeCtx());
+    }
+    expect(calls).toBe(3);
+
+    // Confirm it's actually disabled: one more call does not reach the provider.
+    await handlers.get("before_agent_start")?.({ prompt: "p3", systemPrompt: "BASE" }, makeCtx());
+    expect(calls).toBe(3);
+
+    // End the session, then start a new one.
+    await handlers.get("session_shutdown")?.({ reason: "quit" }, makeCtx());
+    await handlers.get("session_start")?.({ reason: "startup" }, makeCtx());
+
+    // A fresh session must get a fresh bridge: the provider is invoked again,
+    // not permanently disabled from the prior session's error streak.
+    await handlers.get("before_agent_start")?.({ prompt: "q0", systemPrompt: "BASE" }, makeCtx());
+    expect(calls).toBe(4);
   });
 });

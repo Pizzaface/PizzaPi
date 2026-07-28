@@ -81,6 +81,7 @@ describe("event mapping table", () => {
   test("before_agent_start -> onBeforeAgentStart({ prompt, images, systemPrompt })", async () => {
     let seen: any;
     const handlers = await install(makeProvider({ onBeforeAgentStart: async (event: unknown) => { seen = event; return []; } }));
+    await handlers.get("session_start")?.({ reason: "startup" }, makeCtx());
     await handlers.get("before_agent_start")?.(
       { prompt: "do a thing", images: [{ type: "image" }], systemPrompt: "SYS" },
       makeCtx(),
@@ -92,6 +93,7 @@ describe("event mapping table", () => {
     const handlers = await install(makeProvider({
       onBeforeAgentStart: async () => [{ text: "EXTRA", placement: "append", order: 1, summary: "extra" }],
     }));
+    await handlers.get("session_start")?.({ reason: "startup" }, makeCtx());
     const result = await handlers.get("before_agent_start")?.({ prompt: "p", systemPrompt: "BASE" }, makeCtx()) as { systemPrompt: string };
     expect(result).toEqual({ systemPrompt: "BASE\nEXTRA" });
   });
@@ -99,6 +101,7 @@ describe("event mapping table", () => {
   test("turn_end -> onTurnEnd translates toolResults field names", async () => {
     let seen: any;
     const handlers = await install(makeProvider({ onTurnEnd: async (event: unknown) => { seen = event; } }));
+    await handlers.get("session_start")?.({ reason: "startup" }, makeCtx());
     await handlers.get("turn_end")?.(
       {
         turnIndex: 7,
@@ -123,6 +126,7 @@ describe("event mapping table", () => {
   test("session_shutdown -> onSessionShutdown({ reason, targetSessionFile })", async () => {
     let seen: any;
     const handlers = await install(makeProvider({ onSessionShutdown: async (event: unknown) => { seen = event; } }));
+    await handlers.get("session_start")?.({ reason: "startup" }, makeCtx());
     await handlers.get("session_shutdown")?.({ reason: "reload", targetSessionFile: "next.json" }, makeCtx());
     expect(seen).toEqual({ reason: "reload", targetSessionFile: "next.json" });
   });
@@ -133,6 +137,7 @@ describe("event mapping table", () => {
       onSessionShutdown: async () => { order.push("onSessionShutdown"); },
       dispose: async () => { order.push("dispose"); },
     }));
+    await handlers.get("session_start")?.({ reason: "startup" }, makeCtx());
     await handlers.get("session_shutdown")?.({ reason: "quit" }, makeCtx());
     expect(order).toEqual(["onSessionShutdown", "dispose"]);
   });
