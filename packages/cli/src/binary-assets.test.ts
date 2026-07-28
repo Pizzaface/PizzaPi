@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { copyBinaryAssets, PACKAGED_BINARY_ASSETS } from "./binary-assets.js";
+import { copyBinaryAssets, PACKAGED_BINARY_ASSETS } from "../binary-assets.js";
 
 let outputDir: string | undefined;
 afterEach(() => {
