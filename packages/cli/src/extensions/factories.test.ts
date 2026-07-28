@@ -33,7 +33,10 @@ import { backgroundBashExtension } from "./background-bash.js";
 import { queueFlushExtension } from "./queue-flush.js";
 import { ollamaCloudProviderExtension } from "./ollama-cloud-provider.js";
 
-const CORE_EXTENSIONS: ExtensionFactory[] = [
+// resource-paths is a factory *created per call* (createResourcePathsExtension(...)),
+// so it's never reference-equal to a statically imported factory. Split the
+// otherwise-static core list around it and assert its presence/type separately.
+const CORE_EXTENSIONS_HEAD: ExtensionFactory[] = [
     ollamaCloudProviderExtension,
     providerRequestLogExtension,
     triggersExtension,  // Must be before remoteExtension (shutdown ordering)
@@ -42,6 +45,8 @@ const CORE_EXTENSIONS: ExtensionFactory[] = [
     mcpExtension,
     toolSearchExtension,  // Must be after MCP to see registered MCP tools
     ollamaWebToolsExtension,
+];
+const CORE_EXTENSIONS_TAIL: ExtensionFactory[] = [
     goalExtension,
     restartExtension,
     sessionProcessesExtension,
@@ -60,6 +65,15 @@ const CORE_EXTENSIONS: ExtensionFactory[] = [
     providerExtension,  // Always registered
     sessionAnalysisExtension,  // Always registered
 ];
+// +1 for the resource-paths factory inserted between HEAD and TAIL.
+const CORE_EXTENSIONS_COUNT = CORE_EXTENSIONS_HEAD.length + 1 + CORE_EXTENSIONS_TAIL.length;
+
+/** Assert the leading `CORE_EXTENSIONS_COUNT` factories match the expected core composition. */
+function expectCoreExtensionsPrefix(factories: ExtensionFactory[]) {
+    expect(factories.slice(0, CORE_EXTENSIONS_HEAD.length)).toEqual(CORE_EXTENSIONS_HEAD);
+    expect(typeof factories[CORE_EXTENSIONS_HEAD.length]).toBe("function"); // resource-paths
+    expect(factories.slice(CORE_EXTENSIONS_HEAD.length + 1, CORE_EXTENSIONS_COUNT)).toEqual(CORE_EXTENSIONS_TAIL);
+}
 
 /**
  * Tests that focus on core extension composition use skipPlugins: true
@@ -70,7 +84,8 @@ const CORE_EXTENSIONS: ExtensionFactory[] = [
 describe("buildPizzaPiExtensionFactories", () => {
     test("returns core extensions by default", () => {
         const factories = buildPizzaPiExtensionFactories({ cwd: "/tmp/pizzapi-test", skipPlugins: true });
-        expect(factories).toEqual(CORE_EXTENSIONS);
+        expect(factories).toHaveLength(CORE_EXTENSIONS_COUNT);
+        expectCoreExtensionsPrefix(factories);
     });
 
     test("includes initial prompt extension for worker mode", () => {
@@ -80,7 +95,9 @@ describe("buildPizzaPiExtensionFactories", () => {
             skipPlugins: true,
         });
 
-        expect(factories).toEqual([...CORE_EXTENSIONS, initialPromptExtension]);
+        expect(factories).toHaveLength(CORE_EXTENSIONS_COUNT + 1);
+        expectCoreExtensionsPrefix(factories);
+        expect(factories[CORE_EXTENSIONS_COUNT]).toBe(initialPromptExtension);
     });
 
     test("appends hooks extension when hooks are configured", () => {
@@ -94,9 +111,9 @@ describe("buildPizzaPiExtensionFactories", () => {
             skipPlugins: true,
         });
 
-        expect(factories).toHaveLength(CORE_EXTENSIONS.length + 1);
-        expect(factories.slice(0, CORE_EXTENSIONS.length)).toEqual(CORE_EXTENSIONS);
-        expect(typeof factories[CORE_EXTENSIONS.length]).toBe("function");
+        expect(factories).toHaveLength(CORE_EXTENSIONS_COUNT + 1);
+        expectCoreExtensionsPrefix(factories);
+        expect(typeof factories[CORE_EXTENSIONS_COUNT]).toBe("function");
     });
 
     test("worker mode includes initial prompt before hooks", () => {
@@ -111,10 +128,10 @@ describe("buildPizzaPiExtensionFactories", () => {
             skipPlugins: true,
         });
 
-        expect(factories).toHaveLength(CORE_EXTENSIONS.length + 2);
-        expect(factories.slice(0, CORE_EXTENSIONS.length)).toEqual(CORE_EXTENSIONS);
-        expect(factories[CORE_EXTENSIONS.length]).toBe(initialPromptExtension);
-        expect(typeof factories[CORE_EXTENSIONS.length + 1]).toBe("function");
+        expect(factories).toHaveLength(CORE_EXTENSIONS_COUNT + 2);
+        expectCoreExtensionsPrefix(factories);
+        expect(factories[CORE_EXTENSIONS_COUNT]).toBe(initialPromptExtension);
+        expect(typeof factories[CORE_EXTENSIONS_COUNT + 1]).toBe("function");
     });
 });
 
@@ -196,8 +213,8 @@ describe("buildPizzaPiExtensionFactories — plugin extension", () => {
             const factories = buildPizzaPiExtensionFactories({ cwd: projectDir });
 
             // Core + plugin extension (at minimum)
-            expect(factories.length).toBeGreaterThan(CORE_EXTENSIONS.length);
-            expect(factories.slice(0, CORE_EXTENSIONS.length)).toEqual(CORE_EXTENSIONS);
+            expect(factories.length).toBeGreaterThan(CORE_EXTENSIONS_COUNT);
+            expectCoreExtensionsPrefix(factories);
             expect(typeof factories[factories.length - 1]).toBe("function");
         } finally {
             try { rmSync(projectDir, { recursive: true, force: true }); } catch {}
@@ -211,7 +228,7 @@ describe("buildPizzaPiExtensionFactories — plugin extension", () => {
             const factories = buildPizzaPiExtensionFactories({ cwd: emptyDir });
             // May or may not have plugin extension depending on real HOME plugins.
             // The key invariant: core extensions are always first.
-            expect(factories.slice(0, CORE_EXTENSIONS.length)).toEqual(CORE_EXTENSIONS);
+            expectCoreExtensionsPrefix(factories);
         } finally {
             try { rmSync(emptyDir, { recursive: true, force: true }); } catch {}
         }
@@ -231,8 +248,8 @@ describe("buildPizzaPiExtensionFactories — plugin extension", () => {
             const factories = buildPizzaPiExtensionFactories({ cwd: projectDir, hooks });
 
             // Core + hooks + plugin (at least)
-            expect(factories.length).toBeGreaterThanOrEqual(CORE_EXTENSIONS.length + 2);
-            expect(factories.slice(0, CORE_EXTENSIONS.length)).toEqual(CORE_EXTENSIONS);
+            expect(factories.length).toBeGreaterThanOrEqual(CORE_EXTENSIONS_COUNT + 2);
+            expectCoreExtensionsPrefix(factories);
         } finally {
             try { rmSync(projectDir, { recursive: true, force: true }); } catch {}
         }
