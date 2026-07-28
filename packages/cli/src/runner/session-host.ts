@@ -2,18 +2,26 @@ import type { AgentSession, AgentSessionRuntime, PromptOptions } from "@earendil
 import type { ImageContent, Model, TextContent } from "@earendil-works/pi-ai/compat";
 
 /**
- * SessionHost — the single control surface over a host-owned `AgentSessionRuntime`.
+ * SessionHost — the single session-control surface PizzaPi's remote extension
+ * drives, decoupled from pi's `ExtensionAPI`.
  *
- * Both the local TUI (`index.ts`) and the runner worker construct an
- * `AgentSessionRuntime`; today PizzaPi's remote extension can only reach session
- * controls through pi's `ExtensionAPI`, which is a strict subset of what the
- * runtime already exposes. That gap is bridged by patch hunks in
- * `patches/@earendil-works%2Fpi-coding-agent@0.82.1.patch` that copy host
- * capabilities down onto `ExtensionAPI`.
+ * The pi-coding-agent 0.82.1 patch copies session-control capabilities onto
+ * `ExtensionAPI` (`newSession`/`switchSession`/`fork`, `getQueuedMessages`/
+ * `replaceQueuedMessages`, `sendUserMessage({expandPromptTemplates})`) purely so
+ * the remote extension — which runs in event handlers and only sees
+ * `ExtensionAPI` — can reach them. Threading a `SessionHost` into the remote
+ * context lets those call sites use a direct handle instead, removing the
+ * patch's reason to exist.
  *
- * SessionHost lets the host hand the remote layer a direct handle instead, so
- * those capabilities are called natively — no patch. It is a thin façade, not an
- * abstraction: it holds no state and adds no serialization (pi's agent already
+ * The two hosts differ only in session *lifecycle*:
+ *  - Local TUI: an `AgentSessionRuntime` provides new/switch/fork natively
+ *    (tears down + recreates the session).
+ *  - Runner worker: headless in-place actions swap the contents of one
+ *    long-lived `AgentSession` (so the relay connection survives).
+ *
+ * Everything else operates on the current `AgentSession`, so `SessionHost` is
+ * parameterized by a session accessor + a lifecycle object rather than
+ * subclassed. It holds no state and adds no serialization (pi's agent already
  * serializes via its steering/follow-up queues).
  */
 export type UserMessageContent = string | (TextContent | ImageContent)[];
@@ -24,34 +32,46 @@ export interface SendUserMessageOptions {
     expandPromptTemplates?: boolean;
 }
 
+/** Session lifecycle operations — backed by the runtime (TUI) or custom worker actions. */
+export interface SessionLifecycle {
+    newSession(options?: Parameters<AgentSessionRuntime["newSession"]>[0]): Promise<{ cancelled: boolean }>;
+    switchSession(
+        sessionPath: string,
+        options?: Parameters<AgentSessionRuntime["switchSession"]>[1],
+    ): Promise<{ cancelled: boolean }>;
+    fork(
+        entryId: string,
+        options?: Parameters<AgentSessionRuntime["fork"]>[1],
+    ): Promise<{ cancelled: boolean; selectedText?: string }>;
+    /** Only the runtime host supports import; optional for headless. */
+    importFromJsonl?(inputPath: string, cwdOverride?: string): Promise<{ cancelled: boolean }>;
+}
+
 /**
  * Injected bridge for the one queue op with no public native equivalent.
  *
  * `replaceQueuedMessages` must repopulate the queue with ALREADY-expanded text,
  * which requires pi's private raw-enqueue (`_queueSteer`/`_queueFollowUp`). The
  * public `steer()`/`followUp()` re-run skill + template expansion, so rebuilding
- * the queue through them would double-expand. Until upstream exposes a public
- * raw-requeue primitive, the host wires this to the patched `ExtensionAPI`
- * runtime method.
+ * the queue through them would double-expand. Each host supplies its own bridge
+ * (the worker reaches the private methods directly, as it already does for queue
+ * clearing).
  *
  * ponytail: one injected fn, not a layer — delete when upstream adds a public
- * requeue and call `session` directly.
+ * raw-requeue primitive.
  */
 export type ReplaceQueuedMessagesFn = (followUp: string[]) => void;
 
 export class SessionHost {
     constructor(
-        private readonly runtime: AgentSessionRuntime,
+        private readonly getSession: () => AgentSession,
+        private readonly lifecycle: SessionLifecycle,
         private readonly replaceQueuedMessagesFn?: ReplaceQueuedMessagesFn,
     ) {}
 
-    /** Read the live session — `runtime.session` is replaced on new/switch/fork/import. */
+    /** Read the live session — it is replaced (TUI) or mutated in place (worker). */
     private get session(): AgentSession {
-        return this.runtime.session;
-    }
-
-    get cwd(): string {
-        return this.runtime.cwd;
+        return this.getSession();
     }
 
     get pendingMessageCount(): number {
@@ -115,23 +135,29 @@ export class SessionHost {
         this.replaceQueuedMessagesFn(followUp);
     }
 
-    newSession(options?: Parameters<AgentSessionRuntime["newSession"]>[0]): ReturnType<AgentSessionRuntime["newSession"]> {
-        return this.runtime.newSession(options);
+    newSession(options?: Parameters<SessionLifecycle["newSession"]>[0]): Promise<{ cancelled: boolean }> {
+        return this.lifecycle.newSession(options);
     }
 
     switchSession(
         sessionPath: string,
-        options?: Parameters<AgentSessionRuntime["switchSession"]>[1],
-    ): ReturnType<AgentSessionRuntime["switchSession"]> {
-        return this.runtime.switchSession(sessionPath, options);
+        options?: Parameters<SessionLifecycle["switchSession"]>[1],
+    ): Promise<{ cancelled: boolean }> {
+        return this.lifecycle.switchSession(sessionPath, options);
     }
 
-    fork(entryId: string, options?: Parameters<AgentSessionRuntime["fork"]>[1]): ReturnType<AgentSessionRuntime["fork"]> {
-        return this.runtime.fork(entryId, options);
+    fork(
+        entryId: string,
+        options?: Parameters<SessionLifecycle["fork"]>[1],
+    ): Promise<{ cancelled: boolean; selectedText?: string }> {
+        return this.lifecycle.fork(entryId, options);
     }
 
-    importFromJsonl(inputPath: string, cwdOverride?: string): ReturnType<AgentSessionRuntime["importFromJsonl"]> {
-        return this.runtime.importFromJsonl(inputPath, cwdOverride);
+    importFromJsonl(inputPath: string, cwdOverride?: string): Promise<{ cancelled: boolean }> {
+        if (!this.lifecycle.importFromJsonl) {
+            throw new Error("SessionHost: importFromJsonl is not supported by this host");
+        }
+        return this.lifecycle.importFromJsonl(inputPath, cwdOverride);
     }
 
     abort(): Promise<void> {
@@ -145,4 +171,24 @@ export class SessionHost {
     setModel(model: Model<any>): Promise<void> {
         return this.session.setModel(model);
     }
+}
+
+/**
+ * Build a SessionHost backed by an `AgentSessionRuntime` (local TUI). Lifecycle
+ * ops delegate to the runtime, which recreates the session on each transition.
+ */
+export function runtimeSessionHost(
+    runtime: AgentSessionRuntime,
+    replaceQueuedMessagesFn?: ReplaceQueuedMessagesFn,
+): SessionHost {
+    return new SessionHost(
+        () => runtime.session,
+        {
+            newSession: (o) => runtime.newSession(o),
+            switchSession: (p, o) => runtime.switchSession(p, o),
+            fork: (e, o) => runtime.fork(e, o),
+            importFromJsonl: (p, c) => runtime.importFromJsonl(p, c),
+        },
+        replaceQueuedMessagesFn,
+    );
 }
