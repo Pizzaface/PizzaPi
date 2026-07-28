@@ -129,6 +129,50 @@ describe("wrapProviderAsExtension", () => {
     expect(order).toEqual(["shutdown", "dispose"]);
   });
 
+  test("shutdown cleanup is exception-safe: a throwing dispose() still resets lifecycle state", async () => {
+    let initCalls = 0;
+    let disposeCalls = 0;
+    const provider = makeProvider({
+      init: async () => { initCalls++; },
+      dispose: async () => { disposeCalls++; throw new Error("dispose boom"); },
+    });
+
+    const handlers = await install(provider);
+    await handlers.get("session_start")?.({ reason: "startup" }, makeCtx());
+    expect(initCalls).toBe(1);
+
+    // dispose() throws — the handler itself must not throw past this point in
+    // a way that leaves stale state; whether the rejection surfaces to the
+    // caller or not, the NEXT session_start must re-init rather than skip it.
+    await handlers.get("session_shutdown")?.({ reason: "quit" }, makeCtx()).catch(() => {});
+
+    await handlers.get("session_start")?.({ reason: "startup" }, makeCtx());
+    expect(initCalls).toBe(2);
+    expect(disposeCalls).toBe(1);
+  });
+
+  test("a shutdown before any session_start is a no-op (does not call dispose)", async () => {
+    let disposeCalls = 0;
+    const provider = makeProvider({ dispose: async () => { disposeCalls++; } });
+
+    const handlers = await install(provider);
+    await handlers.get("session_shutdown")?.({ reason: "quit" }, makeCtx());
+
+    expect(disposeCalls).toBe(0);
+  });
+
+  test("two shutdowns in a row only dispose once", async () => {
+    let disposeCalls = 0;
+    const provider = makeProvider({ dispose: async () => { disposeCalls++; } });
+
+    const handlers = await install(provider);
+    await handlers.get("session_start")?.({ reason: "startup" }, makeCtx());
+    await handlers.get("session_shutdown")?.({ reason: "quit" }, makeCtx());
+    await handlers.get("session_shutdown")?.({ reason: "quit" }, makeCtx());
+
+    expect(disposeCalls).toBe(1);
+  });
+
   test("onSessionClose is never called — pi has no equivalent event", async () => {
     let closeCalled = false;
     const provider = makeProvider({
@@ -155,6 +199,11 @@ describe("wrapProviderAsExtension", () => {
     });
 
     const handlers = await install(provider, { timeoutMs: 50 });
+    // Bridge only exists after session_start — without this, before_agent_start
+    // hits the `if (!bridge) return;` guard and the test would pass vacuously
+    // (0ms) regardless of whether timeout enforcement exists.
+    await handlers.get("session_start")?.({ reason: "startup" }, makeCtx());
+
     const start = Date.now();
     const result = await handlers.get("before_agent_start")?.(
       { prompt: "hi", systemPrompt: "BASE" },
@@ -164,7 +213,104 @@ describe("wrapProviderAsExtension", () => {
 
     // Timed out and swallowed by the bridge -> no contributions -> no return value.
     expect(result).toBeUndefined();
+    expect(elapsed).toBeGreaterThanOrEqual(45);
     expect(elapsed).toBeLessThan(1000);
+  });
+
+  test("propagates an already-aborted signal into the provider hook call", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    // Resolves (does not reject) so an already-settled-but-unraced promise
+    // can't trip an unrelated unhandled-rejection warning in the test run.
+    const provider = makeProvider({
+      onBeforeAgentStart: async () => [{ text: "X", placement: "append", order: 1, summary: "x" }],
+    });
+
+    const handlers = await install(provider, { timeoutMs: 200 });
+    await handlers.get("session_start")?.({ reason: "startup" }, makeCtx({ signal: controller.signal }));
+    const result = await handlers.get("before_agent_start")?.(
+      { prompt: "hi", systemPrompt: "BASE" },
+      makeCtx({ signal: controller.signal }),
+    );
+
+    // Aborted before execution -> bridge rejects the call -> no contributions,
+    // even though the provider hook itself would have succeeded.
+    expect(result).toBeUndefined();
+  });
+
+  test("aborting mid-call rejects the in-flight provider hook", async () => {
+    const controller = new AbortController();
+    const provider = makeProvider({
+      onBeforeAgentStart: () => new Promise(() => {}), // never resolves on its own
+    });
+
+    const handlers = await install(provider, { timeoutMs: 5000 });
+    await handlers.get("session_start")?.({ reason: "startup" }, makeCtx({ signal: controller.signal }));
+
+    const start = Date.now();
+    const call = handlers.get("before_agent_start")?.(
+      { prompt: "hi", systemPrompt: "BASE" },
+      makeCtx({ signal: controller.signal }),
+    );
+    setTimeout(() => controller.abort(), 20);
+    const result = await call;
+    const elapsed = Date.now() - start;
+
+    // Aborted well before the 5000ms timeout would have fired.
+    expect(result).toBeUndefined();
+    expect(elapsed).toBeLessThan(1000);
+  });
+
+  test("sorts contributions by order, then providerId, before mapping onto systemPrompt", async () => {
+    // Two providers registered directly on a single-provider bridge cannot be
+    // exercised through wrapProviderAsExtension (it only wraps one provider),
+    // so this drives the sort via multiple contributions from one provider
+    // with distinct orders — the bridge sorts the full collected set the same
+    // way regardless of provider count.
+    const provider = makeProvider({
+      onBeforeAgentStart: async () => [
+        { text: "THIRD", placement: "append", order: 30, summary: "c" },
+        { text: "FIRST", placement: "append", order: 10, summary: "a" },
+        { text: "SECOND", placement: "append", order: 20, summary: "b" },
+      ],
+    });
+
+    const handlers = await install(provider);
+    await handlers.get("session_start")?.({ reason: "startup" }, makeCtx());
+    const result = await handlers.get("before_agent_start")?.(
+      { prompt: "p", systemPrompt: "BASE" },
+      makeCtx(),
+    ) as { systemPrompt: string };
+
+    expect(result.systemPrompt).toBe("BASE\nFIRST\nSECOND\nTHIRD");
+  });
+
+  test("resets dedupe state on each before_agent_start prompt boundary", async () => {
+    let calls = 0;
+    const provider = makeProvider({
+      onBeforeAgentStart: async () => {
+        calls++;
+        return [{ text: `CTX-${calls}`, placement: "append", order: 1, summary: "s", dedupeKey: "same-key" }];
+      },
+    });
+
+    const handlers = await install(provider);
+    await handlers.get("session_start")?.({ reason: "startup" }, makeCtx());
+
+    const first = await handlers.get("before_agent_start")?.(
+      { prompt: "p1", systemPrompt: "BASE" },
+      makeCtx(),
+    ) as { systemPrompt: string };
+    expect(first.systemPrompt).toBe("BASE\nCTX-1");
+
+    // A second prompt boundary must re-run the provider and emit fresh text
+    // for the same dedupeKey, not silently reuse the first prompt's entry.
+    const second = await handlers.get("before_agent_start")?.(
+      { prompt: "p2", systemPrompt: "BASE" },
+      makeCtx(),
+    ) as { systemPrompt: string };
+    expect(second.systemPrompt).toBe("BASE\nCTX-2");
+    expect(calls).toBe(2);
   });
 
   test("disables the provider after 3 consecutive errors (delegated to ProviderBridge)", async () => {

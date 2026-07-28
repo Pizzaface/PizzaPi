@@ -134,19 +134,31 @@ export function wrapProviderAsExtension(
     });
 
     pi.on("session_shutdown", async (event, ctx) => {
-      if (bridge && isLifecycleHook(provider)) {
-        const sessionId = ctx.sessionManager?.getSessionFile?.() ?? "unknown";
-        await bridge.onSessionShutdown(
-          { reason: event.reason, targetSessionFile: event.targetSessionFile },
-          makeProviderContext(ctx, sessionId, timeoutMs),
-        );
+      // Guard on active state: a shutdown before any session_start, or two
+      // shutdowns in a row, must be a no-op — nothing to notify or dispose.
+      if (!initialized && !bridge) return;
+      try {
+        if (bridge && isLifecycleHook(provider)) {
+          const sessionId = ctx.sessionManager?.getSessionFile?.() ?? "unknown";
+          await bridge.onSessionShutdown(
+            { reason: event.reason, targetSessionFile: event.targetSessionFile },
+            makeProviderContext(ctx, sessionId, timeoutMs),
+          );
+        }
+        // NOTE: onSessionClose is not called here — see module doc comment above.
+        if (initialized) {
+          await provider.dispose();
+        }
+      } finally {
+        // Reset lifecycle state even if onSessionShutdown/dispose() throws —
+        // mirrors production's defensive cleanup (extension.ts session_shutdown):
+        // a failed dispose must never leave stale state for the next session to
+        // skip init() or reuse a disabled/error-laden bridge.
+        initialized = false;
+        // Drop the bridge so a new session_start builds a fresh one — error
+        // counters and disabled-provider state must not leak across sessions.
+        bridge = null;
       }
-      // NOTE: onSessionClose is not called here — see module doc comment above.
-      await provider.dispose();
-      initialized = false;
-      // Drop the bridge so a new session_start builds a fresh one — error
-      // counters and disabled-provider state must not leak across sessions.
-      bridge = null;
     });
   };
 }
