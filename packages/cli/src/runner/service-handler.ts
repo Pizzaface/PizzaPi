@@ -24,6 +24,12 @@ export interface ServiceHandler {
     dispose(): void;
 
     /**
+     * Clean up any state tied to a specific session when that session ends.
+     * Optional — services that don't manage per-session runtime state can skip it.
+     */
+    handleSessionEnded?(sessionId: string): void;
+
+    /**
      * Reconcile in-memory subscription state against a full snapshot from the server.
      * Called after runner reconnection with the subset of subscriptions relevant to
      * this service's trigger types. Services that manage runtime state per subscription

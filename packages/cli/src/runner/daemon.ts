@@ -442,11 +442,10 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
         } else {
             registry.register(new ProcessService((sessionId) => runningSessions.get(sessionId)?.child?.pid ?? null));
         }
-        const cleanupGitSessionState = (sessionId: string) => {
-            const gitService = registry.get("git");
-            if (!gitService) return;
-            const maybeGitService = gitService as GitService & { handleSessionEnded?: (id: string) => void };
-            maybeGitService.handleSessionEnded?.(sessionId);
+        const cleanupSessionServices = (sessionId: string) => {
+            for (const handler of registry.getAll()) {
+                handler.handleSessionEnded?.(sessionId);
+            }
         };
         const sessionCloseMetadata = new Map<string, SessionCloseMetadata>();
         const setSessionCloseMetadata = (sessionId: string, metadata: Omit<SessionCloseMetadata, "updatedAt">) => {
@@ -1400,7 +1399,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                 runningSessions.delete(sessionId);
                 endedSessionIds.set(sessionId, Date.now());
                 await notifyProviderSessionClose(sessionId, "close", entry.sessionFile);
-                cleanupGitSessionState(sessionId);
+                cleanupSessionServices(sessionId);
                 sessionCloseMetadata.delete(sessionId);
                 logInfo(`killed session ${sessionId}${entry.adopted ? " (adopted)" : ""}`);
                 socket.emit("session_killed", { sessionId });
@@ -1467,7 +1466,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                 );
             }
 
-            cleanupGitSessionState(sessionId);
+            cleanupSessionServices(sessionId);
             if (shouldNotifyProviderClose) sessionCloseMetadata.delete(sessionId);
 
             // Clean up persisted attachments.  For spawned sessions child.on("exit")
