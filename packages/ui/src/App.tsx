@@ -76,6 +76,7 @@ import { useRunnerServices, attachServiceAnnounceListener, seedServiceCache, set
 import { useRunnerData } from "@/hooks/useRunnerData";
 import { SigilProvider } from "@/components/sigils/SigilContext";
 import { PizzaPiNavProvider, type PizzaPiNavActions } from "@/components/sigils/PizzaPiNavContext";
+import { resolveFilePath } from "@/components/file-explorer/utils";
 import { ServicePanelButtons, ServicePanelOverflowItems, useServicePanelState, useVisibleServicePanels } from "@/components/service-panels/ServicePanels";
 import { SERVICE_PANELS } from "@/components/service-panels/registry";
 import { DynamicLucideIcon } from "@/components/service-panels/lucide-icon";
@@ -4456,10 +4457,22 @@ export function App() {
     handleToggleServicePanel(serviceId, undefined, undefined, override);
   }, [buttonPositions.positions, activeServicePanels, handleToggleServicePanel]);
 
+  // File sigils → open the file in the file explorer panel.
+  const [fileToOpen, setFileToOpen] = React.useState<{ path: string } | null>(null);
+  const handleOpenFileInExplorer = React.useCallback((path: string) => {
+    const cwd = activeSessionInfo?.cwd;
+    if (!cwd || !activeSessionInfo?.runnerId) return;
+    const abs = resolveFilePath(cwd, path);
+    setFileToOpen({ path: abs });
+    setShowFileExplorer(true);
+    handleCombinedTabChange("files");
+  }, [activeSessionInfo?.cwd, activeSessionInfo?.runnerId, setShowFileExplorer, handleCombinedTabChange]);
+
   const pizzaPiNavActions = React.useMemo<PizzaPiNavActions>(() => ({
     toggleServicePanel: handleToggleServicePanel,
     setActiveSessionId: (sessionId: string) => handleOpenSession(sessionId),
-  }), [handleToggleServicePanel, handleOpenSession]);
+    openFile: handleOpenFileInExplorer,
+  }), [handleToggleServicePanel, handleOpenSession, handleOpenFileInExplorer]);
 
   const terminalPanelTab = React.useMemo<CombinedPanelTab | null>(() => showTerminal ? {
     id: "terminal",
@@ -4505,10 +4518,11 @@ export function App() {
           runnerId={activeSessionInfo.runnerId}
           cwd={activeSessionInfo.cwd}
           className="h-full"
+          openFile={fileToOpen}
         />
       </Suspense>
     ),
-  } : null, [showFileExplorer, activeSessionInfo?.runnerId, activeSessionInfo?.cwd, startPanelDragWith, handleFilesPositionChange]);
+  } : null, [showFileExplorer, activeSessionInfo?.runnerId, activeSessionInfo?.cwd, startPanelDragWith, handleFilesPositionChange, fileToOpen]);
 
   const gitPanelTab = React.useMemo<CombinedPanelTab | null>(() => (showGit && activeSessionInfo?.runnerId && activeSessionInfo?.cwd) ? {
     id: "git",

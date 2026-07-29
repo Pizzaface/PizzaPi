@@ -128,10 +128,22 @@ export function gitStatusLabel(status: string): { label: string; color: string; 
  *  sits under the current working directory. Falls back to the original path
  *  if it is already relative or outside the cwd.
  */
+/**
+ * Resolve a possibly-relative file path against a runner cwd.
+ * Handles POSIX and Windows (drive-letter, UNC) absolute paths and separators.
+ */
+export function resolveFilePath(cwd: string, path: string): string {
+  // Absolute: POSIX (/x), Windows drive (C:\x or C:/x), or UNC (\\host\x)
+  if (/^(\/|[A-Za-z]:[\\/]|\\\\)/.test(path)) return path;
+  const sep = cwd.includes("\\") ? "\\" : "/";
+  return `${cwd.replace(/[\\/]+$/, "")}${sep}${path.replace(/^[\\/]+/, "")}`;
+}
+
 export function repoRelativePath(cwd: string, filePath: string): string {
   if (!cwd || !filePath) return filePath;
-  const withSlash = cwd.endsWith("/") ? cwd : `${cwd}/`;
   if (filePath === cwd) return "";
+  const sep = cwd.includes("\\") ? "\\" : "/";
+  const withSlash = /[\\/]$/.test(cwd) ? cwd : `${cwd}${sep}`;
   if (filePath.startsWith(withSlash)) {
     return filePath.slice(withSlash.length);
   }
