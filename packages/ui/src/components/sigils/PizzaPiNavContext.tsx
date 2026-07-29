@@ -6,6 +6,7 @@
  * - pizzapi://panel/{serviceId}?key=val#frag       — open panel, forward query + hash to iframe
  * - pizzapi://session/{sessionId}                  — navigate to a session
  * - pizzapi://session/{sessionId}?tab=triggers     — navigate with query params
+ * - pizzapi://file/{encodedPath}                    — open a file in the file explorer
  *
  * Query parameters and hash fragments are preserved and passed to the
  * action handlers so they can forward them downstream (e.g. to panel iframes).
@@ -17,6 +18,8 @@ const SCHEME = "pizzapi://";
 export interface PizzaPiNavActions {
   toggleServicePanel: (serviceId: string, query?: string, fragment?: string) => void;
   setActiveSessionId: (sessionId: string, query?: string, fragment?: string) => void;
+  /** Open a file in the file explorer panel. Path is decoded before this is called. */
+  openFile?: (path: string) => void;
 }
 
 type NavigateFn = (url: string) => boolean;
@@ -96,6 +99,17 @@ export function PizzaPiNavProvider({ actions, children }: PizzaPiNavProviderProp
         case "session":
           if (id) {
             actions.setActiveSessionId(id, query, fragment);
+            return true;
+          }
+          return false;
+
+        case "file":
+          if (id && actions.openFile) {
+            try {
+              actions.openFile(decodeURIComponent(id));
+            } catch {
+              actions.openFile(id);
+            }
             return true;
           }
           return false;
