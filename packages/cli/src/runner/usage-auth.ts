@@ -39,11 +39,22 @@ export function getAnthropicKeychainToken(now = Date.now()): string | null {
 }
 
 /**
- * Parse Gemini quota credential from auth.json provider data.
- * Accepts the OAuth payload format used by Gemini CLI ({ token, projectId })
- * but ignores API-key credentials.
+ * Parse a Gemini quota credential out of an auth.json provider entry.
+ *
+ * Two shapes exist in the wild:
+ *  - `{ type: "oauth", access, refresh, expires }` — what a real `/login` writes.
+ *  - `{ type: "api_key", key: '{"token":...,"projectId":...}' }` — legacy wrapper.
+ *
+ * `projectId` is null for the oauth shape; `:retrieveUserQuota` resolves the
+ * caller's Code Assist project from the token when `project` is omitted, so
+ * there is nothing to look up.
+ *
+ * Read-only: an expired `access` token is returned as-is and simply 401s at the
+ * quota endpoint. ponytail: no refresh here, since refreshing would rotate
+ * credentials another process owns — add one only if usage must survive an
+ * idle provider.
  */
-export function parseGeminiQuotaCredential(raw: unknown): { token: string; projectId: string } | null {
+export function parseGeminiQuotaCredential(raw: unknown): { token: string; projectId: string | null } | null {
     if (typeof raw === "string") {
         try {
             return parseGeminiQuotaCredential(JSON.parse(raw));
@@ -53,7 +64,21 @@ export function parseGeminiQuotaCredential(raw: unknown): { token: string; proje
     }
 
     if (!isRecord(raw)) return null;
-    if (raw.type === "api_key") return null;
+
+    // OAuth credential: bearer token lives in `access`.
+    if (typeof raw.access === "string" && raw.access.trim()) {
+        const projectId = raw.projectId;
+        return {
+            token: raw.access,
+            projectId: typeof projectId === "string" && projectId.trim() ? projectId : null,
+        };
+    }
+
+    // Legacy: api_key credential whose `key` is JSON.stringify({ token, projectId }).
+    // A genuine API key (e.g. "AIza...") fails the nested parse and yields null.
+    if (raw.type === "api_key") {
+        return typeof raw.key === "string" ? parseGeminiQuotaCredential(raw.key) : null;
+    }
 
     const token = raw.token;
     const projectId = raw.projectId;

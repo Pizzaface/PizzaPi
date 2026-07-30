@@ -47,6 +47,8 @@ describe("formatProviderUsage", () => {
 
 describe("getUsageKey", () => {
     test("maps anthropic", () => expect(getUsageKey("anthropic")).toBe("anthropic"));
+    test("maps claude-subscription to anthropic", () =>
+        expect(getUsageKey("claude-subscription")).toBe("anthropic"));
     test("maps openai-codex", () => expect(getUsageKey("openai-codex")).toBe("openai-codex"));
     test("maps openai to openai-codex", () => expect(getUsageKey("openai")).toBe("openai-codex"));
     test("maps google-gemini-cli", () => expect(getUsageKey("google-gemini-cli")).toBe("google-gemini-cli"));
@@ -77,6 +79,11 @@ describe("buildUsageKeyToProviderMap", () => {
         expect(result).toEqual({ anthropic: "anthropic" });
     });
 
+    test("routes anthropic usage to claude-subscription when it is the only Claude provider", () => {
+        const result = buildUsageKeyToProviderMap(["claude-subscription", "openrouter"]);
+        expect(result).toEqual({ anthropic: "claude-subscription" });
+    });
+
     test("first display name wins when multiple map to same usage key", () => {
         // "openai" and "openai-codex" both map to "openai-codex" usage key
         const result = buildUsageKeyToProviderMap(["openai", "openai-codex"]);
@@ -102,6 +109,11 @@ describe("normalizeUsageKeys", () => {
         const raw = { "some-custom-provider": sampleData };
         const result = normalizeUsageKeys(raw, ["google"]);
         expect(result["some-custom-provider"]).toBe(sampleData);
+    });
+
+    test("re-keys anthropic usage onto claude-subscription", () => {
+        const result = normalizeUsageKeys({ anthropic: sampleData }, ["claude-subscription"]);
+        expect(result["claude-subscription"]).toBe(sampleData);
     });
 
     test("passes through anthropic unchanged", () => {

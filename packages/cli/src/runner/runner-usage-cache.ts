@@ -145,17 +145,14 @@ async function getRunnerAnthropicUsageData(opts: { force?: boolean } = {}): Prom
 
 async function fetchGeminiUsageData(): Promise<ProviderUsageData | null> {
     let token: string | undefined;
-    let projectId: string | undefined;
+    let projectId: string | null = null;
     try {
         for (const authPath of getKnownAuthPaths()) {
-            // The stored credential's `key` is JSON.stringify({ token, projectId }).
-            // Use parseGeminiQuotaCredential to validate the result — API-key
-            // credentials with an unrelated shape fail JSON.parse, so we
-            // must not short-circuit on the first truthy raw value; we need to
-            // confirm it is a valid Gemini quota credential before stopping.
-            const stored = readStoredCredential("google-gemini-cli", authPath);
-            const raw = stored?.type === "api_key" ? stored.key : undefined;
-            const cred = parseGeminiQuotaCredential(raw);
+            // parseGeminiQuotaCredential handles both the oauth credential a real
+            // /login writes and the legacy api_key wrapper. It validates the
+            // result, so we must not short-circuit on the first truthy raw value —
+            // only on the first path that yields a usable Gemini credential.
+            const cred = parseGeminiQuotaCredential(readStoredCredential("google-gemini-cli", authPath));
             if (cred) {
                 token = cred.token;
                 projectId = cred.projectId;
@@ -166,17 +163,23 @@ async function fetchGeminiUsageData(): Promise<ProviderUsageData | null> {
         logWarn(`failed to get Google credentials: ${err?.message ?? String(err)}`);
         return null;
     }
-    if (!token || !projectId) return null;
+    if (!token) return null;
     try {
         const endpoint = process.env["CODE_ASSIST_ENDPOINT"] ?? "https://cloudcode-pa.googleapis.com";
         const version = process.env["CODE_ASSIST_API_VERSION"] ?? "v1internal";
         const res = await fetch(`${endpoint}/${version}:retrieveUserQuota`, {
             method: "POST",
             headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-            body: JSON.stringify({ project: projectId }),
+            // `project` is optional — the endpoint resolves the caller's Code Assist
+            // project from the token, so no :loadCodeAssist round-trip is needed.
+            body: JSON.stringify(projectId ? { project: projectId } : {}),
         });
         if (!res.ok) {
-            if (res.status === 403) return { windows: [], status: "unknown", errorCode: 403 };
+            // 401 = expired/invalid token, 403 = no access. Report both rather than
+            // dropping Gemini from the usage list with no explanation.
+            if (res.status === 401 || res.status === 403) {
+                return { windows: [], status: "unknown", errorCode: res.status };
+            }
             return null;
         }
         const raw = (await res.json()) as {

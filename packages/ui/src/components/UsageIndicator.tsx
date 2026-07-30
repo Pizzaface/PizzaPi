@@ -6,12 +6,13 @@ import { ProviderIcon } from "@/components/ProviderIcon";
 import { cn } from "@/lib/utils";
 import {
     providerUsageDisplay,
+    activeWindows,
     type UsageWindow,
     type ProviderUsageData,
     type ProviderUsageMap,
 } from "@/lib/provider-usage";
 
-export { providerUsageDisplay, type UsageWindow, type ProviderUsageData, type ProviderUsageMap };
+export { providerUsageDisplay, activeWindows, type UsageWindow, type ProviderUsageData, type ProviderUsageMap };
 
 // Auth source types relayed from the CLI
 export type AuthSource = "oauth" | "env" | "auth.json" | "unknown" | null;
@@ -20,6 +21,7 @@ export type AuthSource = "oauth" | "env" | "auth.json" | "unknown" | null;
 
 const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
     anthropic: "Anthropic",
+    "claude-subscription": "Anthropic",
     "openai-codex": "OpenAI Codex",
     openai: "OpenAI",
     google: "Google",
@@ -88,14 +90,16 @@ function ProviderSection({ providerId, data }: { providerId: string; data: Provi
         );
     }
 
-    if (data.windows.length === 0) return null;
+    // Expired windows have already rolled over; their cached utilization is stale.
+    const windows = activeWindows(data.windows);
+    if (windows.length === 0) return null;
     return (
         <div className="flex flex-col gap-2">
             <div className="flex items-center gap-1.5">
                 <ProviderIcon provider={providerId} className="size-3 flex-shrink-0" />
                 <span className="text-[0.7rem] font-semibold text-foreground">{displayName}</span>
             </div>
-            {data.windows.map((w) => (
+            {windows.map((w) => (
                 <UsageBar key={w.label} window={w} />
             ))}
         </div>
@@ -116,9 +120,11 @@ function ProviderBadge({
     data: ProviderUsageData;
 }) {
     const display = providerUsageDisplay(data);
+    // Which window the number came from — "43%" alone reads as the whole subscription.
+    const governingWindow = display.kind === "usage" ? display.label : null;
     const label = display.kind === "unknown"
         ? `${getProviderDisplayName(providerId)} subscription usage (unknown)`
-        : `${getProviderDisplayName(providerId)} subscription usage (${display.remainingPct.toFixed(0)}% remaining)`;
+        : `${getProviderDisplayName(providerId)} subscription usage (${display.remainingPct.toFixed(0)}% remaining${governingWindow ? `, ${governingWindow} window` : ""})`;
 
     // hovered: controlled by HoverCard's internal hover logic via onOpenChange
     // locked: toggled on click; cleared when pointer leaves while not hovering
@@ -131,6 +137,7 @@ function ProviderBadge({
                 <button
                     className="flex items-center gap-1.5 text-[0.65rem] leading-none sm:text-xs text-muted-foreground hover:text-foreground transition-colors cursor-default select-none"
                     aria-label={label}
+                    title={label}
                     type="button"
                     onClick={() => setLocked((l) => !l)}
                 >
@@ -140,6 +147,7 @@ function ProviderBadge({
                         display.kind === "unknown" ? "bg-slate-400 dark:bg-slate-500" : dotColorClass(display.usedPct),
                     )} />
                     <span className="tabular-nums">{display.kind === "unknown" ? "UNKNOWN" : `${display.remainingPct.toFixed(0)}%`}</span>
+                    {governingWindow && <span className="text-muted-foreground/70">({governingWindow})</span>}
                 </button>
             </HoverCardTrigger>
             <HoverCardContent
@@ -185,7 +193,7 @@ export interface UsageIndicatorProps {
 
 export function UsageIndicator({ usage, authSource: rawAuthSource, activeProvider, onRefresh, refreshing = false }: UsageIndicatorProps) {
     const entries = React.useMemo(
-        () => Object.entries(usage ?? {}).filter(([, d]) => d.status === "unknown" || d.windows.length > 0),
+        () => Object.entries(usage ?? {}).filter(([, d]) => d.status === "unknown" || activeWindows(d.windows).length > 0),
         [usage],
     );
 

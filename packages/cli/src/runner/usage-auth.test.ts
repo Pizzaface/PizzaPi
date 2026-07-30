@@ -69,12 +69,35 @@ describe("parseGeminiQuotaCredential", () => {
         });
     });
 
-    test("ignores api_key credentials", () => {
+    test("unwraps the legacy api_key wrapper around a quota payload", () => {
+        expect(
+            parseGeminiQuotaCredential({ type: "api_key", key: '{"token":"tok","projectId":"proj"}' }),
+        ).toEqual({ token: "tok", projectId: "proj" });
+    });
+
+    test("ignores a real api_key credential", () => {
         expect(parseGeminiQuotaCredential({ type: "api_key", key: "AIza..." })).toBeNull();
+    });
+
+    test("accepts the oauth credential a real /login writes", () => {
+        expect(
+            parseGeminiQuotaCredential({ type: "oauth", access: "ya29.token", refresh: "1//r", expires: 123 }),
+        ).toEqual({ token: "ya29.token", projectId: null });
+    });
+
+    test("keeps a projectId alongside an oauth credential when present", () => {
+        expect(
+            parseGeminiQuotaCredential({ type: "oauth", access: "ya29.token", projectId: "proj" }),
+        ).toEqual({ token: "ya29.token", projectId: "proj" });
+    });
+
+    test("returns null for a blank oauth access token", () => {
+        expect(parseGeminiQuotaCredential({ type: "oauth", access: "   " })).toBeNull();
     });
 
     test("returns null for invalid values", () => {
         expect(parseGeminiQuotaCredential("AIza-api-key")).toBeNull();
         expect(parseGeminiQuotaCredential('{"token":"tok"}')).toBeNull();
+        expect(parseGeminiQuotaCredential(null)).toBeNull();
     });
 });
