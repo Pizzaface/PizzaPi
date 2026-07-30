@@ -368,12 +368,20 @@ export function registerLifecycleHandlers(deps: LifecycleHandlersDeps): void {
 
     pi.on("agent_end", (event: any, ctx: any) => {
         rctx.isAgentActive = false;
-        rctx.forwardEvent(event);
+        // pi's agent_end.messages contains only THIS run's messages (prompts +
+        // new assistant/tool messages), not the full transcript. The web UI and
+        // the server's snapshot cache both treat agent_end.messages as a full
+        // snapshot, so forwarding it wholesale truncates the visible transcript
+        // to the latest run. Strip messages and emit a real full snapshot
+        // (chunk-aware) instead — both consumers skip message-less agent_end.
+        const { messages: runMessages, ...eventWithoutMessages } = event;
+        rctx.forwardEvent(eventWithoutMessages);
+        emitSessionActive(rctx);
         rctx.forwardEvent(rctx.buildHeartbeat());
         // Defer completion/error reporting to agent_settled: pi fires agent_end
         // after every attempt, including ones it will auto-retry. agent_settled
         // fires once, only after retries/compaction/continuations are exhausted.
-        settledMessages = (event as any).messages ?? [];
+        settledMessages = runMessages ?? [];
     });
 
     pi.on("agent_settled", (_event: any, ctx: any) => {
