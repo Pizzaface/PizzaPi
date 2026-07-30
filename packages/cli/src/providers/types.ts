@@ -33,6 +33,13 @@ export interface ProviderContext {
   promptId?: string;
   turnId?: number;
   isFirstTurn?: boolean;
+  /**
+   * Absolute epoch-ms deadline shared across a whole hook invocation that may
+   * loop over multiple providers (e.g. onSessionClose). When set, it caps
+   * `timeoutMs` per provider call so N providers can't add up to N *
+   * timeoutMs — the whole loop is bounded by this one deadline.
+   */
+  deadline?: number;
 }
 
 // ── Context Injection ─────────────────────────────────────────

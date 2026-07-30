@@ -14,8 +14,14 @@ let bridge: ProviderBridge | null = null;
 let providerInstances: Array<{ id: string; dispose(): Promise<void> | void }> = [];
 /** Last-known session identity for close-time context (updated on session_start/turn_end). */
 let currentSessionInfo: { sessionFile?: string; cwd?: string } | null = null;
-/** Run-once guard so concurrent shutdown paths (signal + shutdownHandler) fire close once. */
-let sessionCloseCompleted = false;
+/**
+ * Cached in-flight/completed close promise so concurrent shutdown paths
+ * (signal handler + extension shutdownHandler) share one close instead of
+ * racing: the second caller awaits the SAME promise rather than seeing a
+ * "completed" flag and returning early while the first close is still
+ * running (which let callers proceed to process.exit() mid-close).
+ */
+let sessionClosePromise: Promise<SessionCloseResult | null> | null = null;
 /** Current prompt boundary ID — generated once per user prompt. */
 let currentPromptId: string | null = null;
 /** Turn counter within the current prompt. Reset on new prompt. */
@@ -56,26 +62,45 @@ function makeProviderContext(
  * so a daemon-side import of this module sees `null` (that cross-process
  * call was a guaranteed no-op — see idea jg017xa4).
  *
- * Idempotent: only the first invocation runs providers; later calls return
- * null. Bounded: default 2.5s per provider so the worker stays inside the
- * daemon's SIGTERM→SIGKILL escalation window.
+ * Idempotent: only the first invocation runs providers; concurrent/later
+ * calls await and share that same invocation's result rather than racing
+ * ahead (see sessionClosePromise). Bounded: default 2.5s overall — one
+ * deadline for the whole (possibly multi-provider) close, not per provider
+ * — so the worker stays inside the daemon's SIGTERM→SIGKILL escalation
+ * window.
  */
 export async function runProviderSessionClose(
   reason: "close" | "error" | "complete",
   opts?: { timeoutMs?: number },
 ): Promise<SessionCloseResult | null> {
-  if (sessionCloseCompleted) return null;
-  sessionCloseCompleted = true;
+  if (sessionClosePromise) return sessionClosePromise;
+  sessionClosePromise = doRunProviderSessionClose(reason, opts);
+  return sessionClosePromise;
+}
+
+async function doRunProviderSessionClose(
+  reason: "close" | "error" | "complete",
+  opts?: { timeoutMs?: number },
+): Promise<SessionCloseResult | null> {
   if (!bridge) return null;
   const sessionId = process.env.PIZZAPI_SESSION_ID ?? process.env.SESSION_ID ?? "unknown";
   const sessionFile = currentSessionInfo?.sessionFile ?? sessionId;
   const cwd = currentSessionInfo?.cwd ?? process.cwd();
+  const timeoutMs = opts?.timeoutMs ?? 2500;
+  const deadline = Date.now() + timeoutMs;
+  // Overall deadline is enforced twice: the bridge's own Promise.race stops
+  // WAITING on a slow provider, but a well-behaved hook can also watch
+  // ctx.signal and cancel its own in-flight work — abort it here so hooks
+  // that honor AbortSignal get a chance to clean up rather than being cut off.
+  const controller = new AbortController();
+  const abortTimer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const result = await bridge.onSessionClose(
       { reason, sessionFile },
       {
-        signal: new AbortController().signal,
-        timeoutMs: opts?.timeoutMs ?? 2500,
+        signal: controller.signal,
+        timeoutMs,
+        deadline,
         sessionId,
         sessionFile,
         cwd,
@@ -88,13 +113,15 @@ export async function runProviderSessionClose(
   } catch (err) {
     log.error("Provider close failed:", err);
     return null;
+  } finally {
+    clearTimeout(abortTimer);
   }
 }
 
 /** Test-only: inject a bridge without running provider discovery. */
 export function __setBridgeForTest(b: ProviderBridge | null): void {
   bridge = b;
-  sessionCloseCompleted = false;
+  sessionClosePromise = null;
 }
 
 export async function providerExtension(pi: ExtensionAPI) {
@@ -135,7 +162,7 @@ export async function providerExtension(pi: ExtensionAPI) {
       sessionFile: ctx.sessionManager?.getSessionFile?.() ?? undefined,
       cwd: ctx.cwd,
     };
-    sessionCloseCompleted = false;
+    sessionClosePromise = null;
 
     if (enabledProviders.length === 0) {
       bridge = null;

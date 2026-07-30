@@ -152,12 +152,21 @@ export function initServiceHandlers(
 }
 
 /**
+ * Grace window for a worker's graceful shutdown before SIGKILL, on every
+ * escalation path (process-group signal, single-child SIGTERM/message
+ * fallback). Must cover the worker's own shutdown budget: provider close
+ * (<=2.5s, one overall deadline — see runProviderSessionClose) + sandbox
+ * cleanup (<=5s) = 7.5s worst case.
+ */
+const SESSION_SHUTDOWN_GRACE_MS = 8_000;
+
+/**
  * Escalate a SIGTERM to SIGKILL after `timeoutMs` if the child has not exited.
  * The timer is cleared automatically when the child exits.
  * ponytail: child-process escalation is hard to unit-test without real spawned
  * processes; covered by the real SIGTERM/SIGKILL behavior in session-spawner.
  */
-function escalateToSigkill(child: ChildProcess, label: string, timeoutMs = 5_000): void {
+function escalateToSigkill(child: ChildProcess, label: string, timeoutMs = SESSION_SHUTDOWN_GRACE_MS): void {
     const timer = setTimeout(() => {
         try {
             if (!child.killed && child.exitCode === null) {
@@ -1335,14 +1344,17 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                         // plain SIGTERM elsewhere) if group signaling fails.
                         const child = entry.child;
                         if (!killSessionProcessGroup(child.pid)) {
-                            requestChildShutdown(child, (timeoutMs) =>
-                                logWarn(`[daemon] session ${sessionId} did not exit after ${timeoutMs}ms; force-killing`),
+                            // Same grace window as the process-group path below —
+                            // the default 5s in process-kill.ts's signature is too
+                            // short for provider close + sandbox cleanup.
+                            requestChildShutdown(
+                                child,
+                                (timeoutMs) =>
+                                    logWarn(`[daemon] session ${sessionId} did not exit after ${timeoutMs}ms; force-killing`),
+                                SESSION_SHUTDOWN_GRACE_MS,
                             );
                         } else {
-                            // 8s (not the 5s default): the worker's shutdown runs
-                            // provider close (≤2.5s) + sandbox cleanup (≤5s) before
-                            // exiting — give it room to finish before SIGKILL.
-                            escalateToSigkill(child, `session ${sessionId}`, 8_000);
+                            escalateToSigkill(child, `session ${sessionId}`, SESSION_SHUTDOWN_GRACE_MS);
                         }
                     } catch {}
                 } else if (entry.adopted) {
