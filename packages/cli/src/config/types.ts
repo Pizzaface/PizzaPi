@@ -442,9 +442,9 @@ export interface PizzaPiConfig {
 
     /** Subagent execution settings */
     subagent?: {
-        /** Max number of parallel tasks in a single subagent call. Default: 8. */
+        /** Max parallel tasks per call and active agent slots across background calls. Default: 8. */
         maxParallelTasks?: number;
-        /** Max concurrent agent sessions running simultaneously. Default: 4. */
+        /** Max concurrent agent sessions within one parallel call. Default: 4. */
         maxConcurrency?: number;
     };
 

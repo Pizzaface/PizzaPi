@@ -212,9 +212,11 @@ describe("SubagentDetails type exports", () => {
             agentScope: "user",
             projectAgentsDir: null,
             results: [],
+            background: { taskId: "task-1", status: "started" },
         };
         expect(details.mode).toBe("single");
         expect(details.results).toEqual([]);
+        expect(details.background?.status).toBe("started");
     });
 
     test("UsageStats interface shape", () => {

@@ -12,6 +12,7 @@ import { describe, test, expect, mock } from "bun:test";
 import { registerLifecycleHandlers, type LifecycleHandlerState } from "./lifecycle-handlers.js";
 import { createFollowUpGrace } from "./followup-grace.js";
 import type { RelayContext } from "../remote-types.js";
+import { reserveSubagentSlots } from "../subagent/background-state.js";
 
 function makeState(): LifecycleHandlerState {
     return {
@@ -113,6 +114,48 @@ describe("agent_end — session_error / session_complete ordering", () => {
 
         agentEnd({ messages: [] }, agentEndCtx);
         agentSettled({}, agentEndCtx);
+
+        expect(emitted).toEqual(["session_complete"]);
+    });
+
+    test("defers session_complete until background subagents settle", () => {
+        const release = reserveSubagentSlots(1, 1)!;
+        const { agentEnd, agentSettled, emitted } = setup(null);
+
+        agentEnd({ messages: [] }, agentEndCtx);
+        agentSettled({}, agentEndCtx);
+        expect(emitted).toEqual([]);
+
+        release();
+        expect(emitted).toEqual(["session_complete"]);
+    });
+
+    test("does not report deferred completion after a result starts a follow-up turn", () => {
+        const release = reserveSubagentSlots(1, 1)!;
+        const { agentEnd, agentSettled, emitted } = setup(null);
+
+        agentEnd({ messages: [] }, agentEndCtx);
+        agentSettled({}, agentEndCtx);
+        release(true);
+        expect(emitted).toEqual([]);
+
+        agentEnd({ messages: [] }, agentEndCtx);
+        agentSettled({}, agentEndCtx);
+        expect(emitted).toEqual(["session_complete"]);
+    });
+
+    test("replays settlement when the last of concurrent subagents does not deliver", () => {
+        const releaseA = reserveSubagentSlots(1, 2)!;
+        const releaseB = reserveSubagentSlots(1, 2)!;
+        const { agentEnd, agentSettled, emitted } = setup(null);
+
+        agentEnd({ messages: [] }, agentEndCtx);
+        agentSettled({}, agentEndCtx);
+        releaseA(true);
+
+        agentEnd({ messages: [] }, agentEndCtx);
+        agentSettled({}, agentEndCtx);
+        releaseB(false);
 
         expect(emitted).toEqual(["session_complete"]);
     });

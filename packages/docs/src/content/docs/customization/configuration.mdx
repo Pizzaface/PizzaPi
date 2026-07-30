@@ -159,8 +159,8 @@ You can also override any setting with **environment variables**.
 | `sandbox.filesystem.denyWrite` | `string[]` | *merged with preset* | Additional paths blocked from writing. |
 | `slowStartupWarning` | `boolean` | `true` | Show warnings when startup takes longer than expected (slow MCP servers, etc.). |
 | `disabledRunnerServices` | `string[]` | `[]` | Runner service IDs to skip. Built-in services: `"terminal"`, `"file-explorer"`, `"git"`, `"tunnel"`, `"time"`. Plugin services use the id declared in their manifest. |
-| `subagent.maxParallelTasks` | `number` | `8` | Max tasks in a single parallel subagent call. **Global config only.** |
-| `subagent.maxConcurrency` | `number` | `4` | Max concurrent agent sessions running simultaneously. **Global config only.** |
+| `subagent.maxParallelTasks` | `number` | `8` | Max parallel tasks per call and active agent slots across background calls. **Global config only.** |
+| `subagent.maxConcurrency` | `number` | `4` | Max concurrent agent sessions within one parallel call. **Global config only.** |
 | `goal.evaluatorModel` | `string` | cheapest available authenticated text model | Model (`provider:modelId` or `modelId`) used by the `/goal` LLM evaluator. |
 | `goal.evaluatorMaxTokens` | `number` | `512` | Maximum output tokens for each `/goal` evaluator call. |
 | `goal.evaluateEveryNTurns` | `number` | `3` | Default cadence for the LLM evaluator. `1` = every turn. Ignored by the keyword evaluator. |
