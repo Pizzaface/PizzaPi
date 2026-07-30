@@ -6,14 +6,25 @@ every `bun install` — no postinstall script is needed.
 
 ## @earendil-works/pi-agent-core@0.82.1
 
-Same runtime fix as 0.80.6, ported forward unchanged — neither patched file
-(`dist/agent.js`, `dist/agent-loop.js`) changed upstream between 0.80.6 and
-0.82.0.
+Refreshes the agent's system prompt and tool list before every assistant
+response, not just at loop start. `dist/agent.js` exposes the current
+`systemPrompt`/`tools` off the context snapshot (`__getLatestSystemPrompt`,
+`__getLatestTools`); `dist/agent-loop.js` calls them right before each
+`streamAssistantResponse`. Without this, a tool that loads a deferred tool or
+updates the prompt mid-turn (e.g. `search_tools`) wouldn't take effect until
+the *next* user turn. See the "pi-agent-core dynamic tool refresh" tests in
+`packages/cli/src/patches.test.ts`.
 
 ## @earendil-works/pi-tui@0.82.1
 
-Same Windows console lifecycle patch as 0.80.6, ported forward unchanged —
-`dist/terminal.js` didn't change upstream between 0.80.6 and 0.82.0.
+Adds a Windows console lifecycle to `dist/terminal.js`:
+`createWindowsConsoleLifecycle()` enables VT output processing and switches
+the input/output code pages to UTF-8 (via `koffi` calls into
+`kernel32.dll`) when `ProcessTerminal.start()` runs, publishes the result as
+`globalThis.__PI_WINDOWS_CONSOLE_CAPS__`, and restores the original console
+mode/code pages on `stop()`. This fixes garbled Unicode/ANSI rendering in
+Windows terminals; it's a no-op (best-effort, swallows failures) on other
+platforms. See `packages/cli/src/patches.test.ts`.
 
 ## @earendil-works/pi-ai@0.82.1
 
