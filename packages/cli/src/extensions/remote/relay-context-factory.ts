@@ -51,7 +51,16 @@ export function createRelayContext(
 ): RelayContext {
     const rctx: RelayContext = {
         pi,
-        sessionHost: getRemoteSessionHost(),
+        // Read live rather than snapshot: this factory runs during
+        // loader.reload() (worker.ts), before the worker constructs and
+        // installs its SessionHost via setRemoteSessionHost(). A one-time
+        // snapshot here would freeze sessionHost at null for the process
+        // lifetime. Reading through the module ref on every access keeps it
+        // in sync however the host's install ordering shakes out (worker or
+        // interactive CLI).
+        get sessionHost() {
+            return getRemoteSessionHost();
+        },
         relay: null,
         sioSocket: null,
         latestCtx: null,
