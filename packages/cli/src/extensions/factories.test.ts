@@ -30,6 +30,7 @@ import { sessionAnalysisExtension } from "./session-analysis.js";
 import { providerRequestLogExtension } from "./provider-request-log.js";
 import { sessionProcessesExtension } from "./session-processes.js";
 import { backgroundBashExtension } from "./background-bash.js";
+import { queueFlushExtension } from "./queue-flush.js";
 
 const CORE_EXTENSIONS: ExtensionFactory[] = [
     providerRequestLogExtension,
@@ -45,6 +46,7 @@ const CORE_EXTENSIONS: ExtensionFactory[] = [
     setSessionNameExtension,
     currentTimeExtension,
     backgroundBashExtension,
+    queueFlushExtension,
     updateTodoExtension,
     memoryExtension,
     spawnSessionExtension,

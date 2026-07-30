@@ -28,6 +28,8 @@ import { loadConfig } from "../config.js";
 
 const TAIL_BYTES = 4000;
 const DEFAULT_BACKGROUND_AFTER_SECONDS = 15;
+const DELIVERY_RETRY_MS = 10_000;
+const MAX_DELIVERY_ATTEMPTS = 3;
 
 /** Seconds a bash call streams in the foreground before it auto-backgrounds. 0 = immediate. */
 export function backgroundAfterSeconds(): number {
@@ -163,16 +165,59 @@ let nextRunInBackground = false;
 let nextTitle = "";
 
 export const backgroundBashExtension: ExtensionFactory = (pi) => {
+    // Exit notifications that were sent but haven't shown up in the transcript.
+    // Two ways a completion silently vanishes and leaves the session waiting
+    // forever: queued microseconds after the agent loop drained its queues, or
+    // sendMessage (fire-and-forget) throwing while the agent is
+    // between runs. Both are invisible to us, so re-send until a message_start
+    // proves it landed.
+    const undelivered = new Map<string, { message: any; attempts: number }>();
+    let streaming = false;
+    let sweeper: ReturnType<typeof setInterval> | undefined;
+
+    const send = (deliveryId: string, entry: { message: any; attempts: number }) => {
+        entry.attempts += 1;
+        undelivered.set(deliveryId, entry);
+        if (!sweeper) {
+            sweeper = setInterval(sweep, DELIVERY_RETRY_MS);
+            sweeper.unref?.();
+        }
+        // Steer while streaming so a long turn hears about the exit now instead of
+        // at the end of it; when idle the message has to start a turn itself.
+        pi.sendMessage(entry.message, (streaming ? { deliverAs: "steer" } : { triggerTurn: true }) as any);
+    };
+
+    function sweep(): void {
+        if (streaming) return;
+        for (const [deliveryId, entry] of undelivered) {
+            // ponytail: give up after MAX_DELIVERY_ATTEMPTS rather than risk a resend loop.
+            if (entry.attempts >= MAX_DELIVERY_ATTEMPTS) undelivered.delete(deliveryId);
+            else send(deliveryId, entry);
+        }
+        if (undelivered.size === 0 && sweeper) {
+            clearInterval(sweeper);
+            sweeper = undefined;
+        }
+    }
+
+    pi.on("agent_start" as any, () => { streaming = true; });
+    pi.on("agent_settled" as any, () => { streaming = false; sweep(); });
+    pi.on("message_start" as any, (event: any) => {
+        const deliveryId = event?.message?.details?.deliveryId;
+        if (deliveryId) undelivered.delete(deliveryId);
+    });
+
     const notifyExit = (title: string, command: string, code: number | null, sig: string | null, ms: number, logPath: string, pid: number | undefined) => {
-        pi.sendMessage(
-            {
+        const deliveryId = `bg-${pid}-${Date.now()}`;
+        send(deliveryId, {
+            attempts: 0,
+            message: {
                 customType: "background-bash",
                 content: formatCompletion(title, code, sig, ms, logPath),
                 display: true,
-                details: { title, command, pid, exitCode: code, signal: sig, logPath },
-            } as any,
-            { deliverAs: "followUp", triggerTurn: true } as any,
-        );
+                details: { title, command, pid, exitCode: code, signal: sig, logPath, deliveryId },
+            },
+        });
     };
 
     const exec = async (
