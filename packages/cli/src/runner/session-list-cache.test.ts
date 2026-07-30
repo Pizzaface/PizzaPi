@@ -10,7 +10,7 @@ process.env.HOME = fakeHome;
 mkdirSync(join(fakeHome, ".pizzapi"), { recursive: true });
 
 // Dynamic import after HOME override
-const { listSessionsCached, invalidateSessionListCache, flushSessionListCache, findSessionPathById } = await import("./session-list-cache.js");
+const { listSessionsCached, invalidateSessionListCache, flushSessionListCache, findSessionPathById, readFirstLineSync } = await import("./session-list-cache.js");
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -440,9 +440,11 @@ describe("bounded first-line read (via findSessionPathById)", () => {
         }
     });
 
-    test("bounded read: first line longer than 64KB chunk (critical alias test)", async () => {
-        // This test fails on the old code due to buffer.slice() aliasing bug
-        // Creates a header ~100KB to force multi-chunk reads, then verifies correct parsing
+    test("bounded read: first line longer than 64KB chunk reconstructs without corruption", async () => {
+        // Creates a header ~100KB to force multi-chunk reads, then verifies the
+        // *actual* readFirstLineSync output (not a bypass re-read of the file)
+        // matches byte-for-byte. A chunk-aliasing bug (reusing the read buffer
+        // without copying) would corrupt earlier chunks with later data.
         const sessionsRoot = mkdtempSync(join(tmpdir(), "slc-longheader-"));
         mkdirSync(join(sessionsRoot, "projects"), { recursive: true });
 
@@ -461,7 +463,7 @@ describe("bounded first-line read (via findSessionPathById)", () => {
                 },
             });
 
-            // Verify header is actually >64KB
+            // Verify header is actually >64KB (spans multiple chunk reads)
             expect(header.length).toBeGreaterThan(64 * 1024);
             expect(header.length).toBeLessThan(1 * 1024 * 1024);
 
@@ -473,14 +475,77 @@ describe("bounded first-line read (via findSessionPathById)", () => {
             expect(found).toBeDefined();
             expect(found).toContain("longheader.jsonl");
 
-            // Verify we can actually parse the first line correctly
-            // (this would fail if chunks were aliased)
-            const lines = readFileSync(filePath, "utf8").split("\n");
-            const parsedHeader = JSON.parse(lines[0]);
+            // Assert directly on readFirstLineSync's own return value — proves the
+            // multi-chunk reconstruction is byte-identical to the true first line,
+            // not just "JSON.parse happened to succeed on something".
+            const firstLine = readFirstLineSync(filePath);
+            expect(firstLine).toBe(header);
+            const parsedHeader = JSON.parse(firstLine!);
             expect(parsedHeader.id).toBe("long-header-test-12345");
             expect(parsedHeader.metadata.padding.length).toBe(paddingSize);
         } finally {
             rmSync(sessionsRoot, { recursive: true, force: true });
+        }
+    });
+
+    test("cap exhaustion is rejected, not mistaken for EOF (truncated/corrupt header)", () => {
+        const dir = mkdtempSync(join(tmpdir(), "slc-cap-"));
+        try {
+            // A syntactically-complete JSON header, immediately followed (no
+            // newline) by corruption that pushes the whole "line" past the 1MB
+            // cap. The old behavior returned all bytes read as if it were a
+            // complete first line once the cap was hit; that's indistinguishable
+            // from real truncation/corruption and must be rejected instead.
+            const validPrefix = JSON.stringify({ type: "session", id: "cap-test" });
+            const corruption = "x".repeat(2 * 1024 * 1024); // no newline anywhere
+            const filePath = join(dir, "cap-exhaustion.jsonl");
+            writeFileSync(filePath, validPrefix + corruption);
+
+            expect(readFirstLineSync(filePath)).toBeNull();
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
+    test("true EOF without a cap-exhausting line is still accepted", () => {
+        const dir = mkdtempSync(join(tmpdir(), "slc-eof-"));
+        try {
+            // Well under the 1MB cap, no trailing newline — genuine EOF, not
+            // truncation. Must still be returned (regression guard for the fix
+            // above: don't overcorrect into rejecting legitimate short files).
+            const header = JSON.stringify({ type: "session", id: "eof-test" });
+            const filePath = join(dir, "eof.jsonl");
+            writeFileSync(filePath, header);
+
+            expect(readFirstLineSync(filePath)).toBe(header);
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
+    test("multibyte UTF-8 character straddling a 64KB chunk boundary decodes correctly", () => {
+        const dir = mkdtempSync(join(tmpdir(), "slc-utf8-"));
+        try {
+            const CHUNK_SIZE = 64 * 1024;
+            // Position a 4-byte emoji so its bytes span two chunk reads: pad with
+            // ASCII up to offset CHUNK_SIZE - 2, so the emoji's bytes land at
+            // [CHUNK_SIZE - 2, CHUNK_SIZE + 2), straddling the boundary.
+            const padding = "a".repeat(CHUNK_SIZE - 2);
+            const emoji = "\u{1F600}"; // 4-byte UTF-8 sequence
+            const suffix = "tail";
+            const line = padding + emoji + suffix;
+            const filePath = join(dir, "utf8-boundary.jsonl");
+            writeFileSync(filePath, line + "\n", "utf8");
+
+            // Sanity-check the emoji really straddles the boundary in UTF-8 bytes.
+            const emojiByteOffset = Buffer.byteLength(padding, "utf8");
+            expect(emojiByteOffset).toBe(CHUNK_SIZE - 2);
+
+            const result = readFirstLineSync(filePath);
+            expect(result).toBe(line);
+            expect(result).toContain(emoji);
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
         }
     });
 });

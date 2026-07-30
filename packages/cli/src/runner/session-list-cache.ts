@@ -150,10 +150,14 @@ export function invalidateSessionListCache(): void {
  * into memory. Uses bounded buffering (64KB chunks, 1MB max) to avoid excessive
  * I/O for very large session files.
  *
- * Returns the first line (without trailing newline) as a string, or null on error.
+ * Returns the first line (without trailing newline) as a string, or null if no
+ * complete first line could be established (I/O error, empty file, or the 1MB
+ * cap was exhausted before a newline or true EOF was reached — in that case the
+ * data is a truncated/unbounded fragment, not a trustworthy header, and must be
+ * rejected rather than returned as a valid “first line”).
  * Handles UTF-8 multibyte characters correctly by decoding only after finding the newline.
  */
-function readFirstLineSync(filePath: string): string | null {
+export function readFirstLineSync(filePath: string): string | null {
     const CHUNK_SIZE = 64 * 1024; // 64KB per read
     const MAX_READ_SIZE = 1 * 1024 * 1024; // 1MB cap
 
@@ -164,13 +168,18 @@ function readFirstLineSync(filePath: string): string | null {
         let totalBytes = 0;
         let buffer = Buffer.alloc(CHUNK_SIZE);
         let bytesRead: number;
+        let hitEof = false;
 
-        // Read chunks until we find a newline or hit the cap
+        // Read chunks until we find a newline, hit true EOF, or exhaust the cap
         while (totalBytes < MAX_READ_SIZE) {
             bytesRead = readSync(fd, buffer, 0, CHUNK_SIZE, null);
-            if (bytesRead === 0) break; // EOF
+            if (bytesRead === 0) {
+                hitEof = true;
+                break;
+            }
 
-            // Copy chunk to avoid aliasing — buffer.slice returns a view, not a copy
+            // Copy chunk to avoid aliasing — buffer.subarray returns a view, not a copy,
+            // and `buffer` is reused on the next readSync call
             const chunk = Buffer.from(buffer.subarray(0, bytesRead));
             chunks.push(chunk);
             totalBytes += bytesRead;
@@ -190,8 +199,13 @@ function readFirstLineSync(filePath: string): string | null {
             }
         }
 
-        // No newline found within the cap — return all data as first line
-        if (chunks.length > 0) {
+        // No newline found. Only trust the accumulated bytes as a complete first
+        // line if we truly reached EOF — if we merely exhausted the 1MB cap, the
+        // "line" is unterminated/unbounded (truncated or corrupt) and must not be
+        // treated as a valid header, even if it happens to look like a valid JSON
+        // prefix. ponytail: reject on cap exhaustion rather than reconstruct a
+        // partial line; callers already handle null as "skip this file".
+        if (hitEof && chunks.length > 0) {
             const allData = Buffer.concat(chunks);
             return allData.toString("utf8");
         }
