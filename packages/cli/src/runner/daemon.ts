@@ -13,7 +13,7 @@ import { GitService, GIT_SIGIL_DEFS } from "./services/git-service.js";
 // Resolves @VARIABLE@ tokens used in service panel requires
 import { resolvePizzaPiVar } from "../config/io.js";
 import { mergeModelLists, readSessionModelsCache, type SessionModelEntry } from "../session-models-cache.js";
-import { getCachedOllamaCloudModels } from "../ollama-cloud-models.js";
+import { getCachedOllamaCloudModels, registerOllamaCloudProvider } from "../ollama-cloud-models.js";
 import { TunnelService } from "./services/tunnel-service.js";
 import { ProcessService } from "./services/process-service.js";
 import { MemoryService } from "./services/memory-service.js";
@@ -288,6 +288,62 @@ export function reconcileSnapshotSubscriptions(
  * Relay URL:      PIZZAPI_RELAY_URL env var, or `relayUrl` in ~/.pizzapi/config.json (default: ws://localhost:7492).
  * State file:     PIZZAPI_RUNNER_STATE_PATH env var (default: ~/.pizzapi/runner.json).
  */
+export function resolveConfiguredAgentDir(cwd = process.cwd()): string {
+    const config = loadConfig(cwd);
+    return config.agentDir ? expandHome(config.agentDir) : defaultAgentDir();
+}
+
+/**
+ * Model discovery for the daemon's `list_models` socket event and context-window
+ * lookups. Builds a bare ModelRuntime (no extension loading), so ollama-cloud
+ * needs an explicit registerOllamaCloudProvider() call to be recognized at all —
+ * see ollama-cloud-models.ts. Exported standalone (rather than an inline closure)
+ * so this real discovery path has direct regression coverage.
+ */
+export async function listConfiguredModels(cwd = process.cwd()): Promise<SessionModelEntry[]> {
+    const agentDir = resolveConfiguredAgentDir(cwd);
+    const runtime = await ModelRuntime.create({
+        authPath: join(agentDir, "auth.json"),
+        modelsPath: join(agentDir, "models.json"),
+    });
+    // This runtime never loads extensions, so "ollama-cloud" is otherwise an
+    // unknown provider here: no offline fallback catalog and stored/env
+    // credentials go unrecognized. Mirrors ollamaCloudProviderExtension.
+    registerOllamaCloudProvider(runtime);
+    const modelRegistry = new ModelRegistry(runtime);
+    const diskModels = modelRegistry
+        .getAvailable()
+        .map((model: any) => ({
+            provider: model.provider,
+            id: model.id,
+            name: model.name,
+            reasoning: model.reasoning,
+            contextWindow: model.contextWindow,
+        }));
+    // Ollama Cloud models are discovered dynamically and are NOT in the
+    // static disk registry. Surface the cached list directly so newer
+    // models (e.g. glm-5.2) appear even when no live session has warmed
+    // the session snapshot yet. Gated on Ollama credentials so we don't
+    // advertise models the runner can't actually use.
+    let ollamaModels: SessionModelEntry[] = [];
+    if (runtime.hasConfiguredAuth("ollama-cloud") || process.env.OLLAMA_API_KEY) {
+        ollamaModels = (getCachedOllamaCloudModels() ?? []).map((model) => ({
+            provider: model.provider,
+            id: model.id,
+            name: model.name,
+            reasoning: model.reasoning,
+            contextWindow: model.contextWindow,
+        }));
+    }
+    // Extension-registered providers (pi packages calling registerProvider)
+    // only exist inside live sessions — merge the latest session snapshot so
+    // Web UI model selectors (Runner Settings, Fast Model) show them too.
+    return mergeModelLists(
+        mergeModelLists(diskModels, ollamaModels),
+        readSessionModelsCache() ?? [],
+    );
+}
+
 export async function runDaemon(_args: string[] = []): Promise<number> {
     setLogComponent("daemon");
     const statePath = defaultStatePath();
@@ -456,49 +512,6 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
         } else {
             registry.register(new MemoryService((sessionId) => sessionCloseMetadata.get(sessionId)?.cwd ?? null));
         }
-        const resolveConfiguredAgentDir = (cwd = process.cwd()) => {
-            const config = loadConfig(cwd);
-            return config.agentDir ? expandHome(config.agentDir) : defaultAgentDir();
-        };
-        const listConfiguredModels = async (cwd = process.cwd()) => {
-            const agentDir = resolveConfiguredAgentDir(cwd);
-            const runtime = await ModelRuntime.create({
-                authPath: join(agentDir, "auth.json"),
-                modelsPath: join(agentDir, "models.json"),
-            });
-            const modelRegistry = new ModelRegistry(runtime);
-            const diskModels = modelRegistry
-                .getAvailable()
-                .map((model: any) => ({
-                    provider: model.provider,
-                    id: model.id,
-                    name: model.name,
-                    reasoning: model.reasoning,
-                    contextWindow: model.contextWindow,
-                }));
-            // Ollama Cloud models are discovered dynamically and are NOT in the
-            // static disk registry. Surface the cached list directly so newer
-            // models (e.g. glm-5.2) appear even when no live session has warmed
-            // the session snapshot yet. Gated on Ollama credentials so we don't
-            // advertise models the runner can't actually use.
-            let ollamaModels: SessionModelEntry[] = [];
-            if (runtime.hasConfiguredAuth("ollama-cloud") || process.env.OLLAMA_API_KEY) {
-                ollamaModels = (getCachedOllamaCloudModels() ?? []).map((model) => ({
-                    provider: model.provider,
-                    id: model.id,
-                    name: model.name,
-                    reasoning: model.reasoning,
-                    contextWindow: model.contextWindow,
-                }));
-            }
-            // Extension-registered providers (pi packages calling registerProvider)
-            // only exist inside live sessions — merge the latest session snapshot so
-            // Web UI model selectors (Runner Settings, Fast Model) show them too.
-            return mergeModelLists(
-                mergeModelLists(diskModels, ollamaModels),
-                readSessionModelsCache() ?? [],
-            );
-        };
         const getContextWindowsForAnalysis = async (cwd = process.cwd()): Promise<Map<string, number>> => {
             const windows = new Map<string, number>();
             try {

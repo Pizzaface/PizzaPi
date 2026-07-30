@@ -1,6 +1,6 @@
 import { describe, test, expect } from "bun:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { OLLAMA_CLOUD_FALLBACK_MODELS } from "./ollama-cloud-fallback-models.js";
@@ -106,42 +106,46 @@ describe("ollama-cloud provider registration end-to-end (ModelRuntime)", () => {
         const { ModelRegistry, ModelRuntime } = await import("@earendil-works/pi-coding-agent");
 
         const dir = mkdtempSync(join(tmpdir(), "ollama-cloud-registry-"));
-        const modelsPath = join(dir, "models.json");
-        writeFileSync(
-            modelsPath,
-            JSON.stringify({
-                providers: {
-                    ollama: {
-                        baseUrl: "http://localhost:11434/v1",
-                        api: "openai-completions",
-                        apiKey: "ollama",
-                        models: [{ id: "llama3.1:8b" }],
-                    },
-                },
-            }),
-        );
-        const authPath = join(dir, "auth.json");
-        writeFileSync(authPath, "{}");
-
-        const prev = process.env.OLLAMA_API_KEY;
-        process.env.OLLAMA_API_KEY = "test-ollama-key";
         try {
-            const runtime = await ModelRuntime.create({ authPath, modelsPath });
-            const pi = {
-                registerProvider: (name: string, config: any) => runtime.registerProvider(name, config),
-            } as unknown as ExtensionAPI;
-            await ollamaCloudProviderExtension(pi);
+            const modelsPath = join(dir, "models.json");
+            writeFileSync(
+                modelsPath,
+                JSON.stringify({
+                    providers: {
+                        ollama: {
+                            baseUrl: "http://localhost:11434/v1",
+                            api: "openai-completions",
+                            apiKey: "ollama",
+                            models: [{ id: "llama3.1:8b" }],
+                        },
+                    },
+                }),
+            );
+            const authPath = join(dir, "auth.json");
+            writeFileSync(authPath, "{}");
 
-            const registry = new ModelRegistry(runtime);
-            const available = registry.getAvailable();
+            const prev = process.env.OLLAMA_API_KEY;
+            process.env.OLLAMA_API_KEY = "test-ollama-key";
+            try {
+                const runtime = await ModelRuntime.create({ authPath, modelsPath });
+                const pi = {
+                    registerProvider: (name: string, config: any) => runtime.registerProvider(name, config),
+                } as unknown as ExtensionAPI;
+                await ollamaCloudProviderExtension(pi);
 
-            expect(available.some((m: any) => m.provider === "ollama-cloud" && m.id === "glm-5.1")).toBe(true);
-            expect(available.some((m: any) => m.provider === "ollama" && m.id === "llama3.1:8b")).toBe(true);
-            expect(registry.find("ollama", "llama3.1:8b")?.baseUrl).toBe("http://localhost:11434/v1");
-            expect(runtime.hasConfiguredAuth("ollama-cloud")).toBe(true);
+                const registry = new ModelRegistry(runtime);
+                const available = registry.getAvailable();
+
+                expect(available.some((m: any) => m.provider === "ollama-cloud" && m.id === "glm-5.1")).toBe(true);
+                expect(available.some((m: any) => m.provider === "ollama" && m.id === "llama3.1:8b")).toBe(true);
+                expect(registry.find("ollama", "llama3.1:8b")?.baseUrl).toBe("http://localhost:11434/v1");
+                expect(runtime.hasConfiguredAuth("ollama-cloud")).toBe(true);
+            } finally {
+                if (prev === undefined) delete process.env.OLLAMA_API_KEY;
+                else process.env.OLLAMA_API_KEY = prev;
+            }
         } finally {
-            if (prev === undefined) delete process.env.OLLAMA_API_KEY;
-            else process.env.OLLAMA_API_KEY = prev;
+            rmSync(dir, { recursive: true, force: true });
         }
     });
 });

@@ -11,7 +11,7 @@ import { join } from "path";
 import { c } from "./cli-colors.js";
 import { defaultAgentDir, expandHome, loadConfig } from "./config.js";
 import { createLogger } from "@pizzapi/tools";
-import { fetchOllamaCloudModels, type OllamaCloudModel } from "./ollama-cloud-models.js";
+import { fetchOllamaCloudModels, registerOllamaCloudProvider, type OllamaCloudModel } from "./ollama-cloud-models.js";
 import { mergeModelLists, readSessionModelsCache } from "./session-models-cache.js";
 
 const log = createLogger("models");
@@ -34,6 +34,10 @@ export async function runModelsCommand(args: string[], cwd: string): Promise<num
         authPath: join(agentDir, "auth.json"),
         modelsPath: join(agentDir, "models.json"),
     });
+    // This runtime never loads extensions, so "ollama-cloud" is otherwise an
+    // unknown provider here: no offline fallback catalog and stored/env
+    // credentials go unrecognized. Mirrors ollamaCloudProviderExtension.
+    registerOllamaCloudProvider(runtime);
     const modelRegistry = new ModelRegistry(runtime);
 
     const staticEntries = modelRegistry
