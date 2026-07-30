@@ -9,7 +9,8 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "fs";
 import { tmpdir } from "os";
-import { join } from "path";
+import { join, relative, resolve } from "path";
+import { EventEmitter } from "node:events";
 
 import {
     loadConfig,
@@ -22,6 +23,7 @@ import {
     _setGlobalConfigDir,
 } from "./io.js";
 import { discoverProviders, globalProvidersDir } from "../providers/loader.js";
+import { createClaudePluginExtension, getPluginSkillPaths, getPluginAgentPaths } from "../extensions/claude-plugins.js";
 
 let tmpHome: string;
 let projectDir: string;
@@ -192,7 +194,7 @@ describe("allowProjectMcp (warn-only gate — CRITICAL: servers load regardless)
         expect(servers[0].command).toBe("project-version");
     });
 
-    test("warns once (console.warn) when project mcpServers present and flag not set, but STILL loads them", () => {
+    test("warns once (console.warn) when project mcpServers present and flag not set, but STILL loads them on every call — the warning itself is deduped, not the loading", () => {
         const warnCalls: unknown[][] = [];
         const orig = console.warn;
         console.warn = (...args: unknown[]) => { warnCalls.push(args); };
@@ -201,10 +203,20 @@ describe("allowProjectMcp (warn-only gate — CRITICAL: servers load regardless)
             writeProjectConfig({
                 mcpServers: { projectServer: { command: "project-cmd" } },
             });
+
             const config = loadConfig(projectDir);
             expect((config as any).mcpServers).toHaveProperty("projectServer");
             const joined = warnCalls.map((a) => a.join(" ")).join("\n");
             expect(joined).toContain("Project MCP servers found");
+            expect(warnCalls.length).toBe(1);
+
+            // Second load of the SAME project: servers are still merged (the
+            // gate never blocks loading — see describe title), but the warning
+            // does not fire again. warnLoadConfigOnce dedupes per (projectPath,
+            // code, message) for the lifetime of the process.
+            const config2 = loadConfig(projectDir);
+            expect((config2 as any).mcpServers).toHaveProperty("projectServer");
+            expect(warnCalls.length).toBe(1);
         } finally {
             console.warn = orig;
         }
@@ -255,7 +267,12 @@ describe("allowProjectProviders (enforced gate, via discoverProviders({allowProj
     });
 
     afterEach(() => {
-        process.env.HOME = origHome;
+        // Bun (like Node) does not delete an env var when you assign
+        // `undefined` to it — it coerces to the string "undefined", leaking
+        // a bogus HOME key into the process for the rest of the test run
+        // whenever origHome was unset. Delete explicitly in that case.
+        if (origHome === undefined) delete process.env.HOME;
+        else process.env.HOME = origHome;
     });
 
     function writeProvider(dir: string, id: string): void {
@@ -350,13 +367,210 @@ describe("trustedPlugins (path-based allowlist)", () => {
     test("isPluginTrusted resolves relative paths against process.cwd() before comparing", () => {
         // trustPlugin canonicalizes with resolve(), so a relative path passed to
         // isPluginTrusted must resolve to the same absolute path to match.
+        //
+        // path.relative()/path.resolve() are exact lexical inverses (pure
+        // string manipulation, no filesystem access) — resolve(cwd,
+        // relative(cwd, p)) === p always holds, even when p is outside cwd's
+        // subtree (relative() just emits "../" segments). Using them
+        // unconditionally guarantees this test actually exercises a relative
+        // path, unlike a "use absolute if not under cwd" fallback, which
+        // could silently degrade to re-testing the absolute-path case
+        // depending on where the OS puts tmpdir() relative to cwd.
         const pluginPath = join(tmpHome, "relative-check");
         mkdirSync(pluginPath, { recursive: true });
         trustPlugin(pluginPath);
 
-        const relative = pluginPath.startsWith(process.cwd())
-            ? pluginPath.slice(process.cwd().length + 1)
-            : pluginPath; // fall back if tmpdir isn't under cwd (still absolute, still matches)
-        expect(isPluginTrusted(relative)).toBe(true);
+        const relativePath = relative(process.cwd(), pluginPath);
+        expect(relativePath).not.toBe(pluginPath); // sanity: genuinely relative, not accidentally absolute
+        expect(resolve(process.cwd(), relativePath)).toBe(resolve(pluginPath));
+        expect(isPluginTrusted(relativePath)).toBe(true);
+    });
+});
+
+// ── 5. allowProjectProviders — enforced at the REAL call site ───────────────
+//
+// Section 3 above pins discoverProviders({allowProject}) directly — useful,
+// but discoverProviders is a low-level helper. The only place that actually
+// decides `allowProject` from persisted config is providerExtension's
+// session_start handler (extensions/providers/extension.ts: `allowProject:
+// loadGlobalConfig().allowProjectProviders === true`). A regression there
+// (e.g. flipping the comparison, or dropping the config read) would pass
+// every test in section 3 while silently loading untrusted project
+// providers in production. These tests go through providerExtension itself.
+
+describe("allowProjectProviders enforcement via providerExtension session_start (real production call site)", () => {
+    let origHome: string | undefined;
+
+    beforeEach(() => {
+        origHome = process.env.HOME;
+        process.env.HOME = tmpHome;
+        (globalThis as any).__trustGateProviderInits = [];
+    });
+
+    afterEach(() => {
+        if (origHome === undefined) delete process.env.HOME;
+        else process.env.HOME = origHome;
+        delete (globalThis as any).__trustGateProviderInits;
+    });
+
+    function writeTrackingProvider(dir: string, id: string): void {
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(
+            join(dir, "index.ts"),
+            `export default {
+                id: ${JSON.stringify(id)},
+                capabilities: ["lifecycle"],
+                init() {
+                    globalThis.__trustGateProviderInits.push(${JSON.stringify(id)});
+                },
+                dispose() {},
+                onSessionStart: async () => {},
+            };`,
+        );
+    }
+
+    /** Registers providerExtension with a minimal fake ExtensionAPI and fires session_start — the real production path, not a direct discoverProviders() call. */
+    async function runProviderExtensionSessionStart(cwd: string): Promise<void> {
+        const { default: providerExtension } = await import("../extensions/providers/extension.js");
+        const handlers = new Map<string, (event: unknown, ctx: unknown) => unknown>();
+        const mockPi = {
+            on(event: string, handler: (event: unknown, ctx: unknown) => unknown) { handlers.set(event, handler); },
+            registerCommand() {},
+        } as any;
+        await providerExtension(mockPi);
+        await handlers.get("session_start")?.(
+            { reason: "startup" },
+            { cwd, signal: new AbortController().signal, sessionManager: { getSessionFile: () => "test-session.json" } },
+        );
+    }
+
+    test("project provider is NOT initialized when allowProjectProviders is unset (config default)", async () => {
+        writeTrackingProvider(join(globalProvidersDir(), "global-a"), "global-a");
+        writeTrackingProvider(join(projectDir, ".pizzapi", "providers", "project-a"), "project-a");
+        writeGlobalConfig({});
+
+        await runProviderExtensionSessionStart(projectDir);
+
+        expect((globalThis as any).__trustGateProviderInits).toEqual(["global-a"]);
+    });
+
+    test("project provider is NOT initialized when allowProjectProviders: false explicitly", async () => {
+        writeTrackingProvider(join(globalProvidersDir(), "global-b"), "global-b");
+        writeTrackingProvider(join(projectDir, ".pizzapi", "providers", "project-b"), "project-b");
+        writeGlobalConfig({ allowProjectProviders: false });
+
+        await runProviderExtensionSessionStart(projectDir);
+
+        expect((globalThis as any).__trustGateProviderInits).toEqual(["global-b"]);
+    });
+
+    test("project provider IS initialized when allowProjectProviders: true", async () => {
+        writeTrackingProvider(join(globalProvidersDir(), "global-c"), "global-c");
+        writeTrackingProvider(join(projectDir, ".pizzapi", "providers", "project-c"), "project-c");
+        writeGlobalConfig({ allowProjectProviders: true });
+
+        await runProviderExtensionSessionStart(projectDir);
+
+        expect(((globalThis as any).__trustGateProviderInits as string[]).sort()).toEqual(["global-c", "project-c"]);
+    });
+});
+
+// ── 6. trustedPlugins — enforced at the REAL call sites ─────────────────────
+//
+// Section 4 above pins isPluginTrusted/trustPlugin/untrustPlugin — the
+// path-allowlist storage layer only. It never exercises the code that
+// actually decides whether a discovered plugin's commands/hooks get
+// registered (createClaudePluginExtension, claude-plugins.ts) or whether
+// its skills/agents are added to pi's search paths (getPluginSkillPaths /
+// getPluginAgentPaths, used by worker.ts and index.ts). A regression that
+// dropped the isPluginTrusted() filter at any of those call sites would
+// pass every test in section 4 while silently loading untrusted
+// project-local plugin code in production.
+
+describe("trustedPlugins enforcement via createClaudePluginExtension / getPluginSkillPaths / getPluginAgentPaths (real production call sites)", () => {
+    function writeLocalPlugin(name: string, opts: { skill?: boolean; agent?: boolean } = {}): string {
+        const pluginDir = join(projectDir, ".pizzapi", "plugins", name);
+        mkdirSync(join(pluginDir, "commands"), { recursive: true });
+        writeFileSync(join(pluginDir, "commands", "test.md"), "# test\nHello from " + name + ".");
+        if (opts.skill) {
+            mkdirSync(join(pluginDir, "skills", "foo"), { recursive: true });
+            writeFileSync(join(pluginDir, "skills", "foo", "SKILL.md"), "# Foo skill");
+        }
+        if (opts.agent) {
+            mkdirSync(join(pluginDir, "agents"), { recursive: true });
+            writeFileSync(join(pluginDir, "agents", "helper.md"), "# Helper agent");
+        }
+        return pluginDir;
+    }
+
+    function makeMockPi() {
+        const commands = new Map<string, unknown>();
+        const handlers = new Map<string, (event: unknown, ctx: unknown) => unknown>();
+        const events = new EventEmitter();
+        const api = {
+            registerCommand(name: string, opts: unknown) { commands.set(name, opts); },
+            on(event: string, handler: (event: unknown, ctx: unknown) => unknown) { handlers.set(event, handler); },
+            sendUserMessage() {},
+            events,
+        };
+        return { api, commands, handlers, events };
+    }
+
+    test("untrusted local plugin's command is NOT registered when the trust prompt is declined", async () => {
+        writeLocalPlugin("untrusted-cmd");
+        const factory = createClaudePluginExtension(projectDir);
+        expect(factory).not.toBeNull();
+
+        const { api, commands, handlers, events } = makeMockPi();
+        factory!(api as any);
+        events.on("plugin:trust_prompt", (data: any) => data.respond(false));
+
+        await handlers.get("session_start")?.(
+            { type: "session_start" },
+            { hasUI: false, ui: { notify() {} }, cwd: projectDir },
+        );
+
+        expect(commands.has("test")).toBe(false);
+    });
+
+    test("pre-trusted local plugin's command IS registered on session_start, with no prompt (real trustPlugin \u2192 createClaudePluginExtension path)", async () => {
+        const pluginDir = writeLocalPlugin("trusted-cmd");
+        trustPlugin(pluginDir);
+
+        const factory = createClaudePluginExtension(projectDir);
+        const { api, commands, handlers, events } = makeMockPi();
+        let prompted = false;
+        events.on("plugin:trust_prompt", () => { prompted = true; });
+        factory!(api as any);
+
+        await handlers.get("session_start")?.(
+            { type: "session_start" },
+            { hasUI: false, ui: { notify() {} }, cwd: projectDir },
+        );
+
+        expect(commands.has("test")).toBe(true);
+        expect(prompted).toBe(false);
+    });
+
+    test("getPluginSkillPaths excludes an untrusted local plugin's skills dir", () => {
+        const pluginDir = writeLocalPlugin("untrusted-skill", { skill: true });
+        expect(getPluginSkillPaths(projectDir)).not.toContain(join(pluginDir, "skills"));
+    });
+
+    test("getPluginSkillPaths includes a trusted local plugin's skills dir", () => {
+        const pluginDir = writeLocalPlugin("trusted-skill", { skill: true });
+        trustPlugin(pluginDir);
+        expect(getPluginSkillPaths(projectDir)).toContain(join(pluginDir, "skills"));
+    });
+
+    test("getPluginAgentPaths excludes an untrusted local plugin's agents dir", () => {
+        const pluginDir = writeLocalPlugin("untrusted-agent", { agent: true });
+        expect(getPluginAgentPaths(projectDir)).not.toContain(join(pluginDir, "agents"));
+    });
+
+    test("getPluginAgentPaths includes a trusted local plugin's agents dir", () => {
+        const pluginDir = writeLocalPlugin("trusted-agent", { agent: true });
+        trustPlugin(pluginDir);
+        expect(getPluginAgentPaths(projectDir)).toContain(join(pluginDir, "agents"));
     });
 });

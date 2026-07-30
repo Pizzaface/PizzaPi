@@ -64,10 +64,14 @@ independent per-resource-type gates over `.pizzapi/*`.
 
 ## 3. Gap analysis
 
-- **Granularity**: PizzaPi's gates are more granular (hooks, MCP, providers,
-  plugins can each be trusted independently) than upstream's single yes/no.
-  This granularity is a feature worth keeping — e.g. a user may want to run
-  project hooks but never auto-load project MCP servers.
+- **Granularity**: PizzaPi's gates are more granular than upstream's single
+  yes/no — hooks, providers, and plugins are each independently *enforced*
+  (each can be denied on its own). This granularity is a feature worth
+  keeping — e.g. a user may want to run project hooks but never auto-load
+  project-local providers. MCP is the exception: `allowProjectMcp` is a real,
+  independent config key, but it does not gate loading (see next bullet and
+  section 1) — project MCP servers always merge in regardless of its value,
+  so MCP is not an example of enforced per-resource granularity today.
 - **MCP is deliberately looser**: `allowProjectMcp` is warn-only by design
   (see code comment history — "P0 fix: warn-and-load by default"). This is
   not something upstream's binary trust model has an equivalent for, and
@@ -98,20 +102,27 @@ wrong and is rejected.** Two upstream facts make it unworkable:
    way to say "only run my side effect when pi decided this project is
    trusted" — it would have to re-implement its own ask/persist/lookup logic
    just to get that information, duplicating `ProjectTrustStore`.
-2. **PizzaPi's four gates are global, not per-directory.** `allowProjectHooks`,
-   `allowProjectProviders`, `trustedPlugins`, and `allowProjectMcp` all live in
-   `~/.pizzapi/config.json` with no cwd scoping (section 1). Setting any of
-   them from a `project_trust` handler — which fires per-cwd — would trust
-   *every* project globally the first time *any one* directory is trusted.
-   That's a strict security regression versus today's already-global (but at
-   least explicit, user-set) flags, not a migration.
+2. **PizzaPi's boolean gates are global, not per-directory.**
+   `allowProjectHooks`, `allowProjectProviders`, and `allowProjectMcp` all
+   live in `~/.pizzapi/config.json` with no cwd scoping (section 1). Setting
+   any of them from a `project_trust` handler — which fires per-cwd — would
+   trust *every* project globally the first time *any one* directory is
+   trusted. That's a strict security regression versus today's
+   already-global (but at least explicit, user-set) flags, not a migration.
+   `trustedPlugins` is structurally different and does not have this
+   failure mode the same way: it's a path allowlist (section 1), so wiring
+   it to `project_trust` would add only the specific plugin root paths
+   discovered under that one cwd, not flip a global switch open for every
+   project. It would still bypass the explicit `pizza plugins trust` review
+   step, which is its own regression — but "trusts every project" is not an
+   accurate description of what auto-populating `trustedPlugins` would do.
 
 ### What's actually viable, in order of laziness
 
 - **Recommended for now: don't adopt `project_trust` for these four gates.**
   Keep them independent, global, and explicitly user-set exactly as they are
-  today. The granularity (hooks vs. MCP vs. providers vs. plugins trusted
-  separately) is a real feature upstream's single yes/no doesn't offer, and
+  today. The granularity (hooks vs. providers vs. plugins independently
+  enforced) is a real feature upstream's single yes/no doesn't offer, and
   `allowProjectMcp`'s warn-only UX (section 1) has no upstream equivalent to
   map onto. Simplest, safest, zero new code — this ADR's actual recommendation.
 - **Future work, only if per-directory granularity is wanted:** give PizzaPi
