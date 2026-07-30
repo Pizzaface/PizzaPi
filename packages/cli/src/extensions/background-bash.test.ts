@@ -10,16 +10,18 @@ function mockPi() {
     const tools = new Map<string, any>();
     const shortcuts = new Map<string, any>();
     const commands = new Map<string, any>();
+    const handlers = new Map<string, any[]>();
     return {
         messages,
         tools,
         shortcuts,
         commands,
+        emit(event: string, payload?: any) { for (const h of handlers.get(event) ?? []) h(payload); },
         registerTool(tool: any) { tools.set(tool.name, tool); },
         registerShortcut(key: string, opts: any) { shortcuts.set(key, opts); },
         registerCommand(name: string, opts: any) { commands.set(name, opts); },
         sendMessage(msg: any, opts: any) { messages.push({ msg, opts }); },
-        on: () => {},
+        on(event: string, handler: any) { handlers.set(event, [...(handlers.get(event) ?? []), handler]); },
     };
 }
 
@@ -95,7 +97,26 @@ describe("bash override with backgrounding", () => {
         expect(pi.messages[0].msg.content).toContain("Late job exited with code 7");
         expect(pi.messages[0].msg.content).toContain("See full stdout/stderr in ");
         expect(pi.messages[0].msg.details.exitCode).toBe(7);
-        expect(pi.messages[0].opts.deliverAs).toBe("followUp");
+        expect(pi.messages[0].opts.triggerTurn).toBe(true); // idle → must start a turn
+    });
+
+    test("a completion stranded in a drained queue is re-sent, then confirmed", async () => {
+        const { pi, tool } = getTool();
+        pi.emit("agent_start");
+        await run(tool, { command: "exit 0", title: "Racy job", run_in_background: true });
+        await Bun.sleep(200);
+        expect(pi.messages.length).toBe(1);
+        expect(pi.messages[0].opts.deliverAs).toBe("steer"); // streaming → interrupt the turn
+
+        // Turn ended without the queued message ever being processed.
+        pi.emit("agent_settled");
+        expect(pi.messages.length).toBe(2);
+        expect(pi.messages[1].opts.triggerTurn).toBe(true);
+
+        // The re-send lands: no further attempts.
+        pi.emit("message_start", { message: pi.messages[1].msg });
+        pi.emit("agent_settled");
+        expect(pi.messages.length).toBe(2);
     });
 
     test("manual background (TUI shortcut / web exec) detaches a running foreground command", async () => {
