@@ -144,3 +144,26 @@ describe("agent_end — session_error / session_complete ordering", () => {
         expect(emitted).toEqual(["session_complete"]);
     });
 });
+
+describe("agent_end — forwarded event must not carry run-scoped messages", () => {
+    // pi's agent_end.messages contains only the current run's messages. The web
+    // UI and server snapshot cache treat agent_end.messages as a full-transcript
+    // snapshot, so forwarding them truncates the visible transcript to the last
+    // run. The handler must strip messages before forwarding.
+    test("forwards agent_end without messages, keeps them for the settled summary", () => {
+        const { agentEnd, agentSettled, emitted, rctx } = setup(null);
+        const runMessages = [{ role: "assistant", content: [{ type: "text", text: "turn 2 only" }] }];
+
+        agentEnd({ type: "agent_end", messages: runMessages }, agentEndCtx);
+
+        const forwarded = (rctx.forwardEvent as any).mock.calls
+            .map((c: any[]) => c[0])
+            .find((e: any) => e?.type === "agent_end");
+        expect(forwarded).toBeDefined();
+        expect("messages" in forwarded).toBe(false);
+
+        // Summary reporting still sees the run messages via agent_settled.
+        agentSettled({}, agentEndCtx);
+        expect(emitted).toEqual(["session_complete"]);
+    });
+});
