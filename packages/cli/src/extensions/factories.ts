@@ -90,7 +90,11 @@ export function buildPizzaPiExtensionFactories(options: BuildExtensionFactoriesO
     // constructor options (kept in place — see resource-paths.ts for why).
     factories.push(
         named(
-            createResourcePathsExtension({ configSkills: options.configSkills, skipPlugins: options.skipPlugins }),
+            createResourcePathsExtension({
+                configSkills: options.configSkills,
+                skipPlugins: options.skipPlugins,
+                cwd: options.cwd,
+            }),
             "resource-paths",
         ),
     );
