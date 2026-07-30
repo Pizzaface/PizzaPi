@@ -34,9 +34,12 @@ function makeProvider(overrides: Record<string, any> = {}): ExtensionProvider {
   } as ExtensionProvider;
 }
 
-async function install(provider: ExtensionProvider, opts?: { timeoutMs?: number }) {
+async function install(
+  provider: ExtensionProvider | ExtensionProvider[],
+  opts?: { timeoutMs?: number; initContext?: Record<string, unknown> },
+) {
   const { api, handlers } = makeFakeApi();
-  await wrapProviderAsExtension(provider, opts)(api);
+  await wrapProviderAsExtension(provider, opts as any)(api);
   return handlers;
 }
 
@@ -253,7 +256,12 @@ describe("wrapProviderAsExtension", () => {
     });
 
     const handlers = await install(provider, { timeoutMs: 200 });
-    await handlers.get("session_start")?.({ reason: "startup" }, makeCtx({ signal: controller.signal }));
+    // session_start itself must NOT use the aborted signal here: init() is now
+    // also abort-checked (P2 regression), and a session that never starts
+    // leaves `bridge` null, which would make the before_agent_start assertion
+    // below pass vacuously regardless of abort handling. Only before_agent_start
+    // gets the pre-aborted signal, which is what this test exercises.
+    await handlers.get("session_start")?.({ reason: "startup" }, makeCtx());
     const result = await handlers.get("before_agent_start")?.(
       { prompt: "hi", systemPrompt: "BASE" },
       makeCtx({ signal: controller.signal }),
@@ -288,11 +296,6 @@ describe("wrapProviderAsExtension", () => {
   });
 
   test("sorts contributions by order, then providerId, before mapping onto systemPrompt", async () => {
-    // Two providers registered directly on a single-provider bridge cannot be
-    // exercised through wrapProviderAsExtension (it only wraps one provider),
-    // so this drives the sort via multiple contributions from one provider
-    // with distinct orders — the bridge sorts the full collected set the same
-    // way regardless of provider count.
     const provider = makeProvider({
       onBeforeAgentStart: async () => [
         { text: "THIRD", placement: "append", order: 30, summary: "c" },
@@ -309,6 +312,177 @@ describe("wrapProviderAsExtension", () => {
     ) as { systemPrompt: string };
 
     expect(result.systemPrompt).toBe("BASE\nFIRST\nSECOND\nTHIRD");
+  });
+
+  test("P1 regression: multiple providers passed together share ONE bridge, so contributions are sorted across all of them by order", async () => {
+    // Registered in "wrong" order (zeta before alpha) and with zeta's order
+    // number lower than alpha's — if each provider got its own private bridge
+    // (the bug), results would come back in registration/array order instead
+    // of sorted by `order`.
+    const zeta = makeProvider({
+      id: "zeta",
+      onBeforeAgentStart: async () => [
+        { text: "ZETA", placement: "append", order: 10, summary: "z" },
+      ],
+    });
+    const alpha = makeProvider({
+      id: "alpha",
+      onBeforeAgentStart: async () => [
+        { text: "ALPHA", placement: "append", order: 20, summary: "a" },
+      ],
+    });
+
+    const handlers = await install([zeta, alpha]);
+    await handlers.get("session_start")?.({ reason: "startup" }, makeCtx());
+    const result = await handlers.get("before_agent_start")?.(
+      { prompt: "p", systemPrompt: "BASE" },
+      makeCtx(),
+    ) as { systemPrompt: string };
+
+    expect(result.systemPrompt).toBe("BASE\nZETA\nALPHA");
+  });
+
+  test("P1 regression: pi's ImageContent {type,data,mimeType} translates to ExtensionProvider {type,source:{type,mediaType,data}}", async () => {
+    let seenImages: unknown;
+    const provider = makeProvider({
+      onBeforeAgentStart: async (event: any) => { seenImages = event.images; return []; },
+    });
+
+    const handlers = await install(provider);
+    await handlers.get("session_start")?.({ reason: "startup" }, makeCtx());
+    await handlers.get("before_agent_start")?.(
+      { prompt: "p", systemPrompt: "BASE", images: [{ type: "image", data: "BASE64==", mimeType: "image/png" }] },
+      makeCtx(),
+    );
+
+    expect(seenImages).toEqual([
+      { type: "image", source: { type: "base64", mediaType: "image/png", data: "BASE64==" } },
+    ]);
+  });
+
+  test("P1 regression: session_shutdown enforces the configured timeout instead of hanging on a stuck dispose()", async () => {
+    const provider = makeProvider({ dispose: () => new Promise(() => {}) }); // never resolves
+
+    const handlers = await install(provider, { timeoutMs: 50 });
+    await handlers.get("session_start")?.({ reason: "startup" }, makeCtx());
+
+    const start = Date.now();
+    // The dispose() timeout rejects, which the handler re-throws — assert it
+    // rejects quickly rather than hanging past the configured timeoutMs.
+    await expect(handlers.get("session_shutdown")?.({ reason: "quit" }, makeCtx())).rejects.toThrow();
+    const elapsed = Date.now() - start;
+
+    expect(elapsed).toBeGreaterThanOrEqual(45);
+    expect(elapsed).toBeLessThan(1000);
+  });
+
+  test("P1 regression: one provider's failing dispose() doesn't block another provider's dispose() from running", async () => {
+    const disposed: string[] = [];
+    const failing = makeProvider({
+      id: "failing",
+      dispose: async () => { throw new Error("boom"); },
+    });
+    const healthy = makeProvider({
+      id: "healthy",
+      dispose: async () => { disposed.push("healthy"); },
+    });
+
+    const handlers = await install([failing, healthy]);
+    await handlers.get("session_start")?.({ reason: "startup" }, makeCtx());
+
+    // The failure still surfaces to the caller...
+    await expect(handlers.get("session_shutdown")?.({ reason: "quit" }, makeCtx())).rejects.toThrow("boom");
+    // ...but the healthy provider's dispose() still ran.
+    expect(disposed).toEqual(["healthy"]);
+  });
+
+  test("P2 regression: an already-aborted signal skips provider.init() and provider.dispose() (no side effects)", async () => {
+    let initCalls = 0;
+    let disposeCalls = 0;
+    const provider = makeProvider({
+      init: async () => { initCalls++; },
+      dispose: async () => { disposeCalls++; },
+    });
+
+    const controller = new AbortController();
+    controller.abort();
+
+    const handlers = await install(provider);
+    await handlers.get("session_start")?.({ reason: "startup" }, makeCtx({ signal: controller.signal })).catch(() => {});
+    expect(initCalls).toBe(0);
+
+    // Start for real so shutdown has state to act on, then shut down aborted.
+    await handlers.get("session_start")?.({ reason: "startup" }, makeCtx());
+    expect(initCalls).toBe(1);
+    await handlers.get("session_shutdown")?.({ reason: "quit" }, makeCtx({ signal: controller.signal })).catch(() => {});
+    expect(disposeCalls).toBe(0);
+  });
+
+  test("P2 regression: opts.initContext is a wiring point merged onto the default no-op ProviderInitContext", async () => {
+    let seen: any;
+    const provider = makeProvider({ init: async (ctx: unknown) => { seen = ctx; } });
+
+    const handlers = await install(provider, { initContext: { config: { apiKey: "secret" } } });
+    await handlers.get("session_start")?.({ reason: "startup" }, makeCtx());
+
+    expect(seen.config).toEqual({ apiKey: "secret" });
+    expect(seen.socket).toBeNull();
+    expect(typeof seen.fireTrigger).toBe("function");
+  });
+
+  test("P2 regression: provider context carries sessionId (env-derived) distinct from sessionFile (pi's session file)", async () => {
+    let seen: any;
+    const provider = makeProvider({
+      onSessionStart: async (_event: unknown, ctx: unknown) => { seen = ctx; },
+    });
+
+    const prevEnv = { id: process.env.PIZZAPI_SESSION_ID, alt: process.env.SESSION_ID };
+    process.env.PIZZAPI_SESSION_ID = "session-xyz";
+    delete process.env.SESSION_ID;
+    try {
+      const handlers = await install(provider);
+      await handlers.get("session_start")?.({ reason: "startup" }, makeCtx());
+    } finally {
+      if (prevEnv.id === undefined) delete process.env.PIZZAPI_SESSION_ID; else process.env.PIZZAPI_SESSION_ID = prevEnv.id;
+      if (prevEnv.alt === undefined) delete process.env.SESSION_ID; else process.env.SESSION_ID = prevEnv.alt;
+    }
+
+    expect(seen.sessionId).toBe("session-xyz");
+    expect(seen.sessionFile).toBe("session-abc.json");
+  });
+
+  test("P2 regression: session_start passes ctx.model through to the provider's SessionStartEvent", async () => {
+    let seen: any;
+    const provider = makeProvider({
+      onSessionStart: async (event: unknown) => { seen = event; },
+    });
+
+    const handlers = await install(provider);
+    await handlers.get("session_start")?.(
+      { reason: "startup" },
+      makeCtx({ model: { provider: "anthropic", id: "claude-x", name: "Claude X", extraField: "ignored" } }),
+    );
+
+    expect(seen.model).toEqual({ provider: "anthropic", id: "claude-x", name: "Claude X" });
+  });
+
+  test("P2 regression: turn_end carries the same promptId as the prompt's before_agent_start, with an incrementing turnId", async () => {
+    const promptIdsSeen: (string | undefined)[] = [];
+    const turnIdsSeen: (number | undefined)[] = [];
+    let beforeAgentStartPromptId: string | undefined;
+    const provider = makeProvider({
+      onBeforeAgentStart: async (_event: unknown, ctx: any) => { beforeAgentStartPromptId = ctx.promptId; return []; },
+      onTurnEnd: async (_event: unknown, ctx: any) => { promptIdsSeen.push(ctx.promptId); turnIdsSeen.push(ctx.turnId); },
+    });
+
+    const handlers = await install(provider);
+    await handlers.get("session_start")?.({ reason: "startup" }, makeCtx());
+    await handlers.get("before_agent_start")?.({ prompt: "p", systemPrompt: "BASE" }, makeCtx());
+    await handlers.get("turn_end")?.({ turnIndex: 0, message: { role: "assistant", content: "" } }, makeCtx());
+    await handlers.get("turn_end")?.({ turnIndex: 1, message: { role: "assistant", content: "" } }, makeCtx());
+
+    expect(promptIdsSeen).toEqual([beforeAgentStartPromptId, beforeAgentStartPromptId]);
+    expect(turnIdsSeen).toEqual([1, 2]);
   });
 
   test("resets dedupe state on each before_agent_start prompt boundary", async () => {

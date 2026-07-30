@@ -201,6 +201,44 @@ describe("ProviderBridge", () => {
     expect(calls).toEqual(["start-startup", "turn-1", "shutdown-quit"]);
   });
 
+  test("onSessionShutdown is bounded by timeoutMs (P1 regression: a hung onSessionShutdown must not hang shutdown)", async () => {
+    const provider = makeProvider({
+      id: "hangs",
+      capabilities: ["lifecycle"] as const,
+      onSessionShutdown: () => new Promise(() => {}), // never resolves
+    });
+
+    const bridge = new ProviderBridge([provider]);
+    const ctx = { signal: new AbortController().signal, timeoutMs: 50, sessionId: "s1", cwd: "/tmp" };
+
+    const start = Date.now();
+    // Silently swallowed (matches existing "we're shutting down" contract) but
+    // must resolve well inside the timeout window, not hang forever.
+    await bridge.onSessionShutdown({ reason: "quit" }, ctx);
+    const elapsed = Date.now() - start;
+
+    expect(elapsed).toBeGreaterThanOrEqual(45);
+    expect(elapsed).toBeLessThan(1000);
+  });
+
+  test("an already-aborted signal skips invoking onSessionShutdown entirely", async () => {
+    let called = false;
+    const provider = makeProvider({
+      id: "lifecycle",
+      capabilities: ["lifecycle"] as const,
+      onSessionShutdown: async () => { called = true; },
+    });
+
+    const controller = new AbortController();
+    controller.abort();
+    const bridge = new ProviderBridge([provider]);
+    const ctx = { signal: controller.signal, timeoutMs: 5000, sessionId: "s1", cwd: "/tmp" };
+
+    await bridge.onSessionShutdown({ reason: "quit" }, ctx);
+
+    expect(called).toBe(false);
+  });
+
   test("onSessionClose returns first non-null result", async () => {
     const a = makeProvider({
       id: "alpha",

@@ -11,7 +11,7 @@ import type { ExtensionProvider } from "../../providers/types.js";
  * |-------------------------|----------------------|----------------------------------------------------------|
  * | init()                  | session_start        | ProviderInitContext synthesized (config: {}, socket: null, fireTrigger/publishMetadata no-ops) |
  * | onSessionStart           | session_start         | { reason, previousSessionFile } passed through            |
- * | onBeforeAgentStart        | before_agent_start     | { prompt, images, systemPrompt } in; ContextContribution[] out mapped to pi's { systemPrompt } |
+ * | onBeforeAgentStart        | before_agent_start     | { prompt, systemPrompt } passed through; images translated pi's ImageContent {type,data,mimeType} -> ExtensionProvider's {type,source:{type,mediaType,data}}; ContextContribution[] out mapped to pi's { systemPrompt } |
  * | onTurnEnd                 | turn_end               | pi's toolResults[].{toolName,content,details,isError} -> provider's {name,output,isError} |
  * | onSessionShutdown          | session_shutdown        | { reason, targetSessionFile } passed through               |
  * | dispose()                  | session_shutdown        | called after onSessionShutdown                             |
@@ -83,10 +83,22 @@ describe("event mapping table", () => {
     const handlers = await install(makeProvider({ onBeforeAgentStart: async (event: unknown) => { seen = event; return []; } }));
     await handlers.get("session_start")?.({ reason: "startup" }, makeCtx());
     await handlers.get("before_agent_start")?.(
-      { prompt: "do a thing", images: [{ type: "image" }], systemPrompt: "SYS" },
+      { prompt: "do a thing", images: [{ type: "image", data: "BASE64==", mimeType: "image/png" }], systemPrompt: "SYS" },
       makeCtx(),
     );
-    expect(seen).toEqual({ prompt: "do a thing", images: [{ type: "image" }], systemPrompt: "SYS" });
+    expect(seen).toEqual({
+      prompt: "do a thing",
+      images: [{ type: "image", source: { type: "base64", mediaType: "image/png", data: "BASE64==" } }],
+      systemPrompt: "SYS",
+    });
+  });
+
+  test("before_agent_start -> onBeforeAgentStart with no images passes images: undefined through, not an empty array", async () => {
+    let seen: any;
+    const handlers = await install(makeProvider({ onBeforeAgentStart: async (event: unknown) => { seen = event; return []; } }));
+    await handlers.get("session_start")?.({ reason: "startup" }, makeCtx());
+    await handlers.get("before_agent_start")?.({ prompt: "do a thing", systemPrompt: "SYS" }, makeCtx());
+    expect(seen.images).toBeUndefined();
   });
 
   test("onBeforeAgentStart ContextContribution[] -> pi's { systemPrompt } result", async () => {

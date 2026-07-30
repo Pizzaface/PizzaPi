@@ -24,6 +24,59 @@ interface CollectedContribution {
 
 const MAX_CONSECUTIVE_ERRORS = 3;
 
+/**
+ * Races a provider hook against `ctx.timeoutMs` and `ctx.signal`. Takes a
+ * thunk (not an already-created promise) so an already-aborted signal skips
+ * *invoking* the hook entirely instead of calling it and discarding the
+ * result — promise arguments are evaluated eagerly in JS, so `withTimeout(p(),
+ * ...)` would already have started `p()`'s side effects by the time the
+ * abort check runs.
+ *
+ * Exported (not a private ProviderBridge method) so callers that invoke
+ * provider hooks outside the bridge — e.g. the pi extension adapter's
+ * `provider.init()`/`provider.dispose()`, which the bridge doesn't own — get
+ * the exact same bounded-cancellation semantics instead of a bespoke copy.
+ */
+export async function withProviderTimeout<T>(
+  fn: () => Promise<T>,
+  ctx: ProviderContext,
+  providerId: string,
+): Promise<T> {
+  if (ctx.signal.aborted) {
+    throw new Error(`Provider "${providerId}" call aborted before execution`);
+  }
+
+  // A deadline is a shared budget for sequential provider hooks, not a fresh
+  // timeout per provider.
+  const remainingMs = ctx.deadline !== undefined ? ctx.deadline - Date.now() : ctx.timeoutMs;
+  const effectiveTimeoutMs = Math.max(0, Math.min(ctx.timeoutMs, remainingMs));
+  if (effectiveTimeoutMs === 0) {
+    throw new Error(`Provider "${providerId}" call skipped: overall deadline already elapsed`);
+  }
+
+  const promise = fn();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      reject(new Error(`Provider "${providerId}" timed out after ${effectiveTimeoutMs}ms`));
+    }, effectiveTimeoutMs);
+  });
+
+  const abortPromise = new Promise<never>((_, reject) => {
+    const onAbort = () => {
+      ctx.signal.removeEventListener("abort", onAbort);
+      reject(new Error(`Provider "${providerId}" call aborted`));
+    };
+    ctx.signal.addEventListener("abort", onAbort, { once: true });
+  });
+
+  try {
+    return await Promise.race([promise, timeoutPromise, abortPromise]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
 export class ProviderBridge {
   #providers: ExtensionProvider[];
   #disabled = new Set<string>();
@@ -54,8 +107,8 @@ export class ProviderBridge {
       if (!isContextProvider(provider)) continue;
 
       try {
-        const contributions = await this.#withTimeout(
-          provider.onBeforeAgentStart(event, ctx),
+        const contributions = await withProviderTimeout(
+          () => provider.onBeforeAgentStart(event, ctx),
           ctx,
           provider.id,
         );
@@ -154,25 +207,28 @@ export class ProviderBridge {
     for (const provider of this.#providers) {
       if (this.#disabled.has(provider.id)) continue;
       if (!isLifecycleHook(provider)) continue;
-      if (!provider.onSessionStart) continue;
+      const hook = provider.onSessionStart;
+      if (!hook) continue;
       try {
-        await this.#withTimeout(
-          provider.onSessionStart(event, ctx),
-          ctx,
-          provider.id,
-        );
+        await withProviderTimeout(() => hook(event, ctx), ctx, provider.id);
       } catch (err) {
         this.#recordError(provider.id, err);
       }
     }
   }
 
+  /**
+   * Bounded by `ctx.timeoutMs`/`ctx.signal` via `withProviderTimeout`, same as
+   * every other hook — a hung `onSessionShutdown` used to be able to hang the
+   * whole shutdown path (dispose/reload/new/resume/quit) indefinitely.
+   */
   async onSessionShutdown(event: SessionShutdownEvent, ctx: ProviderContext): Promise<void> {
     for (const provider of this.#providers) {
       if (!isLifecycleHook(provider)) continue;
-      if (!provider.onSessionShutdown) continue;
+      const hook = provider.onSessionShutdown;
+      if (!hook) continue;
       try {
-        await provider.onSessionShutdown(event, ctx);
+        await withProviderTimeout(() => hook(event, ctx), ctx, provider.id);
       } catch {
         // Silent — we're shutting down
       }
@@ -183,13 +239,10 @@ export class ProviderBridge {
     for (const provider of this.#providers) {
       if (this.#disabled.has(provider.id)) continue;
       if (!isLifecycleHook(provider)) continue;
-      if (!provider.onTurnEnd) continue;
+      const hook = provider.onTurnEnd;
+      if (!hook) continue;
       try {
-        await this.#withTimeout(
-          provider.onTurnEnd(event, ctx),
-          ctx,
-          provider.id,
-        );
+        await withProviderTimeout(() => hook(event, ctx), ctx, provider.id);
         this.#errorCounts.set(provider.id, 0);
       } catch (err) {
         this.#recordError(provider.id, err);
@@ -201,70 +254,21 @@ export class ProviderBridge {
     for (const provider of this.#providers) {
       if (this.#disabled.has(provider.id)) continue;
       if (!isLifecycleHook(provider)) continue;
-      if (!provider.onSessionClose) continue;
+      const hook = provider.onSessionClose;
+      if (!hook) continue;
       // Providers run sequentially; without this check N providers could add
       // up to N * timeoutMs of wall time. ctx.deadline (set by the caller,
       // e.g. runProviderSessionClose) is one overall budget for the whole
       // loop, not per provider — stop trying once it's gone.
       if (ctx.deadline !== undefined && Date.now() >= ctx.deadline) break;
       try {
-        const result = await this.#withTimeout(
-          provider.onSessionClose(event, ctx),
-          ctx,
-          provider.id,
-        );
+        const result = await withProviderTimeout(() => hook(event, ctx), ctx, provider.id);
         if (result) return result;
       } catch (err) {
         this.#recordError(provider.id, err);
       }
     }
     return null;
-  }
-
-  /**
-   * Wraps a provider hook promise with timeout and abort signal enforcement.
-   * If the abort signal fires, the promise is rejected with an AbortError.
-   * If the timeout elapses, the promise is rejected with a timeout error.
-   */
-  async #withTimeout<T>(
-    promise: Promise<T>,
-    ctx: ProviderContext,
-    providerId: string,
-  ): Promise<T> {
-    if (ctx.signal.aborted) {
-      throw new Error(`Provider "${providerId}" call aborted before execution`);
-    }
-
-    // ctx.deadline (if set) is one overall budget shared across a loop over
-    // providers — cap this call's timeout to whatever's left of it so N
-    // providers can't each burn a full timeoutMs.
-    const remainingMs = ctx.deadline !== undefined ? ctx.deadline - Date.now() : ctx.timeoutMs;
-    const effectiveTimeoutMs = Math.max(0, Math.min(ctx.timeoutMs, remainingMs));
-    if (effectiveTimeoutMs === 0) {
-      throw new Error(`Provider "${providerId}" call skipped: overall deadline already elapsed`);
-    }
-
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const timeoutPromise = new Promise<never>((_, reject) => {
-      timer = setTimeout(() => {
-        reject(new Error(`Provider "${providerId}" timed out after ${effectiveTimeoutMs}ms`));
-      }, effectiveTimeoutMs);
-    });
-
-    const abortPromise = new Promise<never>((_, reject) => {
-      const onAbort = () => {
-        ctx.signal.removeEventListener("abort", onAbort);
-        reject(new Error(`Provider "${providerId}" call aborted`));
-      };
-      ctx.signal.addEventListener("abort", onAbort, { once: true });
-    });
-
-    try {
-      const result = await Promise.race([promise, timeoutPromise, abortPromise]);
-      return result;
-    } finally {
-      if (timer !== undefined) clearTimeout(timer);
-    }
   }
 
   #recordError(providerId: string, err: unknown): void {
