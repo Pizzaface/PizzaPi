@@ -285,7 +285,9 @@ export function registerChildLifecycleHandlers(socket: RelaySocket, io: SocketIO
             // that clearAndCancelPendingTriggers() emitted just before this event.
             // The trigger_response handler checks targetSession.parentSessionId; if
             // we clear it concurrently, the check fails with "Sender is not the
-            // parent" and the child is left blocked until its 5-minute timeout.
+            // parent" and the child is left blocked indefinitely — child-side waits
+            // no longer have a fallback timeout (see waitForTriggerResponse), so the
+            // parent_delinked event below is now the only way to unblock it.
             //
             // Instead, parentSessionId is cleaned up lazily: registerTuiSession
             // checks isChildDelinked() on reconnect and clears the stale field

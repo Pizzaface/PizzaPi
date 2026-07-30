@@ -296,7 +296,7 @@ export function createRelayContext(
 
         waitForTriggerResponse(
             triggerId: string,
-            timeoutMs: number,
+            timeoutMs?: number,
             signal?: AbortSignal,
         ): Promise<TriggerResponse> {
             return new Promise<TriggerResponse>((resolve) => {
@@ -310,12 +310,19 @@ export function createRelayContext(
                     resolve(result);
                 };
 
-                const timeout = setTimeout(() => {
-                    finish({
-                        response: "Trigger timed out — no response from parent within 5 minutes.",
-                        cancelled: true,
-                    });
-                }, timeoutMs);
+                // ponytail: no default timeout — a session waiting on a parent's
+                // ack (plan review / question answer) waits until it gets a real
+                // response, an explicit cancel, a delivery failure, or its own
+                // connection/abort tears it down. Callers may still opt into a
+                // bounded wait by passing a positive timeoutMs.
+                const timeout = timeoutMs && timeoutMs > 0
+                    ? setTimeout(() => {
+                        finish({
+                            response: `Trigger timed out — no response from parent within ${Math.round(timeoutMs / 1000)}s.`,
+                            cancelled: true,
+                        });
+                    }, timeoutMs)
+                    : undefined;
 
                 const handler = (data: { triggerId: string; response: string; action?: string }) => {
                     if (data.triggerId === triggerId) {
@@ -341,7 +348,7 @@ export function createRelayContext(
                 };
 
                 const cleanup = () => {
-                    clearTimeout(timeout);
+                    if (timeout) clearTimeout(timeout);
                     unregisterWait();
                     rctx.sioSocket?.off("trigger_response" as any, handler);
                     rctx.sioSocket?.off("session_message_error" as any, errorHandler);

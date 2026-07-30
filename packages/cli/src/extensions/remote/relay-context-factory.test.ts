@@ -128,4 +128,30 @@ describe("createRelayContext child trigger delivery", () => {
             cancelled: false,
         });
     });
+
+    test("waitForTriggerResponse with no timeoutMs never auto-cancels — only settles on a real response", async () => {
+        const rctx = createRelayContext({}, createTriggerWaitManager(), { lastBroadcastSessionName: null });
+        const socket = createSocketMock();
+        rctx.relay = { sessionId: "child-1", token: "relay-token", shareUrl: "", seq: 0, ackedSeq: 0 };
+        rctx.sioSocket = socket as any;
+        rctx.parentSessionId = "parent-1";
+
+        const responsePromise = rctx.waitForTriggerResponse("trigger-1");
+
+        // Still unsettled well past what used to be an arbitrary bounded wait —
+        // with no timeoutMs, nothing should auto-cancel it.
+        const raceResult = await Promise.race([
+            responsePromise.then(() => "settled" as const),
+            new Promise<"pending">((resolve) => setTimeout(() => resolve("pending"), 50)),
+        ]);
+        expect(raceResult).toBe("pending");
+
+        socket.fire("trigger_response", { triggerId: "trigger-1", response: "Approved", action: "approve" });
+
+        await expect(responsePromise).resolves.toEqual({
+            response: "Approved",
+            action: "approve",
+            cancelled: false,
+        });
+    });
 });

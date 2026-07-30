@@ -448,10 +448,12 @@ export function registerAskUserTool(rctx: RelayContext) {
                         options: questions.flatMap(q => q.options),
                         questions,
                     },
-                    deliverAs: "followUp" as const,
+                    // steer: the child is blocked waiting on this answer (indefinitely,
+                    // see waitForTriggerResponse) — the parent must be interrupted to see
+                    // it now, not whenever its current turn queue happens to drain.
+                    deliverAs: "steer" as const,
                     expectsResponse: true,
                     triggerId,
-                    timeoutMs: 300_000,
                     ts: new Date().toISOString(),
                 };
 
@@ -471,7 +473,8 @@ export function registerAskUserTool(rctx: RelayContext) {
                     };
                 }
 
-                const triggerResult = await rctx.waitForTriggerResponse(triggerId, trigger.timeoutMs, signal);
+                // No timeout: wait until the parent actually responds (or cancels).
+                const triggerResult = await rctx.waitForTriggerResponse(triggerId, undefined, signal);
 
                 return {
                     content: [{ type: "text", text: triggerResult.response }],

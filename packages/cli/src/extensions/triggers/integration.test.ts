@@ -90,16 +90,16 @@ describe("trigger routing flow", () => {
             expect(receivedTriggers.has("trigger-1")).toBe(false);
         });
 
-        it("prunes stale entries when tracking new triggers", () => {
-            // Manually insert a stale entry (older than TTL)
-            receivedTriggers.set("stale-trigger", {
+        it("does not prune old entries when tracking new triggers — pending triggers never expire", () => {
+            // Manually insert an old entry (a parent that's taken a long time to respond)
+            receivedTriggers.set("old-trigger", {
                 sourceSessionId: "old-child",
                 type: "ask_user_question",
-                trackedAt: Date.now() - 15 * 60 * 1000, // 15 minutes ago (TTL is 10 min)
+                trackedAt: Date.now() - 60 * 60 * 1000, // 1 hour ago
             });
-            // Tracking a new trigger should prune the stale one
+            // Tracking a new trigger must not evict the old, still-pending one.
             trackReceivedTrigger("fresh-trigger", "new-child", "plan_review");
-            expect(receivedTriggers.has("stale-trigger")).toBe(false);
+            expect(receivedTriggers.has("old-trigger")).toBe(true);
             expect(receivedTriggers.has("fresh-trigger")).toBe(true);
         });
     });

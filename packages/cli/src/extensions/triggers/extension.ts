@@ -39,11 +39,16 @@ function isJsonValue(value: unknown): value is JsonValue {
     return false;
 }
 
-/** Tracks triggers this session has received (as parent) for response routing. */
+/** Tracks triggers this session has received (as parent) for response routing.
+ *  No TTL: a trigger stays pending until explicitly handled (markTriggerHandled)
+ *  or cleared (clearAndCancelPendingTriggers on /new). A parent that takes a
+ *  long time to respond must never find its own bookkeeping expired the
+ *  trigger out from under it — see waitForTriggerResponse, which likewise no
+ *  longer times out the child side of this same wait. */
 export const receivedTriggers = new Map<string, { sourceSessionId: string; type: string; trackedAt: number }>();
+// Dedup guard so a re-delivered triggerId (e.g. after escalation) isn't re-tracked as new.
 const handledTriggerTombstones = new Map<string, number>();
 
-const TRIGGER_TTL_MS = 10 * 60 * 1000; // 10 minutes
 const TRIGGER_RESPONSE_ACK_TIMEOUT_MS = 10_000;
 
 export async function sendTriggerResponseWithAck(
@@ -135,27 +140,14 @@ export function clearAndCancelPendingTriggers(
     return { cancelled: count, sent, failed };
 }
 
-function pruneTriggerTracking(now: number): void {
-    for (const [id, entry] of receivedTriggers) {
-        if (now - entry.trackedAt > TRIGGER_TTL_MS) receivedTriggers.delete(id);
-    }
-    for (const [id, handledAt] of handledTriggerTombstones) {
-        if (now - handledAt > TRIGGER_TTL_MS) handledTriggerTombstones.delete(id);
-    }
-}
-
 export function markTriggerHandled(triggerId: string): void {
-    const now = Date.now();
-    handledTriggerTombstones.set(triggerId, now);
+    handledTriggerTombstones.set(triggerId, Date.now());
     receivedTriggers.delete(triggerId);
-    pruneTriggerTracking(now);
 }
 
 export function trackReceivedTrigger(triggerId: string, sourceSessionId: string, type: string): boolean {
-    const now = Date.now();
-    pruneTriggerTracking(now);
     if (receivedTriggers.has(triggerId) || handledTriggerTombstones.has(triggerId)) return false;
-    receivedTriggers.set(triggerId, { sourceSessionId, type, trackedAt: now });
+    receivedTriggers.set(triggerId, { sourceSessionId, type, trackedAt: Date.now() });
     return true;
 }
 
@@ -310,12 +302,7 @@ export const triggersExtension: ExtensionFactory = (pi) => {
             }
             const pending = receivedTriggers.get(params.triggerId);
             if (!pending) {
-                return { content: [{ type: "text" as const, text: `Error: No pending trigger with ID ${params.triggerId}. It may have already been responded to or timed out.` }], details: null as any };
-            }
-            // Enforce TTL — reject if the trigger has expired (child likely already timed out)
-            if (Date.now() - pending.trackedAt > TRIGGER_TTL_MS) {
-                receivedTriggers.delete(params.triggerId);
-                return { content: [{ type: "text" as const, text: `Error: Trigger ${params.triggerId} has expired (older than ${TRIGGER_TTL_MS / 60_000} minutes). The child session likely already timed out.` }], details: null as any };
+                return { content: [{ type: "text" as const, text: `Error: No pending trigger with ID ${params.triggerId}. It may have already been responded to.` }], details: null as any };
             }
 
             // session_complete is respondable but handled differently:

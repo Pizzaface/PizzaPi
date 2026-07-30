@@ -1,9 +1,15 @@
 /**
  * Follow-up grace period and session-complete trigger for child sessions.
  *
- * After a child session's agent_end, the parent has a configurable grace
- * period to send a follow-up message.  If no follow-up arrives the session
- * shuts down automatically.
+ * After a child session's agent_end, it fires session_complete and then
+ * waits for the parent to deal with it — ack, follow up, or explicitly tear
+ * it down (cleanup_child_session / delink). There is no auto-shutdown clock:
+ * a completed child is cheap to leave idle, and a timer here would repeat
+ * the exact bug this module's sibling fix addressed for waitForTriggerResponse
+ * — killing a session out from under a parent that just hasn't gotten to it
+ * yet. The only shutdown paths are explicit: new work arriving (turn_start
+ * clears the grace state) or the parent permanently delinking
+ * (shutdownFollowUpGraceImmediately, a real event, not a timeout).
  *
  * fireSessionComplete emits the session_complete trigger to the parent once
  * and is idempotent thereafter.
@@ -15,7 +21,6 @@ import { createLogger } from "@pizzapi/tools";
 import type { RelayContext } from "../remote-types.js";
 import { emitSessionCompleteWithAck } from "./session-complete-delivery.js";
 
-const FOLLOWUP_GRACE_MS = 10 * 60 * 1_000;
 const SESSION_COMPLETE_RETRY_MS = 3_000;
 const log = createLogger("remote");
 
@@ -23,7 +28,7 @@ const log = createLogger("remote");
  * True when an agent_end on a child session came from a manual abort (Esc /
  * abort exec) rather than a real shutdown. In that case session_complete must
  * NOT be sent — the parent would ack "killed" and tear the session down — and
- * no follow-up grace timer should start: the user took control and will steer
+ * no follow-up grace should start: the user took control and will steer
  * or end the session themselves.
  */
 export function isManualAbort(opts: { wasAborted: boolean; shuttingDown: boolean }): boolean {
@@ -33,7 +38,7 @@ export function isManualAbort(opts: { wasAborted: boolean; shuttingDown: boolean
 export interface FollowUpGraceState {
     /** Set to true once session_complete has been emitted — prevents double-fire. */
     sessionCompleteFired: boolean;
-    followUpGraceTimer: ReturnType<typeof setTimeout> | null;
+    /** The shutdown callback to invoke if the parent explicitly delinks. No timer ever fires this on its own. */
     followUpGraceShutdown: (() => void) | null;
     /** Increments on each new turn/session so stale completion promises can be ignored. */
     sessionCompleteGeneration: number;
@@ -69,10 +74,6 @@ export function createFollowUpGrace(
     const logger = deps?.logger ?? log;
 
     function clearFollowUpGrace(): void {
-        if (state.followUpGraceTimer !== null) {
-            clearTimeout(state.followUpGraceTimer);
-            state.followUpGraceTimer = null;
-        }
         if (state.sessionCompleteRetryTimer !== null) {
             clearTimeout(state.sessionCompleteRetryTimer);
             state.sessionCompleteRetryTimer = null;
@@ -80,7 +81,7 @@ export function createFollowUpGrace(
         state.followUpGraceShutdown = null;
     }
 
-    /** If the grace timer is running, fire its shutdown callback immediately. */
+    /** If grace is armed, fire its shutdown callback immediately (parent permanently delinked — a real event, not a timeout). */
     function shutdownFollowUpGraceImmediately(): void {
         if (state.followUpGraceShutdown) {
             const shutdown = state.followUpGraceShutdown;
@@ -91,26 +92,15 @@ export function createFollowUpGrace(
     }
 
     /**
-     * Start the follow-up grace period.  After FOLLOWUP_GRACE_MS without a
-     * follow-up from the parent the session shuts itself down.
+     * Arm the follow-up grace: remember how to shut down, but never do so on
+     * a clock. The session waits — indefinitely — for the parent to ack,
+     * follow up (clearFollowUpGrace via turn_start), or explicitly delink
+     * (shutdownFollowUpGraceImmediately).
      */
     function startFollowUpGrace(ctx: { shutdown: () => void }): void {
         clearFollowUpGrace();
         state.followUpGraceShutdown = ctx.shutdown;
-        logger.info(`pizzapi: waiting ${FOLLOWUP_GRACE_MS / 1_000}s for parent follow-up before shutting down`);
-        state.followUpGraceTimer = setTimeout(() => {
-            state.followUpGraceTimer = null;
-            state.followUpGraceShutdown = null;
-            logger.info("pizzapi: follow-up grace period expired — shutting down");
-            ctx.shutdown();
-        }, FOLLOWUP_GRACE_MS);
-        if (
-            state.followUpGraceTimer &&
-            typeof state.followUpGraceTimer === "object" &&
-            "unref" in state.followUpGraceTimer
-        ) {
-            (state.followUpGraceTimer as NodeJS.Timeout).unref();
-        }
+        logger.info("pizzapi: session complete — waiting for parent ack/follow-up (no auto-shutdown)");
     }
 
     /**
