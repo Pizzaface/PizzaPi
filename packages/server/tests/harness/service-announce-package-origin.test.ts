@@ -14,7 +14,7 @@
  * require sequential server creation — see mock-runner.test.ts).
  */
 import { describe, test, expect } from "bun:test";
-import type { ServicePanelInfo, ServiceTriggerDef, ServiceSigilDef, ServiceAnnounceData } from "@pizzapi/protocol";
+import type { ServicePanelInfo, ServiceTriggerDef, ServiceSigilDef, ServiceAnnounceData, ServiceAnnounceDelta } from "@pizzapi/protocol";
 import { createTestServer } from "./server.js";
 import { TestScenario } from "./scenario.js";
 import type { TestServer } from "./types.js";
@@ -231,10 +231,10 @@ describe("package-origin service_announce integration", () => {
                     });
                 });
 
-                // Wait for the re-announce the mock runner sends in response to
-                // reconfigure_services (mirrors daemon.ts's emitServiceAnnounce()).
-                const reannouncePromise = new Promise<ServiceAnnounceData>((resolve, reject) => {
-                    const timer = setTimeout(() => reject(new Error("timed out waiting for reconfigure re-announce")), 8000);
+                // The daemon removes disabled non-built-ins and their metadata
+                // from service_announce, retaining only disabledServiceIds.
+                const disabledAnnounce = new Promise<ServiceAnnounceData>((resolve, reject) => {
+                    const timer = setTimeout(() => reject(new Error("timed out waiting for disabled re-announce")), 8000);
                     viewer.socket.on("service_announce", (data) => {
                         const d = data as ServiceAnnounceData;
                         if (d.disabledServiceIds?.includes(PACKAGE_SERVICE_ID)) {
@@ -254,16 +254,46 @@ describe("package-origin service_announce integration", () => {
                 );
                 expect(putRes.status).toBe(200);
 
-                const reannounce = await reannouncePromise;
-                expect(reannounce.disabledServiceIds).toContain(PACKAGE_SERVICE_ID);
-                // Disabling never drops the service's metadata — the UI still needs
-                // labels/panel info to render a "disabled" row.
-                expect(reannounce.serviceIds).toContain(PACKAGE_SERVICE_ID);
+                const disabled = await disabledAnnounce;
+                expect(disabled.disabledServiceIds).toContain(PACKAGE_SERVICE_ID);
+                expect(disabled.serviceIds).not.toContain(PACKAGE_SERVICE_ID);
+                expect(disabled.panels).not.toContainEqual(PACKAGE_PANEL);
+                expect(disabled.triggerDefs).not.toContainEqual(PACKAGE_TRIGGER);
+                expect(disabled.sigilDefs).not.toContainEqual(PACKAGE_SIGIL);
 
-                // Persisted state (what a reload would GET) reflects the disable too.
+                // Persisted state (what a reload would GET) matches the daemon too.
                 const res = await server.fetch(`/api/runners/${encodeURIComponent(runner.runnerId)}/services`);
                 const body = await res.json() as ServiceAnnounceData;
                 expect(body.disabledServiceIds).toContain(PACKAGE_SERVICE_ID);
+                expect(body.serviceIds).not.toContain(PACKAGE_SERVICE_ID);
+                expect(body.panels).not.toContainEqual(PACKAGE_PANEL);
+                expect(body.triggerDefs).not.toContainEqual(PACKAGE_TRIGGER);
+                expect(body.sigilDefs).not.toContainEqual(PACKAGE_SIGIL);
+
+                const enabledAnnounce = new Promise<ServiceAnnounceDelta>((resolve, reject) => {
+                    const timer = setTimeout(() => reject(new Error("timed out waiting for enabled re-announce")), 8000);
+                    viewer.socket.on("service_announce_delta", (data) => {
+                        const d = data as ServiceAnnounceDelta;
+                        if (d.added.serviceIds.includes(PACKAGE_SERVICE_ID)) {
+                            clearTimeout(timer);
+                            resolve(d);
+                        }
+                    });
+                });
+                const reenableRes = await server.fetch(
+                    `/api/runners/${encodeURIComponent(runner.runnerId)}/services/${encodeURIComponent(PACKAGE_SERVICE_ID)}/enabled`,
+                    {
+                        method: "PUT",
+                        headers: { "content-type": "application/json" },
+                        body: JSON.stringify({ enabled: true }),
+                    },
+                );
+                expect(reenableRes.status).toBe(200);
+
+                const enabled = await enabledAnnounce;
+                expect(enabled.added.panels).toContainEqual(PACKAGE_PANEL);
+                expect(enabled.added.triggerDefs).toContainEqual(PACKAGE_TRIGGER);
+                expect(enabled.added.sigilDefs).toContainEqual(PACKAGE_SIGIL);
             } finally {
                 await scenario.teardown();
                 await cleanupServer(server);

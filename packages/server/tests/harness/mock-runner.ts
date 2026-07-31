@@ -300,6 +300,21 @@ export async function createMockRunner(
     let currentTriggerDefs: ServiceTriggerDef[] = opts?.triggerDefs ?? [];
     let currentSigilDefs: ServiceSigilDef[] = opts?.sigilDefs ?? [];
     const disabledServiceIdsSet = new Set<string>();
+    // The daemon never unloads these runtime-pinned built-ins on reconfigure.
+    const nonDisableableServiceIds = new Set(["terminal", "file-explorer", "git", "time", "tunnel"]);
+
+    const emitServiceAnnounce = () => {
+        const activeServiceIds = new Set(currentServiceIds.filter(
+            (id) => !disabledServiceIdsSet.has(id) || nonDisableableServiceIds.has(id),
+        ));
+        (socket as any).emit("service_announce", {
+            serviceIds: Array.from(activeServiceIds),
+            ...(disabledServiceIdsSet.size > 0 ? { disabledServiceIds: Array.from(disabledServiceIdsSet) } : {}),
+            ...(currentPanels.length > 0 ? { panels: currentPanels.filter((panel) => activeServiceIds.has(panel.serviceId)) } : {}),
+            ...(currentTriggerDefs.length > 0 ? { triggerDefs: currentTriggerDefs.filter((trigger) => activeServiceIds.has(trigger.type.split(":")[0])) } : {}),
+            ...(currentSigilDefs.length > 0 ? { sigilDefs: currentSigilDefs.filter((sigil) => activeServiceIds.has(sigil.serviceId ?? sigil.type.split(":")[0])) } : {}),
+        });
+    };
 
     // Populate initial skills
     const initialSkills = opts?.skills ?? defaultSkills();
@@ -785,16 +800,8 @@ export async function createMockRunner(
         const incoming = Array.isArray(data?.disabledServiceIds) ? data.disabledServiceIds as string[] : [];
         disabledServiceIdsSet.clear();
         for (const id of incoming) disabledServiceIdsSet.add(id);
-        // Real daemon re-emits a full service_announce after applying the
-        // reconfigure command so the server (and Redis persistence) picks up
-        // the new disabledServiceIds — mirror that here.
-        (socket as any).emit("service_announce", {
-            serviceIds: currentServiceIds,
-            ...(disabledServiceIdsSet.size > 0 ? { disabledServiceIds: Array.from(disabledServiceIdsSet) } : {}),
-            ...(currentPanels.length > 0 ? { panels: currentPanels } : {}),
-            ...(currentTriggerDefs.length > 0 ? { triggerDefs: currentTriggerDefs } : {}),
-            ...(currentSigilDefs.length > 0 ? { sigilDefs: currentSigilDefs } : {}),
-        });
+        // Real daemon re-emits only active service metadata after reconfigure.
+        emitServiceAnnounce();
     });
 
     // --- Plugins ---
@@ -1238,13 +1245,7 @@ export async function createMockRunner(
             currentPanels = panels ?? [];
             currentTriggerDefs = triggerDefs ?? [];
             currentSigilDefs = sigilDefs ?? [];
-            (socket as any).emit("service_announce", {
-                serviceIds,
-                ...(disabledServiceIdsSet.size > 0 ? { disabledServiceIds: Array.from(disabledServiceIdsSet) } : {}),
-                ...(currentPanels.length > 0 ? { panels: currentPanels } : {}),
-                ...(currentTriggerDefs.length > 0 ? { triggerDefs: currentTriggerDefs } : {}),
-                ...(currentSigilDefs.length > 0 ? { sigilDefs: currentSigilDefs } : {}),
-            });
+            emitServiceAnnounce();
         },
 
         onSkillRequest(handler: (data: unknown) => unknown): void {

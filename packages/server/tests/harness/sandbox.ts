@@ -708,7 +708,7 @@ async function main() {
                 serviceId: GODMOTHER_LITE_SERVICE_ID,
                 description: "Reference to a Godmother Lite idea",
                 icon: "lightbulb",
-                resolve: "/api/resolve/gm-idea",
+                resolve: "/api/resolve/gm-idea/{id}",
                 resolvePort: godmotherLitePort,
             },
         ],

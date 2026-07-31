@@ -104,26 +104,18 @@ describe("RunnerServicesPanel", () => {
     });
   });
 
-  test("renders a disabled service exactly once (serviceIds already includes disabled ids)", async () => {
-    // Wire semantics (see daemon.ts emitServiceAnnounce): `serviceIds` lists
-    // EVERY registered service — disabling one does not remove it from that
-    // array, `disabledServiceIds` is just a subset marker. A package-origin
-    // service surfaced this: naive concatenation of the two arrays rendered
-    // a disabled service twice.
-    const dupFetchSpy = mock(async () => ({
+  test("renders a disabled-only service without stale metadata", async () => {
+    const disabledFetchSpy = mock(async () => ({
       ok: true,
       json: async () => ({
-        serviceIds: ["demo", "godmother-lite"],
+        serviceIds: ["demo"],
         disabledServiceIds: ["godmother-lite"],
-        panels: [
-          { serviceId: "demo", port: 1234, label: "Demo", icon: "server" },
-          { serviceId: "godmother-lite", port: 5678, label: "Godmother Lite", icon: "sparkles" },
-        ],
+        panels: [{ serviceId: "demo", port: 1234, label: "Demo", icon: "server" }],
         triggerDefs: [],
         sigilDefs: [],
       }),
     } as unknown as Response));
-    (globalThis as any).fetch = dupFetchSpy;
+    (globalThis as any).fetch = disabledFetchSpy;
 
     let container!: HTMLElement;
     await act(async () => {
@@ -134,12 +126,9 @@ describe("RunnerServicesPanel", () => {
       ));
     });
 
-    await waitFor(() => expect(container.textContent).toContain("Godmother Lite"));
-
-    const godmotherOccurrences = container.querySelectorAll(".text-sm.font-medium.truncate");
-    const labels = Array.from(godmotherOccurrences).map((el) => el.textContent);
-    expect(labels.filter((l) => l === "Godmother Lite")).toHaveLength(1);
+    await waitFor(() => expect(container.textContent).toContain("godmother-lite"));
     expect(container.textContent).toContain("Disabled");
+    expect(container.textContent).not.toContain("Godmother Lite");
 
     (globalThis as any).fetch = fetchSpy;
   });
