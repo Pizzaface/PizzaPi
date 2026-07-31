@@ -30,9 +30,14 @@ import { providerExtension } from "./providers/extension.js";
 import { sessionAnalysisExtension } from "./session-analysis.js";
 import { providerRequestLogExtension } from "./provider-request-log.js";
 import { createResourcePathsExtension } from "./resource-paths.js";
+import { hostAnnounceExtension } from "./host-announce.js";
+import { createPackageOverlayRulesExtension } from "./package-overlay-rules.js";
+import { resolveAgentDir } from "../config.js";
 
 export interface BuildExtensionFactoriesOptions {
     cwd: string;
+    /** Resolved agent dir. Defaults to `resolveAgentDir(cwd)` when omitted. */
+    agentDir?: string;
     hooks?: HooksConfig;
     includeInitialPrompt?: boolean;
     /** Skip MCP server connections (safe mode). */
@@ -58,6 +63,12 @@ function named(factory: ExtensionFactory, displayName: string): ExtensionFactory
  */
 export function buildPizzaPiExtensionFactories(options: BuildExtensionFactoriesOptions): ExtensionFactory[] {
     const factories: ExtensionFactory[] = [];
+    const agentDir = options.agentDir ?? resolveAgentDir(options.cwd);
+
+    // Host capability announcement — first among PizzaPi's own inline
+    // factories so package extensions subscribed via onPizzaPiHost() see
+    // pizzapi:host:ready as early as possible (§9.3).
+    factories.push(named(hostAnnounceExtension, "host-announce"));
 
     // Static Ollama Cloud provider + fallback model catalog baseline — must
     // run before other factories so --provider ollama-cloud and model listing
@@ -128,6 +139,14 @@ export function buildPizzaPiExtensionFactories(options: BuildExtensionFactoriesO
     const hooksExtension = createHooksExtension(options.hooks, options.cwd);
     if (hooksExtension) {
         factories.push(named(hooksExtension, "hooks"));
+    }
+
+    // pi.pizzapi.rules from configured packages — registered BEFORE the
+    // legacy Claude-plugin rules adapter below so package rules land in the
+    // system prompt first ("package-before-legacy" ordering, §4.3).
+    const overlayRulesExtension = createPackageOverlayRulesExtension(options.cwd, agentDir);
+    if (overlayRulesExtension) {
+        factories.push(named(overlayRulesExtension, "package-overlay-rules"));
     }
 
     // Claude Code plugin adapter — discovers and loads plugins from standard dirs

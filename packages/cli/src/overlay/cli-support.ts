@@ -7,12 +7,13 @@
  * docs/specs/pi-pizzapi-overlay.md §7.3.
  */
 import { createInterface } from "node:readline";
-import { DefaultPackageManager, SettingsManager } from "@earendil-works/pi-coding-agent";
+import type { DefaultPackageManager } from "@earendil-works/pi-coding-agent";
 import { c } from "../cli-colors.js";
 import { loadGlobalConfig } from "../config/io.js";
 import { computePackageIdentity, packageScopeBaseDir } from "./identity.js";
 import { formatOverlayIssue, readOverlayManifest, type OverlayReadResult, type PackageProvenance } from "./manifest.js";
 import { getGrantedServiceIds, grantServices, revokeServices, resolveServiceGrantState } from "./grants.js";
+import { dedupeConfiguredPackages, packageManagerFor, type ConfiguredPkg } from "./resolve.js";
 import { defaultStatePath, isPidRunning, type RunnerState } from "../runner/runner-state.js";
 import { existsSync, readFileSync } from "node:fs";
 
@@ -74,14 +75,6 @@ function askYesNo(question: string): Promise<boolean> {
     });
 }
 
-function packageManagerFor(cwd: string, agentDir: string): DefaultPackageManager {
-    const settingsManager = SettingsManager.create(cwd, agentDir);
-    return new DefaultPackageManager({ cwd, agentDir, settingsManager });
-}
-
-/** `ConfiguredPackage` isn't re-exported from the package root; derive it structurally. */
-type ConfiguredPkg = ReturnType<DefaultPackageManager["listConfiguredPackages"]>[number];
-
 interface ConfiguredMatch {
     provenance: PackageProvenance;
     installedPath: string;
@@ -126,36 +119,6 @@ function readOverlayFor(cwd: string, agentDir: string, source: string, scope: "u
     const match = findConfiguredOverlaySource(pm, source, scope, cwd, agentDir);
     if (!match) return undefined;
     return { provenance: match.provenance, result: readOverlayManifest(match.installedPath, match.provenance) };
-}
-
-/**
- * Dedupe configured packages by normalized identity before display —
- * project entries override user entries for the same identity, matching
- * pi's own scope/dedup rule (docs/packages.md "Scope and Deduplication").
- * Preserves stable order: the winning entry keeps the position of its first
- * occurrence, only its content (source/scope) is replaced.
- */
-function dedupeConfiguredPackages(
-    configured: ConfiguredPkg[],
-    cwd: string,
-    agentDir: string,
-): Array<{ identity: string; pkg: ConfiguredPkg }> {
-    const order: string[] = [];
-    const byIdentity = new Map<string, { identity: string; pkg: ConfiguredPkg }>();
-    for (const pkg of configured) {
-        const baseDir = packageScopeBaseDir(pkg.scope, cwd, agentDir);
-        const identity = computePackageIdentity(pkg.source, baseDir).identity;
-        const existing = byIdentity.get(identity);
-        if (!existing) {
-            byIdentity.set(identity, { identity, pkg });
-            order.push(identity);
-            continue;
-        }
-        if (pkg.scope === "project" && existing.pkg.scope === "user") {
-            byIdentity.set(identity, { identity, pkg });
-        }
-    }
-    return order.map((identity) => byIdentity.get(identity)!);
 }
 
 /**

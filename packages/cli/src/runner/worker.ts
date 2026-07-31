@@ -4,7 +4,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { maybeBuildSystemPrompt, defaultAgentDir, expandHome, loadConfig, resolveSandboxConfig, validateSandboxOverride, applyProviderSettingsEnv } from "../config.js";
 import { buildSkillPaths, buildPromptTemplatePaths, createAgentsFilesOverride } from "../skills.js";
-import { getPluginSkillPaths } from "../extensions/claude-plugins.js";
+import { getPluginSkillPaths, getPluginPromptTemplatePaths } from "../extensions/claude-plugins.js";
 import { setRegisteredCommandsProvider } from "../extensions/command-introspection.js";
 import { initSandbox, cleanupSandbox, isSandboxActive } from "@pizzapi/tools";
 import { createBootTimer } from "./boot-timing.js";
@@ -366,6 +366,7 @@ async function main(): Promise<void> {
         agentDir,
         extensionFactories: buildPizzaPiExtensionFactories({
             cwd,
+            agentDir,
             hooks: process.env.PIZZAPI_NO_HOOKS === "1" ? undefined : config.hooks,
             includeInitialPrompt: true,
             skipMcp: process.env.PIZZAPI_NO_MCP === "1",
@@ -377,7 +378,10 @@ async function main(): Promise<void> {
             ...buildSkillPaths(cwd, config.skills),
             ...(skipPlugins ? [] : getPluginSkillPaths(cwd)),
         ],
-        additionalPromptTemplatePaths: buildPromptTemplatePaths(cwd),
+        additionalPromptTemplatePaths: [
+            ...buildPromptTemplatePaths(cwd),
+            ...(skipPlugins ? [] : getPluginPromptTemplatePaths(cwd)),
+        ],
         ...(config.systemPrompt !== undefined
             ? { systemPromptOverride: () => config.systemPrompt }
             : {}

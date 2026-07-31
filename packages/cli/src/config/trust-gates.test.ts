@@ -23,7 +23,7 @@ import {
     _setGlobalConfigDir,
 } from "./io.js";
 import { discoverProviders, globalProvidersDir } from "../providers/loader.js";
-import { createClaudePluginExtension, getPluginSkillPaths, getPluginAgentPaths } from "../extensions/claude-plugins.js";
+import { createClaudePluginExtension, getPluginSkillPaths, getPluginAgentPaths, getPluginPromptTemplatePaths } from "../extensions/claude-plugins.js";
 
 let tmpHome: string;
 let projectDir: string;
@@ -548,7 +548,11 @@ describe("trustedPlugins enforcement via createClaudePluginExtension / getPlugin
             { hasUI: false, ui: { notify() {} }, cwd: projectDir },
         );
 
-        expect(commands.has("test")).toBe(true);
+        // "test" is a top-level, plain .md command — native-compatible, so it's
+        // routed through pi's own prompt-template loader (getPluginPromptTemplatePaths)
+        // instead of the bespoke pi.registerCommand() adapter (see isNativeCompatibleCommand).
+        expect(commands.has("test")).toBe(false);
+        expect(getPluginPromptTemplatePaths(projectDir)).toContain(join(pluginDir, "commands", "test.md"));
         expect(prompted).toBe(false);
     });
 

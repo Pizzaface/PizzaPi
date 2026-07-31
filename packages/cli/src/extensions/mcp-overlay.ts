@@ -1,0 +1,150 @@
+/**
+ * Feeds `pi.pizzapi.mcp` overlay sidecars — and the legacy Claude-plugin
+ * `.mcp.json` file that was previously detected-but-ignored (`hasMcp` was a
+ * boolean only) — into the existing MCP registry (mcp-extension.ts /
+ * mcp/registry.ts). No second MCP runtime: this module only *augments* the
+ * `PizzaPiConfig & McpConfig` object that already flows into
+ * `registerMcpTools()`.
+ *
+ * Precedence (docs/specs/pi-pizzapi-overlay.md §4.3):
+ *   1. Explicit PizzaPi config (`~/.pizzapi/config.json` / project
+ *      `.pizzapi/config.json`) always wins a server-name collision — never
+ *      overridden here.
+ *   2. Between packages: project scope wins user scope, then settings
+ *      order (first configured wins).
+ *   3. Legacy global Claude-plugin `.mcp.json` servers fill in only names
+ *      nothing else has claimed — package-over-legacy, matching the same
+ *      precedence theme used for runner services (§8).
+ * `disabledMcpServers` is untouched here — it already applies by name in
+ * the existing registry regardless of where a server definition came from.
+ */
+import { existsSync, readFileSync, statSync } from "node:fs";
+import { join } from "node:path";
+import { createLogger } from "@pizzapi/tools";
+import type { PizzaPiConfig } from "../config.js";
+import type { McpConfig } from "./mcp.js";
+import { resolveSessionOverlays } from "../overlay/session-packages.js";
+import { OVERLAY_SIDECAR_MAX_BYTES, resolveConfinedPath } from "../overlay/manifest.js";
+import { discoverPlugins } from "../plugins.js";
+
+const log = createLogger("mcp-overlay");
+
+type Owner = "config" | "user" | "project" | "legacy";
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+/** Read+parse a JSON file with the same size cap overlay sidecars use. Returns undefined on any failure. */
+function readJsonCapped(path: string): unknown | undefined {
+    try {
+        if (statSync(path).size > OVERLAY_SIDECAR_MAX_BYTES) return undefined;
+        return JSON.parse(readFileSync(path, "utf-8"));
+    } catch {
+        return undefined;
+    }
+}
+
+/** Extract `{ preferred, compat }` server entries from a parsed mcp sidecar/`.mcp.json` value. */
+function extractServers(parsed: unknown): { preferred: Record<string, unknown>[]; compat: Record<string, Record<string, unknown>> } {
+    const preferred: Record<string, unknown>[] = [];
+    const compat: Record<string, Record<string, unknown>> = {};
+    if (!isRecord(parsed)) return { preferred, compat };
+    const mcpServers = isRecord(parsed.mcp) ? (parsed.mcp as Record<string, unknown>).servers : undefined;
+    if (Array.isArray(mcpServers)) {
+        for (const s of mcpServers) if (isRecord(s) && typeof s.name === "string") preferred.push(s);
+    }
+    if (isRecord(parsed.mcpServers)) {
+        for (const [name, val] of Object.entries(parsed.mcpServers)) {
+            if (isRecord(val)) compat[name] = val;
+        }
+    }
+    return { preferred, compat };
+}
+
+export function mergeOverlayMcpServers(base: PizzaPiConfig & McpConfig, cwd: string, agentDir: string): PizzaPiConfig & McpConfig {
+    const owner = new Map<string, Owner>();
+    const preferredByName = new Map<string, Record<string, unknown>>();
+    const compatByName = new Map<string, Record<string, unknown>>();
+
+    // Seed with explicit PizzaPi config — never overridden below.
+    for (const s of Array.isArray(base.mcp?.servers) ? (base.mcp!.servers as unknown[]) : []) {
+        if (isRecord(s) && typeof s.name === "string") {
+            owner.set(s.name, "config");
+            preferredByName.set(s.name, s);
+        }
+    }
+    for (const [name, val] of Object.entries(base.mcpServers ?? {})) {
+        owner.set(name, "config");
+        compatByName.set(name, val as Record<string, unknown>);
+    }
+
+    function addPass(scope: Owner, identity: string, preferred: Record<string, unknown>[], compat: Record<string, Record<string, unknown>>): void {
+        for (const s of preferred) {
+            const name = s.name as string;
+            const existing = owner.get(name);
+            const canSet = existing === undefined || (scope === "project" && existing === "user");
+            if (!canSet) {
+                log.warn(`[${identity}] mcp server "${name}" ignored — already defined by ${existing}`);
+                continue;
+            }
+            owner.set(name, scope);
+            preferredByName.set(name, s);
+            compatByName.delete(name);
+        }
+        for (const [name, val] of Object.entries(compat)) {
+            const existing = owner.get(name);
+            const canSet = existing === undefined || (scope === "project" && existing === "user");
+            if (!canSet) {
+                log.warn(`[${identity}] mcp server "${name}" ignored — already defined by ${existing}`);
+                continue;
+            }
+            owner.set(name, scope);
+            compatByName.set(name, val);
+            preferredByName.delete(name);
+        }
+    }
+
+    // ── Package overlays: user pass, then project pass (project overrides user) ──
+    const { packages } = resolveSessionOverlays(cwd, agentDir);
+    for (const scope of ["user", "project"] as const) {
+        for (const pkg of packages.filter((p) => p.scope === scope)) {
+            if (!pkg.overlay.mcp) continue;
+            const resolved = resolveConfinedPath(pkg.installedPath, pkg.overlay.mcp);
+            if (!resolved.ok) {
+                log.warn(`[${pkg.identity}] mcp sidecar failed re-validation: ${resolved.message}`);
+                continue;
+            }
+            const parsed = readJsonCapped(resolved.absolutePath);
+            if (parsed === undefined) {
+                log.warn(`[${pkg.identity}] mcp sidecar could not be read/parsed at mount time`);
+                continue;
+            }
+            const { preferred, compat } = extractServers(parsed);
+            addPass(scope, pkg.identity, preferred, compat);
+        }
+    }
+
+    // ── Legacy: global (auto-trusted) Claude-plugin .mcp.json — lowest precedence ──
+    for (const plugin of discoverPlugins(cwd)) {
+        if (!plugin.hasMcp) continue;
+        const mcpPath = join(plugin.rootPath, ".mcp.json");
+        if (!existsSync(mcpPath)) continue;
+        const parsed = readJsonCapped(mcpPath);
+        if (parsed === undefined) {
+            log.warn(`[plugin:${plugin.name}] .mcp.json could not be read/parsed at mount time`);
+            continue;
+        }
+        const { preferred, compat } = extractServers(parsed);
+        addPass("legacy", `plugin:${plugin.name}`, preferred, compat);
+    }
+
+    const mergedPreferred = [...preferredByName.values()];
+    const mergedCompat = Object.fromEntries(compatByName.entries());
+
+    return {
+        ...base,
+        ...(mergedPreferred.length > 0 ? { mcp: { ...base.mcp, servers: mergedPreferred as never } } : { mcp: base.mcp }),
+        ...(Object.keys(mergedCompat).length > 0 ? { mcpServers: mergedCompat as never } : { mcpServers: base.mcpServers }),
+    };
+}

@@ -16,7 +16,7 @@ import { isPackageCommand, runPackageCommand } from "./package-commands.js";
 import { getOAuthAccessToken, getAnthropicKeychainToken } from "./runner/usage-auth.js";
 import { c, usageBar, colorPct, colorRemaining } from "./cli-colors.js";
 import { buildSkillPaths, buildPromptTemplatePaths, createAgentsFilesOverride } from "./skills.js";
-import { getPluginSkillPaths } from "./extensions/claude-plugins.js";
+import { getPluginSkillPaths, getPluginPromptTemplatePaths } from "./extensions/claude-plugins.js";
 import { buildPizzaPiExtensionFactories } from "./extensions/factories.js";
 import { setRemoteSessionHost } from "./extensions/remote/session-host-ref.js";
 import { runtimeSessionHost } from "./runner/session-host.js";
@@ -492,6 +492,7 @@ async function main() {
     // Build extension list — includes configured hooks when present.
     const extensionFactories = buildPizzaPiExtensionFactories({
         cwd,
+        agentDir,
         hooks: noHooks ? undefined : config.hooks,
         skipMcp: noMcp,
         skipPlugins: noPlugins,
@@ -507,7 +508,10 @@ async function main() {
             ...buildSkillPaths(cwd, config.skills),
             ...(noPlugins ? [] : getPluginSkillPaths(cwd)),
         ],
-        additionalPromptTemplatePaths: buildPromptTemplatePaths(cwd),
+        additionalPromptTemplatePaths: [
+            ...buildPromptTemplatePaths(cwd),
+            ...(noPlugins ? [] : getPluginPromptTemplatePaths(cwd)),
+        ],
         ...(config.systemPrompt !== undefined
             ? { systemPromptOverride: () => config.systemPrompt }
             : {}
@@ -532,7 +536,10 @@ async function main() {
                     ...buildSkillPaths(opts.cwd, config.skills),
                     ...(noPlugins ? [] : getPluginSkillPaths(opts.cwd)),
                 ],
-                additionalPromptTemplatePaths: buildPromptTemplatePaths(opts.cwd),
+                additionalPromptTemplatePaths: [
+                    ...buildPromptTemplatePaths(opts.cwd),
+                    ...(noPlugins ? [] : getPluginPromptTemplatePaths(opts.cwd)),
+                ],
                 ...(config.systemPrompt !== undefined && {
                     systemPromptOverride: () => config.systemPrompt,
                 }),

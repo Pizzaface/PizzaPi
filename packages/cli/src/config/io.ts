@@ -399,6 +399,19 @@ export function defaultAgentDir(): string {
     return join(homedir(), ".pizzapi");
 }
 
+/**
+ * Resolve the effective agent dir for `cwd`: `config.agentDir` (expanded)
+ * when set, else `defaultAgentDir()`. Mirrors the pattern already inlined
+ * at each entrypoint (index.ts, runner/worker.ts) — extracted so session
+ * extensions that need `agentDir` outside those entrypoints (overlay
+ * package resolution, MCP overlay merge) resolve it identically rather
+ * than re-deriving it.
+ */
+export function resolveAgentDir(cwd: string = process.cwd()): string {
+    const config = loadConfig(cwd);
+    return config.agentDir ? expandHome(config.agentDir) : defaultAgentDir();
+}
+
 // ── Session info variable substitution ─────────────────────────────────────────
 
 const VARIABLE_RE = /@(PWD|SESSION_ID|HOME|USER|PROJECT_DIR)@/g;

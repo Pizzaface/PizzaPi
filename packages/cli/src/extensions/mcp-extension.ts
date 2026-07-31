@@ -1,7 +1,8 @@
 import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import { existsSync, readFileSync } from "fs";
 import { join } from "path";
-import { loadConfig, toggleMcpServer, globalConfigDir, type PizzaPiConfig } from "../config.js";
+import { loadConfig, resolveAgentDir, toggleMcpServer, globalConfigDir, type PizzaPiConfig } from "../config.js";
+import { mergeOverlayMcpServers } from "./mcp-overlay.js";
 import {
   registerMcpTools,
   type McpConfig,
@@ -672,7 +673,11 @@ export const mcpExtension: ExtensionFactory = async (pi: any) => {
   let loadLifecycleController = new AbortController();
 
   async function load(): Promise<McpSnapshot> {
-    const mergedConfig = loadConfig(process.cwd()) as PizzaPiConfig & McpConfig;
+    const cwd = process.cwd();
+    const baseConfig = loadConfig(cwd) as PizzaPiConfig & McpConfig;
+    // Feed pi.pizzapi.mcp overlay sidecars (and the legacy plugin .mcp.json
+    // gap) into the same registry — explicit config always wins a collision.
+    const mergedConfig = mergeOverlayMcpServers(baseConfig, cwd, resolveAgentDir(cwd));
     const inspection = inspectMcpConfig(process.cwd());
 
     // Remember previous MCP tool names so we can update active tools after reload.

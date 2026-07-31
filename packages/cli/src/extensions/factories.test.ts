@@ -32,11 +32,18 @@ import { sessionProcessesExtension } from "./session-processes.js";
 import { backgroundBashExtension } from "./background-bash.js";
 import { queueFlushExtension } from "./queue-flush.js";
 import { ollamaCloudProviderExtension } from "./ollama-cloud-provider.js";
+import { hostAnnounceExtension } from "./host-announce.js";
 
 // resource-paths is a factory *created per call* (createResourcePathsExtension(...)),
 // so it's never reference-equal to a statically imported factory. Split the
 // otherwise-static core list around it and assert its presence/type separately.
+// Isolated, empty agent dir so package-overlay-rules resolution (which reads
+// pi settings via SettingsManager) never picks up real packages configured
+// on the machine running these tests — keeps exact-length assertions stable.
+const TEST_AGENT_DIR = mkdtempSync(join(tmpdir(), "pizzapi-factories-agentdir-"));
+
 const CORE_EXTENSIONS_HEAD: ExtensionFactory[] = [
+    hostAnnounceExtension,
     ollamaCloudProviderExtension,
     providerRequestLogExtension,
     triggersExtension,  // Must be before remoteExtension (shutdown ordering)
@@ -83,7 +90,7 @@ function expectCoreExtensionsPrefix(factories: ExtensionFactory[]) {
  */
 describe("buildPizzaPiExtensionFactories", () => {
     test("returns core extensions by default", () => {
-        const factories = buildPizzaPiExtensionFactories({ cwd: "/tmp/pizzapi-test", skipPlugins: true });
+        const factories = buildPizzaPiExtensionFactories({ cwd: "/tmp/pizzapi-test", agentDir: TEST_AGENT_DIR, skipPlugins: true });
         expect(factories).toHaveLength(CORE_EXTENSIONS_COUNT);
         expectCoreExtensionsPrefix(factories);
     });
@@ -91,6 +98,7 @@ describe("buildPizzaPiExtensionFactories", () => {
     test("includes initial prompt extension for worker mode", () => {
         const factories = buildPizzaPiExtensionFactories({
             cwd: "/tmp/pizzapi-test",
+            agentDir: TEST_AGENT_DIR,
             includeInitialPrompt: true,
             skipPlugins: true,
         });
@@ -107,6 +115,7 @@ describe("buildPizzaPiExtensionFactories", () => {
 
         const factories = buildPizzaPiExtensionFactories({
             cwd: "/tmp/pizzapi-test",
+            agentDir: TEST_AGENT_DIR,
             hooks,
             skipPlugins: true,
         });
@@ -123,6 +132,7 @@ describe("buildPizzaPiExtensionFactories", () => {
 
         const factories = buildPizzaPiExtensionFactories({
             cwd: "/tmp/pizzapi-test",
+            agentDir: TEST_AGENT_DIR,
             hooks,
             includeInitialPrompt: true,
             skipPlugins: true,
@@ -139,7 +149,7 @@ describe("buildPizzaPiExtensionFactories", () => {
 
 describe("buildPizzaPiExtensionFactories — safe mode", () => {
     test("skipMcp excludes MCP extension", () => {
-        const factories = buildPizzaPiExtensionFactories({ cwd: "/tmp/pizzapi-test", skipMcp: true });
+        const factories = buildPizzaPiExtensionFactories({ cwd: "/tmp/pizzapi-test", agentDir: TEST_AGENT_DIR, skipMcp: true });
         expect(factories).not.toContain(mcpExtension);
         // Other core extensions should still be present
         expect(factories).toContain(remoteExtension);
@@ -147,7 +157,7 @@ describe("buildPizzaPiExtensionFactories — safe mode", () => {
     });
 
     test("skipRelay excludes remote extension and tunnel tools", () => {
-        const factories = buildPizzaPiExtensionFactories({ cwd: "/tmp/pizzapi-test", skipRelay: true });
+        const factories = buildPizzaPiExtensionFactories({ cwd: "/tmp/pizzapi-test", agentDir: TEST_AGENT_DIR, skipRelay: true });
         expect(factories).not.toContain(remoteExtension);
         expect(factories).not.toContain(tunnelToolsExtension);
         expect(factories).toContain(mcpExtension);
@@ -160,8 +170,8 @@ describe("buildPizzaPiExtensionFactories — safe mode", () => {
             mkdirSync(join(pluginDir, "commands"), { recursive: true });
             writeFileSync(join(pluginDir, "commands", "hello.md"), "# Hello");
 
-            const withPlugins = buildPizzaPiExtensionFactories({ cwd: projectDir });
-            const withoutPlugins = buildPizzaPiExtensionFactories({ cwd: projectDir, skipPlugins: true });
+            const withPlugins = buildPizzaPiExtensionFactories({ cwd: projectDir, agentDir: TEST_AGENT_DIR });
+            const withoutPlugins = buildPizzaPiExtensionFactories({ cwd: projectDir, agentDir: TEST_AGENT_DIR, skipPlugins: true });
 
             // Without skipPlugins, there should be more extensions (plugin extension appended)
             expect(withPlugins.length).toBeGreaterThan(withoutPlugins.length);
@@ -177,6 +187,7 @@ describe("buildPizzaPiExtensionFactories — safe mode", () => {
 
         const factories = buildPizzaPiExtensionFactories({
             cwd: "/tmp/pizzapi-test",
+            agentDir: TEST_AGENT_DIR,
             skipMcp: true,
             skipRelay: true,
             skipPlugins: true,
@@ -210,7 +221,7 @@ describe("buildPizzaPiExtensionFactories — plugin extension", () => {
             mkdirSync(join(pluginDir, "commands"), { recursive: true });
             writeFileSync(join(pluginDir, "commands", "hello.md"), "# Hello");
 
-            const factories = buildPizzaPiExtensionFactories({ cwd: projectDir });
+            const factories = buildPizzaPiExtensionFactories({ cwd: projectDir, agentDir: TEST_AGENT_DIR });
 
             // Core + plugin extension (at minimum)
             expect(factories.length).toBeGreaterThan(CORE_EXTENSIONS_COUNT);
@@ -225,7 +236,7 @@ describe("buildPizzaPiExtensionFactories — plugin extension", () => {
         // Use an empty temp dir — no global or local plugins
         const emptyDir = mkdtempSync(join(tmpdir(), "pizzapi-factories-noplugin-"));
         try {
-            const factories = buildPizzaPiExtensionFactories({ cwd: emptyDir });
+            const factories = buildPizzaPiExtensionFactories({ cwd: emptyDir, agentDir: TEST_AGENT_DIR });
             // May or may not have plugin extension depending on real HOME plugins.
             // The key invariant: core extensions are always first.
             expectCoreExtensionsPrefix(factories);
@@ -245,7 +256,7 @@ describe("buildPizzaPiExtensionFactories — plugin extension", () => {
                 PreToolUse: [{ matcher: "Bash", hooks: [{ command: "echo hook" }] }],
             };
 
-            const factories = buildPizzaPiExtensionFactories({ cwd: projectDir, hooks });
+            const factories = buildPizzaPiExtensionFactories({ cwd: projectDir, agentDir: TEST_AGENT_DIR, hooks });
 
             // Core + hooks + plugin (at least)
             expect(factories.length).toBeGreaterThanOrEqual(CORE_EXTENSIONS_COUNT + 2);

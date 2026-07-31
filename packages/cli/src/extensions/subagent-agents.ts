@@ -230,8 +230,15 @@ export function getUserAgentsDir(): string {
  * @param opts.extraUserDirs - Additional directories to treat as user-scope
  *   (e.g. plugin agents/ dirs). Loaded after ~/.pizzapi and ~/.claude, so
  *   user-owned agents always take precedence.
+ * @param opts.extraProjectDirs - Additional directories to treat as
+ *   project-scope (e.g. `pi.pizzapi.agents` from project-scoped packages).
+ *   Loaded after the walked-up `.pizzapi`/`.claude` project dirs, so
+ *   project-owned agents always take precedence. Agents sourced from here
+ *   still carry `source: "project"`, so they remain excluded from the
+ *   default `agentScope: "user"` and still trigger `confirmProjectAgents`
+ *   (docs/specs/pi-pizzapi-overlay.md §4.3).
  */
-export function discoverAgents(cwd: string, scope: AgentScope, opts?: { extraUserDirs?: string[] }): AgentDiscoveryResult {
+export function discoverAgents(cwd: string, scope: AgentScope, opts?: { extraUserDirs?: string[]; extraProjectDirs?: string[] }): AgentDiscoveryResult {
     const userDirs = getUserAgentsDirs();
     const projectAgentsDirs = findNearestProjectAgentsDirs(cwd);
 
@@ -250,11 +257,13 @@ export function discoverAgents(cwd: string, scope: AgentScope, opts?: { extraUse
         }
     }
 
-    // Load project agents from all found dirs (first-name-wins: .pizzapi before .claude)
+    // Load project agents from all found dirs, then extraProjectDirs
+    // (first-name-wins: .pizzapi before .claude before extraProjectDirs)
     let projectAgents: AgentConfig[] = [];
-    if (scope !== "user" && projectAgentsDirs.length > 0) {
+    if (scope !== "user") {
         const seen = new Set<string>();
-        for (const dir of projectAgentsDirs) {
+        const allProjectDirs = [...projectAgentsDirs, ...(opts?.extraProjectDirs ?? [])];
+        for (const dir of allProjectDirs) {
             for (const agent of loadAgentsFromDir(dir, "project")) {
                 if (!seen.has(agent.name)) {
                     seen.add(agent.name);
