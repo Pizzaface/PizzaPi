@@ -120,9 +120,10 @@ PizzaPi patches four upstream pi packages via `patchedDependencies` in the root 
 
 - **Version check removal:** Disables the npm registry version check and "Update Available" notification (irrelevant for PizzaPi's headless runner).
 - **Auth path display:** Shows the actual auth file path instead of hardcoded default.
-- **`sendUserMessage({ expandPromptTemplates })` opt-in:** lets the web UI input path run slash-command/template expansion.
 
 **Removed in Phase 1 (SessionHost):** the patch no longer copies session-control onto `ExtensionAPI` (`newSession`/`switchSession`/`fork`, `getQueuedMessages`/`replaceQueuedMessages`). Those were surface-widening — already native on `AgentSessionRuntime`/`AgentSession`. PizzaPi's remote extension now drives control through a host-owned `SessionHost` (`packages/cli/src/runner/session-host.ts`), threaded in via `extensions/remote/session-host-ref.ts`. `patches.test.ts` guards against the hunks silently returning on a version bump.
+
+**Removed in Phase 2 (SessionHost.sendUserMessage):** the `sendUserMessage({ expandPromptTemplates })` opt-in hunk (`dist/core/agent-session.js` + both `dist/core/extensions/types.d.ts` hunks) is gone too. `connection-handlers-factory.ts`'s `ConnectionHandlers.sendUserMessage` now calls `rctx.sessionHost.sendUserMessage()` directly instead of `(pi as any).sendUserMessage()`; `SessionHost.sendUserMessage` already drove `session.prompt({ expandPromptTemplates })` via pi's native (unpatched) `PromptOptions` field, so the patched ExtensionAPI wrapper had nothing left calling it.
 
 ### @earendil-works/pi-ai
 

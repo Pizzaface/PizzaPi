@@ -95,13 +95,11 @@ removals absorbed elsewhere rather than restored:
 | File | Change |
 |------|--------|
 | `dist/config.js` | Same `.pizzapi` config-dir / flat-directory / `PIZZAPI_CHANGELOG_PATH` overrides as 0.80.6 |
-| `dist/core/agent-session.js` | `sendUserMessage({ expandPromptTemplates })` opt-in (web UI input path). **The `getQueuedMessages`/`replaceQueuedMessages` runtime getters were removed in Phase 1** — see below. |
-| `dist/core/extensions/types.d.ts` | `ExtensionAPI.sendUserMessage` `expandPromptTemplates` typing only. |
 | `dist/core/model-resolver.js` | Same `ollama-cloud` default model (`glm-5.1`) as 0.80.6 |
 | `dist/modes/interactive/interactive-mode.js` | Same version-notification-UI removal as 0.80.6 (upstream shifted a few lines; hunk re-applied manually) |
 | `dist/index.js` / `dist/index.d.ts` | Same `handlePackageCommand`/`handleConfigCommand` re-export as 0.80.6 |
 
-**No longer present (see above for why):** `dist/core/provider-display-names.js`.
+**No longer present (see above for why):** `dist/core/provider-display-names.js`. **Also no longer present (Phase 2, below):** `dist/core/agent-session.js`'s `sendUserMessage({ expandPromptTemplates })` opt-in and both `dist/core/extensions/types.d.ts` hunks that typed it.
 
 ### Phase 1: control-plane exposure removed (was `loader.js` / `runner.js` / `types.d.ts`)
 
@@ -120,10 +118,24 @@ host with its existing headless in-place lifecycle actions; the local TUI backs
 it with the runtime. `replaceQueuedMessages` has no clean public native path (it
 needs pi's private raw-enqueue to avoid double-expanding already-expanded queued
 text), so the worker's SessionHost reaches those private methods directly — as
-it already does for queue clearing — rather than via a patch. The
-`sendUserMessage({ expandPromptTemplates })` hunk stays (the primary input path
-still uses it). `patches.test.ts` has regression guards asserting the removed
-hunks do not silently return on a version bump.
+it already does for queue clearing — rather than via a patch. `patches.test.ts`
+has regression guards asserting the removed hunks do not silently return on a
+version bump.
+
+### Phase 2: `sendUserMessage({ expandPromptTemplates })` hunk removed
+
+The last remaining reason for the patch's `ExtensionAPI.sendUserMessage`
+surface — the `expandPromptTemplates` opt-in used by the web UI input path —
+was removed once `connection-handlers-factory.ts`'s `ConnectionHandlers.sendUserMessage`
+was rewired to call `rctx.sessionHost.sendUserMessage()` directly instead of
+`(pi as any).sendUserMessage()`. `SessionHost.sendUserMessage` already called
+`session.prompt()` with `expandPromptTemplates` natively supported (unpatched
+`PromptOptions` field) — the patched `AgentSession.sendUserMessage()` method
+and its `ExtensionAPI`/`SendUserMessageHandler` typings in `types.d.ts` were
+never reached anymore. Both hunks (`dist/core/agent-session.js` and the two
+`dist/core/extensions/types.d.ts` hunks) were dropped from the patch.
+`patches.test.ts` has negative-guard tests asserting they do not silently
+reappear on a version bump.
 
 ### packages/cli auth call-site migration (not a patch — our own source)
 

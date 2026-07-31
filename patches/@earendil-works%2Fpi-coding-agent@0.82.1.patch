@@ -35,45 +35,6 @@ index 4600b23493be21d2316303d056ef135313dcef43..85bd9b0d26c0de32a7aabfd0e254fed0
  }
  /** Get path to user's custom themes directory */
  export function getCustomThemesDir() {
-diff --git a/dist/core/agent-session.js b/dist/core/agent-session.js
-index c99a78f31ce2d58973ab1809bd72deb8a1f4135b..abac9c0ddf96e7f41b6de12fd82d8ba567e270a4 100644
---- a/dist/core/agent-session.js
-+++ b/dist/core/agent-session.js
-@@ -1122,9 +1122,10 @@ export class AgentSession {
-             if (images.length === 0)
-                 images = undefined;
-         }
--        // Use prompt() with expandPromptTemplates: false to skip command handling and template expansion
-+        // Use prompt() with expandPromptTemplates: false by default to skip command handling and template expansion.
-+        // PATCH(pizzapi): allow callers to opt into command/template expansion (e.g. web UI input).
-         await this.prompt(text, {
--            expandPromptTemplates: false,
-+            expandPromptTemplates: options?.expandPromptTemplates ?? false,
-             streamingBehavior: options?.deliverAs,
-             images,
-             source: "extension",
-diff --git a/dist/core/extensions/types.d.ts b/dist/core/extensions/types.d.ts
-index a7d5547e62e36d252b90ae083bc847ce97a5bf6d..6b77da4e2b4c342c9f541d0d68ee7755bdfa80ae 100644
---- a/dist/core/extensions/types.d.ts
-+++ b/dist/core/extensions/types.d.ts
-@@ -912,6 +912,8 @@ export interface ExtensionAPI {
-      */
-     sendUserMessage(content: string | (TextContent | ImageContent)[], options?: {
-         deliverAs?: "steer" | "followUp";
-+        /** PATCH(pizzapi): opt into slash-command and template expansion (default false). */
-+        expandPromptTemplates?: boolean;
-     }): void;
-     /** Append a custom entry to the session for state persistence (not sent to LLM). */
-     appendEntry<T = unknown>(customType: string, data?: T): void;
-@@ -1107,6 +1109,8 @@ export type SendMessageHandler = <T = unknown>(message: Pick<CustomMessage<T>, "
- }) => void;
- export type SendUserMessageHandler = (content: string | (TextContent | ImageContent)[], options?: {
-     deliverAs?: "steer" | "followUp";
-+    /** PATCH(pizzapi): opt into slash-command and template expansion (default false). */
-+    expandPromptTemplates?: boolean;
- }) => void;
- export type AppendEntryHandler = <T = unknown>(customType: string, data?: T) => void;
- export type SetSessionNameHandler = (name: string) => void;
 diff --git a/dist/core/model-resolver.js b/dist/core/model-resolver.js
 index 4cd51566b17e362a4c9c149fa3a339458abc30f6..6f41d5c16b9e476dfe01c312cf86fe0bdce96dac 100644
 --- a/dist/core/model-resolver.js

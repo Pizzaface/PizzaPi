@@ -53,7 +53,7 @@ export interface ConnectionHandlers {
     /** Change the active model (called from exec and model_set handlers). */
     setModelFromWeb: (provider: string, modelId: string) => Promise<void>;
     /** Deliver a user message to the agent (called from input and session_trigger handlers). */
-    sendUserMessage: (message: unknown, options?: { deliverAs?: "followUp" | "steer"; expandPromptTemplates?: boolean }) => void;
+    sendUserMessage: (message: unknown, options?: { deliverAs?: "followUp" | "steer"; expandPromptTemplates?: boolean }) => Promise<void>;
 
     // ── Delink handlers (PR #176) ─────────────────────────────────────────
     /** Whether a delink_own_parent is pending (child did /new). */
@@ -228,9 +228,11 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
         void (async () => {
             try {
                 await waitForWorkerStartupComplete();
-                handlers.sendUserMessage(rendered, { deliverAs });
+                await handlers.sendUserMessage(rendered, { deliverAs });
             } catch (err) {
-                log.error(`pizzapi: failed to deliver trigger batch: ${err instanceof Error ? err.message : String(err)}`);
+                const message = err instanceof Error ? err.message : String(err);
+                log.error(`pizzapi: failed to deliver trigger batch: ${message}`);
+                rctx.forwardEvent({ type: "cli_error", message: `Failed to deliver trigger batch: ${message}`, source: "remote", ts: Date.now() });
             }
         })();
     };
@@ -406,9 +408,11 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
                 // started streaming by the time we resume here. See
                 // resolveInputDeliverAs for the rationale.
                 const effectiveDeliverAs = resolveInputDeliverAs(deliverAs, rctx.isAgentActive === true);
-                handlers.sendUserMessage(message, { expandPromptTemplates: true, ...(effectiveDeliverAs ? { deliverAs: effectiveDeliverAs } : {}) });
+                await handlers.sendUserMessage(message, { expandPromptTemplates: true, ...(effectiveDeliverAs ? { deliverAs: effectiveDeliverAs } : {}) });
             } catch (err) {
-                log.error(`pizzapi: failed to deliver remote input: ${err instanceof Error ? err.message : String(err)}`);
+                const errMessage = err instanceof Error ? err.message : String(err);
+                log.error(`pizzapi: failed to deliver remote input: ${errMessage}`);
+                rctx.forwardEvent({ type: "cli_error", message: `Failed to deliver remote input: ${errMessage}`, source: "remote", ts: Date.now() });
             }
         })();
     });

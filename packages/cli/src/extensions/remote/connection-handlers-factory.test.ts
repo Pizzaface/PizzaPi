@@ -90,3 +90,38 @@ describe("createConnectionHandlers flushDeferredDelinks", () => {
         expect(fireSessionComplete).toHaveBeenCalledTimes(1);
     });
 });
+
+describe("createConnectionHandlers sendUserMessage", () => {
+    function makeBaseDeps(sessionHost: unknown) {
+        return {
+            pi: { sendUserMessage: () => { throw new Error("pi.sendUserMessage must never be called"); } },
+            rctx: { sessionHost } as any,
+            state: {} as any,
+            triggerWaits: {} as any,
+            delinkManager: {} as any,
+            cancellationManager: {} as any,
+            followUpGrace: {} as any,
+            setModelFromWeb: async () => {},
+        };
+    }
+
+    test("delegates to rctx.sessionHost.sendUserMessage and awaits the result", async () => {
+        const calls: Array<[unknown, unknown]> = [];
+        const sessionHost = {
+            sendUserMessage: async (msg: unknown, opts?: unknown) => {
+                calls.push([msg, opts]);
+            },
+        };
+        const { connectionHandlers } = createConnectionHandlers(makeBaseDeps(sessionHost) as any);
+
+        await connectionHandlers.sendUserMessage("hello", { expandPromptTemplates: true });
+
+        expect(calls).toEqual([["hello", { expandPromptTemplates: true }]]);
+    });
+
+    test("throws clearly when no SessionHost is available — never falls back to pi.sendUserMessage", async () => {
+        const { connectionHandlers } = createConnectionHandlers(makeBaseDeps(null) as any);
+
+        await expect(connectionHandlers.sendUserMessage("hello")).rejects.toThrow(/SessionHost/);
+    });
+});
