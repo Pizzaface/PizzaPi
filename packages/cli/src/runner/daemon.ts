@@ -20,6 +20,9 @@ import { ProcessService } from "./services/process-service.js";
 import { MemoryService } from "./services/memory-service.js";
 import { TimeService, TIME_TRIGGER_DEFS, TIME_SIGIL_DEFS } from "./services/time-service.js";
 import { discoverServices } from "./service-loader.js";
+import type { ServiceManifest, ServicePluginResult } from "./service-loader.js";
+import { discoverPackageServices } from "./package-service-loader.js";
+import { BUILTIN_SERVICE_IDS } from "./services/builtin-service-ids.js";
 import { globalPluginDirs } from "../plugins/discover.js";
 import { io, type Socket } from "socket.io-client";
 import {
@@ -415,6 +418,12 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
     let disabledServices = resolveDisabledRunnerServices(daemonConfig);
     const isServiceDisabled = (id: string) => disabledServices.has(id);
 
+    // Package-origin service discovery is runner-global (grants are user-scope
+    // only, §7.2) — resolve once, reused by startup discovery and every
+    // reconfigure_services pass.
+    const packageDiscoveryCwd = process.cwd();
+    const packageDiscoveryAgentDir = resolveConfiguredAgentDir(packageDiscoveryCwd);
+
     // Priority: env var > config.json > default
     const apiKey =
         process.env.PIZZAPI_RUNNER_API_KEY ??
@@ -624,6 +633,61 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
         const panelEntries = new Map<string, PanelEntry>();
         // Track ALL discovered service IDs (including disabled ones) so the UI can show them.
         const allDiscoveredServiceIds = new Set<string>();
+        // Package-origin service ids currently mounted, keyed by their normalized
+        // package identity (§7.2/§9.2 provenance). Reconfiguration diffs this
+        // against a fresh discoverPackageServices() pass to dispose/unregister
+        // services whose grant/package/declaration was revoked or removed.
+        const packageServiceIds = new Map<string, { identity: string }>();
+        // Legacy-origin (global-dir/project-dir/plugin-manifest) service ids
+        // currently mounted — lets reconfigure distinguish "this id is already
+        // active from an earlier pass of the SAME origin, leave it running" from
+        // "this id now collides with a different origin," without relying on
+        // ServiceRegistry.register() throwing.
+        const legacyServiceIds = new Set<string>();
+
+        /**
+         * Register a discovered (non-built-in) service if its id isn't reserved
+         * by a built-in or already claimed by an earlier registration this pass.
+         * Shared by the package/legacy startup and reconfigure loops so the
+         * has()-before-register collision rule (§8) — built-ins always win, never
+         * rely on ServiceRegistry.register() throwing for duplicates — lives in
+         * exactly one place, and package-before-legacy precedence falls out of
+         * simply awaiting the package loop before the legacy loop.
+         */
+        const registerDiscoveredService = (
+            handler: ServiceHandler,
+            source: ServicePluginResult["source"],
+            manifest: ServiceManifest | undefined,
+            kind: "package" | "legacy",
+        ): boolean => {
+            const from = source.pluginName ?? source.path;
+            if (BUILTIN_SERVICE_IDS.has(handler.id)) {
+                logWarn(`[services] ${kind} service "${handler.id}" from ${from} collides with a reserved built-in service id — skipped`);
+                return false;
+            }
+            if (registry.has(handler.id)) {
+                logWarn(`[services] ${kind} service "${handler.id}" from ${from} collides with an already-registered service — skipped`);
+                return false;
+            }
+            registry.register(handler);
+            allDiscoveredServiceIds.add(handler.id);
+            logInfo(`[services] loaded ${kind} service "${handler.id}" from ${from}`);
+            if (manifest?.panel || (manifest?.triggers && manifest.triggers.length > 0) || (manifest?.sigils && manifest.sigils.length > 0)) {
+                const existing = panelEntries.get(handler.id);
+                panelEntries.set(handler.id, {
+                    serviceId: handler.id,
+                    label: manifest.label,
+                    icon: manifest.icon,
+                    ...(existing?.port !== undefined ? { port: existing.port } : {}),
+                    ...(manifest.triggers && manifest.triggers.length > 0 ? { triggers: manifest.triggers } : {}),
+                    ...(manifest.sigils && manifest.sigils.length > 0 ? { sigils: manifest.sigils } : {}),
+                    ...(manifest.panel?.requires ? { requires: manifest.panel.requires } : {}),
+                });
+            }
+            if (kind === "package") packageServiceIds.set(handler.id, { identity: source.pluginName ?? handler.id });
+            else legacyServiceIds.add(handler.id);
+            return true;
+        };
 
         // Register built-in Time service trigger/sigil defs so they flow through service_announce.
         // The Time service has no panel — it only runs an HTTP server for sigil resolve calls.
@@ -703,48 +767,46 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             });
         };
 
-        // Discover and register plugin-provided services.
-        // pluginServicesReady resolves once discovery + registration is complete.
+        // Discover and register package-origin and legacy plugin-provided
+        // services. pluginServicesReady resolves once both passes are complete.
         // The runner_registered handler awaits this before announcing services.
+        //
+        // Package discovery (§6/§7/§9.2) is AWAITED and registered before legacy
+        // discovery (§8) — this is what makes package-over-legacy precedence
+        // deterministic rather than dependent on async completion order.
         let resolvePluginServices: () => void;
         const pluginServicesReady = new Promise<void>(r => { resolvePluginServices = r; });
-        discoverServices({ pluginDirs: globalPluginDirs(), disabledIds: disabledServices }).then(({ services, errors }) => {
-            for (const { handler, source, manifest } of services) {
-                try {
-                    registry.register(handler);
-                    allDiscoveredServiceIds.add(handler.id);
-                    logInfo(`[services] loaded plugin service "${handler.id}" from ${source.pluginName ?? source.path}`);
-                    // Track panel metadata and trigger defs from folder-based services
-                    if (manifest?.panel || (manifest?.triggers && manifest.triggers.length > 0) || (manifest?.sigils && manifest.sigils.length > 0)) {
-                        const existing = panelEntries.get(handler.id);
-                        panelEntries.set(handler.id, {
-                            serviceId: handler.id,
-                            label: manifest.label,
-                            icon: manifest.icon,
-                            ...(existing?.port !== undefined ? { port: existing.port } : {}),
-                            ...(manifest.triggers && manifest.triggers.length > 0
-                                ? { triggers: manifest.triggers }
-                                : {}),
-                            ...(manifest.sigils && manifest.sigils.length > 0
-                                ? { sigils: manifest.sigils }
-                                : {}),
-                            ...(manifest.panel?.requires
-                                ? { requires: manifest.panel.requires }
-                                : {}),
-                        });
-                    }
-                } catch (err) {
-                    logWarn(`[services] failed to register plugin service "${handler.id}": ${err}`);
+        (async () => {
+            try {
+                const { services, errors } = await discoverPackageServices({
+                    cwd: packageDiscoveryCwd,
+                    agentDir: packageDiscoveryAgentDir,
+                    disabledIds: disabledServices,
+                });
+                for (const { handler, source, manifest } of services) {
+                    registerDiscoveredService(handler, source, manifest, "package");
                 }
+                for (const { path, error } of errors) {
+                    logWarn(`[services] package service discovery: ${error} (${path})`);
+                }
+            } catch (err) {
+                logWarn(`[services] package service discovery failed: ${err}`);
             }
-            for (const { path, error } of errors) {
-                logWarn(`[services] plugin service load error at ${path}: ${error}`);
+
+            try {
+                const { services, errors } = await discoverServices({ pluginDirs: globalPluginDirs(), disabledIds: disabledServices });
+                for (const { handler, source, manifest } of services) {
+                    registerDiscoveredService(handler, source, manifest, "legacy");
+                }
+                for (const { path, error } of errors) {
+                    logWarn(`[services] plugin service load error at ${path}: ${error}`);
+                }
+            } catch (err) {
+                logWarn(`[services] plugin service discovery failed: ${err}`);
             }
-        }).catch(err => {
-            logWarn(`[services] plugin service discovery failed: ${err}`);
-        }).finally(() => {
+
             resolvePluginServices!();
-        });
+        })();
 
         const socket: Socket<RunnerServerToClientEvents, RunnerClientToServerEvents> = io(
             sioUrl + "/runner",
@@ -1082,12 +1144,12 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                     return opts;
                 };
 
-                // Disable plugin services that are now in the disabled set
-                const BUILTIN_IDS = new Set(["terminal", "file-explorer", "git", "tunnel", "time"]);
-                const pluginsToDisable = registry.getAll()
-                    .filter(s => !BUILTIN_IDS.has(s.id) && newDisabledServices.has(s.id));
-                for (const svc of pluginsToDisable) {
-                    logInfo(`[services] disabling plugin service "${svc.id}"`);
+                // Disable any non-built-in service (package- or legacy-origin)
+                // that is now in the disabled set.
+                const servicesToDisable = registry.getAll()
+                    .filter(s => !BUILTIN_SERVICE_IDS.has(s.id) && newDisabledServices.has(s.id));
+                for (const svc of servicesToDisable) {
+                    logInfo(`[services] disabling service "${svc.id}"`);
                     try {
                         svc.dispose();
                     } catch (err) {
@@ -1095,42 +1157,14 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                     }
                     registry.unregister(svc.id);
                     initializedServiceIds.delete(svc.id);
+                    packageServiceIds.delete(svc.id);
+                    legacyServiceIds.delete(svc.id);
                     // Keep panel entry for disabled services so they still appear in service_announce
                     sigilServerPorts.delete(svc.id);
                 }
 
-                // Re-discover plugin services with new disabled list
-                const { services: discoveredServices, errors } = await discoverServices(
-                    { pluginDirs: globalPluginDirs(), disabledIds: newDisabledServices },
-                );
-
-                // Remove services that are no longer discoverable (plugin deleted) and not disabled
-                for (const id of allDiscoveredServiceIds) {
-                    if (newDisabledServices.has(id)) continue; // Keep disabled services
-                    if (discoveredServices.some(s => s.handler.id === id)) continue; // Still exists
-                    // Plugin was removed and is not disabled - clean up
-                    allDiscoveredServiceIds.delete(id);
-                    panelEntries.delete(id);
-                    sigilServerPorts.delete(id);
-                }
-
-                // Register any newly enabled plugin services
-                for (const { handler, source, manifest } of discoveredServices) {
-                    if (registry.has(handler.id)) continue;
-                    allDiscoveredServiceIds.add(handler.id);
+                const initAndTrack = (handler: ServiceHandler, kind: "package" | "legacy") => {
                     try {
-                        registry.register(handler);
-                        logInfo(`[services] loaded plugin service "${handler.id}" from ${source.pluginName ?? source.path}`);
-                        if (manifest?.panel || (manifest?.triggers && manifest.triggers.length > 0) || (manifest?.sigils && manifest.sigils.length > 0)) {
-                            panelEntries.set(handler.id, {
-                                serviceId: handler.id,
-                                label: manifest.label,
-                                icon: manifest.icon,
-                                ...(manifest.triggers && manifest.triggers.length > 0 ? { triggers: manifest.triggers } : {}),
-                                ...(manifest.sigils && manifest.sigils.length > 0 ? { sigils: manifest.sigils } : {}),
-                                ...(manifest.panel?.requires ? { requires: manifest.panel.requires } : {}),
-                            });
-                        }
                         handler.init(socket as unknown as PizzaPiSocket, optsForInit(handler.id));
                         initializedServiceIds.add(handler.id);
                         if (typeof handler.reconcileSubscriptions === "function") {
@@ -1139,10 +1173,70 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                             logInfo(`[trigger-reconciliation] service "${handler.id}" hot-reload applied ${result.applied}/${subs.length} cached subscriptions${result.errors?.length ? `, errors=${result.errors.length}` : ""}`);
                         }
                     } catch (err) {
-                        logWarn(`[services] failed to register plugin service "${handler.id}": ${err}`);
+                        logWarn(`[services] failed to init ${kind} service "${handler.id}": ${err}`);
                     }
+                };
+
+                // ── Package-origin services: awaited + registered before legacy (§8) ──
+                const { services: freshPackageServices, errors: packageErrors } = await discoverPackageServices({
+                    cwd: packageDiscoveryCwd,
+                    agentDir: packageDiscoveryAgentDir,
+                    disabledIds: newDisabledServices,
+                });
+                const freshPackageIds = new Set(freshPackageServices.map((s) => s.handler.id));
+
+                // Dispose/unregister package services whose grant/package/declaration
+                // was revoked or removed (distinct from the disable-set handling above).
+                for (const id of [...packageServiceIds.keys()]) {
+                    if (freshPackageIds.has(id)) continue;
+                    const svc = registry.get(id);
+                    if (svc) {
+                        logInfo(`[services] unregistering package service "${id}" (revoked or no longer declared)`);
+                        try {
+                            svc.dispose();
+                        } catch (err) {
+                            logWarn(`[services] dispose failed for "${id}": ${err instanceof Error ? err.stack ?? err.message : String(err)}`);
+                        }
+                        registry.unregister(id);
+                        initializedServiceIds.delete(id);
+                    }
+                    packageServiceIds.delete(id);
+                    allDiscoveredServiceIds.delete(id);
+                    panelEntries.delete(id);
+                    sigilServerPorts.delete(id);
                 }
 
+                for (const { handler, source, manifest } of freshPackageServices) {
+                    if (packageServiceIds.has(handler.id) && registry.has(handler.id)) continue; // unchanged — preserve lifecycle
+                    if (!registerDiscoveredService(handler, source, manifest, "package")) continue;
+                    initAndTrack(handler, "package");
+                }
+                for (const { path, error } of packageErrors) {
+                    logWarn(`[services] package service discovery: ${error} (${path})`);
+                }
+
+                // ── Legacy plugin-provided services ────────────────────────────────
+                const { services: discoveredServices, errors } = await discoverServices(
+                    { pluginDirs: globalPluginDirs(), disabledIds: newDisabledServices },
+                );
+
+                // Remove legacy services that are no longer discoverable (plugin
+                // deleted) and not disabled. Package-origin ids are reconciled above.
+                for (const id of [...allDiscoveredServiceIds]) {
+                    if (packageServiceIds.has(id)) continue;
+                    if (newDisabledServices.has(id)) continue; // Keep disabled services
+                    if (discoveredServices.some(s => s.handler.id === id)) continue; // Still exists
+                    allDiscoveredServiceIds.delete(id);
+                    legacyServiceIds.delete(id);
+                    panelEntries.delete(id);
+                    sigilServerPorts.delete(id);
+                }
+
+                for (const { handler, source, manifest } of discoveredServices) {
+                    if (legacyServiceIds.has(handler.id) && registry.has(handler.id)) continue; // unchanged — preserve lifecycle
+                    if (!registerDiscoveredService(handler, source, manifest, "legacy")) continue;
+                    initAndTrack(handler, "legacy");
+                }
                 for (const { path, error } of errors) {
                     logWarn(`[services] plugin service load error at ${path}: ${error}`);
                 }

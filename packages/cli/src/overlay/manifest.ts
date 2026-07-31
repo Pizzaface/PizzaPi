@@ -507,32 +507,40 @@ function validateSigilDef(entry: unknown, field: string, push: PushFn): void {
  * declarations so junk (wrong types, missing type/label, malformed params)
  * is rejected rather than silently forwarded.
  */
+/**
+ * Validate a triggers/sigils field and return the fully resolved array of
+ * definitions (whether declared inline or via a sidecar JSON path) so
+ * callers never need to re-parse a sidecar file themselves. Returns
+ * `undefined` on any validation failure — the caller already tracked the
+ * issue via `push`.
+ */
 function validateTriggerOrSigilField(
     sidecarValue: unknown,
     field: string,
     packageRoot: string,
     kind: "triggers" | "sigils",
     push: PushFn,
-): void {
+): unknown[] | undefined {
     const validateEntry = kind === "triggers" ? validateTriggerDef : validateSigilDef;
 
     if (typeof sidecarValue === "string") {
         const parsed = readSidecarJson(packageRoot, sidecarValue, field, push);
-        if (parsed === undefined) return;
+        if (parsed === undefined) return undefined;
         if (!Array.isArray(parsed)) {
             push(field, "sidecar JSON must be an array of definitions", `Fix the ${kind} sidecar file to contain a top-level JSON array.`);
-            return;
+            return undefined;
         }
         parsed.forEach((entry, i) => validateEntry(entry, `${field}[${i}]`, push));
-        return;
+        return parsed;
     }
 
     if (Array.isArray(sidecarValue)) {
         sidecarValue.forEach((entry, i) => validateEntry(entry, `${field}[${i}]`, push));
-        return;
+        return sidecarValue;
     }
 
     push(field, "must be a package-relative JSON path or an inline array", `Set ${field} to a string path or an array.`);
+    return undefined;
 }
 
 function validateServices(
@@ -654,11 +662,17 @@ function validateServices(
 
         // Note: trigger/sigil shape issues push directly via `push`, which
         // rejects the whole overlay in readOverlayManifest regardless of the
-        // `valid` flag below — no local bookkeeping needed here.
+        // `valid` flag below — no local bookkeeping needed here. The resolved
+        // array (inline or sidecar-parsed) is written back onto `raw` so
+        // downstream consumers (daemon package-service discovery) always see
+        // a literal ServiceTriggerDef[]/ServiceSigilDef[], never a sidecar path.
         for (const sidecarField of ["triggers", "sigils"] as const) {
             const sidecarValue = raw[sidecarField];
             if (sidecarValue === undefined) continue;
-            validateTriggerOrSigilField(sidecarValue, `${field}.${sidecarField}`, packageRoot, sidecarField, push);
+            const resolved = validateTriggerOrSigilField(sidecarValue, `${field}.${sidecarField}`, packageRoot, sidecarField, push);
+            if (resolved !== undefined) {
+                (raw as Record<string, unknown>)[sidecarField] = resolved;
+            }
         }
 
         if (valid) {
