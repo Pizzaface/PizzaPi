@@ -51,6 +51,7 @@ import { CopyableCodeBlock } from "@/components/session-viewer/cards/InterAgentC
 import { WriteFileCard } from "@/components/session-viewer/cards/WriteFileCard";
 import { TodoCard } from "@/components/session-viewer/cards/TodoCard";
 import type { TodoItem } from "@/lib/types";
+import { resolveMobileMediaUrl } from "@/lib/mobile-runtime";
 import { SessionNameCard } from "@/components/session-viewer/cards/SessionNameCard";
 import {
   truncateSessionId,
@@ -112,6 +113,16 @@ export function metadataBadge(label: string, value: string) {
   );
 }
 
+function isSafeImageUrl(url: string): boolean {
+  if (url.startsWith("/") && !url.startsWith("//")) return true;
+  try {
+    const protocol = new URL(url).protocol;
+    return protocol === "http:" || protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
 export function renderReadToolResult(
   content: unknown,
   isError?: boolean,
@@ -142,15 +153,24 @@ export function renderReadToolResult(
       : [];
 
   const imageBlocks = blocks.filter((block) => {
+    const source = block.source && typeof block.source === "object"
+      ? block.source as Record<string, unknown>
+      : {};
     const mimeType =
       typeof block.mimeType === "string"
         ? block.mimeType
         : typeof block.mime === "string"
           ? block.mime
-          : "";
+          : typeof source.media_type === "string"
+            ? source.media_type
+            : typeof source.mediaType === "string"
+              ? source.mediaType
+              : "";
+    const data = typeof block.data === "string" ? block.data : source.data;
+    const url = source.url;
     return (
       (block.type === "image" || mimeType.startsWith("image/")) &&
-      typeof block.data === "string"
+      (typeof data === "string" || (typeof url === "string" && isSafeImageUrl(url)))
     );
   });
 
@@ -186,14 +206,26 @@ export function renderReadToolResult(
   ) : null;
 
   const imageNodes = imageBlocks.map((block, idx) => {
+    const source = block.source && typeof block.source === "object"
+      ? block.source as Record<string, unknown>
+      : {};
     const path = typeof block.path === "string" ? block.path : defaultPath;
     const imgMime =
       typeof block.mimeType === "string"
         ? block.mimeType
         : typeof block.mime === "string"
           ? block.mime
-          : "image/png";
-    const data = block.data as string;
+          : typeof source.media_type === "string"
+            ? source.media_type
+            : typeof source.mediaType === "string"
+              ? source.mediaType
+              : "image/png";
+    const data = typeof block.data === "string"
+      ? block.data
+      : typeof source.data === "string"
+        ? source.data
+        : null;
+    const url = typeof source.url === "string" ? source.url : null;
     const width =
       typeof block.width === "number"
         ? block.width
@@ -216,7 +248,9 @@ export function renderReadToolResult(
             ? block.size
             : null;
 
-    const sizeBytes = explicitSize ?? estimateBase64Bytes(data);
+    const sizeBytes = explicitSize ??
+      (typeof source.originalSizeBytes === "number" ? source.originalSizeBytes : null) ??
+      estimateBase64Bytes(data ?? "");
 
     const mtimeRaw =
       block.mtime ??
@@ -245,9 +279,10 @@ export function renderReadToolResult(
             {mtime ? metadataBadge("mtime", mtime) : null}
           </div>
           <img
-            src={`data:${imgMime};base64,${data}`}
+            src={data ? `data:${imgMime};base64,${data}` : resolveMobileMediaUrl(url!)}
             alt={title}
             className="max-w-full rounded border border-border/70 bg-background object-contain"
+            loading="lazy"
           />
         </div>
       </FileTypeCard>
