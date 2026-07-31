@@ -471,14 +471,28 @@ describe("provider extension", () => {
       ]),
     );
 
-    await mod.runProviderSessionClose("close");
+    // Control env explicitly so the fallback assertion below is
+    // deterministic — PIZZAPI_SESSION_ID/SESSION_ID are commonly set in the
+    // ambient environment (e.g. this suite running inside a real pi
+    // session), which would otherwise leak into the "unknown" fallback.
+    const origPizzapiSessionId = process.env.PIZZAPI_SESSION_ID;
+    const origSessionId = process.env.SESSION_ID;
+    delete process.env.PIZZAPI_SESSION_ID;
+    delete process.env.SESSION_ID;
+    try {
+      await mod.runProviderSessionClose("close");
+    } finally {
+      if (origPizzapiSessionId !== undefined) process.env.PIZZAPI_SESSION_ID = origPizzapiSessionId;
+      if (origSessionId !== undefined) process.env.SESSION_ID = origSessionId;
+    }
 
     // makeCtx()'s sessionManager.getSessionFile() always returns
     // "test-session.json" and cwd is always the fixture project dir — if
     // currentSessionInfo had leaked, ctx would show those stale values here
-    // instead of falling back to sessionId/process.cwd().
-    expect(seenCtx?.sessionFile).not.toBe("test-session.json");
-    expect(seenCtx?.cwd).not.toBe(cwd);
+    // instead of falling back to sessionId/process.cwd(). Pin the exact
+    // fallback values rather than only asserting the negative.
+    expect(seenCtx?.sessionFile).toBe("unknown");
+    expect(seenCtx?.cwd).toBe(process.cwd());
 
     mod.__setBridgeForTest(null);
   });
@@ -502,6 +516,82 @@ describe("provider extension", () => {
     await Promise.all([first, second]);
 
     expect((globalThis as any).__disposeCalls).toEqual(["slow-dispose"]);
+  });
+
+  test("session_shutdown joins an in-flight close instead of racing a second hook, and waits for it before disposing", async () => {
+    const cwd = join(tmpHome, "project");
+    mkdirSync(cwd, { recursive: true });
+    writeProviderSource(tmpHome, "flush-provider", lifecycleProviderSource("flush-provider"));
+    const handlers = await startProviderExtension(cwd);
+
+    const mod = await import("./extension");
+    const { ProviderBridge } = await import("../../providers/bridge");
+
+    let hookCalls = 0;
+    let resolveClose: ((v: { label: string } | null) => void) | undefined;
+    mod.__setBridgeForTest(
+      new ProviderBridge([
+        {
+          id: "flush-provider",
+          capabilities: ["lifecycle"],
+          init: async () => {},
+          dispose: () => {},
+          onSessionClose: async () => {
+            hookCalls++;
+            return new Promise((resolve) => {
+              resolveClose = resolve;
+            });
+          },
+          onSessionShutdown: async () => {},
+        } as any,
+      ]),
+    );
+
+    // A: an in-flight close (e.g. an extension-initiated shutdownHandler
+    // flush) is already running when session_shutdown fires.
+    const closeA = mod.runProviderSessionClose("complete");
+    await Promise.resolve(); // let A reach the in-flight provider hook
+
+    // session_shutdown claims lifecycle state synchronously but must not
+    // resolve until A settles.
+    const shutdown = handlers.get("session_shutdown")?.({ reason: "quit" }, makeCtx(cwd)) as Promise<unknown>;
+    let shutdownDone = false;
+    shutdown.then(() => {
+      shutdownDone = true;
+    });
+
+    // B: a later caller during this same shutdown window (e.g. the worker's
+    // SIGTERM path) must join A's promise, not start a second hook call.
+    const closeB = mod.runProviderSessionClose("close");
+    let bResolved = false;
+    closeB.then(() => {
+      bResolved = true;
+    });
+
+    await new Promise((r) => setTimeout(r, 20));
+    expect(bResolved).toBe(false);
+    expect(shutdownDone).toBe(false);
+    expect(hookCalls).toBe(1);
+
+    resolveClose!({ label: "flushed" });
+
+    const [a, b] = await Promise.all([closeA, closeB]);
+    expect(a?.label).toBe("flushed");
+    expect(b?.label).toBe("flushed");
+    expect(hookCalls).toBe(1);
+
+    await shutdown;
+    expect(shutdownDone).toBe(true);
+    expect((globalThis as any).__disposeCalls).toEqual(["flush-provider"]);
+
+    // Later session gets fresh close tracking: this session's bridge is now
+    // null (claimed/disposed above), so a fresh runProviderSessionClose call
+    // must resolve to null immediately rather than replaying A's cached
+    // "flushed" result from the stale sessionClosePromise.
+    const later = await mod.runProviderSessionClose("close");
+    expect(later).toBeNull();
+
+    mod.__setBridgeForTest(null);
   });
 
   test("if one provider's dispose rejects, remaining providers are still disposed and state resets", async () => {
