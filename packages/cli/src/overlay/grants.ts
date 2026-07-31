@@ -96,6 +96,10 @@ export interface ConfiguredPackageGrantInfo {
  */
 export function buildConfiguredGrantIdentities(cwd: string, agentDir: string): Map<string, ConfiguredPackageGrantInfo> {
     const settingsManager = SettingsManager.create(cwd, agentDir);
+    const globalLoadErrors = settingsManager.drainErrors().filter((entry) => entry.scope === "global");
+    if (globalLoadErrors.length > 0) {
+        throw new Error(`cannot reconcile overlay grants: user package settings failed to load: ${globalLoadErrors.map((entry) => entry.error.message).join("; ")}`);
+    }
     const packageManager = new DefaultPackageManager({ cwd, agentDir, settingsManager });
     const map = new Map<string, ConfiguredPackageGrantInfo>();
 

@@ -117,6 +117,15 @@ describe("reconcileOverlayGrants (daemon startup/reconfigure call path)", () => 
         expect(logged).not.toContain("also-still-trusted");
     });
 
+    test("corrupt user settings preserves all grants fail-closed", () => {
+        const identity = "npm:@acme/configured-before-corruption";
+        grantServices(identity, ["github"]);
+        writeFileSync(join(agentDir, "settings.json"), "{ truncated", "utf-8");
+
+        expect(() => reconcileOverlayGrants(projectDir)).not.toThrow();
+        expect(getGrantedServiceIds(identity)).toEqual(new Set(["github"]));
+    });
+
     test("no configured packages and no grants is a silent no-op", () => {
         writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ packages: [] }));
         expect(() => reconcileOverlayGrants(projectDir)).not.toThrow();
