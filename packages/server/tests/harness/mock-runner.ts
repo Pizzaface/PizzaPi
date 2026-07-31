@@ -17,6 +17,8 @@ import type {
     RunnerPlugin,
     RunnerHook,
     ServicePanelInfo,
+    ServiceTriggerDef,
+    ServiceSigilDef,
 } from "@pizzapi/protocol";
 
 import type { TestServer } from "./types.js";
@@ -102,6 +104,10 @@ export interface MockRunnerOptions {
     serviceIds?: string[];
     /** Service panels to announce (dynamic iframe panels). */
     panels?: ServicePanelInfo[];
+    /** Trigger types declared by announced services (e.g. package-origin manifests). */
+    triggerDefs?: ServiceTriggerDef[];
+    /** Sigil types declared by announced services (e.g. package-origin manifests). */
+    sigilDefs?: ServiceSigilDef[];
 }
 
 export interface MockRunner {
@@ -131,7 +137,14 @@ export interface MockRunner {
     onFileRequest(handler: (data: unknown) => unknown): void;
 
     // Services
-    announceServices(serviceIds: string[], panels?: ServicePanelInfo[]): void;
+    announceServices(
+        serviceIds: string[],
+        panels?: ServicePanelInfo[],
+        triggerDefs?: ServiceTriggerDef[],
+        sigilDefs?: ServiceSigilDef[],
+    ): void;
+    /** Disabled service IDs currently applied (mutated by reconfigure_services, mirrors real daemon). */
+    readonly disabledServiceIds: ReadonlySet<string>;
 
     // Utilities
     waitForEvent(eventName: string, timeout?: number): Promise<unknown>;
@@ -279,6 +292,14 @@ export async function createMockRunner(
     let restartRequested = false;
     let shutdownRequested = false;
     let isShuttingDown = false;
+    // Mutable service_announce state — mirrors the real daemon's panelEntries/
+    // disabledServices so announceServices() and reconfigure_services can both
+    // re-emit a consistent full announce.
+    let currentServiceIds: string[] = opts?.serviceIds ?? [];
+    let currentPanels: ServicePanelInfo[] = opts?.panels ?? [];
+    let currentTriggerDefs: ServiceTriggerDef[] = opts?.triggerDefs ?? [];
+    let currentSigilDefs: ServiceSigilDef[] = opts?.sigilDefs ?? [];
+    const disabledServiceIdsSet = new Set<string>();
 
     // Populate initial skills
     const initialSkills = opts?.skills ?? defaultSkills();
@@ -381,10 +402,12 @@ export async function createMockRunner(
                     }
                 }
                 // Announce services after registration (like real daemon)
-                if (opts?.serviceIds && opts.serviceIds.length > 0) {
+                if (currentServiceIds.length > 0) {
                     (socket as any).emit("service_announce", {
-                        serviceIds: opts.serviceIds,
-                        ...(opts.panels && opts.panels.length > 0 ? { panels: opts.panels } : {}),
+                        serviceIds: currentServiceIds,
+                        ...(currentPanels.length > 0 ? { panels: currentPanels } : {}),
+                        ...(currentTriggerDefs.length > 0 ? { triggerDefs: currentTriggerDefs } : {}),
+                        ...(currentSigilDefs.length > 0 ? { sigilDefs: currentSigilDefs } : {}),
                     });
                 }
                 resolve();
@@ -753,6 +776,25 @@ export async function createMockRunner(
                 content: agent.content ?? `# ${agentName}\n\nAgent definition placeholder.`,
             });
         }
+    });
+
+    // --- Services (reconfigure_services → re-announce, mirrors daemon.ts) ---
+
+    socket.on("reconfigure_services", (data: any) => {
+        if (isShuttingDown) return;
+        const incoming = Array.isArray(data?.disabledServiceIds) ? data.disabledServiceIds as string[] : [];
+        disabledServiceIdsSet.clear();
+        for (const id of incoming) disabledServiceIdsSet.add(id);
+        // Real daemon re-emits a full service_announce after applying the
+        // reconfigure command so the server (and Redis persistence) picks up
+        // the new disabledServiceIds — mirror that here.
+        (socket as any).emit("service_announce", {
+            serviceIds: currentServiceIds,
+            ...(disabledServiceIdsSet.size > 0 ? { disabledServiceIds: Array.from(disabledServiceIdsSet) } : {}),
+            ...(currentPanels.length > 0 ? { panels: currentPanels } : {}),
+            ...(currentTriggerDefs.length > 0 ? { triggerDefs: currentTriggerDefs } : {}),
+            ...(currentSigilDefs.length > 0 ? { sigilDefs: currentSigilDefs } : {}),
+        });
     });
 
     // --- Plugins ---
@@ -1182,10 +1224,26 @@ export async function createMockRunner(
             return shutdownRequested;
         },
 
-        announceServices(serviceIds: string[], panels?: ServicePanelInfo[]): void {
+        get disabledServiceIds(): ReadonlySet<string> {
+            return disabledServiceIdsSet;
+        },
+
+        announceServices(
+            serviceIds: string[],
+            panels?: ServicePanelInfo[],
+            triggerDefs?: ServiceTriggerDef[],
+            sigilDefs?: ServiceSigilDef[],
+        ): void {
+            currentServiceIds = serviceIds;
+            currentPanels = panels ?? [];
+            currentTriggerDefs = triggerDefs ?? [];
+            currentSigilDefs = sigilDefs ?? [];
             (socket as any).emit("service_announce", {
                 serviceIds,
-                ...(panels && panels.length > 0 ? { panels } : {}),
+                ...(disabledServiceIdsSet.size > 0 ? { disabledServiceIds: Array.from(disabledServiceIdsSet) } : {}),
+                ...(currentPanels.length > 0 ? { panels: currentPanels } : {}),
+                ...(currentTriggerDefs.length > 0 ? { triggerDefs: currentTriggerDefs } : {}),
+                ...(currentSigilDefs.length > 0 ? { sigilDefs: currentSigilDefs } : {}),
             });
         },
 

@@ -122,9 +122,16 @@ export function RunnerServicesPanel({ runnerId }: RunnerServicesPanelProps) {
         sigilDefs?: SigilDef[];
       };
 
-      const enabledServiceIds = (data.serviceIds ?? []).filter(id => !BUILTIN_SERVICE_IDS.has(id));
+      // `serviceIds` from service_announce already includes every registered
+      // service id — disabled ones are NOT removed from it, `disabledServiceIds`
+      // is just a subset marker (see daemon.ts emitServiceAnnounce). Naively
+      // concatenating the two lists double-counts every disabled service; union
+      // via a Set instead, while still surfacing a disabled id that no longer
+      // appears in `serviceIds` at all (e.g. a service disabled while offline).
+      const nonBuiltinServiceIds = (data.serviceIds ?? []).filter(id => !BUILTIN_SERVICE_IDS.has(id));
       const disabledServiceIds = (data.disabledServiceIds ?? []).filter(id => !BUILTIN_SERVICE_IDS.has(id));
-      const allServiceIds = [...enabledServiceIds, ...disabledServiceIds];
+      const disabledSet = new Set(disabledServiceIds);
+      const allServiceIds = Array.from(new Set([...nonBuiltinServiceIds, ...disabledServiceIds]));
       const panelMap = new Map((data.panels ?? []).map(p => [p.serviceId, p]));
       const triggerDefs = data.triggerDefs ?? [];
       const sigilDefs = data.sigilDefs ?? [];
@@ -148,7 +155,7 @@ export function RunnerServicesPanel({ runnerId }: RunnerServicesPanelProps) {
         panel: panelMap.get(id),
         triggerCount: triggerCounts.get(id) || 0,
         sigilCount: sigilCounts.get(id) || 0,
-        enabled: enabledServiceIds.includes(id),
+        enabled: !disabledSet.has(id),
       }));
 
       setServices(result);

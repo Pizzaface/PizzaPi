@@ -103,4 +103,44 @@ describe("RunnerServicesPanel", () => {
       expect(container.textContent).toContain('Service "demo" disabled. Change applied immediately.');
     });
   });
+
+  test("renders a disabled service exactly once (serviceIds already includes disabled ids)", async () => {
+    // Wire semantics (see daemon.ts emitServiceAnnounce): `serviceIds` lists
+    // EVERY registered service — disabling one does not remove it from that
+    // array, `disabledServiceIds` is just a subset marker. A package-origin
+    // service surfaced this: naive concatenation of the two arrays rendered
+    // a disabled service twice.
+    const dupFetchSpy = mock(async () => ({
+      ok: true,
+      json: async () => ({
+        serviceIds: ["demo", "godmother-lite"],
+        disabledServiceIds: ["godmother-lite"],
+        panels: [
+          { serviceId: "demo", port: 1234, label: "Demo", icon: "server" },
+          { serviceId: "godmother-lite", port: 5678, label: "Godmother Lite", icon: "sparkles" },
+        ],
+        triggerDefs: [],
+        sigilDefs: [],
+      }),
+    } as unknown as Response));
+    (globalThis as any).fetch = dupFetchSpy;
+
+    let container!: HTMLElement;
+    await act(async () => {
+      ({ container } = render(
+        <actualTooltip.TooltipProvider>
+          <RunnerServicesPanel runnerId="runner-1" />
+        </actualTooltip.TooltipProvider>,
+      ));
+    });
+
+    await waitFor(() => expect(container.textContent).toContain("Godmother Lite"));
+
+    const godmotherOccurrences = container.querySelectorAll(".text-sm.font-medium.truncate");
+    const labels = Array.from(godmotherOccurrences).map((el) => el.textContent);
+    expect(labels.filter((l) => l === "Godmother Lite")).toHaveLength(1);
+    expect(container.textContent).toContain("Disabled");
+
+    (globalThis as any).fetch = fetchSpy;
+  });
 });
