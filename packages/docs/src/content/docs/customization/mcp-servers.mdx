@@ -94,6 +94,23 @@ STDIO is the most common transport. PizzaPi spawns the MCP server as a child pro
 | `env` | `Record<string, string>` | — | Environment variables set for the child process. These are merged with the current environment. |
 | `cwd` | `string` | — | Working directory for the child process. Defaults to the current project root. |
 
+### Package overlay MCP paths
+
+A package's `pi.pizzapi.mcp` sidecar can use `@PACKAGE_ROOT@` in stdio `command`, `cwd`, string `args` entries, and string `env` values. PizzaPi replaces it with that installed package's confined root before normal variable expansion. It is not available in explicit config files or legacy Claude-plugin `.mcp.json` files, and does not apply to URLs or headers.
+
+For example, the AgentMemory package sidecar should use:
+
+```json
+{
+  "mcpServers": {
+    "godmother": {
+      "command": "@PACKAGE_ROOT@/gm",
+      "args": ["--config", "@PACKAGE_ROOT@/config.json"]
+    }
+  }
+}
+```
+
 ## HTTP / Streamable HTTP Transport
 
 For remote MCP servers, use URL-based configuration instead of spawning a local process.

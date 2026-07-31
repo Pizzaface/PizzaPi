@@ -90,6 +90,31 @@ function isValidMcpSidecarShape(parsed: unknown): parsed is Record<string, unkno
 }
 
 /** Extract `{ preferred, compat }` server entries from a parsed mcp sidecar/`.mcp.json` value. */
+const PACKAGE_ROOT_TOKEN = "@PACKAGE_ROOT@";
+
+function replacePackageRoot(value: unknown, packageRoot: string): unknown {
+    return typeof value === "string" ? value.replaceAll(PACKAGE_ROOT_TOKEN, packageRoot) : value;
+}
+
+/**
+ * Materialize the one package-scoped token in stdio fields only. This is
+ * deliberately narrower than config variable expansion: URLs, headers, and
+ * arbitrary nested data keep their literal values, while command arguments
+ * remain argv entries rather than shell text.
+ */
+function materializePackageMcpServer(server: Record<string, unknown>, packageRoot: string): Record<string, unknown> {
+    const materialized = { ...server };
+    if (typeof server.command === "string") materialized.command = replacePackageRoot(server.command, packageRoot);
+    if (typeof server.cwd === "string") materialized.cwd = replacePackageRoot(server.cwd, packageRoot);
+    if (Array.isArray(server.args)) materialized.args = server.args.map((arg) => replacePackageRoot(arg, packageRoot));
+    if (isRecord(server.env)) {
+        materialized.env = Object.fromEntries(
+            Object.entries(server.env).map(([name, value]) => [name, replacePackageRoot(value, packageRoot)]),
+        );
+    }
+    return materialized;
+}
+
 function extractServers(parsed: unknown): { preferred: Record<string, unknown>[]; compat: Record<string, Record<string, unknown>> } {
     const preferred: Record<string, unknown>[] = [];
     const compat: Record<string, Record<string, unknown>> = {};
@@ -195,8 +220,13 @@ export function mergeOverlayMcpServers(
         for (const pkg of packages.filter((p) => p.scope === scope)) {
             if (!pkg.overlay.mcp) continue;
             const resolved = resolveConfinedPath(pkg.installedPath, pkg.overlay.mcp);
+            const packageRoot = resolveConfinedPath(pkg.installedPath, ".");
             if (!resolved.ok) {
                 log.warn(`[${pkg.identity}] mcp sidecar failed re-validation: ${resolved.message}`);
+                continue;
+            }
+            if (!packageRoot.ok) {
+                log.warn(`[${pkg.identity}] package root failed re-validation: ${packageRoot.message}`);
                 continue;
             }
             const parsed = readJsonCapped(resolved.absolutePath);
@@ -209,7 +239,13 @@ export function mergeOverlayMcpServers(
                 continue;
             }
             const { preferred, compat } = extractServers(parsed);
-            addPass(scope, pkg.identity, pkg.installedPath, preferred, compat);
+            addPass(
+                scope,
+                pkg.identity,
+                pkg.installedPath,
+                preferred.map((server) => materializePackageMcpServer(server, packageRoot.absolutePath)),
+                Object.fromEntries(Object.entries(compat).map(([name, server]) => [name, materializePackageMcpServer(server, packageRoot.absolutePath)])),
+            );
         }
     }
 
