@@ -218,12 +218,14 @@ describe("overlay trust integration", () => {
         expect(getGrantedServiceIds("local:" + realpathSync(pkgDir)).size).toBe(0);
     });
 
-    test("install rejects a preferred MCP sidecar without an explicit transport", async () => {
+    test("install rejects closed preferred MCP transport fields", async () => {
         const agentDir = join(tmpDir, "agent");
         const cwd = join(tmpDir, "project");
         const pkgDir = join(tmpDir, "bad-mcp-pkg");
         writeFixturePackage(pkgDir, { schemaVersion: 1, mcp: "./mcp.json" });
-        writeFileSync(join(pkgDir, "mcp.json"), JSON.stringify({ mcp: { servers: [{ name: "godmother", command: "godmother" }] } }));
+        writeFileSync(join(pkgDir, "mcp.json"), JSON.stringify({ mcp: { servers: [{
+            name: "godmother", transport: "http", url: "https://example.test/mcp", command: "godmother", oauthClientId: "ignored", unexpected: true,
+        }] } }));
 
         const originalError = console.error;
         const errors: string[] = [];
@@ -236,7 +238,9 @@ describe("overlay trust integration", () => {
         }
 
         expect(code).not.toBe(0);
-        expect(errors.join("\n")).toContain("mcp.servers[0].transport");
+        expect(errors.join("\n")).toContain("mcp.servers[0].command");
+        expect(errors.join("\n")).toContain("mcp.servers[0].oauthClientId");
+        expect(errors.join("\n")).toContain("mcp.servers[0].unexpected");
         expect(errors.join("\n")).toContain("pi-native package install may remain");
     });
 

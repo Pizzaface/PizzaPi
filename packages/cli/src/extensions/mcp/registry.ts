@@ -30,7 +30,7 @@ export type McpConfig = {
   mcp?: {
     servers?: Array<
       | { name: string; transport: "stdio"; command: string; args?: string[]; env?: Record<string, string>; cwd?: string; deferLoading?: boolean }
-      | { name: string; transport: "http"; url: string; headers?: Record<string, string>; oauthClientName?: string; oauthClientId?: string; oauthClientSecret?: string; oauthCallbackPort?: number; deferLoading?: boolean }
+      | { name: string; transport: "http"; url: string; headers?: Record<string, string>; deferLoading?: boolean }
       | { name: string; transport: "streamable"; url: string; headers?: Record<string, string>; oauthClientName?: string; oauthClientId?: string; oauthClientSecret?: string; oauthCallbackPort?: number; deferLoading?: boolean }
     >;
   };

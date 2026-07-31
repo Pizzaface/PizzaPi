@@ -22,6 +22,12 @@ export const OVERLAY_SIDECAR_MAX_BYTES = MAX_PLUGIN_FILE_SIZE;
 
 const TOP_LEVEL_KEYS = new Set(["schemaVersion", "services", "agents", "rules", "mcp"]);
 const PREFERRED_MCP_TRANSPORTS = new Set(["stdio", "http", "streamable"]);
+const PREFERRED_MCP_COMMON_KEYS = new Set(["name", "transport", "deferLoading"]);
+const PREFERRED_MCP_TRANSPORT_KEYS: Record<string, Set<string>> = {
+    stdio: new Set(["command", "args", "env", "cwd"]),
+    http: new Set(["url", "headers"]),
+    streamable: new Set(["url", "headers", "oauthClientName", "oauthClientId", "oauthClientSecret", "oauthCallbackPort"]),
+};
 const SERVICE_KEYS = new Set(["id", "label", "entry", "icon", "panel", "triggers", "sigils"]);
 const PANEL_KEYS = new Set(["dir", "requires"]);
 const PANEL_VARIABLES: ReadonlySet<PanelVariable> = new Set(["PWD", "SESSION_ID", "HOME", "USER", "PROJECT_DIR"]);
@@ -350,6 +356,17 @@ function validateMcpShape(parsed: unknown, field: string, push: PushFn): void {
         return;
     }
 
+    if (parsed.mcp !== undefined && !isPlainObject(parsed.mcp)) {
+        push(`${field}.mcp`, "must be an object", "Set mcp to an object with a servers array.");
+    }
+    if (isPlainObject(parsed.mcp)) {
+        for (const key of Object.keys(parsed.mcp)) {
+            if (key !== "servers") {
+                push(`${field}.mcp.${key}`, `unknown mcp key "${key}"`, 'Remove it — the preferred mcp object only supports "servers".');
+            }
+        }
+    }
+
     const mcpServersArray = isPlainObject(parsed.mcp) && Array.isArray((parsed.mcp as Record<string, unknown>).servers)
         ? ((parsed.mcp as Record<string, unknown>).servers as unknown[])
         : undefined;
@@ -370,7 +387,19 @@ function validateMcpShape(parsed: unknown, field: string, push: PushFn): void {
             if (typeof entry.name !== "string" || entry.name.length === 0) {
                 push(`${entryField}.name`, "must be a non-empty string", "Set name to a unique server identifier.");
             }
-            if (typeof entry.transport !== "string" || !PREFERRED_MCP_TRANSPORTS.has(entry.transport)) {
+            const transport = typeof entry.transport === "string" && PREFERRED_MCP_TRANSPORTS.has(entry.transport)
+                ? entry.transport
+                : undefined;
+            const allowedKeys = new Set([
+                ...PREFERRED_MCP_COMMON_KEYS,
+                ...(transport ? PREFERRED_MCP_TRANSPORT_KEYS[transport] : Object.values(PREFERRED_MCP_TRANSPORT_KEYS).flatMap((keys) => [...keys])),
+            ]);
+            for (const key of Object.keys(entry)) {
+                if (!allowedKeys.has(key)) {
+                    push(`${entryField}.${key}`, `is not allowed when transport is ${transport ?? JSON.stringify(entry.transport)}`, `Remove "${key}" — allowed fields are: ${[...allowedKeys].join(", ")}.`);
+                }
+            }
+            if (!transport) {
                 push(
                     `${entryField}.transport`,
                     `is required and must be one of ${[...PREFERRED_MCP_TRANSPORTS].join(", ")}`,
@@ -378,19 +407,38 @@ function validateMcpShape(parsed: unknown, field: string, push: PushFn): void {
                 );
                 return;
             }
-            if (entry.transport === "stdio") {
+            if (entry.deferLoading !== undefined && typeof entry.deferLoading !== "boolean") {
+                push(`${entryField}.deferLoading`, "must be a boolean", "Set deferLoading to true/false, or omit it.");
+            }
+            if (transport === "stdio") {
                 if (typeof entry.command !== "string" || entry.command.length === 0) {
                     push(`${entryField}.command`, "must be a non-empty string when transport is stdio", "Set command to the stdio server executable.");
                 }
-                if (entry.url !== undefined) {
-                    push(`${entryField}.url`, "is not allowed when transport is stdio", "Remove url or use transport http/streamable.");
+                if (entry.args !== undefined && (!Array.isArray(entry.args) || entry.args.some((arg) => typeof arg !== "string"))) {
+                    push(`${entryField}.args`, "must be an array of strings", "Set args to string arguments, or omit it.");
                 }
-            } else {
-                if (typeof entry.url !== "string" || entry.url.length === 0) {
-                    push(`${entryField}.url`, `must be a non-empty string when transport is ${entry.transport}`, "Set url to the remote MCP endpoint.");
+                if (entry.env !== undefined && (!isPlainObject(entry.env) || Object.values(entry.env).some((value) => typeof value !== "string"))) {
+                    push(`${entryField}.env`, "must be an object with string values", "Set env to string key/value pairs, or omit it.");
                 }
-                if (entry.command !== undefined) {
-                    push(`${entryField}.command`, `is not allowed when transport is ${entry.transport}`, "Remove command or use transport stdio.");
+                if (entry.cwd !== undefined && typeof entry.cwd !== "string") {
+                    push(`${entryField}.cwd`, "must be a string", "Set cwd to a working-directory path, or omit it.");
+                }
+                return;
+            }
+            if (typeof entry.url !== "string" || entry.url.length === 0) {
+                push(`${entryField}.url`, `must be a non-empty string when transport is ${transport}`, "Set url to the remote MCP endpoint.");
+            }
+            if (entry.headers !== undefined && (!isPlainObject(entry.headers) || Object.values(entry.headers).some((value) => typeof value !== "string"))) {
+                push(`${entryField}.headers`, "must be an object with string values", "Set headers to string key/value pairs, or omit it.");
+            }
+            if (transport === "streamable") {
+                for (const key of ["oauthClientName", "oauthClientId", "oauthClientSecret"] as const) {
+                    if (entry[key] !== undefined && typeof entry[key] !== "string") {
+                        push(`${entryField}.${key}`, "must be a string", `Set ${key} to a string, or omit it.`);
+                    }
+                }
+                if (entry.oauthCallbackPort !== undefined && typeof entry.oauthCallbackPort !== "number") {
+                    push(`${entryField}.oauthCallbackPort`, "must be a number", "Set oauthCallbackPort to a port number, or omit it.");
                 }
             }
         });

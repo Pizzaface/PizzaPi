@@ -216,13 +216,14 @@ describe("readOverlayManifest", () => {
         expect(result.issues).toContainEqual(expect.objectContaining({ field: "mcp.servers[0].transport", message: expect.stringContaining("required") }));
     });
 
-    test("preferred mcp.servers rejects unknown and contradictory transport fields", () => {
+    test("preferred mcp.servers rejects every field outside its transport matrix", () => {
         const dir = fixturePkg({ schemaVersion: 1, mcp: "./bad-entry.json" }, (d) => {
             writeFileSync(join(d, "bad-entry.json"), JSON.stringify({
                 mcp: { servers: [
-                    { name: "unknown", transport: "sse", url: "https://example.test/mcp" },
-                    { name: "stdio-url", transport: "stdio", command: "echo", url: "https://example.test/mcp" },
-                    { name: "http-command", transport: "http", command: "echo" },
+                    { name: "unknown", transport: "sse", url: "https://example.test/mcp", bogus: true },
+                    { name: "stdio", transport: "stdio", command: "echo", url: "https://example.test/mcp", headers: {}, oauthClientName: "x", oauthClientId: "id", oauthClientSecret: "secret", oauthCallbackPort: 1, bogus: true },
+                    { name: "http", transport: "http", url: "https://example.test/mcp", command: "echo", args: [], env: {}, cwd: ".", oauthClientName: "x", oauthClientId: "id", oauthClientSecret: "secret", oauthCallbackPort: 1, bogus: true },
+                    { name: "streamable", transport: "streamable", url: "https://example.test/mcp", command: "echo", args: [], env: {}, cwd: ".", bogus: true },
                 ] },
             }));
         });
@@ -230,10 +231,10 @@ describe("readOverlayManifest", () => {
         const result = readOverlayManifest(dir, provenance);
         expect(result.overlay).toBeNull();
         expect(result.issues.map((i) => i.field)).toEqual(expect.arrayContaining([
-            "mcp.servers[0].transport",
-            "mcp.servers[1].url",
-            "mcp.servers[2].url",
-            "mcp.servers[2].command",
+            "mcp.servers[0].transport", "mcp.servers[0].bogus",
+            "mcp.servers[1].url", "mcp.servers[1].headers", "mcp.servers[1].oauthClientName", "mcp.servers[1].oauthClientId", "mcp.servers[1].oauthClientSecret", "mcp.servers[1].oauthCallbackPort", "mcp.servers[1].bogus",
+            "mcp.servers[2].command", "mcp.servers[2].args", "mcp.servers[2].env", "mcp.servers[2].cwd", "mcp.servers[2].oauthClientName", "mcp.servers[2].oauthClientId", "mcp.servers[2].oauthClientSecret", "mcp.servers[2].oauthCallbackPort", "mcp.servers[2].bogus",
+            "mcp.servers[3].command", "mcp.servers[3].args", "mcp.servers[3].env", "mcp.servers[3].cwd", "mcp.servers[3].bogus",
         ]));
     });
 
@@ -257,12 +258,12 @@ describe("readOverlayManifest", () => {
         expect(result.overlay?.mcp).toBe("./mcp.json");
     });
 
-    test("mcp sidecar with all supported preferred transports is accepted", () => {
+    test("mcp sidecar accepts the complete preferred transport field matrix", () => {
         const dir = fixturePkg({ schemaVersion: 1, mcp: "./mcp.json" }, (d) => {
             writeFileSync(join(d, "mcp.json"), JSON.stringify({ mcp: { servers: [
-                { name: "local", transport: "stdio", command: "echo" },
-                { name: "http", transport: "http", url: "https://api.example.com/mcp" },
-                { name: "streamable", transport: "streamable", url: "https://api.example.com/stream" },
+                { name: "local", transport: "stdio", command: "echo", args: ["--flag"], env: { KEY: "value" }, cwd: ".", deferLoading: true },
+                { name: "http", transport: "http", url: "https://api.example.com/mcp", headers: { Authorization: "Bearer token" }, deferLoading: false },
+                { name: "streamable", transport: "streamable", url: "https://api.example.com/stream", headers: { Authorization: "Bearer token" }, oauthClientName: "PizzaPi", oauthClientId: "id", oauthClientSecret: "secret", oauthCallbackPort: 3000, deferLoading: true },
             ] } }));
         });
         dirs.push(dir);

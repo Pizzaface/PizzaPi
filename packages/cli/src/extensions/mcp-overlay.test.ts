@@ -77,8 +77,8 @@ describe("mergeOverlayMcpServers", () => {
                         transport: "stdio",
                         command: "@PACKAGE_ROOT@/gm",
                         cwd: "@PACKAGE_ROOT@/work dir",
-                        args: ["--config", "@PACKAGE_ROOT@/config.json", 7],
-                        env: { CONFIG: "@PACKAGE_ROOT@/config.json", COUNT: 1 },
+                        args: ["--config", "@PACKAGE_ROOT@/config.json", "7"],
+                        env: { CONFIG: "@PACKAGE_ROOT@/config.json", COUNT: "1" },
                     }],
                 },
                 mcpServers: {
@@ -100,8 +100,8 @@ describe("mergeOverlayMcpServers", () => {
         expect((config.mcp?.servers?.[0] as any)).toMatchObject({
             command: "@PACKAGE_ROOT@/gm",
             cwd: "@PACKAGE_ROOT@/work dir",
-            args: ["--config", "@PACKAGE_ROOT@/config.json", 7],
-            env: { CONFIG: "@PACKAGE_ROOT@/config.json", COUNT: 1 },
+            args: ["--config", "@PACKAGE_ROOT@/config.json", "7"],
+            env: { CONFIG: "@PACKAGE_ROOT@/config.json", COUNT: "1" },
         });
         expect(config.mcpServers?.compat).toMatchObject({
             command: "@PACKAGE_ROOT@/bin/gm",
