@@ -1,5 +1,6 @@
 import { describe, test, expect } from "bun:test";
 import { isPizzaPiHostInfo, detectPizzaPiHost, onPizzaPiHost } from "@pizzapi/extension-sdk";
+import { createEventBus } from "@earendil-works/pi-coding-agent";
 import { hostAnnounceExtension, buildHostInfo } from "./host-announce.js";
 
 /** Minimal synchronous pi.events fake — enough to exercise probe/ready semantics. */
@@ -20,6 +21,10 @@ function fakePiEvents() {
                 for (const handler of listeners.get(type) ?? []) handler(payload);
             },
         },
+        // Lifecycle events (session_shutdown, etc.) are a separate mechanism
+        // from the `.events` pub/sub bus — hostAnnounceExtension only needs
+        // session_shutdown, so that's all this fake wires up.
+        on(_type: string, _handler: () => void) {},
     };
 }
 
@@ -64,5 +69,48 @@ describe("hostAnnounceExtension", () => {
         });
 
         expect(delivered).toEqual(buildHostInfo());
+    });
+
+    /**
+     * Build a minimal but REAL-bus pi fake: `.events` is backed by pi's own
+     * `createEventBus()` (real Node EventEmitter under the hood), not a
+     * hand-rolled listeners map — so this test actually characterizes the
+     * accumulation behavior a fake could silently diverge from. `.on()` is a
+     * small session-lifecycle-event shim (session_shutdown only, which is
+     * all this extension uses) that hands back the same real emitter's
+     * listener count for assertions.
+     */
+    function realBusPi() {
+        const bus = createEventBus();
+        const shutdownHandlers: Array<() => void> = [];
+        const pi = {
+            events: bus,
+            on(event: string, handler: () => void) {
+                if (event === "session_shutdown") shutdownHandlers.push(handler);
+            },
+        };
+        return {
+            pi,
+            bus,
+            fireShutdown: () => { for (const h of shutdownHandlers.splice(0)) h(); },
+        };
+    }
+
+    test("session_shutdown removes the probe listener from the real pi event bus (no accumulation across reloads)", () => {
+        const { pi, bus, fireShutdown } = realBusPi();
+
+        // Simulate `/reload`: pi re-invokes the SAME inline factory against the
+        // SAME bus on every reload (resource-loader.js loadExtensionFactories()
+        // runs again), firing session_shutdown for the previous runner first.
+        for (let i = 0; i < 3; i++) {
+            hostAnnounceExtension(pi as any);
+            expect(detectPizzaPiHost(pi as any)).toEqual(buildHostInfo());
+            fireShutdown();
+        }
+
+        // After the last shutdown, the probe listener must be gone — a probe
+        // now gets no response, proving each factory run's listener was
+        // actually removed rather than accumulating one per iteration.
+        expect(detectPizzaPiHost(pi as any)).toBeUndefined();
     });
 });

@@ -78,6 +78,70 @@ export const BUILTIN_AGENTS: AgentConfig[] = [
 ];
 
 /**
+ * Parse a single agent `.md` file's frontmatter + body into an `AgentConfig`.
+ * Returns `null` when the file is missing/unreadable, has malformed YAML
+ * frontmatter, or is missing the required `name`/`description` fields.
+ */
+function loadAgentFromFile(filePath: string, source: "user" | "project"): AgentConfig | null {
+    let content: string;
+    try {
+        content = fs.readFileSync(filePath, "utf-8");
+    } catch {
+        return null;
+    }
+
+    let frontmatter: Record<string, string | boolean | number>;
+    let body: string;
+    try {
+        ({ frontmatter, body } = parseFrontmatter<Record<string, string | boolean | number>>(content));
+    } catch {
+        // Malformed YAML frontmatter — silently skip this file
+        return null;
+    }
+
+    const name = String(frontmatter.name ?? "").trim();
+    const description = String(frontmatter.description ?? "").trim();
+    if (!name || !description) {
+        return null;
+    }
+
+    const toolsStr = typeof frontmatter.tools === "string" ? frontmatter.tools : "";
+    const tools = toolsStr
+        .split(",")
+        .map((t: string) => t.trim())
+        .filter(Boolean);
+
+    const disallowedStr = typeof frontmatter.disallowedTools === "string" ? frontmatter.disallowedTools : "";
+    const disallowedTools = disallowedStr
+        .split(",")
+        .map((t: string) => t.trim())
+        .filter(Boolean);
+
+    const rawMaxTurns = frontmatter.maxTurns;
+    const maxTurns = rawMaxTurns ? parseInt(String(rawMaxTurns), 10) : undefined;
+    // YAML parses `true` as boolean, but it might also be the string "true" / "yes"
+    const rawBg = frontmatter.background;
+    const background = rawBg === true || rawBg === "true" || rawBg === "yes";
+
+    const model = typeof frontmatter.model === "string" ? frontmatter.model : undefined;
+    const permissionMode = typeof frontmatter.permissionMode === "string" ? frontmatter.permissionMode : undefined;
+
+    return {
+        name,
+        description,
+        tools: tools.length > 0 ? tools : undefined,
+        disallowedTools: disallowedTools.length > 0 ? disallowedTools : undefined,
+        model,
+        maxTurns: maxTurns && !isNaN(maxTurns) ? maxTurns : undefined,
+        permissionMode,
+        background: background || undefined,
+        systemPrompt: body,
+        source,
+        filePath,
+    };
+}
+
+/**
  * Load agent definitions from a directory of .md files.
  *
  * Each .md file must have YAML frontmatter with at least `name` and `description`.
@@ -102,65 +166,27 @@ function loadAgentsFromDir(dir: string, source: "user" | "project"): AgentConfig
         if (!entry.name.endsWith(".md")) continue;
         if (!entry.isFile() && !entry.isSymbolicLink()) continue;
 
-        const filePath = path.join(dir, entry.name);
-        let content: string;
-        try {
-            content = fs.readFileSync(filePath, "utf-8");
-        } catch {
-            continue;
-        }
-
-        let frontmatter: Record<string, string | boolean | number>;
-        let body: string;
-        try {
-            ({ frontmatter, body } = parseFrontmatter<Record<string, string | boolean | number>>(content));
-        } catch {
-            // Malformed YAML frontmatter — silently skip this file
-            continue;
-        }
-
-        const name = String(frontmatter.name ?? "").trim();
-        const description = String(frontmatter.description ?? "").trim();
-        if (!name || !description) {
-            continue;
-        }
-
-        const toolsStr = typeof frontmatter.tools === "string" ? frontmatter.tools : "";
-        const tools = toolsStr
-            .split(",")
-            .map((t: string) => t.trim())
-            .filter(Boolean);
-
-        const disallowedStr = typeof frontmatter.disallowedTools === "string" ? frontmatter.disallowedTools : "";
-        const disallowedTools = disallowedStr
-            .split(",")
-            .map((t: string) => t.trim())
-            .filter(Boolean);
-
-        const rawMaxTurns = frontmatter.maxTurns;
-        const maxTurns = rawMaxTurns ? parseInt(String(rawMaxTurns), 10) : undefined;
-        // YAML parses `true` as boolean, but it might also be the string "true" / "yes"
-        const rawBg = frontmatter.background;
-        const background = rawBg === true || rawBg === "true" || rawBg === "yes";
-
-        const model = typeof frontmatter.model === "string" ? frontmatter.model : undefined;
-        const permissionMode = typeof frontmatter.permissionMode === "string" ? frontmatter.permissionMode : undefined;
-
-        agents.push({
-            name,
-            description,
-            tools: tools.length > 0 ? tools : undefined,
-            disallowedTools: disallowedTools.length > 0 ? disallowedTools : undefined,
-            model,
-            maxTurns: maxTurns && !isNaN(maxTurns) ? maxTurns : undefined,
-            permissionMode,
-            background: background || undefined,
-            systemPrompt: body,
-            source,
-            filePath,
-        });
+        const agent = loadAgentFromFile(path.join(dir, entry.name), source);
+        if (agent) agents.push(agent);
     }
 
+    return agents;
+}
+
+/**
+ * Load exactly the declared `.md` files as agents — unlike
+ * `loadAgentsFromDir()`, sibling files in the same directory that weren't
+ * explicitly listed are never picked up. Used for overlay `agents` entries
+ * that name a single file (docs/specs/pi-pizzapi-overlay.md §4.3): a
+ * package declaring `agents: ["agents/a.md"]` must not also load an
+ * unrelated `agents/b.md` sitting next to it.
+ */
+export function loadAgentsFromFile(files: string[], source: "user" | "project"): AgentConfig[] {
+    const agents: AgentConfig[] = [];
+    for (const filePath of files) {
+        const agent = loadAgentFromFile(filePath, source);
+        if (agent) agents.push(agent);
+    }
     return agents;
 }
 
@@ -237,8 +263,17 @@ export function getUserAgentsDir(): string {
  *   still carry `source: "project"`, so they remain excluded from the
  *   default `agentScope: "user"` and still trigger `confirmProjectAgents`
  *   (docs/specs/pi-pizzapi-overlay.md §4.3).
+ * @param opts.extraUserFiles / extraProjectFiles - Additional exact `.md`
+ *   files (not directories) to load as user-/project-scope agents, loaded
+ *   after the corresponding `extra*Dirs`. Used for overlay `agents` entries
+ *   that name a single file: loaded via `loadAgentsFromFile()` so a sibling
+ *   `.md` file in the same directory that wasn't declared is never picked up.
  */
-export function discoverAgents(cwd: string, scope: AgentScope, opts?: { extraUserDirs?: string[]; extraProjectDirs?: string[] }): AgentDiscoveryResult {
+export function discoverAgents(
+    cwd: string,
+    scope: AgentScope,
+    opts?: { extraUserDirs?: string[]; extraProjectDirs?: string[]; extraUserFiles?: string[]; extraProjectFiles?: string[] },
+): AgentDiscoveryResult {
     const userDirs = getUserAgentsDirs();
     const projectAgentsDirs = findNearestProjectAgentsDirs(cwd);
 
@@ -247,12 +282,14 @@ export function discoverAgents(cwd: string, scope: AgentScope, opts?: { extraUse
     if (scope !== "project") {
         const seen = new Set<string>();
         const allUserDirs = [...userDirs, ...(opts?.extraUserDirs ?? [])];
-        for (const dir of allUserDirs) {
-            for (const agent of loadAgentsFromDir(dir, "user")) {
-                if (!seen.has(agent.name)) {
-                    seen.add(agent.name);
-                    userAgents.push(agent);
-                }
+        const userAgentSources = [
+            ...allUserDirs.flatMap((dir) => loadAgentsFromDir(dir, "user")),
+            ...loadAgentsFromFile(opts?.extraUserFiles ?? [], "user"),
+        ];
+        for (const agent of userAgentSources) {
+            if (!seen.has(agent.name)) {
+                seen.add(agent.name);
+                userAgents.push(agent);
             }
         }
     }
@@ -263,12 +300,14 @@ export function discoverAgents(cwd: string, scope: AgentScope, opts?: { extraUse
     if (scope !== "user") {
         const seen = new Set<string>();
         const allProjectDirs = [...projectAgentsDirs, ...(opts?.extraProjectDirs ?? [])];
-        for (const dir of allProjectDirs) {
-            for (const agent of loadAgentsFromDir(dir, "project")) {
-                if (!seen.has(agent.name)) {
-                    seen.add(agent.name);
-                    projectAgents.push(agent);
-                }
+        const projectAgentSources = [
+            ...allProjectDirs.flatMap((dir) => loadAgentsFromDir(dir, "project")),
+            ...loadAgentsFromFile(opts?.extraProjectFiles ?? [], "project"),
+        ];
+        for (const agent of projectAgentSources) {
+            if (!seen.has(agent.name)) {
+                seen.add(agent.name);
+                projectAgents.push(agent);
             }
         }
     }

@@ -48,7 +48,7 @@ describe("createPackageOverlayRulesExtension", () => {
     }
 
     test("returns null when no configured package declares rules", () => {
-        expect(createPackageOverlayRulesExtension(cwd, agentDir)).toBeNull();
+        expect(createPackageOverlayRulesExtension(cwd, agentDir, true)).toBeNull();
     });
 
     test("appends rule content additively via before_agent_start", async () => {
@@ -56,7 +56,7 @@ describe("createPackageOverlayRulesExtension", () => {
         writeFixturePackage(pkgDir, { schemaVersion: 1, rules: ["./rules"] }, { "rules/a.md": "Always be terse." });
         await install("../rules-pkg");
 
-        const factory = createPackageOverlayRulesExtension(cwd, agentDir);
+        const factory = createPackageOverlayRulesExtension(cwd, agentDir, true);
         expect(factory).not.toBeNull();
 
         let handler: ((event: { systemPrompt: string }) => Promise<{ systemPrompt: string }>) | undefined;
@@ -71,5 +71,15 @@ describe("createPackageOverlayRulesExtension", () => {
         const result = await handler!({ systemPrompt: "BASE PROMPT" });
         expect(result.systemPrompt.startsWith("BASE PROMPT")).toBe(true);
         expect(result.systemPrompt).toContain("Always be terse.");
+    });
+
+    test("project-scope package rules are excluded when the project is not explicitly trusted", async () => {
+        const pkgDir = join(tmpDir, "untrusted-rules-pkg");
+        writeFixturePackage(pkgDir, { schemaVersion: 1, rules: ["./rules"] }, { "rules/a.md": "Secret project rule." });
+        const code = await runPackageCommand(["install", "../untrusted-rules-pkg", "-l"], cwd, agentDir);
+        expect(code).toBe(0);
+
+        expect(createPackageOverlayRulesExtension(cwd, agentDir, false)).toBeNull();
+        expect(createPackageOverlayRulesExtension(cwd, agentDir, true)).not.toBeNull();
     });
 });

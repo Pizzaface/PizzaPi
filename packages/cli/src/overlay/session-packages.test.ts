@@ -60,7 +60,7 @@ describe("session-packages overlay mounting", () => {
         writeFixturePackage(invalidDir, { schemaVersion: 1, bogus: true });
         await install("../invalid-pkg", { allowInvalidOverlay: true });
 
-        const { packages, warnings } = resolveSessionOverlays(cwd, agentDir);
+        const { packages, warnings } = resolveSessionOverlays(cwd, agentDir, true);
         expect(packages).toHaveLength(1);
         expect(packages[0]!.source).toContain("valid-pkg");
         expect(warnings.some((w) => w.includes("bogus"))).toBe(true);
@@ -75,11 +75,50 @@ describe("session-packages overlay mounting", () => {
         writeFixturePackage(projectPkg, { schemaVersion: 1, agents: ["./agents"] }, { "agents/bar.md": "---\nname: bar\ndescription: Bar\n---\nBody" });
         await install("../project-agents-pkg", { project: true });
 
-        const { userDirs, projectDirs } = collectOverlayAgentDirs(cwd, agentDir);
+        const { userDirs, projectDirs } = collectOverlayAgentDirs(cwd, agentDir, true);
         expect(userDirs).toHaveLength(1);
         expect(userDirs[0]).toContain("user-agents-pkg");
         expect(projectDirs).toHaveLength(1);
         expect(projectDirs[0]).toContain("project-agents-pkg");
+    });
+
+    test("collectOverlayAgentDirs returns a single .md agents entry as a file, not folded into its directory", async () => {
+        const pkg = join(tmpDir, "single-file-agents-pkg");
+        writeFixturePackage(pkg, { schemaVersion: 1, agents: ["./agents/a.md"] }, {
+            "agents/a.md": "---\nname: a\ndescription: A\n---\nBody A",
+            "agents/b.md": "---\nname: b\ndescription: B\n---\nBody B",
+        });
+        await install("../single-file-agents-pkg");
+
+        const { userDirs, userFiles } = collectOverlayAgentDirs(cwd, agentDir, true);
+        expect(userDirs).toHaveLength(0);
+        expect(userFiles).toHaveLength(1);
+        expect(userFiles[0]).toContain("a.md");
+        expect(userFiles.some((f) => f.endsWith("b.md"))).toBe(false);
+    });
+
+    test("project-scope overlays are excluded from resolution when the project is not explicitly trusted", async () => {
+        const userPkg = join(tmpDir, "user-untrust-pkg");
+        writeFixturePackage(userPkg, { schemaVersion: 1, agents: ["./agents"] }, { "agents/foo.md": "---\nname: foo\ndescription: Foo\n---\nBody" });
+        await install("../user-untrust-pkg");
+
+        const projectPkg = join(tmpDir, "project-untrust-pkg");
+        writeFixturePackage(projectPkg, { schemaVersion: 1, agents: ["./agents"] }, { "agents/bar.md": "---\nname: bar\ndescription: Bar\n---\nBody" });
+        await install("../project-untrust-pkg", { project: true });
+
+        // projectTrusted: false — project-scope configured packages (and thus
+        // their overlays) must not resolve at all, matching pi's own
+        // SettingsManager behavior (getProjectSettings() returns {} when
+        // untrusted).
+        const trusted = resolveSessionOverlays(cwd, agentDir, true);
+        expect(trusted.packages.some((p) => p.scope === "project")).toBe(true);
+
+        const untrusted = resolveSessionOverlays(cwd, agentDir, false);
+        expect(untrusted.packages.some((p) => p.scope === "project")).toBe(false);
+        expect(untrusted.packages.some((p) => p.scope === "user")).toBe(true);
+
+        const { projectDirs } = collectOverlayAgentDirs(cwd, agentDir, false);
+        expect(projectDirs).toHaveLength(0);
     });
 
     test("collectOverlayRuleBlocks orders user-scope packages before project-scope packages", async () => {
@@ -91,7 +130,7 @@ describe("session-packages overlay mounting", () => {
         writeFixturePackage(userPkg, { schemaVersion: 1, rules: ["./rules"] }, { "rules/r.md": "User rule" });
         await install("../a-user-rules-pkg");
 
-        const blocks = collectOverlayRuleBlocks(cwd, agentDir);
+        const blocks = collectOverlayRuleBlocks(cwd, agentDir, true);
         expect(blocks).toHaveLength(2);
         expect(blocks[0]!.scope).toBe("user");
         expect(blocks[0]!.text).toContain("User rule");
@@ -107,9 +146,34 @@ describe("session-packages overlay mounting", () => {
         });
         await install("../nested-rules-pkg");
 
-        const blocks = collectOverlayRuleBlocks(cwd, agentDir);
+        const blocks = collectOverlayRuleBlocks(cwd, agentDir, true);
         expect(blocks).toHaveLength(1);
         expect(blocks[0]!.text).toContain("Top rule");
         expect(blocks[0]!.text).toContain("Deep rule");
+    });
+
+    test("recursive rules directory traversal visits entries in deterministic sorted order", async () => {
+        const pkgDir = join(tmpDir, "sorted-rules-pkg");
+        writeFixturePackage(pkgDir, { schemaVersion: 1, rules: ["./rules"] }, {
+            "rules/zeta.md": "Zeta",
+            "rules/alpha.md": "Alpha",
+            "rules/mid/b.md": "Mid B",
+            "rules/mid/a.md": "Mid A",
+        });
+        await install("../sorted-rules-pkg");
+
+        const blocks = collectOverlayRuleBlocks(cwd, agentDir, true);
+        expect(blocks).toHaveLength(1);
+        const text = blocks[0]!.text;
+        // Sorted traversal: top-level entries alphabetically (alpha.md, mid/, zeta.md),
+        // and within mid/, a.md before b.md.
+        const alphaIdx = text.indexOf("Alpha");
+        const midAIdx = text.indexOf("Mid A");
+        const midBIdx = text.indexOf("Mid B");
+        const zetaIdx = text.indexOf("Zeta");
+        expect(alphaIdx).toBeGreaterThanOrEqual(0);
+        expect(alphaIdx).toBeLessThan(midAIdx);
+        expect(midAIdx).toBeLessThan(midBIdx);
+        expect(midBIdx).toBeLessThan(zetaIdx);
     });
 });

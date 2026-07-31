@@ -115,7 +115,9 @@ function findConfiguredOverlaySource(
 }
 
 function readOverlayFor(cwd: string, agentDir: string, source: string, scope: "user" | "project"): { provenance: PackageProvenance; result: OverlayReadResult } | undefined {
-    const pm = packageManagerFor(cwd, agentDir);
+    // Explicit CLI inspection command, not session-side autoloading — always
+    // show all configured packages regardless of project trust (see resolve.ts).
+    const pm = packageManagerFor(cwd, agentDir, true);
     const match = findConfiguredOverlaySource(pm, source, scope, cwd, agentDir);
     if (!match) return undefined;
     return { provenance: match.provenance, result: readOverlayManifest(match.installedPath, match.provenance) };
@@ -200,7 +202,9 @@ export async function handlePostInstallOverlay(args: string[], cwd: string, agen
 
 /** Render the overlay/service-trust section appended to `pizza list` output. */
 export function renderOverlaySummary(cwd: string, agentDir: string): void {
-    const pm = packageManagerFor(cwd, agentDir);
+    // Explicit CLI inspection command, not session-side autoloading — always
+    // show all configured packages regardless of project trust (see resolve.ts).
+    const pm = packageManagerFor(cwd, agentDir, true);
     const configured = pm.listConfiguredPackages();
     if (configured.length === 0) return;
 
@@ -305,7 +309,9 @@ export interface OverlaySnapshotEntry {
  * newly-malformed overlay.
  */
 export function snapshotOverlayServiceIds(cwd: string, agentDir: string): Map<string, OverlaySnapshotEntry> {
-    const pm = packageManagerFor(cwd, agentDir);
+    // Explicit CLI inspection command, not session-side autoloading — always
+    // show all configured packages regardless of project trust (see resolve.ts).
+    const pm = packageManagerFor(cwd, agentDir, true);
     const configured = pm.listConfiguredPackages().filter((p) => p.scope === "user");
     const deduped = dedupeConfiguredPackages(configured, cwd, agentDir);
     const snapshot = new Map<string, OverlaySnapshotEntry>();

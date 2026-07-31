@@ -62,8 +62,8 @@ describe("mergeOverlayMcpServers", () => {
         });
         await install("../mcp-pkg");
 
-        const merged = mergeOverlayMcpServers({}, cwd, agentDir);
-        expect(merged.mcpServers?.fromPkg).toBeDefined();
+        const { config } = mergeOverlayMcpServers({}, cwd, agentDir, true);
+        expect(config.mcpServers?.fromPkg).toBeDefined();
     });
 
     test("explicit PizzaPi config always wins a server-name collision over package overlay", async () => {
@@ -74,8 +74,8 @@ describe("mergeOverlayMcpServers", () => {
         await install("../mcp-collide-pkg");
 
         const base = { mcpServers: { shared: { command: "explicit-config-command" } } };
-        const merged = mergeOverlayMcpServers(base, cwd, agentDir);
-        expect((merged.mcpServers?.shared as any).command).toBe("explicit-config-command");
+        const { config } = mergeOverlayMcpServers(base, cwd, agentDir, true);
+        expect((config.mcpServers?.shared as any).command).toBe("explicit-config-command");
     });
 
     test("project-scope package wins over user-scope package for the same server name", async () => {
@@ -91,8 +91,50 @@ describe("mergeOverlayMcpServers", () => {
         });
         await install("../mcp-project-pkg", { project: true });
 
-        const merged = mergeOverlayMcpServers({}, cwd, agentDir);
-        expect((merged.mcpServers?.shared as any).command).toBe("project-command");
+        const { config } = mergeOverlayMcpServers({}, cwd, agentDir, true);
+        expect((config.mcpServers?.shared as any).command).toBe("project-command");
+    });
+
+    test("project-scope package overlay is excluded when the project is not explicitly trusted", async () => {
+        const userPkg = join(tmpDir, "mcp-trust-user-pkg");
+        writeFixturePackage(userPkg, { schemaVersion: 1, mcp: "./.mcp.json" }, {
+            ".mcp.json": JSON.stringify({ mcpServers: { fromUser: { command: "user-command" } } }),
+        });
+        await install("../mcp-trust-user-pkg");
+
+        const projectPkg = join(tmpDir, "mcp-trust-project-pkg");
+        writeFixturePackage(projectPkg, { schemaVersion: 1, mcp: "./.mcp.json" }, {
+            ".mcp.json": JSON.stringify({ mcpServers: { fromProject: { command: "project-command" } } }),
+        });
+        await install("../mcp-trust-project-pkg", { project: true });
+
+        const untrusted = mergeOverlayMcpServers({}, cwd, agentDir, false);
+        expect(untrusted.config.mcpServers?.fromUser).toBeDefined();
+        expect(untrusted.config.mcpServers?.fromProject).toBeUndefined();
+        expect(untrusted.serverProvenance.some((p) => p.name === "fromProject")).toBe(false);
+        expect(untrusted.serverProvenance.some((p) => p.name === "fromUser" && p.owner === "user")).toBe(true);
+
+        const trusted = mergeOverlayMcpServers({}, cwd, agentDir, true);
+        expect(trusted.config.mcpServers?.fromProject).toBeDefined();
+        expect(trusted.serverProvenance.some((p) => p.name === "fromProject" && p.owner === "project")).toBe(true);
+    });
+
+    test("malformed mcp sidecar shape (re-parsed at mount time) is skipped with a warning, not silently treated as empty", async () => {
+        const pkgDir = join(tmpDir, "mcp-malformed-pkg");
+        writeFixturePackage(pkgDir, { schemaVersion: 1, mcp: "./.mcp.json" }, {
+            ".mcp.json": JSON.stringify({ mcpServers: { fromPkg: { command: "echo" } } }),
+        });
+        await install("../mcp-malformed-pkg");
+
+        // Simulate the sidecar being replaced with a malformed shape between
+        // manifest validation and mount-time read (manifest.ts only validates
+        // the `mcp` path points to a confined, readable location — not the
+        // referenced file's own JSON shape).
+        writeFileSync(join(pkgDir, ".mcp.json"), JSON.stringify(["not", "an", "object"]));
+
+        const { config, serverProvenance } = mergeOverlayMcpServers({}, cwd, agentDir, true);
+        expect(config.mcpServers?.fromPkg).toBeUndefined();
+        expect(serverProvenance.some((p) => p.name === "fromPkg")).toBe(false);
     });
 
     /**
@@ -121,8 +163,8 @@ describe("mergeOverlayMcpServers", () => {
     test("legacy global Claude-plugin .mcp.json is picked up (fixes the previously-ignored gap) at lowest precedence", () => {
         installLegacyPlugin("legacy-plugin", { legacyServer: { command: "legacy-command" } });
 
-        const merged = mergeOverlayMcpServers({}, cwd, agentDir);
-        expect((merged.mcpServers?.legacyServer as any).command).toBe("legacy-command");
+        const { config } = mergeOverlayMcpServers({}, cwd, agentDir, true);
+        expect((config.mcpServers?.legacyServer as any).command).toBe("legacy-command");
     });
 
     test("package overlay mcp wins over legacy plugin .mcp.json for the same name", async () => {
@@ -134,7 +176,7 @@ describe("mergeOverlayMcpServers", () => {
         });
         await install("../mcp-beats-legacy-pkg");
 
-        const merged = mergeOverlayMcpServers({}, cwd, agentDir);
-        expect((merged.mcpServers?.shared as any).command).toBe("package-command");
+        const { config } = mergeOverlayMcpServers({}, cwd, agentDir, true);
+        expect((config.mcpServers?.shared as any).command).toBe("package-command");
     });
 });

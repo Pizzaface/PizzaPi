@@ -48,11 +48,11 @@ export interface SessionOverlayResolution {
  * provenance-rich warning and never block that package's pi-native
  * resources (which pi mounts independently of this module).
  */
-export function resolveSessionOverlays(cwd: string, agentDir: string): SessionOverlayResolution {
+export function resolveSessionOverlays(cwd: string, agentDir: string, projectTrusted: boolean): SessionOverlayResolution {
     const warnings: string[] = [];
     let deduped: ReturnType<typeof listDedupedConfiguredPackages>;
     try {
-        deduped = listDedupedConfiguredPackages(cwd, agentDir);
+        deduped = listDedupedConfiguredPackages(cwd, agentDir, projectTrusted);
     } catch (err) {
         warnings.push(`overlay: failed to resolve configured packages: ${err instanceof Error ? err.message : String(err)}`);
         return { packages: [], warnings };
@@ -109,36 +109,50 @@ export function splitPathEntries(entries: string[] | undefined, packageRoot: str
 }
 
 /**
- * Collect overlay agent directories, partitioned by scope, for
- * `subagent-agents.ts`'s `extraUserDirs`/`extraProjectDirs`.
- *
- * ponytail: a single `.md` file entry is folded in via its containing
- * directory (loadAgentsFromDir scans a directory, not one file) rather than
- * adding a parallel single-file loading path to subagent-agents.ts. This
- * means sibling `.md` files in that same directory are also picked up.
- * Upgrade to per-file loading if a package needs to declare one agent file
- * alongside unrelated markdown in the same directory.
+ * Collect overlay agent directories AND single-file entries, partitioned by
+ * scope, for `subagent-agents.ts`'s `extraUserDirs`/`extraProjectDirs`/
+ * `extraUserFiles`/`extraProjectFiles`. A declared `agents` entry that
+ * points at a single `.md` file is returned as a file (loaded exactly, via
+ * `loadAgentsFromFile`) — NOT folded into its containing directory — so a
+ * package that declares `agents: ["agents/a.md"]` never picks up an
+ * unrelated sibling `agents/b.md` it didn't declare.
  */
-export function collectOverlayAgentDirs(cwd: string, agentDir: string): { userDirs: string[]; projectDirs: string[] } {
-    const { packages } = resolveSessionOverlays(cwd, agentDir);
+export function collectOverlayAgentDirs(
+    cwd: string,
+    agentDir: string,
+    projectTrusted: boolean,
+): { userDirs: string[]; projectDirs: string[]; userFiles: string[]; projectFiles: string[] } {
+    const { packages } = resolveSessionOverlays(cwd, agentDir, projectTrusted);
     const userDirs: string[] = [];
     const projectDirs: string[] = [];
+    const userFiles: string[] = [];
+    const projectFiles: string[] = [];
     for (const pkg of packages) {
         if (!pkg.overlay.agents?.length) continue;
         const { dirs, files } = splitPathEntries(pkg.overlay.agents, pkg.installedPath, pkg.identity, "agents");
-        const allDirs = [...dirs, ...new Set(files.map((f) => dirname(f)))];
-        if (pkg.scope === "user") userDirs.push(...allDirs);
-        else projectDirs.push(...allDirs);
+        if (pkg.scope === "user") {
+            userDirs.push(...dirs);
+            userFiles.push(...files);
+        } else {
+            projectDirs.push(...dirs);
+            projectFiles.push(...files);
+        }
     }
-    return { userDirs, projectDirs };
+    return { userDirs, projectDirs, userFiles, projectFiles };
 }
 
-/** Recursively collect `.md` files under `dir` (symlink-safe, entry-capped — mirrors plugins/parse.ts conventions). */
+/**
+ * Recursively collect `.md` files under `dir` (symlink-safe, entry-capped —
+ * mirrors plugins/parse.ts conventions). Entries are sorted before
+ * recursing so traversal order — and therefore the order files land in the
+ * rendered rules block — is deterministic across platforms/filesystems
+ * instead of following whatever order `readdirSync()` happens to return.
+ */
 function collectMarkdownFilesRecursive(dir: string, out: string[], depth = 0): void {
     if (depth > 10 || out.length >= MAX_ENTRIES_PER_DIR) return;
     let entries: string[];
     try {
-        entries = readdirSync(dir);
+        entries = readdirSync(dir).sort();
     } catch {
         return;
     }
@@ -174,8 +188,8 @@ export interface OverlayRuleBlock {
  * its scope (§4.3: "User-package rules are injected before project-package
  * rules; settings order is preserved within each scope.").
  */
-export function collectOverlayRuleBlocks(cwd: string, agentDir: string): OverlayRuleBlock[] {
-    const { packages } = resolveSessionOverlays(cwd, agentDir);
+export function collectOverlayRuleBlocks(cwd: string, agentDir: string, projectTrusted: boolean): OverlayRuleBlock[] {
+    const { packages } = resolveSessionOverlays(cwd, agentDir, projectTrusted);
     const build = (pkg: ResolvedOverlayPackage): OverlayRuleBlock | null => {
         if (!pkg.overlay.rules?.length) return null;
         const { dirs, files } = splitPathEntries(pkg.overlay.rules, pkg.installedPath, pkg.identity, "rules");

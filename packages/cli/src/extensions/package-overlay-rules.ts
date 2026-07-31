@@ -16,8 +16,8 @@ import { collectOverlayRuleBlocks } from "../overlay/session-packages.js";
  * throws (resolveSessionOverlays already isolates and warns), so a broken
  * package can never prevent this factory (or session startup) from loading.
  */
-export function createPackageOverlayRulesExtension(cwd: string, agentDir: string): ExtensionFactory | null {
-    const blocks = collectOverlayRuleBlocks(cwd, agentDir);
+export function createPackageOverlayRulesExtension(cwd: string, agentDir: string, projectTrusted: boolean): ExtensionFactory | null {
+    const blocks = collectOverlayRuleBlocks(cwd, agentDir, projectTrusted);
     if (blocks.length === 0) return null;
 
     const section = `\n\n# Package Rules\n\n${blocks.map((b) => b.text).join("\n\n")}`;

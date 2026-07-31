@@ -556,6 +556,36 @@ describe("trustedPlugins enforcement via createClaudePluginExtension / getPlugin
         expect(prompted).toBe(false);
     });
 
+    test("accepting the trust prompt makes a newly-trusted plugin's native-compatible command available via resources_discover in the SAME session_start bind cycle — no restart", async () => {
+        const pluginDir = writeLocalPlugin("newly-trusted-cmd");
+        const factory = createClaudePluginExtension(projectDir);
+        expect(factory).not.toBeNull();
+
+        const { api, handlers, events } = makeMockPi();
+        factory!(api as any);
+        events.on("plugin:trust_prompt", (data: any) => data.respond(true));
+
+        // Before session_start: the plugin isn't trusted yet, so pi's
+        // startup-time additionalPromptTemplatePaths (built from
+        // getPluginPromptTemplatePaths() before this factory ever runs)
+        // would not have included it either — nothing to assert here except
+        // that trust hasn't happened yet.
+        expect(isPluginTrusted(pluginDir)).toBe(false);
+
+        // Real ordering: pi's bindExtensions() awaits session_start handlers
+        // to fully resolve (including this factory's trust-prompt await),
+        // THEN fires resources_discover — all within one bind cycle, no
+        // process restart in between.
+        await handlers.get("session_start")?.(
+            { type: "session_start" },
+            { hasUI: false, ui: { notify() {} }, cwd: projectDir },
+        );
+        expect(isPluginTrusted(pluginDir)).toBe(true); // trust was persisted
+
+        const discovered = await handlers.get("resources_discover")?.({ cwd: projectDir, reason: "startup" }, {} as any) as { promptPaths?: string[] } | undefined;
+        expect(discovered?.promptPaths).toContain(join(pluginDir, "commands", "test.md"));
+    });
+
     test("getPluginSkillPaths excludes an untrusted local plugin's skills dir", () => {
         const pluginDir = writeLocalPlugin("untrusted-skill", { skill: true });
         expect(getPluginSkillPaths(projectDir)).not.toContain(join(pluginDir, "skills"));

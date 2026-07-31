@@ -36,7 +36,19 @@ export const hostAnnounceExtension: ExtensionFactory = (pi) => {
     // Synchronous probe responder — per spec §9.3 this MUST reply
     // synchronously; pi's event bus invokes listeners before emit() returns,
     // but only for this synchronous tick.
-    pi.events.on("pizzapi:host:probe", (payload: unknown) => {
+    //
+    // pi's real `createEventBus()` (core/event-bus.ts) backs `pi.events` with
+    // a single Node `EventEmitter` that OUTLIVES a `/reload` — reload()
+    // re-invokes every inline extension factory (including this one) against
+    // the SAME bus (see resource-loader.ts reload() -> loadExtensionFactories()),
+    // so a probe listener registered here and never removed would
+    // accumulate one more listener per reload for the life of the process.
+    // `.on()` returns pi's own unsubscribe function for exactly this reason
+    // — capture it and remove the listener on session_shutdown, which pi
+    // fires for the CURRENT extension runner before reload() re-runs
+    // factories (agent-session.ts reload(): emitSessionShutdownEvent(...)
+    // happens before this._resourceLoader.reload()).
+    const unsubscribeProbe = pi.events.on("pizzapi:host:probe", (payload: unknown) => {
         const respond = (payload as { respond?: (value: unknown) => void } | undefined)?.respond;
         if (typeof respond === "function") respond(hostInfo);
     });
@@ -45,4 +57,8 @@ export const hostAnnounceExtension: ExtensionFactory = (pi) => {
     // package extension whose factory already ran and subscribed to
     // "pizzapi:host:ready" receives this synchronously.
     pi.events.emit("pizzapi:host:ready", hostInfo);
+
+    pi.on("session_shutdown", () => {
+        unsubscribeProbe();
+    });
 };

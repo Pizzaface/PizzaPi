@@ -48,6 +48,14 @@ export interface BuildExtensionFactoriesOptions {
     skipRelay?: boolean;
     /** `config.skills` — extra skill directories from the resolved PizzaPi config. */
     configSkills?: string[];
+    /**
+     * Explicit, persisted pi project-trust decision for `cwd` (see
+     * config/io.ts `resolveExplicitProjectTrust`). Gates project-scope
+     * `pi.pizzapi` overlay rules — defaults to `false` (untrusted) when
+     * omitted so a caller that forgets to thread trust fails closed instead
+     * of silently re-trusting an untrusted repo's project-scope packages.
+     */
+    projectTrusted?: boolean;
 }
 
 /** Tag a factory with a display name for the boot info listing. */
@@ -144,7 +152,7 @@ export function buildPizzaPiExtensionFactories(options: BuildExtensionFactoriesO
     // pi.pizzapi.rules from configured packages — registered BEFORE the
     // legacy Claude-plugin rules adapter below so package rules land in the
     // system prompt first ("package-before-legacy" ordering, §4.3).
-    const overlayRulesExtension = createPackageOverlayRulesExtension(options.cwd, agentDir);
+    const overlayRulesExtension = createPackageOverlayRulesExtension(options.cwd, agentDir, options.projectTrusted ?? false);
     if (overlayRulesExtension) {
         factories.push(named(overlayRulesExtension, "package-overlay-rules"));
     }

@@ -548,6 +548,29 @@ export function createClaudePluginExtension(cwd: string): ExtensionFactory | nul
         // picked up on the next session_start without re-registering ones
         // already loaded.
         const registeredLocalPaths = new Set<string>();
+        const localByRootPath = new Map(localOnly.map((p) => [p.rootPath, p]));
+
+        // Newly-trusted local plugins' native-compatible commands (see
+        // isNativeCompatibleCommand()) are only mounted here, via
+        // `resources_discover` — NOT through registerPlugin()/registerCommand()
+        // above (registerPlugin explicitly skips them, matching
+        // getPluginPromptTemplatePaths()'s startup-time list). pi fires
+        // `resources_discover` right after `session_start` handlers resolve
+        // (agent-session.js bindExtensions(): emit(session_start) THEN
+        // extendResourcesFromExtensions()), in the SAME bind cycle — so a
+        // plugin trusted via the trust prompt or a pre-trusted rescan just
+        // above becomes usable immediately, no process restart required.
+        pi.on("resources_discover", () => {
+            const promptPaths: string[] = [];
+            for (const rootPath of registeredLocalPaths) {
+                const plugin = localByRootPath.get(rootPath);
+                if (!plugin) continue;
+                for (const cmd of plugin.commands) {
+                    if (isNativeCompatibleCommand(cmd)) promptPaths.push(cmd.filePath);
+                }
+            }
+            return { promptPaths };
+        });
 
         pi.on("session_start", async (_event, ctx) => {
             // Notify about global plugins

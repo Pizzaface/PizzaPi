@@ -33,6 +33,7 @@ import { backgroundBashExtension } from "./background-bash.js";
 import { queueFlushExtension } from "./queue-flush.js";
 import { ollamaCloudProviderExtension } from "./ollama-cloud-provider.js";
 import { hostAnnounceExtension } from "./host-announce.js";
+import { runPackageCommand } from "../package-commands.js";
 
 // resource-paths is a factory *created per call* (createResourcePathsExtension(...)),
 // so it's never reference-equal to a statically imported factory. Split the
@@ -264,5 +265,93 @@ describe("buildPizzaPiExtensionFactories — plugin extension", () => {
         } finally {
             try { rmSync(projectDir, { recursive: true, force: true }); } catch {}
         }
+    });
+});
+
+// ── Package-overlay-rules factory: project-trust gate + ordering ─────────────
+
+describe("buildPizzaPiExtensionFactories — package-overlay-rules trust gate", () => {
+    function writeFixturePackage(dir: string, overlay: unknown, files?: Record<string, string>) {
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "fixture", pi: { pizzapi: overlay } }));
+        for (const [rel, content] of Object.entries(files ?? {})) {
+            const filePath = join(dir, rel);
+            mkdirSync(join(filePath, ".."), { recursive: true });
+            writeFileSync(filePath, content);
+        }
+    }
+
+    // runPackageCommand() chdir()s the process into cwd and only sets
+    // PI_CODING_AGENT_DIR when unset — both must be restored, or a LATER
+    // test file sharing this bun test process inherits a deleted tmp cwd
+    // (breaking anything that shells out or resolves relative paths) and/or
+    // a stale agentDir (see other overlay tests' identical notes).
+    async function withRestoredProcessState<T>(fn: () => Promise<T>): Promise<T> {
+        const originalCwd = process.cwd();
+        const originalAgentDirEnv = process.env.PI_CODING_AGENT_DIR;
+        try {
+            return await fn();
+        } finally {
+            process.chdir(originalCwd);
+            if (originalAgentDirEnv === undefined) delete process.env.PI_CODING_AGENT_DIR;
+            else process.env.PI_CODING_AGENT_DIR = originalAgentDirEnv;
+        }
+    }
+
+    test("projectTrusted: true wires the package-overlay-rules factory for a project-scope package; false excludes it (defaults to false when omitted)", async () => {
+        await withRestoredProcessState(async () => {
+            const rootDir = mkdtempSync(join(tmpdir(), "pizzapi-factories-overlay-rules-"));
+            const cwd = join(rootDir, "project");
+            const agentDir = join(rootDir, "agent");
+            mkdirSync(cwd, { recursive: true });
+            mkdirSync(agentDir, { recursive: true });
+            try {
+                const pkgDir = join(rootDir, "rules-pkg");
+                writeFixturePackage(pkgDir, { schemaVersion: 1, rules: ["./rules"] }, { "rules/a.md": "Be terse." });
+                const code = await runPackageCommand(["install", "../rules-pkg", "-l"], cwd, agentDir);
+                expect(code).toBe(0);
+
+                const untrustedFactories = buildPizzaPiExtensionFactories({ cwd, agentDir, skipPlugins: true });
+                expect(untrustedFactories.length).toBe(CORE_EXTENSIONS_COUNT); // no projectTrusted passed — fails closed
+
+                const explicitlyUntrusted = buildPizzaPiExtensionFactories({ cwd, agentDir, skipPlugins: true, projectTrusted: false });
+                expect(explicitlyUntrusted.length).toBe(CORE_EXTENSIONS_COUNT);
+
+                const trustedFactories = buildPizzaPiExtensionFactories({ cwd, agentDir, skipPlugins: true, projectTrusted: true });
+                expect(trustedFactories.length).toBe(CORE_EXTENSIONS_COUNT + 1);
+                expect((trustedFactories[trustedFactories.length - 1] as any).displayName).toBe("package-overlay-rules");
+            } finally {
+                try { rmSync(rootDir, { recursive: true, force: true }); } catch {}
+            }
+        });
+    });
+
+    test("package-overlay-rules factory is registered before the legacy Claude-plugin rules factory (package-before-legacy ordering)", async () => {
+        await withRestoredProcessState(async () => {
+            const rootDir = mkdtempSync(join(tmpdir(), "pizzapi-factories-overlay-order-"));
+            const cwd = join(rootDir, "project");
+            const agentDir = join(rootDir, "agent");
+            mkdirSync(cwd, { recursive: true });
+            mkdirSync(agentDir, { recursive: true });
+            try {
+                const pkgDir = join(rootDir, "rules-pkg2");
+                writeFixturePackage(pkgDir, { schemaVersion: 1, rules: ["./rules"] }, { "rules/a.md": "Be terse." });
+                const code = await runPackageCommand(["install", "../rules-pkg2", "-l"], cwd, agentDir);
+                expect(code).toBe(0);
+
+                const pluginDir = join(cwd, ".pizzapi", "plugins", "legacy-plugin");
+                mkdirSync(join(pluginDir, "rules"), { recursive: true });
+                writeFileSync(join(pluginDir, "rules", "b.md"), "# Legacy rule\nLegacy content.");
+
+                const factories = buildPizzaPiExtensionFactories({ cwd, agentDir, projectTrusted: true });
+                const overlayIdx = factories.findIndex((f) => (f as any).displayName === "package-overlay-rules");
+                const pluginsIdx = factories.findIndex((f) => (f as any).displayName === "plugins");
+                expect(overlayIdx).toBeGreaterThanOrEqual(0);
+                expect(pluginsIdx).toBeGreaterThanOrEqual(0);
+                expect(overlayIdx).toBeLessThan(pluginsIdx);
+            } finally {
+                try { rmSync(rootDir, { recursive: true, force: true }); } catch {}
+            }
+        });
     });
 });

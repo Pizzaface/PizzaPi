@@ -25,7 +25,7 @@ import { tmpdir } from "node:os";
 import { type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { type AgentScope, discoverAgents } from "../subagent-agents.js";
 import { getPluginAgentPaths } from "../claude-plugins.js";
-import { loadGlobalConfig, resolveAgentDir } from "../../config.js";
+import { loadGlobalConfig, resolveAgentDir, resolveExplicitProjectTrust } from "../../config.js";
 import { collectOverlayAgentDirs } from "../../overlay/session-packages.js";
 import {
     DEFAULT_MAX_PARALLEL_TASKS,
@@ -159,10 +159,14 @@ export const subagentExtension = (pi: ExtensionAPI, runAgent = runSingleAgent) =
             // matching the package-over-legacy precedence used elsewhere in the
             // overlay (docs/specs/pi-pizzapi-overlay.md §8) — listed first so
             // discoverAgents' first-name-wins merge prefers them.
-            const overlayAgentDirs = collectOverlayAgentDirs(ctx.cwd, resolveAgentDir(ctx.cwd));
+            const overlayAgentDir = resolveAgentDir(ctx.cwd);
+            const overlayProjectTrusted = resolveExplicitProjectTrust(ctx.cwd, overlayAgentDir);
+            const overlayAgentDirs = collectOverlayAgentDirs(ctx.cwd, overlayAgentDir, overlayProjectTrusted);
             const discovery = discoverAgents(ctx.cwd, agentScope, {
                 extraUserDirs: [...overlayAgentDirs.userDirs, ...pluginAgentDirs],
                 extraProjectDirs: overlayAgentDirs.projectDirs,
+                extraUserFiles: overlayAgentDirs.userFiles,
+                extraProjectFiles: overlayAgentDirs.projectFiles,
             });
             const agents = discovery.agents;
             const confirmProjectAgents = params.confirmProjectAgents ?? true;
