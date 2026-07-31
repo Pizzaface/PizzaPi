@@ -1,0 +1,256 @@
+/**
+ * `pizza install|list|config` overlay trust UX — flag stripping, install-time
+ * grant prompts, and list/config grant-state rendering.
+ *
+ * All overlay reading goes through readOverlayManifest() (manifest.ts); this
+ * module only adds the CLI-facing prompt/print/grant plumbing described in
+ * docs/specs/pi-pizzapi-overlay.md §7.3.
+ */
+import { createInterface } from "node:readline";
+import { DefaultPackageManager, SettingsManager } from "@earendil-works/pi-coding-agent";
+import { c } from "../cli-colors.js";
+import { loadGlobalConfig } from "../config/io.js";
+import { computePackageIdentity } from "./identity.js";
+import { formatOverlayIssue, readOverlayManifest, type OverlayReadResult, type PackageProvenance } from "./manifest.js";
+import { getGrantedServiceIds, grantServices, resolveServiceGrantState } from "./grants.js";
+import { defaultStatePath, isPidRunning, type RunnerState } from "../runner/runner-state.js";
+import { existsSync, readFileSync } from "node:fs";
+
+export interface DaemonServiceFlagResult {
+    args: string[];
+    /** true = --allow-daemon-services, false = --no-allow-daemon-services, undefined = neither given. */
+    allowDaemonServices: boolean | undefined;
+}
+
+/** Pre-parse and strip --allow-daemon-services / --no-allow-daemon-services, mirroring stripCwdFlag(). */
+export function stripDaemonServiceFlags(args: string[]): DaemonServiceFlagResult {
+    let allowDaemonServices: boolean | undefined;
+    const out: string[] = [];
+    for (const arg of args) {
+        if (arg === "--allow-daemon-services") {
+            allowDaemonServices = true;
+            continue;
+        }
+        if (arg === "--no-allow-daemon-services") {
+            allowDaemonServices = false;
+            continue;
+        }
+        out.push(arg);
+    }
+    return { args: out, allowDaemonServices };
+}
+
+function firstPositional(args: string[]): string | undefined {
+    return args.slice(1).find((a) => !a.startsWith("-"));
+}
+
+function isLocalScopeInstall(args: string[]): boolean {
+    return args.includes("-l") || args.includes("--local");
+}
+
+/** Best-effort: is a runner daemon currently running? Informational only — no new IPC. */
+function describeRunningDaemon(): string {
+    try {
+        const path = defaultStatePath();
+        if (!existsSync(path)) return "Grant changes will take effect the next time the daemon starts.";
+        const state = JSON.parse(readFileSync(path, "utf-8")) as Partial<RunnerState>;
+        const pid = typeof state.pid === "number" ? state.pid : 0;
+        if (pid > 0 && isPidRunning(pid)) {
+            return "A runner daemon is currently running — restart it (or wait for the next scheduled restart) to apply this grant change; automatic reconciliation lands with daemon package-service discovery.";
+        }
+    } catch {
+        // best-effort only
+    }
+    return "Grant changes will take effect the next time the daemon starts.";
+}
+
+function askYesNo(question: string): Promise<boolean> {
+    const iface = createInterface({ input: process.stdin, output: process.stdout });
+    return new Promise((resolve) => {
+        iface.question(question, (answer) => {
+            iface.close();
+            resolve(/^y(es)?$/i.test(answer.trim()));
+        });
+    });
+}
+
+function packageManagerFor(cwd: string, agentDir: string): DefaultPackageManager {
+    const settingsManager = SettingsManager.create(cwd, agentDir);
+    return new DefaultPackageManager({ cwd, agentDir, settingsManager });
+}
+
+function readOverlayFor(cwd: string, agentDir: string, source: string, scope: "user" | "project"): { provenance: PackageProvenance; result: OverlayReadResult } | undefined {
+    const pm = packageManagerFor(cwd, agentDir);
+    const installedPath = pm.getInstalledPath(source, scope);
+    if (!installedPath) return undefined;
+    const identity = computePackageIdentity(source, agentDir).identity;
+    const provenance: PackageProvenance = { identity, source, scope };
+    return { provenance, result: readOverlayManifest(installedPath, provenance) };
+}
+
+/**
+ * Run after a successful upstream `pizza install <source>`. Validates the
+ * overlay and, for user-scoped packages that declare services, grants or
+ * warns per §7.3. Returns the exit code the CLI should use (0 unless the
+ * overlay is malformed).
+ */
+export async function handlePostInstallOverlay(args: string[], cwd: string, agentDir: string, allowDaemonServices: boolean | undefined): Promise<number> {
+    const source = firstPositional(args);
+    if (!source) return 0;
+    const scope: "user" | "project" = isLocalScopeInstall(args) ? "project" : "user";
+
+    const found = readOverlayFor(cwd, agentDir, source, scope);
+    if (!found) return 0; // not resolvable (e.g. install itself failed) — nothing to validate
+    const { provenance, result } = found;
+
+    if (result.present && result.overlay === null) {
+        console.error(`\n${c.error("✗")} pi.pizzapi overlay is invalid for ${c.cmd(provenance.identity)}:\n`);
+        for (const iss of result.issues) {
+            console.error(`  ${c.error("•")} ${formatOverlayIssue(iss)}`);
+        }
+        console.error(
+            `\n${c.warning("Note:")} the pi-native package install may remain in place (upstream install is not transactional).\n` +
+            `No daemon service grant was created. Run ${c.cmd(`pizza remove ${source}`)} to undo the install.\n`,
+        );
+        return 1;
+    }
+
+    if (!result.overlay || !result.overlay.services || result.overlay.services.length === 0) {
+        return 0;
+    }
+
+    const declaredIds = result.overlay.services.map((s) => s.id);
+
+    if (scope === "project") {
+        console.log(
+            `\n${c.warning("Note:")} ${c.cmd(provenance.identity)} declares runner service(s) [${declaredIds.join(", ")}], ` +
+            `but project-scoped packages do not mount daemon services in schema v1. The session-side surface (extensions/skills/agents/rules/mcp) still loads after project trust.\n`,
+        );
+        return 0;
+    }
+
+    if (allowDaemonServices === true) {
+        grantServices(provenance.identity, declaredIds);
+        console.log(`\n${c.success("✓")} Granted daemon service(s) [${declaredIds.join(", ")}] for ${c.cmd(provenance.identity)}.`);
+        console.log(`  ${describeRunningDaemon()}\n`);
+        return 0;
+    }
+
+    if (allowDaemonServices === false) {
+        console.log(
+            `\n${c.warning("Note:")} ${c.cmd(provenance.identity)} declares runner service(s) [${declaredIds.join(", ")}] — left ${c.warning("untrusted")} (--no-allow-daemon-services). ` +
+            `Run ${c.cmd(`pizza config grant ${source}`)} to trust them later.\n`,
+        );
+        return 0;
+    }
+
+    const interactive = process.stdin.isTTY === true && process.stdout.isTTY === true;
+    if (interactive) {
+        console.log(`\n${c.cmd(provenance.identity)} declares runner service(s):`);
+        for (const svc of result.overlay.services) console.log(`  - ${svc.id} (${svc.label})`);
+        const grant = await askYesNo(`Grant daemon access to these service(s) now? [y/N] `);
+        if (grant) {
+            grantServices(provenance.identity, declaredIds);
+            console.log(`${c.success("✓")} Granted. ${describeRunningDaemon()}\n`);
+        } else {
+            console.log(`Left untrusted. Run ${c.cmd(`pizza config grant ${source}`)} to trust them later.\n`);
+        }
+        return 0;
+    }
+
+    console.log(
+        `\n${c.warning("Note:")} ${c.cmd(provenance.identity)} declares runner service(s) [${declaredIds.join(", ")}] — installed but left ${c.warning("untrusted")} ` +
+        `(non-interactive install with no --allow-daemon-services/--no-allow-daemon-services flag). Run ${c.cmd(`pizza config grant ${source}`)} to trust them.\n`,
+    );
+    return 0;
+}
+
+/** Render the overlay/service-trust section appended to `pizza list` output. */
+export function renderOverlaySummary(cwd: string, agentDir: string): void {
+    const pm = packageManagerFor(cwd, agentDir);
+    const configured = pm.listConfiguredPackages();
+    if (configured.length === 0) return;
+
+    const disabledRunnerServices = loadGlobalConfig().disabledRunnerServices ?? [];
+    const lines: string[] = [];
+
+    for (const pkg of configured) {
+        if (!pkg.installedPath) continue;
+        const identity = computePackageIdentity(pkg.source, agentDir).identity;
+        const provenance: PackageProvenance = { identity, source: pkg.source, scope: pkg.scope };
+        const { overlay, present, issues } = readOverlayManifest(pkg.installedPath, provenance);
+
+        if (present && !overlay) {
+            lines.push(`${c.warning("⚠")} ${identity} — invalid pi.pizzapi overlay (${issues.length} issue(s); run \`pizza install ${pkg.source}\` again to see details)`);
+            continue;
+        }
+        if (!overlay) continue;
+
+        const parts: string[] = [];
+        if (overlay.agents?.length) parts.push(`agents:${overlay.agents.length}`);
+        if (overlay.rules?.length) parts.push(`rules:${overlay.rules.length}`);
+        if (overlay.mcp) parts.push("mcp");
+        if (overlay.services?.length) {
+            const svcStates = overlay.services
+                .map((s) => {
+                    const state = pkg.scope === "project" ? "untrusted (project, v1)" : resolveServiceGrantState(identity, s.id, disabledRunnerServices);
+                    return `${s.id}:${state}`;
+                })
+                .join(", ");
+            parts.push(`services:[${svcStates}]`);
+        }
+        if (parts.length > 0) {
+            lines.push(`${c.accent("●")} ${identity} (${pkg.scope}) — ${parts.join("  ")}`);
+        }
+    }
+
+    if (lines.length > 0) {
+        console.log(`\n${c.label("PizzaPi overlay:")}`);
+        for (const line of lines) console.log(`  ${line}`);
+        console.log();
+    }
+}
+
+/** `pizza config grant|revoke <source> [serviceId...]`. Returns undefined if args aren't a grant/revoke subcommand. */
+export async function runOverlayConfigSubcommand(args: string[], cwd: string, agentDir: string): Promise<number | undefined> {
+    const sub = args[1];
+    if (sub !== "grant" && sub !== "revoke") return undefined;
+
+    const source = args[2];
+    if (!source) {
+        console.error(`pizza config ${sub}: missing <source>. Usage: pizza config ${sub} <source> [serviceId...]`);
+        return 1;
+    }
+
+    const found = readOverlayFor(cwd, agentDir, source, "user");
+    if (!found || !found.result.overlay) {
+        console.error(`pizza config ${sub}: no valid pi.pizzapi overlay found for "${source}" (must be a configured user-scope package).`);
+        return 1;
+    }
+    const { provenance, result } = found;
+    const declared = result.overlay!.services?.map((s) => s.id) ?? [];
+    if (declared.length === 0) {
+        console.error(`pizza config ${sub}: ${provenance.identity} declares no runner services.`);
+        return 1;
+    }
+
+    const requestedIds = args.slice(3).filter((a) => !a.startsWith("-"));
+    const ids = requestedIds.length > 0 ? requestedIds : declared;
+    const unknown = ids.filter((id) => !declared.includes(id));
+    if (unknown.length > 0) {
+        console.error(`pizza config ${sub}: unknown service id(s) [${unknown.join(", ")}] for ${provenance.identity}. Declared: [${declared.join(", ")}]`);
+        return 1;
+    }
+
+    if (sub === "grant") {
+        grantServices(provenance.identity, ids);
+        console.log(`${c.success("✓")} Granted [${ids.join(", ")}] for ${c.cmd(provenance.identity)}. ${describeRunningDaemon()}`);
+    } else {
+        const { revokeServices } = await import("./grants.js");
+        revokeServices(provenance.identity, ids);
+        console.log(`${c.success("✓")} Revoked [${ids.join(", ")}] for ${c.cmd(provenance.identity)}. ${describeRunningDaemon()}`);
+    }
+    return 0;
+}
+
+export { getGrantedServiceIds };

@@ -6,6 +6,7 @@
 
 import { handleConfigCommand, handlePackageCommand } from "@earendil-works/pi-coding-agent";
 import { c } from "./cli-colors.js";
+import { stripDaemonServiceFlags, handlePostInstallOverlay, renderOverlaySummary, runOverlayConfigSubcommand } from "./overlay/cli-support.js";
 
 const PACKAGE_COMMANDS = new Set(["install", "remove", "uninstall", "update", "list", "config"]);
 
@@ -39,11 +40,14 @@ const COMMAND_HELP: HelpEntry[] = [
             { flag: "-l, --local", desc: "Install into the project-local .pizzapi directory" },
             { flag: "-a, --approve", desc: "Trust project-local files for this command" },
             { flag: "-na, --no-approve", desc: "Ignore project-local files for this command" },
+            { flag: "--allow-daemon-services", desc: "Grant declared pi.pizzapi runner services (user scope only)" },
+            { flag: "--no-allow-daemon-services", desc: "Install but leave declared runner services untrusted" },
         ],
         examples: [
             "pizza install npm:@foo/pi-tools",
             "pizza install git:github.com/user/repo",
             "pizza install ./local/path",
+            "pizza install npm:@foo/pi-tools --allow-daemon-services",
         ],
     },
     {
@@ -82,11 +86,15 @@ const COMMAND_HELP: HelpEntry[] = [
     },
     {
         commands: ["config"],
-        usage: "[-a|-na]",
-        description: () => "Interactively enable or disable installed package resources.",
+        usage: "[-a|-na] | grant|revoke <source> [serviceId...]",
+        description: () => "Interactively enable or disable installed package resources, or grant/revoke pi.pizzapi daemon service trust.",
         options: [
             { flag: "-a, --approve", desc: "Trust project-local files" },
             { flag: "-na, --no-approve", desc: "Ignore project-local files" },
+        ],
+        examples: [
+            "pizza config grant npm:@foo/pi-tools",
+            "pizza config revoke npm:@foo/pi-tools github",
         ],
     },
 ];
@@ -176,6 +184,8 @@ export async function runPackageCommand(args: string[], cwd: string, agentDir: s
 
     try {
         args = stripCwdFlag(args);
+        const { args: strippedArgs, allowDaemonServices } = stripDaemonServiceFlags(args);
+        args = strippedArgs;
 
         if (!process.env.PI_CODING_AGENT_DIR) {
             process.env.PI_CODING_AGENT_DIR = agentDir;
@@ -188,6 +198,14 @@ export async function runPackageCommand(args: string[], cwd: string, agentDir: s
 
         if (args.includes("--help") || args.includes("-h")) {
             printCommandHelp(args[0] ?? "install");
+            return 0;
+        }
+
+        if (args[0] === "config") {
+            const overlayCode = await runOverlayConfigSubcommand(args, cwd, agentDir);
+            if (overlayCode !== undefined) return overlayCode;
+            // handleConfigCommand exits the process itself.
+            await handleConfigCommand(args);
             return 0;
         }
 
@@ -213,14 +231,17 @@ export async function runPackageCommand(args: string[], cwd: string, agentDir: s
         }
 
         try {
-            if (args[0] === "config") {
-                // handleConfigCommand exits the process itself.
-                await handleConfigCommand(args);
-                return 0;
+            const handled = await handlePackageCommand(args);
+            let code = handled ? Number(process.exitCode ?? 0) : 1;
+
+            if (handled && code === 0 && args[0] === "install") {
+                code = await handlePostInstallOverlay(args, cwd, agentDir, allowDaemonServices);
+            }
+            if (handled && code === 0 && args[0] === "list") {
+                renderOverlaySummary(cwd, agentDir);
             }
 
-            const handled = await handlePackageCommand(args);
-            return handled ? Number(process.exitCode ?? 0) : 1;
+            return code;
         } catch (err) {
             console.error(`pizza ${args[0]}: ${err instanceof Error ? err.message : String(err)}`);
             return 1;

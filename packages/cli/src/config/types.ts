@@ -331,6 +331,20 @@ export interface ProviderConfig {
   [key: string]: unknown;
 }
 
+/**
+ * A daemon-service trust grant for one `pi.pizzapi` overlay package.
+ *
+ * Distinct from pi's project trust, `trustedPlugins` (legacy plugin-path
+ * allowlist), and `disabledRunnerServices` (on/off switch *after* trust).
+ * See docs/specs/pi-pizzapi-overlay.md §7.2.
+ */
+export interface OverlayServiceGrant {
+    /** Normalized package identity, e.g. "npm:@acme/pi-github", "local:/abs/path". */
+    package: string;
+    /** Exact granted service IDs. A package update that adds a service does not auto-grant it. */
+    services: string[];
+}
+
 export interface PizzaPiConfig {
     /** Override the default system prompt */
     systemPrompt?: string;
@@ -560,4 +574,15 @@ export interface PizzaPiConfig {
 
     /** Extension provider configurations, keyed by provider ID. */
     providers?: Record<string, ProviderConfig>;
+
+    /**
+     * Explicit per-package, per-service daemon trust grants for `pi.pizzapi`
+     * overlay packages. Keyed by normalized package identity — separate from
+     * pi project trust, `trustedPlugins`, and `disabledRunnerServices`.
+     *
+     * Always stored in the GLOBAL ~/.pizzapi/config.json. Project packages
+     * never receive grants here in schema v1 (see docs/specs/pi-pizzapi-overlay.md §6.3).
+     * Managed via `pizza install --allow-daemon-services` / `pizza config grant|revoke`.
+     */
+    overlayServiceGrants?: OverlayServiceGrant[];
 }
