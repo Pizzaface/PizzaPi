@@ -96,7 +96,7 @@ STDIO is the most common transport. PizzaPi spawns the MCP server as a child pro
 
 ### Package overlay MCP paths
 
-A package's `pi.pizzapi.mcp` sidecar can use `@PACKAGE_ROOT@` in stdio `command`, `cwd`, string `args` entries, and string `env` values. PizzaPi replaces it with that installed package's confined root before normal variable expansion. It is not available in explicit config files or legacy Claude-plugin `.mcp.json` files, and does not apply to URLs or headers.
+A package's `pi.pizzapi.mcp` sidecar can use `@PACKAGE_ROOT@` in stdio `command`, `cwd`, string `args` entries, and string `env` values. PizzaPi replaces it with that installed package's confined root after normal variable expansion, so literal variable-shaped text in the installed path stays unchanged. It is not available in explicit config files or legacy Claude-plugin `.mcp.json` files, and does not apply to URL-based definitions (even if they also contain stdio fields), URLs, or headers.
 
 For example, the AgentMemory package sidecar should use:
 

@@ -10,6 +10,7 @@
  */
 
 import { type PizzaPiConfig, expandVars, expandVarsDeep } from "../../config.js";
+import { getPackageMcpRoot, resolveMcpCompatTransport } from "../mcp-overlay.js";
 import { PizzaPiOAuthProvider, type RelayContext } from "../mcp-oauth.js";
 import { createLogger, isSandboxActive, getResolvedConfig } from "@pizzapi/tools";
 import { createStdioMcpClient } from "./transport-stdio.js";
@@ -178,6 +179,7 @@ export async function createMcpClientsFromConfig(config: PizzaPiConfig & McpConf
             args: s.args,
             env: s.env,
             cwd: s.cwd,
+            packageRoot: getPackageMcpRoot(s),
           }),
         );
       } catch (err) {
@@ -230,7 +232,8 @@ export async function createMcpClientsFromConfig(config: PizzaPiConfig & McpConf
     if (!def || typeof def !== "object") continue;
     if (disabled.has(name)) continue; // skip disabled servers
 
-    if ("command" in def && typeof (def as any).command === "string") {
+    const transport = resolveMcpCompatTransport(def as Record<string, unknown>);
+    if (transport === "stdio") {
       const d = def as { command: string; args?: string[]; env?: Record<string, string>; cwd?: string };
       try {
         clients.push(
@@ -240,6 +243,7 @@ export async function createMcpClientsFromConfig(config: PizzaPiConfig & McpConf
             args: d.args,
             env: d.env,
             cwd: d.cwd,
+            packageRoot: getPackageMcpRoot(def),
           }),
         );
       } catch (err) {
@@ -248,7 +252,7 @@ export async function createMcpClientsFromConfig(config: PizzaPiConfig & McpConf
       continue;
     }
 
-    if ("url" in def && typeof (def as any).url === "string") {
+    if (transport === "http" || transport === "streamable") {
       const d = def as { url: string; transport?: string; type?: string; headers?: Record<string, string>; oauthClientName?: string; oauthClientId?: string; oauthClientSecret?: string; oauthCallbackPort?: number };
 
       // Expand @VARNAME@ tokens in url and headers
@@ -261,9 +265,7 @@ export async function createMcpClientsFromConfig(config: PizzaPiConfig & McpConf
       // Determine transport mode:
       //  - "transport" field (our format): "streamable" → streamable, else plain HTTP
       //  - "type" field (Claude Code / VS Code format): "http" → streamable (per MCP spec)
-      const useStreamable =
-        d.transport === "streamable" ||
-        (d.type === "http" && d.transport === undefined);
+      const useStreamable = transport === "streamable";
 
       if (useStreamable) {
         // Per-server clientId/clientSecret are a pair (see comment above)

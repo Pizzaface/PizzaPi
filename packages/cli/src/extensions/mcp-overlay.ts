@@ -90,28 +90,31 @@ function isValidMcpSidecarShape(parsed: unknown): parsed is Record<string, unkno
 }
 
 /** Extract `{ preferred, compat }` server entries from a parsed mcp sidecar/`.mcp.json` value. */
-const PACKAGE_ROOT_TOKEN = "@PACKAGE_ROOT@";
+const packageMcpRoots = new WeakMap<Record<string, unknown>, string>();
 
-function replacePackageRoot(value: unknown, packageRoot: string): unknown {
-    return typeof value === "string" ? value.replaceAll(PACKAGE_ROOT_TOKEN, packageRoot) : value;
+/** Match the registry's URL-first compatibility transport selection. */
+export function resolveMcpCompatTransport(value: Record<string, unknown>): "stdio" | "http" | "streamable" | "unknown" {
+    if (typeof value.url === "string") {
+        return value.transport === "streamable" || (value.type === "http" && value.transport === undefined)
+            ? "streamable"
+            : "http";
+    }
+    return typeof value.command === "string" ? "stdio" : "unknown";
+}
+
+/** Package roots are internal metadata, not a config field. */
+export function getPackageMcpRoot(server: unknown): string | undefined {
+    return isRecord(server) ? packageMcpRoots.get(server) : undefined;
 }
 
 /**
- * Materialize the one package-scoped token in stdio fields only. This is
- * deliberately narrower than config variable expansion: URLs, headers, and
- * arbitrary nested data keep their literal values, while command arguments
- * remain argv entries rather than shell text.
+ * Preserve @PACKAGE_ROOT@ until the stdio transport expands the definition.
+ * That inserts the canonical root after ordinary variables, so literal tokens
+ * in an installed path cannot be expanded accidentally.
  */
-function materializePackageMcpServer(server: Record<string, unknown>, packageRoot: string): Record<string, unknown> {
+function materializePackageMcpServer(server: Record<string, unknown>, packageRoot: string, isStdio: boolean): Record<string, unknown> {
     const materialized = { ...server };
-    if (typeof server.command === "string") materialized.command = replacePackageRoot(server.command, packageRoot);
-    if (typeof server.cwd === "string") materialized.cwd = replacePackageRoot(server.cwd, packageRoot);
-    if (Array.isArray(server.args)) materialized.args = server.args.map((arg) => replacePackageRoot(arg, packageRoot));
-    if (isRecord(server.env)) {
-        materialized.env = Object.fromEntries(
-            Object.entries(server.env).map(([name, value]) => [name, replacePackageRoot(value, packageRoot)]),
-        );
-    }
+    if (isStdio) packageMcpRoots.set(materialized, packageRoot);
     return materialized;
 }
 
@@ -138,16 +141,7 @@ function extractServers(parsed: unknown): { preferred: Record<string, unknown>[]
  * from an explicit config file or an overlay/legacy sidecar.
  */
 export function inferMcpCompatTransport(value: Record<string, unknown>): string {
-    if (typeof value.command === "string") return "stdio";
-    if (typeof value.url === "string") {
-        // "transport" is our field; "type" is Claude Code / VS Code format.
-        // In the standard MCP ecosystem, type "http" = streamable HTTP.
-        if (typeof value.transport === "string") return value.transport;
-        if (value.type === "http") return "streamable";
-        if (typeof value.type === "string") return value.type;
-        return "http";
-    }
-    return "unknown";
+    return resolveMcpCompatTransport(value);
 }
 
 export function mergeOverlayMcpServers(
@@ -243,8 +237,8 @@ export function mergeOverlayMcpServers(
                 scope,
                 pkg.identity,
                 pkg.installedPath,
-                preferred.map((server) => materializePackageMcpServer(server, packageRoot.absolutePath)),
-                Object.fromEntries(Object.entries(compat).map(([name, server]) => [name, materializePackageMcpServer(server, packageRoot.absolutePath)])),
+                preferred.map((server) => materializePackageMcpServer(server, packageRoot.absolutePath, server.transport === "stdio")),
+                Object.fromEntries(Object.entries(compat).map(([name, server]) => [name, materializePackageMcpServer(server, packageRoot.absolutePath, resolveMcpCompatTransport(server) === "stdio")])),
             );
         }
     }
