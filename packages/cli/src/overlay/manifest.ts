@@ -21,6 +21,7 @@ import { MAX_PLUGIN_FILE_SIZE } from "../plugins/types.js";
 export const OVERLAY_SIDECAR_MAX_BYTES = MAX_PLUGIN_FILE_SIZE;
 
 const TOP_LEVEL_KEYS = new Set(["schemaVersion", "services", "agents", "rules", "mcp"]);
+const PREFERRED_MCP_TRANSPORTS = new Set(["stdio", "http", "streamable"]);
 const SERVICE_KEYS = new Set(["id", "label", "entry", "icon", "panel", "triggers", "sigils"]);
 const PANEL_KEYS = new Set(["dir", "requires"]);
 const PANEL_VARIABLES: ReadonlySet<PanelVariable> = new Set(["PWD", "SESSION_ID", "HOME", "USER", "PROJECT_DIR"]);
@@ -339,7 +340,9 @@ function validateAgentsOrRules(value: unknown, field: string, packageRoot: strin
  * `mcp.servers` array or the compatibility `mcpServers` object (see
  * extensions/mcp-extension.ts, extensions/mcp/registry.ts). Entries are
  * shape-checked just enough to reject junk while staying compatible with
- * every transport variant those loaders already support.
+ * every transport variant those loaders already support. Preferred entries
+ * must explicitly choose a transport so validation matches the registry;
+ * compatibility entries retain their URL-first inference behavior.
  */
 function validateMcpShape(parsed: unknown, field: string, push: PushFn): void {
     if (!isPlainObject(parsed)) {
@@ -361,14 +364,34 @@ function validateMcpShape(parsed: unknown, field: string, push: PushFn): void {
         mcpServersArray.forEach((entry, i) => {
             const entryField = `${field}.servers[${i}]`;
             if (!isPlainObject(entry)) {
-                push(entryField, "must be an object", "Fix this mcp.servers entry to a { name, command|url } object.");
+                push(entryField, "must be an object", "Fix this mcp.servers entry to a { name, transport, command|url } object.");
                 return;
             }
             if (typeof entry.name !== "string" || entry.name.length === 0) {
                 push(`${entryField}.name`, "must be a non-empty string", "Set name to a unique server identifier.");
             }
-            if (typeof entry.command !== "string" && typeof entry.url !== "string") {
-                push(entryField, "must have a string command (stdio) or url (http/streamable)", "Set command for a stdio server, or url for an http/streamable server.");
+            if (typeof entry.transport !== "string" || !PREFERRED_MCP_TRANSPORTS.has(entry.transport)) {
+                push(
+                    `${entryField}.transport`,
+                    `is required and must be one of ${[...PREFERRED_MCP_TRANSPORTS].join(", ")}`,
+                    "Set transport to stdio with command, or http/streamable with url.",
+                );
+                return;
+            }
+            if (entry.transport === "stdio") {
+                if (typeof entry.command !== "string" || entry.command.length === 0) {
+                    push(`${entryField}.command`, "must be a non-empty string when transport is stdio", "Set command to the stdio server executable.");
+                }
+                if (entry.url !== undefined) {
+                    push(`${entryField}.url`, "is not allowed when transport is stdio", "Remove url or use transport http/streamable.");
+                }
+            } else {
+                if (typeof entry.url !== "string" || entry.url.length === 0) {
+                    push(`${entryField}.url`, `must be a non-empty string when transport is ${entry.transport}`, "Set url to the remote MCP endpoint.");
+                }
+                if (entry.command !== undefined) {
+                    push(`${entryField}.command`, `is not allowed when transport is ${entry.transport}`, "Remove command or use transport stdio.");
+                }
             }
         });
     }

@@ -218,6 +218,28 @@ describe("overlay trust integration", () => {
         expect(getGrantedServiceIds("local:" + realpathSync(pkgDir)).size).toBe(0);
     });
 
+    test("install rejects a preferred MCP sidecar without an explicit transport", async () => {
+        const agentDir = join(tmpDir, "agent");
+        const cwd = join(tmpDir, "project");
+        const pkgDir = join(tmpDir, "bad-mcp-pkg");
+        writeFixturePackage(pkgDir, { schemaVersion: 1, mcp: "./mcp.json" });
+        writeFileSync(join(pkgDir, "mcp.json"), JSON.stringify({ mcp: { servers: [{ name: "godmother", command: "godmother" }] } }));
+
+        const originalError = console.error;
+        const errors: string[] = [];
+        console.error = ((...a: unknown[]) => { errors.push(a.join(" ")); }) as typeof console.error;
+        let code: number;
+        try {
+            code = await runPackageCommand(["install", "../bad-mcp-pkg"], cwd, agentDir);
+        } finally {
+            console.error = originalError;
+        }
+
+        expect(code).not.toBe(0);
+        expect(errors.join("\n")).toContain("mcp.servers[0].transport");
+        expect(errors.join("\n")).toContain("pi-native package install may remain");
+    });
+
     // P1: `pizza config grant` must require the normalized identity to exist
     // in DefaultPackageManager.listConfiguredPackages() at USER scope —
     // an arbitrary local directory that merely exists on disk (never

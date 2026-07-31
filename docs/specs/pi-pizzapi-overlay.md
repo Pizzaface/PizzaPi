@@ -190,7 +190,7 @@ Pi 0.82.1 has no native `pi.agents` package resource, while PizzaPi's subagent r
 #### `mcp`
 
 - One explicit package-relative JSON path.
-- The file uses PizzaPi's existing preferred `mcp.servers` array or compatibility `mcpServers` object format.
+- The file uses PizzaPi's existing preferred `mcp.servers` array or compatibility `mcpServers` object format. Preferred entries MUST explicitly set `transport` to `stdio`, `http`, or `streamable`: `stdio` requires `command`; `http`/`streamable` require `url`; command and URL fields cannot be mixed. Compatibility entries retain URL-first transport inference.
 - One file can declare multiple servers; an array of config paths is unnecessary in version 1.
 - Explicit user/project PizzaPi config wins a server-name collision over package MCP config.
 - Between packages, project scope wins user scope, then settings order wins; later duplicates are warned and skipped.

@@ -41,7 +41,7 @@ Two config formats are supported:
     ```
   </TabItem>
   <TabItem label="mcp.servers (preferred)">
-    The `mcp.servers` format uses an array of server objects, each with an explicit `name` field. PizzaPi treats this as the preferred format internally.
+    The `mcp.servers` format uses an array of server objects, each with explicit `name` and `transport` fields. PizzaPi treats this as the preferred format internally. Use `stdio` with `command`, or `http`/`streamable` with `url`; do not mix command and URL fields.
 
     ```jsonc
     // ~/.pizzapi/config.json
@@ -50,12 +50,14 @@ Two config formats are supported:
         "servers": [
           {
             "name": "tavily",
+            "transport": "stdio",
             "command": "npx",
             "args": ["-y", "@tavily/mcp-server"],
             "env": { "TAVILY_API_KEY": "tvly-..." }
           },
           {
             "name": "filesystem",
+            "transport": "stdio",
             "command": "npx",
             "args": ["-y", "@anthropic/mcp-filesystem"],
             "env": {}

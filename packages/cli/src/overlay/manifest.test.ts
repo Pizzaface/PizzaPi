@@ -206,7 +206,38 @@ describe("readOverlayManifest", () => {
         expect(result.issues.some((i) => i.field === "mcp" && i.message.includes("mcp.servers"))).toBe(true);
     });
 
-    test("mcp sidecar entry missing both command and url is rejected", () => {
+    test("preferred mcp.servers entry with command but no transport is rejected", () => {
+        const dir = fixturePkg({ schemaVersion: 1, mcp: "./bad-entry.json" }, (d) => {
+            writeFileSync(join(d, "bad-entry.json"), JSON.stringify({ mcp: { servers: [{ name: "x", command: "echo" }] } }));
+        });
+        dirs.push(dir);
+        const result = readOverlayManifest(dir, provenance);
+        expect(result.overlay).toBeNull();
+        expect(result.issues).toContainEqual(expect.objectContaining({ field: "mcp.servers[0].transport", message: expect.stringContaining("required") }));
+    });
+
+    test("preferred mcp.servers rejects unknown and contradictory transport fields", () => {
+        const dir = fixturePkg({ schemaVersion: 1, mcp: "./bad-entry.json" }, (d) => {
+            writeFileSync(join(d, "bad-entry.json"), JSON.stringify({
+                mcp: { servers: [
+                    { name: "unknown", transport: "sse", url: "https://example.test/mcp" },
+                    { name: "stdio-url", transport: "stdio", command: "echo", url: "https://example.test/mcp" },
+                    { name: "http-command", transport: "http", command: "echo" },
+                ] },
+            }));
+        });
+        dirs.push(dir);
+        const result = readOverlayManifest(dir, provenance);
+        expect(result.overlay).toBeNull();
+        expect(result.issues.map((i) => i.field)).toEqual(expect.arrayContaining([
+            "mcp.servers[0].transport",
+            "mcp.servers[1].url",
+            "mcp.servers[2].url",
+            "mcp.servers[2].command",
+        ]));
+    });
+
+    test("compatibility mcpServers entry missing both command and url is rejected", () => {
         const dir = fixturePkg({ schemaVersion: 1, mcp: "./bad-entry.json" }, (d) => {
             writeFileSync(join(d, "bad-entry.json"), JSON.stringify({ mcpServers: { x: { transport: "stdio" } } }));
         });
@@ -226,9 +257,13 @@ describe("readOverlayManifest", () => {
         expect(result.overlay?.mcp).toBe("./mcp.json");
     });
 
-    test("mcp sidecar with valid mcp.servers array format is accepted", () => {
+    test("mcp sidecar with all supported preferred transports is accepted", () => {
         const dir = fixturePkg({ schemaVersion: 1, mcp: "./mcp.json" }, (d) => {
-            writeFileSync(join(d, "mcp.json"), JSON.stringify({ mcp: { servers: [{ name: "gh", transport: "http", url: "https://api.example.com/mcp" }] } }));
+            writeFileSync(join(d, "mcp.json"), JSON.stringify({ mcp: { servers: [
+                { name: "local", transport: "stdio", command: "echo" },
+                { name: "http", transport: "http", url: "https://api.example.com/mcp" },
+                { name: "streamable", transport: "streamable", url: "https://api.example.com/stream" },
+            ] } }));
         });
         dirs.push(dir);
         const result = readOverlayManifest(dir, provenance);
