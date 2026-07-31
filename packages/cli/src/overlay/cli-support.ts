@@ -10,9 +10,9 @@ import { createInterface } from "node:readline";
 import { DefaultPackageManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { c } from "../cli-colors.js";
 import { loadGlobalConfig } from "../config/io.js";
-import { computePackageIdentity } from "./identity.js";
+import { computePackageIdentity, packageScopeBaseDir } from "./identity.js";
 import { formatOverlayIssue, readOverlayManifest, type OverlayReadResult, type PackageProvenance } from "./manifest.js";
-import { getGrantedServiceIds, grantServices, resolveServiceGrantState } from "./grants.js";
+import { getGrantedServiceIds, grantServices, revokeServices, resolveServiceGrantState } from "./grants.js";
 import { defaultStatePath, isPidRunning, type RunnerState } from "../runner/runner-state.js";
 import { existsSync, readFileSync } from "node:fs";
 
@@ -79,13 +79,83 @@ function packageManagerFor(cwd: string, agentDir: string): DefaultPackageManager
     return new DefaultPackageManager({ cwd, agentDir, settingsManager });
 }
 
+/** `ConfiguredPackage` isn't re-exported from the package root; derive it structurally. */
+type ConfiguredPkg = ReturnType<DefaultPackageManager["listConfiguredPackages"]>[number];
+
+interface ConfiguredMatch {
+    provenance: PackageProvenance;
+    installedPath: string;
+}
+
+/**
+ * Resolve `source` to a package pi actually has *configured* at `scope` —
+ * matched by normalized identity, using the scope-aware base dir pi itself
+ * resolves relative local paths against (agent dir for user, `<cwd>/.pizzapi`
+ * for project; see identity.ts `packageScopeBaseDir`).
+ *
+ * P1: `DefaultPackageManager.getInstalledPath()` alone does NOT check
+ * configuration for local sources — it just resolves the path and checks
+ * `existsSync`. Reading an overlay (and especially granting daemon service
+ * trust) must never be reachable for an arbitrary local directory that
+ * merely exists on disk; it must be a package the user actually installed
+ * via `pi install`/`pizza install` (i.e. present in
+ * `listConfiguredPackages()`). This is the single choke point every
+ * overlay-reading CLI path (install, list, config grant/revoke, update)
+ * goes through.
+ */
+function findConfiguredOverlaySource(
+    pm: DefaultPackageManager,
+    source: string,
+    scope: "user" | "project",
+    cwd: string,
+    agentDir: string,
+): ConfiguredMatch | undefined {
+    const baseDir = packageScopeBaseDir(scope, cwd, agentDir);
+    const identity = computePackageIdentity(source, baseDir).identity;
+    for (const pkg of pm.listConfiguredPackages()) {
+        if (pkg.scope !== scope || !pkg.installedPath) continue;
+        const pkgBaseDir = packageScopeBaseDir(pkg.scope, cwd, agentDir);
+        if (computePackageIdentity(pkg.source, pkgBaseDir).identity !== identity) continue;
+        return { provenance: { identity, source: pkg.source, scope }, installedPath: pkg.installedPath };
+    }
+    return undefined;
+}
+
 function readOverlayFor(cwd: string, agentDir: string, source: string, scope: "user" | "project"): { provenance: PackageProvenance; result: OverlayReadResult } | undefined {
     const pm = packageManagerFor(cwd, agentDir);
-    const installedPath = pm.getInstalledPath(source, scope);
-    if (!installedPath) return undefined;
-    const identity = computePackageIdentity(source, agentDir).identity;
-    const provenance: PackageProvenance = { identity, source, scope };
-    return { provenance, result: readOverlayManifest(installedPath, provenance) };
+    const match = findConfiguredOverlaySource(pm, source, scope, cwd, agentDir);
+    if (!match) return undefined;
+    return { provenance: match.provenance, result: readOverlayManifest(match.installedPath, match.provenance) };
+}
+
+/**
+ * Dedupe configured packages by normalized identity before display —
+ * project entries override user entries for the same identity, matching
+ * pi's own scope/dedup rule (docs/packages.md "Scope and Deduplication").
+ * Preserves stable order: the winning entry keeps the position of its first
+ * occurrence, only its content (source/scope) is replaced.
+ */
+function dedupeConfiguredPackages(
+    configured: ConfiguredPkg[],
+    cwd: string,
+    agentDir: string,
+): Array<{ identity: string; pkg: ConfiguredPkg }> {
+    const order: string[] = [];
+    const byIdentity = new Map<string, { identity: string; pkg: ConfiguredPkg }>();
+    for (const pkg of configured) {
+        const baseDir = packageScopeBaseDir(pkg.scope, cwd, agentDir);
+        const identity = computePackageIdentity(pkg.source, baseDir).identity;
+        const existing = byIdentity.get(identity);
+        if (!existing) {
+            byIdentity.set(identity, { identity, pkg });
+            order.push(identity);
+            continue;
+        }
+        if (pkg.scope === "project" && existing.pkg.scope === "user") {
+            byIdentity.set(identity, { identity, pkg });
+        }
+    }
+    return order.map((identity) => byIdentity.get(identity)!);
 }
 
 /**
@@ -171,12 +241,12 @@ export function renderOverlaySummary(cwd: string, agentDir: string): void {
     const configured = pm.listConfiguredPackages();
     if (configured.length === 0) return;
 
+    const deduped = dedupeConfiguredPackages(configured, cwd, agentDir);
     const disabledRunnerServices = loadGlobalConfig().disabledRunnerServices ?? [];
     const lines: string[] = [];
 
-    for (const pkg of configured) {
+    for (const { identity, pkg } of deduped) {
         if (!pkg.installedPath) continue;
-        const identity = computePackageIdentity(pkg.source, agentDir).identity;
         const provenance: PackageProvenance = { identity, source: pkg.source, scope: pkg.scope };
         const { overlay, present, issues } = readOverlayManifest(pkg.installedPath, provenance);
 
@@ -246,11 +316,91 @@ export async function runOverlayConfigSubcommand(args: string[], cwd: string, ag
         grantServices(provenance.identity, ids);
         console.log(`${c.success("✓")} Granted [${ids.join(", ")}] for ${c.cmd(provenance.identity)}. ${describeRunningDaemon()}`);
     } else {
-        const { revokeServices } = await import("./grants.js");
         revokeServices(provenance.identity, ids);
         console.log(`${c.success("✓")} Revoked [${ids.join(", ")}] for ${c.cmd(provenance.identity)}. ${describeRunningDaemon()}`);
     }
     return 0;
 }
 
-export { getGrantedServiceIds };
+export interface OverlaySnapshotEntry {
+    identity: string;
+    source: string;
+    overlayPresent: boolean;
+    overlayValid: boolean;
+    serviceIds: string[];
+}
+
+/**
+ * Snapshot each configured user-scope package's declared overlay service ids
+ * (plus overlay validity), keyed by normalized identity.
+ *
+ * P2: `pizza update` doesn't change `packages[]` in settings.json (the
+ * identity is unchanged before/after), so a literal settings diff can't
+ * detect that an update changed a package's *content*. We snapshot the
+ * overlay content itself before and after the upstream update instead, so
+ * `handlePostUpdateOverlay()` can diff declared service ids and catch a
+ * newly-malformed overlay.
+ */
+export function snapshotOverlayServiceIds(cwd: string, agentDir: string): Map<string, OverlaySnapshotEntry> {
+    const pm = packageManagerFor(cwd, agentDir);
+    const configured = pm.listConfiguredPackages().filter((p) => p.scope === "user");
+    const deduped = dedupeConfiguredPackages(configured, cwd, agentDir);
+    const snapshot = new Map<string, OverlaySnapshotEntry>();
+    for (const { identity, pkg } of deduped) {
+        if (!pkg.installedPath) continue;
+        const provenance: PackageProvenance = { identity, source: pkg.source, scope: "user" };
+        const { overlay, present } = readOverlayManifest(pkg.installedPath, provenance);
+        snapshot.set(identity, {
+            identity,
+            source: pkg.source,
+            overlayPresent: present,
+            overlayValid: present ? overlay !== null : true,
+            serviceIds: overlay?.services?.map((s) => s.id) ?? [],
+        });
+    }
+    return snapshot;
+}
+
+/**
+ * Run after a successful upstream `pizza update`. Compares the pre-update
+ * overlay snapshot (from `snapshotOverlayServiceIds`) against the current
+ * one: a newly-malformed overlay fails the command (partial-update
+ * remediation); newly-declared service ids are surfaced as untrusted but
+ * never auto-granted; ids that were already granted stay granted (grants
+ * are keyed by exact service id and untouched here). Returns the exit code
+ * the CLI should use (0 unless an overlay became malformed).
+ */
+export function handlePostUpdateOverlay(cwd: string, agentDir: string, before: Map<string, OverlaySnapshotEntry>): number {
+    const after = snapshotOverlayServiceIds(cwd, agentDir);
+    let sawMalformed = false;
+    const newlyDeclared: Array<{ identity: string; ids: string[] }> = [];
+
+    for (const snap of after.values()) {
+        if (snap.overlayPresent && !snap.overlayValid) {
+            console.error(`\n${c.error("✗")} pi.pizzapi overlay is invalid for ${c.cmd(snap.identity)} after update:\n`);
+            console.error(
+                `  ${c.warning("Note:")} the pi-native package update may have completed (upstream update is not transactional); ` +
+                `its daemon services remain unmounted. Run ${c.cmd(`pizza install ${snap.source}`)} to see full errors, or ${c.cmd(`pizza remove ${snap.source}`)} to undo.\n`,
+            );
+            sawMalformed = true;
+            continue;
+        }
+
+        const prior = before.get(snap.identity);
+        const priorIds = new Set(prior?.serviceIds ?? []);
+        const granted = getGrantedServiceIds(snap.identity);
+        const newUngranted = snap.serviceIds.filter((id) => !priorIds.has(id) && !granted.has(id));
+        if (newUngranted.length > 0) {
+            newlyDeclared.push({ identity: snap.identity, ids: newUngranted });
+        }
+    }
+
+    for (const { identity, ids } of newlyDeclared) {
+        console.log(
+            `\n${c.warning("Note:")} ${c.cmd(identity)} now declares new runner service(s) [${ids.join(", ")}] — left ${c.warning("untrusted")}. ` +
+            `Run ${c.cmd(`pizza config grant <source> ${ids.join(" ")}`)} to trust them.\n`,
+        );
+    }
+
+    return sawMalformed ? 1 : 0;
+}

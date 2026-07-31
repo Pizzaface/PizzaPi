@@ -6,7 +6,14 @@
 
 import { handleConfigCommand, handlePackageCommand } from "@earendil-works/pi-coding-agent";
 import { c } from "./cli-colors.js";
-import { stripDaemonServiceFlags, handlePostInstallOverlay, renderOverlaySummary, runOverlayConfigSubcommand } from "./overlay/cli-support.js";
+import {
+    stripDaemonServiceFlags,
+    handlePostInstallOverlay,
+    handlePostUpdateOverlay,
+    renderOverlaySummary,
+    runOverlayConfigSubcommand,
+    snapshotOverlayServiceIds,
+} from "./overlay/cli-support.js";
 
 const PACKAGE_COMMANDS = new Set(["install", "remove", "uninstall", "update", "list", "config"]);
 
@@ -217,11 +224,21 @@ export async function runPackageCommand(args: string[], cwd: string, agentDir: s
                 return 1;
             }
             const wasRewritten = argsForUpstream !== args;
+            // P2: snapshot declared overlay service ids/validity *before* the
+            // update runs. `packages[]` in settings.json doesn't change on
+            // update, so this is the only way to detect a same-identity
+            // overlay content change (new service ids, or a newly-malformed
+            // overlay) afterward.
+            const overlaySnapshotBefore = snapshotOverlayServiceIds(cwd, agentDir);
             try {
                 const handled = await handlePackageCommand(argsForUpstream);
                 if (handled) {
                     if (wasRewritten) printSelfUpdateNote();
-                    return Number(process.exitCode ?? 0);
+                    let code = Number(process.exitCode ?? 0);
+                    if (code === 0) {
+                        code = handlePostUpdateOverlay(cwd, agentDir, overlaySnapshotBefore);
+                    }
+                    return code;
                 }
                 return 1;
             } catch (err) {
