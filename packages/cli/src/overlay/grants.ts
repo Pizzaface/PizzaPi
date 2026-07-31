@@ -114,9 +114,13 @@ export function buildConfiguredGrantIdentities(cwd: string, agentDir: string): M
         let declaredServiceIds: Set<string> | null;
         try {
             const provenance: PackageProvenance = { identity, source: pkg.source, scope: pkg.scope };
-            const { overlay, present } = readOverlayManifest(pkg.installedPath, provenance);
-            if (!present) {
-                // No pi.pizzapi key at all — the package declares no services.
+            const { overlay, present, issues } = readOverlayManifest(pkg.installedPath, provenance);
+            if (issues.length > 0 || !existsSync(join(pkg.installedPath, "package.json"))) {
+                // The configured install exists but its package manifest cannot
+                // be read cleanly. Preserve grants fail-closed until repaired.
+                declaredServiceIds = null;
+            } else if (!present) {
+                // Readable package.json with no pi.pizzapi key: no services.
                 declaredServiceIds = new Set();
             } else if (overlay) {
                 declaredServiceIds = new Set(overlay.services?.map((s) => s.id) ?? []);
@@ -158,6 +162,7 @@ export interface GrantReconciliationRemoval {
  *   fresh grant); the entry is dropped entirely if nothing remains.
  */
 export function reconcileGrants(configured: ReadonlyMap<string, ConfiguredPackageGrantInfo>): GrantReconciliationRemoval[] {
+    assertGlobalConfigParsable();
     const grants = getOverlayServiceGrants();
     const kept: OverlayServiceGrant[] = [];
     const removals: GrantReconciliationRemoval[] = [];
@@ -208,7 +213,8 @@ function assertGlobalConfigParsable(): void {
         throw new Error(`overlay grants: cannot read global config at ${path}: ${err instanceof Error ? err.message : String(err)}`);
     }
     try {
-        JSON.parse(text);
+        const parsed: unknown = JSON.parse(text);
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("top-level value must be an object");
     } catch {
         throw new Error(
             `overlay grants: refusing to modify malformed global config at ${path} — ` +

@@ -121,6 +121,14 @@ describe("overlay grants", () => {
             expect(() => revokeServices("npm:@acme/pkg", ["github"])).toThrow(/malformed global config/);
             expect(readFileSync(path, "utf-8")).toBe(bytes);
         });
+
+        test("valid JSON with a non-object top level is also refused", () => {
+            const path = join(dir, "config.json");
+            const bytes = "[]\n";
+            writeFileSync(path, bytes, "utf-8");
+            expect(() => grantServices("npm:@acme/pkg", ["github"])).toThrow(/malformed global config/);
+            expect(readFileSync(path, "utf-8")).toBe(bytes);
+        });
     });
 
     describe("reconcileGrants", () => {

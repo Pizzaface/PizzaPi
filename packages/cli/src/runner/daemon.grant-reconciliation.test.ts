@@ -71,13 +71,20 @@ describe("reconcileOverlayGrants (daemon startup/reconfigure call path)", () => 
         const missingPkgPath = join(agentDir, "packages", "pkg-missing-not-on-disk");
         const missingIdentity = computePackageIdentity(missingPkgPath, agentDir).identity;
 
-        writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ packages: [keptPkgPath, missingPkgPath] }));
+        // Configured path exists, but package.json is temporarily absent/corrupt.
+        // This is unreadable, not proof that the package intentionally removed its overlay.
+        const brokenPkgPath = join(agentDir, "packages", "pkg-broken-install");
+        mkdirSync(brokenPkgPath, { recursive: true });
+        const brokenIdentity = computePackageIdentity(brokenPkgPath, agentDir).identity;
+
+        writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ packages: [keptPkgPath, missingPkgPath, brokenPkgPath] }));
 
         // Never configured at all — a pure orphan.
         const orphanIdentity = "npm:@acme/long-gone";
 
         grantServices(keptIdentity, ["kept", "dropped"]);
         grantServices(missingIdentity, ["still-trusted"]);
+        grantServices(brokenIdentity, ["also-still-trusted"]);
         grantServices(orphanIdentity, ["gone"]);
 
         const writes: string[] = [];
@@ -97,14 +104,17 @@ describe("reconcileOverlayGrants (daemon startup/reconfigure call path)", () => 
         expect(getGrantedServiceIds(keptIdentity)).toEqual(new Set(["kept"]));
         // Fail-closed: missing installed path leaves the grant untouched.
         expect(getGrantedServiceIds(missingIdentity)).toEqual(new Set(["still-trusted"]));
+        // Fail-closed: an existing but unreadable package install is also retained.
+        expect(getGrantedServiceIds(brokenIdentity)).toEqual(new Set(["also-still-trusted"]));
         // Fully unconfigured identity is removed entirely.
         expect(getGrantedServiceIds(orphanIdentity).size).toBe(0);
-        expect(getOverlayServiceGrants().map((g) => g.package).sort()).toEqual([keptIdentity, missingIdentity].sort());
+        expect(getOverlayServiceGrants().map((g) => g.package).sort()).toEqual([brokenIdentity, keptIdentity, missingIdentity].sort());
 
         const logged = writes.join("");
         expect(logged).toContain(orphanIdentity);
         expect(logged).toContain("dropped");
         expect(logged).not.toContain("still-trusted");
+        expect(logged).not.toContain("also-still-trusted");
     });
 
     test("no configured packages and no grants is a silent no-op", () => {
