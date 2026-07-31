@@ -190,6 +190,122 @@ describe("discoverPackageServices", () => {
         expect(errors.some((e) => e.error.includes("collides with already-registered package"))).toBe(true);
     });
 
+    test("corrupt GLOBAL settings make discovery non-authoritative, not an empty valid result (fix #1)", async () => {
+        // Malformed JSON in the global (user-scope) settings file — this is
+        // what `DefaultPackageManager.listConfiguredPackages()` silently
+        // degrades to `[]` for, which must NOT be read as "user has no
+        // packages configured".
+        writeFileSync(join(agentDir, "settings.json"), "{ not valid json");
+
+        const { services, errors, authoritative } = await discoverPackageServices({ cwd, agentDir });
+        expect(services).toHaveLength(0);
+        expect(authoritative).toBe(false);
+        expect(errors.some((e) => e.error.includes("not authoritative"))).toBe(true);
+    });
+
+    test("a project-scope settings load error does NOT flip authoritative (fix #1)", async () => {
+        // Project settings failures must not gate user-scope daemon service
+        // discovery — only GLOBAL (user-scope) load errors do.
+        mkdirSync(join(cwd, ".pizzapi"), { recursive: true });
+        writeFileSync(join(cwd, ".pizzapi", "settings.json"), "{ not valid json");
+
+        const { authoritative } = await discoverPackageServices({ cwd, agentDir });
+        expect(authoritative).toBe(true);
+    });
+
+    test("an untrusted (ungranted) first package still reserves its id — a later granted package cannot impersonate it (fix #5)", async () => {
+        const pkgADir = join(tmpDir, "untrusted-first");
+        const pkgBDir = join(tmpDir, "granted-second");
+        writeFixturePackage(pkgADir, { schemaVersion: 1, services: [{ id: "shared-id", label: "A", entry: "./service.ts" }] });
+        writeFileSync(join(pkgADir, "service.ts"), "export default { id: 'shared-id', init(){}, dispose(){} };");
+        writeFixturePackage(pkgBDir, { schemaVersion: 1, services: [{ id: "shared-id", label: "B", entry: "./service.ts" }] });
+        writeFileSync(join(pkgBDir, "service.ts"), "export default { id: 'shared-id', init(){}, dispose(){} };");
+
+        await installLocal("../untrusted-first");
+        await installLocal("../granted-second");
+        const identityB = "local:" + realpathSync(pkgBDir);
+        // Only B is granted — A is left untrusted (broken/untrusted-first case).
+        grantServices(identityB, ["shared-id"]);
+
+        const { services, errors } = await discoverPackageServices({ cwd, agentDir });
+        expect(services).toHaveLength(0); // A is untrusted, B is blocked by A's reservation
+        expect(errors.some((e) => e.error.includes("is not granted"))).toBe(true);
+        expect(errors.some((e) => e.error.includes("collides with already-registered package"))).toBe(true);
+    });
+
+    test("panel.dir failing re-validation immediately before use rejects the whole service (fix #2, TOCTOU)", async () => {
+        // A pre-deleted panel dir would already be caught by
+        // readOverlayManifest()'s own validation (before the per-service
+        // TOCTOU recheck even runs) — to exercise the *actual* re-validation
+        // gap, delete the panel dir as a side effect of importing the entry
+        // module. Manifest validation (which reads panel.dir first) has
+        // already passed by the time the entry is imported; the panel-dir
+        // recheck runs immediately AFTER import, so it must catch this.
+        const pkgDir = join(tmpDir, "panel-toctou-pkg");
+        const panelDir = join(pkgDir, "panel");
+        writeFixturePackage(pkgDir, {
+            schemaVersion: 1,
+            services: [{ id: "panel-svc", label: "X", entry: "./service.ts", panel: { dir: "./panel" } }],
+        });
+        writeFileSync(
+            join(pkgDir, "service.ts"),
+            `import { rmSync } from "node:fs";\n` +
+            `rmSync(${JSON.stringify(panelDir)}, { recursive: true, force: true });\n` +
+            `export default { id: "panel-svc", init(){}, dispose(){} };\n`,
+        );
+        mkdirSync(panelDir, { recursive: true });
+        writeFileSync(join(panelDir, "index.html"), "<html></html>");
+        await installLocal("../panel-toctou-pkg");
+        const identity = "local:" + realpathSync(pkgDir);
+        grantServices(identity, ["panel-svc"]);
+
+        const { services, errors } = await discoverPackageServices({ cwd, agentDir });
+        expect(services).toHaveLength(0); // never register a broken-panel service
+        expect(errors.some((e) => e.error.includes("panel.dir failed re-validation"))).toBe(true);
+    });
+
+    test("a package service with only triggers/sigils (no panel) gets hasPanel: false in its manifest (fix #3)", async () => {
+        const pkgDir = join(tmpDir, "no-panel-pkg");
+        writeFixturePackage(pkgDir, {
+            schemaVersion: 1,
+            services: [{
+                id: "sigil-svc",
+                label: "X",
+                entry: "./service.ts",
+                sigils: [{ type: "thing", label: "Thing" }],
+            }],
+        });
+        writeFileSync(join(pkgDir, "service.ts"), "export default { id: 'sigil-svc', init(){}, dispose(){} };");
+        await installLocal("../no-panel-pkg");
+        const identity = "local:" + realpathSync(pkgDir);
+        grantServices(identity, ["sigil-svc"]);
+
+        const { services, errors } = await discoverPackageServices({ cwd, agentDir });
+        expect(errors).toEqual([]);
+        expect(services).toHaveLength(1);
+        expect(services[0]!.manifest?.hasPanel).toBe(false);
+        expect(services[0]!.manifest?.panel).toBeUndefined();
+    });
+
+    test("a package service with a panel gets hasPanel: true in its manifest (fix #3)", async () => {
+        const pkgDir = join(tmpDir, "with-panel-pkg");
+        writeFixturePackage(pkgDir, {
+            schemaVersion: 1,
+            services: [{ id: "panel-svc2", label: "X", entry: "./service.ts", panel: { dir: "./panel" } }],
+        });
+        writeFileSync(join(pkgDir, "service.ts"), "export default { id: 'panel-svc2', init(){}, dispose(){} };");
+        mkdirSync(join(pkgDir, "panel"), { recursive: true });
+        writeFileSync(join(pkgDir, "panel", "index.html"), "<html></html>");
+        await installLocal("../with-panel-pkg");
+        const identity = "local:" + realpathSync(pkgDir);
+        grantServices(identity, ["panel-svc2"]);
+
+        const { services, errors } = await discoverPackageServices({ cwd, agentDir });
+        expect(errors).toEqual([]);
+        expect(services).toHaveLength(1);
+        expect(services[0]!.manifest?.hasPanel).toBe(true);
+    });
+
     test("one invalid package does not block discovery of a valid one", async () => {
         const badPkgDir = join(tmpDir, "bad-pkg");
         const goodPkgDir = join(tmpDir, "good-pkg");

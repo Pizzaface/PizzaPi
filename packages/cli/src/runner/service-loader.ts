@@ -33,6 +33,14 @@ export interface ServiceManifest {
         /** Variable names the panel requires. UI resolves and passes as query params. */
         requires?: string[];
     };
+    /**
+     * Whether this service has a UI panel shown to users. Defaults to
+     * `!!panel` when omitted (folder-based legacy manifests never set this
+     * explicitly). Package-origin manifests set it explicitly so a
+     * trigger/sigil-only service (no `panel`) reliably gets
+     * `announceSigilServer` at init time instead of `announcePanel`.
+     */
+    hasPanel?: boolean;
     /** Trigger types this service can emit. Declared in triggers.json or manifest.json. */
     triggers?: ServiceTriggerDef[];
     /** Sigil types this service defines. Declared in sigils.json or manifest.json. */

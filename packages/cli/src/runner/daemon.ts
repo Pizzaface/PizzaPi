@@ -21,8 +21,8 @@ import { MemoryService } from "./services/memory-service.js";
 import { TimeService, TIME_TRIGGER_DEFS, TIME_SIGIL_DEFS } from "./services/time-service.js";
 import { discoverServices } from "./service-loader.js";
 import type { ServiceManifest, ServicePluginResult } from "./service-loader.js";
-import { discoverPackageServices } from "./package-service-loader.js";
-import { BUILTIN_SERVICE_IDS } from "./services/builtin-service-ids.js";
+import { discoverPackageServices, type DiscoverPackageServicesResult } from "./package-service-loader.js";
+import { BUILTIN_SERVICE_IDS, NON_DISABLEABLE_SERVICE_IDS } from "./services/builtin-service-ids.js";
 import { globalPluginDirs } from "../plugins/discover.js";
 import { io, type Socket } from "socket.io-client";
 import {
@@ -83,6 +83,219 @@ function resolveRequires(requires: string[]): Record<string, string> {
         if (key) params[key] = resolvePizzaPiVar(name);
     }
     return params;
+}
+
+/** Panel/trigger/sigil metadata tracked per active service, keyed by service id. */
+export type PanelEntry = {
+    serviceId: string;
+    label: string;
+    icon: string;
+    port?: number;
+    /** Trigger types declared in this service's manifest */
+    triggers?: ServiceTriggerDef[];
+    /** Sigil types declared in this service's manifest */
+    sigils?: ServiceSigilDef[];
+    /**
+     * Whether this service has a UI panel shown to users.
+     * false = service has trigger/sigil defs but no panel (e.g. the time service).
+     */
+    hasPanel?: boolean;
+    /**
+     * Variable names the panel requires. The UI resolves these and appends
+     * them as query params to the iframe src.
+     */
+    requires?: string[];
+};
+
+export interface TimeoutRaceResult<T> {
+    value: T;
+    timedOut: boolean;
+}
+
+/**
+ * Race `promise` against `timeoutMs`. On timeout, resolves immediately with
+ * `fallback()` and `timedOut: true` so a stalled discovery pass (e.g. a
+ * hung dynamic `import()`) can never strand the rest of startup/reconfigure.
+ * The original promise keeps running in the background; if/when it settles
+ * after the timeout already fired, `onLate` is called with its value so the
+ * caller can dispose it instead of silently mutating shared state (registry,
+ * panel entries, etc.) out from under an already-completed pass.
+ *
+ * Pure/host-independent — exported for direct regression coverage with a
+ * never-resolving promise, without real services or timers.
+ */
+export function raceWithTimeout<T>(
+    promise: Promise<T>,
+    timeoutMs: number,
+    fallback: () => T,
+    onLate?: (value: T) => void,
+): Promise<TimeoutRaceResult<T>> {
+    return new Promise((resolve) => {
+        let settled = false;
+        const timer = setTimeout(() => {
+            if (settled) return;
+            settled = true;
+            resolve({ value: fallback(), timedOut: true });
+        }, timeoutMs);
+        promise.then(
+            (value) => {
+                clearTimeout(timer);
+                if (settled) {
+                    onLate?.(value);
+                    return;
+                }
+                settled = true;
+                resolve({ value, timedOut: false });
+            },
+            () => {
+                clearTimeout(timer);
+                if (!settled) {
+                    settled = true;
+                    resolve({ value: fallback(), timedOut: true });
+                }
+            },
+        );
+    });
+}
+
+/**
+ * Bound on a single discoverPackageServices() pass (dynamic `import()` of a
+ * package's service entry can hang indefinitely on a bad/malicious module).
+ * Shorter than PLUGIN_DISCOVERY_TIMEOUT_MS (the outer runner_registered
+ * race) so a package timeout still leaves headroom for legacy discovery to
+ * run and for registration to proceed on schedule.
+ */
+export const PACKAGE_DISCOVERY_TIMEOUT_MS = 20_000;
+
+/** Fallback result used when a discoverPackageServices() pass times out — deliberately non-authoritative (see DiscoverPackageServicesResult). */
+export function timedOutPackageDiscoveryResult(agentDir: string): DiscoverPackageServicesResult {
+    return {
+        services: [],
+        errors: [{ path: agentDir, error: `package service discovery timed out after ${PACKAGE_DISCOVERY_TIMEOUT_MS}ms — treating as unknown, not "no packages"` }],
+        authoritative: false,
+    };
+}
+
+/** Best-effort disposal of a late (post-timeout) discoverPackageServices() result — never initialized, so dispose() is cleanup-only. */
+function disposeLatePackageDiscovery(result: DiscoverPackageServicesResult): void {
+    if (result.services.length === 0) return;
+    logWarn(`[services] package service discovery finished after its timeout — discarding ${result.services.length} late result(s): ${result.services.map((s) => s.handler.id).join(", ")}`);
+    for (const { handler } of result.services) {
+        try {
+            handler.dispose();
+        } catch {
+            // Never initialized — best-effort cleanup only.
+        }
+    }
+}
+
+export interface PackageServiceReconcilePlan {
+    /** Ids that were package-mounted before but are no longer declared/granted this pass — dispose+unregister, drop all tracking. */
+    revoke: string[];
+    /** Ids whose winning identity is unchanged and still registered — preserve the running handler, only refresh panel/trigger/sigil metadata. */
+    preserveRefreshMetadata: string[];
+    /** Ids whose winning package identity changed since the last pass — dispose the old handler, then register the fresh one. */
+    replaceIdentitySwap: string[];
+    /** Ids currently held by a legacy-origin handler that package discovery now claims — dispose the legacy incumbent, then register the package handler. */
+    evictLegacyThenRegister: string[];
+    /** Ids with no incumbent at all — just register + init. */
+    registerNew: string[];
+}
+
+/**
+ * Decide what to do with each freshly-discovered package service against
+ * the currently mounted state, without touching the registry/sockets/panel
+ * map itself — the daemon executes the plan against real state; this
+ * function is the actual decision logic reconfigure_services runs, exported
+ * so package-before-legacy precedence and every reconfigure lifecycle edge
+ * case (revocation/identity-swap/legacy-eviction/unchanged-preserve) has
+ * direct regression coverage without spinning up sockets.
+ */
+export function planPackageServiceReconcile(
+    freshPackageServices: ReadonlyArray<{ id: string; identity: string }>,
+    packageServiceIds: ReadonlyMap<string, { identity: string }>,
+    legacyServiceIds: ReadonlySet<string>,
+    isRegistered: (id: string) => boolean,
+): PackageServiceReconcilePlan {
+    const freshIds = new Set(freshPackageServices.map((s) => s.id));
+    const revoke = [...packageServiceIds.keys()].filter((id) => !freshIds.has(id));
+
+    const preserveRefreshMetadata: string[] = [];
+    const replaceIdentitySwap: string[] = [];
+    const evictLegacyThenRegister: string[] = [];
+    const registerNew: string[] = [];
+
+    for (const { id, identity } of freshPackageServices) {
+        const existing = packageServiceIds.get(id);
+        if (existing && existing.identity === identity && isRegistered(id)) {
+            preserveRefreshMetadata.push(id);
+        } else if (existing) {
+            replaceIdentitySwap.push(id);
+        } else if (legacyServiceIds.has(id) && isRegistered(id)) {
+            evictLegacyThenRegister.push(id);
+        } else {
+            registerNew.push(id);
+        }
+    }
+
+    return { revoke, preserveRefreshMetadata, replaceIdentitySwap, evictLegacyThenRegister, registerNew };
+}
+
+export type DiscoveredServiceRejectReason = "builtin" | "collision";
+
+/**
+ * The has()-before-register collision guard registerDiscoveredService() runs
+ * before mounting any discovered (non-built-in) service. Built-ins always
+ * win; otherwise the FIRST caller to reach this check for a given id wins —
+ * which is what makes package-before-legacy precedence (§8) fall out of
+ * simply awaiting/registering the package discovery pass before the legacy
+ * pass, rather than depending on ServiceRegistry.register() throwing.
+ *
+ * Pure/host-independent — exported for direct regression coverage of
+ * registration-order precedence with a real ServiceRegistry, without
+ * spinning up sockets.
+ */
+export function canRegisterDiscoveredService(
+    isBuiltinReserved: boolean,
+    isAlreadyRegistered: boolean,
+): { register: true } | { register: false; reason: DiscoveredServiceRejectReason } {
+    if (isBuiltinReserved) return { register: false, reason: "builtin" };
+    if (isAlreadyRegistered) return { register: false, reason: "collision" };
+    return { register: true };
+}
+
+/**
+ * Derive the panelEntries value for a service from its manifest, preserving
+ * an already-announced port across re-registration/metadata refresh.
+ * Returns null when the manifest declares no panel/triggers/sigils (nothing
+ * worth tracking). `hasPanel` prefers the manifest's explicit value (set by
+ * package discovery) and falls back to inferring from `panel` presence for
+ * legacy folder-based manifests that never set it explicitly — this is what
+ * routes a trigger/sigil-only service to `announceSigilServer` instead of
+ * `announcePanel` at init time.
+ *
+ * Pure and host-independent — exported for direct regression coverage
+ * without spinning up the daemon/socket.
+ */
+export function panelEntryFromManifest(
+    serviceId: string,
+    manifest: ServiceManifest | undefined,
+    existingPort?: number,
+): PanelEntry | null {
+    if (!manifest) return null;
+    const hasTriggers = !!(manifest.triggers && manifest.triggers.length > 0);
+    const hasSigils = !!(manifest.sigils && manifest.sigils.length > 0);
+    if (!manifest.panel && !hasTriggers && !hasSigils) return null;
+    return {
+        serviceId,
+        label: manifest.label,
+        icon: manifest.icon,
+        hasPanel: manifest.hasPanel ?? !!manifest.panel,
+        ...(existingPort !== undefined ? { port: existingPort } : {}),
+        ...(hasTriggers ? { triggers: manifest.triggers } : {}),
+        ...(hasSigils ? { sigils: manifest.sigils } : {}),
+        ...(manifest.panel?.requires ? { requires: manifest.panel.requires } : {}),
+    };
 }
 
 /**
@@ -609,27 +822,6 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
         tunnelService.setTunnelClient(tunnelClient);
 
         // Panel tracking — manifests from folder-based services, ports from announcePanel()
-        type PanelEntry = {
-            serviceId: string;
-            label: string;
-            icon: string;
-            port?: number;
-            /** Trigger types declared in this service's manifest */
-            triggers?: ServiceTriggerDef[];
-            /** Sigil types declared in this service's manifest */
-            sigils?: ServiceSigilDef[];
-            /**
-             * Whether this service has a UI panel shown to users.
-             * false = service has trigger/sigil defs but no panel (e.g. the time service).
-             * Defaults to true for plugin-provided services with a panel manifest.
-             */
-            hasPanel?: boolean;
-            /**
-             * Variable names the panel requires. The UI resolves these and appends
-             * them as query params to the iframe src.
-             */
-            requires?: string[];
-        };
         const panelEntries = new Map<string, PanelEntry>();
         // Track ALL discovered service IDs (including disabled ones) so the UI can show them.
         const allDiscoveredServiceIds = new Set<string>();
@@ -661,29 +853,17 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             kind: "package" | "legacy",
         ): boolean => {
             const from = source.pluginName ?? source.path;
-            if (BUILTIN_SERVICE_IDS.has(handler.id)) {
-                logWarn(`[services] ${kind} service "${handler.id}" from ${from} collides with a reserved built-in service id — skipped`);
-                return false;
-            }
-            if (registry.has(handler.id)) {
-                logWarn(`[services] ${kind} service "${handler.id}" from ${from} collides with an already-registered service — skipped`);
+            const decision = canRegisterDiscoveredService(BUILTIN_SERVICE_IDS.has(handler.id), registry.has(handler.id));
+            if (!decision.register) {
+                const why = decision.reason === "builtin" ? "collides with a reserved built-in service id" : "collides with an already-registered service";
+                logWarn(`[services] ${kind} service "${handler.id}" from ${from} ${why} — skipped`);
                 return false;
             }
             registry.register(handler);
             allDiscoveredServiceIds.add(handler.id);
             logInfo(`[services] loaded ${kind} service "${handler.id}" from ${from}`);
-            if (manifest?.panel || (manifest?.triggers && manifest.triggers.length > 0) || (manifest?.sigils && manifest.sigils.length > 0)) {
-                const existing = panelEntries.get(handler.id);
-                panelEntries.set(handler.id, {
-                    serviceId: handler.id,
-                    label: manifest.label,
-                    icon: manifest.icon,
-                    ...(existing?.port !== undefined ? { port: existing.port } : {}),
-                    ...(manifest.triggers && manifest.triggers.length > 0 ? { triggers: manifest.triggers } : {}),
-                    ...(manifest.sigils && manifest.sigils.length > 0 ? { sigils: manifest.sigils } : {}),
-                    ...(manifest.panel?.requires ? { requires: manifest.panel.requires } : {}),
-                });
-            }
+            const entry = panelEntryFromManifest(handler.id, manifest, panelEntries.get(handler.id)?.port);
+            if (entry) panelEntries.set(handler.id, entry);
             if (kind === "package") packageServiceIds.set(handler.id, { identity: source.pluginName ?? handler.id });
             else legacyServiceIds.add(handler.id);
             return true;
@@ -778,11 +958,19 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
         const pluginServicesReady = new Promise<void>(r => { resolvePluginServices = r; });
         (async () => {
             try {
-                const { services, errors } = await discoverPackageServices({
-                    cwd: packageDiscoveryCwd,
-                    agentDir: packageDiscoveryAgentDir,
-                    disabledIds: disabledServices,
-                });
+                // Bounded so a stalled package import can never strand legacy
+                // discovery below (§C) — late results are discarded, not mutated in.
+                const { value: { services, errors }, timedOut } = await raceWithTimeout(
+                    discoverPackageServices({
+                        cwd: packageDiscoveryCwd,
+                        agentDir: packageDiscoveryAgentDir,
+                        disabledIds: disabledServices,
+                    }),
+                    PACKAGE_DISCOVERY_TIMEOUT_MS,
+                    () => timedOutPackageDiscoveryResult(packageDiscoveryAgentDir),
+                    disposeLatePackageDiscovery,
+                );
+                if (timedOut) logWarn(`[services] package service discovery did not complete within ${PACKAGE_DISCOVERY_TIMEOUT_MS}ms; proceeding without package services this pass`);
                 for (const { handler, source, manifest } of services) {
                     registerDiscoveredService(handler, source, manifest, "package");
                 }
@@ -1144,10 +1332,14 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                     return opts;
                 };
 
-                // Disable any non-built-in service (package- or legacy-origin)
-                // that is now in the disabled set.
+                // Disable any non-permanently-pinned service (package-,
+                // legacy-, or the memory/process built-ins) that is now in
+                // the disabled set. NON_DISABLEABLE_SERVICE_IDS (not the
+                // broader BUILTIN_SERVICE_IDS collision-reservation set) is
+                // the runtime-disable gate — memory/process must stay
+                // disableable at runtime like every other built-in used to be.
                 const servicesToDisable = registry.getAll()
-                    .filter(s => !BUILTIN_SERVICE_IDS.has(s.id) && newDisabledServices.has(s.id));
+                    .filter(s => !NON_DISABLEABLE_SERVICE_IDS.has(s.id) && newDisabledServices.has(s.id));
                 for (const svc of servicesToDisable) {
                     logInfo(`[services] disabling service "${svc.id}"`);
                     try {
@@ -1178,41 +1370,118 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                 };
 
                 // ── Package-origin services: awaited + registered before legacy (§8) ──
-                const { services: freshPackageServices, errors: packageErrors } = await discoverPackageServices({
-                    cwd: packageDiscoveryCwd,
-                    agentDir: packageDiscoveryAgentDir,
-                    disabledIds: newDisabledServices,
-                });
-                const freshPackageIds = new Set(freshPackageServices.map((s) => s.handler.id));
+                // Bounded so a stalled package import can never hang reconfigure
+                // indefinitely (§C); a timeout also forces authoritative=false below.
+                const {
+                    value: { services: freshPackageServices, errors: packageErrors, authoritative: packageDiscoveryAuthoritative },
+                    timedOut: packageDiscoveryTimedOut,
+                } = await raceWithTimeout(
+                    discoverPackageServices({
+                        cwd: packageDiscoveryCwd,
+                        agentDir: packageDiscoveryAgentDir,
+                        disabledIds: newDisabledServices,
+                    }),
+                    PACKAGE_DISCOVERY_TIMEOUT_MS,
+                    () => timedOutPackageDiscoveryResult(packageDiscoveryAgentDir),
+                    disposeLatePackageDiscovery,
+                );
+                if (packageDiscoveryTimedOut) {
+                    logWarn(`[services] package service discovery did not complete within ${PACKAGE_DISCOVERY_TIMEOUT_MS}ms during reconfigure`);
+                }
 
-                // Dispose/unregister package services whose grant/package/declaration
-                // was revoked or removed (distinct from the disable-set handling above).
-                for (const id of [...packageServiceIds.keys()]) {
-                    if (freshPackageIds.has(id)) continue;
-                    const svc = registry.get(id);
-                    if (svc) {
-                        logInfo(`[services] unregistering package service "${id}" (revoked or no longer declared)`);
+                if (!packageDiscoveryAuthoritative) {
+                    // Corrupt/unreadable GLOBAL settings, or a discovery timeout: the
+                    // fresh result is not a trustworthy "no packages" answer. Never
+                    // treat it as authorization to dispose currently running package
+                    // services — skip the reconcile/register diff entirely and just
+                    // surface whatever per-package errors did come through.
+                    logWarn(`[services] package service discovery is not authoritative this pass — preserving ${packageServiceIds.size} currently active package service(s) untouched`);
+                    for (const { path, error } of packageErrors) {
+                        logWarn(`[services] package service discovery: ${error} (${path})`);
+                    }
+                } else {
+                    const freshById = new Map(freshPackageServices.map((s) => [s.handler.id, s] as const));
+                    const plan = planPackageServiceReconcile(
+                        freshPackageServices.map((s) => ({ id: s.handler.id, identity: s.source.pluginName ?? s.handler.id })),
+                        packageServiceIds,
+                        legacyServiceIds,
+                        (id) => registry.has(id),
+                    );
+
+                    // Ids that were package-mounted before but are no longer
+                    // declared/granted this pass (distinct from the disable-set
+                    // handling above).
+                    for (const id of plan.revoke) {
+                        const svc = registry.get(id);
+                        if (svc) {
+                            logInfo(`[services] unregistering package service "${id}" (revoked or no longer declared)`);
+                            try {
+                                svc.dispose();
+                            } catch (err) {
+                                logWarn(`[services] dispose failed for "${id}": ${err instanceof Error ? err.stack ?? err.message : String(err)}`);
+                            }
+                            registry.unregister(id);
+                            initializedServiceIds.delete(id);
+                        }
+                        packageServiceIds.delete(id);
+                        allDiscoveredServiceIds.delete(id);
+                        panelEntries.delete(id);
+                        sigilServerPorts.delete(id);
+                    }
+
+                    // Unchanged winning identity — preserve the running lifecycle,
+                    // but refresh panel/trigger/sigil metadata from the fresh
+                    // manifest (the package could have been reinstalled/updated
+                    // without its identity changing).
+                    for (const id of plan.preserveRefreshMetadata) {
+                        const manifest = freshById.get(id)?.manifest;
+                        const entry = panelEntryFromManifest(id, manifest, panelEntries.get(id)?.port);
+                        if (entry) panelEntries.set(id, entry);
+                        else panelEntries.delete(id);
+                    }
+
+                    const disposeIncumbent = (id: string, reason: string) => {
+                        const oldSvc = registry.get(id);
+                        if (!oldSvc) return;
+                        logInfo(`[services] ${reason}`);
                         try {
-                            svc.dispose();
+                            oldSvc.dispose();
                         } catch (err) {
                             logWarn(`[services] dispose failed for "${id}": ${err instanceof Error ? err.stack ?? err.message : String(err)}`);
                         }
                         registry.unregister(id);
                         initializedServiceIds.delete(id);
-                    }
-                    packageServiceIds.delete(id);
-                    allDiscoveredServiceIds.delete(id);
-                    panelEntries.delete(id);
-                    sigilServerPorts.delete(id);
-                }
+                    };
 
-                for (const { handler, source, manifest } of freshPackageServices) {
-                    if (packageServiceIds.has(handler.id) && registry.has(handler.id)) continue; // unchanged — preserve lifecycle
-                    if (!registerDiscoveredService(handler, source, manifest, "package")) continue;
-                    initAndTrack(handler, "package");
-                }
-                for (const { path, error } of packageErrors) {
-                    logWarn(`[services] package service discovery: ${error} (${path})`);
+                    // Same service id, but the package identity that won it changed
+                    // underneath it — dispose the incumbent before mounting the new
+                    // one so stale handler state/timers never linger alongside it.
+                    for (const id of plan.replaceIdentitySwap) {
+                        const existing = packageServiceIds.get(id);
+                        const freshIdentity = freshById.get(id)?.source.pluginName ?? id;
+                        disposeIncumbent(id, `package service "${id}" identity changed (${existing?.identity} → ${freshIdentity}) — disposing old handler`);
+                        packageServiceIds.delete(id);
+                    }
+
+                    // A legacy-origin service currently holds this id from an
+                    // earlier pass, but package discovery now declares it — evict
+                    // the legacy incumbent so package-over-legacy precedence (§8)
+                    // holds dynamically, without requiring a daemon restart.
+                    for (const id of plan.evictLegacyThenRegister) {
+                        disposeIncumbent(id, `package service "${id}" supersedes legacy incumbent — disposing legacy handler`);
+                        legacyServiceIds.delete(id);
+                        allDiscoveredServiceIds.delete(id);
+                    }
+
+                    for (const id of [...plan.replaceIdentitySwap, ...plan.evictLegacyThenRegister, ...plan.registerNew]) {
+                        const fresh = freshById.get(id);
+                        if (!fresh) continue;
+                        if (!registerDiscoveredService(fresh.handler, fresh.source, fresh.manifest, "package")) continue;
+                        initAndTrack(fresh.handler, "package");
+                    }
+                    for (const { path, error } of packageErrors) {
+                        logWarn(`[services] package service discovery: ${error} (${path})`);
+                    }
                 }
 
                 // ── Legacy plugin-provided services ────────────────────────────────

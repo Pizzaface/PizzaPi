@@ -45,6 +45,15 @@ export interface DiscoverPackageServicesOptions {
 export interface DiscoverPackageServicesResult {
     services: ServicePluginResult[];
     errors: ServiceLoadError[];
+    /**
+     * False when USER-scope (global) settings failed to load (e.g. corrupt
+     * JSON) — `services` is then an untrustworthy "nothing configured"
+     * result, not a real "no packages" answer. Callers (daemon reconfigure)
+     * MUST NOT treat a non-authoritative result as authorization to dispose
+     * currently running package services. Project-scope settings errors do
+     * not affect this flag — daemon services are user-scope only.
+     */
+    authoritative: boolean;
 }
 
 export async function discoverPackageServices(
@@ -57,18 +66,33 @@ export async function discoverPackageServices(
     // serviceId -> identity of the package that already won it, for the
     // package-vs-package collision warning (§8: stable first-configured wins).
     const winnerByServiceId = new Map<string, string>();
+    let authoritative = true;
 
     let configured: ReturnType<DefaultPackageManager["listConfiguredPackages"]>;
     try {
         const settingsManager = SettingsManager.create(cwd, agentDir);
         const packageManager = new DefaultPackageManager({ cwd, agentDir, settingsManager });
         configured = packageManager.listConfiguredPackages();
+        // A corrupt/unreadable GLOBAL (user-scope) settings file loads as an
+        // empty `{}` rather than throwing — listConfiguredPackages() above
+        // would silently report "no packages configured" even though the
+        // user genuinely has packages, which must never be read as "user
+        // revoked everything". Project-scope errors are ignored here: project
+        // packages never mount user daemon services anyway (§6.3).
+        const globalError = settingsManager.drainErrors().find((e) => e.scope === "global");
+        if (globalError) {
+            authoritative = false;
+            errors.push({
+                path: agentDir,
+                error: `package service discovery: global (user-scope) settings failed to load (${globalError.error.message}) — result is not authoritative; treat as "unknown", not "no packages"`,
+            });
+        }
     } catch (err) {
         errors.push({
             path: cwd,
             error: `package service discovery: failed to load configured packages: ${err instanceof Error ? err.message : String(err)}`,
         });
-        return { services, errors };
+        return { services, errors, authoritative: false };
     }
 
     // ── Project-scope packages never mount daemon services in v1 (§6.3) ───
@@ -132,8 +156,8 @@ export async function discoverPackageServices(
         const grantedIds = getGrantedServiceIds(identity);
 
         for (const decl of overlay.services) {
-            if (disabledIds.has(decl.id)) continue; // operationally disabled — never imported
-
+            // Built-ins always win, regardless of package order — reject
+            // immediately, before any collision reservation (§8).
             if (BUILTIN_SERVICE_IDS.has(decl.id)) {
                 errors.push({
                     path: packageRoot,
@@ -143,13 +167,22 @@ export async function discoverPackageServices(
             }
 
             const existingWinner = winnerByServiceId.get(decl.id);
-            if (existingWinner) {
+            if (existingWinner && existingWinner !== identity) {
                 errors.push({
                     path: packageRoot,
                     error: `[${identity}] service "${decl.id}" collides with already-registered package "${existingWinner}" — first configured package wins, skipped.`,
                 });
                 continue;
             }
+            // The first valid (non-built-in-colliding) declaration reserves
+            // the id in stable configured-package order — BEFORE the
+            // disabled/grant/import checks below, so an untrusted or broken
+            // first package still blocks a later package from impersonating
+            // the same id, matching spec §8 (reservation is by declaration
+            // order, not by which package happens to finish importing first).
+            if (!existingWinner) winnerByServiceId.set(decl.id, identity);
+
+            if (disabledIds.has(decl.id)) continue; // operationally disabled — never imported
 
             if (!grantedIds.has(decl.id)) {
                 // Untrusted: NEVER imported (§9.2). Trust state is surfaced
@@ -187,15 +220,20 @@ export async function discoverPackageServices(
             }
 
             // Revalidate panel.dir immediately before use, same TOCTOU
-            // rationale as the entry path above.
+            // rationale as the entry path above. Unlike the entry path (which
+            // gates the whole service earlier), a panel.dir that fails this
+            // late check must reject the service outright rather than fall
+            // back to registering it panel-less — a package that declared a
+            // panel and lost it between validation and use is broken, not
+            // silently trigger/sigil-only.
             let panelDir: string | undefined;
             if (decl.panel?.dir) {
                 const resolvedPanel = resolveConfinedPath(packageRoot, decl.panel.dir);
                 if (!resolvedPanel.ok) {
-                    errors.push({ path: packageRoot, error: `[${identity}] service "${decl.id}" panel.dir failed re-validation before use: ${resolvedPanel.message}` });
-                } else {
-                    panelDir = resolvedPanel.absolutePath;
+                    errors.push({ path: packageRoot, error: `[${identity}] service "${decl.id}" panel.dir failed re-validation before use: ${resolvedPanel.message} — service rejected (never registering a broken panel).` });
+                    continue;
                 }
+                panelDir = resolvedPanel.absolutePath;
             }
 
             const manifest: ServiceManifest = {
@@ -203,12 +241,15 @@ export async function discoverPackageServices(
                 label: decl.label,
                 icon: decl.icon ?? "square",
                 entry: decl.entry,
+                // hasPanel is explicit (not inferred from presence of the `panel`
+                // key downstream) so a service with only triggers/sigils gets
+                // announceSigilServer, not announcePanel, at init time.
+                hasPanel: !!decl.panel,
                 ...(decl.panel ? { panel: { dir: panelDir, requires: decl.panel.requires } } : {}),
                 ...(Array.isArray(decl.triggers) && decl.triggers.length > 0 ? { triggers: decl.triggers } : {}),
                 ...(Array.isArray(decl.sigils) && decl.sigils.length > 0 ? { sigils: decl.sigils } : {}),
             };
 
-            winnerByServiceId.set(decl.id, identity);
             services.push({
                 handler,
                 source: { origin: "package", path: resolvedEntry.absolutePath, pluginName: identity },
@@ -217,5 +258,5 @@ export async function discoverPackageServices(
         }
     }
 
-    return { services, errors };
+    return { services, errors, authoritative };
 }
