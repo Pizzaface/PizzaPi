@@ -115,6 +115,7 @@ async function doRunProviderSessionClose(
     return null;
   } finally {
     clearTimeout(abortTimer);
+    controller.abort();
   }
 }
 
