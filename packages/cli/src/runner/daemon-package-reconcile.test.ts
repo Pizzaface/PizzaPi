@@ -1,11 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import {
     canRegisterDiscoveredService,
+    clearServiceRuntimePorts,
     panelEntryFromManifest,
     planPackageServiceReconcile,
     raceWithTimeout,
     timedOutPackageDiscoveryResult,
     PACKAGE_DISCOVERY_TIMEOUT_MS,
+    type PanelEntry,
 } from "./daemon.js";
 import { ServiceRegistry } from "./service-handler.js";
 import { BUILTIN_SERVICE_IDS, NON_DISABLEABLE_SERVICE_IDS } from "./services/builtin-service-ids.js";
@@ -95,6 +97,28 @@ describe("panelEntryFromManifest (fix #3: hasPanel routing)", () => {
         const entry = panelEntryFromManifest("svc", manifest, 4321);
         expect(entry?.port).toBe(4321);
         expect(entry?.label).toBe("New Label");
+    });
+});
+
+describe("clearServiceRuntimePorts (final-review port hygiene)", () => {
+    test("identity swap or legacy eviction removes all stale runtime metadata", () => {
+        const panels = new Map<string, PanelEntry>([["svc", { serviceId: "svc", label: "Old", icon: "square", port: 4321 }]]);
+        const sigilPorts = new Map([["svc", 8765]]);
+
+        clearServiceRuntimePorts("svc", panels, sigilPorts, false);
+
+        expect(panels.has("svc")).toBe(false);
+        expect(sigilPorts.has("svc")).toBe(false);
+    });
+
+    test("disable keeps metadata visible but strips panel and sigil-server ports", () => {
+        const panels = new Map<string, PanelEntry>([["svc", { serviceId: "svc", label: "Svc", icon: "square", port: 4321 }]]);
+        const sigilPorts = new Map([["svc", 8765]]);
+
+        clearServiceRuntimePorts("svc", panels, sigilPorts, true);
+
+        expect(panels.get("svc")).toEqual({ serviceId: "svc", label: "Svc", icon: "square" });
+        expect(sigilPorts.has("svc")).toBe(false);
     });
 });
 

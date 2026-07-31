@@ -298,6 +298,24 @@ export function panelEntryFromManifest(
     };
 }
 
+/** Remove ports owned by a stopped handler; optionally retain its disabled-state metadata. */
+export function clearServiceRuntimePorts(
+    serviceId: string,
+    panelEntries: Map<string, PanelEntry>,
+    sigilServerPorts: Map<string, number>,
+    keepMetadata: boolean,
+): void {
+    sigilServerPorts.delete(serviceId);
+    const entry = panelEntries.get(serviceId);
+    if (!entry) return;
+    if (!keepMetadata) {
+        panelEntries.delete(serviceId);
+        return;
+    }
+    const { port: _stalePort, ...metadata } = entry;
+    panelEntries.set(serviceId, metadata);
+}
+
 /**
  * Resolve the set of runner service IDs that should be skipped.
  * Built-in services: "terminal", "file-explorer", "git", "tunnel", "time".
@@ -1351,8 +1369,8 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                     initializedServiceIds.delete(svc.id);
                     packageServiceIds.delete(svc.id);
                     legacyServiceIds.delete(svc.id);
-                    // Keep panel entry for disabled services so they still appear in service_announce
-                    sigilServerPorts.delete(svc.id);
+                    // Keep disabled-service metadata visible, but never re-announce its dead ports.
+                    clearServiceRuntimePorts(svc.id, panelEntries, sigilServerPorts, true);
                 }
 
                 const initAndTrack = (handler: ServiceHandler, kind: "package" | "legacy") => {
@@ -1461,6 +1479,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                         const freshIdentity = freshById.get(id)?.source.pluginName ?? id;
                         disposeIncumbent(id, `package service "${id}" identity changed (${existing?.identity} → ${freshIdentity}) — disposing old handler`);
                         packageServiceIds.delete(id);
+                        clearServiceRuntimePorts(id, panelEntries, sigilServerPorts, false);
                     }
 
                     // A legacy-origin service currently holds this id from an
@@ -1471,6 +1490,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                         disposeIncumbent(id, `package service "${id}" supersedes legacy incumbent — disposing legacy handler`);
                         legacyServiceIds.delete(id);
                         allDiscoveredServiceIds.delete(id);
+                        clearServiceRuntimePorts(id, panelEntries, sigilServerPorts, false);
                     }
 
                     for (const id of [...plan.replaceIdentitySwap, ...plan.evictLegacyThenRegister, ...plan.registerNew]) {
