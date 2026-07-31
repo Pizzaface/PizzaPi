@@ -153,6 +153,245 @@ describe("readOverlayManifest", () => {
         expect(result.overlay).toBeNull();
         expect(result.issues.some((i) => i.field === "services[0].panel.dir")).toBe(true);
     });
+
+    // ── mcp sidecar shape/format ────────────────────────────────────────────
+
+    test("mcp sidecar with malformed JSON is rejected", () => {
+        const dir = fixturePkg({ schemaVersion: 1, mcp: "./bad.json" }, (d) => {
+            writeFileSync(join(d, "bad.json"), "{ not valid json,,,");
+        });
+        dirs.push(dir);
+        const result = readOverlayManifest(dir, provenance);
+        expect(result.overlay).toBeNull();
+        expect(result.issues.some((i) => i.field === "mcp" && i.message.includes("not valid JSON"))).toBe(true);
+    });
+
+    test("mcp sidecar containing HTML is rejected", () => {
+        const dir = fixturePkg({ schemaVersion: 1, mcp: "./bad.json" }, (d) => {
+            writeFileSync(join(d, "bad.json"), "<html><body>nope</body></html>");
+        });
+        dirs.push(dir);
+        const result = readOverlayManifest(dir, provenance);
+        expect(result.overlay).toBeNull();
+        expect(result.issues.some((i) => i.field === "mcp" && i.message.includes("not valid JSON"))).toBe(true);
+    });
+
+    test("mcp sidecar pointing at a directory is rejected", () => {
+        const dir = fixturePkg({ schemaVersion: 1, mcp: "./sidecar-dir.json" }, (d) => {
+            mkdirSync(join(d, "sidecar-dir.json"));
+        });
+        dirs.push(dir);
+        const result = readOverlayManifest(dir, provenance);
+        expect(result.overlay).toBeNull();
+        expect(result.issues.some((i) => i.field === "mcp" && i.message.includes("regular file"))).toBe(true);
+    });
+
+    test("mcp sidecar with non-.json extension is rejected", () => {
+        const dir = fixturePkg({ schemaVersion: 1, mcp: "./config.txt" }, (d) => {
+            writeFileSync(join(d, "config.txt"), JSON.stringify({ mcpServers: { x: { command: "foo" } } }));
+        });
+        dirs.push(dir);
+        const result = readOverlayManifest(dir, provenance);
+        expect(result.overlay).toBeNull();
+        expect(result.issues.some((i) => i.field === "mcp" && i.message.includes(".json extension"))).toBe(true);
+    });
+
+    test("mcp sidecar with invalid shape (neither mcp.servers nor mcpServers) is rejected", () => {
+        const dir = fixturePkg({ schemaVersion: 1, mcp: "./junk.json" }, (d) => {
+            writeFileSync(join(d, "junk.json"), JSON.stringify({ foo: "bar" }));
+        });
+        dirs.push(dir);
+        const result = readOverlayManifest(dir, provenance);
+        expect(result.overlay).toBeNull();
+        expect(result.issues.some((i) => i.field === "mcp" && i.message.includes("mcp.servers"))).toBe(true);
+    });
+
+    test("mcp sidecar entry missing both command and url is rejected", () => {
+        const dir = fixturePkg({ schemaVersion: 1, mcp: "./bad-entry.json" }, (d) => {
+            writeFileSync(join(d, "bad-entry.json"), JSON.stringify({ mcpServers: { x: { transport: "stdio" } } }));
+        });
+        dirs.push(dir);
+        const result = readOverlayManifest(dir, provenance);
+        expect(result.overlay).toBeNull();
+        expect(result.issues.some((i) => i.field.includes("mcpServers.x"))).toBe(true);
+    });
+
+    test("mcp sidecar with valid mcpServers object format is accepted", () => {
+        const dir = fixturePkg({ schemaVersion: 1, mcp: "./mcp.json" }, (d) => {
+            writeFileSync(join(d, "mcp.json"), JSON.stringify({ mcpServers: { playwright: { command: "npx", args: ["@playwright/mcp"] } } }));
+        });
+        dirs.push(dir);
+        const result = readOverlayManifest(dir, provenance);
+        expect(result.issues).toHaveLength(0);
+        expect(result.overlay?.mcp).toBe("./mcp.json");
+    });
+
+    test("mcp sidecar with valid mcp.servers array format is accepted", () => {
+        const dir = fixturePkg({ schemaVersion: 1, mcp: "./mcp.json" }, (d) => {
+            writeFileSync(join(d, "mcp.json"), JSON.stringify({ mcp: { servers: [{ name: "gh", transport: "http", url: "https://api.example.com/mcp" }] } }));
+        });
+        dirs.push(dir);
+        const result = readOverlayManifest(dir, provenance);
+        expect(result.issues).toHaveLength(0);
+    });
+
+    // ── triggers/sigils sidecar and inline validation ──────────────────────
+
+    test("triggers sidecar that isn't an array is rejected", () => {
+        const dir = fixturePkg({
+            schemaVersion: 1,
+            services: [{ id: "svc", label: "x", entry: "./service.ts", triggers: "./triggers.json" }],
+        }, (d) => {
+            writeFileSync(join(d, "triggers.json"), JSON.stringify({ type: "x", label: "y" }));
+        });
+        dirs.push(dir);
+        const result = readOverlayManifest(dir, provenance);
+        expect(result.overlay).toBeNull();
+        expect(result.issues.some((i) => i.field === "services[0].triggers" && i.message.includes("array"))).toBe(true);
+    });
+
+    test("triggers sidecar with malformed JSON is rejected", () => {
+        const dir = fixturePkg({
+            schemaVersion: 1,
+            services: [{ id: "svc", label: "x", entry: "./service.ts", triggers: "./triggers.json" }],
+        }, (d) => {
+            writeFileSync(join(d, "triggers.json"), "not json at all");
+        });
+        dirs.push(dir);
+        const result = readOverlayManifest(dir, provenance);
+        expect(result.overlay).toBeNull();
+        expect(result.issues.some((i) => i.field === "services[0].triggers" && i.message.includes("not valid JSON"))).toBe(true);
+    });
+
+    test("triggers sidecar pointing at a directory is rejected", () => {
+        const dir = fixturePkg({
+            schemaVersion: 1,
+            services: [{ id: "svc", label: "x", entry: "./service.ts", triggers: "./triggers-dir.json" }],
+        }, (d) => {
+            mkdirSync(join(d, "triggers-dir.json"));
+        });
+        dirs.push(dir);
+        const result = readOverlayManifest(dir, provenance);
+        expect(result.overlay).toBeNull();
+        expect(result.issues.some((i) => i.field === "services[0].triggers" && i.message.includes("regular file"))).toBe(true);
+    });
+
+    test("inline junk sigil entry (missing type/label) is rejected", () => {
+        const dir = fixturePkg({
+            schemaVersion: 1,
+            services: [{ id: "svc", label: "x", entry: "./service.ts", sigils: [{ icon: "bug" }] }],
+        });
+        dirs.push(dir);
+        const result = readOverlayManifest(dir, provenance);
+        expect(result.overlay).toBeNull();
+        expect(result.issues.some((i) => i.field === "services[0].sigils[0].type")).toBe(true);
+        expect(result.issues.some((i) => i.field === "services[0].sigils[0].label")).toBe(true);
+    });
+
+    test("inline junk trigger entry (unknown key, wrong description type) is rejected", () => {
+        const dir = fixturePkg({
+            schemaVersion: 1,
+            services: [{
+                id: "svc",
+                label: "x",
+                entry: "./service.ts",
+                triggers: [{ type: "svc:event", label: "Event", description: 123, bogus: true }],
+            }],
+        });
+        dirs.push(dir);
+        const result = readOverlayManifest(dir, provenance);
+        expect(result.overlay).toBeNull();
+        expect(result.issues.some((i) => i.field === "services[0].triggers[0].description")).toBe(true);
+        expect(result.issues.some((i) => i.field === "services[0].triggers[0].bogus")).toBe(true);
+    });
+
+    test("malformed trigger params (bad type, multiselect without enum) is rejected", () => {
+        const dir = fixturePkg({
+            schemaVersion: 1,
+            services: [{
+                id: "svc",
+                label: "x",
+                entry: "./service.ts",
+                triggers: [{
+                    type: "svc:event",
+                    label: "Event",
+                    params: [
+                        { name: "repo", label: "Repo", type: "stringly" },
+                        { name: "mode", label: "Mode", type: "string", multiselect: true },
+                    ],
+                }],
+            }],
+        });
+        dirs.push(dir);
+        const result = readOverlayManifest(dir, provenance);
+        expect(result.overlay).toBeNull();
+        expect(result.issues.some((i) => i.field === "services[0].triggers[0].params[0].type")).toBe(true);
+        expect(result.issues.some((i) => i.field === "services[0].triggers[0].params[1].multiselect")).toBe(true);
+    });
+
+    test("valid inline trigger and sigil definitions are accepted", () => {
+        const dir = fixturePkg({
+            schemaVersion: 1,
+            services: [{
+                id: "svc",
+                label: "x",
+                entry: "./service.ts",
+                triggers: [{
+                    type: "svc:event",
+                    label: "Event",
+                    description: "fires on stuff",
+                    params: [{ name: "repo", label: "Repo", type: "string", required: true, enum: ["a", "b"], multiselect: true }],
+                }],
+                sigils: [{ type: "pr", label: "Pull Request", icon: "git-pull-request", aliases: ["mr"] }],
+            }],
+        });
+        dirs.push(dir);
+        const result = readOverlayManifest(dir, provenance);
+        expect(result.issues).toHaveLength(0);
+        expect(result.overlay?.services?.[0]?.triggers).toBeDefined();
+    });
+
+    test("valid sidecar trigger/sigil JSON arrays are accepted", () => {
+        const dir = fixturePkg({
+            schemaVersion: 1,
+            services: [{ id: "svc", label: "x", entry: "./service.ts", triggers: "./triggers.json", sigils: "./sigils.json" }],
+        }, (d) => {
+            writeFileSync(join(d, "triggers.json"), JSON.stringify([{ type: "svc:event", label: "Event" }]));
+            writeFileSync(join(d, "sigils.json"), JSON.stringify([{ type: "pr", label: "Pull Request" }]));
+        });
+        dirs.push(dir);
+        const result = readOverlayManifest(dir, provenance);
+        expect(result.issues).toHaveLength(0);
+    });
+
+    // ── agents/rules must resolve to a directory or a .md file ─────────────
+
+    test("agent entry pointing at a non-.md file is rejected", () => {
+        const dir = fixturePkg({ schemaVersion: 1, agents: ["./service.ts"] });
+        dirs.push(dir);
+        const result = readOverlayManifest(dir, provenance);
+        expect(result.overlay).toBeNull();
+        expect(result.issues.some((i) => i.field === "agents[0]" && i.message.includes(".md"))).toBe(true);
+    });
+
+    test("rule entry pointing at a directory is accepted", () => {
+        const dir = fixturePkg({ schemaVersion: 1, rules: ["./rules-dir"] }, (d) => {
+            mkdirSync(join(d, "rules-dir"));
+            writeFileSync(join(d, "rules-dir", "a.md"), "# hi");
+        });
+        dirs.push(dir);
+        const result = readOverlayManifest(dir, provenance);
+        expect(result.issues).toHaveLength(0);
+    });
+
+    test("agent entry pointing at a .md file is accepted", () => {
+        const dir = fixturePkg({ schemaVersion: 1, agents: ["./agent.md"] }, (d) => {
+            writeFileSync(join(d, "agent.md"), "# agent");
+        });
+        dirs.push(dir);
+        const result = readOverlayManifest(dir, provenance);
+        expect(result.issues).toHaveLength(0);
+    });
 });
 
 describe("resolveConfinedPath", () => {
