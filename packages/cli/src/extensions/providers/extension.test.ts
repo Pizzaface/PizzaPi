@@ -19,6 +19,37 @@ function writeProvider(homeDir: string, id: string): void {
   `);
 }
 
+function lifecycleProviderSource(id: string, opts: { failDispose?: boolean; deferDispose?: boolean } = {}): string {
+  const { failDispose = false, deferDispose = false } = opts;
+  const deferBlock = deferDispose
+    ? `
+    return new Promise((resolve) => {
+      globalThis.__disposeDeferred = globalThis.__disposeDeferred || {};
+      globalThis.__disposeDeferred[${JSON.stringify(id)}] = resolve;
+    });`
+    : "";
+  const failLine = failDispose ? `throw new Error(${JSON.stringify(`dispose failed: ${id}`)});` : "";
+  // No lifecycle capability declared: these providers only exercise
+  // init()/dispose() tracking, not bridge hooks, so an empty capabilities
+  // array keeps loader validation happy without a throwaway hook method.
+  return `
+export default {
+  id: ${JSON.stringify(id)},
+  capabilities: [],
+  init() {
+    globalThis.__initCalls = globalThis.__initCalls || [];
+    globalThis.__initCalls.push(${JSON.stringify(id)});
+  },
+  dispose() {
+    globalThis.__disposeCalls = globalThis.__disposeCalls || [];
+    globalThis.__disposeCalls.push(${JSON.stringify(id)});
+    ${deferBlock}
+    ${failLine}
+  },
+};
+`;
+}
+
 function writeProviderSource(homeDir: string, id: string, source: string): void {
   const providerDir = join(homeDir, ".pizzapi", "providers", id);
   mkdirSync(providerDir, { recursive: true });
@@ -58,11 +89,17 @@ describe("provider extension", () => {
     process.env.HOME = tmpHome;
     (globalThis as any).__providerInitCalls = [];
     (globalThis as any).__providerExtensionCalls = [];
+    (globalThis as any).__initCalls = [];
+    (globalThis as any).__disposeCalls = [];
+    (globalThis as any).__disposeDeferred = {};
   });
 
   afterEach(() => {
     delete (globalThis as any).__providerInitCalls;
     delete (globalThis as any).__providerExtensionCalls;
+    delete (globalThis as any).__initCalls;
+    delete (globalThis as any).__disposeCalls;
+    delete (globalThis as any).__disposeDeferred;
     process.env.HOME = origHome;
     if (existsSync(tmpHome)) rmSync(tmpHome, { recursive: true, force: true });
   });
@@ -338,6 +375,104 @@ describe("provider extension", () => {
     expect(second?.systemPrompt).not.toContain("Memory for first");
 
     await handlers.get("session_shutdown")?.({ reason: "quit" }, makeCtx(cwd));
+  });
+
+  test("forced onSessionShutdown rejection still disposes all providers and resets state", async () => {
+    const cwd = join(tmpHome, "project");
+    mkdirSync(cwd, { recursive: true });
+    writeProviderSource(tmpHome, "shutdown-a", lifecycleProviderSource("shutdown-a"));
+    writeProviderSource(tmpHome, "shutdown-b", lifecycleProviderSource("shutdown-b"));
+    const handlers = await startProviderExtension(cwd);
+
+    const mod = await import("./extension");
+    // ProviderBridge already swallows per-provider onSessionShutdown hook
+    // errors internally, so to exercise the extension's own defensive catch
+    // we swap in a bridge whose onSessionShutdown itself rejects.
+    mod.__setBridgeForTest({
+      onSessionShutdown: async () => {
+        throw new Error("boom");
+      },
+    } as any);
+
+    await handlers.get("session_shutdown")?.({ reason: "quit" }, makeCtx(cwd));
+
+    expect(((globalThis as any).__disposeCalls as string[]).sort()).toEqual(["shutdown-a", "shutdown-b"]);
+
+    // bridge/providerInstances were reset despite the rejection.
+    const result = await handlers.get("before_agent_start")?.(
+      { prompt: "hi", images: [], systemPrompt: "line1\nline2\nline3\nline4" },
+      makeCtx(cwd),
+    );
+    expect(result).toBeUndefined();
+  });
+
+  test("a later session initializes cleanly after a failed shutdown", async () => {
+    const cwd = join(tmpHome, "project");
+    mkdirSync(cwd, { recursive: true });
+    writeProviderSource(tmpHome, "shutdown-a", lifecycleProviderSource("shutdown-a"));
+    const handlers = await startProviderExtension(cwd);
+
+    const mod = await import("./extension");
+    mod.__setBridgeForTest({
+      onSessionShutdown: async () => {
+        throw new Error("boom");
+      },
+    } as any);
+    await handlers.get("session_shutdown")?.({ reason: "quit" }, makeCtx(cwd));
+
+    (globalThis as any).__initCalls = [];
+    (globalThis as any).__disposeCalls = [];
+
+    // Must not throw, and must not re-dispose an already-cleared instance
+    // from the failed shutdown (session_start's defensive re-init loop runs
+    // over providerInstances, which was already reset to []).
+    await expect(
+      handlers.get("session_start")?.({ reason: "startup" }, makeCtx(cwd)) as Promise<unknown>,
+    ).resolves.toBeUndefined();
+
+    expect((globalThis as any).__initCalls).toEqual(["shutdown-a"]);
+    expect((globalThis as any).__disposeCalls).toEqual([]);
+
+    await handlers.get("session_shutdown")?.({ reason: "quit" }, makeCtx(cwd));
+  });
+
+  test("concurrent session_shutdown events do not double-dispose the same provider instances", async () => {
+    const cwd = join(tmpHome, "project");
+    mkdirSync(cwd, { recursive: true });
+    writeProviderSource(tmpHome, "slow-dispose", lifecycleProviderSource("slow-dispose", { deferDispose: true }));
+    const handlers = await startProviderExtension(cwd);
+
+    const mod = await import("./extension");
+    mod.__setBridgeForTest(null); // isolate dispose-claiming from bridge notification timing
+
+    const first = handlers.get("session_shutdown")?.({ reason: "quit" }, makeCtx(cwd)) as Promise<unknown>;
+    const second = handlers.get("session_shutdown")?.({ reason: "quit" }, makeCtx(cwd)) as Promise<unknown>;
+
+    const resolveDispose = (globalThis as any).__disposeDeferred["slow-dispose"];
+    expect(typeof resolveDispose).toBe("function");
+    resolveDispose();
+
+    await Promise.all([first, second]);
+
+    expect((globalThis as any).__disposeCalls).toEqual(["slow-dispose"]);
+  });
+
+  test("if one provider's dispose rejects, remaining providers are still disposed and state resets", async () => {
+    const cwd = join(tmpHome, "project");
+    mkdirSync(cwd, { recursive: true });
+    writeProviderSource(tmpHome, "dispose-fail", lifecycleProviderSource("dispose-fail", { failDispose: true }));
+    writeProviderSource(tmpHome, "dispose-ok", lifecycleProviderSource("dispose-ok"));
+    const handlers = await startProviderExtension(cwd);
+
+    await handlers.get("session_shutdown")?.({ reason: "quit" }, makeCtx(cwd));
+
+    expect(((globalThis as any).__disposeCalls as string[]).sort()).toEqual(["dispose-fail", "dispose-ok"]);
+
+    const result = await handlers.get("before_agent_start")?.(
+      { prompt: "hi", images: [], systemPrompt: "line1\nline2\nline3\nline4" },
+      makeCtx(cwd),
+    );
+    expect(result).toBeUndefined();
   });
 });
 
