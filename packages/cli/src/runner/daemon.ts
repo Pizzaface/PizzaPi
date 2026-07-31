@@ -7,6 +7,7 @@ import { dirname, join } from "node:path";
 import { existsSync, rmSync } from "node:fs";
 import { forceKillTree, isShutdownMessage, requestChildShutdown, STOP_FILE_NAME } from "./process-kill.js";
 import { ServiceRegistry, type ServiceHandler, type ServiceInitOptions } from "./service-handler.js";
+import type { PizzaPiSocket } from "@pizzapi/extension-sdk";
 import { TerminalService } from "./services/terminal-service.js";
 import { FileExplorerService } from "./services/file-explorer-service.js";
 import { GitService, GIT_SIGIL_DEFS } from "./services/git-service.js";
@@ -139,7 +140,7 @@ export function initServiceHandlers(
     for (const handler of handlers) {
         if (initializedIds.has(handler.id)) continue;
         try {
-            handler.init(socket, makeOpts(handler));
+            handler.init(socket as unknown as PizzaPiSocket, makeOpts(handler));
             initializedIds.add(handler.id);
             initialized.push(handler.id);
         } catch (err) {
@@ -1094,7 +1095,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                                 ...(manifest.panel?.requires ? { requires: manifest.panel.requires } : {}),
                             });
                         }
-                        handler.init(socket, optsForInit(handler.id));
+                        handler.init(socket as unknown as PizzaPiSocket, optsForInit(handler.id));
                         initializedServiceIds.add(handler.id);
                         if (typeof handler.reconcileSubscriptions === "function") {
                             const subs = cachedTriggerSubscriptions.filter((sub) => sub.triggerType?.split(":")[0] === handler.id);

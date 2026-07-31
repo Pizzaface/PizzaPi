@@ -5,8 +5,8 @@
         "rootDir": "src"
     },
     "include": ["src"],
+    "exclude": ["src/**/*.test.ts"],
     "references": [
-        { "path": "../protocol" },
-        { "path": "../extension-sdk" }
+        { "path": "../protocol" }
     ]
 }

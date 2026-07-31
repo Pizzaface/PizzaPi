@@ -32,6 +32,7 @@
     "@earendil-works/pi-ai": "^0.82.1",
     "@earendil-works/pi-coding-agent": "^0.82.1",
     "@modelcontextprotocol/sdk": "^1.27.1",
+    "@pizzapi/extension-sdk": "workspace:*",
     "@pizzapi/protocol": "workspace:*",
     "@pizzapi/tools": "workspace:*",
     "@pizzapi/tunnel": "workspace:*",
