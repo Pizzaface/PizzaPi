@@ -39,7 +39,7 @@ test("detail writes a topic file and links it", () => {
 
 test("index truncates at 200 lines", () => {
   const big = mkdtempSync(join(tmpdir(), "membig-"));
-  for (let i = 0; i < 250; i++) S.saveMemory({ summary: `entry ${i}` }, big);
+  S.writeMemoryFile("MEMORY.md", Array.from({ length: 250 }, (_, i) => `- entry ${i}`).join("\n"), big);
   const { text, truncated } = S.readIndexTruncated(big);
   expect(truncated).toBe(true);
   expect(text.split("\n").length).toBeLessThanOrEqual(S.MAX_INDEX_LINES);
