@@ -436,6 +436,53 @@ describe("provider extension", () => {
     await handlers.get("session_shutdown")?.({ reason: "quit" }, makeCtx(cwd));
   });
 
+  test("currentSessionInfo does not leak into a subsequent close after a failed shutdown", async () => {
+    const cwd = join(tmpHome, "project");
+    mkdirSync(cwd, { recursive: true });
+    writeProviderSource(tmpHome, "shutdown-a", lifecycleProviderSource("shutdown-a"));
+    const handlers = await startProviderExtension(cwd);
+
+    const mod = await import("./extension");
+    const { ProviderBridge } = await import("../../providers/bridge");
+
+    // Shutdown fails partway through — the claim/reset block must still
+    // clear currentSessionInfo synchronously (before the first await) so a
+    // subsequent close never sees this session's sessionFile/cwd.
+    mod.__setBridgeForTest({
+      onSessionShutdown: async () => {
+        throw new Error("boom");
+      },
+    } as any);
+    await handlers.get("session_shutdown")?.({ reason: "quit" }, makeCtx(cwd));
+
+    let seenCtx: { sessionFile?: string; cwd?: string } | undefined;
+    mod.__setBridgeForTest(
+      new ProviderBridge([
+        {
+          id: "close-after-shutdown",
+          capabilities: ["lifecycle"],
+          init: async () => {},
+          dispose: () => {},
+          onSessionClose: async (_event: unknown, ctx: any) => {
+            seenCtx = { sessionFile: ctx.sessionFile, cwd: ctx.cwd };
+            return null;
+          },
+        } as any,
+      ]),
+    );
+
+    await mod.runProviderSessionClose("close");
+
+    // makeCtx()'s sessionManager.getSessionFile() always returns
+    // "test-session.json" and cwd is always the fixture project dir — if
+    // currentSessionInfo had leaked, ctx would show those stale values here
+    // instead of falling back to sessionId/process.cwd().
+    expect(seenCtx?.sessionFile).not.toBe("test-session.json");
+    expect(seenCtx?.cwd).not.toBe(cwd);
+
+    mod.__setBridgeForTest(null);
+  });
+
   test("concurrent session_shutdown events do not double-dispose the same provider instances", async () => {
     const cwd = join(tmpHome, "project");
     mkdirSync(cwd, { recursive: true });

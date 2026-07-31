@@ -287,6 +287,7 @@ export async function providerExtension(pi: ExtensionAPI) {
     const instances = providerInstances;
     bridge = null;
     providerInstances = [];
+    currentSessionInfo = null;
     currentPromptId = null;
     currentTurnId = 0;
     sessionClosePromise = null;
