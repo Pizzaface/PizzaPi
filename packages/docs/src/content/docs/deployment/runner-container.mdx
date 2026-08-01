@@ -225,6 +225,10 @@ environment:
 
 then run `git config --global user.name "..." && git config --global user.email "..."` once inside the container. The default `/home/pizza/.gitconfig` location is **not** part of the persisted `.pizzapi` volume and won't survive a recreation unless you use one of the two options above.
 
+<Aside type="caution">
+  Set an identity before letting agents commit. With no git identity configured, commits made inside the container are attributed to the agent's placeholder identity (`Pi Agent <pi-agent@example.com>`) rather than to you — and that lands in your repo history.
+</Aside>
+
 ---
 
 ## Sandbox posture
@@ -282,6 +286,7 @@ Other operational notes:
 
 - `restart: unless-stopped` + `stop_grace_period: 30s` — `docker stop` sends SIGTERM to `tini` (PID 1), which forwards it through the supervisor to the daemon, the same clean-shutdown path as running `pizza runner stop`. Give it the full 30s window to disconnect and release its lock before Docker sends SIGKILL.
 - Logs are the runner's stdout/stderr (`docker logs pizzapi-runner`). Rotation is Docker's/your logging driver's job, not the image's.
+- **Relay restarts are survivable and need no action.** If the relay goes away, the runner reconnects with backoff, re-registers under the same identity, and preserves its already-initialized runner services rather than tearing them down. Expect the container to report `unhealthy` for a healthcheck interval or two while that happens — don't wire an external supervisor to restart it on the first failed check.
 - Resource limits (`mem_limit`, `cpus`, ...) apply to the whole container — every session and its child processes share them. Size for your heaviest concurrent session load, not one session.
 - **Upgrade** by pulling a new version tag and recreating the container; the data volume carries identity, auth, and transcripts forward:
 
@@ -296,7 +301,8 @@ Other operational notes:
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| Container unhealthy | Bad `PIZZAPI_API_KEY`, unreachable relay, or wrong `PIZZAPI_RELAY_URL` scheme | `docker exec <ctr> pizza runner status` for the exact `reason`; check the URL scheme matches the relay's actual setup |
+| Container unhealthy | Unreachable relay, or wrong `PIZZAPI_RELAY_URL` scheme | `docker exec <ctr> pizza runner status` for the exact `reason`; check the URL scheme matches the relay's actual setup |
+| Logs stop after `connecting to relay at ...` and never say `registered as ...`; status shows `connected false` / `not registered with relay` | Invalid `PIZZAPI_API_KEY`. The socket connects before the key is validated, so a bad key looks like a hang rather than an auth error | Check the **relay's** logs for `Failed to validate API key`, then issue a fresh runner token. Note an `apiKey` in a host `config.json` is not automatically the one your shell has in `PIZZAPI_API_KEY` — confirm which one you're passing |
 | `Permission denied` writing to `/home/pizza/.pizzapi` | Bind-mounted (not named) volume owned by a different host UID | Use a named volume, chown the host dir to `1000:1000`, or use the `PUID`/`PGID` remap path |
 | Spawn request rejected: "outside allowed workspace root(s)" | `cwd` isn't under any `PIZZAPI_WORKSPACE_ROOTS` entry, or you passed a host path instead of a container path | Use the container-side mount path; add the missing root to `PIZZAPI_WORKSPACE_ROOTS` |
 | `command not found` for a language toolchain, `gh`, etc. | Base image intentionally excludes it | Build a [derived image](#sidecars--derived-images) |
