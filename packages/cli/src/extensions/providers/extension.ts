@@ -5,11 +5,14 @@ import { join } from "node:path";
 import { ProviderBridge } from "../../providers/bridge";
 import type { ProviderContext, SessionCloseResult } from "../../providers/types";
 import { loadGlobalConfig } from "../../config/io";
+import { registerWorkerShutdownHook } from "../shutdown-hooks";
 import { createLogger } from "@pizzapi/tools";
 
 const log = createLogger("provider-extension");
 
 let bridge: ProviderBridge | null = null;
+/** Drops this worker's pre-exit registration when the factory re-runs in place. */
+let unregisterShutdownHook: (() => void) | null = null;
 /** Provider instances tracked separately for disposal (bridge doesn't own lifecycle). */
 let providerInstances: Array<{ id: string; dispose(): Promise<void> | void }> = [];
 /** Last-known session identity for close-time context (updated on session_start/turn_end). */
@@ -69,9 +72,19 @@ function makeProviderContext(
  * — so the worker stays inside the daemon's SIGTERM→SIGKILL escalation
  * window.
  */
+export interface ProviderSessionCloseOptions {
+  timeoutMs?: number;
+  /** Shared absolute deadline when driven by the worker shutdown window. */
+  deadline?: number;
+  /** Shared abort signal when driven by the worker shutdown window. */
+  signal?: AbortSignal;
+  sessionFile?: string;
+  cwd?: string;
+}
+
 export async function runProviderSessionClose(
   reason: "close" | "error" | "complete",
-  opts?: { timeoutMs?: number },
+  opts?: ProviderSessionCloseOptions,
 ): Promise<SessionCloseResult | null> {
   if (sessionClosePromise) return sessionClosePromise;
   sessionClosePromise = doRunProviderSessionClose(reason, opts);
@@ -80,20 +93,27 @@ export async function runProviderSessionClose(
 
 async function doRunProviderSessionClose(
   reason: "close" | "error" | "complete",
-  opts?: { timeoutMs?: number },
+  opts?: ProviderSessionCloseOptions,
 ): Promise<SessionCloseResult | null> {
   if (!bridge) return null;
   const sessionId = process.env.PIZZAPI_SESSION_ID ?? process.env.SESSION_ID ?? "unknown";
-  const sessionFile = currentSessionInfo?.sessionFile ?? sessionId;
-  const cwd = currentSessionInfo?.cwd ?? process.cwd();
-  const timeoutMs = opts?.timeoutMs ?? 2500;
-  const deadline = Date.now() + timeoutMs;
+  const sessionFile = opts?.sessionFile ?? currentSessionInfo?.sessionFile ?? sessionId;
+  const cwd = opts?.cwd ?? currentSessionInfo?.cwd ?? process.cwd();
+  // When the worker shutdown window drives this, adopt ITS deadline rather than
+  // starting a second independent budget — otherwise the two stack and the
+  // worker can outlive the daemon's SIGKILL escalation.
+  const deadline = opts?.deadline ?? Date.now() + (opts?.timeoutMs ?? 2500);
+  const timeoutMs = Math.max(0, deadline - Date.now());
   // Overall deadline is enforced twice: the bridge's own Promise.race stops
   // WAITING on a slow provider, but a well-behaved hook can also watch
   // ctx.signal and cancel its own in-flight work — abort it here so hooks
   // that honor AbortSignal get a chance to clean up rather than being cut off.
   const controller = new AbortController();
   const abortTimer = setTimeout(() => controller.abort(), timeoutMs);
+  // An externally-supplied signal (shared window) must still abort us.
+  const externalAbort = () => controller.abort();
+  opts?.signal?.addEventListener("abort", externalAbort, { once: true });
+  if (opts?.signal?.aborted) controller.abort();
   try {
     const result = await bridge.onSessionClose(
       { reason, sessionFile },
@@ -115,6 +135,7 @@ async function doRunProviderSessionClose(
     return null;
   } finally {
     clearTimeout(abortTimer);
+    opts?.signal?.removeEventListener("abort", externalAbort);
     controller.abort();
   }
 }
@@ -126,6 +147,23 @@ export function __setBridgeForTest(b: ProviderBridge | null): void {
 }
 
 export async function providerExtension(pi: ExtensionAPI) {
+  // Close-time flush is driven by the worker's own pre-exit window (pi has no
+  // event that fires on daemon SIGTERM). The provider layer is just one
+  // participant in that window now, not the owner of it.
+  //
+  // Factories re-run when a session is created in place, so drop any previous
+  // registration first — re-registering the same id is expected here and must
+  // not look like the id collision the registry warns about.
+  unregisterShutdownHook?.();
+  unregisterShutdownHook = registerWorkerShutdownHook("providers", async (shutdownCtx) => {
+    await runProviderSessionClose(shutdownCtx.reason, {
+      deadline: shutdownCtx.deadline,
+      signal: shutdownCtx.signal,
+      sessionFile: shutdownCtx.sessionFile,
+      cwd: shutdownCtx.cwd,
+    });
+  });
+
   // ── Session Start: discover and init providers ────────────────
   pi.on("session_start", async (event, ctx) => {
     const { discoverProviders } = await import("../../providers/loader");
