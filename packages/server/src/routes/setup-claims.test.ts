@@ -3,7 +3,9 @@
  *
  * These exist specifically to catch routing regressions that store-level
  * tests can't see: GET /api/setup-claim/:token is a one-shot redeem for the
- * CLI, and GET /api/setup-claim/:token/info must never fall through to it.
+ * CLI, and GET /api/setup-claim-info/:token must never fall through to it, and must
+ * live outside the /api/setup-claim/ prefix so older relays (which parse the
+ * poll token with split("/")[0]) can't mis-route it into the consuming handler.
  */
 
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
@@ -33,7 +35,7 @@ function get(path: string): { req: Request; url: URL } {
 }
 
 describe("setup-claim routes", () => {
-    test("GET .../info never consumes the one-shot key, and the CLI poll route still redeems afterwards", async () => {
+    test("GET /api/setup-claim-info/:token never consumes the one-shot key, and the CLI poll route still redeems afterwards", async () => {
         await runWithAuthContext(authContext, async () => {
             const { token } = await createSetupClaim("http://localhost:7492", "docker-demo-runner");
             const approve = await approveSetupClaim(token, "user-route", "Route");
@@ -42,7 +44,7 @@ describe("setup-claim routes", () => {
             // Simulate the browser re-opening the confirm screen after approval
             // (deep link revisited, StrictMode double-invoke, etc.) — hit /info twice.
             for (let i = 0; i < 2; i++) {
-                const { req, url } = get(`/api/setup-claim/${token}/info`);
+                const { req, url } = get(`/api/setup-claim-info/${token}`);
                 const res = await handleSetupClaimsRoute(req, url);
                 expect(res).toBeDefined();
                 const body = (await res!.json()) as { status: string; label?: string; apiKey?: string };
@@ -67,13 +69,44 @@ describe("setup-claim routes", () => {
         });
     });
 
-    test("GET .../token (no /info) is still the one-shot redeem for a pending claim", async () => {
+    test("GET .../token (no info route) is still the one-shot redeem for a pending claim", async () => {
         await runWithAuthContext(authContext, async () => {
             const { token } = await createSetupClaim("http://localhost:7492");
             const { req, url } = get(`/api/setup-claim/${token}`);
             const res = await handleSetupClaimsRoute(req, url);
             const body = (await res!.json()) as { status: string };
             expect(body.status).toBe("pending");
+        });
+    });
+
+    // Cross-version safety. The UI ships as its own image and will meet older
+    // relays, which resolve the poll token as
+    // `pathname.slice("/api/setup-claim/".length).split("/")[0]` — meaning a
+    // NESTED `/api/setup-claim/:token/info` arrives at their consuming handler
+    // with a valid token and silently redeems an approved claim. Keeping the
+    // info route under its own prefix is what prevents that, so pin it here:
+    // if someone "tidies" the path back under /api/setup-claim/, this fails.
+    test("the info route lives outside the /api/setup-claim/ prefix (old relays would mis-route a nested path)", async () => {
+        await runWithAuthContext(authContext, async () => {
+            const { token } = await createSetupClaim("http://localhost:7492", "docker-demo-runner");
+            await approveSetupClaim(token, "user-route", "Route");
+
+            // The nested path must NOT be served as an info read here either —
+            // this server answers it with the redeem handler, exactly as an old
+            // relay would, which is precisely why the UI must not request it.
+            const nested = get(`/api/setup-claim/${token}/info`);
+            const nestedRes = await handleSetupClaimsRoute(nested.req, nested.url);
+            const nestedBody = (await nestedRes!.json()) as { status?: string; apiKey?: string };
+            expect(nestedBody.apiKey).toBeDefined(); // consumed — proves the hazard is real
+
+            // ...and the dedicated prefix is the safe read that the UI uses.
+            const { token: token2 } = await createSetupClaim("http://localhost:7492", "docker-demo-runner");
+            await approveSetupClaim(token2, "user-route", "Route");
+            const info = get(`/api/setup-claim-info/${token2}`);
+            const infoRes = await handleSetupClaimsRoute(info.req, info.url);
+            const infoBody = (await infoRes!.json()) as { status: string; apiKey?: string };
+            expect(infoBody.apiKey).toBeUndefined();
+            expect(infoBody.status).toBe("approved");
         });
     });
 });

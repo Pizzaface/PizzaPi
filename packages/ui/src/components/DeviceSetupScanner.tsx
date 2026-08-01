@@ -33,13 +33,19 @@ function extractToken(decodedText: string): string | null {
 
 /**
  * Best-effort label lookup for the confirmation screen; never blocks approval.
- * Hits the non-consuming /info route — the plain /api/setup-claim/:token route
- * is a one-shot redeem for the CLI and must never be called from here (doing
- * so would silently burn the approved key out from under the CLI's poll).
+ * Hits the non-consuming /api/setup-claim-info/:token route — the plain
+ * /api/setup-claim/:token route is a one-shot redeem for the CLI and must
+ * never be called from here (doing so would silently burn the approved key
+ * out from under the CLI's poll).
+ *
+ * Note the separate prefix rather than a nested /info path: older relays parse
+ * the poll route's token with split("/")[0], so a nested path would reach
+ * their consuming handler with a valid token. This UI ships as its own image
+ * and will meet older servers; there it simply 404s and the label is omitted.
  */
 async function fetchClaimLabel(token: string): Promise<string | undefined> {
     try {
-        const res = await fetch(`/api/setup-claim/${token}/info`);
+        const res = await fetch(`/api/setup-claim-info/${token}`);
         if (!res.ok) return undefined;
         const data = (await res.json()) as { label?: string };
         return typeof data.label === "string" && data.label ? data.label : undefined;

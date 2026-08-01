@@ -3,7 +3,15 @@
  *
  * - POST /api/setup-claim              — unauthenticated; creates a pending claim.
  * - GET  /api/setup-claim/:token       — unauthenticated; poll/redeem a claim (one-shot key delivery, CLI only).
- * - GET  /api/setup-claim/:token/info  — unauthenticated; non-consuming status/label read for the approval UI.
+ * - GET  /api/setup-claim-info/:token  — unauthenticated; non-consuming status/label read for the approval UI.
+ *
+ * The info route deliberately sits OUTSIDE the /api/setup-claim/ prefix. Older
+ * relays parse the poll route's token as
+ * `pathname.slice("/api/setup-claim/".length).split("/")[0]`, so a nested
+ * `/api/setup-claim/:token/info` request would hit their *consuming* poll
+ * handler with a valid token and silently redeem an approved claim. The UI is
+ * shipped as a separately versioned image from the server, so a newer UI WILL
+ * meet an older server in the wild. A distinct prefix 404s there instead.
  * - POST /api/setup-claim/:token/approve — authenticated; approve and attach API key.
  */
 
@@ -33,8 +41,8 @@ export const handleSetupClaimsRoute: RouteHandler = async (req, url) => {
 
     // Non-consuming status/label read for the web approval UI (checked before the
     // poll/redeem route below — must NEVER fall through to the one-shot redeem).
-    if (url.pathname.startsWith("/api/setup-claim/") && url.pathname.endsWith("/info") && req.method === "GET") {
-        const token = url.pathname.slice("/api/setup-claim/".length, -"/info".length);
+    if (url.pathname.startsWith("/api/setup-claim-info/") && req.method === "GET") {
+        const token = url.pathname.slice("/api/setup-claim-info/".length).split("/")[0];
         if (!token) {
             return Response.json({ error: "Missing claim token" }, { status: 400 });
         }
