@@ -219,4 +219,58 @@ describe("ProviderBridge", () => {
     const result = await bridge.onSessionClose({ reason: "close", sessionFile: "/tmp/s.jsonl" }, ctx);
     expect(result).toEqual({ label: "Flushing beta", jobRef: { id: "j1" } });
   });
+
+  test("onSessionClose bounds sequential providers by one overall ctx.deadline, not N * timeoutMs", async () => {
+    let attempts = 0;
+    const hung = (id: string) => makeProvider({
+      id,
+      capabilities: ["lifecycle"] as const,
+      onSessionClose: async () => {
+        attempts++;
+        return new Promise(() => {}); // never resolves
+      },
+    });
+
+    const bridge = new ProviderBridge([hung("p1"), hung("p2"), hung("p3")]);
+    const timeoutMs = 100;
+    const deadline = Date.now() + 120;
+    const ctx = { signal: new AbortController().signal, timeoutMs, deadline, sessionId: "s1", cwd: "/tmp" };
+
+    const start = Date.now();
+    const result = await bridge.onSessionClose({ reason: "close", sessionFile: "/tmp/s.jsonl" }, ctx);
+    const elapsed = Date.now() - start;
+
+    expect(result).toBeNull();
+    // Per-provider (not overall) timeouts would let 3 hung providers add up to
+    // ~3 * 100ms = 300ms. One shared deadline should stay close to the 120ms
+    // budget instead.
+    expect(elapsed).toBeLessThan(200);
+    // The deadline should stop the loop from even attempting every provider.
+    expect(attempts).toBeLessThan(3);
+  });
+
+  test("onSessionClose skips remaining providers once ctx.deadline has already elapsed", async () => {
+    let attempts = 0;
+    const provider = makeProvider({
+      id: "late",
+      capabilities: ["lifecycle"] as const,
+      onSessionClose: async () => {
+        attempts++;
+        return { label: "should not run", jobRef: {} };
+      },
+    });
+
+    const bridge = new ProviderBridge([provider]);
+    const ctx = {
+      signal: new AbortController().signal,
+      timeoutMs: 1000,
+      deadline: Date.now() - 1, // already elapsed
+      sessionId: "s1",
+      cwd: "/tmp",
+    };
+
+    const result = await bridge.onSessionClose({ reason: "close", sessionFile: "/tmp/s.jsonl" }, ctx);
+    expect(result).toBeNull();
+    expect(attempts).toBe(0);
+  });
 });

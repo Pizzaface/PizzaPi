@@ -55,7 +55,11 @@ export function forceKillTree(child: ChildProcess): void {
 export function requestChildShutdown(
     child: ChildProcess,
     onEscalate?: (timeoutMs: number) => void,
-    timeoutMs = 5_000,
+    // ponytail: 8s default, not 5s — a worker's own shutdown budget is provider
+    // close (<=2.5s) + sandbox cleanup (<=5s) = 7.5s worst case; 5s would
+    // SIGKILL mid-cleanup. Callers with a smaller/larger known budget can
+    // still override.
+    timeoutMs = 8_000,
 ): void {
     let requested = false;
     if (process.platform === "win32") {

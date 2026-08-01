@@ -186,6 +186,7 @@ async function createModelRuntimeWithRetry(authPath: string, modelsPath: string,
 import { forwardCliError } from "../extensions/remote.js";
 import { buildPizzaPiExtensionFactories } from "../extensions/factories.js";
 import { armWorkerStartupGate, markWorkerStartupComplete } from "../extensions/worker-startup-gate.js";
+import { runProviderSessionClose } from "../extensions/providers/extension.js";
 
 // ── Session metadata / context tracking ──────────────────────────────────
 
@@ -669,11 +670,19 @@ async function main(): Promise<void> {
             },
         },
         shutdownHandler: () => {
-            try {
-                session.dispose();
-            } finally {
-                process.exit(0);
-            }
+            // Extension-initiated shutdown (e.g. auto-close after session
+            // completion) — run provider close with "complete" semantics.
+            // ponytail: reason is a heuristic (any ctx.shutdown() maps to
+            // "complete"); plumb an explicit reason if a second caller appears.
+            void runProviderSessionClose("complete")
+                .catch(() => {})
+                .finally(() => {
+                    try {
+                        session.dispose();
+                    } finally {
+                        process.exit(0);
+                    }
+                });
         },
         onError: (err) => {
             logError(`[extension] ${err.extensionPath}: ${err.error}`);
@@ -751,6 +760,13 @@ async function main(): Promise<void> {
             logWarn("[worker] cleanup did not finish in time; forcing process exit");
             process.exit(0);
         }, hardExitTimeoutMs);
+        // Provider close hooks run first (data flush/archival is the most
+        // valuable cleanup) and in-process — the daemon cannot reach the
+        // provider bridge across the process boundary. Bounded at 2.5s so
+        // close + sandbox cleanup stay inside the daemon's SIGKILL escalation.
+        try {
+            await runProviderSessionClose("close");
+        } catch {}
         try {
             await Promise.race([
                 cleanupSandbox(),

@@ -202,6 +202,11 @@ export class ProviderBridge {
       if (this.#disabled.has(provider.id)) continue;
       if (!isLifecycleHook(provider)) continue;
       if (!provider.onSessionClose) continue;
+      // Providers run sequentially; without this check N providers could add
+      // up to N * timeoutMs of wall time. ctx.deadline (set by the caller,
+      // e.g. runProviderSessionClose) is one overall budget for the whole
+      // loop, not per provider — stop trying once it's gone.
+      if (ctx.deadline !== undefined && Date.now() >= ctx.deadline) break;
       try {
         const result = await this.#withTimeout(
           provider.onSessionClose(event, ctx),
@@ -230,11 +235,20 @@ export class ProviderBridge {
       throw new Error(`Provider "${providerId}" call aborted before execution`);
     }
 
+    // ctx.deadline (if set) is one overall budget shared across a loop over
+    // providers — cap this call's timeout to whatever's left of it so N
+    // providers can't each burn a full timeoutMs.
+    const remainingMs = ctx.deadline !== undefined ? ctx.deadline - Date.now() : ctx.timeoutMs;
+    const effectiveTimeoutMs = Math.max(0, Math.min(ctx.timeoutMs, remainingMs));
+    if (effectiveTimeoutMs === 0) {
+      throw new Error(`Provider "${providerId}" call skipped: overall deadline already elapsed`);
+    }
+
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timeoutPromise = new Promise<never>((_, reject) => {
       timer = setTimeout(() => {
-        reject(new Error(`Provider "${providerId}" timed out after ${ctx.timeoutMs}ms`));
-      }, ctx.timeoutMs);
+        reject(new Error(`Provider "${providerId}" timed out after ${effectiveTimeoutMs}ms`));
+      }, effectiveTimeoutMs);
     });
 
     const abortPromise = new Promise<never>((_, reject) => {

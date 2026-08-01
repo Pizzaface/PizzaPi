@@ -72,9 +72,153 @@ describe("provider extension", () => {
     expect(typeof mod.default).toBe("function");
   });
 
-  test("triggerSessionClose is exported", async () => {
+  test("runProviderSessionClose is exported", async () => {
     const mod = await import("./extension");
-    expect(typeof mod.triggerSessionClose).toBe("function");
+    expect(typeof mod.runProviderSessionClose).toBe("function");
+  });
+
+  test("runProviderSessionClose returns null with no bridge", async () => {
+    const mod = await import("./extension");
+    mod.__setBridgeForTest(null);
+    expect(await mod.runProviderSessionClose("close")).toBeNull();
+  });
+
+  test("runProviderSessionClose invokes provider onSessionClose with reason, once", async () => {
+    const mod = await import("./extension");
+    const { ProviderBridge } = await import("../../providers/bridge");
+    const calls: Array<{ reason: string }> = [];
+    const provider = {
+      id: "close-test",
+      capabilities: ["lifecycle"],
+      init: async () => {},
+      dispose: () => {},
+      onSessionClose: async (event: { reason: string }) => {
+        calls.push({ reason: event.reason });
+        return { label: "archived" };
+      },
+    };
+    mod.__setBridgeForTest(new ProviderBridge([provider as any]));
+    const first = await mod.runProviderSessionClose("complete");
+    expect(first?.label).toBe("archived");
+    expect(calls).toEqual([{ reason: "complete" }]);
+    // Idempotent — second shutdown path must not re-run providers. It shares
+    // the first call's cached result rather than running again or short-
+    // circuiting to null (which would let a caller proceed to exit() before
+    // the real close settled — see the concurrent-shutdown test below).
+    const second = await mod.runProviderSessionClose("close");
+    expect(second?.label).toBe("archived");
+    expect(calls.length).toBe(1);
+    mod.__setBridgeForTest(null);
+  });
+
+  test("runProviderSessionClose: concurrent callers await the same in-flight close", async () => {
+    const mod = await import("./extension");
+    const { ProviderBridge } = await import("../../providers/bridge");
+    let resolveClose: ((v: { label: string }) => void) | undefined;
+    let callCount = 0;
+    const provider = {
+      id: "slow-close",
+      capabilities: ["lifecycle"],
+      init: async () => {},
+      dispose: () => {},
+      onSessionClose: async () => {
+        callCount++;
+        return new Promise((resolve) => {
+          resolveClose = resolve;
+        });
+      },
+    };
+    mod.__setBridgeForTest(new ProviderBridge([provider as any]));
+
+    // First caller (e.g. a signal handler) starts the close but doesn't await
+    // yet. A second caller (e.g. an extension-initiated shutdownHandler)
+    // fires concurrently, before the provider's promise resolves.
+    const firstCall = mod.runProviderSessionClose("close");
+    await Promise.resolve(); // let the first call reach the in-flight provider promise
+    const secondCall = mod.runProviderSessionClose("complete");
+
+    // The second caller must NOT resolve early (e.g. to null) while the first
+    // close is still in-flight — that's what let a shutdown path terminate a
+    // real in-flight provider close.
+    let secondResolved = false;
+    secondCall.then(() => {
+      secondResolved = true;
+    });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(secondResolved).toBe(false);
+
+    resolveClose!({ label: "flushed" });
+    const [first, second] = await Promise.all([firstCall, secondCall]);
+    expect(first?.label).toBe("flushed");
+    expect(second?.label).toBe("flushed");
+    expect(callCount).toBe(1);
+    mod.__setBridgeForTest(null);
+  });
+
+  test("runProviderSessionClose bounds a hung provider via timeout", async () => {
+    const mod = await import("./extension");
+    const { ProviderBridge } = await import("../../providers/bridge");
+    const provider = {
+      id: "hung-provider",
+      capabilities: ["lifecycle"],
+      init: async () => {},
+      dispose: () => {},
+      onSessionClose: () => new Promise(() => {}),
+    };
+    mod.__setBridgeForTest(new ProviderBridge([provider as any]));
+    const start = Date.now();
+    const result = await mod.runProviderSessionClose("close", { timeoutMs: 100 });
+    const elapsed = Date.now() - start;
+    expect(result).toBeNull();
+    expect(elapsed).toBeLessThan(2000);
+    mod.__setBridgeForTest(null);
+  });
+
+  test("runProviderSessionClose bounds N hung providers by one overall deadline, not N * timeoutMs", async () => {
+    const mod = await import("./extension");
+    const { ProviderBridge } = await import("../../providers/bridge");
+    const hungProvider = (id: string) => ({
+      id,
+      capabilities: ["lifecycle"],
+      init: async () => {},
+      dispose: () => {},
+      onSessionClose: () => new Promise(() => {}),
+    });
+    mod.__setBridgeForTest(
+      new ProviderBridge([hungProvider("p1"), hungProvider("p2"), hungProvider("p3")] as any),
+    );
+    const start = Date.now();
+    const result = await mod.runProviderSessionClose("close", { timeoutMs: 100 });
+    const elapsed = Date.now() - start;
+    expect(result).toBeNull();
+    // Bridge runs providers sequentially. A per-provider (not overall)
+    // timeout would let 3 hung providers add up to ~300ms; the shared
+    // deadline should keep total time close to the single 100ms budget.
+    expect(elapsed).toBeLessThan(250);
+    mod.__setBridgeForTest(null);
+  });
+
+  test("runProviderSessionClose aborts its signal once the overall deadline elapses", async () => {
+    const mod = await import("./extension");
+    const { ProviderBridge } = await import("../../providers/bridge");
+    let sawAbort = false;
+    const provider = {
+      id: "abort-aware",
+      capabilities: ["lifecycle"],
+      init: async () => {},
+      dispose: () => {},
+      onSessionClose: (_event: unknown, ctx: { signal: AbortSignal }) =>
+        new Promise((resolve) => {
+          ctx.signal.addEventListener("abort", () => {
+            sawAbort = true;
+            resolve(null);
+          });
+        }),
+    };
+    mod.__setBridgeForTest(new ProviderBridge([provider as any]));
+    await mod.runProviderSessionClose("close", { timeoutMs: 50 });
+    expect(sawAbort).toBe(true);
+    mod.__setBridgeForTest(null);
   });
 
   test("extension registers on session_start, before_agent_start, turn_end, session_shutdown", async () => {

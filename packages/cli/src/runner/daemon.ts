@@ -31,7 +31,6 @@ import { loadGlobalConfig, saveGlobalConfig, defaultAgentDir, expandHome, loadCo
 import type { PizzaPiConfig } from "../config.js";
 import { findSessionPathById } from "./session-list-cache.js";
 import { cleanupSessionAttachments, sweepOrphanedAttachments } from "../extensions/session-attachments.js";
-import { triggerSessionClose } from "../extensions/providers/extension.js";
 import { ModelRegistry, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import type { ServiceTriggerDef, ServiceSigilDef, TriggerSubscriptionEntry } from "@pizzapi/protocol";
 import { setLogComponent, logInfo, logWarn, logError } from "./logger.js";
@@ -153,12 +152,21 @@ export function initServiceHandlers(
 }
 
 /**
+ * Grace window for a worker's graceful shutdown before SIGKILL, on every
+ * escalation path (process-group signal, single-child SIGTERM/message
+ * fallback). Must cover the worker's own shutdown budget: provider close
+ * (<=2.5s, one overall deadline — see runProviderSessionClose) + sandbox
+ * cleanup (<=5s) = 7.5s worst case.
+ */
+const SESSION_SHUTDOWN_GRACE_MS = 8_000;
+
+/**
  * Escalate a SIGTERM to SIGKILL after `timeoutMs` if the child has not exited.
  * The timer is cleared automatically when the child exits.
  * ponytail: child-process escalation is hard to unit-test without real spawned
  * processes; covered by the real SIGTERM/SIGKILL behavior in session-spawner.
  */
-function escalateToSigkill(child: ChildProcess, label: string, timeoutMs = 5_000): void {
+function escalateToSigkill(child: ChildProcess, label: string, timeoutMs = SESSION_SHUTDOWN_GRACE_MS): void {
     const timer = setTimeout(() => {
         try {
             if (!child.killed && child.exitCode === null) {
@@ -503,49 +511,13 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             }
             return windows;
         };
-        const normalizeSessionCloseReason = (reason: unknown): "close" | "error" | "complete" => {
-            const text = typeof reason === "string" ? reason.toLowerCase() : "";
-            if (text.includes("error") || text.includes("crash") || text.includes("orphan")) return "error";
-            if (text.includes("complete")) return "complete";
-            return "close";
-        };
-        const resolveSessionFileForClose = async (sessionId: string, explicitSessionFile?: string): Promise<string> => {
-            if (explicitSessionFile) return explicitSessionFile;
-            const remembered = sessionCloseMetadata.get(sessionId)?.sessionFile;
-            if (remembered) return remembered;
-
-            try {
-                const sessionsRootDir = join(resolveConfiguredAgentDir(sessionCloseMetadata.get(sessionId)?.cwd), "sessions");
-                const found = await findSessionPathById(sessionsRootDir, sessionId);
-                if (found) return found;
-            } catch {
-                // Best-effort only — providers may still be able to use the relay session id.
-            }
-
-            return sessionId;
-        };
-        const notifyProviderSessionClose = async (
-            sessionId: string,
-            reason: unknown,
-            explicitSessionFile?: string,
-        ) => {
-            const metadata = sessionCloseMetadata.get(sessionId);
-            const cwd = metadata?.cwd ?? process.cwd();
-            const sessionFile = await resolveSessionFileForClose(sessionId, explicitSessionFile);
-            try {
-                const closeResult = await triggerSessionClose(
-                    sessionId,
-                    sessionFile,
-                    normalizeSessionCloseReason(reason),
-                    cwd,
-                );
-                if (closeResult) {
-                    logInfo(`[daemon] Provider close: ${closeResult.label}`);
-                }
-            } catch (err) {
-                logWarn(`[daemon] Provider close failed for ${sessionId}: ${err instanceof Error ? err.message : String(err)}`);
-            }
-        };
+        // NOTE: provider onSessionClose runs IN THE WORKER PROCESS during its
+        // SIGTERM/shutdownHandler paths (see extensions/providers/extension.ts
+        // runProviderSessionClose). The daemon previously imported
+        // triggerSessionClose here, but that was a guaranteed no-op: the
+        // provider bridge is a module-global initialized only in the worker.
+        // Daemon-side crash finalization (worker died without running close)
+        // is tracked as the Phase 3 finalizer contract (idea jg017xa4).
         const tunnelService = new TunnelService();
         if (isServiceDisabled("tunnel")) {
             logInfo('[services] built-in service "tunnel" disabled by config');
@@ -1372,11 +1344,17 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                         // plain SIGTERM elsewhere) if group signaling fails.
                         const child = entry.child;
                         if (!killSessionProcessGroup(child.pid)) {
-                            requestChildShutdown(child, (timeoutMs) =>
-                                logWarn(`[daemon] session ${sessionId} did not exit after ${timeoutMs}ms; force-killing`),
+                            // Same grace window as the process-group path below —
+                            // the default 5s in process-kill.ts's signature is too
+                            // short for provider close + sandbox cleanup.
+                            requestChildShutdown(
+                                child,
+                                (timeoutMs) =>
+                                    logWarn(`[daemon] session ${sessionId} did not exit after ${timeoutMs}ms; force-killing`),
+                                SESSION_SHUTDOWN_GRACE_MS,
                             );
                         } else {
-                            escalateToSigkill(child, `session ${sessionId}`);
+                            escalateToSigkill(child, `session ${sessionId}`, SESSION_SHUTDOWN_GRACE_MS);
                         }
                     } catch {}
                 } else if (entry.adopted) {
@@ -1386,7 +1364,6 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                 }
                 runningSessions.delete(sessionId);
                 endedSessionIds.set(sessionId, Date.now());
-                await notifyProviderSessionClose(sessionId, "close", entry.sessionFile);
                 cleanupSessionServices(sessionId);
                 sessionCloseMetadata.delete(sessionId);
                 logInfo(`killed session ${sessionId}${entry.adopted ? " (adopted)" : ""}`);
@@ -1420,7 +1397,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             }
 
             const entry = runningSessions.get(sessionId);
-            let shouldNotifyProviderClose = false;
+            let sessionFullyEnded = false;
             if (entry) {
                 // If the child process is still alive AND this is a transient
                 // relay disconnect (not an expiry/orphan sweep), keep the entry
@@ -1436,26 +1413,18 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                 runningSessions.delete(sessionId);
                 killedSessions.delete(sessionId);
                 endedSessionIds.set(sessionId, Date.now());
-                shouldNotifyProviderClose = true;
+                sessionFullyEnded = true;
                 logInfo(`session ${sessionId} ended on relay${entry.adopted ? " (adopted)" : ""}${reason ? ` (${reason})` : ""}`);
             } else if (!endedSessionIds.has(sessionId)) {
                 // First duplicate — log once then suppress subsequent copies
                 endedSessionIds.set(sessionId, Date.now());
-                shouldNotifyProviderClose = true;
+                sessionFullyEnded = true;
                 logInfo(`session_ended for unknown/already-removed session ${sessionId}`);
             }
             // else: duplicate session_ended for a session we already handled — silently ignore
 
-            if (shouldNotifyProviderClose) {
-                await notifyProviderSessionClose(
-                    sessionId,
-                    reason,
-                    typeof sessionFile === "string" ? sessionFile : entry?.sessionFile,
-                );
-            }
-
             cleanupSessionServices(sessionId);
-            if (shouldNotifyProviderClose) sessionCloseMetadata.delete(sessionId);
+            if (sessionFullyEnded) sessionCloseMetadata.delete(sessionId);
 
             // Clean up persisted attachments.  For spawned sessions child.on("exit")
             // already ran cleanup, so this is a no-op (idempotent).  For adopted sessions

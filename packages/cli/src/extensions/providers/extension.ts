@@ -12,6 +12,16 @@ const log = createLogger("provider-extension");
 let bridge: ProviderBridge | null = null;
 /** Provider instances tracked separately for disposal (bridge doesn't own lifecycle). */
 let providerInstances: Array<{ id: string; dispose(): Promise<void> | void }> = [];
+/** Last-known session identity for close-time context (updated on session_start/turn_end). */
+let currentSessionInfo: { sessionFile?: string; cwd?: string } | null = null;
+/**
+ * Cached in-flight/completed close promise so concurrent shutdown paths
+ * (signal handler + extension shutdownHandler) share one close instead of
+ * racing: the second caller awaits the SAME promise rather than seeing a
+ * "completed" flag and returning early while the first close is still
+ * running (which let callers proceed to process.exit() mid-close).
+ */
+let sessionClosePromise: Promise<SessionCloseResult | null> | null = null;
 /** Current prompt boundary ID — generated once per user prompt. */
 let currentPromptId: string | null = null;
 /** Turn counter within the current prompt. Reset on new prompt. */
@@ -45,26 +55,74 @@ function makeProviderContext(
 }
 
 /**
- * Called by the daemon when a session is being archived.
- * Returns the close result if any provider handles it, or null.
+ * Run provider onSessionClose hooks in-process, from the worker's own
+ * shutdown paths (SIGTERM/SIGINT/IPC shutdown and extension-initiated
+ * shutdownHandler). This MUST run in the worker process: `bridge` is a
+ * module-global initialized by providerExtension's session_start handler,
+ * so a daemon-side import of this module sees `null` (that cross-process
+ * call was a guaranteed no-op — see idea jg017xa4).
+ *
+ * Idempotent: only the first invocation runs providers; concurrent/later
+ * calls await and share that same invocation's result rather than racing
+ * ahead (see sessionClosePromise). Bounded: default 2.5s overall — one
+ * deadline for the whole (possibly multi-provider) close, not per provider
+ * — so the worker stays inside the daemon's SIGTERM→SIGKILL escalation
+ * window.
  */
-export async function triggerSessionClose(
-  sessionId: string,
-  sessionFile: string,
+export async function runProviderSessionClose(
   reason: "close" | "error" | "complete",
-  cwd: string,
+  opts?: { timeoutMs?: number },
+): Promise<SessionCloseResult | null> {
+  if (sessionClosePromise) return sessionClosePromise;
+  sessionClosePromise = doRunProviderSessionClose(reason, opts);
+  return sessionClosePromise;
+}
+
+async function doRunProviderSessionClose(
+  reason: "close" | "error" | "complete",
+  opts?: { timeoutMs?: number },
 ): Promise<SessionCloseResult | null> {
   if (!bridge) return null;
-  return bridge.onSessionClose(
-    { reason, sessionFile },
-    {
-      signal: new AbortController().signal,
-      timeoutMs: 5000,
-      sessionId,
-      sessionFile,
-      cwd,
-    },
-  );
+  const sessionId = process.env.PIZZAPI_SESSION_ID ?? process.env.SESSION_ID ?? "unknown";
+  const sessionFile = currentSessionInfo?.sessionFile ?? sessionId;
+  const cwd = currentSessionInfo?.cwd ?? process.cwd();
+  const timeoutMs = opts?.timeoutMs ?? 2500;
+  const deadline = Date.now() + timeoutMs;
+  // Overall deadline is enforced twice: the bridge's own Promise.race stops
+  // WAITING on a slow provider, but a well-behaved hook can also watch
+  // ctx.signal and cancel its own in-flight work — abort it here so hooks
+  // that honor AbortSignal get a chance to clean up rather than being cut off.
+  const controller = new AbortController();
+  const abortTimer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const result = await bridge.onSessionClose(
+      { reason, sessionFile },
+      {
+        signal: controller.signal,
+        timeoutMs,
+        deadline,
+        sessionId,
+        sessionFile,
+        cwd,
+      },
+    );
+    if (result) {
+      log.info(`Provider close: ${result.label}`);
+    }
+    return result;
+  } catch (err) {
+    log.error("Provider close failed:", err);
+    return null;
+  } finally {
+    clearTimeout(abortTimer);
+    controller.abort();
+  }
+}
+
+/** Test-only: inject a bridge without running provider discovery. */
+export function __setBridgeForTest(b: ProviderBridge | null): void {
+  bridge = b;
+  sessionClosePromise = null;
 }
 
 export async function providerExtension(pi: ExtensionAPI) {
@@ -100,6 +158,12 @@ export async function providerExtension(pi: ExtensionAPI) {
       }
       return true;
     });
+
+    currentSessionInfo = {
+      sessionFile: ctx.sessionManager?.getSessionFile?.() ?? undefined,
+      cwd: ctx.cwd,
+    };
+    sessionClosePromise = null;
 
     if (enabledProviders.length === 0) {
       bridge = null;
@@ -185,6 +249,13 @@ export async function providerExtension(pi: ExtensionAPI) {
 
     currentTurnId++;
 
+    // Keep close-time context fresh — headless switchSession/newSession may
+    // swap the session file without a session_start in this process.
+    currentSessionInfo = {
+      sessionFile: ctx.sessionManager?.getSessionFile?.() ?? currentSessionInfo?.sessionFile,
+      cwd: ctx.cwd ?? currentSessionInfo?.cwd,
+    };
+
     await bridge.onTurnEnd(
       {
         turnIndex: event.turnIndex,
@@ -207,8 +278,8 @@ export async function providerExtension(pi: ExtensionAPI) {
   // ── Session Shutdown: dispose providers ───────────────────────
   pi.on("session_shutdown", async (event, ctx) => {
     if (bridge) {
-      // SessionClose is called separately by daemon before session_shutdown.
-      // Here we only notify shutdown and dispose.
+      // SessionClose runs from the worker's process shutdown paths (see
+      // runProviderSessionClose). Here we only notify shutdown and dispose.
       await bridge.onSessionShutdown(
         { reason: event.reason as "quit", targetSessionFile: event.targetSessionFile },
         makeProviderContext(ctx),
