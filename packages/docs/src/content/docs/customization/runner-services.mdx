@@ -622,6 +622,127 @@ A service doesn't need a UI panel. Omit `panel` from the manifest and skip `anno
 
 ---
 
+## Connectivity Services
+
+A **connectivity service** owns a live connection to an outside network — a chat
+gateway, a webhook receiver, a message queue, an MQTT broker. This is the shape
+to reach for whenever sessions need to talk to a third-party system that keeps a
+persistent connection open.
+
+The rule is simple: **the daemon owns one connection, and sessions never open
+their own.**
+
+### Why not a per-session abstraction
+
+The tempting design is a per-session object — every session gets a `bridge` it
+can connect and send through. It does not survive contact with a real service:
+
+| Problem | What happens with N sessions |
+|---------|------------------------------|
+| **N connections** | Ten sessions means ten gateway connections on one bot token. Discord rate-limits identifies per token; other providers ban outright. |
+| **Duplicate inbound** | Every connection receives every event. Ten sessions each see the same message and ten agents answer it. |
+| **Lifetime mismatch** | Connections belong to the machine, not the conversation. Sessions start and stop constantly; a connection that dies with a session cannot receive anything between sessions — including the message that should *start* one. |
+| **Credential spread** | The token has to be readable by every session process instead of living in one place on the daemon. |
+| **No routing authority** | "Which session owns this thread?" has no answer if every session holds its own map. |
+
+The daemon is the only component with the right lifetime and the right
+cardinality. Everything else follows from putting the connection there.
+
+<Aside type="caution" title="One connection, one owner">
+If you find yourself writing a class that a session constructs to talk to an
+external network, stop. That is the wrong shape. Move the connection to a
+runner service and give sessions a message channel to it.
+</Aside>
+
+### The two directions
+
+Inbound and outbound use different transports, because they have different
+routing problems.
+
+**Inbound — outside world → session.** The service already knows which session
+the event belongs to (it owns the mapping), so it delivers straight to that one
+session over HTTP:
+
+```typescript
+// Targeted: this session only. No subscription required.
+await fetch(`${relayUrl}/api/sessions/${sessionId}/trigger`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-api-key": apiKey },
+    body: JSON.stringify({
+        type: "discord:message",
+        payload: { threadId, text },
+        source: "discord",
+        deliverAs: "steer",
+    }),
+});
+```
+
+Use `POST /api/runners/{runnerId}/trigger-broadcast` instead only when the event
+has **no** single owner and any interested session should hear it — a CI result,
+a repo-wide push. Broadcast fans out to every *subscriber*; it cannot address one
+conversation.
+
+**Outbound — session → outside world.** The session emits a `service_message`
+envelope on its own relay socket. The relay forwards it to the daemon, which
+routes it to the service by `serviceId`:
+
+```typescript
+// In a session-side extension.
+socket.emit("service_message", {
+    serviceId: "discord",
+    type: "discord_post",
+    payload: { sessionId, content },
+});
+```
+
+The service picks it up in the handler it registered during `init()`:
+
+```typescript
+init(socket, opts) {
+    this.onMessage = (envelope) => {
+        if (envelope.serviceId !== "discord") return;
+        if (envelope.type === "discord_post") void this.post(envelope.payload);
+    };
+    socket.on("service_message", this.onMessage);
+}
+```
+
+Note what the session does **not** do: it does not look up a thread, hold a
+token, or know whether the bridge is even configured. It emits one envelope and
+the service drops it if that session has no mapping. Routing lives in exactly one
+place.
+
+<Aside type="tip" title="Round-trip vs fire-and-forget">
+Add a `requestId` and listen for the matching reply when the session needs an
+answer (`create_tunnel` does this — see `packages/cli/src/extensions/tunnel-tools.ts`).
+Omit it for notifications, so a slow or disconnected external service can never
+stall an agent turn.
+</Aside>
+
+### Mapping sessions to conversations
+
+The service owns the mapping and is responsible for its whole lifecycle:
+
+- **Persist it.** Write bindings to the service's `settings.json` (write-to-temp
+  then rename) so a daemon restart does not orphan every live conversation.
+- **Index both ways.** Keep `sessionId → conversation` in memory for outbound
+  routing; the persisted map is keyed by conversation for inbound.
+- **Clean up on session end.** Implement `handleSessionEnded(sessionId)` to drop
+  the binding, and tell the remote side the conversation is over.
+- **Unbind on delivery failure.** A `404` from the trigger endpoint means the
+  session is gone. Drop the binding rather than silently swallowing every
+  subsequent message.
+
+### Worked example
+
+The Discord bridge implements exactly this pattern — one gateway connection for
+the runner, thread-per-session bindings, session spawning from a mention, and a
+panel for status and controls. Its session-side half is
+`packages/cli/src/extensions/discord-mirror.ts`, which forwards each settled
+assistant turn and nothing else.
+
+---
+
 ## ServiceHandler API
 
 The service module must default-export a class implementing the ServiceHandler interface:
