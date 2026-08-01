@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach } from "bun:test";
-import { createDiscordMirrorExtension, lastAssistantText, renderToolCallLine } from "./discord-mirror.js";
+import { createDiscordMirrorExtension, lastAssistantText, sanitizeToolInput } from "./discord-mirror.js";
 
 function createMockPi() {
     const handlers = new Map<string, Function[]>();
@@ -154,11 +154,21 @@ describe("discordMirrorExtension", () => {
         expect(() => pi.fire("agent_settled")).not.toThrow();
     });
 
-    test("emits a discord_activity envelope for each tool call", () => {
+    test("emits a discord_activity envelope with raw toolName/input for each tool call", () => {
         pi.fire("tool_call", { toolName: "bash", input: { command: "ls -la" } });
         expect(emitted).toHaveLength(1);
         expect(emitted[0].payload.type).toBe("discord_activity");
-        expect(emitted[0].payload.payload).toMatchObject({ sessionId: "sess-1", line: expect.stringContaining("bash") });
+        expect(emitted[0].payload.payload).toMatchObject({
+            sessionId: "sess-1",
+            toolName: "bash",
+            input: { command: "ls -la" },
+        });
+    });
+
+    test("forwards update_todo's input as-is — no per-tool hardcoding needed", () => {
+        const todos = [{ id: 1, text: "Do the thing", status: "in_progress" }];
+        pi.fire("tool_call", { toolName: "update_todo", input: { todos } });
+        expect(emitted[0].payload.payload).toMatchObject({ toolName: "update_todo", input: { todos } });
     });
 
     test("surfaces tool errors but stays quiet on successes", () => {
@@ -207,12 +217,26 @@ describe("discordMirrorExtension", () => {
     });
 });
 
-describe("renderToolCallLine", () => {
-    test("summarizes common tools with their key input", () => {
-        expect(renderToolCallLine("read", { path: "src/x.ts" })).toContain("src/x.ts");
-        expect(renderToolCallLine("bash", { command: "echo hi\nsecond line" })).toContain("echo hi");
-        expect(renderToolCallLine("bash", { command: "echo hi\nsecond line" })).not.toContain("second line");
-        expect(renderToolCallLine("mystery-tool", {})).toContain("mystery-tool");
-        expect(renderToolCallLine(undefined, undefined)).toContain("tool");
+describe("sanitizeToolInput", () => {
+    test("passes small inputs through unchanged", () => {
+        expect(sanitizeToolInput({ path: "src/x.ts" })).toEqual({ path: "src/x.ts" });
+    });
+
+    test("caps long string fields so huge file/bash content doesn't ship over the relay", () => {
+        const big = "x".repeat(1_000);
+        const out = sanitizeToolInput({ content: big });
+        expect((out.content as string).length).toBeLessThan(1_000);
+        expect((out.content as string).endsWith("…")).toBe(true);
+    });
+
+    test("leaves non-string fields (e.g. a todos array) alone", () => {
+        const todos = [{ id: 1, text: "a", status: "pending" }];
+        expect(sanitizeToolInput({ todos })).toEqual({ todos });
+    });
+
+    test("returns {} for non-object input", () => {
+        expect(sanitizeToolInput(undefined)).toEqual({});
+        expect(sanitizeToolInput(null)).toEqual({});
+        expect(sanitizeToolInput("nope")).toEqual({});
     });
 });

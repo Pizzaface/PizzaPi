@@ -24,30 +24,25 @@ import { sanitizeQuestions } from "./remote-ask-user.js";
 /** Discord's hard limit is 2000 chars; the service re-chunks, this just bounds the payload. */
 const MAX_MIRROR_CHARS = 8_000;
 
-/** Trim to one line and cap length for a compact tool-activity line. */
-function summarize(value: unknown, max = 120): string {
-    const s = String(value ?? "").split("\n")[0].trim();
-    return s.length <= max ? s : `${s.slice(0, max - 1)}…`;
-}
+/** Per-field cap on tool_call input shipped over the relay — big file/bash content stays local. */
+const MAX_INPUT_FIELD_CHARS = 500;
 
 /**
- * Render a compact one-line summary of a tool call for the Discord thread.
- * Falls back to just the tool name for tools we don't special-case.
+ * Shallow-copy a tool call's input, capping any long string field so a
+ * `write` of a huge file (or similar) doesn't ship megabytes over the relay.
+ * No per-tool-name knowledge here — rendering happens in the Discord
+ * package, which can format *any* tool generically instead of this
+ * extension needing a hardcoded allowlist that drifts from the real tool set.
  */
-export function renderToolCallLine(toolName: unknown, input: any): string {
-    const t = typeof toolName === "string" && toolName ? toolName : "tool";
-    const i = input && typeof input === "object" ? input : {};
-    const code = (v: unknown) => (v ? ` \`${summarize(v)}\`` : "");
-    switch (t) {
-        case "bash": return `\u2699\uFE0F \`bash\`${code(i.command)}`;
-        case "read": return `\uD83D\uDCD6 \`read\`${code(i.path)}`;
-        case "write": return `\u270F\uFE0F \`write\`${code(i.path)}`;
-        case "edit": return `\u270F\uFE0F \`edit\`${code(i.path)}`;
-        case "grep": return `\uD83D\uDD0D \`grep\`${code(i.pattern)}`;
-        case "find": return `\uD83D\uDD0D \`find\`${code(i.pattern ?? i.query)}`;
-        case "ls": return `\uD83D\uDCC1 \`ls\`${code(i.path)}`;
-        default: return `\uD83D\uDD27 \`${t}\``;
+export function sanitizeToolInput(input: unknown): Record<string, unknown> {
+    if (!input || typeof input !== "object") return {};
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(input as Record<string, unknown>)) {
+        out[k] = typeof v === "string" && v.length > MAX_INPUT_FIELD_CHARS
+            ? `${v.slice(0, MAX_INPUT_FIELD_CHARS)}…`
+            : v;
     }
+    return out;
 }
 
 export interface DiscordMirrorDeps {
@@ -131,7 +126,7 @@ export function createDiscordMirrorExtension(deps: DiscordMirrorDeps = defaultDe
                 });
                 return;
             }
-            emit("discord_activity", { line: renderToolCallLine(name, event?.input) });
+            emit("discord_activity", { toolName: name, input: sanitizeToolInput(event?.input) });
         });
 
         // set_session_name -> Discord thread title. session_info_changed fires
