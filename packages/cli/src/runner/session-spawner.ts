@@ -46,6 +46,32 @@ export function killSessionProcessGroup(pid: number | undefined, signal: NodeJS.
     }
 }
 
+/**
+ * Tell every live worker that the daemon is restarting on purpose, so they do
+ * not exit when the IPC channel closes.  Waits for the sends to flush (bounded)
+ * because the daemon exits right after this returns.
+ */
+export async function notifyWorkersOfRestart(
+    runningSessions: Map<string, RunnerSession>,
+    timeoutMs = 1_000,
+): Promise<void> {
+    const sends = Array.from(runningSessions.values())
+        .map((s) => s.child)
+        .filter((c): c is ChildProcess => !!c?.connected)
+        .map((child) => new Promise<void>((resolve) => {
+            try {
+                child.send({ type: "detach" }, () => resolve());
+            } catch {
+                resolve();
+            }
+        }));
+    if (sends.length === 0) return;
+    await Promise.race([
+        Promise.all(sends),
+        new Promise<void>((resolve) => setTimeout(resolve, timeoutMs)),
+    ]);
+}
+
 /** Is this process running inside a compiled Bun single-file binary? */
 // Detect compiled Bun single-file binary.
 // - Unix: import.meta.url contains "$bunfs"

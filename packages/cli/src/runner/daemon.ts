@@ -44,7 +44,7 @@ import { normalizeLoopbackHost } from "../relay-url.js";
 import { startUsageRefreshLoop, stopUsageRefreshLoop } from "./runner-usage-cache.js";
 import { startOllamaModelsRefreshLoop, stopOllamaModelsRefreshLoop } from "./runner-ollama-models-cache.js";
 import { getWorkspaceRoots } from "./workspace.js";
-import { type RunnerSession, spawnSession, killSessionProcessGroup } from "./session-spawner.js";
+import { type RunnerSession, spawnSession, killSessionProcessGroup, notifyWorkersOfRestart } from "./session-spawner.js";
 import { pruneSessionCloseMetadata, type SessionCloseMetadata } from "./session-close-metadata.js";
 
 import { scanGlobalSkills } from "../skills.js";
@@ -1096,6 +1096,10 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
         const shutdown = async (code: number) => {
             if (isShuttingDown) return;
             isShuttingDown = true;
+            // Workers exit when our IPC channel closes (see worker.ts "disconnect").
+            // On an intentional restart (42) tell them to stay alive so the next
+            // daemon re-adopts them; every other exit takes its sessions with it.
+            if (code === 42) await notifyWorkersOfRestart(runningSessions);
             clearInterval(stopFilePoll);
             clearInterval(endedSessionSweep);
             clearInterval(sessionCloseMetadataSweep);
