@@ -18,9 +18,7 @@ Pin a version tag — `ghcr.io/pizzaface/pizzapi-runner:0.5.61`, matching your C
 ## Quick start
 
 <Steps>
-1. **Get a runner token.** Open your relay's web UI → Settings → **Runner Tokens** card → create one. It gives you the `PIZZAPI_RELAY_URL` and `PIZZAPI_API_KEY` values to copy.
-
-2. **Start the container** with Compose:
+1. **Start the container** with Compose — no API key needed yet:
 
    ```yaml
    # compose.yml
@@ -31,7 +29,6 @@ Pin a version tag — `ghcr.io/pizzaface/pizzapi-runner:0.5.61`, matching your C
        stop_grace_period: 30s
        environment:
          PIZZAPI_RELAY_URL: https://pizza.example.com
-         PIZZAPI_API_KEY: ${PIZZAPI_API_KEY}
          PIZZAPI_RUNNER_NAME: docker-runner
        volumes:
          - runner-data:/home/pizza/.pizzapi
@@ -51,12 +48,19 @@ Pin a version tag — `ghcr.io/pizzaface/pizzapi-runner:0.5.61`, matching your C
    docker run -d --name pizzapi-runner \
      --restart unless-stopped --stop-timeout 30 \
      -e PIZZAPI_RELAY_URL=https://pizza.example.com \
-     -e PIZZAPI_API_KEY="$PIZZAPI_API_KEY" \
      -e PIZZAPI_RUNNER_NAME=docker-runner \
      -v runner-data:/home/pizza/.pizzapi \
      -v "$(pwd)/projects:/workspace" \
      ghcr.io/pizzaface/pizzapi-runner:0.5.61
    ```
+
+2. **Approve it.** A container with no resolvable credential and a known relay URL auto-pairs on boot: it prints an approval URL + QR code to its logs (re-printed roughly every 60s while it waits) and polls for approval.
+
+   ```bash
+   docker compose logs -f runner
+   ```
+
+   Open the printed URL in a browser where you're already signed in to the relay, and approve. The runner then saves the minted key into the data volume and continues starting — no restart needed.
 
 3. **Confirm it registered:**
 
@@ -66,8 +70,10 @@ Pin a version tag — `ghcr.io/pizzaface/pizzapi-runner:0.5.61`, matching your C
    docker exec pizzapi-runner pizza runner status
    ```
 
-   Or check the relay's web UI — the runner shows up under its display name (`PIZZAPI_RUNNER_NAME`, defaulting to the container's hostname).
+   Or check the relay's web UI — the runner shows up under its display name (`PIZZAPI_RUNNER_NAME`, defaulting to the container's hostname), and the key it used shows up in Settings → API Keys as `runner-<name>`, individually revocable.
 </Steps>
+
+Prefer to skip the approval step entirely — automated provisioning, fleet rollout, `PIZZAPI_PAIRING=0` — see [Credentials](#credentials) below for the Docker/K8s-secrets alternative.
 
 If your relay is itself a Compose service, point at it by service name instead of a public URL:
 
@@ -145,15 +151,58 @@ The entrypoint detects it's running as uid 0, remaps the baked-in `pizza` accoun
 
 ## Credentials
 
-Two credential paths, same as bare-metal:
+### Pairing (recommended)
 
-1. **Environment variables** — `PIZZAPI_API_KEY`, provider keys (`ANTHROPIC_API_KEY`, etc.), ideally from your orchestrator's secret store.
-2. **Persisted `auth.json`** in the data volume — written by `pizza setup` / OAuth login run inside the container, survives recreation.
+A container with no resolvable relay credential and a known `PIZZAPI_RELAY_URL` auto-pairs on boot instead of failing: it mints a device-claim token, prints an approval URL + QR code to stdout (re-printed roughly every 60s while pending), and polls the relay. Approving it from an already-authenticated browser mints a fresh, dedicated API key — named `runner-<name>`, where `<name>` is `PIZZAPI_RUNNER_NAME` or the container's hostname if unset — and the runner saves it (plus the relay URL) into `config.json` in the data volume and continues starting, no restart required.
 
-macOS Keychain-stored credentials do **not** cross into the container — it's Linux. If you relied on keychain fallback on your Mac, you need an explicit env var or `auth.json` entry instead.
+That key shows up individually in the relay's Settings → API Keys, labeled by name, and can be revoked on its own without touching any other runner's credentials — unlike a hand-copied token shared across machines.
+
+Opt out with `PIZZAPI_PAIRING=0` if you'd rather the container fail fast with an actionable error than sit there waiting for a human to click a link (e.g. for the secrets-file path below, or any automated provisioning where no one will be watching the logs).
+
+**Re-pairing after revoking a key.** Revoking the minted key in the web UI doesn't make the runner forget it — the stale key is only in `config.json` in the data volume. To force a fresh pairing, remove the stored credential and restart (this assumes the pairing-first setup above, with no `PIZZAPI_API_KEY` env var set on the service — if you also have `PIZZAPI_API_KEY` in the environment, that still wins over the now-revoked value in `config.json`; remove it from Compose too):
+
+```bash
+docker compose exec runner rm /home/pizza/.pizzapi/config.json
+docker compose restart runner
+```
+
+(If you've also persisted `auth.json`/provider credentials you want to keep, don't remove the whole volume — just `config.json`, which is what holds `apiKey`/`relayUrl`.)
+
+### Docker/K8s secrets (alternative)
+
+For automated provisioning where pairing's human-approval step doesn't fit — CI, fleet rollout — mount credentials as files and point env vars at them instead:
+
+| Variable | Behavior |
+|---|---|
+| `<NAME>_FILE` (e.g. `PIZZAPI_API_KEY_FILE`, `ANTHROPIC_API_KEY_FILE`, `GH_TOKEN_FILE`) | Populates `<NAME>` from the trimmed contents of the file at that path, but **only** for credential-shaped names — ones ending in `_KEY` or `_TOKEN` (which covers `_API_KEY`). An already-set `<NAME>` wins over its `_FILE` counterpart. Any other `*_FILE` var (e.g. an app's own `NTFY_AUTH_FILE`) is left completely alone. |
+| `PIZZAPI_AUTH_FILE` | Seeds `<data volume>/auth.json` (mode `0600`) from the file at that path, but **only when `auth.json` doesn't already exist**. It never overwrites an existing one — OAuth refresh writes back to `auth.json` on every token refresh, so clobbering it on every restart would destroy already-refreshed credentials. |
+
+The deliberate `_KEY`/`_TOKEN` scoping matters: a blanket `*_FILE` → bare-name expansion would silently repurpose any unrelated app's own `FOO_FILE` convention (pointing at a config path, a binary DB, whatever) the moment it happened to share a name with something the runner reads — restricting it to credential-shaped suffixes keeps the behavior predictable.
+
+```yaml
+services:
+  runner:
+    environment:
+      PIZZAPI_API_KEY_FILE: /run/secrets/pizzapi_api_key
+      PIZZAPI_AUTH_FILE: /run/secrets/pizzapi_auth_json
+    secrets:
+      - pizzapi_api_key
+      - pizzapi_auth_json
+secrets:
+  pizzapi_api_key:
+    file: ./secrets/pizzapi_api_key.txt
+  pizzapi_auth_json:
+    file: ./secrets/auth.json
+```
+
+### Other notes
+
+macOS Keychain-stored credentials do **not** cross into the container — it's Linux. If you relied on keychain fallback on your Mac, you need an explicit env var, `_FILE` secret, or `auth.json` entry instead.
 
 <Aside type="caution" title="Worker sessions inherit almost all of the daemon's environment">
   Every env var set on the runner container — including Compose secrets meant for something else entirely — is forwarded to spawned agent sessions, except a small denylist: `PIZZAPI_RUNNER_TOKEN`, `PIZZAPI_RUNNER_API_KEY`, `PIZZAPI_SESSION_PROVIDER`, `NODE_OPTIONS`, `BUN_OPTIONS`, `LD_PRELOAD`, `DYLD_INSERT_LIBRARIES`, `DYLD_FORCE_FLAT_NAMESPACE`. There's no daemon-only secrecy for arbitrary env vars — if a sidecar's `DATABASE_URL` is on the runner's environment, an agent session can read it (`process.env`) and could put it in a file or shell command. Keep secrets a session shouldn't see out of the **runner's** environment; put them on the sidecar's environment instead.
+
+  This includes the runner's own relay key: the daemon passes its resolved `PIZZAPI_API_KEY` into every worker session's environment (`packages/cli/src/runner/session-spawner.ts`), because worker sessions connect to the relay themselves. **Pairing does not change this.** It shrinks the blast radius of a leak — a dedicated, individually revocable key instead of a master token shared across every runner — but any agent code running in the container can still read that key via `process.env` and do whatever a valid API key can do. Pairing is not session isolation; it's damage-limitation for the credential's scope and lifecycle.
 </Aside>
 
 ---
@@ -280,13 +329,14 @@ docker exec pizzapi-runner pizza runner status --json
 }
 ```
 
-When unhealthy, `reason` explains why (`"no runner state file found"`, `"process not running"`, or `"not registered with relay"`) — see the [CLI Reference](/PizzaPi/running/cli-reference/#pizzapi-runner-status).
+When unhealthy, `reason` explains why — `"no runner state file found"`, `"process not running"`, `"not registered with relay"`, a pending-pairing message with the approval URL, or `"relay rejected credentials — check PIZZAPI_API_KEY / re-pair"` — see the [CLI Reference](/PizzaPi/running/cli-reference/#pizzapi-runner-status).
 
 Other operational notes:
 
 - `restart: unless-stopped` + `stop_grace_period: 30s` — `docker stop` sends SIGTERM to `tini` (PID 1), which forwards it through the supervisor to the daemon, the same clean-shutdown path as running `pizza runner stop`. Give it the full 30s window to disconnect and release its lock before Docker sends SIGKILL.
 - Logs are the runner's stdout/stderr (`docker logs pizzapi-runner`). Rotation is Docker's/your logging driver's job, not the image's.
 - **Relay restarts are survivable and need no action.** If the relay goes away, the runner reconnects with backoff, re-registers under the same identity, and preserves its already-initialized runner services rather than tearing them down. Expect the container to report `unhealthy` for a healthcheck interval or two while that happens — don't wire an external supervisor to restart it on the first failed check.
+- **A fresh container waiting on pairing approval is also legitimately `unhealthy`**, for however long it takes a human to click the approval link — minutes, potentially, not one healthcheck interval. This is intentional: the `HEALTHCHECK` (`--start-period=45s --retries=3`) is left as-is rather than widened for pairing, because Docker's healthcheck only ever reports status here — nothing in this image restarts or kills the container for failing it, so a long unhealthy window costs nothing. Don't wire an autoheal/restart-on-unhealthy supervisor on top of this image; the moment one exists, an unattended pairing window turns into a restart loop instead of a runner patiently waiting for a click.
 - Resource limits (`mem_limit`, `cpus`, ...) apply to the whole container — every session and its child processes share them. Size for your heaviest concurrent session load, not one session.
 - **Upgrade** by pulling a new version tag and recreating the container; the data volume carries identity, auth, and transcripts forward:
 
@@ -302,7 +352,8 @@ Other operational notes:
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | Container unhealthy | Unreachable relay, or wrong `PIZZAPI_RELAY_URL` scheme | `docker exec <ctr> pizza runner status` for the exact `reason`; check the URL scheme matches the relay's actual setup |
-| Logs stop after `connecting to relay at ...` and never say `registered as ...`; status shows `connected false` / `not registered with relay` | Invalid `PIZZAPI_API_KEY`. The socket connects before the key is validated, so a bad key looks like a hang rather than an auth error | Check the **relay's** logs for `Failed to validate API key`, then issue a fresh runner token. Note an `apiKey` in a host `config.json` is not automatically the one your shell has in `PIZZAPI_API_KEY` — confirm which one you're passing |
+| Logs show `[relay] rejected our API key at ... — check PIZZAPI_API_KEY ... or re-pair this runner`; status shows `connected false` / `relay rejected credentials — check PIZZAPI_API_KEY / re-pair` | Invalid or revoked `PIZZAPI_API_KEY` (or a stale key left in `config.json` from a prior pairing). The daemon watches for socket.io's `unauthorized` connect error and logs this loudly and immediately (rate-limited to once/~60s during retries), rather than the old silent hang | Issue a fresh key — re-pair (see [Credentials](#credentials)) if you're using auto-pairing, or a new runner token otherwise. Note an `apiKey` in a host `config.json` is not automatically the one your shell has in `PIZZAPI_API_KEY` — confirm which one you're passing |
+| Container sits `unhealthy` right after a fresh start, with an approval URL in the logs | Expected — auto-pairing is waiting for a human to approve it | Open the printed URL (or re-run `docker compose logs -f runner` to see it again); see [Credentials → Pairing](#pairing-recommended). Not a bug, and nothing should be restarting the container for this |
 | `Permission denied` writing to `/home/pizza/.pizzapi` | Bind-mounted (not named) volume owned by a different host UID | Use a named volume, chown the host dir to `1000:1000`, or use the `PUID`/`PGID` remap path |
 | Spawn request rejected: "outside allowed workspace root(s)" | `cwd` isn't under any `PIZZAPI_WORKSPACE_ROOTS` entry, or you passed a host path instead of a container path | Use the container-side mount path; add the missing root to `PIZZAPI_WORKSPACE_ROOTS` |
 | `command not found` for a language toolchain, `gh`, etc. | Base image intentionally excludes it | Build a [derived image](#sidecars--derived-images) |

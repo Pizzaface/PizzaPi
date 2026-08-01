@@ -190,7 +190,7 @@ pizzapi runner status          # human-readable
 pizzapi runner status --json   # machine-readable
 ```
 
-Exits `0` if the process is alive **and** currently registered with the relay, `1` otherwise (dead process, or alive but disconnected). This is what the [runner container image](/PizzaPi/deployment/runner-container/)'s Docker `HEALTHCHECK` runs. See the [CLI Reference](/PizzaPi/running/cli-reference/#pizzapi-runner-status) for the JSON field reference.
+Exits `0` if the process is alive **and** currently registered with the relay, `1` otherwise (dead process, alive but disconnected, waiting on pairing approval, or rejected by the relay — `reason` distinguishes these). This is what the [runner container image](/PizzaPi/deployment/runner-container/)'s Docker `HEALTHCHECK` runs. See the [CLI Reference](/PizzaPi/running/cli-reference/#pizzapi-runner-status) for the JSON field reference, and [Runner Container → Credentials](/PizzaPi/deployment/runner-container/#credentials) for what auto-pairing does when no `PIZZAPI_API_KEY` is set.
 
 ---
 

@@ -210,7 +210,8 @@ pizzapi runner status --json   # machine-readable, for scripting/monitoring
 | Field | Present when | Description |
 |---|---|---|
 | `healthy` | always | `true` only if the process is alive and `connected` is `true` |
-| `reason` | unhealthy | `"no runner state file found"`, `"process not running"`, or `"not registered with relay"` |
+| `reason` | unhealthy | `"no runner state file found"`, `"pairing pending — approve at <url>"` (auto-pairing is waiting on approval), `"process not running"`, `"relay rejected credentials — check PIZZAPI_API_KEY / re-pair"` (the relay rejected the key — distinct from an ordinary connectivity problem), or `"not registered with relay"` |
+| `pairingUrl` | pairing pending | The approval URL to open, when `reason` is a pending-pairing message |
 | `runnerId`, `runnerName`, `relayUrl`, `cliVersion` | state file exists | Copied from `~/.pizzapi/runner.json` |
 | `connected` | always | Whether the daemon's last-known state is registered with the relay |
 | `pid` | a pid was recorded | The daemon process's own PID (not the supervisor's) |
