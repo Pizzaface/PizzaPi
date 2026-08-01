@@ -78,6 +78,7 @@ export default defineConfig({
                     label: "Deployment",
                     items: [
                         { label: "Self-Hosting", slug: "deployment/self-hosting" },
+                        { label: "Runner Container", slug: "deployment/runner-container" },
                         { label: "Tailscale HTTPS", slug: "deployment/tailscale" },
                         { label: "macOS Service", slug: "deployment/mac-setup" },
                     ],
