@@ -1,0 +1,313 @@
+---
+title: Runner Container
+description: Run the PizzaPi runner in Docker — data volume, workspace mounts, UID/GID remapping, credentials, sidecars, and sandbox posture.
+---
+
+import { Aside, Steps } from "@astrojs/starlight/components";
+
+The runner container image (`ghcr.io/pizzaface/pizzapi-runner`) packages the standalone `pizza runner` binary as a small, non-root Debian image. It's a **remote coding machine** — it dials out to a relay over HTTP/WebSocket and spawns agent sessions against mounted workspaces. It exposes no inbound ports.
+
+<Aside type="caution">
+  This is **not** the relay/server image. To self-host the relay + web UI, see [Self-Hosting](/PizzaPi/deployment/self-hosting/). This page only covers the runner.
+</Aside>
+
+Pin a version tag — `ghcr.io/pizzaface/pizzapi-runner:0.5.61`, matching your CLI/relay version. A `:latest` tag exists but isn't reproducible; don't use it in a config you expect to stay stable across upgrades.
+
+---
+
+## Quick start
+
+<Steps>
+1. **Get a runner token.** Open your relay's web UI → Settings → **Runner Tokens** card → create one. It gives you the `PIZZAPI_RELAY_URL` and `PIZZAPI_API_KEY` values to copy.
+
+2. **Start the container** with Compose:
+
+   ```yaml
+   # compose.yml
+   services:
+     runner:
+       image: ghcr.io/pizzaface/pizzapi-runner:0.5.61
+       restart: unless-stopped
+       stop_grace_period: 30s
+       environment:
+         PIZZAPI_RELAY_URL: https://pizza.example.com
+         PIZZAPI_API_KEY: ${PIZZAPI_API_KEY}
+         PIZZAPI_RUNNER_NAME: docker-runner
+       volumes:
+         - runner-data:/home/pizza/.pizzapi
+         - ./projects:/workspace
+
+   volumes:
+     runner-data:
+   ```
+
+   ```bash
+   docker compose up -d
+   ```
+
+   Or the equivalent `docker run`:
+
+   ```bash
+   docker run -d --name pizzapi-runner \
+     --restart unless-stopped --stop-timeout 30 \
+     -e PIZZAPI_RELAY_URL=https://pizza.example.com \
+     -e PIZZAPI_API_KEY="$PIZZAPI_API_KEY" \
+     -e PIZZAPI_RUNNER_NAME=docker-runner \
+     -v runner-data:/home/pizza/.pizzapi \
+     -v "$(pwd)/projects:/workspace" \
+     ghcr.io/pizzaface/pizzapi-runner:0.5.61
+   ```
+
+3. **Confirm it registered:**
+
+   ```bash
+   docker compose exec runner pizza runner status
+   # or, for the docker run form:
+   docker exec pizzapi-runner pizza runner status
+   ```
+
+   Or check the relay's web UI — the runner shows up under its display name (`PIZZAPI_RUNNER_NAME`, defaulting to the container's hostname).
+</Steps>
+
+If your relay is itself a Compose service, point at it by service name instead of a public URL:
+
+```yaml
+environment:
+  PIZZAPI_RELAY_URL: http://server:7492
+```
+
+`localhost` inside the container always means the **container itself** — not your host, and not the relay (the relay is never this same container).
+
+---
+
+## Data volume
+
+Mount `/home/pizza/.pizzapi` as one persistent volume — everything that makes the runner *this* runner lives there:
+
+- `runner.json` — runner identity (`runnerId`) and secret (`runnerSecret`) used to re-authenticate with the relay, plus the process lock
+- `config.json`, `settings.json`, `models.json`
+- `auth.json` — provider credentials (OAuth tokens, saved API keys)
+- session transcripts and attachments
+- the usage database/cache
+- installed packages, plugins, agents, skills, and global runner services
+
+Persist the whole directory, not a subset — it's one coupled unit. Treat it as **secret-bearing**: it holds `runnerSecret` and provider tokens. Never bake it into an image or commit it.
+
+If you don't persist it: every container recreation gets a **new** `runnerId` (the relay sees a brand-new runner registering, not the same one reconnecting), all provider auth is gone (re-run `pizza setup` / OAuth login inside the container), and every session transcript and attachment is lost.
+
+---
+
+## Workspaces
+
+Mount project directories under `/workspace` (or wherever `PIZZAPI_WORKSPACE_ROOTS` points — the image defaults it to `/workspace`):
+
+```yaml
+volumes:
+  - ./projects/client-a:/workspace/client-a
+  - ./projects/client-b:/workspace/client-b:ro
+```
+
+- `PIZZAPI_WORKSPACE_ROOTS` is comma-separated: `/workspace/client-a,/workspace/client-b`.
+- Spawn requests (`spawn_session`, the web UI's session picker) must use **container paths** — `/workspace/client-a`, not the host path you mounted from.
+- Read-only mounts (`:ro`) work, but agents can't edit those files.
+- A spawn request with a `cwd` outside every configured root is rejected: `Requested cwd is outside allowed workspace root(s): <path>`.
+- If you unset `PIZZAPI_WORKSPACE_ROOTS` entirely, the runner is **unscoped** — any path on the container filesystem is allowed. Don't do this in a shared container.
+
+---
+
+## UID/GID ownership
+
+The image runs as a fixed non-root user, `pizza` (uid/gid `1000:1000`), by default. Named volumes (like `runner-data` above) pick up that ownership automatically the first time Docker populates them from the image. Bind mounts are the common failure case: if `./projects` on the host is owned by a different UID than 1000, the container's `pizza` user can't write to it.
+
+To match a host UID/GID, run the container **as root** and let the entrypoint remap and drop privileges — don't just set a raw `user:` override:
+
+```yaml
+services:
+  runner:
+    image: ghcr.io/pizzaface/pizzapi-runner:0.5.61
+    user: "0:0"          # required — the entrypoint needs root to remap, then drops it
+    environment:
+      PUID: "1000"
+      PGID: "1000"
+      PIZZAPI_CHOWN_WORKSPACE: "1"   # recursively chown mounted workspace roots to PUID:PGID
+    volumes:
+      - runner-data:/home/pizza/.pizzapi
+      - ./projects:/workspace
+```
+
+The entrypoint detects it's running as uid 0, remaps the baked-in `pizza` account to `PUID`/`PGID`, chowns `$HOME` and `.pizzapi`, optionally chowns the workspace roots (`PIZZAPI_CHOWN_WORKSPACE=1` — a recursive `chown`, can be slow on large repos), then drops privileges via `setpriv` before exec'ing `tini -- pizza runner`. The daemon itself never runs as root.
+
+<Aside type="caution">
+  Don't set `user: "5000:5000"` directly without `PUID`/`PGID` and running as root first. A raw uid override leaves no `/etc/passwd` entry for that uid — verified: `whoami` fails and `git` operations break, since git refuses to resolve a committer identity for an unknown uid. This is exactly why the remap path exists; use it instead of a bare `user:` override.
+</Aside>
+
+---
+
+## Credentials
+
+Two credential paths, same as bare-metal:
+
+1. **Environment variables** — `PIZZAPI_API_KEY`, provider keys (`ANTHROPIC_API_KEY`, etc.), ideally from your orchestrator's secret store.
+2. **Persisted `auth.json`** in the data volume — written by `pizza setup` / OAuth login run inside the container, survives recreation.
+
+macOS Keychain-stored credentials do **not** cross into the container — it's Linux. If you relied on keychain fallback on your Mac, you need an explicit env var or `auth.json` entry instead.
+
+<Aside type="caution" title="Worker sessions inherit almost all of the daemon's environment">
+  Every env var set on the runner container — including Compose secrets meant for something else entirely — is forwarded to spawned agent sessions, except a small denylist: `PIZZAPI_RUNNER_TOKEN`, `PIZZAPI_RUNNER_API_KEY`, `PIZZAPI_SESSION_PROVIDER`, `NODE_OPTIONS`, `BUN_OPTIONS`, `LD_PRELOAD`, `DYLD_INSERT_LIBRARIES`, `DYLD_FORCE_FLAT_NAMESPACE`. There's no daemon-only secrecy for arbitrary env vars — if a sidecar's `DATABASE_URL` is on the runner's environment, an agent session can read it (`process.env`) and could put it in a file or shell command. Keep secrets a session shouldn't see out of the **runner's** environment; put them on the sidecar's environment instead.
+</Aside>
+
+---
+
+## Sidecars & derived images
+
+Sidecars (databases, Ollama, MCP HTTP servers) share the Compose network and get addressed by service DNS name:
+
+```yaml
+services:
+  runner:
+    environment:
+      DATABASE_URL: postgres://user:pass@postgres:5432/app
+      OLLAMA_HOST: http://ollama:11434
+  postgres:
+    image: postgres:16
+  ollama:
+    image: ollama/ollama
+```
+
+The base image deliberately ships **no** `gh`, Node, Python, or compilers — only what PizzaPi itself needs (git, ssh, ripgrep, bash, bubblewrap, curl, tini). Add a toolchain in a derived image:
+
+```dockerfile
+# Dockerfile
+FROM ghcr.io/pizzaface/pizzapi-runner:0.5.61
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        nodejs npm gh \
+    && rm -rf /var/lib/apt/lists/*
+USER pizza
+```
+
+Stdio MCP servers and custom runner services need their executable dependencies (interpreters, CLIs) baked into a derived image the same way — the base image won't have them.
+
+---
+
+## Runner services & tunnels
+
+Built-in runner services — terminal, file explorer, git, process, memory, time, tunnel — run inside the container unmodified. Their ports stay internal to the container; the browser reaches them through the relay's existing `/_tunnel` WebSocket proxy (the same mechanism [`create_tunnel`](/PizzaPi/features/tunnels/) uses for dev-server previews). You don't need any `ports:` entries in Compose for this to work.
+
+---
+
+## SSH & git identity
+
+Prefer forwarding an SSH agent socket over mounting private keys:
+
+```yaml
+services:
+  runner:
+    environment:
+      SSH_AUTH_SOCK: /ssh-agent
+    volumes:
+      - ${SSH_AUTH_SOCK}:/ssh-agent:ro
+```
+
+For git identity, either mount your host config read-only:
+
+```yaml
+volumes:
+  - ~/.gitconfig:/home/pizza/.gitconfig:ro
+```
+
+or point git's own `GIT_CONFIG_GLOBAL` at a file inside the persisted volume so identity survives recreation without a host mount:
+
+```yaml
+environment:
+  GIT_CONFIG_GLOBAL: /home/pizza/.pizzapi/gitconfig
+```
+
+then run `git config --global user.name "..." && git config --global user.email "..."` once inside the container. The default `/home/pizza/.gitconfig` location is **not** part of the persisted `.pizzapi` volume and won't survive a recreation unless you use one of the two options above.
+
+---
+
+## Sandbox posture
+
+The container is the machine boundary, not a per-session boundary — every session in the container shares its filesystem and process namespace unless PizzaPi's own sandbox is enabled and configured.
+
+The image defaults to `PIZZAPI_SANDBOX=none`. That's not a convenience default: bubblewrap (the Linux sandbox backend) can't create user namespaces under Docker's default seccomp profile, even running as root. Verified on Docker 29.5.3.
+
+To opt in to the nested-bubblewrap sandbox:
+
+```yaml
+services:
+  runner:
+    security_opt:
+      - "seccomp=unconfined"
+    environment:
+      PIZZAPI_SANDBOX: basic
+```
+
+This is a trade, not a free win: `seccomp=unconfined` widens the syscalls available to everything in the container, weakening the container's own isolation from the host in exchange for the nested sandbox being able to isolate sessions from each other inside it. Verify it on your actual host before relying on it — see [Agent Sandbox](/PizzaPi/security/sandbox/) for what `basic` mode actually restricts.
+
+<Aside type="caution">
+  The web terminal has full runner-user (`pizza`) permissions inside the container and no separate sandbox of its own. Don't expose a runner container's web terminal to anyone who shouldn't have a shell on that box.
+</Aside>
+
+---
+
+## Health, logs, upgrades
+
+The image ships a `HEALTHCHECK` that runs `pizza runner status` every 30s (5s timeout, 45s start period, 3 retries). Exit 0 means the process is alive **and** registered with the relay — not just alive:
+
+```bash
+docker inspect --format='{{.State.Health.Status}}' pizzapi-runner
+
+# for scripting / your own monitoring
+docker exec pizzapi-runner pizza runner status --json
+```
+
+```json
+{
+  "healthy": true,
+  "runnerId": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+  "runnerName": "docker-runner",
+  "relayUrl": "https://pizza.example.com",
+  "connected": true,
+  "pid": 47,
+  "startedAt": "2025-01-15T10:30:00.000Z",
+  "cliVersion": "0.5.61"
+}
+```
+
+When unhealthy, `reason` explains why (`"no runner state file found"`, `"process not running"`, or `"not registered with relay"`) — see the [CLI Reference](/PizzaPi/running/cli-reference/#pizzapi-runner-status).
+
+Other operational notes:
+
+- `restart: unless-stopped` + `stop_grace_period: 30s` — `docker stop` sends SIGTERM to `tini` (PID 1), which forwards it through the supervisor to the daemon, the same clean-shutdown path as running `pizza runner stop`. Give it the full 30s window to disconnect and release its lock before Docker sends SIGKILL.
+- Logs are the runner's stdout/stderr (`docker logs pizzapi-runner`). Rotation is Docker's/your logging driver's job, not the image's.
+- Resource limits (`mem_limit`, `cpus`, ...) apply to the whole container — every session and its child processes share them. Size for your heaviest concurrent session load, not one session.
+- **Upgrade** by pulling a new version tag and recreating the container; the data volume carries identity, auth, and transcripts forward:
+
+  ```bash
+  docker compose pull runner
+  docker compose up -d runner
+  ```
+
+---
+
+## Troubleshooting
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| Container unhealthy | Bad `PIZZAPI_API_KEY`, unreachable relay, or wrong `PIZZAPI_RELAY_URL` scheme | `docker exec <ctr> pizza runner status` for the exact `reason`; check the URL scheme matches the relay's actual setup |
+| `Permission denied` writing to `/home/pizza/.pizzapi` | Bind-mounted (not named) volume owned by a different host UID | Use a named volume, chown the host dir to `1000:1000`, or use the `PUID`/`PGID` remap path |
+| Spawn request rejected: "outside allowed workspace root(s)" | `cwd` isn't under any `PIZZAPI_WORKSPACE_ROOTS` entry, or you passed a host path instead of a container path | Use the container-side mount path; add the missing root to `PIZZAPI_WORKSPACE_ROOTS` |
+| `command not found` for a language toolchain, `gh`, etc. | Base image intentionally excludes it | Build a [derived image](#sidecars--derived-images) |
+| Sandbox not active despite `PIZZAPI_SANDBOX=basic` | Missing `security_opt: ["seccomp=unconfined"]` | Add the `security_opt` (see [Sandbox posture](#sandbox-posture)) — and re-check the trade-off before you do |
+
+---
+
+## What this image is not
+
+- Not the relay/server — that's a separate image; see [Self-Hosting](/PizzaPi/deployment/self-hosting/).
+- Not one container per session — one runner container hosts many concurrent sessions.
+- No Docker socket, no Docker-outside-of-Docker — the runner never needs `/var/run/docker.sock`.
+- No host path, host keychain, or host `localhost` access — everything the container sees is what you explicitly mounted or networked in.
+- No universal language-toolchain image — bring what your project needs via a derived image.
