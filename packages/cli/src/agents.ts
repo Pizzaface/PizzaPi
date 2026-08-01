@@ -11,6 +11,7 @@ import { existsSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync 
 import { mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { parseFrontmatterDescription } from "./frontmatter.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -41,22 +42,10 @@ export function parseAgentFrontmatter(filePath: string): { description: string }
         return { description: "" };
     }
 
-    return parseAgentFrontmatterFromString(content);
+    return parseFrontmatterDescription(content);
 }
 
-/**
- * Parse the `description` field out of a frontmatter string.
- * Pure function — no filesystem access.
- */
-export function parseAgentFrontmatterFromString(content: string): { description: string } {
-    if (!content.startsWith("---")) return { description: "" };
-    const end = content.indexOf("\n---", 3);
-    if (end === -1) return { description: "" };
-
-    const block = content.slice(3, end);
-    const match = block.match(/^description:\s*(.+)$/m);
-    return { description: match ? match[1].trim().replace(/^["']|["']$/g, "") : "" };
-}
+export { parseFrontmatterDescription as parseAgentFrontmatterFromString } from "./frontmatter.js";
 
 // ── Agent scanning ────────────────────────────────────────────────────────────
 
