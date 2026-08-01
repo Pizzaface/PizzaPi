@@ -371,6 +371,7 @@ async function main(): Promise<void> {
             skipMcp: process.env.PIZZAPI_NO_MCP === "1",
             skipPlugins,
             skipRelay: process.env.PIZZAPI_NO_RELAY === "1",
+            configSkills: config.skills,
         }),
         additionalSkillPaths: [
             ...buildSkillPaths(cwd, config.skills),

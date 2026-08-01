@@ -29,6 +29,7 @@ import { ollamaCloudProviderExtension } from "./ollama-cloud-provider.js";
 import { providerExtension } from "./providers/extension.js";
 import { sessionAnalysisExtension } from "./session-analysis.js";
 import { providerRequestLogExtension } from "./provider-request-log.js";
+import { createResourcePathsExtension } from "./resource-paths.js";
 
 export interface BuildExtensionFactoriesOptions {
     cwd: string;
@@ -40,6 +41,8 @@ export interface BuildExtensionFactoriesOptions {
     skipPlugins?: boolean;
     /** Skip relay server connection (safe mode). */
     skipRelay?: boolean;
+    /** `config.skills` — extra skill directories from the resolved PizzaPi config. */
+    configSkills?: string[];
 }
 
 /** Tag a factory with a display name for the boot info listing. */
@@ -81,6 +84,20 @@ export function buildPizzaPiExtensionFactories(options: BuildExtensionFactoriesO
     }
 
     factories.push(named(ollamaWebToolsExtension, "ollama-web-tools"));
+
+    // resources_discover dual-path: supplies the same skill/prompt paths as
+    // DefaultResourceLoader's additionalSkillPaths/additionalPromptTemplatePaths
+    // constructor options (kept in place — see resource-paths.ts for why).
+    factories.push(
+        named(
+            createResourcePathsExtension({
+                configSkills: options.configSkills,
+                skipPlugins: options.skipPlugins,
+                cwd: options.cwd,
+            }),
+            "resource-paths",
+        ),
+    );
 
     factories.push(
         named(goalExtension, "goal"),

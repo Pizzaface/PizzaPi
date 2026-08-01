@@ -496,6 +496,7 @@ async function main() {
         skipMcp: noMcp,
         skipPlugins: noPlugins,
         skipRelay: noRelay,
+        configSkills: config.skills,
     });
 
     const loader = new DefaultResourceLoader({
