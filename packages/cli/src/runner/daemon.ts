@@ -38,6 +38,7 @@ import type { ServiceTriggerDef, ServiceSigilDef, TriggerSubscriptionEntry } fro
 import { setLogComponent, logInfo, logWarn, logError } from "./logger.js";
 import { extractHookSummary } from "./hook-summary.js";
 import { defaultStatePath, acquireStateAndIdentity, releaseStateLock, patchRunnerState } from "./runner-state.js";
+import { seedAuthFileIfNeeded } from "../secrets.js";
 import { normalizeLoopbackHost } from "../relay-url.js";
 import { startUsageRefreshLoop, stopUsageRefreshLoop } from "./runner-usage-cache.js";
 import { startOllamaModelsRefreshLoop, stopOllamaModelsRefreshLoop } from "./runner-ollama-models-cache.js";
@@ -657,6 +658,10 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
     // reconfigure_services pass.
     const packageDiscoveryCwd = process.cwd();
     const packageDiscoveryAgentDir = resolveConfiguredAgentDir(packageDiscoveryCwd);
+
+    // Seed provider credentials from a mounted secret on first boot (never
+    // clobbers an existing auth.json — OAuth refresh writes back to it).
+    seedAuthFileIfNeeded(packageDiscoveryAgentDir);
 
     // Priority: env var > config.json > default
     const apiKey =
