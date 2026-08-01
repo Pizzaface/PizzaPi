@@ -33,6 +33,14 @@ export interface ServiceManifest {
         /** Variable names the panel requires. UI resolves and passes as query params. */
         requires?: string[];
     };
+    /**
+     * Whether this service has a UI panel shown to users. Defaults to
+     * `!!panel` when omitted (folder-based legacy manifests never set this
+     * explicitly). Package-origin manifests set it explicitly so a
+     * trigger/sigil-only service (no `panel`) reliably gets
+     * `announceSigilServer` at init time instead of `announcePanel`.
+     */
+    hasPanel?: boolean;
     /** Trigger types this service can emit. Declared in triggers.json or manifest.json. */
     triggers?: ServiceTriggerDef[];
     /** Sigil types this service defines. Declared in sigils.json or manifest.json. */
@@ -48,10 +56,10 @@ export interface ServicePluginResult {
 
 export interface ServicePluginSource {
     /** Where this service was discovered */
-    origin: "global-dir" | "project-dir" | "plugin-manifest";
+    origin: "global-dir" | "project-dir" | "plugin-manifest" | "package";
     /** Absolute path to the source file or plugin directory */
     path: string;
-    /** Plugin name (if from a manifest) */
+    /** Plugin name (if from a manifest) or normalized package identity (if origin is "package") */
     pluginName?: string;
 }
 
@@ -534,7 +542,7 @@ function findDefaultEntry(dir: string): string | null {
  * - Default export is a class with prototype { init, dispose } (needs new)
  * - Default export is a function that returns a ServiceHandler (factory)
  */
-async function loadServiceModule(filePath: string): Promise<ServiceHandler | null> {
+export async function loadServiceModule(filePath: string): Promise<ServiceHandler | null> {
     const mod = await import(filePath);
     const exported = mod.default ?? mod;
 
