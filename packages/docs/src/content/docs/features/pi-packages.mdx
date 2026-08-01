@@ -134,6 +134,8 @@ To create your own package, add a `pi` manifest to `package.json`:
 
 Without a `pi` manifest, pi auto-discovers resources from conventional directories: `extensions/`, `skills/`, `prompts/`, `themes/`.
 
+To additionally ship PizzaPi runner services, agents, rules, or MCP servers, add a `pi.pizzapi` overlay block — see [Overlay Packages & the Extension SDK](/PizzaPi/customization/overlay-packages/). The overlay is additive: vanilla pi ignores it, so one package works in both.
+
 ### Package Structure
 
 ```
