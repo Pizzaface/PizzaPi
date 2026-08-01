@@ -12,9 +12,14 @@ services:
     stop_grace_period: 30s
     environment:
       PIZZAPI_RELAY_URL: https://pizza.example.com
-      PIZZAPI_API_KEY: ${PIZZAPI_API_KEY}
       PIZZAPI_RUNNER_NAME: docker-runner
       PIZZAPI_WORKSPACE_ROOTS: /workspace
+      # No PIZZAPI_API_KEY here — first boot with no credential and a known
+      # relay auto-pairs: `docker compose logs -f runner` prints an approval
+      # URL + QR (re-printed every ~60s while pending), you approve it from
+      # an authenticated browser, and the minted key ("runner-docker-runner")
+      # is saved into the runner-data volume below. No restart needed. See
+      # the "Docker/K8s secrets" block further down for the non-pairing path.
       # If the relay is another Compose service instead of a public URL:
       # PIZZAPI_RELAY_URL: http://server:7492
 
@@ -46,5 +51,25 @@ services:
     # environment:
     #   PIZZAPI_SANDBOX: basic
 
+    # --- Alternative to pairing: Docker/K8s secrets ---
+    # Skips the human-approval step; use when provisioning is automated (CI,
+    # fleet rollout) or PIZZAPI_PAIRING=0 is set. `_FILE` vars only expand for
+    # credential-shaped names (*_KEY / *_TOKEN) — populates the bare name from
+    # the trimmed file contents, without ever putting the secret on the
+    # command line or in `docker inspect`'s env list.
+    # environment:
+    #   PIZZAPI_API_KEY_FILE: /run/secrets/pizzapi_api_key
+    #   PIZZAPI_AUTH_FILE: /run/secrets/pizzapi_auth_json   # seeds auth.json once; never clobbers an existing one
+    # secrets:
+    #   - pizzapi_api_key
+    #   - pizzapi_auth_json
+
 volumes:
   runner-data:
+
+# --- Alternative to pairing: Docker/K8s secrets (top-level declaration) ---
+# secrets:
+#   pizzapi_api_key:
+#     file: ./secrets/pizzapi_api_key.txt
+#   pizzapi_auth_json:
+#     file: ./secrets/auth.json

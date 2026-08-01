@@ -75,6 +75,13 @@ ENV HOME=/home/pizza \
 WORKDIR /workspace
 USER pizza
 
+# Left as-is for auto-pairing: a fresh container with no credential can sit
+# unhealthy for minutes waiting on a human to approve the printed URL. That's
+# honest, not broken — `pizza runner status` reports "pairing pending" while
+# it waits, and Docker's healthcheck only ever reports status; nothing here
+# restarts or kills the container for being unhealthy. Do not wire an
+# autoheal/restart-on-unhealthy supervisor on top of this image — see
+# "Health, logs, upgrades" in docs/deployment/runner-container.mdx.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=45s --retries=3 \
     CMD pizza runner status || exit 1
 
