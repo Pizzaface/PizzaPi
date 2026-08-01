@@ -24,6 +24,41 @@ function warnLoadConfigOnce(projectPath: string, code: string, message: string):
     log.warn(message);
 }
 
+/**
+ * Warn about `providers` / `allowProjectProviders`, which are inert since the
+ * extension-provider layer was removed. Named per source so the message points
+ * at the exact file to edit.
+ */
+function warnObsoleteProviderConfig(
+    projectPath: string,
+    global: Partial<PizzaPiConfig>,
+    project: Partial<PizzaPiConfig>,
+): void {
+    const MIGRATION =
+        "Extension providers were removed. For an external integration that owns a " +
+        "long-lived connection (Discord, Slack, a webhook source), declare a runner " +
+        "service under pi.pizzapi.services \u2014 it is daemon-scoped, so one connection is " +
+        "shared by every session. For per-session behaviour, use a plain pi extension.";
+
+    for (const [source, cfg] of [["~/.pizzapi/config.json", global], [".pizzapi/config.json", project]] as const) {
+        const ids = cfg.providers && typeof cfg.providers === "object" ? Object.keys(cfg.providers) : [];
+        if (ids.length > 0) {
+            warnLoadConfigOnce(
+                projectPath,
+                `obsolete-providers:${source}`,
+                `${source} still defines 'providers' (${ids.join(", ")}) — this key is obsolete and is ignored. ${MIGRATION}`,
+            );
+        }
+        if (cfg.allowProjectProviders !== undefined) {
+            warnLoadConfigOnce(
+                projectPath,
+                `obsolete-allowProjectProviders:${source}`,
+                `${source} still sets 'allowProjectProviders' — this key is obsolete and is ignored, as project-local .pizzapi/providers/ is no longer loaded.`,
+            );
+        }
+    }
+}
+
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
 function readJsonSafe(path: string): Partial<PizzaPiConfig> {
@@ -155,6 +190,11 @@ export function loadConfig(cwd: string = process.cwd()): PizzaPiConfig {
     const config = { ...global, ...project };
     if (hooks) config.hooks = hooks;
     else delete config.hooks;
+
+    // Obsolete extension-provider config (overlay spec §12.4). The provider
+    // layer is gone, so these keys now do nothing at all — say so explicitly
+    // rather than letting a configured-but-inert provider look healthy.
+    warnObsoleteProviderConfig(projectPath, global, project);
 
     // Transport/auth fields: global config always wins over project when both are set.
     // If only the project sets them, allow the value through but emit a warning —
