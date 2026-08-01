@@ -18,7 +18,14 @@ import { basename } from "node:path";
 import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import { createLogger } from "@pizzapi/tools";
 import { loadConfig, type DiscordConfig } from "../config.js";
+import { buildSkillPaths, scanSkillsDir } from "../skills.js";
 import { resolveInputDeliverAs } from "./remote/deliver-as-default.js";
+
+interface SkillMeta {
+    name: string;
+    description: string;
+    commandId?: string;
+}
 
 const log = createLogger("discord");
 
@@ -101,6 +108,7 @@ interface DiscordBridge {
     threadId: string;
     threadUrl: string;
     post(text: string): Promise<void>;
+    postEmbed(title: string, fields: Array<{ name: string; value: string; inline?: boolean }>, color?: number): Promise<void>;
     rename(name: string): Promise<void>;
     /** Fire-and-forget typing indicator. */
     typing(): void;
@@ -110,17 +118,26 @@ interface DiscordBridge {
 interface StartBridgeOptions {
     settings: ResolvedDiscordSettings;
     initialThreadName: string;
+    cwd: string;
     onMessage(content: string): void;
+    onToolCall(name: string, args: unknown): void;
+    onToolResult(result: unknown): void;
+    onArtifact(type: string, data: unknown): void;
+    onMessageStart(): void;
+    onAgentStart(): void;
+    onAgentEnd(): void;
 }
 
-async function startBridge({ settings, initialThreadName, onMessage }: StartBridgeOptions): Promise<DiscordBridge> {
+async function startBridge({ settings, initialThreadName, cwd, onMessage, onToolCall, onToolResult, onArtifact, onMessageStart, onAgentStart, onAgentEnd }: StartBridgeOptions): Promise<DiscordBridge> {
     // Lazy import: unconfigured sessions never pay the discord.js load cost.
     const { Client, GatewayIntentBits } = await import("discord.js");
 
     const client = new Client({
         intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent],
     });
-    client.on("error", (err) => log.warn(`discord client error: ${err.message}`));
+    client.on("error", (err: any) => log.warn(`discord client error: ${err.message}`));
+
+    const skills: SkillMeta[] = [];
 
     await client.login(settings.token);
 
@@ -134,6 +151,31 @@ async function startBridge({ settings, initialThreadName, onMessage }: StartBrid
         name: initialThreadName,
         autoArchiveDuration: 1440,
     });
+
+    // ── Skill enumeration & slash command registration ──
+    const skillPaths = buildSkillPaths(cwd);
+    for (const skillPath of skillPaths) {
+        const skillsInDir = scanSkillsDir(skillPath);
+        for (const skillMeta of skillsInDir) {
+            if (skills.find(s => s.name === skillMeta.name)) continue;
+            skills.push({ name: skillMeta.name, description: skillMeta.description });
+        }
+    }
+
+    if (client.application) {
+        for (const skill of skills) {
+            try {
+                const cmd = await client.application.commands.create({
+                    name: skill.name.toLowerCase().replace(/[^a-z0-9-_]/g, '-'),
+                    description: skill.description || `Run ${skill.name}`,
+                    options: [{ name: 'args', description: 'Arguments for the skill', type: 3, required: false }],
+                });
+                skill.commandId = cmd.id;
+            } catch (err) {
+                log.warn(`failed to register slash command for skill ${skill.name}: ${err instanceof Error ? err.message : String(err)}`);
+            }
+        }
+    }
 
     client.on("messageCreate", (msg: any) => {
         try {
@@ -150,6 +192,20 @@ async function startBridge({ settings, initialThreadName, onMessage }: StartBrid
         }
     });
 
+    client.on("interactionCreate", async (interaction: any) => {
+        try {
+            if (!interaction.isCommand?.()) return;
+            const skill = skills.find(s => s.name.toLowerCase().replace(/[^a-z0-9-_]/g, '-') === interaction.commandName);
+            if (!skill) return;
+            await interaction.deferReply?.();
+            const args = interaction.options?.getString?.('args')?.trim() || '';
+            const cmdStr = args ? `/run-skill ${skill.name} ${args}` : `/run-skill ${skill.name}`;
+            onMessage(cmdStr);
+        } catch (err) {
+            log.warn(`discord interactionCreate handler failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
+    });
+
     return {
         threadId: thread.id,
         threadUrl: `https://discord.com/channels/${thread.guildId}/${thread.id}`,
@@ -163,6 +219,17 @@ async function startBridge({ settings, initialThreadName, onMessage }: StartBrid
         },
         typing() {
             thread.sendTyping?.().catch(() => {});
+        },
+        async postEmbed(title: string, fields: Array<{ name: string; value: string; inline?: boolean }>, color?: number) {
+            const { EmbedBuilder } = await import("discord.js");
+            const embed = new EmbedBuilder()
+                .setTitle(title)
+                .setColor(color ?? 0x5865F2)
+                .setTimestamp();
+            for (const field of fields) {
+                embed.addFields({ name: field.name, value: field.value, inline: field.inline ?? false });
+            }
+            await thread.send({ embeds: [embed] });
         },
         async stop() {
             await client.destroy();
@@ -215,12 +282,63 @@ export function createDiscordExtension(
                 bridge = await startBridge({
                     settings,
                     initialThreadName: threadName(pi.getSessionName(), cwd),
+                    cwd,
                     onMessage(content) {
                         const deliverAs = resolveInputDeliverAs(undefined, agentActive);
                         try {
                             pi.sendUserMessage(content, deliverAs ? { deliverAs } : undefined);
                         } catch (err) {
                             log.warn(`discord -> session inject failed: ${err instanceof Error ? err.message : String(err)}`);
+                        }
+                    },
+                    onToolCall(name, args) {
+                        try {
+                            const argsStr = JSON.stringify(args, null, 2).slice(0, 1000);
+                            bridge?.postEmbed(`🔧 Tool Call: ${name}`, [
+                                { name: 'Arguments', value: `\`\`\`json\n${argsStr}\n\`\`\`` },
+                            ], 0xFFA500).catch(err => log.warn(`discord postEmbed failed: ${err?.message ?? err}`));
+                        } catch (err) {
+                            log.warn(`discord onToolCall handler failed: ${err instanceof Error ? err.message : String(err)}`);
+                        }
+                    },
+                    onToolResult(result) {
+                        try {
+                            const resultStr = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
+                            const chunks = chunkDiscordMessage(resultStr, 1024);
+                            for (const chunk of chunks) {
+                                bridge?.postEmbed(`✅ Tool Result`, [
+                                    { name: 'Output', value: `\`\`\`\n${chunk}\n\`\`\`` },
+                                ], 0x57F287).catch(err => log.warn(`discord postEmbed failed: ${err?.message ?? err}`));
+                            }
+                        } catch (err) {
+                            log.warn(`discord onToolResult handler failed: ${err instanceof Error ? err.message : String(err)}`);
+                        }
+                    },
+                    onArtifact(type, data) {
+                        log.info(`discord: artifact ${type} received (buffering for v2 implementation)`);
+                    },
+                    onMessageStart() {
+                        try {
+                            bridge?.postEmbed(`💭 Agent Thinking`, [{ name: 'Status', value: 'Processing...' }], 0x5865F2)
+                                .catch(err => log.warn(`discord postEmbed failed: ${err?.message ?? err}`));
+                        } catch (err) {
+                            log.warn(`discord onMessageStart handler failed: ${err instanceof Error ? err.message : String(err)}`);
+                        }
+                    },
+                    onAgentStart() {
+                        try {
+                            bridge?.postEmbed(`🤖 Agent Started`, [{ name: 'Status', value: 'Running...' }], 0x5865F2)
+                                .catch(err => log.warn(`discord postEmbed failed: ${err?.message ?? err}`));
+                        } catch (err) {
+                            log.warn(`discord onAgentStart handler failed: ${err instanceof Error ? err.message : String(err)}`);
+                        }
+                    },
+                    onAgentEnd() {
+                        try {
+                            bridge?.postEmbed(`⏹️ Agent Completed`, [{ name: 'Status', value: 'Done' }], 0x57F287)
+                                .catch(err => log.warn(`discord postEmbed failed: ${err?.message ?? err}`));
+                        } catch (err) {
+                            log.warn(`discord onAgentEnd handler failed: ${err instanceof Error ? err.message : String(err)}`);
                         }
                     },
                 });
@@ -259,6 +377,21 @@ export function createDiscordExtension(
         pi.on("agent_end", async () => {
             agentActive = false;
             stopTyping();
+        });
+
+        pi.on("tool_call", async (event: any) => {
+            if (!bridge) return;
+            const toolName = event.toolUseBlock?.name ?? event.name ?? "unknown";
+            const toolInput = event.toolUseBlock?.input ?? event.input ?? {};
+        });
+
+        pi.on("tool_result", async (event: any) => {
+            if (!bridge) return;
+            const result = event.result ?? event.content ?? "(no result)";
+        });
+
+        pi.on("message_start", async () => {
+            if (!bridge) return;
         });
 
         pi.on("message_end", async (event) => {
