@@ -23,6 +23,7 @@ import { setRemoteSessionHost } from "./extensions/remote/session-host-ref.js";
 import { runtimeSessionHost } from "./runner/session-host.js";
 import { migrateAgentDir } from "./migrations.js";
 import { runSetup } from "./setup.js";
+import { expandFileBackedEnv } from "./secrets.js";
 import { createLogger, initSandbox, cleanupSandbox, isSandboxActive } from "@pizzapi/tools";
 
 const log = createLogger("cli");
@@ -31,6 +32,10 @@ const log = createLogger("cli");
 registerBunOAuthFlows();
 
 async function main() {
+    // Docker/K8s secrets are file-based — populate FOO from FOO_FILE for
+    // credential-shaped env vars before anything reads them.
+    expandFileBackedEnv();
+
     const args = process.argv.slice(2);
     const cwdFlagIdx = args.indexOf("--cwd");
     const cwd = cwdFlagIdx !== -1 && args[cwdFlagIdx + 1] ? args[cwdFlagIdx + 1] : process.cwd();

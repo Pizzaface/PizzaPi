@@ -38,6 +38,7 @@ import type { ServiceTriggerDef, ServiceSigilDef, TriggerSubscriptionEntry } fro
 import { setLogComponent, logInfo, logWarn, logError } from "./logger.js";
 import { extractHookSummary } from "./hook-summary.js";
 import { defaultStatePath, acquireStateAndIdentity, releaseStateLock, patchRunnerState } from "./runner-state.js";
+import { seedAuthFileIfNeeded } from "../secrets.js";
 import { normalizeLoopbackHost } from "../relay-url.js";
 import { startUsageRefreshLoop, stopUsageRefreshLoop } from "./runner-usage-cache.js";
 import { startOllamaModelsRefreshLoop, stopOllamaModelsRefreshLoop } from "./runner-ollama-models-cache.js";
@@ -658,6 +659,10 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
     const packageDiscoveryCwd = process.cwd();
     const packageDiscoveryAgentDir = resolveConfiguredAgentDir(packageDiscoveryCwd);
 
+    // Seed provider credentials from a mounted secret on first boot (never
+    // clobbers an existing auth.json — OAuth refresh writes back to it).
+    seedAuthFileIfNeeded(packageDiscoveryAgentDir);
+
     // Priority: env var > config.json > default
     const apiKey =
         process.env.PIZZAPI_RUNNER_API_KEY ??
@@ -1143,6 +1148,9 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                 socket.disconnect();
                 return;
             }
+            // Reaching "connect" means the auth middleware accepted us — clear any
+            // earlier rejection so `runner status` stops reporting it as stale.
+            patchRunnerState(statePath, { authRejected: false });
             if (tunnelClient && !tunnelClientStarted) {
                 tunnelClientStarted = true;
                 tunnelClient.connect();
@@ -1151,6 +1159,30 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             isFirstConnect = false;
             logInfo(`${verb}. Registering as ${identity.runnerId}…`);
             emitRegister();
+        });
+
+        // A bad API key otherwise looks like a silent hang: the server rejects
+        // with next(new Error("unauthorized")) during the handshake, socket.io
+        // never fires "connect", and (with reconnection on) just retries forever.
+        // Surface it loudly and distinctly from an ordinary network failure, but
+        // rate-limit so a long retry loop can't flood the logs.
+        let lastAuthErrorLoggedAt = 0;
+        const AUTH_ERROR_LOG_INTERVAL_MS = 60_000;
+        socket.on("connect_error", (err) => {
+            const message = err instanceof Error ? err.message : String(err);
+            if (message !== "unauthorized") {
+                logWarn(`[relay] connect error: ${message}`);
+                return;
+            }
+            patchRunnerState(statePath, { authRejected: true });
+            const now = Date.now();
+            if (now - lastAuthErrorLoggedAt < AUTH_ERROR_LOG_INTERVAL_MS) return;
+            lastAuthErrorLoggedAt = now;
+            logError(
+                `[relay] rejected our API key at ${sioUrl}/runner — check PIZZAPI_API_KEY ` +
+                    "(or PIZZAPI_RUNNER_API_KEY / PIZZAPI_API_TOKEN), or re-pair this runner. " +
+                    "Retrying, but it will keep failing until credentials are fixed.",
+            );
         });
 
         socket.on("disconnect", (reason, details) => {
