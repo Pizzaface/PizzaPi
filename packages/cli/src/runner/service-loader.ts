@@ -589,7 +589,21 @@ function isServiceHandler(obj: unknown): obj is ServiceHandler {
 // ── Public API ────────────────────────────────────────────────────────────────
 
 export interface DiscoverServicesOptions {
-    /** Include project-local services from .pizzapi/services/ */
+    /**
+     * Include project-local services from `<cwd>/.pizzapi/services/`.
+     *
+     * ⚠️ Deliberately unset by every production caller. The daemon owns ONE
+     * global ServiceRegistry shared by all workspaces, so passing a cwd here
+     * would mount whichever checkout the daemon happened to start in as a
+     * runner-global service for every unrelated session — precisely the scope
+     * leak §6.3 of docs/specs/pi-pizzapi-overlay.md forbids in schema v1
+     * ("A global grant is not an acceptable shortcut").
+     *
+     * Kept because it is the loader half of a future project-scoped design,
+     * which additionally needs scoped registry instances, canonical project
+     * ownership and lifecycle isolation. Do not wire this into daemon.ts to
+     * "restore" project services — that is the bug, not the fix.
+     */
     cwd?: string;
     /** Additional plugin directories to scan for manifest-declared services */
     pluginDirs?: string[];

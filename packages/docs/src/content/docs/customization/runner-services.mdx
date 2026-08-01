@@ -9,6 +9,14 @@ Runner services are background processes on the runner daemon. They can expose i
 
 ![Service panel showing a System Monitor with CPU, memory, disk, and process information](../../../assets/service-panel-screenshot.png)
 
+<Aside type="caution" title="Runner services are runner-global">
+Services are always runner-wide. A project-local `.pizzapi/services/` directory is **not** loaded, and a package configured at project scope does not mount its services.
+
+The daemon keeps a single service registry shared by every workspace on the machine. Mounting a service found in one checkout would silently activate that project's code for unrelated sessions, so PizzaPi does not do it. Overlay packages that declare services are still installable at project scope — PizzaPi warns that the services stay inactive.
+
+Supporting genuinely project-scoped services needs scoped registry instances and lifecycle isolation, not a global grant. See §6.3 of `docs/specs/pi-pizzapi-overlay.md`.
+</Aside>
+
 ---
 
 ## Quick Start
@@ -764,7 +772,7 @@ Panels render inside an iframe in the PizzaPi web interface. The bottom dock is 
 
 ## How It Works
 
-1. The runner daemon discovers service folders in `~/.pizzapi/services/`, project-local `.pizzapi/services/`, and plugin service declarations
+1. The runner daemon discovers service folders in `~/.pizzapi/services/`, plus plugin and package service declarations
 2. It reads `manifest.json` for panel metadata and trigger definitions
 3. It loads the service module and calls `init(socket, { announcePanel })`
 4. The service starts `Bun.serve()` on port 0 and calls `announcePanel(port)`

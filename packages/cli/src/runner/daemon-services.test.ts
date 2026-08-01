@@ -1,7 +1,8 @@
 import { describe, test, expect } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync } from "fs";
 import { tmpdir } from "os";
-import { join } from "path";
+import { join, dirname } from "path";
+import { fileURLToPath } from "url";
 import { resolveAnnouncedDisabledRunnerServices, resolveDisabledRunnerServices, resolveReconfiguredDisabledRunnerServices } from "./daemon.js";
 import { _setGlobalConfigDir, loadGlobalConfig, saveGlobalConfig } from "../config/io.js";
 
@@ -67,6 +68,25 @@ describe("resolveReconfiguredDisabledRunnerServices", () => {
             serviceId: "demo",
             enabled: true,
         })).toEqual(new Set(["nightshift"]));
+    });
+});
+
+describe("legacy service discovery stays runner-global (overlay spec §6.3)", () => {
+    // The daemon owns ONE ServiceRegistry shared by every workspace. Passing a
+    // cwd to discoverServices() would mount the daemon's launch directory as a
+    // runner-global service for unrelated sessions. service-loader still
+    // supports { cwd } as the loader half of a future scoped design, so this
+    // pins the invariant that no production caller actually uses it.
+    test("no discoverServices() call in daemon.ts passes a cwd", () => {
+        const daemonSrc = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "daemon.ts"), "utf-8");
+
+        // Deliberately excludes discoverPackageServices(), which is cwd-scoped by design.
+        const callSites = [...daemonSrc.matchAll(/(?<![A-Za-z])discoverServices\(([\s\S]{0,300}?)\)\s*;/g)];
+
+        expect(callSites.length).toBeGreaterThan(0);
+        for (const [, args] of callSites) {
+            expect(args).not.toMatch(/\bcwd\b/);
+        }
     });
 });
 
