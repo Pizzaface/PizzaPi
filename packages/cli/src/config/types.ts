@@ -326,6 +326,10 @@ export interface ToolSearchConfig {
     keepLoadedTools?: boolean;
 }
 
+/**
+ * @deprecated Obsolete. Shape of a legacy `providers` config entry, kept only
+ * so the obsolete-config warning can type its input.
+ */
 export interface ProviderConfig {
   enabled?: boolean;
   [key: string]: unknown;
@@ -382,7 +386,11 @@ export interface PizzaPiConfig {
      */
     allowProjectHooks?: boolean;
 
-    /** Allow loading providers from project-local .pizzapi/providers/ directories. Default: false. */
+    /**
+     * @deprecated Obsolete. The extension-provider layer was removed; nothing
+     * reads this. Retained only so loadConfig() can still recognise the key and
+     * emit a targeted migration warning (overlay spec §12.4).
+     */
     allowProjectProviders?: boolean;
 
     /**
@@ -572,7 +580,12 @@ export interface PizzaPiConfig {
         evaluateEveryNTurns?: number;
     };
 
-    /** Extension provider configurations, keyed by provider ID. */
+    /**
+     * @deprecated Obsolete. Extension providers were removed — build a runner
+     * service (daemon-scoped, for external connectivity) or a plain pi
+     * ExtensionFactory (session-scoped) instead. Retained so loadConfig() can
+     * recognise the key and warn (overlay spec §12.4); no code consumes it.
+     */
     providers?: Record<string, ProviderConfig>;
 
     /**

@@ -22,7 +22,6 @@ import {
     untrustPlugin,
     _setGlobalConfigDir,
 } from "./io.js";
-import { discoverProviders, globalProvidersDir } from "../providers/loader.js";
 import { createClaudePluginExtension, getPluginSkillPaths, getPluginAgentPaths, getPluginPromptTemplatePaths } from "../extensions/claude-plugins.js";
 
 let tmpHome: string;
@@ -258,64 +257,6 @@ describe("allowProjectMcp (warn-only gate — CRITICAL: servers load regardless)
 
 // ── 3. allowProjectProviders — ENFORCED ─────────────────────────────────────
 
-describe("allowProjectProviders (enforced gate, via discoverProviders({allowProject}))", () => {
-    let origHome: string | undefined;
-
-    beforeEach(() => {
-        origHome = process.env.HOME;
-        process.env.HOME = tmpHome;
-    });
-
-    afterEach(() => {
-        // Bun (like Node) does not delete an env var when you assign
-        // `undefined` to it — it coerces to the string "undefined", leaking
-        // a bogus HOME key into the process for the rest of the test run
-        // whenever origHome was unset. Delete explicitly in that case.
-        if (origHome === undefined) delete process.env.HOME;
-        else process.env.HOME = origHome;
-    });
-
-    function writeProvider(dir: string, id: string): void {
-        mkdirSync(dir, { recursive: true });
-        writeFileSync(
-            join(dir, "index.ts"),
-            `export default {
-                id: ${JSON.stringify(id)},
-                capabilities: ["lifecycle"],
-                init() {},
-                dispose() {},
-                onSessionStart: async () => {},
-            };`,
-        );
-    }
-
-    test("allowProject: false (default) returns ONLY global providers, project provider excluded", async () => {
-        writeProvider(join(globalProvidersDir(), "global-prov"), "global-prov");
-        writeProvider(join(projectDir, ".pizzapi", "providers", "project-prov"), "project-prov");
-
-        const result = await discoverProviders({ cwd: projectDir, allowProject: false });
-        expect(result.providers.map((p) => p.provider.id)).toEqual(["global-prov"]);
-    });
-
-    test("allowProject omitted (undefined) also excludes project providers — default is false", async () => {
-        writeProvider(join(globalProvidersDir(), "global-prov"), "global-prov");
-        writeProvider(join(projectDir, ".pizzapi", "providers", "project-prov"), "project-prov");
-
-        const result = await discoverProviders({ cwd: projectDir });
-        expect(result.providers.map((p) => p.provider.id)).toEqual(["global-prov"]);
-    });
-
-    test("allowProject: true includes both global and project providers", async () => {
-        writeProvider(join(globalProvidersDir(), "global-prov"), "global-prov");
-        writeProvider(join(projectDir, ".pizzapi", "providers", "project-prov"), "project-prov");
-
-        const result = await discoverProviders({ cwd: projectDir, allowProject: true });
-        expect(result.providers.map((p) => p.provider.id).sort()).toEqual(["global-prov", "project-prov"]);
-    });
-});
-
-// ── 4. trustedPlugins — path-based allowlist ────────────────────────────────
-
 describe("trustedPlugins (path-based allowlist)", () => {
     test("getTrustedPlugins returns empty array with no config", () => {
         expect(getTrustedPlugins()).toEqual([]);
@@ -386,106 +327,6 @@ describe("trustedPlugins (path-based allowlist)", () => {
         expect(isPluginTrusted(relativePath)).toBe(true);
     });
 });
-
-// ── 5. allowProjectProviders — enforced at the REAL call site ───────────────
-//
-// Section 3 above pins discoverProviders({allowProject}) directly — useful,
-// but discoverProviders is a low-level helper. The only place that actually
-// decides `allowProject` from persisted config is providerExtension's
-// session_start handler (extensions/providers/extension.ts: `allowProject:
-// loadGlobalConfig().allowProjectProviders === true`). A regression there
-// (e.g. flipping the comparison, or dropping the config read) would pass
-// every test in section 3 while silently loading untrusted project
-// providers in production. These tests go through providerExtension itself.
-
-describe("allowProjectProviders enforcement via providerExtension session_start (real production call site)", () => {
-    let origHome: string | undefined;
-
-    beforeEach(() => {
-        origHome = process.env.HOME;
-        process.env.HOME = tmpHome;
-        (globalThis as any).__trustGateProviderInits = [];
-    });
-
-    afterEach(() => {
-        if (origHome === undefined) delete process.env.HOME;
-        else process.env.HOME = origHome;
-        delete (globalThis as any).__trustGateProviderInits;
-    });
-
-    function writeTrackingProvider(dir: string, id: string): void {
-        mkdirSync(dir, { recursive: true });
-        writeFileSync(
-            join(dir, "index.ts"),
-            `export default {
-                id: ${JSON.stringify(id)},
-                capabilities: ["lifecycle"],
-                init() {
-                    globalThis.__trustGateProviderInits.push(${JSON.stringify(id)});
-                },
-                dispose() {},
-                onSessionStart: async () => {},
-            };`,
-        );
-    }
-
-    /** Registers providerExtension with a minimal fake ExtensionAPI and fires session_start — the real production path, not a direct discoverProviders() call. */
-    async function runProviderExtensionSessionStart(cwd: string): Promise<void> {
-        const { default: providerExtension } = await import("../extensions/providers/extension.js");
-        const handlers = new Map<string, (event: unknown, ctx: unknown) => unknown>();
-        const mockPi = {
-            on(event: string, handler: (event: unknown, ctx: unknown) => unknown) { handlers.set(event, handler); },
-            registerCommand() {},
-        } as any;
-        await providerExtension(mockPi);
-        await handlers.get("session_start")?.(
-            { reason: "startup" },
-            { cwd, signal: new AbortController().signal, sessionManager: { getSessionFile: () => "test-session.json" } },
-        );
-    }
-
-    test("project provider is NOT initialized when allowProjectProviders is unset (config default)", async () => {
-        writeTrackingProvider(join(globalProvidersDir(), "global-a"), "global-a");
-        writeTrackingProvider(join(projectDir, ".pizzapi", "providers", "project-a"), "project-a");
-        writeGlobalConfig({});
-
-        await runProviderExtensionSessionStart(projectDir);
-
-        expect((globalThis as any).__trustGateProviderInits).toEqual(["global-a"]);
-    });
-
-    test("project provider is NOT initialized when allowProjectProviders: false explicitly", async () => {
-        writeTrackingProvider(join(globalProvidersDir(), "global-b"), "global-b");
-        writeTrackingProvider(join(projectDir, ".pizzapi", "providers", "project-b"), "project-b");
-        writeGlobalConfig({ allowProjectProviders: false });
-
-        await runProviderExtensionSessionStart(projectDir);
-
-        expect((globalThis as any).__trustGateProviderInits).toEqual(["global-b"]);
-    });
-
-    test("project provider IS initialized when allowProjectProviders: true", async () => {
-        writeTrackingProvider(join(globalProvidersDir(), "global-c"), "global-c");
-        writeTrackingProvider(join(projectDir, ".pizzapi", "providers", "project-c"), "project-c");
-        writeGlobalConfig({ allowProjectProviders: true });
-
-        await runProviderExtensionSessionStart(projectDir);
-
-        expect(((globalThis as any).__trustGateProviderInits as string[]).sort()).toEqual(["global-c", "project-c"]);
-    });
-});
-
-// ── 6. trustedPlugins — enforced at the REAL call sites ─────────────────────
-//
-// Section 4 above pins isPluginTrusted/trustPlugin/untrustPlugin — the
-// path-allowlist storage layer only. It never exercises the code that
-// actually decides whether a discovered plugin's commands/hooks get
-// registered (createClaudePluginExtension, claude-plugins.ts) or whether
-// its skills/agents are added to pi's search paths (getPluginSkillPaths /
-// getPluginAgentPaths, used by worker.ts and index.ts). A regression that
-// dropped the isPluginTrusted() filter at any of those call sites would
-// pass every test in section 4 while silently loading untrusted
-// project-local plugin code in production.
 
 describe("trustedPlugins enforcement via createClaudePluginExtension / getPluginSkillPaths / getPluginAgentPaths (real production call sites)", () => {
     function writeLocalPlugin(name: string, opts: { skill?: boolean; agent?: boolean } = {}): string {

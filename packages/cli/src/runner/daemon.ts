@@ -436,8 +436,8 @@ export function initServiceHandlers(
 /**
  * Grace window for a worker's graceful shutdown before SIGKILL, on every
  * escalation path (process-group signal, single-child SIGTERM/message
- * fallback). Must cover the worker's own shutdown budget: provider close
- * (<=2.5s, one overall deadline — see runProviderSessionClose) + sandbox
+ * fallback). Must cover the worker's own shutdown budget: pre-exit hooks
+ * (<=2.5s, one overall deadline — see extensions/shutdown-hooks.ts) + sandbox
  * cleanup (<=5s) = 7.5s worst case.
  */
 const SESSION_SHUTDOWN_GRACE_MS = 8_000;
@@ -842,13 +842,12 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             }
             return windows;
         };
-        // NOTE: provider onSessionClose runs IN THE WORKER PROCESS during its
-        // SIGTERM/shutdownHandler paths (see extensions/providers/extension.ts
-        // runProviderSessionClose). The daemon previously imported
-        // triggerSessionClose here, but that was a guaranteed no-op: the
-        // provider bridge is a module-global initialized only in the worker.
-        // Daemon-side crash finalization (worker died without running close)
-        // is tracked as the Phase 3 finalizer contract (idea jg017xa4).
+        // NOTE: pre-exit cleanup runs IN THE WORKER PROCESS during its
+        // SIGTERM/shutdownHandler paths (see extensions/shutdown-hooks.ts).
+        // The daemon previously imported triggerSessionClose here, but that was
+        // a guaranteed no-op: hooks are module-globals registered only in the
+        // worker. Daemon-side crash finalization (worker died without running
+        // its hooks) is tracked as the Phase 3 finalizer contract (idea jg017xa4).
         const tunnelService = new TunnelService();
         if (isServiceDisabled("tunnel")) {
             logInfo('[services] built-in service "tunnel" disabled by config');

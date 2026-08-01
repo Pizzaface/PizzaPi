@@ -164,8 +164,8 @@ You can also override any setting with **environment variables**.
 | `goal.evaluatorModel` | `string` | cheapest available authenticated text model | Model (`provider:modelId` or `modelId`) used by the `/goal` LLM evaluator. |
 | `goal.evaluatorMaxTokens` | `number` | `512` | Maximum output tokens for each `/goal` evaluator call. |
 | `goal.evaluateEveryNTurns` | `number` | `3` | Default cadence for the LLM evaluator. `1` = every turn. Ignored by the keyword evaluator. |
-| `allowProjectProviders` | `boolean` | `false` | Allow loading extension providers from project-local `.pizzapi/providers/` directories. **Global config only.** |
-| `providers` | `object` | — | Extension provider configurations keyed by provider ID. See [Extension Providers](/PizzaPi/customization/providers/). |
+| `allowProjectProviders` | `boolean` | — | **Obsolete and ignored.** Project-local `.pizzapi/providers/` is no longer loaded. PizzaPi warns if this key is still present. |
+| `providers` | `object` | — | **Obsolete and ignored.** The extension-provider layer was removed; PizzaPi warns if this key is still present. Use a [runner service](/PizzaPi/customization/runner-services/) for external integrations, or a plain pi extension for per-session behaviour. |
 | `providerSettings` | `object` | — | Provider-specific settings. See [Web Search](#web-search) and [Per-Provider Overrides](#per-provider-overrides) below. |
 
 ---

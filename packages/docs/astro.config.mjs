@@ -120,7 +120,6 @@ export default defineConfig({
                         { label: "Claude Code Plugins", slug: "customization/claude-plugins" },
                         { label: "Runner Services", slug: "customization/runner-services" },
                         { label: "Overlay Packages & SDK", slug: "customization/overlay-packages" },
-                        { label: "Extension Providers", slug: "customization/providers" },
                         { label: "Subagents", slug: "customization/subagents" },
                     ],
                 },
