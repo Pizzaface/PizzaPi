@@ -61,6 +61,7 @@ import { registerPackagesHandlers } from "./daemon-handlers/packages.js";
 
 // Re-export migration from shared module — used on daemon startup
 import { migrateAgentDir } from "../migrations.js";
+import { buildConfiguredGrantIdentities, reconcileGrants } from "../overlay/grants.js";
 
 /** Map variable name (e.g. "PROJECT_DIR") to camelCase query param key. */
 const VAR_TO_PARAM: Record<string, string> = {
@@ -295,6 +296,31 @@ export function resolveConfiguredAgentDir(cwd = process.cwd()): string {
 }
 
 /**
+ * Reconcile overlayServiceGrants against currently configured USER packages
+ * and their currently declared manifest service IDs (§7.2). Call at daemon
+ * startup and on `reconfigure_services` — this only edits
+ * ~/.pizzapi/config.json, it never mounts/unmounts services (that's driven
+ * separately by discoverServices()). Exported standalone (rather than an
+ * inline closure) so the startup/reconfigure call path has direct
+ * regression coverage without spinning up the full socket.io daemon.
+ */
+export function reconcileOverlayGrants(cwd = process.cwd()): void {
+    try {
+        const agentDir = resolveConfiguredAgentDir(cwd);
+        const configured = buildConfiguredGrantIdentities(cwd, agentDir);
+        const removals = reconcileGrants(configured);
+        for (const removal of removals) {
+            logInfo(
+                `[grants] reconciliation removed [${removal.removedServiceIds.join(", ")}] for ${removal.package}` +
+                    `${removal.fullyRemoved ? " (grant cleared)" : " (grant trimmed)"}`,
+            );
+        }
+    } catch (err) {
+        logWarn(`[grants] reconciliation failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+}
+
+/**
  * Model discovery for the daemon's `list_models` socket event and context-window
  * lookups. Builds a bare ModelRuntime (no extension loading), so ollama-cloud
  * needs an explicit registerOllamaCloudProvider() call to be recognized at all —
@@ -352,6 +378,11 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
 
     // Migrate session storage from legacy locations into flat ~/.pizzapi/
     migrateAgentDir();
+
+    // Reconcile overlayServiceGrants against currently configured USER
+    // packages before anything else touches trust state (§7.2). No service
+    // mounting happens here — grants-only bookkeeping.
+    reconcileOverlayGrants();
 
     // Initialize usage tracking
     initUsage();
@@ -1015,6 +1046,11 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                 }
 
                 logInfo(`[services] reconfiguring: disabling ${Array.from(newDisabledServices).join(", ") || "none"}`);
+
+                // Reconcile overlayServiceGrants against currently configured
+                // USER packages (§7.2) — grants-only bookkeeping, no service
+                // (un)mounting here.
+                reconcileOverlayGrants();
 
                 // Update config on disk
                 const currentConfig = loadGlobalConfig();
