@@ -12,6 +12,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { hostname } from "node:os";
 import { join } from "node:path";
 import { loadGlobalConfig, saveConfigAt } from "../config.js";
+import { toHttpRelayUrl } from "../relay-url.js";
 import { requestHeadlessPairing } from "../setup.js";
 import { logError, logInfo, logWarn } from "./logger.js";
 
@@ -119,13 +120,17 @@ export async function ensureRunnerCredentials(agentDir: string): Promise<number 
     const statusPath = pairingStatusPath(agentDir);
     logInfo(`no credentials found — pairing with ${relayUrl} as "${label}"…`);
 
-    const result = await requestHeadlessPairing(relayUrl!, {
+    // The setup-claim REST endpoints need http(s) — but `relayUrl` here may
+    // already be the ws(s) form a *previous* pairing left in config.json
+    // (apiKey cleared without also clearing relayUrl). See relay-url.ts.
+    const claimRelayUrl = toHttpRelayUrl(relayUrl!);
+    const result = await requestHeadlessPairing(claimRelayUrl, {
         label,
         onClaim: (info) =>
             writePairingStatus(statusPath, {
                 claimUrl: info.claimUrl,
                 expiresAt: info.expiresAt,
-                relayUrl: relayUrl!,
+                relayUrl: claimRelayUrl,
                 startedAt: new Date().toISOString(),
             }),
     });

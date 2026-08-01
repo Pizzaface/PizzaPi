@@ -60,6 +60,12 @@ async function main() {
         process.exit(code);
     }
 
+    if (args[0] === "runner" && args[1] === "pair") {
+        const { runPair } = await import("./runner/pair.js");
+        const code = await runPair(args.slice(2));
+        process.exit(code);
+    }
+
     if (args[0] === "runner") {
         const { runSupervisor } = await import("./runner/supervisor.js");
         const code = await runSupervisor(args.slice(1));
@@ -367,6 +373,7 @@ async function main() {
         log.info(`  ${c.cmd("pizza runner")} ${c.dim("[args]")}         Manage the background runner daemon`);
         log.info(`  ${c.cmd("pizza runner stop")}           Stop the runner daemon`);
         log.info(`  ${c.cmd("pizza runner status")} ${c.dim("[--json]")}  Health check the runner daemon (exit 0 = healthy)`);
+        log.info(`  ${c.cmd("pizza runner pair")} ${c.dim("[--force]")}   Pair (or re-pair) the runner with a fresh API key`);
         log.info(`  ${c.cmd("pizza setup")}                 Run first-time setup`);
         log.info(`  ${c.cmd("pizza usage")} ${c.dim("[provider]")}      Show API usage stats`);
         log.info(`  ${c.cmd("pizza models")}                List available models`);

@@ -39,7 +39,7 @@ import { setLogComponent, logInfo, logWarn, logError } from "./logger.js";
 import { extractHookSummary } from "./hook-summary.js";
 import { defaultStatePath, acquireStateAndIdentity, releaseStateLock, patchRunnerState } from "./runner-state.js";
 import { seedAuthFileIfNeeded } from "../secrets.js";
-import { normalizeLoopbackHost } from "../relay-url.js";
+import { normalizeLoopbackHost, toHttpRelayUrl } from "../relay-url.js";
 import { startUsageRefreshLoop, stopUsageRefreshLoop } from "./runner-usage-cache.js";
 import { startOllamaModelsRefreshLoop, stopOllamaModelsRefreshLoop } from "./runner-ollama-models-cache.js";
 import { getWorkspaceRoots } from "./workspace.js";
@@ -688,17 +688,6 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                 .replace(/\/$/, ""),
         );
 
-        // Normalise the relay URL for socket.io-client (needs http(s)://).
-        // If the user supplies a bare hostname (no scheme), default to https://.
-        function normaliseRelayUrl(raw: string): string {
-            if (raw.startsWith("ws://"))      return raw.replace(/^ws:\/\//, "http://");
-            if (raw.startsWith("wss://"))     return raw.replace(/^wss:\/\//, "https://");
-            if (raw.startsWith("http://"))    return raw;
-            if (raw.startsWith("https://"))   return raw;
-            // No scheme — treat as an https host (e.g. "example.com" or "example.com:5173")
-            return `https://${raw}`;
-        }
-
         function toTunnelRelayUrl(raw: string): string {
             if (raw.startsWith("http://")) return `${raw.replace(/^http:\/\//, "ws://")}/_tunnel`;
             if (raw.startsWith("https://")) return `${raw.replace(/^https:\/\//, "wss://")}/_tunnel`;
@@ -706,7 +695,9 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             return `wss://${raw}/_tunnel`;
         }
 
-        const sioUrl = normaliseRelayUrl(relayRaw);
+        // Normalise the relay URL for socket.io-client (needs http(s)://).
+        // If the user supplies a bare hostname (no scheme), default to https://.
+        const sioUrl = toHttpRelayUrl(relayRaw);
         const tunnelRelayUrl = toTunnelRelayUrl(sioUrl);
 
         const runningSessions = new Map<string, RunnerSession>();

@@ -344,6 +344,30 @@ else
     docker logs "$PAIR_CONTAINER" 2>&1 | tail -50
 fi
 
+# ── 11b. `pizza runner pair` (no --force) refuses on an already-paired container ─
+if docker inspect -f '{{.State.Running}}' "$PAIR_CONTAINER" 2>/dev/null | grep -q true; then
+    CONFIG_BEFORE="$(docker exec "$PAIR_CONTAINER" cat /home/pizza/.pizzapi/config.json 2>/dev/null || echo '')"
+    # `pizza runner pair` legitimately exits non-zero here (refusal) under our
+    # own set -euo pipefail. The `... || true` convention used elsewhere in
+    # this script (e.g. status_reason_of, docker rm -f) discards the exit
+    # code entirely — fine when only the output matters, but here the exit
+    # code IS the thing under test, so capture it via if/else instead.
+    if PAIR_REFUSE_OUT="$(docker exec "$PAIR_CONTAINER" pizza runner pair 2>&1)"; then
+        PAIR_REFUSE_CODE=0
+    else
+        PAIR_REFUSE_CODE=$?
+    fi
+    [ "$PAIR_REFUSE_CODE" -ne 0 ] && record PASS "pizza runner pair (no --force) refuses on an already-paired container" "exit=$PAIR_REFUSE_CODE" \
+        || record FAIL "pizza runner pair (no --force) refuses on an already-paired container" "unexpectedly exited 0: $PAIR_REFUSE_OUT"
+
+    CONFIG_AFTER="$(docker exec "$PAIR_CONTAINER" cat /home/pizza/.pizzapi/config.json 2>/dev/null || echo '')"
+    [ "$CONFIG_BEFORE" = "$CONFIG_AFTER" ] && record PASS "refused pair leaves existing credential untouched" "" \
+        || record FAIL "refused pair leaves existing credential untouched" "config.json changed after refusal"
+else
+    record SKIP "pizza runner pair (no --force) refuses on an already-paired container" "$PAIR_CONTAINER not running (see earlier auto-pairing failures)"
+    record SKIP "refused pair leaves existing credential untouched" "$PAIR_CONTAINER not running"
+fi
+
 # ── 12. PIZZAPI_PAIRING=0 fails fast instead of hanging ─────────────────
 NOPAIR_CONTAINER="$CONTAINER-nopair"
 EXTRA_CONTAINERS+=("$NOPAIR_CONTAINER")

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { normalizeLoopbackHost } from "./relay-url.js";
+import { normalizeLoopbackHost, toHttpRelayUrl } from "./relay-url.js";
 
 describe("normalizeLoopbackHost", () => {
     test("rewrites localhost hosts to 127.0.0.1 across schemes", () => {
@@ -29,5 +29,25 @@ describe("normalizeLoopbackHost", () => {
         expect(normalizeLoopbackHost("http://[::1]:7492")).toBe("http://[::1]:7492");
         expect(normalizeLoopbackHost("off")).toBe("off");
         expect(normalizeLoopbackHost("")).toBe("");
+    });
+});
+
+describe("toHttpRelayUrl", () => {
+    test("converts ws:// to http:// — the form a relayUrl round-trips through config.json in after a successful pair", () => {
+        expect(toHttpRelayUrl("ws://localhost:7492")).toBe("http://localhost:7492");
+    });
+
+    test("converts wss:// to https://", () => {
+        expect(toHttpRelayUrl("wss://relay.example.com")).toBe("https://relay.example.com");
+    });
+
+    test("leaves an already-http(s) URL untouched", () => {
+        expect(toHttpRelayUrl("http://localhost:7492")).toBe("http://localhost:7492");
+        expect(toHttpRelayUrl("https://relay.example.com")).toBe("https://relay.example.com");
+    });
+
+    test("defaults a bare hostname (no scheme) to https, matching the daemon's own socket.io resolution", () => {
+        expect(toHttpRelayUrl("relay.example.com")).toBe("https://relay.example.com");
+        expect(toHttpRelayUrl("relay.example.com:5173")).toBe("https://relay.example.com:5173");
     });
 });

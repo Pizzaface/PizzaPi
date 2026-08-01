@@ -159,14 +159,20 @@ That key shows up individually in the relay's Settings → API Keys, labeled by 
 
 Opt out with `PIZZAPI_PAIRING=0` if you'd rather the container fail fast with an actionable error than sit there waiting for a human to click a link (e.g. for the secrets-file path below, or any automated provisioning where no one will be watching the logs).
 
-**Re-pairing after revoking a key.** Revoking the minted key in the web UI doesn't make the runner forget it — the stale key is only in `config.json` in the data volume. To force a fresh pairing, remove the stored credential and restart (this assumes the pairing-first setup above, with no `PIZZAPI_API_KEY` env var set on the service — if you also have `PIZZAPI_API_KEY` in the environment, that still wins over the now-revoked value in `config.json`; remove it from Compose too):
+**Re-pairing after revoking a key.** Revoking the minted key in the web UI doesn't make the runner forget it — the stale key sits in `config.json` in the data volume until something replaces it. Run the same headless flow on demand instead of hand-editing the volume:
+
+```bash
+docker compose exec runner pizza runner pair --force
+```
+
+This prints a fresh approval URL + QR to the container's stdout (`docker compose logs -f runner` to see it if you're not attached), waits for approval, and overwrites `apiKey`/`relayUrl` in `config.json` on success. Without `--force` it refuses — non-zero exit, existing credential untouched — so it's safe to run speculatively to check what's configured. It also warns (and, without `--force`, refuses outright) if `PIZZAPI_API_KEY` or another credential env var is set on the service, since that would keep shadowing the freshly-paired key at runtime — remove it from Compose's `environment:` in that case. **A currently-running daemon keeps using its old credential in memory** even after a successful pair; the command says so and tells you to `docker compose restart runner` (or `pizza runner stop` + start again) to pick up the new key. See [`pizza runner pair`](/PizzaPi/running/cli-reference/#pizzapi-runner-pair) for the full flag/exit-code reference.
+
+The old manual fallback (remove `config.json` from the volume, then restart so auto-pairing kicks in) still works if you'd rather not run a command inside the container:
 
 ```bash
 docker compose exec runner rm /home/pizza/.pizzapi/config.json
 docker compose restart runner
 ```
-
-(If you've also persisted `auth.json`/provider credentials you want to keep, don't remove the whole volume — just `config.json`, which is what holds `apiKey`/`relayUrl`.)
 
 ### Docker/K8s secrets (alternative)
 

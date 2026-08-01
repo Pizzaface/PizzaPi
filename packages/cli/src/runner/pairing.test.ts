@@ -9,7 +9,9 @@ import {
     pairingStatusPath,
     readPairingStatus,
     clearPairingStatus,
+    ensureRunnerCredentials,
 } from "./pairing.js";
+import { _setGlobalConfigDir } from "../config/io.js";
 
 describe("shouldAutoPair", () => {
     test("triggers when nothing is configured but a relay URL is known", () => {
@@ -95,6 +97,73 @@ describe("resolveKnownRelayUrl", () => {
     test("strips a trailing slash", () => {
         process.env.PIZZAPI_RELAY_URL = "http://env:7492/";
         expect(resolveKnownRelayUrl(undefined)).toBe("http://env:7492");
+    });
+});
+
+describe("ensureRunnerCredentials — ws:// relayUrl round-trip regression", () => {
+    // Pins the bug class caught in review: a *second* pairing attempt
+    // (auto-pair re-triggering after apiKey was cleared but relayUrl
+    // wasn't, or any future caller of ensureRunnerCredentials with a
+    // config-sourced relayUrl) must not hand the ws(s):// value straight to
+    // a REST fetch() — it must go through toHttpRelayUrl first (relay-url.ts).
+    let tmpDir: string;
+    const originalFetch = globalThis.fetch;
+    const envKeys = [
+        "PIZZAPI_RUNNER_API_KEY",
+        "PIZZAPI_API_KEY",
+        "PIZZAPI_API_TOKEN",
+        "PIZZAPI_RUNNER_TOKEN",
+        "PIZZAPI_PAIRING",
+        "PIZZAPI_RELAY_URL",
+        "PIZZAPI_RUNNER_NAME",
+    ] as const;
+    const savedEnv: Record<string, string | undefined> = {};
+
+    beforeEach(() => {
+        tmpDir = mkdtempSync(join(tmpdir(), "pizzapi-pairing-regression-test-"));
+        _setGlobalConfigDir(join(tmpDir, ".pizzapi"));
+        for (const k of envKeys) { savedEnv[k] = process.env[k]; delete process.env[k]; }
+    });
+
+    afterEach(() => {
+        _setGlobalConfigDir(null);
+        globalThis.fetch = originalFetch;
+        for (const k of envKeys) {
+            if (savedEnv[k] === undefined) delete process.env[k];
+            else process.env[k] = savedEnv[k];
+        }
+        try { rmSync(tmpDir, { recursive: true, force: true }); } catch {}
+    });
+
+    test("config-sourced ws:// relayUrl still targets http(s) for the setup-claim REST call", async () => {
+        const agentDir = join(tmpDir, ".pizzapi");
+        mkdirSync(agentDir, { recursive: true });
+        writeFileSync(join(agentDir, "config.json"), JSON.stringify({ relayUrl: "ws://localhost:7999" }));
+
+        const requestedUrls: string[] = [];
+        globalThis.fetch = (async (input: RequestInfo | URL) => {
+            const url = input.toString();
+            requestedUrls.push(url);
+            if (url === "http://localhost:7999/api/setup-claim") {
+                return new Response(
+                    JSON.stringify({ token: "tok", expiresAt: new Date(Date.now() + 60_000).toISOString() }),
+                    { status: 200, headers: { "content-type": "application/json" } },
+                );
+            }
+            if (url === "http://localhost:7999/api/setup-claim/tok") {
+                return new Response(JSON.stringify({ status: "approved", apiKey: "a".repeat(64) }), { status: 200 });
+            }
+            throw new Error(`unexpected fetch to ${url}`);
+        }) as typeof fetch;
+
+        const exitCode = await ensureRunnerCredentials(agentDir);
+
+        expect(exitCode).toBeNull(); // pairing succeeded, startup continues
+        expect(requestedUrls.length).toBeGreaterThan(0);
+        for (const url of requestedUrls) {
+            expect(url.startsWith("ws://")).toBe(false);
+            expect(url.startsWith("http://localhost:7999")).toBe(true);
+        }
     });
 });
 

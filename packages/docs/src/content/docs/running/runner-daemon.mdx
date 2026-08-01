@@ -194,6 +194,17 @@ Exits `0` if the process is alive **and** currently registered with the relay, `
 
 ---
 
+## Re-pairing On Demand
+
+```bash
+pizzapi runner pair            # refuses if a credential already resolves
+pizzapi runner pair --force    # pairs and overwrites any existing credential
+```
+
+Runs the same headless device-claim flow the daemon runs automatically on a credential-less boot, but on demand — useful after revoking a runner's API key in the web UI. Refuses without `--force` if a credential already resolves (env var or `config.json`), and refuses (or, with `--force`, warns loudly) if `PIZZAPI_RUNNER_API_KEY` / `PIZZAPI_API_KEY` / `PIZZAPI_API_TOKEN` is set, since that would keep shadowing the freshly paired key at runtime. If a daemon is already running, pairing still writes the new credential but the daemon keeps using the old one in memory until you restart it — the command tells you so. See the [CLI Reference](/PizzaPi/running/cli-reference/#pizzapi-runner-pair) for the full guard-rail and exit-code reference.
+
+---
+
 ## Session Linking & Triggers
 
 When sessions are spawned via `spawn_session`, the runner daemon automatically **links them as parent-child**. This enables the conversation trigger system. See the [Multi-Agent Sessions](/PizzaPi/features/multi-agent/) guide for the full list of trigger types, response actions, and delivery semantics.
