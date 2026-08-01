@@ -18,6 +18,7 @@ import { goalExtension } from "./goal/index.js";
 import { createClaudePluginExtension } from "./claude-plugins.js";
 import { subagentExtension } from "./subagent.js";
 import { tunnelToolsExtension } from "./tunnel-tools.js";
+import { discordMirrorExtension } from "./discord-mirror.js";
 import { planModeToggleExtension } from "./plan-mode/index.js";
 import { triggersExtension } from "./triggers/extension.js";
 import { sandboxEventsExtension } from "./sandbox-events.js";
@@ -94,6 +95,7 @@ export function buildPizzaPiExtensionFactories(options: BuildExtensionFactoriesO
     if (!options.skipRelay) {
         factories.push(named(remoteExtension, "relay"));
         factories.push(named(tunnelToolsExtension, "tunnel-tools"));
+        factories.push(named(discordMirrorExtension, "discord-mirror"));
     }
 
     if (!options.skipMcp) {
