@@ -171,12 +171,25 @@ describe("discordMirrorExtension", () => {
         expect(emitted[0].payload.payload).toMatchObject({ toolName: "update_todo", input: { todos } });
     });
 
-    test("surfaces tool errors but stays quiet on successes", () => {
+    test("surfaces tool errors but stays quiet on other successes", () => {
         pi.fire("tool_result", { toolName: "bash", isError: false });
         expect(emitted).toHaveLength(0);
         pi.fire("tool_result", { toolName: "bash", isError: true });
         expect(emitted).toHaveLength(1);
         expect(emitted[0].payload.payload.line).toContain("failed");
+    });
+
+    test("emits discord_ask_resolved when AskUserQuestion finishes, so Discord closes its poll", () => {
+        pi.fire("tool_result", { toolName: "AskUserQuestion", toolCallId: "tc-9", isError: false });
+        expect(emitted).toHaveLength(1);
+        expect(emitted[0].payload.type).toBe("discord_ask_resolved");
+        expect(emitted[0].payload.payload).toMatchObject({ sessionId: "sess-1", toolCallId: "tc-9" });
+    });
+
+    test("does not emit discord_ask_resolved when AskUserQuestion errors", () => {
+        pi.fire("tool_result", { toolName: "AskUserQuestion", toolCallId: "tc-9", isError: true });
+        expect(emitted).toHaveLength(1);
+        expect(emitted[0].payload.type).toBe("discord_activity");
     });
 
     test("routes AskUserQuestion to a discord_ask envelope, not activity", () => {

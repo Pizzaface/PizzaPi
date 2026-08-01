@@ -137,8 +137,16 @@ export function createDiscordMirrorExtension(deps: DiscordMirrorDeps = defaultDe
             if (name) emit("discord_rename", { name });
         });
         pi.on("tool_result" as any, (event: any) => {
-            if (!event?.isError) return; // successes are implied by the next step; only surface failures
-            emit("discord_activity", { line: `\u274C \`${event?.toolName ?? "tool"}\` failed` });
+            if (event?.isError) {
+                emit("discord_activity", { line: `\u274C \`${event?.toolName ?? "tool"}\` failed` });
+                return;
+            }
+            // AskUserQuestion just finished (answered or cancelled) via web, TUI,
+            // or Discord itself — tell the service to close its poll so it never
+            // sits open on an already-resolved question.
+            if (event?.toolName === "AskUserQuestion") {
+                emit("discord_ask_resolved", { toolCallId: event?.toolCallId });
+            }
         });
 
         pi.on("agent_end" as any, (event: any) => {
