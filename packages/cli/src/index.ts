@@ -49,6 +49,12 @@ async function main() {
         process.exit(code);
     }
 
+    if (args[0] === "runner" && args[1] === "status") {
+        const { runStatus } = await import("./runner/status.js");
+        const code = await runStatus(args.slice(2));
+        process.exit(code);
+    }
+
     if (args[0] === "runner") {
         const { runSupervisor } = await import("./runner/supervisor.js");
         const code = await runSupervisor(args.slice(1));
@@ -355,6 +361,7 @@ async function main() {
         log.info(`  ${c.cmd("pizza web")} ${c.dim("[flags]")}           Manage the PizzaPi web hub (Docker)`);
         log.info(`  ${c.cmd("pizza runner")} ${c.dim("[args]")}         Manage the background runner daemon`);
         log.info(`  ${c.cmd("pizza runner stop")}           Stop the runner daemon`);
+        log.info(`  ${c.cmd("pizza runner status")} ${c.dim("[--json]")}  Health check the runner daemon (exit 0 = healthy)`);
         log.info(`  ${c.cmd("pizza setup")}                 Run first-time setup`);
         log.info(`  ${c.cmd("pizza usage")} ${c.dim("[provider]")}      Show API usage stats`);
         log.info(`  ${c.cmd("pizza models")}                List available models`);

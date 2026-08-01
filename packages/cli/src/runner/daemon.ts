@@ -37,7 +37,7 @@ import { ModelRegistry, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import type { ServiceTriggerDef, ServiceSigilDef, TriggerSubscriptionEntry } from "@pizzapi/protocol";
 import { setLogComponent, logInfo, logWarn, logError } from "./logger.js";
 import { extractHookSummary } from "./hook-summary.js";
-import { defaultStatePath, acquireStateAndIdentity, releaseStateLock } from "./runner-state.js";
+import { defaultStatePath, acquireStateAndIdentity, releaseStateLock, patchRunnerState } from "./runner-state.js";
 import { normalizeLoopbackHost } from "../relay-url.js";
 import { startUsageRefreshLoop, stopUsageRefreshLoop } from "./runner-usage-cache.js";
 import { startOllamaModelsRefreshLoop, stopOllamaModelsRefreshLoop } from "./runner-ollama-models-cache.js";
@@ -1161,6 +1161,11 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                 `disconnected (${reason}). Socket.IO will reconnect automatically. `
                 + `transport=${transportName} details=${JSON.stringify(details ?? {})}`,
             );
+            // ponytail: no heartbeat timer here — socket.io's own ping/timeout
+            // already fires "disconnect" on a dead connection, and `runner status`
+            // combines this flag with a PID liveness check. That's sufficient to
+            // answer "is this runner alive AND registered" without extra polling.
+            patchRunnerState(statePath, { connected: false, disconnectedAt: new Date().toISOString() });
         });
 
         // ── Registration confirmation ─────────────────────────────────────
@@ -1176,6 +1181,13 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                     logWarn(`server assigned unexpected ID ${runnerId} (expected ${identity.runnerId})`);
                 }
                 logInfo(`registered as ${runnerId}`);
+                patchRunnerState(statePath, {
+                    connected: true,
+                    connectedAt: new Date().toISOString(),
+                    relayUrl: sioUrl,
+                    runnerName,
+                    cliVersion,
+                });
 
                 // Wait for plugin service discovery to finish, then init ALL services
                 // (built-in + plugins) once and announce the full list.

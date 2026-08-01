@@ -1,9 +1,9 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { randomBytes, randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { logInfo, logError } from "./logger.js";
+import { logInfo, logError, logWarn } from "./logger.js";
 
 // ── Runner state file (~/.pizzapi/runner.json) ────────────────────────────────
 //
@@ -17,7 +17,13 @@ import { logInfo, logError } from "./logger.js";
 //     "supervisorPid": 12344,  // PID of the outer supervisor process
 //     "startedAt": "<iso>",    // ISO timestamp of that daemon start
 //     "runnerId": "<uuid>",    // stable runner identity (never changes)
-//     "runnerSecret": "<hex>"  // 32-byte secret used to re-authenticate
+//     "runnerSecret": "<hex>", // 32-byte secret used to re-authenticate
+//     "connected": true,       // whether the daemon is currently registered with the relay
+//     "connectedAt": "<iso>",  // when the last successful registration happened
+//     "disconnectedAt": "<iso>", // when the socket last dropped
+//     "relayUrl": "...",       // relay URL the daemon is registered against
+//     "runnerName": "...",     // display name reported at registration
+//     "cliVersion": "..."      // CLI version reported at registration
 //   }
 
 export interface RunnerState {
@@ -26,6 +32,12 @@ export interface RunnerState {
     startedAt: string;
     runnerId: string;
     runnerSecret: string;
+    connected?: boolean;
+    connectedAt?: string;
+    disconnectedAt?: string;
+    relayUrl?: string;
+    runnerName?: string;
+    cliVersion?: string;
 }
 
 export function defaultStatePath(): string {
@@ -120,6 +132,34 @@ export function releaseStateLock(statePath: string) {
         writeFileSync(statePath, JSON.stringify(updated, null, 2), { encoding: "utf-8", mode: 0o600 });
     } catch {
         // Best-effort — ignore errors on shutdown.
+    }
+}
+
+/**
+ * Read-modify-write a partial patch onto the state file, preserving any
+ * fields this process doesn't know about. Used by the daemon to record
+ * relay connection state (connected/connectedAt/...) without racing the
+ * pid-lock fields above.
+ *
+ * Best-effort: never throws. Writes via temp-file + rename in the same
+ * directory so a concurrent `runner status` read never sees a truncated file.
+ */
+export function patchRunnerState(statePath: string, patch: Partial<RunnerState>): void {
+    try {
+        let existing: Partial<RunnerState> = {};
+        if (existsSync(statePath)) {
+            try {
+                existing = JSON.parse(readFileSync(statePath, "utf-8")) as Partial<RunnerState>;
+            } catch {
+                // Corrupt file — overwrite with just the patch below.
+            }
+        }
+        const updated = { ...existing, ...patch };
+        const tmpPath = `${statePath}.tmp-${process.pid}`;
+        writeFileSync(tmpPath, JSON.stringify(updated, null, 2), { encoding: "utf-8", mode: 0o600 });
+        renameSync(tmpPath, statePath);
+    } catch (err: any) {
+        logWarn(`Failed to patch runner state at ${statePath}: ${err?.message ?? String(err)}`);
     }
 }
 
