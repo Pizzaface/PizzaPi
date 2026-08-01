@@ -63,14 +63,30 @@ function piTuiPath(subpath: string): string {
 // ---------------------------------------------------------------------------
 
 describe("pi-coding-agent patch application", () => {
-    test("agent-session.js: extension sendUserMessage accepts expandPromptTemplates opt-in", async () => {
+    // Phase 2 (SessionHost sendUserMessage routing): the expandPromptTemplates
+    // opt-in hunk was removed. PizzaPi's remote extension no longer calls the
+    // patched ExtensionAPI.sendUserMessage at all — connection-handlers-factory.ts
+    // drives SessionHost.sendUserMessage, which calls session.prompt() directly
+    // (packages/cli/src/runner/session-host.ts). These guards prevent the hunk
+    // from silently reappearing on a version bump.
+    test("agent-session.js: extension sendUserMessage does NOT special-case expandPromptTemplates (removed — PizzaPi routes through SessionHost)", async () => {
         const source = await Bun.file(
             piCodingAgentPath("dist/core/agent-session.js"),
         ).text();
 
-        // The patch lets callers opt into command/template expansion (default false)
-        expect(source).toContain("PATCH(pizzapi): allow callers to opt into command/template expansion");
-        expect(source).toContain("options?.expandPromptTemplates ?? false");
+        expect(source).not.toContain("PATCH(pizzapi): allow callers to opt into command/template expansion");
+        expect(source).not.toContain("options?.expandPromptTemplates ?? false");
+        // Upstream's original hardcoded false is back in place.
+        expect(source).toContain("expandPromptTemplates: false,");
+    });
+
+    test("types.d.ts: ExtensionAPI.sendUserMessage does NOT carry the expandPromptTemplates PATCH (removed — SessionHost owns expansion)", async () => {
+        const source = await Bun.file(
+            piCodingAgentPath("dist/core/extensions/types.d.ts"),
+        ).text();
+
+        expect(source).not.toContain("expandPromptTemplates");
+        expect(source).not.toContain("PATCH(pizzapi): opt into slash-command and template expansion");
     });
 
     // Phase 1: the ExtensionAPI control-plane exposure (newSession/switchSession/

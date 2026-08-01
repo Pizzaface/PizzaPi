@@ -141,7 +141,6 @@ export const remoteExtension: ExtensionFactory = (pi) => {
     const followUpGrace = createFollowUpGrace(rctx, st);
 
     const { doConnect, doDisconnect } = createConnectionHandlers({
-        pi,
         rctx,
         state: st,
         triggerWaits,

@@ -12,6 +12,7 @@
 import { createLogger } from "@pizzapi/tools";
 import type { RelayContext } from "../remote-types.js";
 import type { TriggerWaitManager } from "../trigger-wait-manager.js";
+import type { SendUserMessageOptions, UserMessageContent } from "../../runner/session-host.js";
 import { connect, disconnect, type ConnectionHandlers } from "./connection.js";
 import type { DelinkManager } from "./delink-management.js";
 import type { CancellationManager } from "./trigger-cancellation.js";
@@ -43,7 +44,6 @@ export interface ConnectionHandlerState {
 }
 
 export interface ConnectionHandlersDeps {
-    pi: any;
     rctx: RelayContext;
     state: ConnectionHandlerState;
     triggerWaits: TriggerWaitManager;
@@ -57,15 +57,23 @@ export interface ConnectionHandlersDeps {
  * Build ConnectionHandlers + doConnect/doDisconnect from the provided deps.
  */
 export function createConnectionHandlers(deps: ConnectionHandlersDeps) {
-    const { pi, rctx, state, triggerWaits, delinkManager, cancellationManager, followUpGrace, setModelFromWeb } = deps;
+    const { rctx, state, triggerWaits, delinkManager, cancellationManager, followUpGrace, setModelFromWeb } = deps;
 
     const connectionHandlers: ConnectionHandlers = {
         clearFollowUpGrace: followUpGrace.clearFollowUpGrace,
 
         setModelFromWeb,
 
-        sendUserMessage: (msg: unknown, opts?: { deliverAs?: "followUp" | "steer"; expandPromptTemplates?: boolean }) =>
-            (pi as any).sendUserMessage(msg, opts),
+        // Routed through the host-owned SessionHost — never falls back to the
+        // (now-unpatched) ExtensionAPI.sendUserMessage. If no host was ever
+        // published (see remote-types.ts RelayContext.sessionHost), fail loudly
+        // instead of silently dropping the message.
+        sendUserMessage: async (msg: unknown, opts?: SendUserMessageOptions): Promise<void> => {
+            if (!rctx.sessionHost) {
+                throw new Error("pizzapi: no SessionHost available — cannot deliver user message");
+            }
+            await rctx.sessionHost.sendUserMessage(msg as UserMessageContent, opts);
+        },
 
         // ── Delink handlers ───────────────────────────────────────────────
 
