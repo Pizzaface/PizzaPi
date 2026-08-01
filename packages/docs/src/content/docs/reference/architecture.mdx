@@ -193,7 +193,7 @@ See the [Claude Code Plugins guide](/PizzaPi/customization/claude-plugins/) for 
 
 ## Runner Services
 
-Runner services are background processes that run on the runner and expose interactive UI panels in the web interface. Each service ships its own HTML panel rendered in an iframe — no React compilation needed. Services are discovered automatically from `~/.pizzapi/services/` and from plugins.
+Runner services are background processes that run on the runner and expose interactive UI panels in the web interface. Each service ships its own HTML panel rendered in an iframe — no React compilation needed. Services are declared by [overlay packages](/PizzaPi/customization/overlay-packages/) under `pi.pizzapi.services` and only load once that package holds a daemon-service grant.
 
 See the [Runner Services guide](/PizzaPi/customization/runner-services/) for full details on creating custom services.
 

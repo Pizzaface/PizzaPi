@@ -71,22 +71,41 @@ describe("resolveReconfiguredDisabledRunnerServices", () => {
     });
 });
 
-describe("legacy service discovery stays runner-global (overlay spec §6.3)", () => {
-    // The daemon owns ONE ServiceRegistry shared by every workspace. Passing a
-    // cwd to discoverServices() would mount the daemon's launch directory as a
-    // runner-global service for unrelated sessions. service-loader still
-    // supports { cwd } as the loader half of a future scoped design, so this
-    // pins the invariant that no production caller actually uses it.
-    test("no discoverServices() call in daemon.ts passes a cwd", () => {
-        const daemonSrc = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "daemon.ts"), "utf-8");
+describe("packages are the only source of runner services (overlay spec §6.3, §12.4)", () => {
+    const runnerDir = dirname(fileURLToPath(import.meta.url));
+    const read = (f: string) => readFileSync(join(runnerDir, f), "utf-8");
 
-        // Deliberately excludes discoverPackageServices(), which is cwd-scoped by design.
-        const callSites = [...daemonSrc.matchAll(/(?<![A-Za-z])discoverServices\(([\s\S]{0,300}?)\)\s*;/g)];
-
-        expect(callSites.length).toBeGreaterThan(0);
-        for (const [, args] of callSites) {
-            expect(args).not.toMatch(/\bcwd\b/);
+    // Legacy discovery scanned ~/.pizzapi/services/, <cwd>/.pizzapi/services/ and
+    // plugin dirs, mounting code on the daemon with no trust grant and no
+    // provenance. The daemon owns ONE ServiceRegistry shared by every workspace,
+    // so a project-scoped scan would activate one checkout's code for unrelated
+    // sessions. Both concerns are now closed structurally: the scanners are gone
+    // and package services carry an explicit per-package grant.
+    test("service-loader.ts exports no directory or plugin scanner", () => {
+        const src = read("service-loader.ts");
+        for (const gone of [
+            "discoverServices",
+            "globalServicesDir",
+            "projectServicesDir",
+            "loadServicesFromDir",
+            "loadServicesFromPlugins",
+        ]) {
+            expect(src).not.toContain(`export function ${gone}`);
+            expect(src).not.toContain(`export async function ${gone}`);
         }
+    });
+
+    test("daemon.ts mounts services only via discoverPackageServices()", () => {
+        const src = read("daemon.ts");
+        // discoverPackageServices() is cwd-scoped by design (it resolves
+        // project-scope packages to warn that their services stay inactive);
+        // the bare legacy scanner must not come back.
+        expect(src).not.toMatch(/(?<![A-Za-z])discoverServices\(/);
+        expect(src).toMatch(/discoverPackageServices\(/);
+    });
+
+    test("only package-origin services can be registered", () => {
+        expect(read("service-loader.ts")).toContain('origin: "package"');
     });
 });
 
