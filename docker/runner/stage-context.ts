@@ -19,7 +19,7 @@
 
 import { $ } from "bun";
 import { join, dirname } from "path";
-import { existsSync, mkdirSync, cpSync, readdirSync, statSync } from "fs";
+import { existsSync, mkdirSync, cpSync, readdirSync } from "fs";
 
 const SECCOMP_ARCH_MAP: Record<string, "x64" | "arm64"> = {
     "linux-x64": "x64",

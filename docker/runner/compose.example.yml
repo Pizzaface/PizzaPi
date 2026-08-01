@@ -1,0 +1,50 @@
+# Example Compose service for the PizzaPi runner image.
+#
+# Copy the `runner:` service (and `volumes:` entry) into your own
+# compose.yml, or run this file directly:
+#   docker compose -f docker/runner/compose.example.yml up -d
+#
+# See docs/plans/2026-07-31-runner-container-spike.md for the full design.
+services:
+  runner:
+    image: ghcr.io/pizzaface/pizzapi-runner:0.5.61
+    restart: unless-stopped
+    stop_grace_period: 30s
+    environment:
+      PIZZAPI_RELAY_URL: https://pizza.example.com
+      PIZZAPI_API_KEY: ${PIZZAPI_API_KEY}
+      PIZZAPI_RUNNER_NAME: docker-runner
+      PIZZAPI_WORKSPACE_ROOTS: /workspace
+      # If the relay is another Compose service instead of a public URL:
+      # PIZZAPI_RELAY_URL: http://server:7492
+
+      # --- Optional: remap the container's `pizza` user to a host uid/gid ---
+      # Useful when ./projects is a bind mount owned by your host user.
+      # PUID: "1000"
+      # PGID: "1000"
+      # PIZZAPI_CHOWN_WORKSPACE: "1"  # also chown workspace roots on start (slow, off by default)
+    volumes:
+      # Required: runner identity, auth, sessions, installed services — treat as secret.
+      - runner-data:/home/pizza/.pizzapi
+      # Workspaces, mounted under PIZZAPI_WORKSPACE_ROOTS.
+      - ./projects:/workspace
+
+      # --- Optional: git identity from the host ---
+      # - ~/.gitconfig:/home/pizza/.gitconfig:ro
+
+      # --- Optional: SSH agent forwarding (preferred over mounting keys) ---
+      # - ${SSH_AUTH_SOCK}:/ssh-agent
+    # environment:
+    #   SSH_AUTH_SOCK: /ssh-agent
+
+    # --- Optional: opt-in nested Bubblewrap sandbox (PIZZAPI_SANDBOX=none by default) ---
+    # This weakens container isolation: it requires disabling Docker's default
+    # seccomp profile for the whole container, not just the sandboxed session.
+    # Only enable this if you understand and accept that tradeoff.
+    # security_opt:
+    #   - seccomp=unconfined
+    # environment:
+    #   PIZZAPI_SANDBOX: basic
+
+volumes:
+  runner-data:
