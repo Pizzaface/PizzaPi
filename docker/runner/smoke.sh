@@ -49,11 +49,17 @@ cleanup() {
     echo "==== SMOKE TEST SUMMARY ===="
     printf '%-6s  %-52s  %s\n' STATUS CHECK DETAIL
     local fail=0
-    for r in "${RESULTS[@]}"; do
-        IFS='|' read -r status name detail <<<"$r"
-        printf '%-6s  %-52s  %s\n' "$status" "$name" "$detail"
-        [ "$status" = "FAIL" ] && fail=1
-    done
+    # macOS ships bash 3.2 as /bin/bash, where "${arr[@]}" on an EMPTY array is
+    # an unbound-variable fatal under `set -u` (${#arr[@]} is fine). Without
+    # this guard, exiting at a preflight FATAL — before any record() call — makes
+    # the trap itself die and swallow the actual error message.
+    if [ "${#RESULTS[@]}" -gt 0 ]; then
+        for r in "${RESULTS[@]}"; do
+            IFS='|' read -r status name detail <<<"$r"
+            printf '%-6s  %-52s  %s\n' "$status" "$name" "$detail"
+            [ "$status" = "FAIL" ] && fail=1
+        done
+    fi
     if [ "$ec" != "0" ]; then
         echo "(script exited early with code $ec — see output above)"
         fail=1

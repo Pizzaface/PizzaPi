@@ -1,10 +1,36 @@
 import { getAuth, getKysely } from "./auth.js";
 
+/**
+ * better-auth's api-key plugin hooks session resolution, so an invalid or
+ * malformed `x-api-key` header makes `getSession` THROW rather than return
+ * null. Unguarded, that surfaced as a 500 "Internal server error" on every
+ * session-authenticated route whenever a client presented a stale key — the
+ * one case where the answer is unambiguously 401. Swallow it and let the
+ * explicit API-key path produce the real status, matching what
+ * routes/tunnel-ws.ts and ws/namespaces/auth.ts already do.
+ */
+async function trySession(req: Request) {
+    try {
+        return await getAuth().api.getSession({ headers: req.headers });
+    } catch {
+        return null;
+    }
+}
+
+/** Same rationale as trySession: a malformed key throws instead of returning invalid. */
+async function tryVerifyApiKey(key: string) {
+    try {
+        return await getAuth().api.verifyApiKey({ body: { key } });
+    } catch {
+        return null;
+    }
+}
+
 /** Returns the session+user or a 401 Response. Falls back to API-key auth. */
 export async function requireSession(
     req: Request,
 ): Promise<{ userId: string; userName: string } | Response> {
-    const session = await getAuth().api.getSession({ headers: req.headers });
+    const session = await trySession(req);
     if (session?.user?.id) {
         return { userId: session.user.id, userName: session.user.name ?? session.user.id };
     }
@@ -33,14 +59,14 @@ export interface EnrollmentAuth {
  * is allowed to live (see EnrollmentAuth.maxMintTtlSeconds).
  */
 export async function requireEnrollmentAuth(req: Request): Promise<EnrollmentAuth | Response> {
-    const session = await getAuth().api.getSession({ headers: req.headers });
+    const session = await trySession(req);
     if (session?.user?.id) {
         return { userId: session.user.id, userName: session.user.name ?? session.user.id, maxMintTtlSeconds: null };
     }
     const key = req.headers.get("x-api-key");
     if (!key) return new Response("Unauthorized", { status: 401 });
-    const result = await getAuth().api.verifyApiKey({ body: { key } });
-    if (!result.valid || !result.key?.userId) {
+    const result = await tryVerifyApiKey(key);
+    if (!result?.valid || !result.key?.userId) {
         return new Response("Invalid or expired API key", { status: 401 });
     }
     const userId = result.key.userId;
@@ -64,8 +90,8 @@ export async function validateApiKey(
     if (!key) {
         return new Response("Missing API key (x-api-key header)", { status: 401 });
     }
-    const result = await getAuth().api.verifyApiKey({ body: { key } });
-    if (!result.valid || !result.key?.userId) {
+    const result = await tryVerifyApiKey(key);
+    if (!result?.valid || !result.key?.userId) {
         return new Response("Invalid or expired API key", { status: 401 });
     }
     const userId = result.key.userId;
