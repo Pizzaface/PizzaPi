@@ -24,6 +24,9 @@ import { sanitizeQuestions } from "./remote-ask-user.js";
 /** Discord's hard limit is 2000 chars; the service re-chunks, this just bounds the payload. */
 const MAX_MIRROR_CHARS = 8_000;
 
+/** Mid-turn assistant text rides the activity feed as a preview line, not the full post — keep it short. */
+const MAX_MIDTURN_CHARS = 300;
+
 /** Per-field cap on tool_call input shipped over the relay — big file/bash content stays local. */
 const MAX_INPUT_FIELD_CHARS = 500;
 
@@ -57,6 +60,31 @@ const defaultDeps: DiscordMirrorDeps = {
     newId: randomUUID,
 };
 
+/** Count added/removed lines from a unified diff patch (the edit tool's `details.patch`). Null if unparsable/empty. */
+function diffStatsFromPatch(patch: unknown): { added: number; removed: number } | null {
+    if (typeof patch !== "string" || !patch) return null;
+    let added = 0;
+    let removed = 0;
+    for (const line of patch.split("\n")) {
+        if (line.startsWith("+++") || line.startsWith("---")) continue;
+        if (line.startsWith("+")) added++;
+        else if (line.startsWith("-")) removed++;
+    }
+    return added || removed ? { added, removed } : null;
+}
+
+/** Extract one assistant message's text content, joining its text blocks. Null for non-assistant or textless (tool-only) messages. */
+function assistantMessageText(msg: unknown): string | null {
+    const m = msg as any;
+    if (m?.role !== "assistant" || !Array.isArray(m.content)) return null;
+    const text = m.content
+        .filter((c: any) => c && typeof c === "object" && c.type === "text" && typeof c.text === "string" && c.text)
+        .map((c: any) => c.text as string)
+        .join("\n")
+        .trim();
+    return text || null;
+}
+
 /**
  * Pull the text of the last assistant message out of a run's message list.
  * Mirrors the extraction in remote/lifecycle-handlers.ts.
@@ -64,13 +92,7 @@ const defaultDeps: DiscordMirrorDeps = {
 export function lastAssistantText(messages: unknown): string | null {
     if (!Array.isArray(messages)) return null;
     for (let i = messages.length - 1; i >= 0; i--) {
-        const msg = messages[i] as any;
-        if (msg?.role !== "assistant" || !Array.isArray(msg.content)) continue;
-        const text = msg.content
-            .filter((c: any) => c && typeof c === "object" && c.type === "text" && typeof c.text === "string" && c.text)
-            .map((c: any) => c.text as string)
-            .join("\n")
-            .trim();
+        const text = assistantMessageText(messages[i]);
         if (text) return text.length > MAX_MIRROR_CHARS ? `${text.slice(0, MAX_MIRROR_CHARS)}\n…(truncated)` : text;
     }
     return null;
@@ -126,7 +148,33 @@ export function createDiscordMirrorExtension(deps: DiscordMirrorDeps = defaultDe
                 });
                 return;
             }
+            // edit's diff stats aren't known until it finishes — the tool_result
+            // handler below emits its activity line (with +/- counts) instead.
+            if (name === "edit") return;
+            if (name === "write") {
+                // write replaces the whole file — there's no "before" to diff against
+                // (unlike edit, which gets a real patch back), so just count the
+                // lines going in.
+                const content = typeof event?.input?.content === "string" ? event.input.content : "";
+                const input = sanitizeToolInput(event?.input);
+                if (content) input.added = content.split("\n").length;
+                emit("discord_activity", { toolName: name, input });
+                return;
+            }
             emit("discord_activity", { toolName: name, input: sanitizeToolInput(event?.input) });
+        });
+
+        // Assistant text that lands *between* tool calls ("let me check that file
+        // first…") would otherwise be silently dropped — only the run's final
+        // message gets mirrored, via agent_end/agent_settled below. Feed every
+        // intermediate assistant message into the same activity trail as tool
+        // calls so the thread shows the model's reasoning as it happens, not
+        // just the finished answer.
+        pi.on("message_end" as any, (event: any) => {
+            const text = assistantMessageText(event?.message);
+            if (!text) return;
+            const line = text.length > MAX_MIDTURN_CHARS ? `${text.slice(0, MAX_MIDTURN_CHARS)}…` : text;
+            emit("discord_activity", { line: `💬 ${line}` });
         });
 
         // set_session_name -> Discord thread title. session_info_changed fires
@@ -146,6 +194,12 @@ export function createDiscordMirrorExtension(deps: DiscordMirrorDeps = defaultDe
             // sits open on an already-resolved question.
             if (event?.toolName === "AskUserQuestion") {
                 emit("discord_ask_resolved", { toolCallId: event?.toolCallId });
+                return;
+            }
+            if (event?.toolName === "edit") {
+                const stats = diffStatsFromPatch((event?.details as any)?.patch);
+                const input = stats ? { path: event?.input?.path, ...stats } : sanitizeToolInput(event?.input);
+                emit("discord_activity", { toolName: "edit", input });
             }
         });
 

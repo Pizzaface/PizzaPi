@@ -154,6 +154,26 @@ describe("discordMirrorExtension", () => {
         expect(() => pi.fire("agent_settled")).not.toThrow();
     });
 
+    test("mirrors mid-turn assistant text as a discord_activity line, not just the final post", () => {
+        pi.fire("message_end", { message: assistantMsg("let me check that file first") });
+        expect(emitted).toHaveLength(1);
+        expect(emitted[0].payload.type).toBe("discord_activity");
+        expect(emitted[0].payload.payload.line).toBe("\u{1F4AC} let me check that file first");
+    });
+
+    test("ignores message_end for non-assistant or textless messages", () => {
+        pi.fire("message_end", { message: { role: "user", content: [{ type: "text", text: "hi" }] } });
+        pi.fire("message_end", { message: { role: "assistant", content: [{ type: "tool_use", id: "1", name: "bash" }] } });
+        expect(emitted).toHaveLength(0);
+    });
+
+    test("truncates long mid-turn assistant text for the activity preview", () => {
+        pi.fire("message_end", { message: assistantMsg("x".repeat(500)) });
+        const line = emitted[0].payload.payload.line as string;
+        expect(line.length).toBeLessThan(320);
+        expect(line.endsWith("\u2026")).toBe(true);
+    });
+
     test("emits a discord_activity envelope with raw toolName/input for each tool call", () => {
         pi.fire("tool_call", { toolName: "bash", input: { command: "ls -la" } });
         expect(emitted).toHaveLength(1);
@@ -169,6 +189,44 @@ describe("discordMirrorExtension", () => {
         const todos = [{ id: 1, text: "Do the thing", status: "in_progress" }];
         pi.fire("tool_call", { toolName: "update_todo", input: { todos } });
         expect(emitted[0].payload.payload).toMatchObject({ toolName: "update_todo", input: { todos } });
+    });
+
+    test("defers edit's activity line to tool_result so it can carry +/- diff stats", () => {
+        pi.fire("tool_call", { toolName: "edit", input: { path: "src/x.ts", edits: [] } });
+        expect(emitted).toHaveLength(0);
+
+        pi.fire("tool_result", {
+            toolName: "edit",
+            isError: false,
+            input: { path: "src/x.ts" },
+            details: { patch: "--- a/x.ts\n+++ b/x.ts\n@@\n-old line\n-old line 2\n+new line\n+new line 2\n+new line 3\n" },
+        });
+        expect(emitted).toHaveLength(1);
+        expect(emitted[0].payload.payload).toMatchObject({
+            toolName: "edit",
+            input: { path: "src/x.ts", added: 3, removed: 2 },
+        });
+    });
+
+    test("falls back to plain path when edit has no parsable patch", () => {
+        pi.fire("tool_result", { toolName: "edit", isError: false, input: { path: "src/x.ts" }, details: undefined });
+        expect(emitted).toHaveLength(1);
+        expect(emitted[0].payload.payload.input).toEqual({ path: "src/x.ts" });
+    });
+
+    test("tags write's activity line with an added-lines count (no removed — no \"before\" to diff)", () => {
+        pi.fire("tool_call", { toolName: "write", input: { path: "src/new.ts", content: "a\nb\nc" } });
+        expect(emitted).toHaveLength(1);
+        expect(emitted[0].payload.payload).toMatchObject({
+            toolName: "write",
+            input: { path: "src/new.ts", added: 3 },
+        });
+        expect(emitted[0].payload.payload.input.removed).toBeUndefined();
+    });
+
+    test("omits the added count for an empty write", () => {
+        pi.fire("tool_call", { toolName: "write", input: { path: "src/empty.ts", content: "" } });
+        expect(emitted[0].payload.payload.input.added).toBeUndefined();
     });
 
     test("surfaces tool errors but stays quiet on other successes", () => {
